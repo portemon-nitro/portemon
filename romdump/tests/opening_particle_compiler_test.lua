@@ -17,8 +17,10 @@ local function u32(v)
   return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
 end
 
+local SELF_DEST = 2 ^ 14
+
 local function emitter(textureIndex)
-  return u32(0)
+  return u32(SELF_DEST)
     .. string.rep("\0", 56)
     .. u16(18)
     .. u16(15)
@@ -97,7 +99,7 @@ end
 function T.particle_compiler_rejects_an_unsupported_feature()
   local parts = { " APS12_1" .. u16(9) .. u16(9) .. string.rep("\0", 20) }
   for id = 1, 9 do
-    local flag = id == 1 and 2 ^ 11 or 0
+    local flag = SELF_DEST + (id == 1 and 2 ^ 20 or 0)
     parts[#parts + 1] = u32(flag)
       .. string.rep("\0", 56)
       .. u16(18)
@@ -117,7 +119,7 @@ end
 function T.particle_compiler_rejects_a_missing_texture_selection()
   local parts = { " APS12_1" .. u16(9) .. u16(1) .. string.rep("\0", 20) }
   for _ = 1, 9 do
-    parts[#parts + 1] = u32(0)
+    parts[#parts + 1] = u32(SELF_DEST)
       .. string.rep("\0", 56)
       .. u16(18)
       .. u16(15)
@@ -139,19 +141,14 @@ end
 
 local function s32(v)
   v = v % 0x100000000
-  return string.char(
-    v % 256,
-    math.floor(v / 256) % 256,
-    math.floor(v / 65536) % 256,
-    math.floor(v / 16777216) % 256
-  )
+  return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
 end
 
 -- A base record with explicit source words: fixed-point magnitude words,
 -- the aspect/start/rotation/lifespan/random words, and the generation and
 -- texture words. Optional block bytes follow the base in source order.
 local function tailedEmitter(flag, words, extra)
-  local record = u32(flag)
+  local record = u32(flag + (math.floor(flag / SELF_DEST) % 2 == 1 and 0 or SELF_DEST))
     .. string.rep("\0", 12)
     .. s32(words.genNum or 4096)
     .. s32(words.radius or 4096)
@@ -235,29 +232,30 @@ end
 
 function T.particle_compiler_decodes_animation_geometry_and_motion_records()
   local flag = 2 + 2 ^ 8 + 2 ^ 9 + 2 ^ 10 + 2 ^ 14 + 2 ^ 27
-  local first = tailedEmitter(flag, {
-    genNum = 20480,
-    radius = 2132,
-    ivel = 8192,
-    bscl = 1638,
-    emtrLife = 18,
-    ptclLife = 15,
-    rndmBase = 84,
-    rndmLife = 0,
-    rndmVel = 102,
-    genIntvl = 1,
-    baseAlp = 31,
-    air = 129,
-    texNo = 0,
-    baseColor = rgb(17, 27, 31),
-  }, scaleBlock(2048, 4096, 8192, 64, 192)
-    .. colorBlock(rgb(31, 0, 0), rgb(0, 0, 31), 10, 100, 200, true)
-    .. alphaBlock(5, 20, 10, 30, 220)
-    .. spinField(2000, 2))
-  local compiled, err = OpeningParticleCompiler.compile(
-    memberWithFirst(first),
-    "assets/generated/startup/opening/4"
+  local first = tailedEmitter(
+    flag,
+    {
+      genNum = 20480,
+      radius = 2132,
+      ivel = 8192,
+      bscl = 1638,
+      emtrLife = 18,
+      ptclLife = 15,
+      rndmBase = 84,
+      rndmLife = 0,
+      rndmVel = 102,
+      genIntvl = 1,
+      baseAlp = 31,
+      air = 129,
+      texNo = 0,
+      baseColor = rgb(17, 27, 31),
+    },
+    scaleBlock(2048, 4096, 8192, 64, 192)
+      .. colorBlock(rgb(31, 0, 0), rgb(0, 0, 31), 10, 100, 200, true)
+      .. alphaBlock(5, 20, 10, 30, 220)
+      .. spinField(2000, 2)
   )
+  local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
   Assert.notNil(compiled, "the animated member compiles: " .. tostring(err))
   local record = assert(compiled.particles.emitters[1], "the first emitter normalizes")
   Assert.equal(record.id, 0, "the first emitter keeps its source id")
@@ -291,11 +289,7 @@ function T.particle_compiler_decodes_animation_geometry_and_motion_records()
   Assert.equal(record.velRandom, 102, "the emitter keeps its velocity random range")
   Assert.equal(record.scaleRandom, 84, "the emitter keeps its scale random range")
   Assert.equal(record.airResist, 129, "the emitter keeps its air resistance")
-  Assert.deepEqual(
-    record.baseColorRgb,
-    { r = 17, g = 27, b = 31 },
-    "the emitter keeps its exact base color channels"
-  )
+  Assert.deepEqual(record.baseColorRgb, { r = 17, g = 27, b = 31 }, "the emitter keeps its exact base color channels")
   Assert.equal(#record.fields, 1, "the emitter keeps its spin field")
   Assert.equal(record.fields[1].kind, "spin", "the field keeps its spin kind")
   Assert.equal(record.fields[1].rotation, 2000, "the spin keeps its rotation step")
@@ -314,10 +308,7 @@ function T.particle_compiler_decodes_child_records()
     .. string.char(1, 0, 3, 8)
     .. string.char(5, 0, 0, 0)
   local first = tailedEmitter(flag, { texNo = 1 }, string.rep("\0", 12 + 12 + 8) .. child .. spinField(609, 2))
-  local compiled, err = OpeningParticleCompiler.compile(
-    memberWithFirst(first),
-    "assets/generated/startup/opening/4"
-  )
+  local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
   Assert.notNil(compiled, "the child member compiles: " .. tostring(err))
   local record = assert(compiled.particles.emitters[1], "the first emitter normalizes")
   local childRecord = assert(record.child, "the child block normalizes")
@@ -331,24 +322,21 @@ end
 
 function T.particle_compiler_rejects_a_zero_generation_interval()
   local first = tailedEmitter(2, { genIntvl = 0, texNo = 0 })
-  local compiled, err =
-    OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
+  local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
   Assert.isNil(compiled, "a zero generation interval never compiles")
   Assert.notNil(err, "the zero interval reports its emitter context")
 end
 
 function T.particle_compiler_rejects_an_unsupported_draw_kind()
   local first = tailedEmitter(2 + 2 ^ 5, { texNo = 0 })
-  local compiled, err =
-    OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
+  local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
   Assert.isNil(compiled, "a polygon draw kind never compiles")
   Assert.notNil(err, "the draw kind reports its emitter context")
 end
 
 function T.particle_compiler_rejects_mirrored_texture_coordinates()
   local first = tailedEmitter(2, { texNo = 0, word2 = 1 })
-  local compiled, err =
-    OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
+  local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
   Assert.isNil(compiled, "a mirrored texture never compiles")
   Assert.notNil(err, "the mirror flag reports its emitter context")
 end

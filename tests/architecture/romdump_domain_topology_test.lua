@@ -167,6 +167,9 @@ local DOMAINS = {
     "StarterChoiceAssetCacheWriter",
     "StarterChoiceAssetCompiler",
   },
+  particle = {
+    "SplEmitterCompiler",
+  },
   startup = {
     "StartupCacheWriter",
     "StartupVisualCompiler",
