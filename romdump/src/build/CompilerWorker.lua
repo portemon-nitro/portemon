@@ -7,6 +7,7 @@
 -- across jobs: large compilations never retire it.
 
 local CacheFs = require("libs.storage.src.CacheFs")
+local Errors = require("libs.errors.src.Errors")
 local RomFs = require("romdump.src.source.RomFs")
 local RomSource = require("romdump.src.source.RomSource")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
@@ -177,7 +178,8 @@ end
 ---@param status string reused, prepared, or failed
 ---@param timingReason string reused or interleaved
 ---@param workSeconds number wall time spent on validation and compilation
----@param failure table<string, unknown>|nil plain typed error, present only when the pool reports source-unavailable
+---@param failure string|table<string, unknown>|nil channel-safe cause: the pool-reported typed error,
+--- a worker-caught compile or backend failure with its throw-site trace, or nothing on success paths
 local function pushCompletion(
   resultChannel,
   workerId,
@@ -205,6 +207,49 @@ local function pushCompletion(
     timingReason = timingReason,
     error = failure,
   })
+end
+
+-- Captures the throw-site traceback for a failure caught by xpcall. Called
+-- from the error handler, which runs where the failure was raised; the same
+-- call anywhere else would describe the wrong frame.
+-- Level 3 skips this helper and its pcall, so the trace starts at the
+-- handler frame exactly like the direct debug.traceback("", 2) calls the
+-- digest compilers make in their own xpcall handlers.
+---@return string? traceback when the debug library can provide one
+local function throwSiteTraceback()
+  if type(debug) ~= "table" or type(debug.traceback) ~= "function" then
+    return nil
+  end
+  local ok, trace = pcall(debug.traceback, "", 3)
+  if ok and type(trace) == "string" and trace ~= "" then
+    return trace
+  end
+  return nil
+end
+
+-- Failure causes cross the love thread boundary to the pool, which carries
+-- plain data only: a metatabled Errors value would not survive the trip, so
+-- typed failures travel as plain code/message tables and untyped throws as
+-- strings. A captured throw-site traceback rides along when present. The
+-- pool prefers staged manifest detail first and falls back to this cause
+-- before the generic fault.
+---@param failure unknown caught xpcall failure
+---@param traceback string? throw-site trace captured by the handler
+---@return string|table<string, unknown> channel-safe completion cause
+local function completionCause(failure, traceback)
+  if Errors.is(failure) then
+    ---@cast failure Errors.Error
+    local cause = { code = failure.code, message = failure.message, context = failure.context }
+    if traceback ~= nil then
+      cause.traceback = traceback
+    end
+    return cause
+  end
+  local message = tostring(failure)
+  if traceback ~= nil then
+    message = message .. "\n" .. traceback
+  end
+  return message
 end
 
 ---@param workerId integer
@@ -253,9 +298,11 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
       -- Only a missing, stale, or unusable receipt compiles below. A
       -- genuine cache backend failure is terminal for the job, exactly
       -- like a compile failure.
+      local receiptTraceback = nil
       local receiptOk, receipt = xpcall(function()
         return ArtifactState.read(context.cacheFs, executeJob.generationId, executeJob.kind, executeJob.key)
       end, function(failure)
+        receiptTraceback = throwSiteTraceback()
         return failure
       end)
       if receiptOk and receipt ~= nil then
@@ -309,9 +356,11 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
             -- Fall through to the next control message without compiling.
           else
             assert(context.romFs and context.cacheFs, "worker context is incomplete")
+            local compileTraceback = nil
             local ok, result = xpcall(function()
               return CompilerWorker.execute(executeJob, context)
             end, function(failure)
+              compileTraceback = throwSiteTraceback()
               return failure
             end)
             local workSeconds = wallSeconds() - startedAt
@@ -338,7 +387,8 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
                 job.stageName,
                 "failed",
                 "interleaved",
-                workSeconds
+                workSeconds,
+                completionCause(result, compileTraceback)
               )
             end
           end
@@ -354,7 +404,8 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
             job.stageName,
             "failed",
             "interleaved",
-            wallSeconds() - startedAt
+            wallSeconds() - startedAt,
+            completionCause(receipt, receiptTraceback)
           )
         end
       end

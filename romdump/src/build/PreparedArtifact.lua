@@ -369,14 +369,90 @@ function PreparedArtifact:addSharedFile(path)
   self._sharedFiles[path] = true
 end
 
+-- Shared PNGs are addressed by source hash while their bytes embed the host
+-- zlib's deflate output, so a host toolchain change contradicts
+-- byte-identical pixels. The logical PNG identity below is the IHDR plus
+-- every non-IDAT chunk plus the decompressed scanlines: two files sharing
+-- it render the same pixels. A PNG whose live and staged copies share
+-- that identity reinstalls the staged bytes (healing encoder drift
+-- permanently and converging on the current encoder); every other
+-- contradiction still fails before any success is sealed.
+local PNG_SIGNATURE = "\137PNG\r\n\26\n"
+
+---@param bytes string raw file bytes
+---@param pos integer 1-based offset of the chunk length field
+---@return string? ctype chunk type
+---@return string? data chunk payload
+---@return integer? nextPos 1-based offset past the chunk CRC
+local function readPngChunk(bytes, pos)
+  if pos + 7 > #bytes then
+    return nil
+  end
+  local b1, b2, b3, b4 = string.byte(bytes, pos, pos + 3)
+  if b1 == nil or b2 == nil or b3 == nil or b4 == nil then
+    return nil
+  end
+  local length = ((b1 * 256 + b2) * 256 + b3) * 256 + b4
+  if length < 0 or pos + 11 + length > #bytes then
+    return nil
+  end
+  return bytes:sub(pos + 4, pos + 7), bytes:sub(pos + 8, pos + 7 + length), pos + 12 + length
+end
+
+---@param bytes string raw file bytes
+---@return string? identity canonical logical identity, nil unless a well-formed PNG
+local function pngLogicalIdentity(bytes)
+  if bytes:sub(1, 8) ~= PNG_SIGNATURE then
+    return nil
+  end
+  local host = rawget(_G, "love")
+  if type(host) ~= "table" or type(host.data) ~= "table" or type(host.data.decompress) ~= "function" then
+    return nil
+  end
+  local pos, ihdr, idats, rest = 9, nil, {}, {}
+  while true do
+    if pos > #bytes then
+      return nil
+    end
+    local ctype, data, nextPos = readPngChunk(bytes, pos)
+    if ctype == nil or data == nil or nextPos == nil then
+      return nil
+    end
+    if ctype == "IDAT" then
+      idats[#idats + 1] = data
+    else
+      if ctype == "IHDR" then
+        if ihdr ~= nil then
+          return nil
+        end
+        ihdr = data
+      end
+      rest[#rest + 1] = ctype .. "\0" .. data
+    end
+    pos = nextPos
+    if ctype == "IEND" then
+      break
+    end
+  end
+  if pos ~= #bytes + 1 or ihdr == nil or #idats == 0 then
+    return nil
+  end
+  local decoded, raw = pcall(host.data.decompress, "string", "zlib", table.concat(idats))
+  if not decoded or type(raw) ~= "string" then
+    return nil
+  end
+  return table.concat(rest, "\1") .. "\1IDAT\0" .. raw
+end
+
 -- Worker-side shared-file proof, sealed before success: every staged
 -- shared path must exist; a path absent from the live tree becomes an
 -- install candidate, a byte-identical live path is marked reused and its
--- redundant staged copy removed, and a contradiction fails before any
--- success is sealed. The controller later installs or reuses from this
--- classification without reading payload bytes. Shared paths must be
--- deterministic derivations of the generation source: the same path always
--- carries the same bytes, so concurrent producers cannot genuinely
+-- redundant staged copy removed, a PNG pairing with identical decoded
+-- pixels reinstalls the staged copy, and any other contradiction fails
+-- before any success is sealed. The controller later installs or reuses
+-- from this classification without reading payload bytes. Shared paths must
+-- be deterministic derivations of the generation source: the same path
+-- always carries the same bytes, so concurrent producers cannot genuinely
 -- conflict; a mismatch fails here and serialized controller publication
 -- never overwrites live bytes on a race.
 function PreparedArtifact:_reconcileShared()
@@ -385,13 +461,19 @@ function PreparedArtifact:_reconcileShared()
   for path in pairs(self._sharedFiles) do
     assert(self._stageFs:exists(path, "file"), "prepared shared file is missing: " .. path)
     local live = self._cacheFs:read(path)
+    local staged = assert(self._stageFs:read(path), "prepared shared file is missing: " .. path)
     if live == nil then
       install[#install + 1] = path
-    elseif live == self._stageFs:read(path) then
+    elseif live == staged then
       reused[#reused + 1] = path
       self._stageFs:remove(path)
     else
-      Errors.raise("PREPARED_SHARED_CONFLICT", "staged shared file contradicts the live artifact", { path = path })
+      local liveIdentity, stagedIdentity = pngLogicalIdentity(live), pngLogicalIdentity(staged)
+      if liveIdentity ~= nil and liveIdentity == stagedIdentity then
+        install[#install + 1] = path
+      else
+        Errors.raise("PREPARED_SHARED_CONFLICT", "staged shared file contradicts the live artifact", { path = path })
+      end
     end
   end
   table.sort(install)
