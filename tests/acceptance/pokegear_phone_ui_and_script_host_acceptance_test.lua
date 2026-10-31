@@ -280,6 +280,16 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
       "menu-tip-α-26",
       "menu-tip-α-27",
     },
+    menuLabels = {
+      "menu-label-α-0",
+      "menu-label-α-1",
+      "menu-label-α-2",
+      "menu-label-α-3",
+      "menu-label-α-4",
+      "menu-label-α-5",
+      "menu-label-α-6",
+      "menu-label-α-7",
+    },
   })
   -- The menu path walks the real list UI: the single contact opens
   -- selected, confirming opens its action menu, and confirming the
@@ -290,7 +300,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local actionMenu = assert(menuController:status().view, "the menu state exports its view").contextMenu
   Assert.deepEqual(
     (actionMenu --[[@as table]]).options,
-    { "Call", "Sort", "Quit" },
+    { "menu-label-α-0", "menu-label-α-1", "menu-label-α-2" },
     "the menu action menu keeps its source options"
   )
   menuController:updateFixed({ { type = "confirm" } })

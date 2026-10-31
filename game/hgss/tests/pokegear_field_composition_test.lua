@@ -1224,6 +1224,79 @@ function T.tests.radio_facts_reach_every_reception_table_in_production_resolutio
   end
 end
 
+-- Synthetic label bank behind the normal phone card: eight unique
+-- non-English menu entries starting at entry 0 beside the eight
+-- context labels starting at entry 20. Counters observe the composed
+-- resource discipline directly.
+---@return table<integer, unknown> texts by entry
+---@return table counters
+---@return table provider
+local function menuLabelProvider()
+  local texts = {}
+  for entry = 0, 7 do
+    texts[entry] = "denwa-menu-\u{03b1}-" .. entry
+  end
+  for entry = 20, 27 do
+    texts[entry] = "sagashi-tip-\u{03b1}-" .. entry
+  end
+  local counters = { acquire = 0, release = 0, reads = 0, menuReads = 0 }
+  local provider = {
+    acquireBank = function(_, bank)
+      counters.acquire = counters.acquire + 1
+      assert(bank == 271, "the phone menu options read their own bank")
+      return {}
+    end,
+    get = function(_, bank, entry)
+      counters.reads = counters.reads + 1
+      assert(bank == 271, "the phone menu options read their own bank")
+      if entry >= 0 and entry <= 7 then
+        counters.menuReads = counters.menuReads + 1
+      end
+      local text = texts[entry]
+      if text == nil then
+        return nil
+      end
+      return { text = text }
+    end,
+    releaseBank = function(_, bank)
+      counters.release = counters.release + 1
+      assert(bank == 271, "the phone menu options release their own bank")
+    end,
+  }
+  return texts, counters, provider
+end
+
+-- The normal phone card resolves its action and sort menus from the
+-- source bank: the detached menus publish the provider's entries 0-7,
+-- and the bank is read once per label at open.
+function T.tests.composed_phone_card_reads_menu_options_from_bank_271()
+  local friends = companion()
+  friends.state:registerContact(NEIGHBOR_KEY)
+  local texts, counters, provider = menuLabelProvider()
+  local bundle, runtime = composeGear(friends)
+  runtime.messageProvider = provider
+  local screen = bundle.screenFactory({ kind = "browse" })
+  Assert.equal(counters.menuReads, 8, "opening the normal phone card reads its eight menu labels once")
+  screen:updateFixed({ { type = "confirm" } })
+  local status = screen:status()
+  local child = assert(status.child, "the composed screen publishes its phone child") --[[@as table]]
+  local view = assert((child --[[@as table<string, unknown>]]).view, "the phone child publishes its view") --[[@as table]]
+  local menu = assert((view --[[@as table<string, unknown>]]).contextMenu, "confirming a row opens its action menu") --[[@as table]]
+  Assert.deepEqual(menu.options, { texts[0], texts[1], texts[2] }, "the action menu publishes bank entries 0-2")
+  screen:updateFixed({ { type = "navigate", direction = "down" } })
+  screen:updateFixed({ { type = "confirm" } })
+  local submenu = assert(
+    (assert(screen:status().child, "the composed screen publishes its phone child").view --[[@as table]]).contextMenu,
+    "choosing Sort opens its submenu"
+  ) --[[@as table]]
+  Assert.deepEqual(
+    submenu.options,
+    { texts[3], texts[4], texts[5], texts[6], texts[7] },
+    "the sort menu publishes bank entries 3-7"
+  )
+  screen:dispose()
+end
+
 -- Synthetic context-label bank behind the normal phone card: eight unique
 -- non-English entries starting at entry 20, with acquisition counters so
 -- the tests observe the composed resource discipline directly.
@@ -1232,6 +1305,9 @@ end
 ---@return table provider
 local function tooltipProvider()
   local texts = {}
+  for entry = 0, 7 do
+    texts[entry] = "denwa-menu-α-" .. entry
+  end
   for entry = 20, 27 do
     texts[entry] = "sagashi-tip-α-" .. entry
   end
@@ -1264,15 +1340,15 @@ end
 local function composedTooltip(screen)
   local status = screen:status()
   local child = assert(status.child, "the composed screen publishes its phone child") --[[@as table]]
-  local view =
-    assert((child --[[@as table<string, unknown>]]).view, "the phone child publishes its view") --[[@as table]]
+  local view = assert((child --[[@as table<string, unknown>]]).view, "the phone child publishes its view") --[[@as table]]
   return (view --[[@as table<string, unknown>]]).tooltip
 end
 
 -- The normal phone card shows the composed source labels and balances its
 -- bank: one acquisition and one release per card construction, one read
 -- per label, and no re-reads on later draws. The main menu names the
--- first label; each sort focus names its own label in turn.
+-- first label; each sort focus names its own label in turn. The action
+-- and sort menus publish the composed option labels from the same bank.
 function T.tests.composed_phone_card_shows_provider_tooltips_and_balances_its_bank()
   local friends = companion()
   friends.state:registerContact(NEIGHBOR_KEY)
@@ -1282,7 +1358,7 @@ function T.tests.composed_phone_card_shows_provider_tooltips_and_balances_its_ba
   local screen = bundle.screenFactory({ kind = "browse" })
   Assert.equal(counters.acquire, 1, "opening the normal phone card acquires its label bank once")
   Assert.equal(counters.release, 1, "opening the normal phone card releases its label bank once")
-  Assert.equal(counters.reads, 8, "opening the normal phone card reads its eight labels once")
+  Assert.equal(counters.reads, 16, "opening the normal phone card reads its sixteen labels once")
   Assert.isNil(composedTooltip(screen), "the contact list shows no context tooltip")
   local readsAfterOpen = counters.reads
   for _ = 1, 3 do
@@ -1297,11 +1373,7 @@ function T.tests.composed_phone_card_shows_provider_tooltips_and_balances_its_ba
     if cursor > 0 then
       screen:updateFixed({ { type = "navigate", direction = "down" } })
     end
-    Assert.equal(
-      composedTooltip(screen),
-      texts[23 + cursor],
-      "sort focus " .. cursor .. " names its own source label"
-    )
+    Assert.equal(composedTooltip(screen), texts[23 + cursor], "sort focus " .. cursor .. " names its own source label")
   end
   screen:dispose()
 end

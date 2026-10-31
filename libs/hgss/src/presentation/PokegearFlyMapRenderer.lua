@@ -28,99 +28,25 @@ local INDICATOR_SEQUENCE = { unavailable = 10, available = 11, selected = 12 }
 -- The Town map's banner sits eighty-one pixels lower than the Fly panel.
 local TOWN_SLIDE = -81
 
--- Menu frame tile groups in the list-menu tile strip: top row, button
--- sides, separator, and bottom row, each of left, middle, and right tiles,
--- with the highlighted variants twelve (eighteen for separators) later.
-local MENU_TOP, MENU_SIDE, MENU_SEPARATOR, MENU_BOTTOM = 0, 3, 6, 9
-local MENU_HIGHLIGHT, MENU_SEPARATOR_BELOW = 12, 18
+-- Menu tile row of the two-entry Fly/Quit frame (source M9270:1083-1097).
 local MENU_ROW = 4
 
----@param graphics love.graphics
----@param image table<string, unknown> pooled atlas lease behind the menu strip
----@param tile integer tile index in the menu strip
----@param column integer
----@param row integer
-local function menuTile(graphics, image, tile, column, row)
-  PokegearAtlas.draw(graphics, image, tile * 8, 0, 8, 8, column * 8, row * 8)
-end
-
--- One three-tile row of the menu frame: left, repeated middle, right.
----@param graphics love.graphics
----@param image table<string, unknown> pooled atlas lease behind the menu strip
----@param base integer first tile of the group
----@param x integer left column
----@param row integer
----@param width integer middle tiles
-local function menuRow(graphics, image, base, x, row, width)
-  menuTile(graphics, image, base, x, row)
-  for column = 1, width do
-    menuTile(graphics, image, base + 1, x + column, row)
-  end
-  menuTile(graphics, image, base + 2, x + width + 1, row)
-end
-
 -- The Fly/Quit menu: the framed two-entry list at its tile position, the
--- cursor entry highlighted (source touchscreen_list_menu.c).
+-- cursor entry highlighted (source touchscreen_list_menu.c). The frame
+-- itself is the shared touchscreen list menu.
 ---@param graphics love.graphics
----@param images table<string, unknown>
----@param text table<string, unknown>?
----@param content table<string, unknown>
----@param menu table<string, unknown>
-local function drawMenu(graphics, images, text, content, menu)
-  local tiles = imageAt(images, content.menuTiles)
-  local colors = (content.textColors --[[@as table<string, unknown>]]).menu --[[@as table<integer, table<string, number>>]]
-  local x, width, selected =
-    menu.x, --[[@as integer]]
-    menu.width, --[[@as integer]]
-    menu.cursor --[[@as integer]]
-  local entries = 2
-  graphics.setColor(1, 1, 1, 1)
-  menuRow(graphics, tiles, MENU_TOP + (selected == 0 and MENU_HIGHLIGHT or 0), x, MENU_ROW, width)
-  for index = 0, entries - 1 do
-    local row = MENU_ROW + 3 * index
-    local highlighted = selected == index
-    local fill = colors[(highlighted and 6 or 3) + 1]
-    for line = 1, 2 do
-      menuTile(graphics, tiles, MENU_SIDE + (highlighted and MENU_HIGHLIGHT or 0), x, row + line)
-      menuTile(graphics, tiles, MENU_SIDE + 2 + (highlighted and MENU_HIGHLIGHT or 0), x + width + 1, row + line)
-    end
-    graphics.setColor(fill.r / 255, fill.g / 255, fill.b / 255, 1)
-    graphics.rectangle("fill", (x + 1) * 8, (row + 1) * 8, width * 8, 16)
-    graphics.setColor(1, 1, 1, 1)
-    local label = (menu.labels --[[@as string[]?]] or {})[index + 1]
-    if
-      text ~= nil
-      and label ~= nil
-      and type((text --[[@as table<string, unknown>]]).drawTextWithPalette) == "function"
-    then
-      local measure = (text --[[@as table<string, unknown>]]).textWidth --[[@as fun(self: table, line: string): number]]
-      local labelWidth = measure(text, label)
-      local foreground, shadow = colors[(highlighted and 4 or 1) + 1], colors[(highlighted and 5 or 2) + 1]
-      local palette = {
-        foreground = foreground,
-        shadow = shadow,
-        background = { r = 0, g = 0, b = 0, a = 0 },
-      }
-      printText(text, label, (x + 1) * 8 + math.floor((width * 8 - labelWidth) / 2), (row + 1) * 8, palette)
-    end
-    local separator = MENU_SEPARATOR
-    if selected == index then
-      separator = separator + MENU_HIGHLIGHT
-    elseif selected == index + 1 then
-      separator = separator + MENU_SEPARATOR_BELOW
-    end
-    if index < entries - 1 then
-      menuRow(graphics, tiles, separator, x, row + 3, width)
-    end
-  end
-  menuRow(
-    graphics,
-    tiles,
-    MENU_BOTTOM + (selected == entries - 1 and MENU_HIGHLIGHT or 0),
-    x,
-    MENU_ROW + 3 * (entries - 1) + 3,
-    width
-  )
+---@param tiles table<string, unknown> pooled atlas lease behind the menu strip
+---@param colors table<integer, table<string, number>> sixteen list-menu palette colors, one-based
+---@param text table<string, unknown>? borrowed text primitives
+---@param menu table<string, unknown> tile geometry with labels and cursor
+local function drawMenu(graphics, tiles, colors, text, menu)
+  PokegearMapLayers.drawListMenuFrame(graphics, tiles, colors, text, {
+    x = menu.x, --[[@as integer]]
+    y = MENU_ROW,
+    width = menu.width, --[[@as integer]]
+    labels = menu.labels --[[@as string[] ]],
+    cursor = menu.cursor --[[@as integer]],
+  })
 end
 
 -- Draws the lower pane: the world and flypoint indicators under the chrome
@@ -164,7 +90,14 @@ function PokegearFlyMapRenderer.render(resources, child, plan)
     ), 168, colors.close --[[@as table]])
   end
   if view.menu ~= nil then
-    drawMenu(graphics, images, text, content, view.menu --[[@as table<string, unknown>]])
+    local menu = view.menu --[[@as table<string, unknown>]]
+    drawMenu(
+      graphics,
+      imageAt(images, content.menuTiles),
+      (content.textColors --[[@as table<string, unknown>]]).menu --[[@as table<integer, table<string, number>>]],
+      text,
+      menu
+    )
   end
   graphics.setColor(1, 1, 1, 1)
 end

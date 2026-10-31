@@ -90,6 +90,14 @@ local function fixtureManifest(contacts, order)
     end
     phoneSprites[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
   end
+  -- The shared touchscreen list-menu tile strip behind framed menus:
+  -- the same staged sbox tiles the Fly card frames its menu with, so the
+  -- phone context menus paint the regular frame instead of an invented
+  -- rectangle. Sixteen palette colors ride beside the strip.
+  local menuPalette = {}
+  for index = 1, 16 do
+    menuPalette[index] = { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
+  end
   return {
     schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
@@ -103,7 +111,11 @@ local function fixtureManifest(contacts, order)
       sprites = { phone = phoneSprites },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
-    fly = { base = visualRef("assets/generated/pokegear/fly-base.png", 32, 32) },
+    fly = {
+      base = visualRef("assets/generated/pokegear/fly-base.png", 32, 32),
+      menuTiles = visualRef("assets/generated/pokegear/fly-menu-tiles.png", 256, 16),
+      menuPalette = menuPalette,
+    },
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png", 32, 32) },
     catalog = {
       contacts = contacts,
@@ -252,6 +264,36 @@ local function fixtureTooltips()
   }
 end
 
+-- Recognizable browse-mode menu labels: the source bank entries 0-7 in
+-- order (Call/Sort/Quit, then Title/Alphabet/Location/Move/Quit).
+-- Synthetic non-English strings keep the assertions off any fixed
+-- language while pinning the source selection order.
+---@return string[]
+local function fixtureMenuLabels()
+  return {
+    "fixture-menu-\u{03b1}-0",
+    "fixture-menu-\u{03b1}-1",
+    "fixture-menu-\u{03b1}-2",
+    "fixture-menu-\u{03b1}-3",
+    "fixture-menu-\u{03b1}-4",
+    "fixture-menu-\u{03b1}-5",
+    "fixture-menu-\u{03b1}-6",
+    "fixture-menu-\u{03b1}-7",
+  }
+end
+
+---@return string[]
+local function fixtureMenuLabelsMain()
+  local labels = fixtureMenuLabels()
+  return { labels[1], labels[2], labels[3] }
+end
+
+---@return string[]
+local function fixtureMenuLabelsSort()
+  local labels = fixtureMenuLabels()
+  return { labels[4], labels[5], labels[6], labels[7], labels[8] }
+end
+
 ---@param manifest table
 ---@param skin integer
 ---@param audio table? optional audio boundary, defaulting to the instant fake
@@ -284,6 +326,7 @@ local function openPhone(manifest, skin, audio)
     audio = audio or instantAudio(),
     random = PokegearRandom.new(2024),
     tooltips = fixtureTooltips(),
+    menuLabels = fixtureMenuLabels(),
   })
   return controller, state, record
 end
@@ -318,17 +361,13 @@ local function sortBy(controller, sortIndex)
   Assert.notNil(menu, "confirming a row opens its context menu")
   Assert.deepEqual(
     (menu --[[@as table]]).options,
-    { "Call", "Sort", "Quit" },
+    fixtureMenuLabelsMain(),
     "the call action menu keeps its source options"
   )
   chooseMenuOption(controller, 2)
   local submenu = assert(controller:status().view, "the sort state exports its view").contextMenu
   Assert.notNil(submenu, "choosing Sort opens its submenu")
-  Assert.deepEqual(
-    (submenu --[[@as table]]).options,
-    { "Title", "Alphabet", "Location", "Move", "Quit" },
-    "the sort menu keeps its source options"
-  )
+  Assert.deepEqual((submenu --[[@as table]]).options, fixtureMenuLabelsSort(), "the sort menu keeps its source options")
   chooseMenuOption(controller, sortIndex)
 end
 
@@ -559,10 +598,7 @@ function T.contact_list_sorts_scrolls_and_separates_manual_move_input(_scope)
   -- row rectangles, and opens the row's context menu at once.
   tap(controller, 100, rowBandCenter(3))
   Assert.equal(listView(controller).selected, 2, "tapping the third row band selects the third row")
-  Assert.notNil(
-    controller:status().view.contextMenu,
-    "a row tap opens the row's context menu at once"
-  )
+  Assert.notNil(controller:status().view.contextMenu, "a row tap opens the row's context menu at once")
   controller:updateFixed({ { type = "cancel" } })
   Assert.isNil(controller:status().view.contextMenu, "cancelling closes the tapped menu")
 
@@ -888,17 +924,13 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
   Assert.equal(listView(controller).selected, 2, "tapping the third row band selects the third row")
   local menu = assert(controller:status().view, "the tapped row exports its view").contextMenu
   Assert.notNil(menu, "a row tap opens the row's context menu at once")
-  Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the row menu keeps its source options")
+  Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "the row menu keeps its source options")
   Assert.deepEqual(
     menu.frame,
     { x = 104, y = 72, width = 128, height = 72 },
     "the call menu sits at its source tile frame"
   )
-  Assert.equal(
-    controller:status().view.tooltip,
-    fixtureTooltips()[1],
-    "the call menu prints its source tooltip"
-  )
+  Assert.equal(controller:status().view.tooltip, fixtureTooltips()[1], "the call menu prints its source tooltip")
   controller:updateFixed({ { type = "cancel" } })
   Assert.isNil(controller:status().view.contextMenu, "cancelling closes the tapped menu")
   controller:updateFixed({ { type = "navigate", direction = "right" } })
@@ -922,11 +954,7 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
     { x = 104, y = 24, width = 128, height = 104 },
     "the sort menu sits at its own source frame"
   )
-  Assert.equal(
-    controller:status().view.tooltip,
-    fixtureTooltips()[4],
-    "the sort menu tracks its cursor tooltip"
-  )
+  Assert.equal(controller:status().view.tooltip, fixtureTooltips()[4], "the sort menu tracks its cursor tooltip")
   controller:dispose()
 end
 
@@ -948,11 +976,7 @@ function T.list_and_menu_keys_play_their_source_tones(_scope)
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.deepEqual(played, { "SEQ_SE_GS_GEARCURSOR" }, "stepping down plays the cursor tone")
   controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.deepEqual(
-    played,
-    { "SEQ_SE_GS_GEARCURSOR", "SEQ_SE_GS_GEARCURSOR" },
-    "stepping back plays it again"
-  )
+  Assert.deepEqual(played, { "SEQ_SE_GS_GEARCURSOR", "SEQ_SE_GS_GEARCURSOR" }, "stepping back plays it again")
   controller:updateFixed({ { type = "navigate", direction = "up" } })
   Assert.equal(#played, 2, "bumping the list end plays nothing")
   controller:updateFixed({ { type = "confirm" } })
@@ -1024,10 +1048,7 @@ function T.selection_frame_and_scroll_arrows_draw_in_pixels(scope)
   )
   local shownR, shownG, shownB = surfaceBytes(data, 124, 160)
   local hiddenR, hiddenG, hiddenB = surfaceBytes(scrolled, 124, 160)
-  Assert.isTrue(
-    hiddenR ~= shownR or hiddenG ~= shownG or hiddenB ~= shownB,
-    "the down chevron hides at the bottom"
-  )
+  Assert.isTrue(hiddenR ~= shownR or hiddenG ~= shownG or hiddenB ~= shownB, "the down chevron hides at the bottom")
   controller:dispose()
 end
 
@@ -1130,14 +1151,10 @@ function T.main_and_sort_menus_share_tap_selection(_scope)
   local controller, state = openPhone(fixtureManifest(contacts, order), 0)
   tap(controller, 100, rowBandCenter(3))
   local menu = assert(controller:status().view, "the tapped row exports its view").contextMenu
-  Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the row menu keeps its source options")
+  Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "the row menu keeps its source options")
   tap(controller, 110, 112)
   local submenu = assert(controller:status().view, "the sort state exports its view").contextMenu
-  Assert.deepEqual(
-    submenu.options,
-    { "Title", "Alphabet", "Location", "Move", "Quit" },
-    "tapping the Sort row opens the sort menu"
-  )
+  Assert.deepEqual(submenu.options, fixtureMenuLabelsSort(), "tapping the Sort row opens the sort menu")
   tap(controller, 110, 88)
   Assert.isNil(controller:status().view.contextMenu, "choosing a sort returns to the list")
   local touched = visibleKeys(listView(controller))
@@ -1147,26 +1164,18 @@ function T.main_and_sort_menus_share_tap_selection(_scope)
     { full[1], full[2], full[3], full[4], full[5], full[6] },
     "tapping the Location row sorts the same stable way as keys"
   )
-  Assert.deepEqual(
-    state:readPhone().contactOrder,
-    order,
-    "automatic sorting leaves the saved order alone"
-  )
+  Assert.deepEqual(state:readPhone().contactOrder, order, "automatic sorting leaves the saved order alone")
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 88 } })
   Assert.isNil(controller:status().view.contextMenu, "a release without a press opens nothing")
   local keyboard = openPhone(fixtureManifest(contacts, order), 0)
   sortBy(keyboard, 3)
-  Assert.deepEqual(
-    visibleKeys(listView(keyboard)),
-    touched,
-    "keys choose the same sort as taps"
-  )
+  Assert.deepEqual(visibleKeys(listView(keyboard)), touched, "keys choose the same sort as taps")
   keyboard:dispose()
   tap(controller, 100, rowBandCenter(1))
   tap(controller, 110, 112)
   tap(controller, 110, 136)
   local back = assert(controller:status().view, "the quit state exports its view").contextMenu
-  Assert.deepEqual(back.options, { "Call", "Sort", "Quit" }, "tapping the sort Quit row returns to the menu")
+  Assert.deepEqual(back.options, fixtureMenuLabelsMain(), "tapping the sort Quit row returns to the menu")
   controller:dispose()
 end
 
@@ -1186,26 +1195,18 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
   local function openSort(controller)
     tap(controller, 110, 112)
     local submenu = assert(controller:status().view, "the sort state exports its view").contextMenu
-    Assert.deepEqual(
-      submenu.options,
-      { "Title", "Alphabet", "Location", "Move", "Quit" },
-      "tapping the Sort row opens the sort menu"
-    )
+    Assert.deepEqual(submenu.options, fixtureMenuLabelsSort(), "tapping the Sort row opens the sort menu")
   end
   do
     local controller = openMain()
     controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 136 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = 110, y = 136 } })
     local menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a release from another pointer runs nothing")
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "a release from another pointer runs nothing")
     Assert.isNil(controller:status().view.call, "the foreign release starts no call")
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 136 } })
     menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(
-      menu.options,
-      { "Call", "Sort", "Quit" },
-      "the rejected release clears the press"
-    )
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "the rejected release clears the press")
     controller:dispose()
   end
   do
@@ -1214,7 +1215,7 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 119, y = 136 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 119, y = 136 } })
     local menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a drag past 8px runs nothing")
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "a drag past 8px runs nothing")
     Assert.isNil(controller:status().view.call, "the dragged release starts no call")
     controller:dispose()
   end
@@ -1232,11 +1233,11 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 136 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 100 } })
     local menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a release between text rows runs nothing")
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "a release between text rows runs nothing")
     controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 88 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 50, y = 88 } })
     menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "a release outside the frame runs nothing")
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "a release outside the frame runs nothing")
     Assert.isNil(controller:status().view.call, "off-row releases start no call")
     controller:updateFixed({ { type = "pointer_cancel", pointerId = "touch:1" } })
     Assert.isNil(controller:status().view.contextMenu, "the pointer cancel key leaves the menu")
@@ -1255,18 +1256,10 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 88 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = 110, y = 88 } })
     local submenu = assert(controller:status().view, "the sort state persists").contextMenu
-    Assert.deepEqual(
-      submenu.options,
-      { "Title", "Alphabet", "Location", "Move", "Quit" },
-      "a release from another pointer runs no sort"
-    )
+    Assert.deepEqual(submenu.options, fixtureMenuLabelsSort(), "a release from another pointer runs no sort")
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 88 } })
     submenu = assert(controller:status().view, "the sort state persists").contextMenu
-    Assert.deepEqual(
-      submenu.options,
-      { "Title", "Alphabet", "Location", "Move", "Quit" },
-      "the rejected release clears the press"
-    )
+    Assert.deepEqual(submenu.options, fixtureMenuLabelsSort(), "the rejected release clears the press")
     controller:dispose()
   end
   do
@@ -1277,11 +1270,7 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 110, y = 93 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 93 } })
     local submenu = assert(controller:status().view, "the sort state persists").contextMenu
-    Assert.deepEqual(
-      submenu.options,
-      { "Title", "Alphabet", "Location", "Move", "Quit" },
-      "a vertical drag past 8px runs no sort"
-    )
+    Assert.deepEqual(submenu.options, fixtureMenuLabelsSort(), "a vertical drag past 8px runs no sort")
     controller:dispose()
   end
   do
@@ -1307,11 +1296,7 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 110, y = 88 } })
     controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 110, y = 100 } })
     local submenu = assert(controller:status().view, "the sort state persists").contextMenu
-    Assert.deepEqual(
-      submenu.options,
-      { "Title", "Alphabet", "Location", "Move", "Quit" },
-      "a release between sort rows runs no sort"
-    )
+    Assert.deepEqual(submenu.options, fixtureMenuLabelsSort(), "a release between sort rows runs no sort")
     Assert.deepEqual(
       visibleKeys(listView(controller)),
       { order[1], order[2], order[3], order[4], order[5], order[6] },
@@ -1319,7 +1304,7 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     )
     controller:updateFixed({ { type = "pointer_cancel", pointerId = "touch:1" } })
     local menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the pointer cancel key backs out to the menu")
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "the pointer cancel key backs out to the menu")
     controller:dispose()
   end
   do
@@ -1328,7 +1313,7 @@ function T.menu_pointer_gestures_reject_invalid_releases(_scope)
     openSort(controller)
     controller:updateFixed({ { type = "cancel" } })
     local menu = assert(controller:status().view, "the menu state persists").contextMenu
-    Assert.deepEqual(menu.options, { "Call", "Sort", "Quit" }, "the cancel key backs out to the menu")
+    Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "the cancel key backs out to the menu")
     Assert.equal(menu.cursor, 1, "backing out keeps the Sort cursor")
     controller:dispose()
   end
@@ -1672,6 +1657,71 @@ function T.phone_upward_step_clips_to_the_viewport_and_keeps_chrome(scope)
     )
     book:dispose()
   end
+end
+
+-- The six-row viewport paints through the active placement transform:
+-- drawing the published plan inside a scaled and translated logical
+-- surface still clips rows to the viewport instead of the unscaled
+-- device rectangle, so the contact list stays visible on every display
+-- configuration.
+function T.list_viewport_paints_inside_a_scaled_placement(scope)
+  local contacts, order = sortingFixture()
+  local manifest = fixtureManifest(contacts, order)
+  local controller = openPhone(manifest, 0)
+  local resources = renderResources(scope, manifest)
+  local status = controller:status()
+  local plan = assert(status.presentation, "the phone controller publishes its presentation plan")
+  local LogicalSurface = require("libs.ui.src.LogicalSurface")
+  local canvas = scope:own(love.graphics.newCanvas(512, 384))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(1, 1, 1, 1)
+  LogicalSurface.draw(love.graphics, {
+    frame = { x = 0, y = 0, width = 512, height = 384 },
+    origin = { x = 64, y = 48 },
+    scale = 2,
+  }, function()
+    plan.render(resources, status, plan)
+  end)
+  love.graphics.setCanvas()
+  local placed = scope:own(canvas:newImageData())
+  -- Logical (220, 100) sits on the fourth band fill beyond the unscaled
+  -- device scissor, at device (504, 248) through the placement. The
+  -- point avoids corner sprites, scroll arrows, and text cells, so both
+  -- draws sample the same solid band fill.
+  local direct = drawPhone(scope, controller, resources)
+  Assert.deepEqual(
+    { surfaceBytes(placed, 504, 248) },
+    { surfaceBytes(direct, 220, 100) },
+    "the scaled placement paints the same band fill as the direct draw"
+  )
+  controller:dispose()
+end
+
+-- The context menu paints the shared list-menu tile frame: the menu
+-- top-left corner samples the staged tile strip, and the plan
+-- publishes the strip and palette paths behind the current assets.
+function T.context_menu_paints_the_shared_tile_frame(scope)
+  local contacts, order = sortingFixture()
+  local manifest = fixtureManifest(contacts, order)
+  local controller = openPhone(manifest, 0)
+  local resources = renderResources(scope, manifest)
+  local status = controller:status()
+  local plan = assert(status.presentation, "the phone controller publishes its presentation plan")
+  Assert.equal(
+    plan.content.menuTiles,
+    "assets/generated/pokegear/fly-menu-tiles.png",
+    "the phone plan publishes the shared list-menu tile strip"
+  )
+  Assert.notNil(plan.content.menuPalette, "the phone plan publishes the list-menu palette")
+  controller:updateFixed({ { type = "confirm" } })
+  local framed = drawPhone(scope, controller, resources)
+  Assert.deepEqual(
+    { surfaceBytes(framed, 106, 74) },
+    { leaseBytes(scope, resources.images, "assets/generated/pokegear/fly-menu-tiles.png") },
+    "the menu corner paints the shared tile strip"
+  )
+  controller:dispose()
 end
 
 return GraphicsSmoke.suite(T, { tags = { "pokegear" } })
