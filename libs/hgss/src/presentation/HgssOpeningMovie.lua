@@ -75,7 +75,7 @@ local PALETTE_FADE_SETTLE_TICKS = 2
 -- Extra source ticks every scene-init call holds the incoming scene's entry
 -- frame: retail scene init loads cartridge graphics and stalls the video
 -- while the music keeps its real-time clock. Tunable by ear.
-local SCENE_INIT_STALL_TICKS = 3
+local SCENE_INIT_STALL_TICKS = 5
 -- Ops whose `effect` field starts a waitable effect when the event fires.
 -- Started names (plus started emitter groups and compiled sprite clips)
 -- are the only identities a later wait may name.

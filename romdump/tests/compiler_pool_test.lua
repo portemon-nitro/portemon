@@ -733,6 +733,204 @@ function T.plain_worker_failures_keep_their_message()
   pool:shutdown()
 end
 
+-- An unstaged worker failure keeps the cause its completion carries: with
+-- no prepared stage to open, the pool falls back to the worker-sent detail
+-- before the generic fault. The second job proves a typed cause keeps its
+-- code and throw-site trace, and that consecutive failures on one worker
+-- never cross-contaminate.
+function T.unstaged_worker_failures_keep_their_worker_cause()
+  local CompilerPool = requirePool()
+  local backendStore = FakeCache.new()
+  local filesystem = {
+    write = function(path, data)
+      return backendStore:write(path, data)
+    end,
+    read = function(path)
+      return backendStore:read(path)
+    end,
+    getInfo = function(path)
+      return backendStore:getInfo(path)
+    end,
+    createDirectory = function(path)
+      return backendStore:createDirectory(path)
+    end,
+    remove = function(path)
+      return backendStore:remove(path)
+    end,
+    getDirectoryItems = function(path)
+      return backendStore:getDirectoryItems(path)
+    end,
+  }
+  local resultChannel = nil
+  local inputChannels = {}
+  local channels = {}
+  local function newChannel()
+    local values = {}
+    local channel = {}
+    function channel:push(value)
+      values[#values + 1] = value
+      return true
+    end
+    function channel:pop()
+      if #values == 0 then
+        return nil
+      end
+      return table.remove(values, 1)
+    end
+    function channel:demand()
+      return self:pop()
+    end
+    function channel:getCount()
+      return #values
+    end
+    channels[#channels + 1] = channel
+    return channel
+  end
+  local function newThread()
+    local thread = { starts = 0, waits = 0 }
+    function thread:start()
+      self.starts = self.starts + 1
+    end
+    function thread:wait()
+      self.waits = self.waits + 1
+    end
+    function thread:getError()
+      return nil
+    end
+    function thread:isRunning()
+      return self.starts > 0 and self.waits == 0
+    end
+    return thread
+  end
+  local fakeLove = {
+    filesystem = filesystem,
+    system = {
+      getProcessorCount = function()
+        return 2
+      end,
+    },
+    timer = {
+      getTime = function()
+        return 0
+      end,
+    },
+    thread = {
+      newChannel = newChannel,
+      newThread = newThread,
+    },
+  }
+  local generationId = "unstaged-cause-generation"
+  local pool = assert(withLove(fakeLove, function()
+    local instance = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+    instance:selectGeneration({ versionId = "heartgold", generationId = generationId }, 1)
+    instance:request({
+      versionId = "heartgold",
+      generationId = generationId,
+      epoch = 1,
+      kind = "map",
+      key = "60",
+      jobKey = "map:60",
+      priority = 0,
+      sizeClass = "normal",
+      payload = { mapId = 60 },
+    })
+    instance:request({
+      versionId = "heartgold",
+      generationId = generationId,
+      epoch = 1,
+      kind = "map",
+      key = "61",
+      jobKey = "map:61",
+      priority = 0,
+      sizeClass = "normal",
+      payload = { mapId = 61 },
+    })
+    instance:update()
+    return instance
+  end))
+  resultChannel = channels[1]
+  for index = 2, #channels do
+    inputChannels[#inputChannels + 1] = channels[index]
+  end
+  local function popDispatch(jobKey)
+    for offset, channel in ipairs(inputChannels) do
+      local dispatched = channel:pop()
+      if type(dispatched) == "table" and dispatched.jobKey == jobKey then
+        return dispatched, offset
+      end
+    end
+    return nil, nil
+  end
+  local first, firstWorker = popDispatch("map:60")
+  Assert.notNil(first, "the pool dispatches the first job with a stage name")
+  resultChannel:push({
+    workerId = firstWorker,
+    epoch = 1,
+    generationId = generationId,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = first.stageName,
+    status = "failed",
+    error = "synthetic compile boom",
+  })
+  withLove(fakeLove, function()
+    pool:update()
+  end)
+  local state60, details60 = pool:status("map:60")
+  Assert.equal(state60, "failed", "the unstaged worker failure settles the job")
+  local message60 = tostring(details60 and details60.error or "")
+  Assert.isTrue(
+    message60:find("synthetic compile boom", 1, true) ~= nil,
+    "the surfaced failure keeps the worker message: " .. message60
+  )
+  Assert.isTrue(
+    message60:find("worker failed", 1, true) == nil,
+    "the surfaced failure is not the generic fault: " .. message60
+  )
+  local second, secondWorker = popDispatch("map:61")
+  Assert.notNil(second, "the freed worker dispatches the second job")
+  resultChannel:push({
+    workerId = secondWorker,
+    epoch = 1,
+    generationId = generationId,
+    kind = "map",
+    key = "61",
+    jobKey = "map:61",
+    stageName = second.stageName,
+    status = "failed",
+    error = {
+      code = "BAG_SOURCE_INVALID",
+      message = "bag synthetic boom",
+      context = { path = "assets/generated/maps/textures/drifted.png" },
+      traceback = "stack traceback:\n\tsynthetic:1",
+    },
+  })
+  withLove(fakeLove, function()
+    pool:update()
+  end)
+  local state61, details61 = pool:status("map:61")
+  Assert.equal(state61, "failed", "the typed worker failure settles the job")
+  local message61 = tostring(details61 and details61.error or "")
+  Assert.isTrue(
+    message61:find("BAG_SOURCE_INVALID: bag synthetic boom", 1, true) ~= nil,
+    "the surfaced failure keeps the typed cause: " .. message61
+  )
+  Assert.isTrue(
+    message61:find("stack traceback", 1, true) ~= nil,
+    "the surfaced failure keeps the throw-site trace: " .. message61
+  )
+  Assert.isTrue(
+    message61:find("assets/generated/maps/textures/drifted.png", 1, true) ~= nil,
+    "the surfaced failure keeps the diagnostic context: " .. message61
+  )
+  Assert.isTrue(
+    message61:find("synthetic compile boom", 1, true) == nil,
+    "consecutive failures never cross-contaminate: " .. message61
+  )
+  pool:shutdown()
+end
+
 function T.dispatched_stages_skip_names_left_by_an_earlier_process()
   local CompilerPool = requirePool()
   local host = newThreadHost(4)

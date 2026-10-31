@@ -1384,7 +1384,13 @@ function CompilerPool:_readFailure(record, message)
   -- reach the session textually instead of collapsing to a generic fault.
   if type(message.error) == "table" and type(message.error.code) == "string" then
     local restored = sourceErrorTable(message.error)
-    local failure = restored.code .. ": " .. tostring(restored.message)
+    -- Render through the structured formatter so diagnostic context (the
+    -- conflicting shared path, for example) survives instead of being
+    -- dropped: an empty context renders exactly the bare code and message.
+    local failure = Errors.format(Errors.new(restored.code, tostring(restored.message), restored.context))
+    if type(message.error.traceback) == "string" and message.error.traceback ~= "" then
+      failure = failure .. "\n" .. message.error.traceback
+    end
     self:_settleFailure(record, message.workerId, failure)
     return
   end
@@ -1411,7 +1417,11 @@ function CompilerPool:_readFailure(record, message)
     end
   end
   if not opened then
-    failure = restoreError(failure)
+    if type(message.error) == "string" and message.error ~= "" then
+      failure = message.error
+    else
+      failure = restoreError(failure)
+    end
   end
   self:_settleFailure(record, message.workerId, failure)
 end

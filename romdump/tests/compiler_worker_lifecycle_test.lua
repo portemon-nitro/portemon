@@ -691,4 +691,162 @@ function T.receipt_miss_asks_the_pool_for_source_and_suspends_the_job()
   end
 end
 
+-- A compilation failure carries its cause back to the pool instead of
+-- reporting bare status: the pool can only surface what the completion
+-- carries, so a dropped cause settles the milestone as the generic
+-- "worker failed" fault with no clue about the original throw.
+function T.compile_failures_carry_their_cause_to_the_pool()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local Errors = require("libs.errors.src.Errors")
+  local RomFs = require("romdump.src.source.RomFs")
+  local untyped = {
+    kind = "map",
+    key = "62",
+    jobKey = "map:62",
+    versionId = "heartgold",
+    generationId = "compile-cause-generation",
+    epoch = 1,
+    stageName = "cause-stage-untyped",
+    sizeClass = "normal",
+    payload = { mapId = 62 },
+    producerFingerprint = "producer",
+  }
+  local typed = {
+    kind = "map",
+    key = "63",
+    jobKey = "map:63",
+    versionId = "heartgold",
+    generationId = "compile-cause-generation",
+    epoch = 1,
+    stageName = "cause-stage-typed",
+    sizeClass = "normal",
+    payload = { mapId = 63 },
+    producerFingerprint = "producer",
+  }
+  -- The second job reuses the source view the first job installed: same
+  -- version and generation never ask the pool twice, so no second supply
+  -- is scripted. A stray supply here would be consumed as a job.
+  local input = scriptedChannel({ untyped, pooledSupply(untyped), typed, { kind = "stop" } })
+  local resultsChannel, received = recordingChannel()
+  local realOpen = RomFs.open
+  RomFs.open = function(_)
+    return { close = function(_) end }
+  end
+  local realExecute = CompilerWorker.execute
+  CompilerWorker.execute = function(executeJob, _)
+    if executeJob.key == "62" then
+      error("synthetic untyped boom")
+    end
+    error(Errors.new("BAG_SOURCE_INVALID", "bag synthetic boom", { role = "upper-base" }))
+  end
+  local runOk, runErr = withLove(fakeLove(), function()
+    return pcall(CompilerWorker.run, 1, input, resultsChannel)
+  end)
+  RomFs.open = realOpen
+  CompilerWorker.execute = realExecute
+  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+  Assert.equal(#received, 3, "the miss asks once, then each failed job reports")
+  local untypedTerminal, typedTerminal = nil, nil
+  for _, message in ipairs(received) do
+    if message.jobKey == "map:62" and message.status ~= "source-needed" then
+      untypedTerminal = message
+    elseif message.jobKey == "map:63" and message.status ~= "source-needed" then
+      typedTerminal = message
+    end
+  end
+  Assert.notNil(untypedTerminal, "the untyped failure reports exactly once")
+  Assert.equal(untypedTerminal.status, "failed", "a throwing compilation stays terminal")
+  Assert.equal(type(untypedTerminal.error), "string", "an untyped throw travels as plain data")
+  Assert.isTrue(
+    untypedTerminal.error:find("synthetic untyped boom", 1, true) ~= nil,
+    "the failure keeps the compile message: " .. untypedTerminal.error
+  )
+  Assert.isTrue(
+    untypedTerminal.error:lower():find("traceback", 1, true) ~= nil,
+    "the failure keeps the throw-site trace: " .. untypedTerminal.error
+  )
+  Assert.notNil(typedTerminal, "the typed failure reports exactly once")
+  Assert.equal(typedTerminal.status, "failed", "a typed compilation failure stays terminal")
+  Assert.equal(
+    type(typedTerminal.error),
+    "table",
+    "a typed failure travels as a plain table, got: " .. tostring(typedTerminal.error)
+  )
+  Assert.isNil(getmetatable(typedTerminal.error), "the typed cause carries no metatable across the channel")
+  Assert.equal(typedTerminal.error.code, "BAG_SOURCE_INVALID", "the cause keeps its error code")
+  Assert.isTrue(
+    tostring(typedTerminal.error.message):find("bag synthetic boom", 1, true) ~= nil,
+    "the cause keeps its message"
+  )
+  Assert.equal(type(typedTerminal.error.traceback), "string", "the typed cause keeps the throw-site trace")
+end
+
+-- A cache backend failure carries its cause the same way: the receipt read
+-- runs behind an xpcall boundary too, so its infrastructure message must
+-- reach the pool instead of collapsing to the generic fault.
+function T.unreadable_receipt_failures_carry_their_cause()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local RomFs = require("romdump.src.source.RomFs")
+  local input = scriptedChannel({
+    {
+      kind = "field-font",
+      key = "global",
+      jobKey = "field-font:global",
+      versionId = "heartgold",
+      generationId = "receipt-cause-generation",
+      epoch = 1,
+      stageName = "font-cause-stage",
+      sizeClass = "normal",
+      payload = {},
+      producerFingerprint = "producer",
+    },
+    { kind = "stop" },
+  })
+  local resultsChannel, received = recordingChannel()
+  local sourceOpened = false
+  local realOpen = RomFs.open
+  RomFs.open = function(_)
+    sourceOpened = true
+    return { close = function(_) end }
+  end
+  local realExecute = CompilerWorker.execute
+  CompilerWorker.execute = function(_, _)
+    error("a backend receipt failure must not reach compilation")
+  end
+  local hosted = fakeLove()
+  local runOk, runErr = withLove(hosted, function()
+    local CacheFs = require("libs.storage.src.CacheFs")
+    local ArtifactState = require("romdump.src.build.ArtifactState")
+    local cacheFs = CacheFs.forVersion("heartgold")
+    cacheFs:writeLua(ArtifactState.path("field-font", "global"), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = "receipt-cause-generation",
+      kind = "field-font",
+      key = "global",
+      marker = "receipt-trust-marker",
+    })
+    local receiptFullPath = cacheFs:resolve(ArtifactState.path("field-font", "global"))
+    local realRead = hosted.filesystem.read
+    hosted.filesystem.read = function(path)
+      if path == receiptFullPath then
+        return nil, "injected receipt read failure"
+      end
+      return realRead(path)
+    end
+    return pcall(CompilerWorker.run, 1, input, resultsChannel)
+  end)
+  RomFs.open = realOpen
+  CompilerWorker.execute = realExecute
+  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+  Assert.equal(#received, 1, "the failed job reports once")
+  Assert.equal(received[1].status, "failed", "a backend receipt read failure stays terminal")
+  Assert.isFalse(sourceOpened, "a backend failure never opens ROM source as a fallback")
+  local cause = received[1].error
+  local text = type(cause) == "table" and tostring(cause.message or "") or tostring(cause or "")
+  Assert.isTrue(
+    text:find("injected receipt read failure", 1, true) ~= nil,
+    "the failure keeps the backend message: " .. text
+  )
+end
+
 return { tests = T }

@@ -460,6 +460,184 @@ end
 -- stays last, so a replacement can only supersede the previous generation
 -- atomically and a crash before commit always leaves the prior generation
 -- readable.
+-- Shared PNGs are addressed by source hash while their bytes embed the host
+-- zlib's deflate output: a toolchain change contradicts byte-identical
+-- pixels. Decode-identical PNGs reinstall the staged copy (healing the
+-- drift permanently and converging on the current encoder); any other
+-- contradiction still fails loudly.
+local function pngChunks(png)
+  local chunks = {}
+  local pos = 9
+  while pos <= #png do
+    local b1, b2, b3, b4 = string.byte(png, pos, pos + 3)
+    assert(b1 ~= nil, "the fixture png stays well-formed")
+    local length = ((b1 * 256 + b2) * 256 + b3) * 256 + b4
+    local ctype = png:sub(pos + 4, pos + 7)
+    local data = png:sub(pos + 8, pos + 7 + length)
+    chunks[#chunks + 1] = { ctype = ctype, data = data }
+    pos = pos + 12 + length
+  end
+  return chunks
+end
+
+local function crc32(bytes)
+  local bit = require("bit")
+  local table_ = {}
+  for i = 0, 255 do
+    local c = i
+    for _ = 1, 8 do
+      if bit.band(c, 1) ~= 0 then
+        c = bit.bxor(0xEDB88320, bit.rshift(c, 1))
+      else
+        c = bit.rshift(c, 1)
+      end
+    end
+    table_[i] = c
+  end
+  local crc = 0xFFFFFFFF
+  for i = 1, #bytes do
+    crc = bit.bxor(table_[bit.band(bit.bxor(crc, string.byte(bytes, i)), 0xFF)], bit.rshift(crc, 8))
+  end
+  crc = bit.bxor(crc, 0xFFFFFFFF)
+  local function byteAt(shift)
+    return bit.band(bit.rshift(crc, shift), 0xFF)
+  end
+  return string.char(byteAt(24), byteAt(16), byteAt(8), byteAt(0))
+end
+
+-- Rewraps the single IDAT of a fixture PNG into two IDAT chunks: different
+-- bytes, one valid zlib stream, identical decoded pixels. CRCs are
+-- recomputed so the fixture stays a well-formed PNG.
+local function splitPngIdat(png)
+  local out = { png:sub(1, 8) }
+  local split = false
+  for _, chunk in ipairs(pngChunks(png)) do
+    if chunk.ctype == "IDAT" and not split and #chunk.data > 2 then
+      split = true
+      local half = math.floor(#chunk.data / 2)
+      for _, part in ipairs({ chunk.data:sub(1, half), chunk.data:sub(half + 1) }) do
+        local length = #part
+        local b1 = math.floor(length / 16777216) % 256
+        local b2 = math.floor(length / 65536) % 256
+        local b3 = math.floor(length / 256) % 256
+        out[#out + 1] = string.char(b1, b2, b3, length % 256) .. "IDAT" .. part .. crc32("IDAT" .. part)
+      end
+    else
+      local length = #chunk.data
+      local b1 = math.floor(length / 16777216) % 256
+      local b2 = math.floor(length / 65536) % 256
+      local b3 = math.floor(length / 256) % 256
+      out[#out + 1] = string.char(b1, b2, b3, length % 256)
+        .. chunk.ctype
+        .. chunk.data
+        .. crc32(chunk.ctype .. chunk.data)
+    end
+  end
+  assert(split, "the fixture png carries a splittable IDAT")
+  return table.concat(out)
+end
+
+function T.png_encoder_drift_reinstalls_decode_identical_pixels()
+  local PngEncoder = require("romdump.src.digest.PngEncoder")
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("png drift producer"))
+  local cache = newCache()
+  cache:recoverPublication()
+  local rgba = string.char(255, 0, 0, 255, 0, 255, 0, 255)
+  local firstBytes = PngEncoder.encode(2, 1, rgba)
+  local driftedBytes = splitPngIdat(firstBytes)
+  Assert.isTrue(firstBytes ~= driftedBytes, "the drifted fixture must differ byte-wise")
+  local path = "assets/generated/maps/textures/drifted.png"
+  local first = stages.new(stageOptions("map", "91", generation, 1, "png-first", cache))
+  first:stageFs():write(path, firstBytes)
+  first:addSharedFile(path)
+  first:stageFs():write("maps/91/complete", "ready")
+  first:addOwnedRoot("maps/91")
+  first:finishSuccess({ marker = "complete" })
+  first:publish(expectedOf("map", "91", generation, 1))
+  Assert.equal(cache:read(path), firstBytes)
+  local second = stages.new(stageOptions("map", "92", generation, 1, "png-drifted", cache))
+  second:stageFs():write(path, driftedBytes)
+  second:addSharedFile(path)
+  second:stageFs():write("maps/92/complete", "ready")
+  second:addOwnedRoot("maps/92")
+  second:finishSuccess({ marker = "complete" })
+  Assert.deepEqual(second:manifest().sharedInstall, { path }, "decode-identical pixels reinstall instead of conflicting")
+  Assert.deepEqual(second:manifest().sharedReused, {}, "no reuse is claimed for replaced bytes")
+  second:publish(expectedOf("map", "92", generation, 1))
+  Assert.equal(cache:read(path), driftedBytes, "the current encoder wins the live bytes")
+  local third = stages.new(stageOptions("map", "93", generation, 1, "png-converged", cache))
+  third:stageFs():write(path, driftedBytes)
+  third:addSharedFile(path)
+  third:stageFs():write("maps/93/complete", "ready")
+  third:addOwnedRoot("maps/93")
+  third:finishSuccess({ marker = "complete" })
+  Assert.deepEqual(third:manifest().sharedReused, { path }, "the healed bytes reuse by identity afterwards")
+  third:publish(expectedOf("map", "93", generation, 1))
+  Assert.equal(cache:read(path), driftedBytes)
+end
+
+function T.png_pixel_differences_still_conflict()
+  local PngEncoder = require("romdump.src.digest.PngEncoder")
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("png pixels producer"))
+  local cache = newCache()
+  cache:recoverPublication()
+  local path = "assets/generated/maps/textures/pixels.png"
+  local first = stages.new(stageOptions("map", "94", generation, 1, "png-live", cache))
+  first:stageFs():write(path, PngEncoder.encode(2, 1, string.char(255, 0, 0, 255, 0, 255, 0, 255)))
+  first:addSharedFile(path)
+  first:stageFs():write("maps/94/complete", "ready")
+  first:addOwnedRoot("maps/94")
+  first:finishSuccess({ marker = "complete" })
+  first:publish(expectedOf("map", "94", generation, 1))
+  local clashing = stages.new(stageOptions("map", "95", generation, 1, "png-clash", cache))
+  clashing:stageFs():write(path, PngEncoder.encode(2, 1, string.char(0, 0, 255, 255, 0, 255, 0, 255)))
+  clashing:addSharedFile(path)
+  clashing:stageFs():write("maps/95/complete", "ready")
+  clashing:addOwnedRoot("maps/95")
+  local conflict = Assert.throws(function()
+    clashing:finishSuccess({ marker = "complete" })
+  end)
+  Assert.isTrue(
+    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "different pixels still fail loudly"
+  )
+  Assert.equal(conflict.code, "PREPARED_SHARED_CONFLICT", "the conflict keeps its code")
+  Assert.equal(conflict.context.path, path, "the conflict names its path")
+  clashing:abort()
+  Assert.isFalse(cache:exists("maps/95/complete"), "a pixel conflict must not expose the staged family")
+end
+
+function T.png_garbage_bytes_still_conflict()
+  local PngEncoder = require("romdump.src.digest.PngEncoder")
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("png garbage producer"))
+  local cache = newCache()
+  cache:recoverPublication()
+  local path = "assets/generated/maps/textures/garbage.png"
+  local first = stages.new(stageOptions("map", "96", generation, 1, "png-plain", cache))
+  first:stageFs():write(path, "not a png")
+  first:addSharedFile(path)
+  first:stageFs():write("maps/96/complete", "ready")
+  first:addOwnedRoot("maps/96")
+  first:finishSuccess({ marker = "complete" })
+  first:publish(expectedOf("map", "96", generation, 1))
+  local clashing = stages.new(stageOptions("map", "97", generation, 1, "png-garbage", cache))
+  clashing:stageFs():write(path, PngEncoder.encode(2, 1, string.char(255, 0, 0, 255, 0, 255, 0, 255)))
+  clashing:addSharedFile(path)
+  clashing:stageFs():write("maps/97/complete", "ready")
+  clashing:addOwnedRoot("maps/97")
+  local conflict = Assert.throws(function()
+    clashing:finishSuccess({ marker = "complete" })
+  end)
+  Assert.isTrue(
+    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "unparseable bytes still fail loudly instead of crashing the worker"
+  )
+  clashing:abort()
+end
+
 function T.replacement_roots_commit_with_their_shared_proof_and_drop_the_previous_generation()
   local receipts = requireReceipts()
   local stages = requireStages()
