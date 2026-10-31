@@ -31,6 +31,7 @@ assert(ffi.abi("le"), "host PCM output requires a little-endian host")
 ---@field private _underrunCount integer
 ---@field private _released boolean
 ---@field private _queuedCurrentTrack integer successfully queued current-track buffers
+---@field private _channelMode string the output channel mode, "stereo" or "mono"
 local LoveAudioSink = {}
 LoveAudioSink.__index = LoveAudioSink
 
@@ -41,18 +42,21 @@ local BIT_DEPTH = 16
 local CHUNK_FRAMES = 512
 local QUEUE_BUFFER_COUNT = 4
 
----@param opts { audio: table<string, unknown>, sound: table<string, unknown>, renderer: LoveAudioSinkRenderer, sampleRate: integer }
+---@param opts { audio: table<string, unknown>, sound: table<string, unknown>, renderer: LoveAudioSinkRenderer, sampleRate: integer, channelMode: string? }
 ---@return LoveAudioSink
 function LoveAudioSink.new(opts)
   assert(
     opts and opts.audio and opts.sound and opts.renderer and opts.sampleRate,
     "LoveAudioSink requires audio, sound, renderer and sampleRate"
   )
+  local channelMode = opts.channelMode or "stereo"
+  assert(channelMode == "stereo" or channelMode == "mono", "audio channel mode must be stereo or mono")
   return setmetatable({
     _audio = opts.audio,
     _sound = opts.sound,
     _renderer = opts.renderer,
     _sampleRate = opts.sampleRate,
+    _channelMode = channelMode,
     _source = nil,
     _pendingData = nil,
     _started = false,
@@ -125,7 +129,18 @@ function LoveAudioSink:update()
         )
         local raw = data:getFFIPointer()
         assert(raw ~= nil, "host buffer must expose its sample memory")
-        self._renderer:renderIntoInt16(ffi.cast("int16_t *", raw), CHUNK_FRAMES)
+        local samples = ffi.cast("int16_t *", raw)
+        self._renderer:renderIntoInt16(samples, CHUNK_FRAMES)
+        if self._channelMode == "mono" then
+          -- Applied only to a newly rendered int16 buffer in mono mode.
+          for frame = 0, CHUNK_FRAMES - 1 do
+            local left = tonumber(samples[2 * frame])
+            local right = tonumber(samples[2 * frame + 1])
+            local mono = math.floor((left + right) / 2)
+            samples[2 * frame] = mono
+            samples[2 * frame + 1] = mono
+          end
+        end
         self._pendingData = data
         fresh = nil
       end
@@ -182,6 +197,16 @@ function LoveAudioSink:update()
     return true
   end
   return false
+end
+
+-- Selects the output channel mode for future freshly rendered buffers: stereo
+-- leaves PCM byte-identical, mono averages each pair once. The mode is a
+-- scalar only: it performs no IO, restarts no source, and never reprocesses
+-- a parked pending buffer, which keeps the mode it had when rendered.
+---@param mode string "stereo" or "mono"
+function LoveAudioSink:setChannelMode(mode)
+  assert(mode == "stereo" or mode == "mono", "audio channel mode must be stereo or mono")
+  self._channelMode = mode
 end
 
 -- Discards the current track queue without releasing the sink: releases the

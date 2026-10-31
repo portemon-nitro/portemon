@@ -49,6 +49,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
+---@field audioPreferences table<string, function>? borrowed app-wide volume port for the Options factory
 ---@field derivedAssets table<string, function>? semantic derived-asset host
 ---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root provider for live script mart stock
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game entry; the runtime claims its loader and queue
@@ -185,6 +186,7 @@ function FieldState.new(game, options)
     preparedEntry = options.preparedEntry,
     saveStore = options.saveStore,
     audioOutput = options.audioOutput,
+    audioPreferences = options.audioPreferences,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
     displayContext = displayContext,

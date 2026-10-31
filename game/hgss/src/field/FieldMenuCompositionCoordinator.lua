@@ -833,6 +833,11 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       end
       return mapData
     end
+    -- The sink starts in the selected save's channel mode before its first
+    -- queueing; routes without player options (like Oak) stay stereo.
+    local playerData = runtime.playerData
+    local playerOptions = playerData ~= nil and playerData.options or nil
+    local channelMode = (playerOptions ~= nil and playerOptions.soundMode) or "stereo"
     local audio = FieldAudio.compose({
       cacheFs = cacheFs,
       outputRate = AUDIO_SAMPLE_RATE,
@@ -842,6 +847,7 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       fieldDataForMap = fieldDataForMap,
       traversal = readAvatarTraversal,
       outputHost = runtime.audioOutput,
+      channelMode = channelMode,
       -- The presented field shares its preparation worker with the scene
       -- and image owners; headless runtimes pass no queue and stay on the
       -- synchronous-safe sample path.
@@ -1121,6 +1127,13 @@ function FieldMenuCompositionCoordinator:preparePlayerOptions(values)
     end
     if starter ~= nil then
       starter:setFrameIndex(canonical.textFrame)
+    end
+    -- The confirmed channel mode reaches the live sink through this same
+    -- closure: the scalar-only update performs no IO and never restarts
+    -- playback. The headless no-sink path stays valid.
+    local sink = runtime.audioSink
+    if sink ~= nil then
+      sink:setChannelMode(canonical.soundMode)
     end
     consumed = true
   end

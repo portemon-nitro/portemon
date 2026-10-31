@@ -29,6 +29,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
 ---@field derivedAssets table<string, function> semantic derived-asset host for gated field entry
+---@field audioPreferences table<string, function>? borrowed app-wide volume port, forwarded to field composition
 ---@field fieldMapLoader table<string, unknown>? borrowed metadata-only loader for entry planning
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)? actual host surfaces for every entry route
 ---@field presentationOverrides table<string, table<string, unknown>>? per-case function overrides by application
@@ -51,6 +52,7 @@ local function fieldStateOptions(options, saveStore, extra, shared)
     saveStore = saveStore,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
+    audioPreferences = options.audioPreferences,
   }
   if extra then
     for key, value in pairs(extra) do
