@@ -2859,16 +2859,20 @@ end
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 local function drawParticles(self, slot)
+  -- Children draw their own staged texture; parents their emitter's.
+  ---@param runtime table<string, unknown>
+  ---@param child table<string, unknown>|nil
+  ---@return love.Image
+  local function resolveTexture(runtime, _, child)
+    local path = (child or runtime.record).textureImage
+    local image = slot.imageByPath[path]
+    assert(image ~= nil, "opening scene staged particle art is missing: " .. tostring(path))
+    return image
+  end
   SplParticleDraw.draw(self.graphics, slot.sim, {
     centerX = STAGE_CENTER_X,
     centerY = STAGE_CENTER_Y,
-    resolveTexture = function(runtime, _, child)
-      -- Children draw their own staged texture; parents their emitter's.
-      local path = (child or runtime.record).textureImage
-      local image = slot.imageByPath[path]
-      assert(image ~= nil, "opening scene staged particle art is missing: " .. tostring(path))
-      return image
-    end,
+    resolveTexture = resolveTexture,
   })
 end
 

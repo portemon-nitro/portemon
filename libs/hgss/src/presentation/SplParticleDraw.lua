@@ -16,7 +16,7 @@ local CAMERA_DISTANCE = 4
 -- entries release with the image.
 local quadsByImage = setmetatable({}, { __mode = "k" })
 
----@param graphics table love-like graphics namespace
+---@param graphics table<string, function> love-like graphics namespace
 ---@param image love.Image
 ---@param repS integer horizontal repeat power
 ---@param repT integer vertical repeat power
@@ -129,7 +129,7 @@ end
 -- record; the image must already wrap in repeat mode when the record repeats.
 -- A record `textureOffset` shifts the quad center within the particle's local
 -- space by (x, y) half-extents, as the retail quad is drawn around that point.
----@param graphics table love-like graphics namespace
+---@param graphics table<string, function> love-like graphics namespace
 ---@param simulation SplParticleSimulation
 ---@param options SplParticleDrawOptions
 function M.draw(graphics, simulation, options)
