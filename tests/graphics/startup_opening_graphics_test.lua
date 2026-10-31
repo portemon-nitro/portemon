@@ -1400,7 +1400,7 @@ local function soulsilver_starter_child_scale_follows_its_life_curve(scope, cont
     end
     local slot = movie.current
     Assert.notNil(slot, "the running movie owns its current slot")
-    for _, candidate in ipairs(slot.emitters) do
+    for _, candidate in ipairs(slot.sim.emitters) do
       if candidate.id == 1 and #candidate.children > 0 then
         runtime = candidate
       end
@@ -3070,7 +3070,7 @@ local function starter_particles_move_only_the_main_source_target(scope, context
   local movie = openMovie(scope, versionId, 512, 384, "dual")
   local function liveParticles()
     local count = 0
-    for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its live emitters")) do
+    for _, runtime in ipairs(assert(movie.current.sim.emitters, "the movie tracks its live emitters")) do
       count = count + #(runtime.particles or {})
     end
     return count
@@ -3148,7 +3148,7 @@ local function scene4_starter_beats_hold_emission_and_flip_until_their_cases(sco
   local appearSprite = assert(movie.current.spriteInstances.chikorita, "the appear stages its starter")
   Assert.isTrue(appearSprite.visible, "the appear shows its starter")
   local appearLive = 0
-  for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its live emitters")) do
+  for _, runtime in ipairs(assert(movie.current.sim.emitters, "the movie tracks its live emitters")) do
     appearLive = appearLive + #(runtime.particles or {})
     Assert.isFalse(runtime.group == "grass", "the appear frame runs no grass emitter")
   end
@@ -3158,7 +3158,7 @@ local function scene4_starter_beats_hold_emission_and_flip_until_their_cases(sco
   advance(movie, 3)
   Assert.equal(currentStepId(movie), "run-chikorita", "the run holds across its emitter beat")
   local runLive = 0
-  for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its run emitters")) do
+  for _, runtime in ipairs(assert(movie.current.sim.emitters, "the movie tracks its run emitters")) do
     runLive = runLive + #(runtime.particles or {})
   end
   Assert.isTrue(runLive > 0, "the run samples live emitters")
@@ -4738,7 +4738,7 @@ local function soulsilver_source_starter_paints_its_authored_frame(scope, contex
   Assert.equal(placement.x, 128, "the starter holds its retail x")
   Assert.equal(placement.y, 96, "the starter holds its retail y")
   local live = 0
-  for _, runtime in ipairs(assert(movie.current.emitters, "the movie tracks its live emitters")) do
+  for _, runtime in ipairs(assert(movie.current.sim.emitters, "the movie tracks its live emitters")) do
     live = live + #(runtime.particles or {})
   end
   Assert.isTrue(live > 0, "the starter samples while its particles are live")
@@ -7445,7 +7445,7 @@ local function groupLiveCurve(movie, scope, group, starter)
     movie:draw()
     local slot = assert(movie.current, "the running movie owns its current slot")
     local live = 0
-    for _, runtime in ipairs(slot.emitters) do
+    for _, runtime in ipairs(slot.sim.emitters) do
       if runtime.group == group then
         live = live + #runtime.particles + #(runtime.children or {})
       end

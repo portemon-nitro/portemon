@@ -5608,13 +5608,13 @@ local function reachStarterCase(movie, graphics)
   end
   Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scene")
   ticks = 0
-  while #assert(movie.current, "the running movie owns its current slot").emitters == 0 and ticks < 20000 do
+  while #assert(movie.current, "the running movie owns its current slot").sim.emitters == 0 and ticks < 20000 do
     movie:updateFixed()
     movie:draw()
     ticks = ticks + 1
   end
   Assert.isTrue(
-    #assert(movie.current, "the running movie owns its current slot").emitters > 0,
+    #assert(movie.current, "the running movie owns its current slot").sim.emitters > 0,
     "the starter case dispatches its emitters"
   )
 end
@@ -5623,7 +5623,7 @@ end
 ---@return table live emitter runtime for source id 6
 local function grassRuntime(movie)
   local slot = assert(movie.current, "the running movie owns its current slot")
-  for _, runtime in ipairs(slot.emitters) do
+  for _, runtime in ipairs(slot.sim.emitters) do
     if runtime.id == 6 then
       return runtime
     end
@@ -5959,10 +5959,10 @@ function T.starter_child_spread_keeps_raw_precision_with_three_stream_draws()
   Assert.isTrue(#runtime.children > 0, "the parent spawns children every tick")
   runtime.children = {}
   local slot = assert(movie.current, "the running movie owns its current slot")
-  local streamBefore = slot.rng --[[@as integer]]
+  local streamBefore = slot.sim.rng --[[@as integer]]
   movie:updateFixed()
   Assert.equal(#runtime.children, 1, "the parent spawns exactly one more child")
-  local streamAfter = slot.rng --[[@as integer]]
+  local streamAfter = slot.sim.rng --[[@as integer]]
   Assert.equal(streamAfter, rngStep(rngStep(rngStep(streamBefore))), "one child consumes exactly three stream draws")
   local first = rngStep(streamBefore)
   local second = rngStep(first)
@@ -6037,7 +6037,7 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
   movie:updateFixed()
   local slot = assert(movie.current, "the running movie owns its current slot")
   local runtimes = {}
-  for _, runtime in ipairs(slot.emitters) do
+  for _, runtime in ipairs(slot.sim.emitters) do
     if runtime.id == 6 or runtime.id == 7 or runtime.id == 8 then
       runtimes[
         runtime.id --[[@as integer]]
@@ -6300,8 +6300,10 @@ function T.starter_emitter_count_stays_within_its_scene_bound()
     movie:updateFixed()
     movie:draw()
     local slot = assert(movie.current, "the running movie owns its current slot")
-    Assert.equal(#slot.emitters, group * 3, "starter group " .. group .. " joins live emitters on its tick")
+    Assert.equal(#slot.sim.emitters, group * 3, "starter group " .. group .. " joins live emitters on its tick")
   end
+  local slot = assert(movie.current, "the running movie owns its current slot")
+  Assert.equal(#slot.sim.emitters, 9, "three starter groups stay live together")
   local ok, failure = pcall(function()
     for _ = 1, 3 do
       movie:updateFixed()
