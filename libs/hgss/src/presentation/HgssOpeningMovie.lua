@@ -17,6 +17,7 @@ local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local PixelScale = require("libs.ui.src.PixelScale")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
 local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
@@ -95,9 +96,7 @@ local SCENE_INIT_STALL_TICKS = 5
 -- rotations use host floating point and are deterministic without being
 -- bit-identical to the retail fixed-point unit. The slot stream opens at
 -- the manifest seed (never math.randomseed, never the global state).
-local PARTICLE_PX_PER_UNIT = 24
 local STAGE_CENTER_X, STAGE_CENTER_Y = 128, 96
-local PARTICLE_DEPTH_NEAR, PARTICLE_DEPTH_FAR = 1, 900
 -- The scene-4 emitter callback pins every emitter to its resource position
 -- plus this z offset on every update (IntroMovie_Scene4_SPLEmitterCB).
 local EMITTER_CALLBACK_Z = 0.015625
@@ -2859,152 +2858,18 @@ end
 
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
----@param runtime table<string, unknown> live emitter runtime
----@param cacheKey string quad cache slot on the runtime
----@param textureImage string staged particle texture path
----@param repS integer horizontal repeat power
----@param repT integer vertical repeat power
----@return love.Image, love.Quad, number, number
-local function particleQuad(self, slot, runtime, cacheKey, textureImage, repS, repT)
-  -- Quads tile the staged texture when the record repeats it; one parent
-  -- and one child quad cache per live emitter and release with the slot.
-  local image = slot.imageByPath[textureImage]
-  assert(image ~= nil, "opening scene staged particle art is missing: " .. tostring(textureImage))
-  if runtime[cacheKey] == nil then
-    local width, height = image:getWidth(), image:getHeight()
-    runtime[cacheKey] = self.graphics.newQuad(0, 0, width * (2 ^ repS), height * (2 ^ repT), width, height)
-    runtime[cacheKey .. "Width"] = width * (2 ^ repS)
-    runtime[cacheKey .. "Height"] = height * (2 ^ repT)
-  end
-  return image,
-    runtime[cacheKey], --[[@as table<string, unknown>]]
-    runtime[cacheKey .. "Width"], --[[@as number]]
-    runtime[cacheKey .. "Height"] --[[@as number]]
-end
-
----@param self HgssOpeningMovie
----@param slot OpeningMovieSlot scene slot
 local function drawParticles(self, slot)
-  local graphics = self.graphics
-  -- One global draw list, far particles first: the retail hardware
-  -- depth-tests every billboard, and painter ordering is the 2D
-  -- stand-in. The sequence tiebreak keeps replay order deterministic
-  -- where depths coincide.
-  local draws = {}
-  local sequence = 0
-  for emitterIndex = #slot.sim.emitters, 1, -1 do
-    local runtime = slot.sim.emitters[emitterIndex]
-    for particleIndex = #runtime.particles, 1, -1 do
-      sequence = sequence + 1
-      draws[#draws + 1] =
-        { runtime = runtime, particle = runtime.particles[particleIndex], child = nil, seq = sequence }
-    end
-    for childIndex = #runtime.children, 1, -1 do
-      sequence = sequence + 1
-      draws[#draws + 1] = {
-        runtime = runtime,
-        particle = runtime.children[childIndex],
-        child = runtime.record.child,
-        seq = sequence,
-      }
-    end
-  end
-  table.sort(draws, function(a, b)
-    local za = a.particle.z --[[@as number]] + a.particle.ez --[[@as number]]
-    local zb = b.particle.z --[[@as number]] + b.particle.ez --[[@as number]]
-    if za ~= zb then
-      return za < zb
-    end
-    return a.seq < b.seq
-  end)
-  for _, draw in ipairs(draws) do
-    local runtime = draw.runtime
-    local particle = draw.particle --[[@as table<string, unknown>]]
-    local record = runtime.record --[[@as table<string, unknown>]]
-    local alpha = math.floor(
-      particle.baseAlpha --[[@as integer]]
-        * (
-          particle.animAlpha --[[@as integer]]
-          + 1
-        )
-        / 32
-    )
-    if alpha > 0 then
-      local worldX = particle.x --[[@as number]] + particle.ex --[[@as number]]
-      local worldY = particle.y --[[@as number]] + particle.ey --[[@as number]]
-      local worldZ = particle.z --[[@as number]] + particle.ez --[[@as number]]
-      local depth = 4 - worldZ
-      if depth >= PARTICLE_DEPTH_NEAR and depth <= PARTICLE_DEPTH_FAR then
-        local colorRgb = particle.colorRgb --[[@as table<string, integer>]]
-        local baseScale = particle.baseScale --[[@as number]] / 4096
-        local animScale = particle.animScale --[[@as number]] / 4096
-        local aspect = record.aspect --[[@as number]]
-        local sx = baseScale * aspect
-        local sy = baseScale
-        local direct = record.sclAnmDirect --[[@as integer]]
-        if direct == 0 then
-          sx, sy = sx * animScale, sy * animScale
-        elseif direct == 1 then
-          sx = sx * animScale
-        else
-          sy = sy * animScale
-        end
-        local rotation
-        -- Children always draw as billboards with their own texture;
-        -- parents follow their staged draw kind.
-        if draw.child ~= nil or record.drawType == 0 then
-          rotation = particle.rtt --[[@as integer]] / 65536 * 2 * math.pi
-        else
-          -- Directional billboards stretch along the 3D velocity: the
-          -- quad x-axis follows velocity cross camera-z in view space,
-          -- and the y extent grows as the motion turns screen-parallel.
-          local vx = particle.vx --[[@as number]]
-          local vy = particle.vy --[[@as number]]
-          local dirX, dirY = vy, -vx
-          local dirLength = math.sqrt(dirX * dirX + dirY * dirY)
-          if dirLength > 0 then
-            dirX, dirY = dirX / dirLength, dirY / dirLength
-            local speed = math.sqrt(vx * vx + vy * vy + particle.vz --[[@as number]] * particle.vz --[[@as number]])
-            local parallel = 1
-            if speed > 0 then
-              parallel = math.abs(particle.vz --[[@as number]] / speed)
-            end
-            local dbbScale = record.dbbScale --[[@as integer]]
-            sy = sy * (1 + (1 - parallel) * dbbScale / 4096)
-            rotation = math.atan2(-dirY, dirX)
-          else
-            rotation = nil
-          end
-        end
-        if rotation ~= nil then
-          local textureImage = record.textureImage --[[@as string]]
-          local repeat_ = record.texRepeat --[[@as { s: integer, t: integer }]]
-          local cacheKey = "quad"
-          if draw.child ~= nil then
-            local child = draw.child --[[@as table<string, unknown>]]
-            textureImage = child.textureImage --[[@as string]]
-            repeat_ = child.texRepeat --[[@as { s: integer, t: integer }]]
-            cacheKey = "childQuad"
-          end
-          local image, quad, quadWidth, quadHeight =
-            particleQuad(self, slot, runtime, cacheKey, textureImage, repeat_.s, repeat_.t)
-          graphics.setColor(colorRgb.r / 31, colorRgb.g / 31, colorRgb.b / 31, alpha / 31)
-          graphics.draw(
-            image,
-            quad,
-            STAGE_CENTER_X + worldX * PARTICLE_PX_PER_UNIT,
-            STAGE_CENTER_Y - worldY * PARTICLE_PX_PER_UNIT,
-            rotation,
-            2 * sx * PARTICLE_PX_PER_UNIT / quadWidth,
-            2 * sy * PARTICLE_PX_PER_UNIT / quadHeight,
-            quadWidth / 2,
-            quadHeight / 2
-          )
-        end
-      end
-    end
-  end
-  graphics.setColor(1, 1, 1, 1)
+  SplParticleDraw.draw(self.graphics, slot.sim, {
+    centerX = STAGE_CENTER_X,
+    centerY = STAGE_CENTER_Y,
+    resolveTexture = function(runtime, _, child)
+      -- Children draw their own staged texture; parents their emitter's.
+      local path = (child or runtime.record).textureImage
+      local image = slot.imageByPath[path]
+      assert(image ~= nil, "opening scene staged particle art is missing: " .. tostring(path))
+      return image
+    end,
+  })
 end
 
 -- Engine-local line-shutter mask for one fade task: the revealed band is

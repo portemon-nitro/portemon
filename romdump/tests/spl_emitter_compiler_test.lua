@@ -180,6 +180,13 @@ function T.compile_records_the_texture_offset()
   )
 end
 
+function T.compile_records_child_first_drawing_only_when_set()
+  local first = compileOne(emitterBase(SELF_DEST + 2 ^ 21, 0))
+  Assert.isTrue(first.particles.emitters[1].drawChildFirst, "the child-first draw flag is kept")
+  local plain = compileOne(emitterBase(SELF_DEST, 0))
+  Assert.isNil(plain.particles.emitters[1].drawChildFirst, "an unset child-first flag stays absent")
+end
+
 function T.compile_rejects_mirrored_texture_coordinates()
   Assert.isNil(compileOne(emitterBase(SELF_DEST, 0, 1)), "a mirrored emitter texture fails")
 end

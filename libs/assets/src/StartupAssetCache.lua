@@ -1013,6 +1013,7 @@ local function validateOpeningEmitter(emitter)
       texRepeat = true,
       texture = true,
       textureImage = true,
+      drawChildFirst = true,
       animations = true,
       child = true,
       fields = true,
@@ -1020,6 +1021,7 @@ local function validateOpeningEmitter(emitter)
     or not isNonnegativeInteger(emitter.id)
     or emitter.id > 8
     or emitter.group ~= OPENING_EMITTER_GROUPS[emitter.id]
+    or (emitter.drawChildFirst ~= nil and emitter.drawChildFirst ~= true)
   then
     return nil, invalid("opening scene emitter is outside the nine source emitters", path)
   end

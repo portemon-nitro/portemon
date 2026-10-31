@@ -373,6 +373,10 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
   if emitter.offsetPos ~= 0 or emitter.offset.x ~= 0 or emitter.offset.y ~= 0 then
     textureOffset = { mode = emitter.offsetPos, x = emitter.offset.x, y = emitter.offset.y }
   end
+  local drawChildFirst = nil
+  if math.floor(emitter.flag / 2097152) % 2 == 1 then
+    drawChildFirst = true
+  end
   return {
     id = emitter.id,
     group = group,
@@ -408,6 +412,7 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
     textureImage = texture.image,
     textureAnim = textureAnim,
     textureOffset = textureOffset,
+    drawChildFirst = drawChildFirst,
     animations = animations,
     child = child,
     fields = fields,
@@ -421,7 +426,7 @@ end
 
 -- Compile one SPL member into normalized per-emitter emission records plus
 -- staged texture art. The emitter-level `textureAnim` and `textureOffset`
--- fields, and the `loop`/`random` flags on animation blocks, are absent
+-- fields, `drawChildFirst`, and the `loop`/`random` flags on animation blocks, are absent
 -- unless the source sets them. Returns the normalized particle set, its
 -- staged files, and the producer dependencies for the job receipt.
 ---@param memberBytes string raw SPL member bytes
