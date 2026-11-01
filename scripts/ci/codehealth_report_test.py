@@ -577,9 +577,12 @@ class CodeHealthReportTest(unittest.TestCase):
                 ]), 0)
 
             extracted_paths, extracted_cache, extracted_root, parallel, workers = calls["extract"]
-            self.assertEqual(extracted_paths, [root / "a.lua", root / "nested" / "b.lua"])
-            self.assertEqual(extracted_cache, cache_root)
-            self.assertEqual(extracted_root, root)
+            self.assertEqual(
+                extracted_paths,
+                [(root / "a.lua").resolve(), (root / "nested" / "b.lua").resolve()],
+            )
+            self.assertEqual(extracted_cache, cache_root.resolve())
+            self.assertEqual(extracted_root, root.resolve())
             self.assertTrue(parallel)
             self.assertEqual(workers, 4)
             self.assertEqual(calls["build"][2], True)

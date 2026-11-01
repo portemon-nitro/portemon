@@ -498,13 +498,17 @@ def _init_lint_repo(root: Path, fixtures: dict[str, str]) -> tuple[Path, Path]:
     lint_target.write_bytes(LINT_SOURCE.read_bytes())
     lint_target.chmod(0o755)
     lib = root / "scripts" / "lib"
-    for source in (SCOPE_SOURCE, REPO_CHECK_SOURCE):
+    for source in (
+        SCOPE_SOURCE, REPO_CHECK_SOURCE,
+        REPO_ROOT / "scripts/lib/dev.sh",
+        REPO_ROOT / "scripts/lib/repo-setup.sh",
+    ):
         target = lib / source.name
         target.write_bytes(source.read_bytes())
         target.chmod(0o755)
     bin_dir = root / "test-bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("stylua", "lua-language-server"):
+    for name in ("love", "stylua", "lua-language-server"):
         stub = bin_dir / name
         stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)
