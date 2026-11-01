@@ -56,6 +56,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _preparedDemands table<integer, table<string, unknown>> exact launch demands requested, in order
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
+---@field _battleSpeed integer admitted presentation speed factor behind the launch, 1 outside launches
 ---@field _pendingFailed boolean true once the envelope reported its terminal launch failure
 ---@field _pendingBuild boolean true while a scheduled launch still awaits its deferred screen
 ---@field _portDisposed boolean true once the live five-operation port released its screen
@@ -887,6 +888,7 @@ function FieldBattlePresentation.new(opts)
     _preparedDemands = {},
     _launchId = nil,
     _descriptor = nil,
+    _battleSpeed = 1,
     _pendingFailed = false,
     _pendingBuild = false,
     _portDisposed = false,
@@ -3142,8 +3144,20 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   local sceneKey = environment.sceneKey
   assert(type(sceneKey) == "string" and sceneKey ~= "", "launch environments resolve their scene identity")
   assert(BattlePresentationCache.parseSceneKey(sceneKey) ~= nil, "unknown battle scene key: " .. tostring(sceneKey))
+  -- The frozen launch factor defaults to the historical single rate for
+  -- hand-built descriptors; a malformed present value fails admission
+  -- instead of guessing a rate.
+  local launchSpeed = descriptor.battleSpeed
+  if launchSpeed == nil then
+    launchSpeed = 1
+  end
+  assert(
+    launchSpeed == 1 or launchSpeed == 2 or launchSpeed == 4,
+    "presented battle launches carry their presentation speed"
+  )
   self._launchId = descriptor.launchId
   self._descriptor = descriptor
+  self._battleSpeed = launchSpeed
   self._pendingFailed = false
   self._enrolledUploads = {}
   assert(next(self._pendingUploads) == nil, "a launch never inherits pre-enrolled upload tickets")
@@ -4036,16 +4050,31 @@ function FieldBattlePresentation:updateFixed(dt)
   -- cannot publish a packet before its screen exists and a terminal
   -- build failure reaches the host before any further advance.
   self:_pollPendingScreen()
-  self._accumulator = self._accumulator + dt
+  -- One acceleration owner: only this envelope scales its accepted time,
+  -- and only while it owns the admitted battle launch. The factor applies
+  -- once, to the credit and the catch-up budget together; every inner
+  -- iteration still runs the complete ordered quantum at exactly one
+  -- source quantum, so children and delivery drains step per call instead
+  -- of receiving one scaled delta.
+  local factor = 1
+  if self._launchId ~= nil then
+    factor = self._battleSpeed or 1
+  end
+  self._accumulator = self._accumulator + dt * factor
   local steps = 0
+  local budget = FieldBattlePresentation.MAX_CATCH_UP * factor
   while
     self._accumulator + FieldBattlePresentation.SOURCE_EPSILON >= FieldBattlePresentation.SOURCE_FRAME
-    and steps < FieldBattlePresentation.MAX_CATCH_UP
+    and steps < budget
   do
     self._accumulator = self._accumulator - FieldBattlePresentation.SOURCE_FRAME
     steps = steps + 1
     self:_stepTransition()
     self:_stepCover()
+    if self._launchId == nil or self._descriptor == nil then
+      self._accumulator = 0
+      break
+    end
     -- The presented launch advances only here: the runtime phase machine
     -- and the owned battle clock run once per accepted tick, never through
     -- the host-update pump as well.
@@ -4054,10 +4083,18 @@ function FieldBattlePresentation:updateFixed(dt)
     if self._launchId ~= nil and host ~= nil then
       host.advance()
     end
+    if self._launchId == nil or self._descriptor == nil then
+      self._accumulator = 0
+      break
+    end
     local screen = self._screen
     if screen ~= nil then
       screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
       self:_observeScreenFailure()
+    end
+    if self._launchId == nil or self._descriptor == nil then
+      self._accumulator = 0
+      break
     end
   end
   if self._accumulator + FieldBattlePresentation.SOURCE_EPSILON >= FieldBattlePresentation.SOURCE_FRAME then
@@ -4390,6 +4427,7 @@ function FieldBattlePresentation:_dropLaunch()
   self._enrolledUploads = {}
   self._launchId = nil
   self._descriptor = nil
+  self._battleSpeed = 1
   self._pendingFailed = false
   self._pendingBuild = false
   self._portDisposed = false
