@@ -6,6 +6,7 @@ local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresenta
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
+local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
@@ -251,6 +252,30 @@ function FieldState.new(game, options)
     local function currentFieldCamera()
       return runtime.camera
     end
+    local summaryManifest =
+      assert(self.presentationResources.summaryManifest, "battle evolution summaries borrow the field Summary family")
+    local function acquireSummaryPreparation()
+      local binding = assert(runtime._summaryPreparation, "battle evolution summaries require preparation")
+      return binding.acquire()
+    end
+    local function readSummaryNavigation()
+      return assert(runtime.input, "battle evolution summaries require the field input"):lastUiNavigation()
+    end
+    local summary = {
+      mons = assert(runtime.monService, "battle evolution summaries borrow the live mon service"),
+      manifest = summaryManifest,
+      renderer = assert(self.presentationResources.summaryRenderer, "battle evolution summaries borrow the renderer"),
+      measureDisplay = battleDisplay,
+      context = FieldMenuCompositionCoordinator.summaryContextProvider(runtime, summaryManifest),
+      readNavigation = readSummaryNavigation,
+      acquirePreparation = acquireSummaryPreparation,
+      effect = runtime.audio ~= nil and function(sequence)
+        runtime.audio:play(sequence)
+      end or nil,
+      playCry = runtime.audio ~= nil and function(species, pattern, form)
+        runtime.audio:playCry(species, pattern, form)
+      end or nil,
+    }
     self.battleEnvelope = FieldBattlePresentation.new({
       cacheFs = runtime.cacheFs,
       graphics = love.graphics,
@@ -272,6 +297,7 @@ function FieldState.new(game, options)
           icons = self.presentationResources.itemIconProvider,
         },
       },
+      summary = summary,
       pokedex = self.presentationResources:pokedex(),
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),

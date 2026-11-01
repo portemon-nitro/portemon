@@ -326,6 +326,105 @@ function T.evolution_child_wraps_the_native_presentation_state()
   child:dispose()
 end
 
+function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pose()
+  local root = CatalogFixture.buildAssetRoot()
+  local species = root.species
+  species.CHIKORITA.forms[0].evolutions = {
+    { method = "level", level = 16, target = "TOTODILE", form = 0 },
+  }
+  local targetMoves = species.TOTODILE.forms[0].levelUpMoves
+  targetMoves[#targetMoves + 1] = { level = 16, move = "SCRATCH" }
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
+  local mon = CatalogFixture.makeFactory(0xE0010001, catalog)
+    :createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = 16 }))
+  mon.moves = {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
+    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
+  }
+  local function cursorFrame(sourceFrame, durationTicks)
+    return {
+      sourceFrame = sourceFrame,
+      durationTicks = durationTicks,
+      drawableKey = "battle:evolution-cursor:test:" .. sourceFrame,
+      rasterOffset = { x = 0, y = 0 },
+    }
+  end
+  local intent = {
+    kind = "evolution",
+    purpose = "evolution",
+    launchId = "evolution-cursor-clock",
+    requestId = 18,
+    epoch = 8,
+    controller = "player",
+    cancellable = true,
+    subject = mon,
+    context = { trigger = { kind = "level" }, timeOfDay = "day", party = {}, inventory = {} },
+    request = { requestId = 18, epoch = 8, controller = "player", kind = "evolution" },
+    options = { requestId = 18, epoch = 8, controller = "player", kind = "evolution", actors = {} },
+  }
+  local child, openErr = BattleChildApplications.open(intent, {
+    monCatalog = catalog,
+    evolutionCursor = {
+      idle = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { cursorFrame(11, 2), cursorFrame(12, 3) } },
+      select = { playMode = "forward", frames = { cursorFrame(13, 1), cursorFrame(14, 1) } },
+    },
+  })
+  Assert.notNil(child, "the source cursor animation composes with the evolution child: " .. tostring(openErr))
+  assert(child ~= nil, "the evolution cursor child composes")
+  local ticks = 0
+  local heldPrinter = false
+  local function advanceUntil(predicate)
+    for _ = 1, 400 do
+      local status = child:status()
+      if status.palettePending == true then
+        local channels = status.paletteChannels
+        local channel = channels.scene ~= nil and "scene" or "pictures"
+        child:completePaletteFade(channel, assert(channels[channel]))
+      end
+      if child:status().printerPending == true and not heldPrinter then
+        heldPrinter = true
+        for _ = 1, 4 do
+          child:stepPresentationSourceTick(1)
+          child:stepSourceTick(1)
+          ticks = ticks + 1
+        end
+      end
+      if child:status().printerPending == true then
+        child:completeMessage()
+      end
+      child:stepPresentationSourceTick(1)
+      child:stepSourceTick(1)
+      ticks = ticks + 1
+      local view = child:draw()
+      if predicate(view) then
+        return view
+      end
+    end
+    error("the evolution cursor test never reached its requested menu")
+  end
+  local firstMenu = advanceUntil(function(view)
+    return type(view.learnMenu) == "table"
+  end)
+  local idleFrame = (ticks % 5) < 2 and 11 or 12
+  Assert.equal(firstMenu.learnMenu.cursor.role, "idle", "the first menu reveals the scene's original idle animation")
+  Assert.equal(
+    firstMenu.learnMenu.cursor.sourceFrame,
+    idleFrame,
+    "the hidden idle cursor has kept its source age after " .. ticks .. " source ticks"
+  )
+  child:input({ { type = "navigate", direction = "down" } })
+  child:input({ { type = "confirm" } })
+  local stopMenu = advanceUntil(function(view)
+    return type(view.learnMenu) == "table" and view.learnMenu.kind == "stop"
+  end)
+  Assert.equal(stopMenu.learnMenu.cursor.role, "select", "ShowMenu reveals the completed source selection animation")
+  Assert.equal(stopMenu.learnMenu.cursor.sourceFrame, 14, "ShowMenu does not restart the cursor idle animation")
+  child:dispose()
+end
+
 function T.bag_child_needs_its_item_catalog()
   local child, openErr = BattleChildApplications.open(bagIntent({ POTION = 5 }), {})
   Assert.isNil(child, "catalog-free stock composes no native bag")

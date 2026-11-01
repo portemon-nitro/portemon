@@ -397,6 +397,24 @@ end
 -- Resolves one source printer color triple through a staged text-role
 -- palette: the bank is the printer's palette offset and the slots are its
 -- MAKE_TEXT_COLOR entries. Slot zero is the transparent OBJ color.
+---@param colors { [integer]: { r: number, g: number, b: number } } staged RGB colors
+---@param bank integer sixteen-color bank under selection
+---@param foreground integer source foreground slot
+---@param shadow integer source shadow slot
+---@param background integer source background slot
+---@return table<string, table<string, number>> RGB triple for the palette-driven text path
+local function paletteFromColors(colors, bank, foreground, shadow, background)
+  assert(type(colors) == "table", "source text palettes carry an ordered color array")
+  local function at(slot)
+    if slot == 0 then
+      return { r = 0, g = 0, b = 0, a = 0 }
+    end
+    local color = assert(colors[bank * 16 + slot + 1], "source text slots fall inside their palette bank")
+    return { r = color.r, g = color.g, b = color.b }
+  end
+  return { foreground = at(foreground), shadow = at(shadow), background = at(background) }
+end
+
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param palette string staged printer palette ("narration", "hud", or "menu")
 ---@param bank integer sixteen-color bank under selection
@@ -407,14 +425,7 @@ end
 local function sourcePalette(view, palette, bank, foreground, shadow, background)
   local palettes = assert(view.textPalettes, "the battle view carries its staged text palettes") --[[@as table<string, table<string, unknown>>]]
   local colors = assert(palettes[palette], "the battle view carries the " .. palette .. " text palette").colors --[[@as table[] ]]
-  local function at(slot)
-    if slot == 0 then
-      return { r = 0, g = 0, b = 0, a = 0 }
-    end
-    local color = assert(colors[bank * 16 + slot + 1], "source text slots fall inside their palette bank")
-    return { r = color.r, g = color.g, b = color.b }
-  end
-  return { foreground = at(foreground), shadow = at(shadow), background = at(background) }
+  return paletteFromColors(colors, bank, foreground, shadow, background)
 end
 
 ---@param text table<string, unknown> borrowed text services
@@ -2500,6 +2511,270 @@ local function drawParticleSystems(graphics, systems)
   end
 end
 
+---@param assets table<string, unknown> battle image owner
+---@param selector unknown canonical portrait selector
+---@param frame integer source Pokepic animation frame
+---@return table<string, unknown>? staged portrait image
+local function evolutionPortrait(assets, selector, frame)
+  if type(selector) ~= "string" or selector == "" then
+    return nil
+  end
+  local portrait = assets:drawable("mon:" .. selector)
+  if portrait == nil then
+    return nil
+  end
+  local frames = portrait.frames --[[@as table<integer, table<string, unknown>>?]]
+  if type(frames) == "table" then
+    return assert(frames[frame + 1], "evolution portraits stage every source animation frame")
+  end
+  return portrait
+end
+
+---@param resources table<string, unknown> battle renderer resources
+---@param state table<string, unknown> evolution child state
+---@param pane "main"|"sub" Summary pane to render
+local function drawEvolutionSummary(resources, state, pane)
+  local status = assert(state.summaryStatus, "evolution Summary carries its native status")
+  if status.preparationState ~= "ready" then
+    local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+    graphics.push("all")
+    graphics.setColor(0, 0, 0, 1)
+    graphics.rectangle("fill", 0, 0, 256, 192)
+    graphics.pop()
+    return
+  end
+  local renderer = assert(resources.summaryRenderer, "evolution Summary borrows the field renderer")
+  local bundle = assert(status.resources, "ready evolution Summary carries its resource bundle")
+  renderer:drawPane(status, pane, bundle)
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
+---@param evolution table<string, unknown> child-owned evolution snapshot
+---@param battleView table<string, unknown> complete battle view carrying text palettes
+local function drawEvolutionMain(resources, evolution, battleView)
+  local graphics = assert(resources.graphics, "the evolution render borrows its host graphics")
+  local assets = assert(resources.assets, "the evolution render borrows its battle asset holder")
+  local state = assert(evolution.presentation, "evolution views carry their child state") --[[@as table<string, unknown>]]
+  if state.phase == "summary" then
+    drawEvolutionSummary(resources, state, "main")
+    return
+  end
+  local presentation = assert(state.presentation, "evolution views carry source picture state") --[[@as table<string, unknown>]]
+  local window = assert(presentation.window, "evolution views carry their moving window") --[[@as table<string, number>]]
+  local top = assert(window.top, "evolution window carries its top edge")
+  local bottom = assert(window.bottom, "evolution window carries its bottom edge")
+  local center = assert(presentation.pictureCenter, "evolution views carry their Pokepic center") --[[@as table<string, number>]]
+  local selectors = state.pokepicSelectors --[[@as table<string, string>?]]
+  local oldScale = assert(presentation.oldPictureScale, "evolution views carry the old Pokepic scale") / 256
+  local newScale = assert(presentation.newPictureScale, "evolution views carry the new Pokepic scale") / 256
+  graphics.push("all")
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(0, 0, 0, 1)
+  graphics.rectangle("fill", 0, 0, 256, 192)
+  local background = assets:drawable("battle:evolution:main")
+  if background ~= nil then
+    drawArtwork(graphics, background, nil, 0, 0)
+  end
+  if bottom > top then
+    LogicalSurface.clip(graphics, { x = 0, y = top, width = 256, height = bottom - top }, function()
+      local function drawPicture(selector, scale, frame, xOffset)
+        if scale <= 0 then
+          return
+        end
+        local image = evolutionPortrait(assets, selector, frame)
+        if image == nil then
+          return
+        end
+        local picture = pictureImage(image)
+        if picture == nil then
+          return
+        end
+        local width, height = picture.image:getDimensions()
+        drawArtwork(graphics, image, image.quad, center.x + xOffset, center.y, 0, scale, scale, width / 2, height / 2)
+      end
+      if selectors ~= nil then
+        drawPicture(selectors.old, oldScale, presentation.oldPictureFrame or 0, presentation.oldPictureXOffset or 0)
+        drawPicture(selectors.new, newScale, presentation.newPictureFrame or 0, presentation.newPictureXOffset or 0)
+      end
+      drawParticleSystems(graphics, presentation.particleSystems --[[@as table<integer, table<string, unknown>>?]])
+    end)
+  end
+  local windows = assert(resources.windows, "the evolution render borrows its window services")
+  local messageBox = { x = 16, y = 152, width = 216, height = 32 }
+  windows.drawWindow(messageBox, resources.frameKey, { 1, 1, 1, 1 })
+  local message = presentation.message
+  if type(message) == "string" and message ~= "" then
+    local graphicsText = assert(resources.text, "evolution messages use the battle text services")
+    local palette = sourcePalette(battleView, "narration", 0, 1, 2, 15)
+    LogicalSurface.clip(graphics, messageBox, function()
+      local row = 0
+      for line in
+        (message --[[@as string]]):gmatch("[^\n]+")
+      do
+        drawRoleText(graphicsText, "narration", line, messageBox.x, messageBox.y + row * 16, palette)
+        row = row + 1
+      end
+    end)
+  end
+  graphics.pop()
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
+---@param evolution table<string, unknown> child-owned evolution snapshot
+local function drawEvolutionSub(resources, evolution)
+  local graphics = assert(resources.graphics, "the evolution render borrows its host graphics")
+  local assets = assert(resources.assets, "the evolution render borrows its battle asset holder")
+  if evolution.phase == "summary" then
+    drawEvolutionSummary(resources, evolution, "sub")
+    return
+  end
+  graphics.push("all")
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(0, 0, 0, 1)
+  graphics.rectangle("fill", 0, 0, 256, 192)
+  local background = assets:drawable("battle:evolution:sub")
+  if background ~= nil then
+    drawArtwork(graphics, background, nil, 0, 0)
+  end
+  local learnMenu = evolution.learnMenu --[[@as table<string, unknown>?]]
+  if learnMenu ~= nil then
+    local menu = assets:drawable("battle:evolution:menu")
+    if menu ~= nil then
+      drawArtwork(graphics, menu, nil, 0, 0)
+    end
+    local text = assert(resources.text, "evolution menu labels use the staged battle font")
+    local labels = { learnMenu.topText, learnMenu.bottomText }
+    local paletteColors =
+      assert(evolution.menuTextPalette, "evolution menu labels use EvolutionScene's graphic_font member 9 palette") --[[@as table[] ]]
+    local palette = paletteFromColors(paletteColors, 0, 1, 2, 0)
+    for index, label in ipairs(labels) do
+      if type(label) == "string" then
+        drawRoleText(text, "menu", label, 24, index == 1 and 64 or 112, palette)
+      end
+    end
+    local cursor = learnMenu.cursor --[[@as table<string, unknown>?]]
+    if cursor ~= nil then
+      local sourceFrame = assert(cursor.sourceFrame, "evolution menu cursor frames retain their source index")
+      local role = assert(cursor.role, "evolution menu cursor frames name their source animation")
+      local drawable = assets:drawable("battle:evolution-cursor:" .. tostring(role) .. ":" .. tostring(sourceFrame))
+      if drawable ~= nil then
+        local offset = assert(cursor.rasterOffset, "evolution cursor frames retain their source raster origin")
+        local position = assert(cursor.position, "evolution cursor retains its source menu position")
+        drawArtwork(graphics, drawable, nil, position.x + offset.x, position.y + offset.y)
+      end
+    end
+  end
+  graphics.pop()
+end
+
+---@param graphics table<string, unknown> borrowed host graphics
+local function drawEvolutionWaiting(graphics)
+  graphics.push("all")
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(0, 0, 0, 1)
+  graphics.rectangle("fill", 0, 0, 256, 192)
+  graphics.pop()
+end
+
+---@param color string source palette fade color
+---@return number, number, number RGB target color
+local function evolutionFadeColor(color)
+  if color == "white" then
+    return 1, 1, 1
+  end
+  assert(color == "black", "EvolutionScene palette fades target black or white")
+  return 0, 0, 0
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
+---@param state table<string, unknown> evolution child render state
+local function drawEvolutionPictureFade(resources, state)
+  local stateView = assert(state.presentation, "evolution fades read their child presentation") --[[@as table<string, unknown>]]
+  local presentation = assert(stateView.presentation, "evolution fades read source picture state") --[[@as table<string, unknown>]]
+  local fade = stateView.picturePaletteFade --[[@as table<string, unknown>?]]
+  if fade == nil then
+    return
+  end
+  local graphics = assert(resources.graphics, "evolution picture fades borrow host graphics")
+  local assets = assert(resources.assets, "evolution picture fades borrow battle image handles")
+  local selectors = stateView.pokepicSelectors --[[@as table<string, string>?]]
+  if selectors == nil then
+    return
+  end
+  local window = assert(presentation.window, "evolution picture fades follow the retail window") --[[@as table<string, number>]]
+  local center = assert(presentation.pictureCenter, "evolution picture fades use the Pokepic center") --[[@as table<string, number>]]
+  local red, green, blue = evolutionFadeColor(assert(fade.color, "Pokepic fades carry a blend color"))
+  local alpha = assert(fade.coefficient, "Pokepic fades carry a blend coefficient") / 16
+  if alpha <= 0 then
+    return
+  end
+  graphics.push("all")
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(red, green, blue, alpha)
+  LogicalSurface.clip(graphics, {
+    x = 0,
+    y = assert(window.top),
+    width = 256,
+    height = math.max(0, assert(window.bottom) - window.top),
+  }, function()
+    for _, role in ipairs({ "old", "new" }) do
+      local scale = assert(presentation[role .. "PictureScale"]) / 256
+      if scale > 0 then
+        local frame = assert(presentation[role .. "PictureFrame"]) --[[@as integer]]
+        local image = evolutionPortrait(assets, selectors[role], frame)
+        if image ~= nil then
+          local picture = pictureImage(image)
+          if picture ~= nil then
+            local width, height = picture.image:getDimensions()
+            drawArtwork(
+              graphics,
+              image,
+              image.quad,
+              center.x
+                + (
+                  presentation[role .. "PictureXOffset"] --[[@as number?]]
+                  or 0
+                ),
+              center.y,
+              0,
+              scale,
+              scale,
+              width / 2,
+              height / 2
+            )
+          end
+        end
+      end
+    end
+  end)
+  graphics.pop()
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
+---@param child table<string, unknown> evolution child render view
+---@param pane string destination source screen
+local function drawEvolutionFade(resources, child, pane)
+  if pane == "main" then
+    drawEvolutionPictureFade(resources, child)
+  end
+  local stateView = assert(child.presentation, "evolution fades read their child presentation") --[[@as table<string, unknown>]]
+  local fade = stateView.scenePaletteFade --[[@as table<string, unknown>?]]
+  if fade == nil then
+    return
+  end
+  local alpha = assert(fade.coefficient, "scene fades carry a blend coefficient") / 16
+  if alpha <= 0 then
+    return
+  end
+  local red, green, blue = evolutionFadeColor(assert(fade.color, "scene fades carry a blend color"))
+  local graphics = assert(resources.graphics, "evolution scene fades borrow host graphics")
+  graphics.push("all")
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(red, green, blue, alpha)
+  graphics.rectangle("fill", 0, 0, 256, 192)
+  graphics.pop()
+end
+
 -- Draws one pane in its logical space: "detail" for the battlefield,
 -- "interaction" for the lower menu, or "compact" for the single-pane
 -- scene viewport. Unknown pane identities draw nothing.
@@ -2511,7 +2786,20 @@ end
 function BattleRenderer.drawPane(resources, view, paneId, content, placement)
   assert(type(resources) == "table", "pane drawing borrows its resources")
   assert(type(view) == "table", "pane drawing reads its snapshot")
-  if paneId == "compact" then
+  local child = view.mode == "child" and view.childView or nil
+  if type(child) == "table" and child.kind == "evolution" and type(child.presentation) == "table" then
+    if child.presentation.assetsReady == true then
+      if paneId == "detail" then
+        drawEvolutionMain(resources, child, view)
+        drawEvolutionFade(resources, child, "main")
+      elseif paneId == "interaction" then
+        drawEvolutionSub(resources, child.presentation --[[@as table<string, unknown>]])
+        drawEvolutionFade(resources, child, "sub")
+      end
+    elseif paneId == "detail" or paneId == "interaction" then
+      drawEvolutionWaiting(assert(resources.graphics, "the battle render borrows its host graphics"))
+    end
+  elseif paneId == "compact" then
     drawCompactScene(resources, view, content or {})
   elseif paneId == "detail" then
     drawDetail(resources, view)

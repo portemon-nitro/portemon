@@ -32,6 +32,57 @@ BattlePresentationSources.PICTURE_ANIMATION_NARC = "NARC_a_1_8_0"
 BattlePresentationSources.PICTURE_ANIMATION_MEMBER = 0
 BattlePresentationSources.PICTURE_ANIMATION_RECORD_SIZE = 89
 
+-- EvolutionScene loads resource 0 from NARC_a_1_1_9 and creates emitter
+-- IDs 0 through 12 across its particle phases.
+BattlePresentationSources.EVOLUTION_PARTICLES = {
+  archiveSymbol = "NARC_a_1_1_9",
+  memberId = 0,
+  emitterCount = 13,
+}
+
+-- EvolutionScene loads these full-screen BG maps and its animated menu
+-- cursor. Physical archive/member selection remains producer-only provenance.
+BattlePresentationSources.EVOLUTION_GRAPHICS = {
+  main = {
+    archiveSymbol = "NARC_a_1_1_5",
+    characters = 0,
+    screen = 1,
+    paletteArchiveSymbol = "NARC_a_1_1_5",
+    palette = 8,
+  },
+  sub = {
+    archiveSymbol = "NARC_a_2_3_7",
+    characters = 16,
+    screen = 17,
+    paletteArchiveSymbol = "NARC_a_2_3_7",
+    palette = 0,
+  },
+  menu = {
+    archiveSymbol = "NARC_a_2_3_7",
+    characters = 1,
+    screen = 10,
+    paletteArchiveSymbol = "NARC_a_2_3_7",
+    palette = 15,
+  },
+  cursor = {
+    archiveSymbol = "NARC_a_2_3_7",
+    palette = 11,
+    characters = 12,
+    cell = 13,
+    animation = 14,
+    sequences = { idle = 1, select = 3 },
+  },
+}
+
+-- EvolutionScene_PrintMenuOption uses MAKE_TEXT_COLOR(1, 2, 0). Its font
+-- palette is loaded to sub BG palette bank 15 before the menu is printed.
+BattlePresentationSources.EVOLUTION_MENU_TEXT_PALETTE = {
+  archiveSymbol = "NARC_graphic_font",
+  memberId = 9,
+  destinationBank = 15,
+  colorCount = 16,
+}
+
 -- Pokepic's shared 4bpp texture atlas uses the shadow entry from the
 -- other-pokemon graphics archive. The coordinates are the source UV table
 -- in src/pokepic.c; runtime receives the same four regions normalized into

@@ -455,10 +455,9 @@ function T.evolution_learning_ignores_lower_level_target_moves()
   Assert.deepEqual(mon, before, "driving the flow never touches the live mon")
 end
 
--- Current-level target moves fill free slots silently: with room in the
--- set, every unknown current-level entry lands in learnset order without
--- pausing, and the flow completes at once.
-function T.current_level_moves_fill_free_slots_silently()
+-- Current-level moves with free slots stage in learnset order and expose
+-- each new move for its native learned-message wait before continuing.
+function T.current_level_moves_with_free_slots_expose_ordered_learned_moves()
   local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
   local catalog = learningCatalog()
   local mon = pinLevel(makeMon(catalog, 703, {}), catalog, 16)
@@ -471,19 +470,23 @@ function T.current_level_moves_fill_free_slots_silently()
   Assert.notNil(flow, "an eligible mon opens a flow")
   Assert.equal(Flow.step(flow).prompt, "confirm_evolution", "the flow opens on confirmation")
   Flow.respond(flow, { choice = "accept" })
-  Assert.equal(Flow.step(flow).prompt, "complete", "free slots fill without pausing")
+  local first = Flow.step(flow)
+  Assert.equal(first.prompt, "move_learned", "the first free-slot append opens its learned-message beat")
+  Assert.equal(first.move, "QUICK_ATTACK", "the first append follows learnset order")
+  Flow.respond(flow, { choice = "continue" })
+  local second = Flow.step(flow)
+  Assert.equal(second.prompt, "move_learned", "the next free-slot append opens a separate beat")
+  Assert.equal(second.move, "SAND_ATTACK", "the second append follows learnset order")
+  Flow.respond(flow, { choice = "continue" })
+  Assert.equal(Flow.step(flow).prompt, "complete", "all announced free-slot moves precede completion")
   local result = Flow.capture(flow)
   Assert.notNil(result, "the silent flow captures")
-  Assert.deepEqual(
-    result.mon.moves,
-    {
-      { move = "TACKLE", pp = 35, ppUps = 0 },
-      { move = "GROWL", pp = 40, ppUps = 0 },
-      { move = "QUICK_ATTACK", pp = 30, ppUps = 0 },
-      { move = "SAND_ATTACK", pp = 15, ppUps = 0 },
-    },
-    "current-level entries fill free slots in learnset order"
-  )
+  Assert.deepEqual(result.mon.moves, {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "QUICK_ATTACK", pp = 30, ppUps = 0 },
+    { move = "SAND_ATTACK", pp = 15, ppUps = 0 },
+  }, "current-level entries fill free slots in learnset order")
   Assert.deepEqual(mon, before, "filling never touches the live mon")
 end
 
@@ -743,11 +746,7 @@ function T.post_battle_level_rechecks_never_stage_trade_evolutions()
       "the level recheck stages no trade evolution after " .. outcome
     )
   end
-  Assert.deepEqual(
-    Flow.eligibleAfterBattle({ trader }, "loss", context, catalog),
-    {},
-    "a loss stages nothing either"
-  )
+  Assert.deepEqual(Flow.eligibleAfterBattle({ trader }, "loss", context, catalog), {}, "a loss stages nothing either")
 end
 
 return { tests = T }

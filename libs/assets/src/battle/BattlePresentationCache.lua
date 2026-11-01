@@ -103,6 +103,23 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field emitters table<string, unknown>[] compiled emitter records
 ---@field textures BattlePresentationCache.EncounterParticleTexture[]
 
+---@class BattlePresentationCache.EvolutionParticleSet
+---@field seed integer particle random seed
+---@field emitters table<string, unknown>[] retail EvolutionScene emitters, in source order
+---@field textures BattlePresentationCache.EncounterParticleTexture[] staged texture metadata
+
+---@class BattlePresentationCache.EvolutionGraphicsImage
+---@field image string cache-relative staged 256×192 PNG
+---@field width integer
+---@field height integer
+
+---@class BattlePresentationCache.EvolutionGraphics
+---@field main BattlePresentationCache.EvolutionGraphicsImage visible main-screen background
+---@field sub BattlePresentationCache.EvolutionGraphicsImage visible sub-screen background
+---@field menu BattlePresentationCache.EvolutionGraphicsImage lower menu background enabled during evolution menus
+---@field menuTextPalette { colors: table[] } source palette bank for EvolutionScene menu text
+---@field cursor { animations: { idle: { playMode: string, loopStartFrameIdx: integer, frames: { drawableKey: string, image: string, width: integer, height: integer, rasterOffset: { x: number, y: number }, durationTicks: integer, sourceFrame: integer, userAttr: integer }[] }, select: { playMode: string, loopStartFrameIdx: integer, frames: { drawableKey: string, image: string, width: integer, height: integer, rasterOffset: { x: number, y: number }, durationTicks: integer, sourceFrame: integer, userAttr: integer }[] } } } animated menu cursor sprite
+
 -- The ball particles of one ball: its send-out sparkle and opening burst
 -- (with the burst's capture-click emitter and its start tick after the ball
 -- begins opening). Absent for balls whose source members use unsupported
@@ -234,6 +251,35 @@ function BattlePresentationCache.sceneParticleTexturePath(sceneKey, setIndex, te
     "particle texture ids are non-negative integers"
   )
   return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-particles-" .. setIndex .. "-" .. textureId .. ".png"
+end
+
+---@param textureId integer source texture id
+---@return string cache-relative evolution particle texture PNG path
+function BattlePresentationCache.evolutionParticleTexturePath(textureId)
+  assert(
+    type(textureId) == "number" and textureId % 1 == 0 and textureId >= 0,
+    "evolution particle texture ids are non-negative integers"
+  )
+  return ASSET_DIR .. "/evolution-particles-" .. textureId .. ".png"
+end
+
+---@param layer "main"|"sub"|"menu" visible evolution screen layer
+---@return string cache-relative staged EvolutionScene background PNG path
+function BattlePresentationCache.evolutionGraphicsPath(layer)
+  assert(layer == "main" or layer == "sub" or layer == "menu", "evolution graphics name a retail screen layer")
+  return ASSET_DIR .. "/evolution-" .. layer .. ".png"
+end
+
+---@param animationRole "idle"|"select" semantic cursor animation role
+---@param sourceFrame integer zero-based source animation frame index
+---@return string cache-relative staged EvolutionScene cursor frame PNG path
+function BattlePresentationCache.evolutionCursorFramePath(animationRole, sourceFrame)
+  assert(animationRole == "idle" or animationRole == "select", "evolution cursor names a supported animation role")
+  assert(
+    type(sourceFrame) == "number" and sourceFrame % 1 == 0 and sourceFrame >= 0,
+    "evolution cursor frames are zero-based non-negative integers"
+  )
+  return ASSET_DIR .. "/evolution-cursor-" .. animationRole .. "-" .. sourceFrame .. ".png"
 end
 
 ---@param sceneKey string semantic scene key
@@ -377,7 +423,7 @@ end
 -- roles never fall back to planning data silently: the verified flag tells
 -- them apart.
 ---@param cacheFs CacheFs
----@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, cries: string } } global or planning manifest
+---@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, cries: string }, evolutionParticles?: BattlePresentationCache.EvolutionParticleSet, evolutionGraphics?: BattlePresentationCache.EvolutionGraphics } global or planning manifest
 function BattlePresentationCache.load(cacheFs)
   assert(cacheFs ~= nil, "presentation loading requires a cache filesystem")
   local staged = cacheFs:loadLua(BattlePresentationCache.manifestPath())
@@ -388,6 +434,95 @@ function BattlePresentationCache.load(cacheFs)
     end
   end
   return planningManifest(assert(cacheFs.versionId, "presentation loading requires a versioned cache"))
+end
+
+-- Returns the source-normalized EvolutionScene particle set only from a
+-- verified global manifest. An unstaged planning manifest has no playable
+-- particle payload.
+---@param cacheFs CacheFs
+---@return BattlePresentationCache.EvolutionParticleSet|nil particles
+function BattlePresentationCache.loadEvolutionParticles(cacheFs)
+  local manifest = BattlePresentationCache.load(cacheFs)
+  if manifest.verified ~= true then
+    return nil
+  end
+  return manifest.evolutionParticles
+end
+
+-- Returns screen-sized EvolutionScene BG rasters only from a verified
+-- global manifest.
+---@param cacheFs CacheFs
+---@return BattlePresentationCache.EvolutionGraphics|nil graphics
+function BattlePresentationCache.loadEvolutionGraphics(cacheFs)
+  local manifest = BattlePresentationCache.load(cacheFs)
+  if manifest.verified ~= true then
+    return nil
+  end
+  return manifest.evolutionGraphics
+end
+
+-- Checks the particle texture closure behind a global presentation marker.
+---@param cacheFs CacheFs
+---@param expectedMarker string
+---@return boolean ready
+function BattlePresentationCache.isEvolutionParticlesReady(cacheFs, expectedMarker)
+  if cacheFs:read(BattlePresentationCache.markerPath()) ~= expectedMarker then
+    return false
+  end
+  local particles = BattlePresentationCache.loadEvolutionParticles(cacheFs)
+  if particles == nil then
+    return false
+  end
+  for _, texture in ipairs(particles.textures) do
+    local bytes = cacheFs:read(texture.image)
+    if type(bytes) ~= "string" then
+      return false
+    end
+    local width, height = PngWriter.completeDimensions(bytes)
+    if width ~= texture.width or height ~= texture.height then
+      return false
+    end
+  end
+  return true
+end
+
+-- Checks the visible main, sub, and menu EvolutionScene BG images behind
+-- the exact global marker and validated manifest.
+---@param cacheFs CacheFs
+---@param expectedMarker string
+---@return boolean ready
+function BattlePresentationCache.isEvolutionGraphicsReady(cacheFs, expectedMarker)
+  if cacheFs:read(BattlePresentationCache.markerPath()) ~= expectedMarker then
+    return false
+  end
+  local graphics = BattlePresentationCache.loadEvolutionGraphics(cacheFs)
+  if graphics == nil then
+    return false
+  end
+  local function checkImage(image)
+    local bytes = cacheFs:read(image.image)
+    if type(bytes) ~= "string" then
+      return false
+    end
+    local width, height = PngWriter.completeDimensions(bytes)
+    if width ~= image.width or height ~= image.height then
+      return false
+    end
+    return true
+  end
+  for _, layer in ipairs({ "main", "sub", "menu" }) do
+    if not checkImage(graphics[layer]) then
+      return false
+    end
+  end
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    for _, frame in ipairs(graphics.cursor.animations[animationRole].frames) do
+      if not checkImage(frame) then
+        return false
+      end
+    end
+  end
+  return true
 end
 
 -- Load one staged scene record: the record must validate and name exactly

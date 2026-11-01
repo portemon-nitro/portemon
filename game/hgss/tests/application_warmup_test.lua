@@ -12,6 +12,7 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -33,6 +34,12 @@ local function stubPresentationRuntime(cache)
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   return setmetatable({
     monNaming = InactiveMonNaming.new(),
+    monService = {
+      partyCount = function()
+        return 1
+      end,
+    },
+    input = FieldInput.new(),
     cacheFs = cache or FieldStatePresentationFixture.cache(),
     assetNeeds = AssetNeedsRegistry.new(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
@@ -59,14 +66,14 @@ local function stubPresentationRuntime(cache)
     end,
     bindSummaryPreparation = function(self, acquire)
       assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
-      assert(self.summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
-      self.summaryPreparation = { id = 1, acquire = acquire }
-      return self.summaryPreparation.id
+      assert(self._summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+      self._summaryPreparation = { id = 1, acquire = acquire }
+      return self._summaryPreparation.id
     end,
     unbindSummaryPreparation = function(self, binding)
-      local current = self.summaryPreparation
+      local current = self._summaryPreparation
       if current ~= nil and current.id == binding then
-        self.summaryPreparation = nil
+        self._summaryPreparation = nil
       end
     end,
     fieldEntranceIndicatorAsset = {
@@ -91,7 +98,17 @@ local function stubPresentationRuntime(cache)
     windowStyles = {
       resolve = function() end,
     },
-    playerData = { options = { textFrame = 0 } },
+    playerData = { options = { textFrame = 0 }, profile = CatalogFixture.profile() },
+    localClock = {
+      nowLocal = function()
+        return { day = 1 }
+      end,
+    },
+    eventState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
     menuHost = {
       setScreenTopology = function() end,
       setPresentationMetrics = function() end,
@@ -426,10 +443,7 @@ function T.foreground_demand_promotes_pending_idle_work_and_failures_still_surfa
     "idle staging reports its own failure without crashing the field"
   )
   local _, idleFailure = failing.owner:advanceWarmup({ selector }, 1)
-  Assert.isTrue(
-    type(idleFailure) == "string" and idleFailure ~= "",
-    "the failed idle round names its portrait page"
-  )
+  Assert.isTrue(type(idleFailure) == "string" and idleFailure ~= "", "the failed idle round names its portrait page")
   local probe = failing.owner:acquire()
   local refused = prepareToTerminal(probe, warmDemand("promoted-fail", { selector }))
   Assert.equal(refused.kind, "failed", "a warmup attempt never fabricates readiness for a later demand")
@@ -520,7 +534,8 @@ function T.battle_envelope_consumes_only_the_leftover_shared_gpu_slot()
   local ownedState, _, ownedEnvelope = battleSchedulingState(false, "general/plain/day", true, nil)
   ownedState:update(0.016)
   Assert.deepEqual(ownedEnvelope, {}, "an active battle hold spends no idle admission")
-  local coveredState, coveredCalls, coveredEnvelope = battleSchedulingState(false, "general/plain/day", false, heldCover())
+  local coveredState, coveredCalls, coveredEnvelope =
+    battleSchedulingState(false, "general/plain/day", false, heldCover())
   coveredState:update(0.016)
   for _, call in ipairs(coveredCalls) do
     if call[1] == "warmup" then

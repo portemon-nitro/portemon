@@ -620,7 +620,10 @@ local function settleBattle(game, envelope, choose, budget)
       local screen = envelope:liveScreen()
       if screen ~= nil then
         local shown = screen:status()
-        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome"
+        if
+          shown.mode == "intro"
+          or shown.mode == "narration"
+          or shown.mode == "outcome"
           or hasAwaitingNarration(screen)
         then
           envelope:input({ { type = "confirm" } })
@@ -1152,7 +1155,10 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
       local screen = envelope:liveScreen()
       if screen ~= nil then
         local shown = screen:status()
-        if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome"
+        if
+          shown.mode == "intro"
+          or shown.mode == "narration"
+          or shown.mode == "outcome"
           or hasAwaitingNarration(screen)
         then
           envelope:input({ { type = "confirm" } })
@@ -1742,6 +1748,24 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
     play = function(_, _)
       return true
     end,
+    playMusic = function(_, _)
+      return true
+    end,
+    stopMusic = function(_, _)
+      return true
+    end,
+    playEffect = function(_, _)
+      return true
+    end,
+    playFanfare = function(_, _)
+      return true
+    end,
+    isFanfarePlaying = function()
+      return false
+    end,
+    isEffectWaitComplete = function()
+      return true
+    end,
     stop = function(_, _)
       return true
     end,
@@ -1839,7 +1863,7 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
   Assert.isNil(port.takeCompletion(), "the unanswered evolution seals nothing")
   -- No confirmation is ever sent: the native beats start on their own.
   local answer = nil
-  for _ = 1, 600 do
+  for _ = 1, 1800 do
     screen:updateFixed(TICK)
     answer = port.takeCompletion()
     if answer ~= nil then
@@ -1868,7 +1892,7 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
   -- Retail honors cancel on the transformation beat alone, so the exit
   -- keeps pressing until the window opens; earlier edges decide nothing.
   local cancelled = nil
-  for _ = 1, 60 do
+  for _ = 1, 1200 do
     screen:input({ { type = "cancel" } })
     screen:updateFixed(TICK)
     cancelled = port.takeCompletion()

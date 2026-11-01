@@ -29,6 +29,7 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local SummaryController = require("libs.hgss.src.ui.SummaryController")
+local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local BattleChildApplications = {}
 
@@ -1758,40 +1759,6 @@ local function openNamingChild(intent, services)
   return child
 end
 
--- Adapts one staged learned-move prompt into held-move fact rows for the
--- native move picker: committed move points ride the subject record
--- while silently filled slots carry their exact catalog base points.
----@param prompt table<string, unknown> staged learned-move prompt under adaptation
----@param subject table<string, unknown> committed subject carrying its held move points
----@param catalog table<string, unknown> borrowed immutable mon catalog
----@return table<string, unknown> picker-shaped prompt with fact rows and the incoming move
-local function learnFactsFor(prompt, subject, catalog)
-  assert(type(prompt.currentMoves) == "table", "learning prompts carry their held move set")
-  local held = {}
-  for _, entry in ipairs(subject.moves or {}) do
-    if type(entry) == "table" and type(entry.move) == "string" then
-      held[entry.move] = entry
-    end
-  end
-  local moveOf = catalog.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
-  assert(type(moveOf) == "function", "learning facts resolve through the mon catalog")
-  local rows = {}
-  for _, key in
-    ipairs(prompt.currentMoves --[[@as table<integer, string>]])
-  do
-    assert(type(key) == "string" and key ~= "", "held moves name their move identity")
-    local known = held[key]
-    if known ~= nil then
-      rows[#rows + 1] = { move = key, pp = known.pp, ppUps = known.ppUps }
-    else
-      local definition = moveOf(catalog, key)
-      assert(type(definition) == "table", "filled moves resolve through the mon catalog")
-      rows[#rows + 1] = { move = key, pp = definition.basePp, ppUps = 0 }
-    end
-  end
-  return { currentMoves = rows, incomingMove = prompt.move }
-end
-
 -- Composes the native evolution presentation state for a committed
 -- subject behind the full frozen trigger context: the detached subject,
 -- its party slot, and the launch-frozen clock, party, and inventory
@@ -1841,6 +1808,7 @@ local function openEvolutionChild(intent, services)
     mon = copyValue(mon),
     context = context,
     catalog = catalog,
+    particles = services.evolutionParticles,
   })
   if not ok then
     return nil, tostring(state)
@@ -1854,69 +1822,288 @@ local function openEvolutionChild(intent, services)
     _state = state,
     _subject = subject,
     _catalog = catalog,
-    _picker = nil,
-    _lastFocus = 0,
+    _summary = nil --[[@as SummaryScreenState?]],
+    _summaryEvents = {},
+    _summaryPending = false,
+    _cursorAnimations = services.evolutionCursor,
+    _cursorPlayback = nil,
+    _learnMenu = nil,
     _taken = false,
     _disposed = false,
   }
-  -- Opens the native Summary picker for the pending learned move. The
-  -- opening consumes its edge: the picker starts from its entry focus
-  -- with no armed press and no staged outcome.
-  ---@return string? failure cause, nil while the picker owns learning input
-  function child:_ensurePicker()
-    if self._picker ~= nil then
+  function child:_openSummary()
+    if self._summary ~= nil or self._summaryPending then
       return nil
     end
     local prompt = self._state:learnPrompt()
     if prompt == nil then
       return nil
     end
-    local adapted = learnFactsFor(prompt, self._subject, self._catalog)
-    local picker, pickerErr = composeLearnPicker(adapted)
-    if picker == nil then
-      return "evolution learning failed for launch " .. tostring(self._identity.launchId) .. ": " .. tostring(pickerErr)
-    end
-    self._picker = picker
+    self._state:beginLearnSummary()
+    self._summaryPending = true
     return nil
   end
-  -- Drains one sealed picker outcome into the staged learning answer: a
-  -- held row replaces its slot while any cancellation declines the
-  -- incoming move. Exactly once per native seal.
-  function child:_drainPicker()
-    local picker = self._picker
-    if picker == nil then
+  function child:_createSummary()
+    assert(self._summaryPending and self._summary == nil, "Summary opens after the scene fade-out")
+    local prompt = assert(self._state:learnPrompt(), "the Summary transition retains its move prompt")
+    local deps = assert(services.summary, "evolution move replacement requires the field Summary application")
+    local summaryMon = copyValue(self._subject) --[[@as table<string, unknown>]]
+    summaryMon.species = assert(self._state:draw().newSpecies)
+    local heldMoves = summaryMon.moves --[[@as table<integer, table<string, unknown>>]]
+    local currentMoves = prompt.currentMoves --[[@as string[] ]]
+    local moves = {}
+    for slot, moveKey in ipairs(currentMoves) do
+      local retained = nil
+      for _, entry in ipairs(heldMoves) do
+        if entry.move == moveKey then
+          retained = copyValue(entry)
+          break
+        end
+      end
+      if retained == nil then
+        local move = self._catalog:move(moveKey)
+        retained = { move = moveKey, pp = move.basePp, ppUps = 0 }
+      end
+      moves[slot] = retained
+    end
+    summaryMon.moves = moves
+    local function subjectCount()
+      return 1
+    end
+    local function subjectRevision()
+      return 1
+    end
+    local function readSubject(index)
+      assert(index == 0, "evolution Summary presents its one subject")
+      return copyValue(summaryMon)
+    end
+    local function rejectPublish()
+      return { kind = "stale" }
+    end
+    local subjectPort = {
+      count = subjectCount,
+      revision = subjectRevision,
+      read = readSubject,
+      publish = rejectPublish,
+    }
+    self._summary = SummaryScreenState.new({
+      mons = deps.mons,
+      manifest = deps.manifest,
+      measureDisplay = deps.measureDisplay,
+      mode = "move_pick",
+      request = { context = "replace_machine", prospectiveMove = prompt.move },
+      subjectPort = subjectPort,
+      context = deps.context,
+      readNavigation = deps.readNavigation,
+      acquirePreparation = deps.acquirePreparation,
+      effect = deps.effect,
+      playCry = deps.playCry,
+    })
+    self._summaryPending = false
+    return nil
+  end
+  function child:_drainSummary()
+    local summary = self._summary
+    if summary == nil then
       return
     end
-    local drain = picker.takeResult --[[@as fun(self: table<string, unknown>): table<string, unknown>?]]
-    local outcome = parsePickerOutcome(drain(picker), self._lastFocus)
-    if outcome == nil then
+    local result = summary:takeResult()
+    if result == nil then
       return
     end
-    if outcome.kind == "move_selected" then
-      self._state:answerLearn({ choice = "replace", slot = outcome.moveSlot })
+    summary:dispose()
+    self._summary = nil
+    local slot = result.kind == "move_selected" and result.moveSlot or 4
+    self._state:finishLearnSummary(assert(slot, "Summary returns its selected move slot"))
+    self:_startCursor("idle")
+  end
+  function child:completePaletteFade(channel, requestId)
+    self._state:completePaletteFade(channel, requestId)
+    if channel == "scene" and self._state:status().phase == "summary" then
+      self:_createSummary()
+    elseif channel == "scene" and self._state:status().phase == "stop_menu" then
+      self._learnMenu = { kind = "stop", focus = 0 }
+    end
+  end
+  function child:completeMessage()
+    self._state:completeMessage()
+  end
+  function child:_setCursorFrame(index)
+    local playback = assert(self._cursorPlayback, "evolution cursor playback is initialized with the scene")
+    local role = assert(playback.role, "evolution cursor playback names its animation")
+    local animations = assert(self._cursorAnimations, "evolution menus use the staged cursor animation")
+    local animation = assert(animations[role], "evolution cursor animation is staged for " .. role)
+    local frame = assert(animation.frames[index], "evolution cursor playback stays inside source frames")
+    playback.index = index
+    playback.remaining = frame.durationTicks
+    playback.frame = frame
+    self:_showCursorFrame()
+  end
+  function child:_showCursorFrame()
+    local playback = assert(self._cursorPlayback, "evolution cursor playback is initialized with the scene")
+    local menu = self._learnMenu
+    if menu ~= nil then
+      local frame = assert(playback.frame, "evolution cursor playback carries its source frame")
+      menu.cursorRole = playback.role
+      menu.cursorIndex = playback.index
+      menu.cursorRemaining = playback.remaining
+      menu.cursor = {
+        role = playback.role,
+        sourceFrame = frame.sourceFrame,
+        rasterOffset = copyValue(frame.rasterOffset),
+        position = { x = 128, y = menu.focus == 0 and 72 or 120 },
+      }
+    end
+  end
+  function child:_startCursor(role)
+    local animations = assert(self._cursorAnimations, "evolution menus use the staged cursor animation")
+    local animation = assert(animations[role], "evolution cursor animation is staged for " .. role)
+    assert(#animation.frames > 0, "evolution cursor animations contain source frames")
+    local playMode = assert(animation.playMode, "evolution cursor animations retain their source playback mode")
+    assert(
+      playMode == "forward" or playMode == "forward_loop" or playMode == "reverse" or playMode == "reverse_loop",
+      "evolution cursor uses a supported source playback mode"
+    )
+    if role == "select" then
+      assert(playMode == "forward" or playMode == "reverse", "selected cursor animation must finish")
+    end
+    self._cursorPlayback = { role = role }
+    local first = 1
+    if playMode == "reverse" or playMode == "reverse_loop" then
+      first = #animation.frames
+    end
+    self:_setCursorFrame(first)
+  end
+  function child:_newLearnMenu(kind)
+    self._learnMenu = { kind = kind, focus = 0 }
+    if self._cursorPlayback == nil then
+      self:_startCursor("idle")
     else
-      self._state:answerLearn({ choice = "decline" })
+      self:_showCursorFrame()
     end
-    picker:dispose()
-    self._picker = nil
+  end
+  function child:_finishMenuSelection()
+    local menu = assert(self._learnMenu, "evolution menu selection retains its focus")
+    if menu.kind == "delete" and menu.focus == 0 then
+      self._learnMenu = nil
+      self:_openSummary()
+    elseif menu.kind == "delete" then
+      self._state:beginStopQuestion()
+      self:_newLearnMenu("stop")
+    elseif menu.focus == 0 then
+      self._state:answerLearn({ choice = "decline", stopQuestionPresented = true })
+      self._learnMenu = nil
+    else
+      self._state:retryLearn()
+      self:_newLearnMenu("delete")
+    end
+  end
+  function child:_advanceCursor()
+    local playback = self._cursorPlayback
+    if playback == nil or playback.finished == true then
+      return
+    end
+    local animations = assert(self._cursorAnimations, "evolution menus use the staged cursor animation")
+    local animation = assert(animations[assert(playback.role)], "evolution cursor animation is staged")
+    playback.remaining = math.max(0, assert(playback.remaining) - 1)
+    if playback.remaining > 0 then
+      return
+    end
+    local reverse = animation.playMode == "reverse" or animation.playMode == "reverse_loop"
+    local nextIndex = assert(playback.index) + (reverse and -1 or 1)
+    local loop = animation.playMode == "forward_loop" or animation.playMode == "reverse_loop"
+    if loop then
+      local start = assert(animation.loopStartFrameIdx) + 1
+      if reverse and nextIndex < start then
+        nextIndex = #animation.frames
+      elseif not reverse and nextIndex > #animation.frames then
+        nextIndex = start
+      end
+      self:_setCursorFrame(nextIndex)
+      return
+    end
+    if nextIndex >= 1 and nextIndex <= #animation.frames then
+      self:_setCursorFrame(nextIndex)
+      return
+    end
+    if playback.role == "select" then
+      local menu = assert(self._learnMenu, "a finished select animation belongs to its active menu")
+      assert(menu.selecting == true, "select cursor animation only runs after an answer")
+      playback.finished = true
+      self:_finishMenuSelection()
+      return
+    end
+    self:_setCursorFrame(reverse and #animation.frames or 1)
+    return error("evolution cursor animation uses unsupported playback mode " .. animation.playMode, 0)
+  end
+  if child._cursorAnimations ~= nil then
+    child:_startCursor("idle")
   end
   ---@param events table<integer, table<string, unknown>> semantic input batch under routing
   function child:input(events)
     if self._disposed or self._taken then
       return
     end
-    local pickerErr = self:_ensurePicker()
-    if pickerErr ~= nil then
-      error(pickerErr, 0)
+    local phase = self._state:status().phase
+    if
+      self._state:status().printerPending
+      or self._summaryPending
+      or phase == "summary_out"
+      or phase == "summary_in"
+    then
+      return
     end
-    local picker = self._picker
-    if picker ~= nil then
-      local before = picker:status()
-      if type(before) == "table" and before.open ~= false then
-        self._lastFocus = before.moveSlot
+    local summary = self._summary
+    if summary ~= nil then
+      for _, event in ipairs(events) do
+        self._summaryEvents[#self._summaryEvents + 1] = event
       end
-      routeSemantic(picker, expandTaps("learn", events))
-      self:_drainPicker()
+      return
+    end
+    local prompt = self._state:learnPrompt()
+    if prompt ~= nil then
+      if self._learnMenu == nil then
+        self:_newLearnMenu(phase == "stop_menu" and "stop" or "delete")
+      end
+      local menu = assert(self._learnMenu, "evolution menu retains its current selection")
+      for _, event in ipairs(events) do
+        if menu.selecting then
+          break
+        end
+        if event.type == "navigate" then
+          local choice = event.direction == "up" and 0 or event.direction == "down" and 1 or nil
+          if choice ~= nil and menu.focus ~= choice then
+            menu.focus = choice
+            self._state:menuSelect()
+            if menu.cursor ~= nil then
+              menu.cursor.position.y = choice == 0 and 72 or 120
+            end
+          end
+        elseif event.type == "pointer_down" then
+          local choice = nil
+          if event.x >= 50 and event.x <= 92 and event.y >= 3 and event.y <= 251 then
+            choice = 0
+          elseif event.x >= 99 and event.x <= 140 and event.y >= 3 and event.y <= 251 then
+            choice = 1
+          end
+          if choice ~= nil then
+            menu.focus = choice
+            self._state:menuSelect()
+            self._state:menuSelect()
+            self:_startCursor("select")
+            menu.selecting = true
+          end
+        elseif event.type == "cancel" then
+          menu.focus = 1
+          self._state:menuSelect()
+          self:_startCursor("select")
+          menu.selecting = true
+        elseif event.type == "confirm" then
+          self._state:menuSelect()
+          self:_startCursor("select")
+          menu.selecting = true
+        end
+      end
       return
     end
     self._state:input(events)
@@ -1926,26 +2113,53 @@ local function openEvolutionChild(intent, services)
     if self._disposed or self._taken then
       return
     end
-    local pickerErr = self:_ensurePicker()
-    if pickerErr ~= nil then
-      error(pickerErr, 0)
+    if self._summary ~= nil then
+      for _ = 1, tick do
+        self._summary:updateFixed(self._summaryEvents)
+        self._summaryEvents = {}
+        self:_drainSummary()
+      end
+    else
+      for _ = 1, tick do
+        self._state:stepSourceTick(1)
+        if self._learnMenu == nil and self._state:status().phase == "stop_menu" then
+          self:_newLearnMenu("stop")
+        end
+      end
     end
-    -- The picker is event-stepped and keeps no clock; only the
-    -- animation state advances on source ticks.
-    if self._picker == nil then
-      self._state:stepSourceTick(tick)
+  end
+  ---@param tick integer evolution scene animation ticks under stepping
+  function child:stepPresentationSourceTick(tick)
+    if self._disposed or self._taken or self._summary ~= nil then
+      return
     end
+    assert(
+      type(tick) == "number" and tick % 1 == 0 and tick >= 0,
+      "evolution presentation ticks stay whole and non-negative"
+    )
+    for _ = 1, tick do
+      self:_advanceCursor()
+    end
+    self._state:stepPresentationSourceTick(tick)
   end
   ---@param _ table<string, unknown>? borrowed display facts (the returned record is renderer-agnostic data)
   ---@return table<string, unknown> drawable evolution record from the native presentation or picker
   function child:draw(_)
-    local picker = self._picker
-    if picker ~= nil then
-      local view = picker:status()
-      assert(type(view) == "table", "the native summary projects its drawable record")
-      return view
+    local view = self._state:draw()
+    if self._summary ~= nil then
+      view.phase = "summary"
+      view.summaryStatus = self._summary:status()
+    else
+      local prompt = self._state:learnPrompt()
+      local phase = self._state:status().phase
+      if prompt ~= nil and not self._state:status().printerPending and (phase == "learn" or phase == "stop_menu") then
+        if self._learnMenu == nil then
+          self:_newLearnMenu(phase == "stop_menu" and "stop" or "delete")
+        end
+        view.learnMenu = copyValue(self._learnMenu)
+      end
     end
-    return self._state:draw()
+    return view
   end
   ---@return string native application receipt
   function child:application()
@@ -2001,10 +2215,10 @@ local function openEvolutionChild(intent, services)
     -- Disposal releases both leases exactly once: a disposed child owns
     -- no input and seals nothing, so stale learning never reports
     -- afterwards.
-    local picker = self._picker
-    self._picker = nil
-    if picker ~= nil then
-      picker:dispose()
+    local summary = self._summary
+    self._summary = nil
+    if summary ~= nil then
+      summary:dispose()
     end
     self._state:dispose()
   end
@@ -2015,6 +2229,7 @@ end
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog
 ---@field charmap table<string, integer>? injected generated font charmap for naming
+---@field evolutionCursor table<string, unknown>? staged EvolutionScene cursor animations for the move menu
 ---@field effect fun(sequence: string)? injected sound boundary for naming; silent when the host provides none
 
 -- Opens the concrete child application for one barrier identity over

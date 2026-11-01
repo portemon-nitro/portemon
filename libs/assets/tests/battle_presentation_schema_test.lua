@@ -600,6 +600,56 @@ function T.staged_manifests_validate()
   Assert.isTrue(valid, "a complete staged manifest validates: " .. tostring(failure))
 end
 
+function T.evolution_particle_contract_requires_thirteen_ordered_emitters_and_staged_textures()
+  local valid = manifest()
+  Assert.isTrue(Schema.isValidManifest(valid), "the normalized EvolutionScene SPL payload validates")
+
+  local wrongCount = manifest()
+  table.remove(wrongCount.evolutionParticles.emitters)
+  Assert.isFalse(Schema.isValidManifest(wrongCount), "the payload requires all thirteen retail emitters")
+
+  local wrongOrder = manifest()
+  wrongOrder.evolutionParticles.emitters[1].id = 1
+  Assert.isFalse(Schema.isValidManifest(wrongOrder), "the payload preserves ordered retail emitter IDs")
+
+  local wrongImage = manifest()
+  wrongImage.evolutionParticles.textures[1].image = "assets/generated/battle/source-narc-member-0.png"
+  Assert.isFalse(Schema.isValidManifest(wrongImage), "texture paths use the normalized evolution asset contract")
+end
+
+function T.evolution_graphics_require_all_visible_source_rasters()
+  local valid = manifest()
+  Assert.isTrue(Schema.isValidManifest(valid), "all visible EvolutionScene BG rasters validate")
+
+  local missingMenu = manifest()
+  missingMenu.evolutionGraphics.menu = nil
+  Assert.isFalse(Schema.isValidManifest(missingMenu), "the sub-screen menu BG remains in the source contract")
+
+  local wrongSize = manifest()
+  wrongSize.evolutionGraphics.main.height = 256
+  Assert.isFalse(Schema.isValidManifest(wrongSize), "evolution BG rasters match the visible display size")
+
+  local wrongPath = manifest()
+  wrongPath.evolutionGraphics.sub.image = "assets/generated/battle/fallback.png"
+  Assert.isFalse(Schema.isValidManifest(wrongPath), "evolution layers use their semantic staged paths")
+
+  local missingCursor = manifest()
+  missingCursor.evolutionGraphics.cursor = nil
+  Assert.isFalse(Schema.isValidManifest(missingCursor), "the animated retail menu cursor remains in the source contract")
+
+  local wrongCursorFrame = manifest()
+  wrongCursorFrame.evolutionGraphics.cursor.animations.select.frames[2].sourceFrame = 0
+  Assert.isFalse(Schema.isValidManifest(wrongCursorFrame), "cursor select frames preserve source order")
+
+  local missingTextPalette = manifest()
+  missingTextPalette.evolutionGraphics.menuTextPalette = nil
+  Assert.isFalse(Schema.isValidManifest(missingTextPalette), "the EvolutionScene font palette is required")
+
+  local partialTextPalette = manifest()
+  table.remove(partialTextPalette.evolutionGraphics.menuTextPalette.colors)
+  Assert.isFalse(Schema.isValidManifest(partialTextPalette), "the EvolutionScene font palette carries one complete color bank")
+end
+
 function T.text_roles_reject_native_font_ids()
   local leakedSourceId = manifest()
   leakedSourceId.messages.roles.narration.sourceFontId = 1

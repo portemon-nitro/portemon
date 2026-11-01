@@ -411,6 +411,8 @@ local function summaryContextProvider(innerRuntime, manifest)
   return provide
 end
 
+FieldMenuCompositionCoordinator.summaryContextProvider = summaryContextProvider
+
 -- Composes the one live Pokemon menu composition outside the boot
 -- closure (which sits close to LuaJIT's per-function upvalue limit).
 -- Joins the live mon/Bag services, manifests, display facts, and field

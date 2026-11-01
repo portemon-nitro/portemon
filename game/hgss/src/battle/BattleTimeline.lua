@@ -3920,8 +3920,9 @@ end
 
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> narration cue under reveal
+---@param printerCallback (fun(messageId: integer, callback: integer, controlIndex: integer): boolean)? source callback dispatcher
 ---@return boolean finished
-local function tickMessage(self, cue)
+local function tickMessage(self, cue, printerCallback)
   local pages = cue.pages --[[@as string[] ]]
   local page = pages[
     cue.page --[[@as integer]] or 1
@@ -3942,29 +3943,84 @@ local function tickMessage(self, cue)
     cue.delayCounter = 0
   end
   local shown = cue.revealedCount --[[@as integer]]
-  if shown < full then
+  local controls = cue.printerControls --[[@as table<integer, table<string, unknown>>?]]
+  if controls ~= nil then
+    cue.printerControlIndex = cue.printerControlIndex or 1
+    cue.printerPauseUpdates = cue.printerPauseUpdates or 0
+  end
+  local controlIndex = cue.printerControlIndex --[[@as integer?]]
+  local control = controls ~= nil and type(controlIndex) == "number" and controls[controlIndex] or nil
+  if shown < full or (type(control) == "table" and control.glyphIndex == shown) then
     -- NitroMain runs the print-task queue twice per battle source tick.
     -- Keep those printer updates inside the tick so reveal speed matches
     -- retail while waits and animation cues remain on the source cadence.
     local updates = 0
     local printed = 0
-    while updates < 2 and shown < full do
-      updates = updates + 1
-      if
-        cue.delayCounter --[[@as integer]]
-        > 0
-      then
-        cue.delayCounter = cue.delayCounter --[[@as integer]] - 1
-      elseif printed < policy.glyphBudget then
-        local glyphCount = math.min(policy.glyphBudget - printed, full - shown)
-        local target = shown + glyphCount
-        cue.revealedCount = target
-        cue.delayCounter = policy.interGlyphDelay
-        shown = target
-        printed = printed + glyphCount
-        self._message = table.concat(glyphs, "", 1, target)
-        self._messageId = cue.id --[[@as integer]]
+    while updates < 2 and (shown < full or (type(control) == "table" and control.glyphIndex == shown)) do
+      local pauseUpdates = cue.printerPauseUpdates --[[@as integer?]]
+      if type(pauseUpdates) == "number" and pauseUpdates > 0 then
+        cue.printerPauseUpdates = pauseUpdates - 1
+        updates = updates + 1
+      else
+        controlIndex = cue.printerControlIndex --[[@as integer?]]
+        control = controls ~= nil and type(controlIndex) == "number" and controls[controlIndex] or nil
+        if type(control) == "table" and control.glyphIndex == shown then
+          controlIndex = assert(controlIndex, "active printer controls carry their sequence index") --[[@as integer]]
+          if control.kind == "pause" then
+            cue.printerControlIndex = controlIndex + 1
+            cue.printerPauseUpdates = assert(control.updates, "printer pauses carry their update count")
+          elseif control.kind == "callback" then
+            local callback = assert(control.callback, "printer callback controls carry their source id") --[[@as integer]]
+            assert(printerCallback ~= nil, "source printer callbacks have an owning dispatcher")
+            local complete = printerCallback(cue.id --[[@as integer]], callback, controlIndex)
+            if control.wait == true and not complete then
+              updates = updates + 1
+            else
+              cue.printerControlIndex = controlIndex + 1
+              controlIndex = cue.printerControlIndex --[[@as integer]]
+              control = controls ~= nil and controls[controlIndex] or nil
+            end
+          else
+            error("message printer uses unsupported source control " .. tostring(control.kind), 0)
+          end
+        else
+          updates = updates + 1
+          if
+            cue.delayCounter --[[@as integer]]
+            > 0
+          then
+            cue.delayCounter = cue.delayCounter --[[@as integer]] - 1
+          elseif printed < policy.glyphBudget then
+            local glyphBudget = policy.glyphBudget - printed
+            if type(control) == "table" then
+              local boundary = assert(control.glyphIndex, "printer controls carry their glyph boundary") --[[@as integer]]
+              glyphBudget = math.min(glyphBudget, boundary - shown)
+            end
+            local glyphCount = math.min(glyphBudget, full - shown)
+            assert(glyphCount > 0, "printer controls are processed before glyphs at their boundary")
+            local target = shown + glyphCount
+            cue.revealedCount = target
+            cue.delayCounter = policy.interGlyphDelay
+            shown = target
+            printed = printed + glyphCount
+            self._message = table.concat(glyphs, "", 1, target)
+            self._messageId = cue.id --[[@as integer]]
+          end
+        end
       end
+    end
+    if
+      (
+        cue.printerPauseUpdates --[[@as integer?]]
+        or 0
+      ) > 0
+    then
+      return false
+    end
+    controlIndex = cue.printerControlIndex --[[@as integer?]]
+    control = controls ~= nil and type(controlIndex) == "number" and controls[controlIndex] or nil
+    if type(control) == "table" and control.glyphIndex == shown then
+      return false
     end
     if shown < full then
       self._message = table.concat(glyphs, "", 1, shown)
@@ -4091,8 +4147,9 @@ end
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> active cue under advancement
 ---@param soundComplete (fun(cue: table<string, unknown>): boolean)? held sound cue completion probe
+---@param printerCallback (fun(messageId: integer, callback: integer, controlIndex: integer): boolean)? source callback dispatcher
 ---@return boolean finished
-local function tickCue(self, cue, soundComplete)
+local function tickCue(self, cue, soundComplete, printerCallback)
   if cue.kind == "native-effect" then
     -- Only the player occurrence's real completion releases the cue;
     -- every other phase holds without consuming invented timers.
@@ -4100,7 +4157,7 @@ local function tickCue(self, cue, soundComplete)
   elseif cue.kind == "message" then
     local slideDone = tickHealthBoxExit(self, cue)
     local previousHold = cue.hold
-    local messageDone = tickMessage(self, cue)
+    local messageDone = tickMessage(self, cue, printerCallback)
     if not slideDone then
       cue.hold = previousHold
     end
@@ -4377,7 +4434,8 @@ end
 ---@param dt number accepted presentation seconds
 ---@param isAvailable (fun(key: string): boolean)? image availability probe, all available when absent
 ---@param soundComplete (fun(cue: table<string, unknown>): boolean)? completion probe for held sound cues
-function BattleTimeline:update(dt, isAvailable, soundComplete)
+---@param printerCallback (fun(messageId: integer, callback: integer, controlIndex: integer): boolean)? source printer callback dispatcher
+function BattleTimeline:update(dt, isAvailable, soundComplete, printerCallback)
   assert(type(dt) == "number" and dt == dt and dt >= 0, "the cue player advances on accepted seconds")
   self._accum = self._accum + dt
   -- A completed narration page owns the line through the tick its hold
@@ -4420,7 +4478,7 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
           self._accum = 0
         end
         next.elapsed = (next.elapsed or 0) + 1
-        if tickCue(self, next) then
+        if tickCue(self, next, soundComplete, printerCallback) then
           if next.kind == "message" then
             next.finished = true
           else
@@ -4461,7 +4519,7 @@ function BattleTimeline:update(dt, isAvailable, soundComplete)
           local elapsed = current.elapsed
           assert(type(elapsed) == "number", "active cues carry their elapsed ticks")
           current.elapsed = elapsed + 1
-          if tickCue(self, current, soundComplete) then
+          if tickCue(self, current, soundComplete, printerCallback) then
             if current.kind == "message" then
               current.finished = true
             else
@@ -4679,14 +4737,46 @@ end
 ---@param text string narration wording under presentation
 ---@param ackable boolean true when the page waits for acknowledgement instead of holding
 ---@param holdTicks integer? explicit post-text hold in internal ticks, defaulting to the narration hold
+---@param printerControls table<integer, table<string, unknown>>? source controls at glyph boundaries
 ---@return integer stable narration identity
-function BattleTimeline:announce(text, ackable, holdTicks)
+function BattleTimeline:announce(text, ackable, holdTicks, printerControls)
   assert(type(text) == "string" and text ~= "", "announced narration carries its wording")
   if holdTicks ~= nil then
     assert(
       type(holdTicks) == "number" and holdTicks % 1 == 0 and holdTicks >= 0,
       "announced holds stay finite nonnegative integers"
     )
+  end
+  if printerControls ~= nil then
+    local glyphTotal = 0
+    for _ in Utf8Glyphs.iter(text) do
+      glyphTotal = glyphTotal + 1
+    end
+    local previousBoundary = 0
+    for index, control in ipairs(printerControls) do
+      local boundary = assert(control.glyphIndex, "printer controls carry a glyph boundary")
+      assert(
+        type(boundary) == "number" and boundary % 1 == 0 and boundary >= previousBoundary and boundary <= glyphTotal,
+        "printer control boundaries stay ordered within the announced message"
+      )
+      previousBoundary = boundary
+      if control.kind == "pause" then
+        local updates = assert(control.updates, "printer pauses carry their update count")
+        assert(
+          type(updates) == "number" and updates % 1 == 0 and updates >= 0,
+          "printer pauses use whole non-negative updates"
+        )
+      elseif control.kind == "callback" then
+        local callback = assert(control.callback, "printer callbacks carry their source id")
+        assert(
+          type(callback) == "number" and callback % 1 == 0 and callback >= 1 and callback <= 5,
+          "printer callback ids stay within the EvolutionScene callback table"
+        )
+        assert(control.wait == (callback == 1 or callback == 2), "source callback waits match their callback ids")
+      else
+        error("unsupported announced printer control " .. tostring(control.kind) .. " at " .. tostring(index), 0)
+      end
+    end
   end
   self._messageSeq = self._messageSeq + 1
   local id = self._messageSeq
@@ -4700,6 +4790,7 @@ function BattleTimeline:announce(text, ackable, holdTicks)
     hold = 0,
     holdTicks = holdTicks,
     ackable = ackable == true,
+    printerControls = printerControls and copyValue(printerControls) or nil,
   })
   return id
 end

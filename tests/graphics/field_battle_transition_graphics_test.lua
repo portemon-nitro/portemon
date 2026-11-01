@@ -118,6 +118,9 @@ end
 
 local function assertPresentedRoute(scope, versionId, cacheFs, case)
   local derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets
+  derivedAssets.requestBattlePresentation = function()
+    return true
+  end
   derivedAssets.requestBattleScene = function(sceneKey)
     Assert.equal(
       sceneKey,

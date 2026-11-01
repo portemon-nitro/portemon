@@ -14,6 +14,7 @@ local FieldStatePresentationFixture = require("tests.support.FieldStatePresentat
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local InactiveMonNaming = require("tests.support.InactiveMonNaming")
@@ -41,6 +42,12 @@ local function stubPresentationRuntime(cache)
     uiManifest = FieldUiFixture.fieldStateManifest(),
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    monService = {
+      partyCount = function()
+        return 1
+      end,
+    },
+    input = FieldInput.new(),
     pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
     bindPartyIconPreparation = function(_, _, _)
       return 1
@@ -66,14 +73,14 @@ local function stubPresentationRuntime(cache)
     -- identity so a stale unbind can never drop a replacement owner.
     bindSummaryPreparation = function(self, acquire)
       assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
-      assert(self.summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
-      self.summaryPreparation = { id = 1, acquire = acquire }
-      return self.summaryPreparation.id
+      assert(self._summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+      self._summaryPreparation = { id = 1, acquire = acquire }
+      return self._summaryPreparation.id
     end,
     unbindSummaryPreparation = function(self, binding)
-      local current = self.summaryPreparation
+      local current = self._summaryPreparation
       if current ~= nil and current.id == binding then
-        self.summaryPreparation = nil
+        self._summaryPreparation = nil
       end
     end,
     fieldEntranceIndicatorAsset = {
@@ -98,7 +105,17 @@ local function stubPresentationRuntime(cache)
     windowStyles = {
       resolve = function() end,
     },
-    playerData = { options = { textFrame = 0 } },
+    playerData = { options = { textFrame = 0 }, profile = CatalogFixture.profile() },
+    localClock = {
+      nowLocal = function()
+        return { day = 1 }
+      end,
+    },
+    eventState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
     menuHost = {
       setScreenTopology = function() end,
       setPresentationMetrics = function() end,

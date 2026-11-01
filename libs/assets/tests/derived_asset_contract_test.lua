@@ -144,8 +144,8 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-trainer-catalog-v2",
     },
     battlePresentation = {
-      cacheFormat = "battle-presentation-cache-v4",
-      schema = "g4-battle-presentation-v10",
+      cacheFormat = "battle-presentation-cache-v5",
+      schema = "g4-battle-presentation-v11",
       sceneSchema = "g4-battle-scene-v4",
       effectSchema = "g4-battle-effect-v4",
     },

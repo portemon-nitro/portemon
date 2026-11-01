@@ -55,6 +55,11 @@ function T.canonical_paths_keep_global_and_scene_roots_apart()
     "data/generated/battle/scenes/general-grass-day.complete",
     "scene markers live beside the scene record"
   )
+  Assert.equal(
+    BattlePresentationCache.evolutionGraphicsPath("main"),
+    "assets/generated/battle/evolution-main.png",
+    "evolution graphics use their semantic screen-layer path"
+  )
 end
 
 function T.scene_inventory_covers_every_ordinary_combination()
@@ -127,6 +132,101 @@ local validManifest = ManifestFixture.manifest
 local function stagePng(cache, path, width, height)
   local pixels = string.rep("\1\2\3\255", width * height)
   cache:write(path, PngWriter.encode(width, height, pixels))
+end
+
+function T.evolution_particles_load_only_from_verified_manifest_and_check_texture_closure()
+  local cache = staging()
+  Assert.isNil(BattlePresentationCache.loadEvolutionParticles(cache), "planning manifests do not expose playable particles")
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
+    "an unstaged EvolutionScene particle payload is not ready"
+  )
+
+  local manifest = ManifestFixture.manifest()
+  cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
+  cache:write(BattlePresentationCache.markerPath(), "evolution-marker")
+  local texture = manifest.evolutionParticles.textures[1]
+  stagePng(cache, texture.image, texture.width, texture.height)
+
+  local particles = assert(BattlePresentationCache.loadEvolutionParticles(cache))
+  Assert.equal(particles.seed, 0, "the verified loader returns the normalized particle payload")
+  Assert.equal(#particles.emitters, 13, "the verified loader returns the complete emitter list")
+  Assert.isTrue(
+    BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
+    "the marker and complete texture closure establish readiness"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionParticlesReady(cache, "stale-marker"),
+    "a stale global marker prevents readiness"
+  )
+
+  stagePng(cache, texture.image, texture.width + 1, texture.height)
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
+    "a texture with dimensions different from the manifest is not ready"
+  )
+end
+
+function T.evolution_graphics_load_only_from_verified_manifest_and_check_all_screen_rasters()
+  local cache = staging()
+  Assert.isNil(BattlePresentationCache.loadEvolutionGraphics(cache), "planning manifests do not expose evolution BG rasters")
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
+    "an unstaged EvolutionScene BG set is not ready"
+  )
+
+  local manifest = ManifestFixture.manifest()
+  cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
+  cache:write(BattlePresentationCache.markerPath(), "evolution-marker")
+  for _, layer in ipairs({ "main", "sub", "menu" }) do
+    local image = manifest.evolutionGraphics[layer]
+    stagePng(cache, image.image, image.width, image.height)
+  end
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    for _, frame in ipairs(manifest.evolutionGraphics.cursor.animations[animationRole].frames) do
+      stagePng(cache, frame.image, frame.width, frame.height)
+    end
+  end
+
+  local graphics = assert(BattlePresentationCache.loadEvolutionGraphics(cache))
+  Assert.equal(
+    graphics.main.image,
+    "assets/generated/battle/evolution-main.png",
+    "verified loading returns the source-selected main BG raster"
+  )
+  Assert.equal(
+    graphics.cursor.animations.select.frames[2].drawableKey,
+    "battle:evolution-cursor:select:1",
+    "verified loading exposes the selected cursor sequence"
+  )
+  Assert.deepEqual(
+    graphics.menuTextPalette.colors[2],
+    { r = 2, g = 14, b = 26 },
+    "verified loading exposes the source-backed EvolutionScene font palette"
+  )
+  Assert.isTrue(
+    BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
+    "the marker and every screen raster establish readiness"
+  )
+  cache:remove(graphics.sub.image)
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
+    "a missing screen raster does not reach the PNG dimension parser"
+  )
+  stagePng(cache, graphics.sub.image, graphics.sub.width, graphics.sub.height)
+  cache:remove(graphics.cursor.animations.select.frames[1].image)
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
+    "a missing cursor frame does not reach the PNG dimension parser"
+  )
+  local selectFrame = graphics.cursor.animations.select.frames[1]
+  stagePng(cache, selectFrame.image, selectFrame.width, selectFrame.height)
+  local menu = manifest.evolutionGraphics.menu
+  stagePng(cache, menu.image, menu.width, menu.height - 1)
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
+    "one malformed layer prevents the three-layer scene from being ready"
+  )
 end
 
 -- Minimal hand-built PNG envelope: the mon page validator checks

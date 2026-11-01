@@ -330,6 +330,11 @@ local function bootCoveredField(scope)
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
       monNaming = InactiveMonNaming.new(),
+      monService = {
+        partyCount = function()
+          return 0
+        end,
+      },
       itemCatalog = ItemFixture.makeCatalog(),
       monCatalog = CatalogFixture.makeCatalog(),
       pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
@@ -508,6 +513,9 @@ local function bootCoveredField(scope)
         cancelPointerCapture = function() end,
       },
       input = {
+        lastUiNavigation = function()
+          return nil
+        end,
         pressDirection = function() end,
         pressAction = function() end,
         pressMenu = function() end,

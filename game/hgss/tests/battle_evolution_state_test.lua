@@ -196,17 +196,91 @@ local function copyMon(mon)
   return out
 end
 
+---@param state table<string, unknown> evolution state under acknowledging
+---@param channel string? source palette manager, scene by default
+local function completePaletteFade(state, channel)
+  local channels = state:status().paletteChannels
+  local selected = channel or (channels.scene ~= nil and "scene" or "pictures")
+  local requestId = assert(channels[selected], "the selected palette manager has a pending request")
+  state:completePaletteFade(selected, requestId)
+end
+
+---@param state table<string, unknown> evolution presentation state under driving
+---@param ticks integer source ticks under driving
+local function advance(state, ticks)
+  for _ = 1, ticks do
+    if state:status().palettePending then
+      completePaletteFade(state)
+    elseif state:status().printerPending then
+      state:completeMessage()
+    end
+    state:stepSourceTick(1)
+  end
+end
+
+---@param state table<string, unknown> evolution state under driving
+---@param phase string source phase to reach
+---@param ticks integer tick budget
+local function runUntilPhase(state, phase, ticks)
+  for _ = 1, ticks do
+    if state:status().phase == phase then
+      return
+    end
+    advance(state, 1)
+  end
+  error("the evolution sequence never reached " .. phase)
+end
+
 ---@param state table<string, unknown> evolution presentation state under driving
 ---@param ticks integer tick budget before the driver gives up
 local function runUntilSettled(state, ticks)
   for _ = 1, ticks do
-    state:stepSourceTick(1)
+    advance(state, 1)
     local phase = state:status().phase
     if phase == "settled" or phase == "learn" then
       return
     end
   end
-  error("the evolution sequence never settled")
+  local status = state:status()
+  local view = state:draw()
+  error(
+    "the evolution sequence never settled: "
+      .. tostring(status.phase)
+      .. "/"
+      .. tostring(view.beat)
+      .. " clock="
+      .. tostring(view.clock)
+      .. " printer="
+      .. tostring(status.printerPending)
+  )
+end
+
+---@param state table<string, unknown> evolution presentation state under advancing
+local function runUntilOscillation(state)
+  for _ = 1, 120 do
+    if state:draw().beat == "oscillate" then
+      return
+    end
+    advance(state, 1)
+  end
+  error("the evolution sequence never reached OSCILLATE")
+end
+
+---@param state table<string, unknown> cancelled evolution under finishing
+local function finishCancellation(state)
+  for _ = 1, 40 do
+    if state:status().palettePending then
+      completePaletteFade(state)
+    elseif state:status().printerPending then
+      state:completeMessage()
+    else
+      state:stepSourceTick(1)
+    end
+    if state:status().phase == "settled" then
+      return
+    end
+  end
+  error("the cancellation sequence never settled")
 end
 
 ---@param state table<string, unknown> evolution presentation state under inspection
@@ -219,6 +293,25 @@ local function messageIds(state)
     end
   end
   return out
+end
+
+---@param state table<string, unknown> evolution state under driving
+---@param messageId integer source message id to reach
+---@param occurrence integer one-based occurrence under observation
+local function runUntilMessage(state, messageId, occurrence)
+  for _ = 1, 1200 do
+    local seen = 0
+    for _, id in ipairs(messageIds(state)) do
+      if id == messageId then
+        seen = seen + 1
+      end
+    end
+    if seen >= occurrence and state:status().printerPending then
+      return
+    end
+    advance(state, 1)
+  end
+  error("the evolution sequence never printed message " .. tostring(messageId))
 end
 
 ---@param state table<string, unknown> evolution presentation state under inspection
@@ -252,9 +345,9 @@ function T.ineligible_subjects_settle_without_effects_or_mutation()
 end
 
 -- The native beats run with no confirmation gate: entry, cry, and the
--- transformation follow ticks alone, and a lone free move slot fills
--- silently behind the same run. The sequenced evidence follows the
--- retail beats: entry BGM, What?, old cry, evolving, particle/sound
+-- transformation follow ticks alone, and each free move prints its
+-- learned line before the same run continues. The sequenced evidence follows the
+-- retail beats: What?, old cry, evolving, BGM, particle/sound
 -- cascade, new cry, and congratulations.
 function T.sequence_starts_without_confirmation_and_completes_alone()
   local catalog = evolutionCatalog(graftLevelSlot)
@@ -262,7 +355,7 @@ function T.sequence_starts_without_confirmation_and_completes_alone()
   local state = stateFor(catalog, mon)
   Assert.equal(state:status().phase, "entry", "the sequence opens on its entry beat")
   state:input({ { type = "confirm" } })
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 1200)
   local result = state:takeResult()
   Assert.notNil(result, "the unguided sequence answers its choice")
   assert(result ~= nil, "the evolved choice seals")
@@ -291,11 +384,13 @@ function T.sequence_starts_without_confirmation_and_completes_alone()
     end
   end
   Assert.deepEqual(signature, {
-    "music_direct",
+    "palette",
     "message:916",
     "cry:CHIKORITA",
     "message:917",
+    "music_direct",
     "particles:0",
+    "palette",
     "sound:1528",
     "window:narrow",
     "particles:1+2+7+8+9+11",
@@ -303,26 +398,54 @@ function T.sequence_starts_without_confirmation_and_completes_alone()
     "affine:oscillate_start",
     "particles:3+4+5+6+10",
     "sound:1530",
+    "palette",
     "particles:12",
+    "palette",
     "sound:1531",
     "window:widen",
-    "palette",
     "cry:TOTODILE",
     "message:918",
+    "message:4",
+    "message:4",
+    "message:4",
+    "palette",
   }, "the unguided run sequences the retail beats in order")
-  local opening = state:effects()[1]
-  Assert.equal(opening.seq, 1011, "entry voices SEQ_GS_SHINKA music-direct")
+  local music = nil
+  for _, effect in ipairs(state:effects()) do
+    if effect.kind == "music_direct" then
+      music = effect
+    end
+  end
+  Assert.equal(music.seq, 1011, "the cry wait starts SEQ_GS_SHINKA music-direct")
   local cries = {}
   for _, effect in ipairs(state:effects()) do
     if effect.kind == "cry" then
       cries[#cries + 1] = { effect.species, effect.form }
     end
   end
-  Assert.deepEqual(
-    cries,
-    { { "CHIKORITA", 0 }, { "TOTODILE", 0 } },
-    "both cries voice with the subject form"
-  )
+  Assert.deepEqual(cries, { { "CHIKORITA", 0 }, { "TOTODILE", 0 } }, "both cries voice with the subject form")
+end
+
+function T.transformation_waits_and_window_follow_retail_tick_boundaries()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
+  runUntilPhase(state, "transformation", 40)
+  Assert.equal(state:draw().beat, "particle_delay", "the cry/message wait precedes particle startup")
+  local effects = state:effects()
+  Assert.equal(effects[#effects].kind, "music_direct", "SHINKA starts after the old cry progress beat")
+  advance(state, BattleEvolutionState.PARTICLE_DELAY_TICKS - 1)
+  Assert.equal(#state:effects(), #effects, "the first emitter waits the full 20 ticks")
+  advance(state, 1)
+  Assert.equal(state:draw().beat, "narrow_window", "emitter zero begins after the 20 tick delay")
+  advance(state, 20)
+  local presentation = state:draw().presentation
+  Assert.equal(presentation.window.top, 40, "the window narrows two pixels per retail tick")
+  Assert.equal(presentation.window.bottom, 120, "the window bottom narrows with its top")
+  advance(state, BattleEvolutionState.NARROW_WINDOW_TICKS - 20)
+  Assert.equal(state:draw().beat, "oscillate", "the second emitter group starts after 40 ticks")
+  local emitters = state:effects()[#state:effects() - 2]
+  Assert.deepEqual(emitters.emitters, { 1, 2, 7, 8, 9, 11 }, "the narrow-window completion starts the retail group")
 end
 
 -- Non-battle sources skip the What? beat and combine the progress line:
@@ -333,15 +456,15 @@ function T.field_level_skips_what_and_combines_evolving()
   local state = stateFor(catalog, mon, "field_level")
   Assert.equal(state:status().flags, 1, "field level-up passes retail flags 1")
   Assert.isFalse(state:status().printWhat, "only battle prints What")
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 1200)
   local result = state:takeResult()
   Assert.notNil(result, "the field run answers its choice")
   assert(result ~= nil, "the field choice seals")
   Assert.isTrue(result.choice.evolved, "field level-up still evolves")
   Assert.deepEqual(
     messageIds(state),
-    { 915, 918 },
-    "field level-up combines What-evolving and skips the lone What"
+    { 915, 918, 4, 4, 4 },
+    "field level-up combines What-evolving and prints each free-slot learn"
   )
 end
 
@@ -354,12 +477,32 @@ function T.permitted_cancel_declines_without_applying()
   local before = copyMon(mon)
   local state = stateFor(catalog, mon)
   Assert.isTrue(state:status().canCancel, "level evolutions stay cancellable")
-  for _ = 1, BattleEvolutionState.ENTRY_TICKS + BattleEvolutionState.SEQUENCE_TICKS do
-    state:stepSourceTick(1)
-  end
+  runUntilOscillation(state)
   Assert.equal(state:status().phase, "transformation", "setup: the sequence reaches its cancellable beat")
+  local scaleBeforeCancel = state:draw().presentation.oldPictureScale
   state:input({ { type = "cancel" } })
-  Assert.equal(state:status().phase, "settled", "a permitted cancel settles the sequence")
+  Assert.equal(state:status().phase, "cancel", "a permitted cancel begins the restore sequence")
+  Assert.isTrue(
+    state:draw().presentation.oldPictureScale < scaleBeforeCancel,
+    "the current source oscillation step updates picture scale before the cancel fade"
+  )
+  Assert.isNil(state:takeResult(), "cancel does not settle before restoring the presentation")
+  Assert.equal(state:draw().beat, "cancel_fade_in", "cancel first fades the transformation white")
+  completePaletteFade(state, "scene")
+  Assert.equal(state:draw().beat, "cancel_restore", "the old picture is restored after the first white fade")
+  completePaletteFade(state, "scene")
+  Assert.equal(state:draw().beat, "cancel_cry", "the old cry follows the picture restore fade")
+  advance(state, 1)
+  Assert.equal(state:draw().beat, "cancel_wait_message", "the stopped message follows the old cry")
+  local ids = messageIds(state)
+  Assert.equal(ids[#ids], BattleEvolutionState.MSG_STOPPED, "cancel prints message 919 after cry")
+  advance(state, BattleEvolutionState.CANCEL_MESSAGE_TICKS)
+  Assert.equal(state:draw().beat, "cancel_finish", "cancel waits for message 919 before fading out")
+  Assert.isNil(state:takeResult(), "the result waits for the final fade")
+  Assert.isTrue(state:status().palettePending, "the final black fade owns cancellation settlement")
+  completePaletteFade(state, "scene")
+  advance(state, 1)
+  Assert.equal(state:status().phase, "settled", "the final fade settles the declined choice")
   local result = state:takeResult()
   Assert.notNil(result, "the cancelled sequence answers its choice")
   assert(result ~= nil, "the declined choice seals")
@@ -369,9 +512,9 @@ function T.permitted_cancel_declines_without_applying()
   Assert.deepEqual(mon, before, "a declined candidate leaves its subject untouched")
   local tail = {}
   for _, effect in ipairs(state:effects()) do
-    if effect.phase ~= "transformation" then
+    if effect.phase ~= "cancel" then
       -- The sequence cry predates the cancel beat; only the
-      -- transformation beat carries the cancel evidence.
+      -- cancel phase carries the cancellation evidence.
     elseif effect.kind == "stop_bgm" then
       tail[#tail + 1] = effect.seq
     elseif effect.kind == "cry" then
@@ -384,9 +527,36 @@ function T.permitted_cancel_declines_without_applying()
   end
   Assert.deepEqual(
     tail,
-    { 1011, "cry:CHIKORITA", 919 },
-    "cancel stops SHINKA, replays the old cry, and prints stopped-evolving"
+    { "palette", "palette", 1011, "cry:CHIKORITA", 919, "palette" },
+    "cancel restores the picture, stops SHINKA, replays the old cry, prints stopped-evolving, and fades out"
   )
+end
+
+function T.cancel_during_oscillation_can_replace_the_scene_fade_while_pokepic_fades()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
+  for _ = 1, 120 do
+    if state:draw().beat == "particle_delay" then
+      break
+    end
+    advance(state, 1)
+  end
+  Assert.equal(state:draw().beat, "particle_delay", "setup: transformation begins its source particle delay")
+  state:stepSourceTick(BattleEvolutionState.PARTICLE_DELAY_TICKS)
+  Assert.isTrue(state:status().palettePending, "setup: the old and new Pokepic palettes are still fading")
+  local pictureRequestId = assert(state:status().paletteChannels.pictures)
+  state:stepSourceTick(BattleEvolutionState.NARROW_WINDOW_TICKS)
+  Assert.equal(state:draw().beat, "oscillate", "the window reaches the only cancellable beat")
+  state:input({ { type = "cancel" } })
+  Assert.equal(state:draw().beat, "cancel_fade_in", "cancel starts an independent scene fade over the Pokepic fade")
+  Assert.equal(state:status().phase, "cancel", "the overlapping source palette owners preserve cancellation")
+  local channels = state:status().paletteChannels
+  Assert.notNil(channels.scene, "cancel owns a scene-manager fade")
+  Assert.equal(channels.pictures, pictureRequestId, "cancel leaves the active Pokepic fade under its original request")
+  state:completePaletteFade("pictures", pictureRequestId)
+  Assert.equal(state:draw().beat, "cancel_fade_in", "a Pokepic completion cannot advance the scene transition")
+  Assert.notNil(state:status().paletteChannels.scene, "the independent scene fade remains pending")
 end
 
 -- Retail checks B during OSCILLATE alone: cancel input on the entry and
@@ -399,21 +569,22 @@ function T.cancel_before_transformation_is_ignored()
   state:input({ { type = "cancel" } })
   Assert.equal(state:status().phase, "entry", "an entry cancel decides nothing")
   Assert.equal(#state:effects(), entryEffects, "an entry cancel sequences nothing")
-  for _ = 1, BattleEvolutionState.ENTRY_TICKS do
-    state:stepSourceTick(1)
-  end
+  runUntilPhase(state, "sequence", 40)
   Assert.equal(state:status().phase, "sequence", "setup: the sequence beat starts")
   local sequenceEffects = #state:effects()
   state:input({ { type = "cancel" } })
   Assert.equal(state:status().phase, "sequence", "a sequence cancel decides nothing")
   Assert.equal(#state:effects(), sequenceEffects, "a sequence cancel sequences nothing")
   Assert.isNil(state:takeResult(), "ignored cancels settle nothing early")
-  for _ = 1, BattleEvolutionState.SEQUENCE_TICKS do
-    state:stepSourceTick(1)
-  end
+  advance(state, 1)
   Assert.equal(state:status().phase, "transformation", "setup: the cancellable beat starts")
   state:input({ { type = "cancel" } })
-  Assert.equal(state:status().phase, "settled", "the transformation cancel still declines")
+  Assert.isTrue(state:status().active, "particle startup ignores cancel")
+  runUntilOscillation(state)
+  state:input({ { type = "cancel" } })
+  Assert.equal(state:status().phase, "cancel", "the transformation cancel starts its finish sequence")
+  finishCancellation(state)
+  Assert.equal(state:status().phase, "settled", "the transformation cancel settles after its finish sequence")
   local result = state:takeResult()
   Assert.notNil(result, "the declined sequence answers its choice")
   assert(result ~= nil, "the declined choice seals")
@@ -436,11 +607,11 @@ function T.full_moves_pause_for_replace_then_decline_in_order()
     moveEntry("POISONPOWDER"),
   })
   local state = stateFor(catalog, mon)
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 400)
   Assert.equal(state:status().phase, "learn", "a full set pauses on its first pending move")
   Assert.deepEqual(
     messageIds(state),
-    { 916, 917, 918, 1193, 1194, 1195, 1196 },
+    { 916, 917, 918, 1193, 1194, 1195 },
     "the first pause carries battle What, evolving, evolved, and the full-set battery"
   )
   local first = state:learnPrompt()
@@ -482,8 +653,24 @@ function T.full_moves_pause_for_replace_then_decline_in_order()
     { "TACKLE", "GROWL", "RAZOR_LEAF", "POISONPOWDER" },
     "the summary hook detaches the held moves"
   )
-  state:answerLearn({ choice = "replace", slot = 3 })
-  Assert.equal(state:status().phase, "fanfare", "a replacement waits out its fanfare beat")
+  state:beginLearnSummary()
+  Assert.equal(state:status().phase, "summary_out", "the native Summary opens behind a scene fade")
+  Assert.equal(
+    state:effects()[#state:effects()].channels.scene.to,
+    16,
+    "the scene fades out before Summary takes ownership"
+  )
+  completePaletteFade(state, "scene")
+  Assert.equal(state:status().phase, "summary", "the Summary opens after fade completion")
+  state:finishLearnSummary(3)
+  Assert.equal(state:status().phase, "summary_in", "the Summary selection starts the return fade")
+  completePaletteFade(state, "scene")
+  Assert.equal(state:status().phase, "replacement_transition", "the Summary return schedules the replacement sequence")
+  advance(state, 2)
+  Assert.equal(state:status().phase, "replacement_messages", "the next source Runs start the replacement sequence")
+  advance(state, 90)
+  runUntilPhase(state, "fanfare", 10)
+  Assert.equal(state:status().phase, "fanfare", "poof, forgot, and, and learned have separate waits")
   Assert.isNil(state:takeResult(), "the fanfare beat settles nothing early")
   local forgotten = {}
   for _, effect in ipairs(state:effects()) do
@@ -494,69 +681,140 @@ function T.full_moves_pause_for_replace_then_decline_in_order()
   Assert.deepEqual(forgotten, { "POISONPOWDER" }, "the replacement forgets its named slot")
   Assert.deepEqual(
     messageIds(state),
-    { 916, 917, 918, 1193, 1194, 1195, 1196, 1199, 1200, 1201, 1202 },
+    { 916, 917, 918, 1193, 1194, 1195, 1199, 1200, 1201, 1202 },
     "a replacement runs poof/forgot/and/learned"
   )
-  Assert.equal(countKind(state, "fanfare_wait"), 1, "a replacement records its fanfare wait")
+  Assert.equal(countKind(state, "fanfare_wait"), 0, "the learned message owns its native fanfare callback")
   for _, effect in ipairs(state:effects()) do
-    if effect.kind == "fanfare_wait" then
-      Assert.equal(effect.seq, 1184, "the fanfare wait voices SEQ_ME_LVUP")
-    end
     if effect.kind == "sound" and effect.phase == "learn" then
       Assert.equal(effect.se, 1500, "menu answers voice SELECT")
     end
   end
   for _ = 1, BattleEvolutionState.FANFARE_TICKS do
-    state:stepSourceTick(1)
+    advance(state, 1)
   end
+  runUntilSettled(state, 100)
   Assert.equal(state:status().phase, "learn", "the fanfare beat continues to the next pending move")
   local second = state:learnPrompt()
   Assert.notNil(second, "the second pending move pauses in turn")
   assert(second ~= nil, "the second prompt stages")
   Assert.equal(second.move, "LEER", "the second pending move keeps learnset order")
-  state:answerLearn({ choice = "decline" })
-  Assert.equal(state:status().phase, "learn", "a declined prompt continues at once")
-  Assert.equal(countKind(state, "fanfare_wait"), 1, "a decline records no fanfare wait")
+  state:beginStopQuestion()
+  runUntilMessage(state, BattleEvolutionState.MSG_STOP_TRYING, 1)
+  state:completeMessage()
+  advance(state, 2)
+  Assert.equal(state:status().phase, "stop_menu", "the stop-trying menu appears after its message and wait")
+  state:answerLearn({ choice = "decline", stopQuestionPresented = true })
+  advance(state, 31)
+  runUntilSettled(state, 300)
+  Assert.equal(state:status().phase, "learn", "a declined prompt continues after its did-not-learn wait")
+  Assert.equal(countKind(state, "fanfare_wait"), 0, "a decline does not start the learned-message fanfare")
   local declined = messageIds(state)
-  Assert.equal(declined[#declined - 5], 1197, "a decline asks stop-trying")
-  Assert.equal(declined[#declined - 4], 1198, "a decline reports did-not-learn")
-  Assert.equal(declined[#declined - 3], 1193, "a decline advances to the next wants-to-learn")
-  Assert.equal(declined[#declined - 2], 1194, "the next pause repeats however-four")
-  Assert.equal(declined[#declined - 1], 1195, "the next pause repeats should-delete")
-  Assert.equal(declined[#declined], 1196, "the next pause repeats which-move")
+  Assert.deepEqual({
+    declined[#declined - 4],
+    declined[#declined - 3],
+    declined[#declined - 2],
+    declined[#declined - 1],
+    declined[#declined],
+  }, { 1197, 1198, 1193, 1194, 1195 }, "the stop question, did-not-learn wait, and next move battery stay ordered")
   local third = state:learnPrompt()
   Assert.notNil(third, "the third pending move pauses in turn")
   assert(third ~= nil, "the third prompt stages")
   Assert.equal(third.move, "WATER_GUN", "the third pending move keeps learnset order")
   state:answerLearn({ choice = "replace", slot = 0 })
-  Assert.equal(state:status().phase, "fanfare", "the last replacement waits out its fanfare beat")
+  advance(state, 2)
+  advance(state, 90)
+  runUntilPhase(state, "fanfare", 10)
+  Assert.equal(state:status().phase, "fanfare", "the last replacement reaches its fanfare after message waits")
   for _ = 1, BattleEvolutionState.FANFARE_TICKS do
-    state:stepSourceTick(1)
+    advance(state, 1)
   end
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 100)
   local result = state:takeResult()
   Assert.notNil(result, "the answered sequence settles its choice")
   assert(result ~= nil, "the learned choice seals")
   Assert.isTrue(result.choice.evolved, "answered learning still evolves")
-  Assert.deepEqual(
-    messageIds(state),
-    {
-      916, 917, 918,
-      1193, 1194, 1195, 1196,
-      1199, 1200, 1201, 1202,
-      1193, 1194, 1195, 1196,
-      1197, 1198,
-      1193, 1194, 1195, 1196,
-      1199, 1200, 1201, 1202,
-    },
-    "the whole learning run sequences the retail message battery"
-  )
+  Assert.deepEqual(messageIds(state), {
+    916,
+    917,
+    918,
+    1193,
+    1194,
+    1195,
+    1199,
+    1200,
+    1201,
+    1202,
+    1193,
+    1194,
+    1195,
+    1197,
+    1198,
+    1193,
+    1194,
+    1195,
+    1199,
+    1200,
+    1201,
+    1202,
+  }, "the whole learning run sequences the retail message battery")
   local staged = assert(result.choice.staged, "the outcome carries its staged domain result")
   local names = {}
   for _, entry in ipairs(staged.mon.moves) do
     names[#names + 1] = entry.move
   end
   Assert.deepEqual(names, { "WATER_GUN", "GROWL", "RAZOR_LEAF", "SCRATCH" }, "replace and decline land exactly")
+end
+
+function T.free_move_slots_print_each_new_move_and_wait_thirty_ticks()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE"), moveEntry("GROWL") })
+  local state = stateFor(catalog, mon)
+  runUntilMessage(state, BattleEvolutionState.MSG_LEARNED_FREE_SLOT, 1)
+  Assert.equal(state:status().phase, "learned", "the free-slot move waits for its message printer")
+  Assert.isTrue(state:status().printerPending, "the first learned message owns a printer barrier")
+  local learned = assert(state:draw().learnedMove, "the first free slot exposes its learned move")
+  Assert.equal(learned.move, "SCRATCH", "the first free slot follows the evolved learnset")
+  Assert.deepEqual(
+    messageIds(state),
+    { 916, 917, 918, 4 },
+    "each free-slot append prints the retail learned-message id"
+  )
+  local heldClock = state:draw().clock
+  state:stepSourceTick(5)
+  Assert.equal(state:draw().clock, heldClock, "a printing learned line holds the source clock")
+  state:completeMessage()
+  Assert.equal(state:status().phase, "learned_transition", "printer completion enters WAIT_LEARNED's next state")
+  advance(state, 1)
+  Assert.equal(state:status().phase, "learned", "the following Run starts the fanfare wait")
+  advance(state, 29)
+  Assert.equal(state:status().phase, "learned", "WAIT_FANFARE holds for its first twenty-nine ticks")
+  advance(state, 1)
+  Assert.equal(state:status().phase, "try_learn_move", "tick thirty advances to TRY_LEARN_MOVE")
+  advance(state, 1)
+  runUntilMessage(state, BattleEvolutionState.MSG_LEARNED_FREE_SLOT, 2)
+  Assert.equal(state:draw().learnedMove.move, "LEER", "the next free slot keeps learnset order")
+  state:completeMessage()
+  advance(state, 1)
+  advance(state, 30)
+  Assert.equal(state:status().phase, "try_learn_move", "the second learned move also waits thirty ticks")
+  advance(state, 1)
+  advance(state, 1)
+  Assert.equal(state:status().phase, "learn_messages", "the full-set battery begins after free slots")
+  advance(state, 61)
+  Assert.equal(state:status().phase, "learn_messages", "1195 waits for the preceding printer/timer states")
+  advance(state, 1)
+  Assert.equal(
+    messageIds(state)[#messageIds(state)],
+    BattleEvolutionState.MSG_SHOULD_DELETE,
+    "1195 prints on its own source Run"
+  )
+  state:completeMessage()
+  advance(state, 1)
+  Assert.equal(state:status().phase, "learn_messages", "the final one-tick printer wait advances separately")
+  advance(state, 1)
+  Assert.equal(state:status().phase, "learn", "the full-set menu opens after its printer/timer beats")
+  Assert.equal(state:learnPrompt().move, "WATER_GUN", "the full-set opportunity keeps learnset order")
 end
 
 -- Learning answers outside the open prompt fail loudly instead of
@@ -570,7 +828,7 @@ function T.learning_answers_outside_the_prompt_refuse()
     moveEntry("POISONPOWDER"),
   })
   local state = stateFor(catalog, mon)
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 1200)
   Assert.equal(state:status().phase, "learn", "setup: the sequence pauses on its pending move")
   local okChoice = pcall(function()
     state:answerLearn({ choice = "forget" })
@@ -590,7 +848,15 @@ function T.first_matching_rule_wins_and_applies_once()
   local catalog = evolutionCatalog(graftTwoSlots)
   local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
   local state = stateFor(catalog, mon)
-  runUntilSettled(state, 120)
+  runUntilPhase(state, "fade_out_ready", 1200)
+  Assert.isNil(state:takeResult(), "success waits for the final scene fade")
+  advance(state, 1)
+  Assert.equal(state:status().phase, "finish", "the FADE_OUT source Run starts the palette fade")
+  Assert.isTrue(state:status().palettePending, "FINISH waits for palette completion")
+  completePaletteFade(state, "scene")
+  Assert.isNil(state:takeResult(), "palette completion still waits for the FINISH Run")
+  advance(state, 1)
+  Assert.equal(state:status().phase, "settled", "the FINISH Run applies the staged evolution")
   local result = state:takeResult()
   Assert.notNil(result, "the single-rule sequence answers its choice")
   assert(result ~= nil, "the first-match choice seals")
@@ -611,25 +877,17 @@ function T.trade_evolutions_hold_on_cancel()
   })
   Assert.equal(state:status().flags, 4, "trade passes retail flags 4")
   Assert.isFalse(state:status().printWhat, "trade never prints What")
-  for _ = 1, BattleEvolutionState.ENTRY_TICKS + 1 do
-    state:stepSourceTick(1)
-  end
+  runUntilPhase(state, "transformation", 40)
   Assert.isNil(state:status().canCancel, "trade evolutions refuse cancellation")
   state:input({ { type = "cancel" } })
   Assert.isTrue(state:status().active, "a refused cancel keeps the sequence alive")
-  for _ = 1, BattleEvolutionState.SEQUENCE_TICKS do
-    state:stepSourceTick(1)
-  end
+  advance(state, 1)
   Assert.equal(state:status().phase, "transformation", "setup: the cancellable beat starts")
   state:input({ { type = "cancel" } })
   Assert.isTrue(state:status().active, "trade refuses cancel even on the transformation beat")
   Assert.isNil(state:takeResult(), "a held sequence settles nothing early")
-  Assert.deepEqual(
-    messageIds(state),
-    { 915 },
-    "trade combines What-evolving with no lone What"
-  )
-  runUntilSettled(state, 60)
+  Assert.deepEqual(messageIds(state), { 915 }, "trade combines What-evolving with no lone What")
+  runUntilSettled(state, 1200)
   local result = state:takeResult()
   Assert.notNil(result, "the held trade still completes on its own")
   assert(result ~= nil, "the trade choice seals")
@@ -649,7 +907,7 @@ function T.shedinja_side_product_rides_the_staged_result()
     },
     catalog = catalog,
   })
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 1200)
   local result = state:takeResult()
   Assert.notNil(result, "the shed line answers its choice")
   assert(result ~= nil, "the shed choice seals")
@@ -694,18 +952,16 @@ function T.field_item_source_never_cancels()
   local catalog = evolutionCatalog(graftLevelSlot)
   local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
   local state = stateFor(catalog, mon, "field_item")
-  for _ = 1, BattleEvolutionState.ENTRY_TICKS + BattleEvolutionState.SEQUENCE_TICKS do
-    state:stepSourceTick(1)
-  end
+  runUntilOscillation(state)
   Assert.equal(state:status().phase, "transformation", "setup: the cancellable beat starts")
   state:input({ { type = "cancel" } })
   Assert.isTrue(state:status().active, "stone/item input never cancels")
-  runUntilSettled(state, 60)
+  runUntilSettled(state, 1200)
   local result = state:takeResult()
   Assert.notNil(result, "the held sequence still completes on its own")
   assert(result ~= nil, "the held choice seals")
   Assert.isTrue(result.choice.evolved, "the unguided sequence applies its candidate")
-  Assert.deepEqual(messageIds(state), { 915, 918 }, "stone/item skips the lone What")
+  Assert.deepEqual(messageIds(state), { 915, 918, 4, 4, 4 }, "stone/item skips What and prints each free-slot learn")
 end
 
 -- The drawable record names the concrete retail assets the visual
@@ -762,13 +1018,13 @@ function T.teardown_and_foreign_input_never_decide()
   local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
   local state = stateFor(catalog, mon)
   for _ = 1, BattleEvolutionState.ENTRY_TICKS + 1 do
-    state:stepSourceTick(1)
+    advance(state, 1)
   end
   state:input({ { type = "pointer_down" } })
   state:input({ { type = "dismiss" } })
   state:dispose()
   state:input({ { type = "cancel" } })
-  state:stepSourceTick(9)
+  advance(state, 9)
   Assert.isNil(state:takeResult(), "teardown ends the sequence without publishing")
   Assert.isFalse(state:status().active, "disposal releases the presentation lifetime")
 end

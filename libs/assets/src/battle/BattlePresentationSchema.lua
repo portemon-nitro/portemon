@@ -6,11 +6,12 @@
 
 local SchemaCheck = require("libs.assets.src.SchemaCheck")
 local Validate = require("libs.assets.src.Validate")
+local Contract = require("libs.assets.src.DerivedAssetContract")
 
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v10"
+BattlePresentationSchema.MANIFEST_SCHEMA = Contract.battlePresentation.schema
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v4"
 
 local fail = SchemaCheck.fail
@@ -3210,6 +3211,8 @@ local function checkManifestHeader(manifest, context)
     pictures = true,
     trainerPictures = true,
     battleBalls = true,
+    evolutionParticles = true,
+    evolutionGraphics = true,
     menus = true,
     messages = true,
     transitions = true,
@@ -4003,6 +4006,175 @@ local function checkBattleBalls(manifest, context)
   end
 end
 
+-- EvolutionScene loads one SPL set and creates retail emitter IDs 0 through
+-- 12 across its phases. Source archive/member identity stays in producer
+-- provenance; this persisted contract carries compiled records and images.
+local function checkEvolutionParticles(particles, context)
+  local field = "manifest evolutionParticles"
+  SchemaCheck.checkRecord(particles, { seed = true, emitters = true, textures = true }, context, CODE_MANIFEST, field)
+  if particles.seed ~= 0 then
+    fail(CODE_MANIFEST, field .. ".seed must be the retail zero seed", context)
+  end
+  if not Validate.isArray(particles.textures) or #particles.textures == 0 then
+    fail(CODE_MANIFEST, field .. ".textures must carry the staged textures", context)
+  end
+  local byId = {}
+  for index, texture in ipairs(particles.textures) do
+    local at = field .. ".textures[" .. index .. "]"
+    SchemaCheck.checkRecord(
+      texture,
+      { id = true, width = true, height = true, image = true },
+      context,
+      CODE_MANIFEST,
+      at
+    )
+    checkInt(texture.id, 0, 255, context, CODE_MANIFEST, at .. ".id")
+    if byId[texture.id] ~= nil then
+      fail(CODE_MANIFEST, at .. ".id repeats a texture", context)
+    end
+    checkInt(texture.width, 1, 1024, context, CODE_MANIFEST, at .. ".width")
+    checkInt(texture.height, 1, 1024, context, CODE_MANIFEST, at .. ".height")
+    if texture.image ~= ("assets/generated/battle/evolution-particles-" .. texture.id .. ".png") then
+      fail(CODE_MANIFEST, at .. ".image must name its staged evolution particle PNG", context)
+    end
+    byId[texture.id] = texture
+  end
+  if not Validate.isArray(particles.emitters) or #particles.emitters ~= 13 then
+    fail(CODE_MANIFEST, field .. ".emitters must carry retail emitter IDs 0 through 12", context)
+  end
+  for index, emitter in ipairs(particles.emitters) do
+    if emitter.id ~= index - 1 then
+      fail(CODE_MANIFEST, field .. ".emitters must preserve retail IDs 0 through 12", context)
+    end
+    checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
+  end
+end
+
+-- The retail EvolutionScene owns visible main, sub, and sub-menu BG maps.
+-- Runtime receives only complete screen-sized images and semantic paths.
+local function checkEvolutionGraphics(graphics, manifest, context)
+  local field = "manifest evolutionGraphics"
+  SchemaCheck.checkRecord(
+    graphics,
+    { main = true, sub = true, menu = true, cursor = true, menuTextPalette = true },
+    context,
+    CODE_MANIFEST,
+    field
+  )
+  for _, layer in ipairs({ "main", "sub", "menu" }) do
+    local at = field .. "." .. layer
+    local image = graphics[layer]
+    SchemaCheck.checkRecord(image, { image = true, width = true, height = true }, context, CODE_MANIFEST, at)
+    if image.image ~= ("assets/generated/battle/evolution-" .. layer .. ".png") then
+      fail(CODE_MANIFEST, at .. ".image must name its staged screen raster", context)
+    end
+    if image.width ~= 256 or image.height ~= 192 then
+      fail(CODE_MANIFEST, at .. " must carry a 256×192 screen raster", context)
+    end
+    checkImageRef(manifest.menus.images, image.image, context, at .. ".image")
+  end
+  checkPalette(graphics.menuTextPalette, context, CODE_MANIFEST, field .. ".menuTextPalette")
+  if #graphics.menuTextPalette.colors ~= 16 then
+    fail(CODE_MANIFEST, field .. ".menuTextPalette must carry its selected sixteen-color source bank", context)
+  end
+  local cursorField = field .. ".cursor"
+  SchemaCheck.checkRecord(graphics.cursor, { animations = true }, context, CODE_MANIFEST, cursorField)
+  SchemaCheck.checkRecord(
+    graphics.cursor.animations,
+    { idle = true, select = true },
+    context,
+    CODE_MANIFEST,
+    cursorField .. ".animations"
+  )
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    local animationField = cursorField .. ".animations." .. animationRole
+    local animation = graphics.cursor.animations[animationRole]
+    SchemaCheck.checkRecord(
+      animation,
+      { playMode = true, loopStartFrameIdx = true, frames = true },
+      context,
+      CODE_MANIFEST,
+      animationField
+    )
+    if
+      not (
+        animation.playMode == "forward"
+        or animation.playMode == "forward_loop"
+        or animation.playMode == "reverse"
+        or animation.playMode == "reverse_loop"
+      )
+    then
+      fail(CODE_MANIFEST, animationField .. ".playMode must retain its supported source mode", context)
+    end
+    local expectedPlayMode = animationRole == "idle" and "forward_loop" or "forward"
+    if animation.playMode ~= expectedPlayMode then
+      fail(CODE_MANIFEST, animationField .. ".playMode must retain the retail cursor sequence mode", context)
+    end
+    local frames = animation.frames
+    local expectedFrameCount = animationRole == "idle" and 1 or 4
+    if not Validate.isArray(frames) or #frames ~= expectedFrameCount then
+      fail(CODE_MANIFEST, animationField .. ".frames must carry every retail source frame", context)
+    end
+    checkInt(
+      animation.loopStartFrameIdx,
+      0,
+      #frames - 1,
+      context,
+      CODE_MANIFEST,
+      animationField .. ".loopStartFrameIdx"
+    )
+    if animation.loopStartFrameIdx ~= 0 then
+      fail(CODE_MANIFEST, animationField .. ".loopStartFrameIdx must preserve the retail sequence start", context)
+    end
+    for frameIndex, frame in ipairs(frames) do
+      local at = animationField .. ".frames[" .. frameIndex .. "]"
+      SchemaCheck.checkRecord(frame, {
+        drawableKey = true,
+        image = true,
+        width = true,
+        height = true,
+        rasterOffset = true,
+        durationTicks = true,
+        sourceFrame = true,
+        userAttr = true,
+      }, context, CODE_MANIFEST, at)
+      local sourceFrame = frameIndex - 1
+      if
+        frame.drawableKey ~= ("battle:evolution-cursor:" .. animationRole .. ":" .. sourceFrame)
+        or frame.sourceFrame ~= sourceFrame
+      then
+        fail(CODE_MANIFEST, at .. " must retain source frame order and semantic cursor key", context)
+      end
+      if
+        frame.image ~= ("assets/generated/battle/evolution-cursor-" .. animationRole .. "-" .. sourceFrame .. ".png")
+      then
+        fail(CODE_MANIFEST, at .. ".image must name its staged cursor raster", context)
+      end
+      local blankSelectFrame = animationRole == "select" and (sourceFrame == 0 or sourceFrame == 2)
+      local expectedWidth, expectedHeight = blankSelectFrame and 1 or 256, blankSelectFrame and 1 or 48
+      if frame.width ~= expectedWidth or frame.height ~= expectedHeight then
+        fail(CODE_MANIFEST, at .. " must preserve its retail composite or blank-cell dimensions", context)
+      end
+      checkInt(frame.width, 1, 256, context, CODE_MANIFEST, at .. ".width")
+      checkInt(frame.height, 1, 48, context, CODE_MANIFEST, at .. ".height")
+      checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, at .. ".durationTicks")
+      local expectedDuration = animationRole == "idle" and 4 or (sourceFrame == 3 and 2 or 4)
+      if frame.durationTicks ~= expectedDuration then
+        fail(CODE_MANIFEST, at .. ".durationTicks must preserve source animation timing", context)
+      end
+      checkInt(frame.userAttr, 0, 0xFFFFFFFF, context, CODE_MANIFEST, at .. ".userAttr")
+      SchemaCheck.checkRecord(frame.rasterOffset, { x = true, y = true }, context, CODE_MANIFEST, at .. ".rasterOffset")
+      checkInt(frame.rasterOffset.x, -128, 127, context, CODE_MANIFEST, at .. ".rasterOffset.x")
+      checkInt(frame.rasterOffset.y, -128, 127, context, CODE_MANIFEST, at .. ".rasterOffset.y")
+      local expectedOffsetX, expectedOffsetY = blankSelectFrame and 0 or -128, blankSelectFrame and 0 or -24
+      if frame.rasterOffset.x ~= expectedOffsetX or frame.rasterOffset.y ~= expectedOffsetY then
+        fail(CODE_MANIFEST, at .. ".rasterOffset must preserve the composite cell origin", context)
+      end
+      checkImageRef(manifest.menus.images, frame.image, context, at .. ".image")
+    end
+  end
+end
+
 local function checkTagSchemas(tagSchemas, context)
   checkCatalogTable(tagSchemas, context, CODE_MANIFEST, "manifest messages.tagSchemas")
   for tag, slots in pairs(tagSchemas) do
@@ -4087,6 +4259,54 @@ local function checkMessages(manifest, context)
   }, context, CODE_MANIFEST, "manifest messages")
   checkTextRoles(messages.roles, context, CODE_MANIFEST, "manifest messages.roles")
   checkCatalogTable(messages.entries, context, CODE_MANIFEST, "manifest messages.entries")
+  for _, messageId in ipairs({
+    4,
+    915,
+    916,
+    917,
+    918,
+    919,
+    1181,
+    1182,
+    1186,
+    1187,
+    1193,
+    1194,
+    1195,
+    1197,
+    1198,
+    1199,
+    1200,
+    1201,
+    1202,
+  }) do
+    local key = "evolution/" .. tostring(messageId)
+    local entry = messages.entries[key]
+    SchemaCheck.checkRecord(entry, { tokens = true }, context, CODE_MANIFEST, "manifest messages.entries." .. key)
+    if not Validate.isArray(entry.tokens) then
+      fail(CODE_MANIFEST, "manifest messages.entries." .. key .. ".tokens must be an ordered token stream", context)
+    end
+    if messageId == 1186 or messageId == 1187 then
+      local movePlaceholder = false
+      for _, token in ipairs(entry.tokens) do
+        if
+          type(token) == "table"
+          and token.kind == "substitution"
+          and token.control == 0x0106
+          and Validate.isArray(token.args)
+          and #token.args == 2
+          and token.args[1] == 0
+          and token.args[2] == 0
+        then
+          movePlaceholder = true
+          break
+        end
+      end
+      if not movePlaceholder then
+        fail(CODE_MANIFEST, "manifest messages.entries." .. key .. " must retain move-format slot zero", context)
+      end
+    end
+  end
   checkMessageRoutes(messages.routes, messages.entries, context, CODE_MANIFEST, "manifest messages.routes")
   checkMessageBankReferences(messages.banks, resources, context, CODE_MANIFEST, "manifest messages.banks")
   checkMessageDynamicRoutes(messages, resources, context, CODE_MANIFEST, "manifest messages.dynamicRoutes")
@@ -4222,9 +4442,11 @@ function BattlePresentationSchema.assertManifest(manifest)
   checkMenus(manifest, context)
   checkHud(manifest, context)
   checkScreenImageRefs(manifest, context)
+  checkEvolutionGraphics(manifest.evolutionGraphics, manifest, context)
   checkPictures(manifest, context)
   checkTrainerPictures(manifest, context)
   checkBattleBalls(manifest, context)
+  checkEvolutionParticles(manifest.evolutionParticles, context)
   checkMessages(manifest, context)
   checkTransitions(manifest, context)
   checkAudioRoles(manifest.audioRoles, context, CODE_MANIFEST, "manifest audioRoles")

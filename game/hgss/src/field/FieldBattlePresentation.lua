@@ -32,6 +32,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field _monIconProvider table<string, unknown>? field-owned icon page provider borrowed for battle command icons
 ---@field _battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
+---@field _summary table<string, unknown>? field-owned Summary application dependencies
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
 ---@field _pendingSceneImage { path: string, token: integer }? pre-enrolled scene image ticket behind the pending build
 ---@field _pendingUploads table<string, integer> pre-enrolled pool tickets by staged image path behind the pending build
@@ -105,6 +106,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field monIconProvider table<string, unknown>? borrowed field icon page provider for the active command icon
 ---@field battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
+---@field summary table<string, unknown>? borrowed field SummaryScreenState dependencies for evolution move replacement
 ---@field imagePool table<string, unknown>? borrowed shared generated-image owner behind pooled uploads, required to resolve graphical drawables
 ---@field fieldRenderer table<string, unknown>? field-local native plane compositor
 ---@field fieldCamera fun(): table<string, unknown>? current field camera provider
@@ -153,6 +155,8 @@ end
 -- BattlePresentationSchema.assertManifest.
 ---@class FieldBattlePresentation.StagedManifest
 ---@field scenes { key: string }[]
+---@field evolutionParticles { seed: integer, emitters: table<string, unknown>[], textures: BattlePresentationCache.EncounterParticleTexture[] }
+---@field evolutionGraphics BattlePresentationCache.EvolutionGraphics
 ---@field pictures { shadow: FieldBattlePresentation.StagedImage }
 ---@field hud { player: FieldBattlePresentation.StagedImage, enemy: FieldBattlePresentation.StagedImage, doubles: table<"playerLeft"|"playerRight"|"enemyLeft"|"enemyRight", FieldBattlePresentation.StagedImage>, arrow: FieldBattlePresentation.StagedImage, cursor: FieldBattlePresentation.StagedImage, partyGauges: FieldBattlePresentation.StagedImage[] }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
@@ -861,6 +865,9 @@ function FieldBattlePresentation.new(opts)
     assert(type(opts.pokedex) == "table", "the registration card borrows its presentation owner")
     assert(type(opts.pokedex.acquire) == "function", "the borrowed owner acquires registration leases")
   end
+  if opts.summary ~= nil then
+    assert(type(opts.summary) == "table", "battle evolution borrows the composed Summary application")
+  end
   local envelope = setmetatable({
     _cacheFs = opts.cacheFs,
     _text = opts.text,
@@ -874,6 +881,7 @@ function FieldBattlePresentation.new(opts)
     _monCatalog = opts.monCatalog,
     _monIconProvider = opts.monIconProvider,
     _battleMenus = opts.battleMenus,
+    _summary = opts.summary,
     _overrides = opts.overrides or {},
     _manifest = loadManifest(opts.cacheFs),
     _preparedDemands = {},
@@ -1373,6 +1381,36 @@ end
 ---@param key string drawable key under resolution
 ---@return string? cache-relative staged image path, nil without a staged counterpart
 local function stagedArtPath(manifest, key)
+  local evolutionCursorRole, evolutionCursorFrame = key:match("^battle:evolution%-cursor:([%a]+):(%d+)$")
+  if evolutionCursorRole == "idle" or evolutionCursorRole == "select" then
+    local graphics = manifest.evolutionGraphics
+    local cursor = type(graphics) == "table" and graphics.cursor or nil
+    local animations = type(cursor) == "table" and cursor.animations or nil
+    local animation = type(animations) == "table" and animations[evolutionCursorRole] or nil
+    local sourceFrame = tonumber(evolutionCursorFrame)
+    for _, frame in ipairs(type(animation) == "table" and animation.frames or {}) do
+      if frame.sourceFrame == sourceFrame then
+        return frame.image
+      end
+    end
+    return nil
+  end
+  local evolutionLayer = key:match("^battle:evolution:([%a]+)$")
+  if evolutionLayer == "main" or evolutionLayer == "sub" or evolutionLayer == "menu" then
+    local graphics = manifest.evolutionGraphics
+    local image = type(graphics) == "table" and graphics[evolutionLayer] or nil
+    return type(image) == "table" and image.image or nil
+  end
+  local evolutionTextureId = key:match("^battle:evolution%-particle:(%d+)$")
+  if evolutionTextureId ~= nil then
+    local textures = manifest.evolutionParticles.textures
+    for _, texture in ipairs(textures) do
+      if texture.id == tonumber(evolutionTextureId) then
+        return texture.image
+      end
+    end
+    return nil
+  end
   local fixed = FIXED_ART[key]
   if fixed ~= nil then
     return fixedArt(manifest, fixed)
@@ -3551,6 +3589,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     monCatalog = self._monCatalog,
     monIconProvider = self._monIconProvider,
     battleMenus = self._battleMenus,
+    summary = self._summary,
     overrides = { sceneKey = sceneKey },
   })
   self._screen = screen

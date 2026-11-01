@@ -111,10 +111,11 @@ end
 
 ---@param timeline table cue player under test driving
 ---@param soundComplete (fun(cue: table<string, unknown>): boolean)? held-voice probe
-local function advance(timeline, soundComplete)
+---@param printerCallback (fun(messageId: integer, callback: integer, controlIndex: integer): boolean)? source printer callback probe
+local function advance(timeline, soundComplete, printerCallback)
   timeline:update(TICK, function(_)
     return true
-  end, soundComplete)
+  end, soundComplete, printerCallback)
 end
 
 ---@param timeline table cue player under test driving
@@ -167,6 +168,74 @@ function T.default_narration_carries_no_hold()
     advance(timeline)
   end
   Assert.isTrue(timeline:settled(), "a hold-free page settles with its reveal")
+end
+
+-- Evolution printer controls run between glyphs even at fastest speed.
+-- Callback-start controls fire once, PAUSE consumes printer updates, and
+-- WAIT callbacks keep the source line active until their voice completes.
+function T.source_printer_controls_hold_at_exact_glyph_boundaries()
+  local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  timeline:reset(openingView())
+  local messageId = timeline:announce("ABCD", false, 0, {
+    { glyphIndex = 1, kind = "callback", callback = 3, wait = false },
+    { glyphIndex = 2, kind = "pause", updates = 4 },
+    { glyphIndex = 2, kind = "callback", callback = 4, wait = false },
+    { glyphIndex = 4, kind = "callback", callback = 2, wait = true },
+  })
+  local callbacks = {}
+  local fanfareComplete = false
+  local released = false
+  local tick = 0
+  for _ = 1, 100 do
+    tick = tick + 1
+    advance(timeline, nil, function(id, callback, controlIndex)
+      Assert.equal(id, messageId, "callback carries its announced message identity")
+      callbacks[#callbacks + 1] = {
+        callback = callback,
+        controlIndex = controlIndex,
+        message = timeline:message(),
+        tick = tick,
+      }
+      if callback == 2 then
+        return fanfareComplete
+      end
+      return true
+    end)
+    if #callbacks >= 4 then
+      break
+    end
+  end
+  Assert.isTrue(#callbacks >= 4, "each source control reaches the dispatcher, including repeated WAIT probes")
+  Assert.equal(callbacks[1].callback, 3, "the leading control starts the evolution fanfare")
+  Assert.equal(callbacks[1].message, "A", "the callback fires after exactly one glyph")
+  Assert.equal(callbacks[2].callback, 4, "the post-pause control starts the poof sound")
+  Assert.equal(callbacks[2].message, "AB", "pause and sound remain at their source boundary")
+  Assert.equal(callbacks[2].tick - callbacks[1].tick, 3, "PAUSE 4 consumes exactly four printer updates before its callback")
+  Assert.equal(callbacks[3].callback, 2, "the terminal wait probes the fanfare")
+  Assert.equal(callbacks[3].message, "ABCD", "terminal wait begins after the final glyph")
+  Assert.isTrue(timeline:messageActive(), "the final callback still owns the printer")
+  fanfareComplete = true
+  for _ = 1, 5 do
+    advance(timeline, nil, function(_, callback)
+      if callback == 2 then
+        released = true
+      end
+      return true
+    end)
+  end
+  Assert.isTrue(released, "the terminal wait rechecks until the voice completes")
+  Assert.isFalse(timeline:messageActive(), "the printer releases after the wait callback")
+  local outOfRange = pcall(function()
+    timeline:announce("A", false, 0, { { glyphIndex = 2, kind = "pause", updates = 1 } })
+  end)
+  Assert.isFalse(outOfRange, "printer controls cannot point past the rendered message")
+  local outOfOrder = pcall(function()
+    timeline:announce("AB", false, 0, {
+      { glyphIndex = 2, kind = "pause", updates = 1 },
+      { glyphIndex = 1, kind = "pause", updates = 1 },
+    })
+  end)
+  Assert.isFalse(outOfOrder, "printer controls must stay in source order")
 end
 
 -- subscript_0021_MoveFollowupMessage holds the previous page with

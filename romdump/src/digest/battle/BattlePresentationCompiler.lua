@@ -57,6 +57,28 @@ BattlePresentationCompiler.CANVAS_HEIGHT = 256
 
 local SUPPORTED_VERSIONS = { heartgold = true, soulsilver = true }
 
+local EVOLUTION_MESSAGE_IDS = {
+  4,
+  915,
+  916,
+  917,
+  918,
+  919,
+  1181,
+  1182,
+  1186,
+  1187,
+  1193,
+  1194,
+  1195,
+  1197,
+  1198,
+  1199,
+  1200,
+  1201,
+  1202,
+}
+
 local Sources = BattlePresentationSources
 local ROLES = Sources.ROLES
 
@@ -1305,6 +1327,7 @@ end
 ---@param decodedMessageBanks table<string, table<string, unknown>> decoded message banks by role
 ---@return table<string, { tokens: table[] }> entries by semantic key
 ---@return table<string, unknown> provenance source message ids by semantic key
+---@return table<string, unknown> producer-only EvolutionScene message selections
 local function tokenizeMessageEntries(decodedMessageBanks)
   local messageEntries = {}
   local messageProvenance = {}
@@ -1344,7 +1367,44 @@ local function tokenizeMessageEntries(decodedMessageBanks)
     messageEntries[key] = { tokens = tokens }
     messageProvenance[key] = { bankRole = source.bank, messageId = source.messageId }
   end
-  return messageEntries, messageProvenance
+  local evolutionEntries, evolutionProvenance =
+    BattlePresentationCompiler.compileEvolutionMessageEntries(decodedMessageBanks.scriptController)
+  for key, entry in pairs(evolutionEntries) do
+    messageEntries[key] = entry
+    messageProvenance[key] = evolutionProvenance[key]
+  end
+  return messageEntries, messageProvenance, evolutionProvenance
+end
+
+-- Normalizes the exact messages used by EvolutionScene_Run, keyed by
+-- source-independent semantic names. Physical bank/member identity stays
+-- in producer provenance.
+---@param bank UiMessageBank.Bank decoded evolution message bank
+---@return table<string, { tokens: table[] }> semantic entries by evolution message id
+---@return table<string, { bankRole: string, memberId: integer, messageId: integer }> producer-only source selection by key
+function BattlePresentationCompiler.compileEvolutionMessageEntries(bank)
+  local entries = {}
+  local provenance = {}
+  for _, messageId in ipairs(EVOLUTION_MESSAGE_IDS) do
+    local key = "evolution/" .. tostring(messageId)
+    local tokens, failure = UiMessageBank.tokens(bank, Sources.MESSAGE_BANKS.scriptController, messageId, charmap)
+    if tokens == nil then
+      error(
+        Errors.new("BATTLE_EVOLUTION_MESSAGE_INVALID", "EvolutionScene text record is absent or malformed", {
+          messageId = messageId,
+          cause = failure and failure.message or "unknown tokenizer failure",
+        }),
+        0
+      )
+    end
+    entries[key] = { tokens = tokens }
+    provenance[key] = {
+      bankRole = "scriptController",
+      memberId = Sources.MESSAGE_BANKS.scriptController,
+      messageId = messageId,
+    }
+  end
+  return entries, provenance
 end
 
 -- A source route's bank references as staged catalog keys: staged keys
@@ -1446,6 +1506,12 @@ end
 ---@field battleBalls table<string, BattlePresentationCache.BallEntry>? semantic ball animation frames and particles during global compilation
 ---@field ballImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only ball animation pixels
 ---@field ballParticlePngs table<string, string>? staged ball particle texture PNG bytes by cache path
+---@field evolutionParticles BattlePresentationCache.EvolutionParticleSet? normalized EvolutionScene SPL payload
+---@field evolutionParticlePngs table<string, string>? staged evolution particle texture PNG bytes by cache path
+---@field evolutionParticleProvenance { archiveSymbol: string, memberId: integer, particleMemberHash: string }? source identity and content hash
+---@field evolutionGraphics table<string, BattlePresentationCache.EvolutionGraphicsImage>? normalized EvolutionScene screen layers
+---@field evolutionGraphicsImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only EvolutionScene rasters
+---@field evolutionGraphicsProvenance table<string, unknown>? selected EvolutionScene source members
 
 ---@param staging BattleGlobalStaging
 ---@param resourceKey string semantic catalog key
@@ -2675,7 +2741,7 @@ local function compileBattleMessages(romFs, staging)
   end
   local trainerTables = Sources.TRAINER_MESSAGE_TABLES
   local trainerTableProvenance, _, trainerPairs = stageTrainerMessageTables(romFs, staging)
-  local messageEntries, messageProvenance = tokenizeMessageEntries(decodedMessageBanks)
+  local messageEntries, messageProvenance, evolutionMessageProvenance = tokenizeMessageEntries(decodedMessageBanks)
   local trainerPairRecords = {}
   for pairIndex, pair in ipairs(trainerPairs) do
     if pair.messageKind == 1 and trainerPairRecords[pair.trainerIndex] == nil then
@@ -2809,6 +2875,7 @@ local function compileBattleMessages(romFs, staging)
     trainerTableProvenance = trainerTableProvenance,
     entries = messageEntries,
     provenance = messageProvenance,
+    evolutionProvenance = evolutionMessageProvenance,
     routes = messageRoutes,
     dynamicRoutes = dynamicMessageRoutes,
     sourceRoutes = normalizedMessageSourceRoutes,
@@ -3154,6 +3221,234 @@ function BattlePresentationCompiler.compileBattleBalls(romFs)
   return entries, imageSlices, particlePngs
 end
 
+-- Compile the single EvolutionScene SPL resource and stage every texture
+-- as a PNG. The persisted payload contains normalized emitter records;
+-- archive/member identity and source hash remain producer provenance.
+---@param romFs RomFs
+---@return BattlePresentationCache.EvolutionParticleSet particles
+---@return table<string, string> texture PNG bytes by cache path
+---@return { archiveSymbol: string, memberId: integer, particleMemberHash: string } provenance
+function BattlePresentationCompiler.compileEvolutionParticles(romFs)
+  local source = Sources.EVOLUTION_PARTICLES
+  local archive = openArchive(romFs, source.archiveSymbol, "evolution particles")
+  local bytes = decodeMember(archive, source.memberId, "evolution particles")
+  local compiled, compileErr = SplEmitterCompiler.compile(bytes, {
+    emitterCount = source.emitterCount,
+    texturePath = BattlePresentationCache.evolutionParticleTexturePath,
+  })
+  if compiled == nil then
+    error(
+      Errors.new("BATTLE_PARTICLES_INVALID", "EvolutionScene SPL member failed to compile", {
+        memberId = source.memberId,
+        cause = tostring(compileErr),
+      }),
+      0
+    )
+  end
+  for index, emitter in ipairs(compiled.particles.emitters) do
+    if emitter.id ~= index - 1 then
+      error(
+        Errors.new("BATTLE_PARTICLES_INVALID", "EvolutionScene SPL emitter IDs are not the retail sequence", {
+          memberId = source.memberId,
+          index = index,
+          emitterId = emitter.id,
+        }),
+        0
+      )
+    end
+  end
+  local textures = {}
+  for _, texture in ipairs(compiled.particles.textures) do
+    textures[#textures + 1] = {
+      id = texture.id,
+      width = texture.width,
+      height = texture.height,
+      image = texture.image,
+    }
+  end
+  return {
+    seed = compiled.particles.seed,
+    emitters = compiled.particles.emitters,
+    textures = textures,
+  },
+    compiled.files,
+    {
+      archiveSymbol = source.archiveSymbol,
+      memberId = source.memberId,
+      particleMemberHash = compiled.dependencies.particleMemberHash,
+    }
+end
+
+-- Reconstruct the visible 256×192 windows from EvolutionScene's Nitro BG
+-- character, map and palette members. The DS maps may be 256 pixels tall;
+-- hardware displays only their first 192 rows. BG tile zero resolves through
+-- palette entry zero, matching the source display backdrop.
+---@param romFs RomFs
+---@return { records: BattlePresentationCache.EvolutionGraphics, images: table<string, { width: integer, height: integer, pixels: string }>, provenance: table<string, unknown> }
+function BattlePresentationCompiler.compileEvolutionGraphics(romFs)
+  local roles = Sources.EVOLUTION_GRAPHICS
+  local records = {}
+  local images = {}
+  local provenance = {}
+  for _, layerName in ipairs({ "main", "sub", "menu" }) do
+    local role = roles[layerName]
+    local archive = openArchive(romFs, role.archiveSymbol, "evolution " .. layerName .. " BG")
+    local paletteArchive = role.paletteArchiveSymbol == role.archiveSymbol and archive
+      or openArchive(romFs, role.paletteArchiveSymbol, "evolution " .. layerName .. " palette")
+    local chars = decodeChars(archive, role.characters, "evolution " .. layerName .. " characters")
+    local screen = decodeScreen(archive, role.screen, "evolution " .. layerName .. " screen")
+    local palette = decodePalette(paletteArchive, role.palette, "evolution " .. layerName .. " palette")
+    if screen.width ~= 256 or screen.height < 192 then
+      error(
+        Errors.new("BATTLE_SOURCE_UNEXPECTED", "EvolutionScene BG map does not cover a 256×192 display", {
+          layer = layerName,
+          width = screen.width,
+          height = screen.height,
+        }),
+        0
+      )
+    end
+    local full = G2dRasterizer.renderScreen(chars, palette, screen, {
+      asset = role.archiveSymbol,
+      member = role.screen,
+      role = "evolution " .. layerName,
+    }, { backdrop = true })
+    local rows = {}
+    local rowBytes = full.width * 4
+    for y = 0, 191 do
+      local start = y * rowBytes + 1
+      rows[#rows + 1] = full.pixels:sub(start, start + rowBytes - 1)
+    end
+    local raster = { width = 256, height = 192, pixels = table.concat(rows) }
+    local imagePath = BattlePresentationCache.evolutionGraphicsPath(layerName)
+    records[layerName] = { image = imagePath, width = raster.width, height = raster.height }
+    images[layerName] = raster
+    provenance[layerName] = {
+      archiveSymbol = role.archiveSymbol,
+      members = { characters = role.characters, screen = role.screen },
+      paletteArchiveSymbol = role.paletteArchiveSymbol,
+      paletteMember = role.palette,
+      characterMemberHash = Hashing.sha1hex(
+        decodeMember(archive, role.characters, "evolution " .. layerName .. " characters")
+      ),
+      screenMemberHash = Hashing.sha1hex(decodeMember(archive, role.screen, "evolution " .. layerName .. " screen")),
+      paletteMemberHash = Hashing.sha1hex(
+        decodeMember(paletteArchive, role.palette, "evolution " .. layerName .. " palette")
+      ),
+    }
+  end
+  local cursorSource = roles.cursor
+  local cursorArchive = openArchive(romFs, cursorSource.archiveSymbol, "evolution cursor")
+  local cursorCharacters = decodeChars(cursorArchive, cursorSource.characters, "evolution cursor characters")
+  assert(cursorCharacters.depth == 3, "EvolutionScene cursor characters use 4bpp tiles")
+  local cursorPalette = decodePalette(cursorArchive, cursorSource.palette, "evolution cursor palette")
+  local cursorCellBytes = decodeMember(cursorArchive, cursorSource.cell, "evolution cursor cells")
+  local cursorCells, cursorCellErr = G2dDecoder.decodeCell(cursorCellBytes, { label = "evolution cursor cells" })
+  cursorCells = mustDecode(cursorCells, cursorCellErr, "evolution cursor cells", cursorSource.cell)
+  local cursorMapping, cursorMappingErr =
+    G2dDecoder.decodeCellMapping(cursorCellBytes, { label = "evolution cursor cells" })
+  cursorMapping = mustDecode(cursorMapping, cursorMappingErr, "evolution cursor cell mapping", cursorSource.cell)
+  local cursorAnimationData = decodeAnimation(cursorArchive, cursorSource.animation, "evolution cursor animation")
+  local cursorAnimations = {}
+  local selectedSequences = {}
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    local sequence = cursorSource.sequences[animationRole]
+    local cursorAnimation = assert(
+      cursorAnimationData.anims[sequence + 1],
+      "EvolutionScene cursor has its source " .. animationRole .. " animation"
+    )
+    assert(#cursorAnimation.frames > 0, "EvolutionScene cursor " .. animationRole .. " animation has source frames")
+    local cursorFrames = {}
+    for sourceFrameIndex, sourceFrame in ipairs(cursorAnimation.frames) do
+      local cell = cursorCells.cells[sourceFrame.cell + 1]
+      local raster
+      if cell ~= nil and type(cell.objs) == "table" and #cell.objs == 0 then
+        raster = { width = 1, height = 1, pixels = string.rep("\0", 4), offset = { x = 0, y = 0 } }
+      else
+        raster = G2dRasterizer.renderAnimationFrame(
+          cursorCharacters,
+          cursorPalette,
+          cursorCells,
+          cursorAnimation,
+          sourceFrameIndex,
+          {
+            asset = cursorSource.archiveSymbol,
+            member = cursorSource.animation,
+            role = "evolution cursor " .. animationRole,
+            frame = sourceFrameIndex - 1,
+          },
+          nil,
+          cursorMapping
+        )
+      end
+      assert(
+        raster.width <= 256 and raster.height <= 192,
+        "EvolutionScene cursor's composed OBJ cell fits the 256×192 display area"
+      )
+      local frameIndex = sourceFrameIndex - 1
+      local imagePath = BattlePresentationCache.evolutionCursorFramePath(animationRole, frameIndex)
+      images["cursor-" .. animationRole .. "-" .. frameIndex] = raster
+      cursorFrames[#cursorFrames + 1] = {
+        drawableKey = "battle:evolution-cursor:" .. animationRole .. ":" .. frameIndex,
+        image = imagePath,
+        width = raster.width,
+        height = raster.height,
+        rasterOffset = raster.offset,
+        durationTicks = sourceFrame.duration,
+        sourceFrame = frameIndex,
+        userAttr = sourceFrame.userAttr or 0,
+      }
+    end
+    cursorAnimations[animationRole] = {
+      playMode = cursorAnimation.playMode,
+      loopStartFrameIdx = cursorAnimation.loopStartFrameIdx,
+      frames = cursorFrames,
+    }
+    selectedSequences[animationRole] = sequence
+  end
+  records.cursor = { animations = cursorAnimations }
+  provenance.cursor = {
+    archiveSymbol = cursorSource.archiveSymbol,
+    members = {
+      palette = cursorSource.palette,
+      characters = cursorSource.characters,
+      cell = cursorSource.cell,
+      animation = cursorSource.animation,
+    },
+    sequences = selectedSequences,
+    memberHashes = {
+      palette = Hashing.sha1hex(decodeMember(cursorArchive, cursorSource.palette, "evolution cursor palette")),
+      characters = Hashing.sha1hex(decodeMember(cursorArchive, cursorSource.characters, "evolution cursor characters")),
+      cell = Hashing.sha1hex(cursorCellBytes),
+      animation = Hashing.sha1hex(decodeMember(cursorArchive, cursorSource.animation, "evolution cursor animation")),
+    },
+  }
+  local textPaletteSource = Sources.EVOLUTION_MENU_TEXT_PALETTE
+  local textPaletteArchive = openArchive(romFs, textPaletteSource.archiveSymbol, "evolution menu text palette")
+  local decodedTextPalette =
+    decodePalette(textPaletteArchive, textPaletteSource.memberId, "evolution menu text palette")
+  assert(
+    #decodedTextPalette.colors >= textPaletteSource.colorCount,
+    "EvolutionScene menu font palette contains its loaded 16-color bank"
+  )
+  local textPaletteColors = {}
+  for colorIndex = 1, textPaletteSource.colorCount do
+    local color = assert(decodedTextPalette.colors[colorIndex], "EvolutionScene menu text palette entry exists")
+    textPaletteColors[colorIndex] = { r = color.r, g = color.g, b = color.b }
+  end
+  records.menuTextPalette = { colors = textPaletteColors }
+  provenance.menuTextPalette = {
+    archiveSymbol = textPaletteSource.archiveSymbol,
+    memberId = textPaletteSource.memberId,
+    destinationBank = textPaletteSource.destinationBank,
+    colorCount = textPaletteSource.colorCount,
+    paletteMemberHash = Hashing.sha1hex(
+      decodeMember(textPaletteArchive, textPaletteSource.memberId, "evolution menu text palette")
+    ),
+  }
+  return { records = records, images = images, provenance = provenance }
+end
+
 function BattlePresentationCompiler.compileGlobal(romFs, opts)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -3194,6 +3489,15 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     end
     staging.battleBalls, staging.ballImageSlices, staging.ballParticlePngs =
       BattlePresentationCompiler.compileBattleBalls(romFs)
+    staging.evolutionParticles, staging.evolutionParticlePngs, staging.evolutionParticleProvenance =
+      BattlePresentationCompiler.compileEvolutionParticles(romFs)
+    local evolutionGraphics = BattlePresentationCompiler.compileEvolutionGraphics(romFs)
+    staging.evolutionGraphics = evolutionGraphics.records
+    staging.evolutionGraphicsImageSlices = evolutionGraphics.images
+    staging.evolutionGraphicsProvenance = evolutionGraphics.provenance
+    for layerName, raster in pairs(evolutionGraphics.images) do
+      stageSlice("evolution-" .. layerName, raster.pixels, raster.width, raster.height)
+    end
     for imageName, raster in pairs(staging.ballImageSlices) do
       stageSlice(imageName, raster.pixels, raster.width, raster.height)
     end
@@ -3799,6 +4103,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       },
       trainerPictures = { entries = staging.trainerPictures },
       battleBalls = { entries = staging.battleBalls },
+      evolutionParticles = staging.evolutionParticles,
+      evolutionGraphics = staging.evolutionGraphics,
       menus = {
         images = imageManifest,
         layouts = menuLayouts,
@@ -3899,6 +4205,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       recorderFeedbackUnreachableFlags = Sources.RECORDER_FEEDBACK_UNREACHABLE_FLAGS,
       frontierTrainerMessageRoute = Sources.FRONTIER_TRAINER_MESSAGE_ROUTE,
       transitionMessage = messages.transitionMessageProvenance,
+      evolutionMessages = messages.evolutionProvenance,
       transitionMessageRoutes = Sources.TRANSITION_MESSAGE_SOURCE_ROUTES,
       messageDependencies = messages.dependencies,
       transitionResources = transition.provenance,
@@ -3917,6 +4224,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       transitionSourceResources = transition.sourceResources,
       transitionResourceMembers = transition.resourceMembers,
       transitionParticleMembers = transition.particleMembers,
+      evolutionParticles = staging.evolutionParticleProvenance,
+      evolutionGraphics = staging.evolutionGraphicsProvenance,
       menuTilemaps = menuTilemapProvenance,
       menuLayouts = menuLayoutProvenance,
       menuLayerIndices = menuLayerIndices,
@@ -3940,7 +4249,16 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     return {
       manifest = partialManifest,
       images = images,
-      pngImages = staging.ballParticlePngs,
+      pngImages = (function()
+        local pngImages = {}
+        for path, bytes in pairs(staging.ballParticlePngs) do
+          pngImages[path] = bytes
+        end
+        for path, bytes in pairs(staging.evolutionParticlePngs) do
+          pngImages[path] = bytes
+        end
+        return pngImages
+      end)(),
       resourcePayloads = resourcePayloads,
       provenance = provenance,
       blockers = blockers,

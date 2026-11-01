@@ -5,7 +5,7 @@
 -- evolution_scene.c EVO_STATE_TRY_LEARN_MOVE: only the staged species'
 -- learnset entries whose level equals the current level are offered, in
 -- learnset order with already-known moves passing silently; free move
--- slots fill silently while a full set pauses for an explicit
+-- slots return an ordered learned-message prompt while a full set pauses for an explicit
 -- replace-or-decline decision, retail msg_0197_01193), and publishes the
 -- whole result at once on capture. The full-set choice stays on the
 -- learn_move prompt; the PokemonSummary mode-2 replacement screen is a
@@ -97,13 +97,14 @@ function EvolutionFlow.start(mon, context, catalog)
     _complete = false,
     _cursor = 1,
     _pending = nil,
+    _announcing = nil,
     _result = nil,
   }
 end
 
--- Reports the next prompt: the opening confirmation, one learning decision
--- per full-set opportunity, or the terminal descriptor. Free move slots
--- fill silently inside the step; already-known opportunities are skipped.
+-- Reports the next prompt: the opening confirmation, each free-slot
+-- learned-message beat, one decision per full-set opportunity, or the
+-- terminal descriptor. Already-known opportunities are skipped.
 ---@param flow table<string, unknown>
 ---@return table<string, unknown>
 function EvolutionFlow.step(flow)
@@ -122,6 +123,13 @@ function EvolutionFlow.step(flow)
   if flow._pending ~= nil then
     return learnPrompt(flow._pending, flow._staged)
   end
+  if flow._announcing ~= nil then
+    return {
+      prompt = "move_learned",
+      move = flow._announcing.move,
+      level = flow._announcing.level,
+    }
+  end
   local catalog = assert(flow._catalog, "evolution flows read their catalog")
   local opportunities = assert(plan.learningOpportunities, "evolution flows read staged learning")
   while flow._cursor <= #opportunities do
@@ -134,6 +142,12 @@ function EvolutionFlow.step(flow)
       assert(filled.applied, "a free move slot accepts evolution learning")
       flow._staged = filled.mon
       flow._cursor = flow._cursor + 1
+      flow._announcing = opportunity
+      return {
+        prompt = "move_learned",
+        move = opportunity.move,
+        level = opportunity.level,
+      }
     else
       flow._pending = opportunity
       return learnPrompt(opportunity, flow._staged)
@@ -153,6 +167,11 @@ function EvolutionFlow.respond(flow, reply)
   checkFlow(flow)
   assert(type(reply) == "table", "flow replies form a record")
   assert(not flow._complete and not flow._cancelled, "the flow already resolved its prompts")
+  if flow._announcing ~= nil then
+    assert(reply.choice == "continue", "announced free-slot learning continues after its retail message")
+    flow._announcing = nil
+    return
+  end
   if flow._pending ~= nil then
     local pending = flow._pending
     local choice = reply.choice

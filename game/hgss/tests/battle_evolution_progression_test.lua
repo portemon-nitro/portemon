@@ -405,6 +405,19 @@ local function openEvolutionRig(opts)
     rig.audio.plays[#rig.audio.plays + 1] = symbol
     return true
   end
+  function rig.audio.playMusic(_, symbol)
+    rig.audio.plays[#rig.audio.plays + 1] = symbol
+    return true
+  end
+  function rig.audio.stopMusic(_)
+    return true
+  end
+  function rig.audio.isFanfarePlaying(_)
+    return false
+  end
+  function rig.audio.isEffectWaitComplete(_)
+    return true
+  end
   function rig.audio.stop(_, _)
     return true
   end
@@ -500,9 +513,17 @@ end
 -- would, so the terminal outcome can be observed and acknowledged.
 ---@param rig table live evolution rig under test driving
 local function ackNarration(rig)
-  local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  local status = rig.screen:status()
+  local mode = status.mode
+  if
+    status.completion == nil
+    and (
+      mode == "intro"
+      or mode == "narration"
+      or mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
+    )
   then
     rig.screen:input({ { type = "confirm" } })
   end
@@ -557,9 +578,15 @@ local function driveToCommitted(rig, budget)
     end
   end
   local status = rig.battle:status()
-  error("the evolution battle never published its commit receipt (phase=" .. tostring(status.phase)
-    .. ", request=" .. tostring(status.request and status.request.kind)
-    .. ", result=" .. tostring(status.result) .. ")")
+  error(
+    "the evolution battle never published its commit receipt (phase="
+      .. tostring(status.phase)
+      .. ", request="
+      .. tostring(status.request and status.request.kind)
+      .. ", result="
+      .. tostring(status.result)
+      .. ")"
+  )
 end
 
 -- Waits for the postbattle evolution decision through the real completion
@@ -591,14 +618,74 @@ local function runEvolutionHandsFree(rig, budget)
   for _ = 1, budget do
     rig.pump(1)
     ackNarration(rig)
-    if rig.battle:status().phase == "complete" then
+    local battleStatus = rig.battle:status()
+    local screenStatus = rig.screen:status()
+    if battleStatus.phase == "complete" then
       return
     end
-    if rig.battle:status().phase == "failed" then
-      error("the evolution run failed: " .. tostring(rig.battle:status().error), 0)
+    if battleStatus.phase == "failed" then
+      error("the evolution run failed: " .. tostring(battleStatus.error), 0)
+    end
+    if screenStatus.mode == "failed" then
+      error("the evolution screen failed: " .. tostring(screenStatus.error), 0)
+    end
+    local childView = rig.screen:_snapshot().childView
+    if type(childView) == "table" and childView.kind == "evolution" and childView.learn ~= nil then
+      local menu = childView.presentation.learnMenu
+      if type(menu) == "table" and menu.selecting ~= true then
+        if menu.kind == "delete" and menu.focus == 0 then
+          rig.screen:input({ { type = "navigate", direction = "down" } })
+        elseif menu.kind == "delete" and menu.focus == 1 or menu.kind == "stop" and menu.focus == 0 then
+          rig.screen:input({ { type = "confirm" } })
+        end
+      end
     end
   end
-  error("the offered evolution never settled back to the field")
+  local screenStatus = rig.screen:status()
+  local child = rig.screen:_snapshot().childView
+  local childPresentation = type(child) == "table" and child.presentation or nil
+  local menu = type(childPresentation) == "table" and childPresentation.learnMenu or nil
+  local completion = rig.screen._completion
+  local childStatus = type(rig.screen._completionChild) == "table" and rig.screen._completionChild:status() or nil
+  local childEffects = type(rig.screen._completionChild) == "table" and rig.screen._completionChild:effects() or {}
+  error(
+    "the offered evolution never settled back to the field (stage="
+      .. tostring(type(screenStatus.completion) == "table" and screenStatus.completion.stage)
+      .. ", child="
+      .. tostring(type(child) == "table" and child.kind)
+      .. ", phase="
+      .. tostring(type(child) == "table" and child.phase)
+      .. ", menu="
+      .. tostring(type(menu) == "table" and menu.kind)
+      .. ", focus="
+      .. tostring(type(menu) == "table" and menu.focus)
+      .. ", selecting="
+      .. tostring(type(menu) == "table" and menu.selecting)
+      .. ", printer="
+      .. tostring(type(completion) == "table" and completion.printerMessageId)
+      .. ", active="
+      .. tostring(rig.screen._timeline:messageActive())
+      .. ", busy="
+      .. tostring(rig.screen._timeline:busy())
+      .. ", pending="
+      .. tostring(type(childStatus) == "table" and childStatus.printerPending)
+      .. ", printWhat="
+      .. tostring(type(childStatus) == "table" and childStatus.printWhat)
+      .. ", message="
+      .. tostring(rig.screen._timeline:message())
+      .. ", effectCursor="
+      .. tostring(type(completion) == "table" and completion.effectCursor)
+      .. ", effects="
+      .. tostring(#childEffects)
+      .. ", palette="
+      .. tostring(type(completion) == "table" and completion.paletteFade ~= nil)
+      .. ", assets="
+      .. tostring(rig.screen._assets:state())
+      .. ", screen="
+      .. tostring(screenStatus.mode)
+      .. ", error="
+      .. tostring(screenStatus.error)
+  )
 end
 
 local function singleTackle()
@@ -1000,7 +1087,14 @@ function T.cancelled_first_member_yields_to_the_second()
       break
     end
   end
-  Assert.isTrue(secondOffered, "declining the first member still offers the second")
+  Assert.isTrue(
+    secondOffered,
+    "declining the first member still offers the second (screen="
+      .. tostring(rig.screen:status().mode)
+      .. ", error="
+      .. tostring(rig.screen:status().error)
+      .. ")"
+  )
   runEvolutionHandsFree(rig, 1500)
   Assert.equal(rig.battle:status().phase, "complete", "the yielded sequence still returns to the field")
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
@@ -1044,7 +1138,15 @@ function T.declined_evolution_registers_no_caught_flag()
       error("the declined evolution failed: " .. tostring(rig.battle:status().error), 0)
     end
   end
-  Assert.equal(rig.battle:status().phase, "complete", "the declined evolution still returns to the field")
+  Assert.equal(
+    rig.battle:status().phase,
+    "complete",
+    "the declined evolution still returns to the field (screen="
+      .. tostring(rig.screen:status().mode)
+      .. ", error="
+      .. tostring(rig.screen:status().error)
+      .. ")"
+  )
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
   Assert.isFalse(dex:isCaught("TOTODILE"), "the declined evolution registers no caught flag")
   rig.battle:dispose()
@@ -1170,7 +1272,15 @@ function T.declined_evolution_counts_nothing()
       error("the declined evolution failed: " .. tostring(rig.battle:status().error), 0)
     end
   end
-  Assert.equal(rig.battle:status().phase, "complete", "the declined evolution still returns to the field")
+  Assert.equal(
+    rig.battle:status().phase,
+    "complete",
+    "the declined evolution still returns to the field (screen="
+      .. tostring(rig.screen:status().mode)
+      .. ", error="
+      .. tostring(rig.screen:status().error)
+      .. ")"
+  )
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
   Assert.equal(stats:uniqueCount(), 0, "the declined evolution counts nothing")
   Assert.equal(stats:score(), 0, "the declined evolution awards no points")

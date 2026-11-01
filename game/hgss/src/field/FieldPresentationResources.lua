@@ -102,6 +102,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field _summaryBinding integer? installed summary preparation binding identity
 ---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
 ---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
+---@field summaryManifest table<string, unknown>? validated generated Summary family
 ---@field _pokedexBinding integer? installed pokedex preparation binding identity
 ---@field pokedexResources PokedexPresentationResources? the one lazily owned field pokedex preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
@@ -574,6 +575,7 @@ function FieldPresentationResources.new(runtime)
     -- field never starts without its preparation capability. No image
     -- realizes here; a wrapper lease demands visuals later.
     self.summaryRenderer = SummaryRenderer.new({ text = textRenderer })
+    self.summaryManifest = SummaryCache.loadManifest(runtime.cacheFs)
     self.summaryResources = SummaryPresentationResources.new({
       cacheFs = runtime.cacheFs,
       graphics = assert(love and love.graphics, "summary preparation needs its graphics namespace"),
@@ -581,7 +583,7 @@ function FieldPresentationResources.new(runtime)
       icons = provider,
       imagePool = sharedImages,
       derivedAssets = runtime.derivedAssets or {},
-      manifest = SummaryCache.loadManifest(runtime.cacheFs),
+      manifest = self.summaryManifest,
     })
     local bindSummaryPreparation =
       assert(runtime.bindSummaryPreparation, "presented summary preparation requires the runtime preparation binding")

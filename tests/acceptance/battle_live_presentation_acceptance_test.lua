@@ -19,6 +19,7 @@ local T = {
     capabilities = { "rom_dump" },
     derivedAssets = {
       "field-runtime",
+      "audio-bank:702",
       "battle-presentation:global",
       "map-data:7",
       "map-data:61",
@@ -125,7 +126,19 @@ local function presentationServices()
       play = function()
         return true
       end,
+      playMusic = function()
+        return true
+      end,
+      playFanfare = function()
+        return true
+      end,
+      isFanfarePlaying = function()
+        return false
+      end,
       stop = function()
+        return true
+      end,
+      stopMusic = function()
         return true
       end,
     },
@@ -133,7 +146,8 @@ local function presentationServices()
 end
 
 local function foeRecord(catalog, species, seed, name)
-  local record = CatalogFixture.makeFactory(seed, catalog):createNormal(CatalogFixture.normalRequest({ species = species, level = 8 }))
+  local record = CatalogFixture.makeFactory(seed, catalog)
+    :createNormal(CatalogFixture.normalRequest({ species = species, level = 8 }))
   record.nickname = name
   record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   return record
@@ -395,20 +409,244 @@ local function assertTargetMenuJourney(game)
   end
 end
 
+-- Uses the production HGSS party, battle, completion child, and presentation
+-- port with ROM-derived evolution rules, through the retail congratulations
+-- line before the acceptance render trap permits any GPU operation.
+local function assertEvolutionSceneJourney(game)
+  local service = game.runtime.monService
+  Assert.isTrue(
+    service:giveMon({ species = "CYNDAQUIL", level = 13, heldItem = "NONE", form = 0 }),
+    "the party needs a level-eligible evolution subject"
+  )
+  service:setMove(0, 0, "TACKLE")
+  local catalog = service:catalog()
+  local subject = assert(service:partyMon(0), "the evolution candidate is readable")
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local growthCurve = catalog:growthCurve(catalog:species(subject.species).growthCurve)
+  subject.experience = Experience.expFor(growthCurve, 14) - 1
+  local preparation = assert(
+    service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = subject } }),
+    "the evolution candidate accepts its staged experience"
+  )
+  preparation.publish()
+  local enemy = foeRecord(catalog, "CHANSEY", 20, "PRACTICE")
+  enemy.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+
+  local launchId = "acceptance-evolution-presentation-" .. game.versionId
+  local launch = {
+    id = launchId,
+    kind = "wild",
+    payload = { species = "CHANSEY", level = 20, mon = enemy },
+  }
+  local scenario = require("libs.hgss.src.battle.HgssBattleScenarioFactory").fromEncounter(launch.payload, {
+    party = service,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      language = "english",
+    },
+  })
+  local manifest = assert(
+    BattlePresentationCache.load(CacheFs.forVersion(game.versionId)),
+    "the ready version carries verified battle presentation resources"
+  )
+  local presentation = presentationServices()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local battle
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = manifest,
+    model = require("game.hgss.src.battle.BattlePresentationModel"),
+    submit = function(reply)
+      return battle:submit(reply)
+    end,
+    measureDisplay = measurement,
+    assets = presentation.assets,
+    text = presentation.text,
+    windows = presentation.windows,
+    audio = presentation.audio,
+    monCatalog = catalog,
+    monIconProvider = {
+      frame = function()
+        return drawable("evolution-icon")
+      end,
+    },
+  })
+  battle = require("game.hgss.src.battle.BattleRuntime").new({
+    request = launch,
+    scenario = scenario,
+    presentation = screen:presentationPort(),
+    party = service,
+    seed = 0xE7010710,
+    evolutionContext = { timeOfDay = "day", mapId = 7 },
+  })
+
+  local ok, err = xpcall(function()
+    local sceneView = nil
+    local evolvedLine = nil
+    for _ = 1, 5000 do
+      local screenStatus = screen:status()
+      local liveView = screen:view()
+      if type(screenStatus.completion) == "table" and screenStatus.completion.kind == "evolution" then
+        local completionChild = screen:_snapshot().childView
+        Assert.isTrue(
+          type(completionChild) == "table" and completionChild.kind == "evolution",
+          "an open evolution completion publishes the renderer's scene view"
+        )
+      end
+      if
+        screenStatus.mode == "intro"
+        or screenStatus.mode == "narration"
+        or screenStatus.mode == "outcome"
+        or liveView.levelUpStats ~= nil
+      then
+        screen:input({ { type = "confirm" } })
+      end
+      game:step()
+      battle:update()
+      screen:updateFixed(TICK)
+
+      local child = screen:_snapshot().childView
+      if type(child) == "table" and child.kind == "evolution" then
+        local childPresentation = child.presentation --[[@as table<string, unknown>?]]
+        local scene = type(childPresentation) == "table" and childPresentation.scene or nil
+        local particles = type(scene) == "table" and scene.particles or nil
+        local emitters = type(particles) == "table" and particles.emitters or nil
+        if sceneView == nil and type(emitters) == "table" and emitters[1] == 0 then
+          sceneView = child
+        end
+        if child.phase == "evolved_message" then
+          local sourcePresentation = type(childPresentation) == "table" and childPresentation.presentation or nil
+          local message = type(sourcePresentation) == "table" and sourcePresentation.message or nil
+          if type(message) == "string" then
+            local normalized = message:lower()
+            if normalized:find("cyndaquil", 1, true) and normalized:find("quilava", 1, true) then
+              evolvedLine = message
+              break
+            end
+          end
+        end
+      end
+
+      local status = battle:status()
+      Assert.isFalse(status.phase == "failed", "the live evolution battle stays composed: " .. tostring(status.error))
+      if status.phase == "running" and status.request ~= nil then
+        local request = status.request
+        local fragment
+        if request.kind == "learn_move" then
+          local actor = assert(request.actors[1], "mid-battle learning names its actor")
+          fragment = { actor = actor, kind = "confirm", payload = { decision = "decline" } }
+        else
+          local actor = assert(request.actors[1], "the attack request names its actor")
+          fragment = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        end
+        local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, { fragment }))
+        Assert.isTrue(accepted, "the production battle decision is accepted: " .. tostring(replyErr))
+      end
+    end
+
+    local after = service:partyMon(0)
+    local finalScreenStatus = screen:status()
+    Assert.isTrue(
+      sceneView ~= nil,
+      "the leveled Cyndaquil opens its post-battle evolution scene (battle="
+        .. tostring(battle:status().phase)
+        .. ", result="
+        .. tostring(battle:status().result)
+        .. ", species="
+        .. tostring(after.species)
+        .. ", level="
+        .. tostring(Experience.level(growthCurve, after.experience))
+        .. ", screen="
+        .. tostring(finalScreenStatus.mode)
+        .. ", ready="
+        .. tostring(finalScreenStatus.ready)
+        .. ", error="
+        .. tostring(finalScreenStatus.error)
+        .. ", completion="
+        .. tostring(screen:status().completion and screen:status().completion.stage)
+        .. ")"
+    )
+    local view = assert(sceneView --[[@as table<string, unknown>]]).presentation
+    Assert.isTrue(type(view) == "table", "the evolution child publishes its scene presentation")
+    Assert.equal(view.kind, "evolution", "the presentation identifies the evolution scene")
+    local scene = assert(view.scene, "the evolution view describes both retail display surfaces")
+    Assert.equal(scene.main.kind, "main", "the upper display owns the evolving Pokepics")
+    Assert.equal(scene.sub.kind, "sub", "the lower display owns the evolution sub-screen")
+    Assert.equal(scene.main.oldSpecies, "CYNDAQUIL", "the old Pokepic shows the committed subject")
+    Assert.equal(scene.main.newSpecies, "QUILAVA", "the new Pokepic shows the staged target")
+    Assert.equal(scene.main.pictureCenter.x, 128, "both Pokepics use the retail horizontal center")
+    Assert.equal(scene.main.pictureCenter.y, 80, "both Pokepics use the retail vertical center")
+    Assert.equal(scene.particles.identity, "evolution", "the normalized particle set identifies its evolution role")
+    Assert.equal(scene.particles.resource, 0, "the evolution scene loads SPL resource zero")
+    Assert.deepEqual(scene.particles.emitters, { 0 }, "the scene's first SPL emitter request is emitter zero")
+    local firstEvents = {}
+    local expectedEvents = {
+      { kind = "message", id = 916 },
+      { kind = "cry", species = "CYNDAQUIL", form = 0 },
+      { kind = "message", id = 917 },
+      { kind = "music", sequence = 1011 },
+    }
+    for index = 1, #expectedEvents do
+      firstEvents[index] = scene.events[index]
+    end
+    Assert.deepEqual(
+      firstEvents,
+      expectedEvents,
+      "the first scene effects follow the retail cry/message/music boundary"
+    )
+    local normalizedLine = assert(evolvedLine, "the live scene prints its congratulations after the new cry"):lower()
+    Assert.isTrue(
+      normalizedLine:find("cyndaquil", 1, true) ~= nil and normalizedLine:find("quilava", 1, true) ~= nil,
+      "the congratulations line keeps the old mon name and target species distinct"
+    )
+  end, debug.traceback)
+  screen:dispose()
+  battle:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.tests.live_battle_projects_status_and_drives_the_target_menu()
   local versionId = AcceptanceHarness.defaultVersion()
   local game = harness():boot({ versionId = versionId, map = MAP, save = "fresh" })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
     local party = game.runtime.monService
-    Assert.isTrue(party:giveMon({ species = "GASTLY", level = 20, heldItem = "NONE", form = 0 }), "the lead joins the live party")
-    Assert.isTrue(party:giveMon({ species = "CYNDAQUIL", level = 8, heldItem = "NONE", form = 0 }), "the partner joins the live party")
+    Assert.isTrue(
+      party:giveMon({ species = "GASTLY", level = 20, heldItem = "NONE", form = 0 }),
+      "the lead joins the live party"
+    )
+    Assert.isTrue(
+      party:giveMon({ species = "CYNDAQUIL", level = 8, heldItem = "NONE", form = 0 }),
+      "the partner joins the live party"
+    )
     assertHypnosisSleepProjection(game)
     assertTargetMenuJourney(game)
   end, debug.traceback)
   game:close()
   if ok then
     Assert.equal(game:renderAttempts(), 0, "the journeys stop before GPU rendering")
+    Assert.isNil(love.filesystem.getInfo(game.saveNamespace), "teardown removes the isolated save namespace")
+  end
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.tests.live_battle_opens_the_rom_derived_evolution_scene()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local game = harness():boot({ versionId = versionId, map = MAP, save = "fresh" })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    assertEvolutionSceneJourney(game)
+  end, debug.traceback)
+  game:close()
+  if ok then
+    Assert.equal(game:renderAttempts(), 0, "the evolution journey stops before GPU rendering")
     Assert.isNil(love.filesystem.getInfo(game.saveNamespace), "teardown removes the isolated save namespace")
   end
   if not ok then

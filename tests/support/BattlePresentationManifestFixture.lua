@@ -315,8 +315,21 @@ local function manifest()
       end
     end
   end
+  local evolutionTexture = "assets/generated/battle/evolution-particles-0.png"
+  local evolutionSourceEmitter =
+    require("tests.support.BattleEncounterParticlesFixture").sets("general/grass/day")[1].emitters[1]
+  local evolutionEmitters = {}
+  for emitterId = 0, 12 do
+    local emitter = {}
+    for key, value in pairs(evolutionSourceEmitter) do
+      emitter[key] = value
+    end
+    emitter.id = emitterId
+    emitter.textureImage = evolutionTexture
+    evolutionEmitters[#evolutionEmitters + 1] = emitter
+  end
   local old = {
-    schema = "g4-battle-presentation-v10",
+    schema = "g4-battle-presentation-v11",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -325,6 +338,11 @@ local function manifest()
       ["assets/generated/battle/menu-command-1.png"] = { width = 256, height = 256 },
       ["assets/generated/battle/menu-frontier-layout.png"] = { width = 256, height = 256 },
       ["assets/generated/battle/menu-vs-recorder-layout.png"] = { width = 256, height = 256 },
+      ["assets/generated/battle/evolution-cursor-idle-0.png"] = { width = 256, height = 48 },
+      ["assets/generated/battle/evolution-cursor-select-0.png"] = { width = 1, height = 1 },
+      ["assets/generated/battle/evolution-cursor-select-1.png"] = { width = 256, height = 48 },
+      ["assets/generated/battle/evolution-cursor-select-2.png"] = { width = 1, height = 1 },
+      ["assets/generated/battle/evolution-cursor-select-3.png"] = { width = 256, height = 48 },
       ["assets/generated/battle/lower-chars.png"] = { width = 3072, height = 8 },
       ["assets/generated/battle/hud-player-chars.png"] = { width = 1648, height = 8 },
       ["assets/generated/battle/hud-enemy-chars.png"] = { width = 1648, height = 8 },
@@ -339,6 +357,9 @@ local function manifest()
       ["assets/generated/battle/gauges-1-chars.png"] = { width = 512, height = 8 },
       ["assets/generated/battle/pokepic-shadow.png"] = { width = 64, height = 64 },
       ["assets/generated/battle/battle-ball-POKE_BALL-0.png"] = { width = 16, height = 16 },
+      ["assets/generated/battle/evolution-main.png"] = { width = 256, height = 192 },
+      ["assets/generated/battle/evolution-sub.png"] = { width = 256, height = 192 },
+      ["assets/generated/battle/evolution-menu.png"] = { width = 256, height = 192 },
     },
     command = menuSection(),
     moves = menuSection(),
@@ -576,6 +597,30 @@ local function manifest()
   old.images["assets/generated/battle/trainer-front-YOUNGSTER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-front-LEADER_FALKNER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"] = { width = 80, height = 80 }
+  local pictureSelectors = { exemplar = "pokemon/CHIKORITA/form-0/male/back" }
+  local pictureAttribute = old.pictureAttributes["pokemon/CHIKORITA/form-0/male/back"]
+  for _, species in ipairs({ "EEVEE", "TOTODILE", "PICHU", "NINCADA", "NINJASK", "SHEDINJA", "SENTRET", "FURRET" }) do
+    for _, gender in ipairs({ "male", "female" }) do
+      for _, facing in ipairs({ "front", "back" }) do
+        local key = "pokemon/" .. species .. "/form-0/" .. gender .. "/" .. facing
+        local record = {
+          height = pictureAttribute.height,
+          animation = pictureAttribute.animation,
+        }
+        if facing == "front" then
+          record.shadow = { height = 0, xOffset = 0, size = 0 }
+        end
+        old.pictureAttributes[key] = record
+        pictureSelectors[key] = {
+          species = species,
+          form = 0,
+          gender = gender,
+          facing = facing,
+          attributes = key,
+        }
+      end
+    end
+  end
   return {
     schema = old.schema,
     version = old.version,
@@ -682,7 +727,7 @@ local function manifest()
     },
     pictures = {
       attributes = old.pictureAttributes,
-      selectors = { exemplar = "pokemon/CHIKORITA/form-0/male/back" },
+      selectors = pictureSelectors,
       shadow = {
         image = "assets/generated/battle/pokepic-shadow.png",
         width = 64,
@@ -755,6 +800,83 @@ local function manifest()
               image = "assets/generated/battle/battle-ball-POKE_BALL-0.png",
               width = 16,
               height = 16,
+            },
+          },
+        },
+      },
+    },
+    evolutionParticles = {
+      seed = 0,
+      emitters = evolutionEmitters,
+      textures = { { id = 0, width = 32, height = 32, image = evolutionTexture } },
+    },
+    evolutionGraphics = {
+      main = { image = "assets/generated/battle/evolution-main.png", width = 256, height = 192 },
+      sub = { image = "assets/generated/battle/evolution-sub.png", width = 256, height = 192 },
+      menu = { image = "assets/generated/battle/evolution-menu.png", width = 256, height = 192 },
+      menuTextPalette = printerPalette(1),
+      cursor = {
+        animations = {
+          idle = {
+            playMode = "forward_loop",
+            loopStartFrameIdx = 0,
+            frames = {
+              {
+                drawableKey = "battle:evolution-cursor:idle:0",
+                image = "assets/generated/battle/evolution-cursor-idle-0.png",
+                width = 256,
+                height = 48,
+                rasterOffset = { x = -128, y = -24 },
+                durationTicks = 4,
+                sourceFrame = 0,
+                userAttr = 0,
+              },
+            },
+          },
+          select = {
+            playMode = "forward",
+            loopStartFrameIdx = 0,
+            frames = {
+              {
+                drawableKey = "battle:evolution-cursor:select:0",
+                image = "assets/generated/battle/evolution-cursor-select-0.png",
+                width = 1,
+                height = 1,
+                rasterOffset = { x = 0, y = 0 },
+                durationTicks = 4,
+                sourceFrame = 0,
+                userAttr = 0,
+              },
+              {
+                drawableKey = "battle:evolution-cursor:select:1",
+                image = "assets/generated/battle/evolution-cursor-select-1.png",
+                width = 256,
+                height = 48,
+                rasterOffset = { x = -128, y = -24 },
+                durationTicks = 4,
+                sourceFrame = 1,
+                userAttr = 0,
+              },
+              {
+                drawableKey = "battle:evolution-cursor:select:2",
+                image = "assets/generated/battle/evolution-cursor-select-2.png",
+                width = 1,
+                height = 1,
+                rasterOffset = { x = 0, y = 0 },
+                durationTicks = 4,
+                sourceFrame = 2,
+                userAttr = 0,
+              },
+              {
+                drawableKey = "battle:evolution-cursor:select:3",
+                image = "assets/generated/battle/evolution-cursor-select-3.png",
+                width = 256,
+                height = 48,
+                rasterOffset = { x = -128, y = -24 },
+                durationTicks = 2,
+                sourceFrame = 3,
+                userAttr = 0,
+              },
             },
           },
         },
@@ -1211,6 +1333,25 @@ local function manifest()
         ["label/yes"] = menuLabel("Yes"),
         ["label/no"] = menuLabel("No"),
         ["label/keep-move"] = menuLabel("Keep old moves!"),
+        ["evolution/4"] = messageRecord({ false, " learned ", false, "!" }),
+        ["evolution/915"] = messageRecord({ false, " is evolving!" }),
+        ["evolution/916"] = messageRecord({ "What?" }),
+        ["evolution/917"] = messageRecord({ false, " is evolving!" }),
+        ["evolution/918"] = messageRecord({ "Congratulations! ", false, " evolved into ", false, "!" }),
+        ["evolution/919"] = messageRecord({ false, " stopped evolving." }),
+        ["evolution/1181"] = messageRecord({ "Yes" }),
+        ["evolution/1182"] = messageRecord({ "No" }),
+        ["evolution/1186"] = { tokens = { { kind = "substitution", control = 0x0106, args = { 0, 0 } } } },
+        ["evolution/1187"] = { tokens = { { kind = "substitution", control = 0x0106, args = { 0, 0 } } } },
+        ["evolution/1193"] = messageRecord({ false, " wants to learn ", false, "!" }),
+        ["evolution/1194"] = messageRecord({ false, " already knows four moves." }),
+        ["evolution/1195"] = messageRecord({ "Should it forget a move?" }),
+        ["evolution/1197"] = messageRecord({ "Stop trying to learn ", false, "?" }),
+        ["evolution/1198"] = messageRecord({ false, " did not learn ", false, "." }),
+        ["evolution/1199"] = messageRecord({ "1, 2, and..." }),
+        ["evolution/1200"] = messageRecord({ false, " forgot ", false, "!" }),
+        ["evolution/1201"] = messageRecord({ "And..." }),
+        ["evolution/1202"] = messageRecord({ false, " learned ", false, "!" }),
         ["label/forget-move"] = menuLabel("Forget a move!"),
         ["label/recorder-stop"] = { tokens = {} },
         ["template/bug-contest-level"] = { tokens = {} },

@@ -319,8 +319,15 @@ end
 local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   local measurement = dualMeasurement()
+  local FieldInput = require("libs.hgss.src.field.FieldInput")
   return setmetatable({
     monNaming = InactiveMonNaming.new(),
+    monService = {
+      partyCount = function()
+        return 1
+      end,
+    },
+    input = FieldInput.new(),
     cacheFs = cache,
     assetNeeds = AssetNeedsRegistry.new(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
@@ -344,6 +351,18 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
       return 1
     end,
     unbindPartyIconPreparation = function(_, _) end,
+    bindSummaryPreparation = function(self, acquire)
+      assert(type(acquire) == "function", "summary preparation binding requires its acquire function")
+      assert(self._summaryPreparation == nil, "one summary preparation binding owns the presented lifetime")
+      self._summaryPreparation = { id = 1, acquire = acquire }
+      return self._summaryPreparation.id
+    end,
+    unbindSummaryPreparation = function(self, binding)
+      local current = self._summaryPreparation
+      if current ~= nil and current.id == binding then
+        self._summaryPreparation = nil
+      end
+    end,
     bindBattlePresentation = function(self, factory)
       assert(type(factory) == "function", "battle presentation binding requires its factory function")
       assert(self.battlePresentation == nil, "one battle presentation binding owns the presented lifetime")
@@ -670,7 +689,11 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "confirming the known slot submits")
-  Assert.equal(countCalls(audio.calls, "play"), 3, "the accepted reply plays its selection once beside the two encounter sounds")
+  Assert.equal(
+    countCalls(audio.calls, "play"),
+    3,
+    "the accepted reply plays its selection once beside the two encounter sounds"
+  )
   local select
   for _, call in ipairs(audio.calls) do
     if call.method == "play" then
