@@ -58,6 +58,9 @@ jobs:
             | sudo tee /usr/local/bin/lua-language-server >/dev/null
           sudo chmod +x /usr/local/bin/lua-language-server
 
+      - name: Install runtime required by repository setup
+        run: scripts/lib/repo-setup.sh --yes
+
       - name: Run lint checks
         run: scripts/lint.sh --check
 
@@ -110,4 +113,5 @@ jobs:
         run: scripts/test.sh
 
       - name: Run runner self-tests
+        if: ${{ !cancelled() }}
         run: scripts/test.sh --self-test
