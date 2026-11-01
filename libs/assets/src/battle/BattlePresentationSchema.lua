@@ -909,6 +909,82 @@ local function checkEncounterParticles(sets, sceneKey, context)
   end
 end
 
+-- The emitter placement positions a battle particle system carries: for each
+-- battler position, the staged emitter world position under each of the two
+-- particle perspective types.
+local PARTICLE_PLACEMENT_POSITIONS = {
+  "solo-player",
+  "solo-enemy",
+  "player-side-slot-1",
+  "enemy-side-slot-1",
+  "player-side-slot-2",
+  "enemy-side-slot-2",
+}
+
+-- Asserts one battle move particle system payload: the zero retail seed, its
+-- compiled emitters, the staged texture keys they draw, and the emitter
+-- placement table. A member whose vocabulary is not reproduced stages only
+-- the cause, which the runtime refuses to load.
+---@param system table<string, unknown> particle system payload under validation
+function BattlePresentationSchema.assertParticleSystem(system)
+  local context = {}
+  local field = "particle system"
+  if type(system) == "table" and system.unsupported ~= nil then
+    SchemaCheck.checkRecord(system, { unsupported = true }, context, CODE_SCENE, field)
+    checkString(system.unsupported, context, CODE_SCENE, field .. ".unsupported")
+    return
+  end
+  SchemaCheck.checkRecord(
+    system,
+    { seed = true, emitters = true, textures = true, placements = true },
+    context,
+    CODE_SCENE,
+    field
+  )
+  if system.seed ~= 0 then
+    fail(CODE_SCENE, field .. ".seed must be the retail zero seed", context)
+  end
+  if not Validate.isArray(system.textures) or #system.textures == 0 then
+    fail(CODE_SCENE, field .. ".textures must carry the system's staged textures", context)
+  end
+  local byId = {}
+  for index, texture in ipairs(system.textures) do
+    local at = field .. ".textures[" .. index .. "]"
+    SchemaCheck.checkRecord(texture, { id = true, width = true, height = true, image = true }, context, CODE_SCENE, at)
+    checkInt(texture.id, 0, 255, context, CODE_SCENE, at .. ".id")
+    if byId[texture.id] ~= nil then
+      fail(CODE_SCENE, at .. ".id repeats a texture of its system", context)
+    end
+    checkInt(texture.width, 1, 1024, context, CODE_SCENE, at .. ".width")
+    checkInt(texture.height, 1, 1024, context, CODE_SCENE, at .. ".height")
+    checkString(texture.image, context, CODE_SCENE, at .. ".image")
+    byId[texture.id] = {}
+  end
+  if not Validate.isArray(system.emitters) or #system.emitters == 0 then
+    fail(CODE_SCENE, field .. ".emitters must carry the system's emitters", context)
+  end
+  -- Emitters name their textures by id only; the system's texture list owns
+  -- the staged resource keys.
+  for index, emitter in ipairs(system.emitters) do
+    checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
+  end
+  local allowed = {}
+  for _, position in ipairs(PARTICLE_PLACEMENT_POSITIONS) do
+    allowed[position] = true
+  end
+  SchemaCheck.checkRecord(system.placements, allowed, context, CODE_SCENE, field .. ".placements")
+  for _, position in ipairs(PARTICLE_PLACEMENT_POSITIONS) do
+    local at = field .. ".placements[" .. position .. "]"
+    local perspectives = system.placements[position]
+    if not Validate.isArray(perspectives) or #perspectives ~= 2 then
+      fail(CODE_SCENE, at .. " must carry one position per particle perspective type", context)
+    end
+    for perspective, vector in ipairs(perspectives) do
+      checkXyz(vector, context, at .. "[" .. perspective .. "]")
+    end
+  end
+end
+
 local SCRIPT_MESSAGE_INPUTS = { "messageRecordReference", "messageTagSymbol", "tagTypedParameters" }
 
 -- Each program-context placeholder slot and the catalog/operand it binds.

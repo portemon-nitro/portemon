@@ -40,8 +40,10 @@ local TASK_STATES = { pending = true, running = true, complete = true, cancelled
 -- Task ownership groups echoing the native counters: general tasks feed
 -- the interpreter counter wait, sound actions feed the sound wait, enemy
 -- particle work feeds the battler-effects wait, and raw visual work runs
--- outside every counter exactly like the native direct sys tasks.
-local TASK_GROUPS = { general = true, sound = true, particle = true, raw = true }
+-- outside every counter exactly like the native direct sys tasks. A loaded
+-- particle system is not a task in the source; its group is outside every
+-- counter and its tasks retire when the occurrence ends.
+local TASK_GROUPS = { general = true, sound = true, particle = true, raw = true, system = true }
 local VOICE_ESCAPE_TICKS = 90
 
 ---@class BattleAnimationOccurrence
@@ -72,6 +74,7 @@ local VOICE_ESCAPE_TICKS = 90
 ---@field seedLatched boolean visual seed has been captured
 ---@field randomState integer occurrence-local visual random state
 ---@field packet table<string, unknown> immutable playback packet behind identity and context
+---@field particles table<string, table<integer, unknown>> loaded particle systems, persistent emitters, and camera settings shared by the occurrence tasks
 
 ---@param collaborators table<string, unknown> required scene, audio, resources, tasks narrow seam
 ---@return BattleAnimationPlayer runnable battle-private animation player
@@ -203,6 +206,7 @@ function BattleAnimationPlayer:start(playback, program)
     seed = 0,
     seedLatched = false,
     randomState = 0,
+    particles = { systems = {}, emitters = {}, perspective = {}, flipY = {}, skipped = {} },
   }
   self._occurrences[#self._occurrences + 1] = occurrence
   self._byId[id] = occurrence
@@ -305,6 +309,11 @@ local function settle(self, occurrence, phase, fault)
     )
   end
   if phase == "complete" then
+    for _, record in ipairs(occurrence.owned) do
+      if record.group == "system" then
+        retireRecord(record)
+      end
+    end
     stopVoices(self, occurrence)
     releaseLeases(self, occurrence)
   else
@@ -375,6 +384,7 @@ local function taskContext(occurrence)
     sourceBattlers = sourceBattlers,
     event = event,
     visualSeed = visualSeed,
+    particles = occurrence.particles,
   }
 end
 
@@ -688,6 +698,9 @@ function BattleAnimationPlayer:_exec(occurrence)
       return packet.topology
     end
     return nil
+  end
+  function exec.particles()
+    return occurrence.particles
   end
   function exec.eventIdentity()
     local packet = occurrence.packet

@@ -510,22 +510,21 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
           0
         )
       end
-      local emitterPosition = sources().resolveBattlerPosition(operands[1])
-      if emitterPosition == nil then
-        error(decodeError(key, start, "particle handler has an invalid battler effect slot", offset + 4), 0)
+      -- Operand 1 is the particle system slot the emitter joins.
+      if operands[1] > 15 then
+        error(decodeError(key, start, "particle handler names a system outside the 16 slots", offset), 0)
       end
-      assert(type(emitterPosition) == "string", "resolved battler position is semantic")
       instruction = {
         op = "create-parameterized-battler-effect",
         actionProfile = resolved.actionProfile,
-        emitterPosition = emitterPosition,
+        systemIndex = operands[1],
         taskKind = resolved.taskKind,
       }
       if opcode == 46 or opcode == 47 then
         if
           type(resolved.actionProfile) ~= "string"
-          or type(resolved.resource) ~= "string"
-          or resolved.resourceCases ~= nil
+          or type(resolved.emitter) ~= "number"
+          or resolved.emitterCases ~= nil
           or resolved.callbackCases ~= nil
           or resolved.runtimeSelection ~= nil
         then
@@ -533,36 +532,36 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
             decodeError(
               key,
               start,
-              "particle action resolver returned an invalid fixed resource plan",
+              "particle action resolver returned an invalid fixed emitter plan",
               offset + #operands * 4
             ),
             0
           )
         end
-        instruction.resource = resolved.resource
+        instruction.emitter = resolved.emitter
         if opcode == 47 then
           instruction.continuationSlot = operands[2]
         end
       else
         if
           resolved.runtimeSelection ~= "battler-particle-position-pair"
-          or type(resolved.resourceCases) ~= "table"
+          or type(resolved.emitterCases) ~= "table"
           or type(resolved.actionProfile) ~= "string"
-          or resolved.resource ~= nil
+          or resolved.emitter ~= nil
           or resolved.callbackCases ~= nil
         then
           error(
             decodeError(
               key,
               start,
-              "particle action resolver returned an invalid position-pair resource map",
+              "particle action resolver returned an invalid position-pair emitter map",
               offset + #operands * 4
             ),
             0
           )
         end
         instruction.runtimeSelection = resolved.runtimeSelection
-        instruction.resourceCases = resolved.resourceCases
+        instruction.emitterCases = resolved.emitterCases
       end
       offset = offset + #operands * 4
       -- Emitter callbacks that configure from the script (ConfigureFromScript,
@@ -604,15 +603,14 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       if resource == nil then
         error(decodeError(key, start, "unresolved particle resource selector", offset + 8), 0)
       end
-      local emitterPosition = sources().resolveBattlerPosition(battler)
-      if emitterPosition == nil then
-        error(decodeError(key, start, "particle creation has an invalid battler effect slot", offset + 4), 0)
+      if battler > 15 then
+        error(decodeError(key, start, "particle creation names a system outside the 16 slots", offset + 4), 0)
       end
       instruction = {
         op = "create-battler-effect",
-        emitterPosition = emitterPosition,
+        systemIndex = battler,
         resource = resource,
-        taskKind = "battler-effect-continuation",
+        taskKind = "battle-particle-system",
       }
       offset = offset + 8
     elseif opcode == 52 then

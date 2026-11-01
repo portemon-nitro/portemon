@@ -691,18 +691,17 @@ function T.supersonic_particle_path_callback_lowers_its_emitter_and_timing_conte
     taskKind = "battle-particle-emitter-battler-path",
     context = "battle-particle-emitter",
     parameters = {
-      spriteContextSlot = 1,
+      emitterSlot = 1,
       offsetX = 0,
       offsetY = 0,
-      leadingInterpolationSteps = 0,
-      sinePeriodDivisor = 14,
-      interpolationDurationTicks = 64,
+      delayTicks = 0,
+      durationTicks = 14,
       pairOrder = "attacker-target",
-      initialInterpolationSteps = 0,
-      completionLimit = 255,
-      sinusoidalOffset = false,
+      startFrame = 0,
+      endFrame = 255,
+      wave = false,
     },
-  }, "callback words retain their typed sprite context and normalized interpolation controls")
+  }, "callback words retain their emitter slot and the MoveEmitter delay, duration, and frame window")
 
   local program = assert(compiler().compile({
     key = "supersonic-particle-path",
@@ -713,8 +712,8 @@ function T.supersonic_particle_path_callback_lowers_its_emitter_and_timing_conte
   }))
   Assert.equal(program.instructions[1].taskKind, "battle-particle-emitter-battler-path")
   Assert.isNil(program.instructions[1].selector, "callback selector stays producer-only")
-  Assert.equal(program.instructions[1].parameters.spriteContextSlot, 1)
-  Assert.equal(program.instructions[1].parameters.interpolationDurationTicks, 64)
+  Assert.equal(program.instructions[1].parameters.emitterSlot, 1)
+  Assert.equal(program.instructions[1].parameters.durationTicks, 14)
   Assert.equal(program.instructions[2].op, "noop", "the count-framed callback leaves the following opcode intact")
   Assert.isTrue(require("libs.assets.src.battle.BattleAnimationSchema").assertProgram({
     entry = program.entry,
@@ -737,17 +736,16 @@ function T.supersonic_particle_path_callback_lowers_its_emitter_and_timing_conte
     1,
   })
   Assert.deepEqual(contextual.parameters, {
-    spriteContextSlot = 1,
+    emitterSlot = 1,
     offsetX = 0,
     offsetY = 0,
-    leadingInterpolationSteps = 0,
-    sinePeriodDivisor = 14,
-    interpolationDurationTicks = 64,
+    delayTicks = 0,
+    durationTicks = 14,
     pairOrder = "target-attacker",
-    initialInterpolationSteps = 3,
-    completionLimit = 5,
-    sinusoidalOffset = true,
-  }, "optional source words select the typed position order and timing behavior")
+    startFrame = 3,
+    endFrame = 5,
+    wave = true,
+  }, "optional source words select the direction, frame window, and wave")
 
   local invalid, invalidReason = Sources.resolveBattleAnimationCallback({ 65, 7, 1, 0, 0, 0, 14, 64, 2 })
   Assert.isNil(invalid)
@@ -1638,7 +1636,7 @@ function T.battler_animation_destination_form_uses_its_four_word_source_frame()
     resolveSourceInput = function(role, operands)
       Assert.equal(role, "battler-particle-action", "opcode 47 uses its source particle route")
       local action = assert(Sources.resolveSourceSelection(role, operands))
-      action.resource = "battle/particle-emitter/destination"
+      action.emitter = 7
       return action
     end,
   }))
@@ -1648,8 +1646,9 @@ function T.battler_animation_destination_form_uses_its_four_word_source_frame()
     "particle-emitter-target-battler-relative",
     "selector maps to its semantic profile"
   )
-  Assert.equal(program.instructions[1].emitterPosition, "solo-enemy", "source slot is normalized to a battler position")
-  Assert.equal(program.instructions[1].resource, "battle/particle-emitter/destination")
+  Assert.equal(program.instructions[1].systemIndex, 1, "operand one names the particle system slot")
+  Assert.isNil(program.instructions[1].emitterPosition, "no battler position is derived from the slot")
+  Assert.equal(program.instructions[1].emitter, 7, "the resolved emitter ordinal lowers into the instruction")
   Assert.equal(program.instructions[1].continuationSlot, 2, "destination slot retains its continuation semantics")
   Assert.deepEqual(program.sourceOffsets, { 0, 20 }, "producer provenance aligns byte offsets to instruction order")
   Assert.isNil(program.instructions[1].values, "native res_no and callback selector stay out of runtime values")
@@ -1664,7 +1663,7 @@ function T.particle_continuation_slot_uses_the_source_allocated_table_bound()
       stream = table.concat({ u32(47), u32(1), u32(slot), u32(0), u32(3), u32(54) }),
       resolveSourceInput = function(role, operands)
         local action = assert(Sources.resolveSourceSelection(role, operands))
-        action.resource = "battle/particle-emitter/continuation-bound"
+        action.emitter = 3
         return action
       end,
     })
@@ -1742,12 +1741,12 @@ function T.particle_initializer_table_resolves_all_profiles_without_native_selec
     profileBySelector[selector] = plan.actionProfile
     Assert.equal(plan.taskKind, "battler-effect-continuation", "each initializer belongs to the typed effect task")
     Assert.isTrue(type(plan.actionProfile) == "string", "every initializer has a semantic action profile")
-    Assert.equal(plan.sourceEmitterSelections.resource, 0x55, "the fixed APS emitter ordinal remains producer-only")
+    Assert.equal(plan.sourceEmitterSelections.emitter, 0x55, "the fixed source emitter ordinal selects its emitter")
     Assert.isNil(plan.selector, "source callback selector stays out of the action plan")
   end
   local destination = assert(Sources.resolveBattlerParticleAction(47, { 2, 5, 0x66, 4 }))
   Assert.equal(
-    destination.sourceEmitterSelections.resource,
+    destination.sourceEmitterSelections.emitter,
     0x66,
     "opcode47 selects its APS ordinal from operand three"
   )
@@ -1826,13 +1825,13 @@ function T.position_pair_particle_lowering_carries_semantic_resources_not_res_no
     "player-side-slot-2",
     "enemy-side-slot-2",
   }
-  local resourceCases = {}
+  local emitterCases = {}
   for _, attacker in ipairs(positions) do
     for _, target in ipairs(positions) do
-      resourceCases[attacker .. "/" .. target] = "battle/particle-emitter/test"
+      emitterCases[attacker .. "/" .. target] = 2
     end
   end
-  resourceCases["solo-player/solo-enemy"] = "source-assert"
+  emitterCases["solo-player/solo-enemy"] = "source-assert"
   local program = assert(compiler().compile({
     key = "position-pair-particle-resources",
     stream = table.concat({
@@ -1854,17 +1853,16 @@ function T.position_pair_particle_lowering_carries_semantic_resources_not_res_no
         actionProfile = "particle-emitter-target-battler-relative",
         taskKind = "battler-effect-continuation",
         runtimeSelection = "battler-particle-position-pair",
-        emitterPosition = "solo-player",
-        resourceCases = resourceCases,
+        emitterCases = emitterCases,
       }
     end,
   }))
   local instruction = program.instructions[1]
   Assert.equal(instruction.op, "create-parameterized-battler-effect")
   Assert.equal(instruction.actionProfile, "particle-emitter-target-battler-relative")
-  Assert.deepEqual(instruction.resourceCases, resourceCases, "source selections lower to semantic emitter keys")
+  Assert.deepEqual(instruction.emitterCases, emitterCases, "source selections lower to emitter ordinals")
   Assert.isNil(instruction.values, "native res_no and callback words do not enter runtime values")
-  Assert.equal(instruction.emitterPosition, "solo-enemy", "the effect slot is a semantic battler position")
+  Assert.equal(instruction.systemIndex, 1, "the first word names the particle system slot")
   Assert.isNil(instruction.callbackCases, "resource selection is not mislabeled callback dispatch")
 
   local opcode49Operands = { 2, 9, 10, 11, 12, 4 }
@@ -1884,15 +1882,14 @@ function T.position_pair_particle_lowering_carries_semantic_resources_not_res_no
       for _, attacker in ipairs(positions) do
         for _, target in ipairs(positions) do
           local candidate = Sources.battlerParticleCandidate(49, attacker, target)
-          cases[attacker .. "/" .. target] = candidate == nil and "source-assert"
-            or "battle/particle-emitter/candidate-" .. candidate
+          cases[attacker .. "/" .. target] = candidate == nil and "source-assert" or candidate
         end
       end
       return {
         actionProfile = selection.actionProfile,
         taskKind = selection.taskKind,
         runtimeSelection = selection.runtimeSelection,
-        resourceCases = cases,
+        emitterCases = cases,
       }
     end,
   }))
@@ -1901,12 +1898,12 @@ function T.position_pair_particle_lowering_carries_semantic_resources_not_res_no
   Assert.equal(opcode49Instruction.actionProfile, "particle-emitter-target-battler-relative")
   Assert.equal(opcode49Instruction.runtimeSelection, "battler-particle-position-pair")
   Assert.equal(
-    opcode49Instruction.resourceCases["player-side-slot-1/player-side-slot-2"],
-    "battle/particle-emitter/candidate-0",
-    "opcode49 preserves the source-selected semantic resource for its valid pair"
+    opcode49Instruction.emitterCases["player-side-slot-1/player-side-slot-2"],
+    0,
+    "opcode49 preserves the source-selected emitter ordinal for its valid pair"
   )
   Assert.equal(
-    opcode49Instruction.resourceCases["solo-player/solo-enemy"],
+    opcode49Instruction.emitterCases["solo-player/solo-enemy"],
     "source-assert",
     "opcode49 preserves native source-assert positions"
   )
@@ -2850,10 +2847,9 @@ function T.battler_particle_effects_lower_to_typed_profiles_and_position_pair_ca
       Assert.equal(role, "battler-particle-action", "particle effects request their semantic source plan")
       local action = assert(Sources.resolveSourceSelection(role, operands))
       if #operands == 3 then
-        action.resource = "battle/particle-emitter/direct"
+        action.emitter = 9
       else
-        action.emitterPosition = "solo-enemy"
-        action.resourceCases = {}
+        action.emitterCases = {}
         for _, attacker in ipairs({
           "solo-player",
           "solo-enemy",
@@ -2871,12 +2867,10 @@ function T.battler_particle_effects_lower_to_typed_profiles_and_position_pair_ca
             "enemy-side-slot-2",
           }) do
             local candidate = Sources.battlerParticleCandidate(48, attacker, target)
-            action.resourceCases[attacker .. "/" .. target] = candidate == nil and "source-assert"
-              or "battle/particle-emitter/candidate-" .. candidate
+            action.emitterCases[attacker .. "/" .. target] = candidate == nil and "source-assert" or candidate
           end
         end
       end
-      action.emitterPosition = action.emitterPosition or "solo-player"
       return action
     end,
   }))
@@ -2887,26 +2881,22 @@ function T.battler_particle_effects_lower_to_typed_profiles_and_position_pair_ca
     "direct callback maps to a semantic action profile"
   )
   Assert.equal(program.instructions[1].taskKind, "battler-effect-continuation", "effect uses its typed task")
-  Assert.equal(
-    program.instructions[1].resource,
-    "battle/particle-emitter/direct",
-    "resolved emitter identity enters IR"
-  )
-  Assert.equal(program.instructions[1].emitterPosition, "solo-enemy", "emitter slot is normalized to a position")
+  Assert.equal(program.instructions[1].emitter, 9, "resolved emitter ordinal enters IR")
+  Assert.equal(program.instructions[1].systemIndex, 1, "the first word names the particle system slot")
   Assert.isNil(program.instructions[1].values, "native res_no and callback selectors are not runtime values")
   Assert.equal(program.instructions[2].runtimeSelection, "battler-particle-position-pair", "context choice is explicit")
   Assert.equal(
-    program.instructions[2].resourceCases["solo-player/solo-enemy"],
-    "battle/particle-emitter/candidate-0",
+    program.instructions[2].emitterCases["solo-player/solo-enemy"],
+    0,
     "first source selection is attached to the complete semantic position pair"
   )
   Assert.equal(
-    program.instructions[2].resourceCases["solo-enemy/solo-player"],
-    "battle/particle-emitter/candidate-3",
+    program.instructions[2].emitterCases["solo-enemy/solo-player"],
+    3,
     "second source selection preserves the reverse semantic position pair"
   )
   local pairCount = 0
-  for _ in pairs(program.instructions[2].resourceCases) do
+  for _ in pairs(program.instructions[2].emitterCases) do
     pairCount = pairCount + 1
   end
   Assert.equal(pairCount, 36, "semantic decision map covers every attacker/target position pair")
@@ -2947,7 +2937,7 @@ function T.configure_from_script_callbacks_consume_their_inline_config()
       return {
         actionProfile = "particle-emitter-default",
         taskKind = "battler-effect-continuation",
-        resource = "battle/particle-emitter/configured",
+        emitter = 0,
       }
     end,
   }))
@@ -2973,7 +2963,7 @@ function T.configure_from_script_callbacks_consume_their_inline_config()
       return {
         actionProfile = "particle-emitter-default",
         taskKind = "battler-effect-continuation",
-        resource = "battle/particle-emitter/configured",
+        emitter = 0,
       }
     end,
   })
@@ -3844,7 +3834,8 @@ function T.particle_creation_resolves_the_source_resource_to_a_semantic_key()
   }))
   Assert.equal(program.instructions[1].op, "create-battler-effect", "opcode 51 creates a battle particle")
   Assert.equal(program.instructions[1].resource, "battle/particle/tackle", "SPL member resolves to a semantic key")
-  Assert.equal(program.instructions[1].emitterPosition, "player-side-slot-1", "battler slot is a semantic position")
+  Assert.equal(program.instructions[1].systemIndex, 2, "the first word names the particle system slot")
+  Assert.equal(program.instructions[1].taskKind, "battle-particle-system", "the load spawns a particle system task")
   Assert.equal(program.instructions[2].op, "noop", "the resource selector is consumed by the creation operation")
 
   local supersonic = assert(compiler().compile({
@@ -3897,11 +3888,7 @@ function T.particle_creation_routes_its_member_through_the_build_source_resolver
   }))
   Assert.isTrue(resolvedSource, "opcode51 must use its producer source route")
   Assert.equal(program.instructions[1].resource, "battle/particle/asleep")
-  Assert.equal(
-    program.instructions[1].emitterPosition,
-    "player-side-slot-1",
-    "only the semantic battler context remains in IR"
-  )
+  Assert.equal(program.instructions[1].systemIndex, 2, "only the system slot remains in IR")
 end
 
 function T.pokemon_picture_modes_preserve_the_optional_animation_task()

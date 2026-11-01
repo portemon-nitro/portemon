@@ -14,6 +14,7 @@
 -- record only.
 
 local Assert = require("tests.support.Assert")
+local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
@@ -243,17 +244,7 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
   end
   local resources = {}
   function resources.resolve(key)
-    local params = {}
-    for index = 1, 42 do
-      params[index] = 0
-    end
-    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return {
-      key = key,
-      kind = "particle-emitter",
-      payloadPath = "probe/particle-emitter",
-      data = { features = { "alpha", "random" }, params = params },
-    }
+    return BattleParticleLeaseFixture.resolve(key)
   end
   function resources.release(_lease) end
   local player = assert(Player.new({
@@ -319,17 +310,7 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
   end
   local resources = {}
   function resources.resolve(key)
-    local params = {}
-    for index = 1, 42 do
-      params[index] = 0
-    end
-    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return {
-      key = key,
-      kind = "particle-emitter",
-      payloadPath = "probe/particle-emitter",
-      data = { features = { "alpha", "random" }, params = params },
-    }
+    return BattleParticleLeaseFixture.resolve(key)
   end
   function resources.release(_lease) end
   local player = assert(Player.new({

@@ -29,7 +29,7 @@ end
 
 local function effectArtifact()
   return {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "synthetic-effect-probe",
     catalogIdentity = "synthetic-catalog",
     program = {
@@ -122,13 +122,13 @@ function T.effect_schema_versions_the_normalized_particle_contract()
   assert(Schema ~= nil, "the effect schema is available")
   Assert.equal(
     Schema.EFFECT_SCHEMA,
-    "g4-battle-effect-v3",
+    "g4-battle-effect-v4",
     "the effect schema carries the normalized particle contract identity"
   )
   local Contract = assetContract()
   Assert.equal(
     Contract.battlePresentation.effectSchema,
-    "g4-battle-effect-v3",
+    "g4-battle-effect-v4",
     "the generated contract mirrors the normalized effect schema"
   )
   Assert.equal(

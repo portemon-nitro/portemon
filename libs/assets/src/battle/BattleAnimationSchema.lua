@@ -12,7 +12,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattleAnimationSchema
 local BattleAnimationSchema = {}
 
-BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v3"
+BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v4"
 
 local CODE_EFFECT = "BATTLE_EFFECT_INVALID"
 
@@ -27,7 +27,6 @@ local RESOURCE_KINDS = {
   cell = true,
   animation = true,
   particle = true,
-  ["particle-emitter"] = true,
   ["multi-cell"] = true,
   ["multi-cell-animation"] = true,
   message = true,
@@ -89,6 +88,7 @@ local TASK_KINDS = {
   ["battle-background-resource-load"] = true,
   ["battle-presentation-resource-cleanup"] = true,
   ["battler-effect-continuation"] = true,
+  ["battle-particle-system"] = true,
   ["managed-sprite-draw-loop"] = true,
   ["battle-particle-emitter-battler-path"] = true,
   ["battle-particle-emitter-curved-battler-path"] = true,
@@ -292,11 +292,6 @@ local BATTLER_POSITION_KEYS = {
   "player-side-slot-2",
   "enemy-side-slot-2",
 }
-
-local BATTLER_POSITION_SET = {}
-for _, position in ipairs(BATTLER_POSITION_KEYS) do
-  BATTLER_POSITION_SET[position] = true
-end
 
 local BATTLER_TARGETS = {
   ["active-battler"] = true,
@@ -1093,18 +1088,17 @@ local ANIMATION_CALLBACKS = {
   ["battle-particle-emitter-battler-path"] = {
     taskKind = "battle-particle-emitter-battler-path",
     taskContext = "battle-particle-emitter",
-    requiresSpriteContextTable = true,
+    requiresBattlerTopology = true,
     parameters = {
-      spriteContextSlot = { min = 0, max = 70 },
+      emitterSlot = { min = 0, max = 70 },
       offsetX = { min = -0x8000, max = 0x7FFF },
       offsetY = { min = -0x8000, max = 0x7FFF },
-      leadingInterpolationSteps = { min = -0x8000, max = 0x7FFF },
-      sinePeriodDivisor = { min = -0x8000, max = 0x7FFF },
-      interpolationDurationTicks = { min = 0, max = 0xFFFF },
+      delayTicks = { min = -0x8000, max = 0x7FFF },
+      durationTicks = { min = -0x8000, max = 0x7FFF },
       pairOrder = { type = "enum", values = BATTLER_PAIR_ORDERS },
-      initialInterpolationSteps = { min = 0, max = 0xFFFF },
-      completionLimit = { min = 0, max = 0xFF },
-      sinusoidalOffset = { type = "boolean" },
+      startFrame = { min = 0, max = 0xFFFF },
+      endFrame = { min = 0, max = 0xFF },
+      wave = { type = "boolean" },
     },
   },
   ["battle-particle-emitter-curved-battler-path"] = {
@@ -1169,7 +1163,8 @@ local CURSOR_RULES = {
   ["return-to-active-subprogram-slot"] = true,
 }
 
-local PARTICLE_EMITTER_KEY_PATTERN = "^battle/particle%-emitter/[^/]+$"
+local MAX_PARTICLE_SYSTEM_INDEX = 15
+local MAX_PARTICLE_EMITTER_ORDINAL = 255
 
 -- Every attacker/target position pair a position-pair emitter map covers.
 local POSITION_PAIRS = {}
@@ -1204,7 +1199,6 @@ local STRING_FIELDS = {
   "taskInputRule",
   "taskStartRule",
   "resource",
-  "emitterPosition",
   "updateKind",
   "mode",
   "runtimeSelection",
@@ -1214,7 +1208,6 @@ local STRING_FIELDS = {
 }
 
 local ENUM_FIELDS = {
-  { name = "emitterPosition", values = BATTLER_POSITION_SET },
   { name = "cursorRule", values = CURSOR_RULES },
   { name = "taskKind", values = TASK_KINDS },
   { name = "taskContext", values = TASK_CONTEXTS },
@@ -1437,39 +1430,45 @@ local function checkConfiguredSprite(instruction, context, code, field)
   checkParameters(instruction.parameters, declarations, context, code, field)
 end
 
-local function checkBattlerEffect(instruction, context, code, field)
-  if instruction.resource == nil or instruction.emitterPosition == nil then
-    fail(code, field .. " requires a particle resource and emitter position", context)
-  end
+local function isOrdinal(value)
+  return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= MAX_PARTICLE_EMITTER_ORDINAL
 end
 
-local function checkResourceCases(resourceCases, context, code, field)
-  if type(resourceCases) ~= "table" then
-    fail(code, field .. ".resourceCases must be a record", context)
+local function checkBattlerEffect(instruction, context, code, field)
+  if instruction.resource == nil or instruction.systemIndex == nil then
+    fail(code, field .. " requires a particle resource and system index", context)
   end
-  for pairKey, resourceKey in pairs(resourceCases) do
-    if
-      not POSITION_PAIR_SET[pairKey]
-      or type(resourceKey) ~= "string"
-      or (resourceKey ~= "source-assert" and resourceKey:match(PARTICLE_EMITTER_KEY_PATTERN) == nil)
-    then
-      fail(code, field .. ".resourceCases has an unknown position pair or invalid resource key", context)
+  SchemaCheck.checkInteger(
+    instruction.systemIndex,
+    context,
+    code,
+    field .. ".systemIndex",
+    0,
+    MAX_PARTICLE_SYSTEM_INDEX
+  )
+end
+
+local function checkEmitterCases(emitterCases, context, code, field)
+  if type(emitterCases) ~= "table" then
+    fail(code, field .. ".emitterCases must be a record", context)
+  end
+  for pairKey, ordinal in pairs(emitterCases) do
+    if not POSITION_PAIR_SET[pairKey] or (ordinal ~= "source-assert" and not isOrdinal(ordinal)) then
+      fail(code, field .. ".emitterCases has an unknown position pair or invalid emitter ordinal", context)
     end
   end
   for _, pairKey in ipairs(POSITION_PAIRS) do
-    if resourceCases[pairKey] == nil then
-      fail(code, field .. ".resourceCases is missing position pair " .. pairKey, context)
+    if emitterCases[pairKey] == nil then
+      fail(code, field .. ".emitterCases is missing position pair " .. pairKey, context)
     end
   end
 end
 
--- A parameterized emitter is either one fixed emitter resource or a closed
--- position-pair resource map selected at runtime.
+-- A parameterized emitter creation joins a loaded particle system with
+-- either one fixed emitter ordinal or a closed position-pair ordinal map
+-- selected at runtime.
 local function checkParameterizedBattlerEffect(instruction, context, code, field)
-  local resource = instruction.resource
-  if resource ~= nil and resource:match(PARTICLE_EMITTER_KEY_PATTERN) == nil then
-    fail(code, field .. ".resource must be a semantic particle-emitter key", context)
-  end
+  local emitter = instruction.emitter
   local continuationSlot = instruction.continuationSlot
   if continuationSlot ~= nil then
     SchemaCheck.checkInteger(continuationSlot, context, code, field .. ".continuationSlot")
@@ -1477,22 +1476,33 @@ local function checkParameterizedBattlerEffect(instruction, context, code, field
       fail(code, field .. ".continuationSlot is outside the 71-slot particle continuation table", context)
     end
   end
-  if instruction.actionProfile == nil or instruction.emitterPosition == nil then
-    fail(code, field .. " requires a semantic action profile and emitter position", context)
+  if instruction.actionProfile == nil or instruction.systemIndex == nil then
+    fail(code, field .. " requires a semantic action profile and system index", context)
   end
-  if resource ~= nil then
-    if instruction.resourceCases ~= nil or instruction.runtimeSelection ~= nil then
-      fail(code, field .. " fixed emitter cannot carry position-pair resource cases", context)
+  SchemaCheck.checkInteger(
+    instruction.systemIndex,
+    context,
+    code,
+    field .. ".systemIndex",
+    0,
+    MAX_PARTICLE_SYSTEM_INDEX
+  )
+  if emitter ~= nil then
+    if not isOrdinal(emitter) then
+      fail(code, field .. ".emitter must be a source emitter ordinal", context)
+    end
+    if instruction.emitterCases ~= nil or instruction.runtimeSelection ~= nil then
+      fail(code, field .. " fixed emitter cannot carry position-pair emitter cases", context)
     end
   elseif
-    instruction.resourceCases == nil
+    instruction.emitterCases == nil
     or instruction.runtimeSelection ~= "battler-particle-position-pair"
     or continuationSlot ~= nil
   then
-    fail(code, field .. " requires a fixed emitter or a position-pair resource map", context)
+    fail(code, field .. " requires a fixed emitter or a position-pair emitter map", context)
   end
-  if instruction.resourceCases ~= nil then
-    checkResourceCases(instruction.resourceCases, context, code, field)
+  if instruction.emitterCases ~= nil then
+    checkEmitterCases(instruction.emitterCases, context, code, field)
   end
 end
 
@@ -1603,7 +1613,7 @@ local OPERATIONS = {
   ["wait-for-sound"] = { values = 1, fields = { "cursorRule" } },
   ["branch-on-picture-state"] = { values = true, fields = { "branchTarget" } },
   ["create-battler-effect"] = {
-    fields = { "emitterPosition", "resource", "taskKind" },
+    fields = { "systemIndex", "resource", "taskKind" },
     check = checkBattlerEffect,
   },
   ["create-parameterized-battler-effect"] = {
@@ -1611,10 +1621,10 @@ local OPERATIONS = {
       "values",
       "taskKind",
       "actionProfile",
-      "resource",
-      "resourceCases",
+      "emitter",
+      "emitterCases",
       "runtimeSelection",
-      "emitterPosition",
+      "systemIndex",
       "continuationSlot",
     },
     check = checkParameterizedBattlerEffect,
@@ -1874,24 +1884,6 @@ local function checkProgramResourceClosure(program, dependencies, resources, con
     end
     if instruction.resource ~= nil then
       refs[#refs + 1] = instruction.resource
-    end
-    if instruction.resourceCases ~= nil then
-      for _, key in pairs(instruction.resourceCases) do
-        if key ~= "source-assert" then
-          refs[#refs + 1] = key
-          if resources[key] ~= nil and resources[key].kind ~= "particle-emitter" then
-            fail(code, "instruction " .. index .. " references a resource that is not a particle emitter", context)
-          end
-        end
-      end
-    end
-    if
-      instruction.op == "create-parameterized-battler-effect"
-      and instruction.resource ~= nil
-      and resources[instruction.resource] ~= nil
-      and resources[instruction.resource].kind ~= "particle-emitter"
-    then
-      fail(code, "instruction " .. index .. " references a resource that is not a particle emitter", context)
     end
     if
       instruction.op == "create-battler-effect"

@@ -33,6 +33,8 @@
 ---@field _effects table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> live transient effect records
 ---@field _battlerSpriteSlots table<string, table<integer, integer>> battler picture copies by source occurrence and sprite slot
 ---@field _nextEffect integer next transient effect identity
+---@field _particleSystems { id: integer, system: table<string, unknown> }[] live move particle systems in registration order
+---@field _nextParticleSystem integer next particle system registration identity
 ---@field _released boolean launch-scoped release guard
 local BattleScene = {}
 BattleScene.__index = BattleScene
@@ -88,6 +90,8 @@ function BattleScene.new()
     _effects = {},
     _battlerSpriteSlots = {},
     _nextEffect = 1,
+    _particleSystems = {},
+    _nextParticleSystem = 1,
     _released = false,
   }, BattleScene)
 end
@@ -1913,6 +1917,41 @@ function BattleScene:effectViews()
   return views
 end
 
+-- Registers one live move particle system for drawing: its simulation and the
+-- drawable handles of its textures by source texture id. The owning task keeps
+-- stepping the simulation; the scene only carries it to the renderer.
+---@param system { simulation: SplParticleSimulation, textures: table<integer, unknown> } live system to draw
+---@return integer id registration identity for release
+function BattleScene:allocParticleSystem(system)
+  assert(not self._released, "released scenes register no particle systems")
+  assert(type(system) == "table" and type(system.simulation) == "table", "particle systems carry their simulation")
+  local id = self._nextParticleSystem
+  self._nextParticleSystem = id + 1
+  self._particleSystems[#self._particleSystems + 1] = { id = id, system = system }
+  return id
+end
+
+-- Drops one registered particle system; unknown or repeated identities stay silent.
+---@param id integer registration identity under release
+function BattleScene:releaseParticleSystem(id)
+  for index, entry in ipairs(self._particleSystems) do
+    if entry.id == id then
+      table.remove(self._particleSystems, index)
+      return
+    end
+  end
+end
+
+-- The live move particle systems in registration order, for drawing.
+---@return { simulation: SplParticleSimulation, textures: table<integer, unknown> }[]
+function BattleScene:particleSystems()
+  local systems = {}
+  for _, entry in ipairs(self._particleSystems) do
+    systems[#systems + 1] = entry.system
+  end
+  return systems
+end
+
 -- Releases one transient effect instance exactly once; unknown or
 -- repeated identities stay silent.
 ---@param id integer effect identity under releasing
@@ -1930,6 +1969,7 @@ function BattleScene:release()
   self._released = true
   self._entries = {}
   self._effects = {}
+  self._particleSystems = {}
   self._battlerSpriteSlots = {}
   self._background = nil
   self._backgroundRasterizer = nil

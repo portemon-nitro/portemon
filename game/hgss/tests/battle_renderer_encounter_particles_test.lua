@@ -1,5 +1,6 @@
 -- The encounter terrain particles draw over the main screen after the fade
--- overlay, from the live systems the screen publishes in its view.
+-- overlay, and the move particle systems draw in the detail pane, from the
+-- live systems the screen publishes in its view.
 
 local Assert = require("tests.support.Assert")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
@@ -101,6 +102,32 @@ function T.live_particles_draw_after_the_encounter_fade_overlay()
   Assert.notNil(overlayIndex, "the fade overlay draws")
   Assert.notNil(firstParticle, "live particles draw their staged texture")
   Assert.isTrue(firstParticle > overlayIndex, "particles draw over the fade, untinted by it")
+end
+
+function T.move_particle_systems_draw_their_textures_in_the_detail_pane()
+  local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
+  local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
+  local simulation = SplParticleSimulation.new(0, 0)
+  local record = BattleParticleLeaseFixture.payload(1).emitters[1]
+  SplParticleSimulation.addEmitter(simulation, 0, nil, record)
+  SplParticleSimulation.advance(simulation)
+  local image = {
+    getWidth = function()
+      return 8
+    end,
+    getHeight = function()
+      return 8
+    end,
+  }
+  local log = {}
+  drawDetail(recordingGraphics(log), { moveParticleSystems = { { simulation = simulation, textures = { [0] = image } } } })
+  local drawn = 0
+  for _, entry in ipairs(log) do
+    if entry.kind == "draw" and entry.image == image then
+      drawn = drawn + 1
+    end
+  end
+  Assert.isTrue(drawn >= 1, "a live move particle draws its staged texture")
 end
 
 function T.no_live_systems_draw_no_particles()

@@ -148,7 +148,7 @@ function T.move_power_picture_transition_requires_a_typed_event_input_and_fixed_
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "move-power-picture-transition",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -358,7 +358,7 @@ function T.sprite_priority_appearance_requires_topology_and_registered_sprite_co
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "sprite-priority-appearance-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -376,7 +376,7 @@ end
 
 function T.cyclic_picture_position_transition_requires_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "cyclic-picture-position-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -427,7 +427,7 @@ function T.battler_blend_alpha_callback_has_typed_sprite_and_coefficient_fields(
 
   instruction.parameters.oamModeSpriteSlots = { "sprite-context-slot-0" }
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "blend-alpha-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -453,7 +453,7 @@ function T.selected_picture_pair_callback_requires_a_closed_topology_context()
   Assert.isFalse(pcall(schema().assertProgram, program(instruction)))
   instruction.parameters.pictureSets = { "active-battler" }
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "selected-picture-pair-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -468,7 +468,7 @@ end
 
 function T.picture_affine_blend_callback_requires_registered_sprite_context()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "picture-affine-blend-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -612,9 +612,9 @@ function T.particle_continuation_slot_covers_the_source_allocated_seventy_one_en
   local instruction = {
     op = "create-parameterized-battler-effect",
     actionProfile = "particle-emitter-target-battler-relative",
-    emitterPosition = "solo-player",
+    systemIndex = 0,
     taskKind = "battler-effect-continuation",
-    resource = "battle/particle-emitter/example",
+    emitter = 3,
     continuationSlot = 70,
   }
   Assert.isTrue(schema().assertProgram(program(instruction)), "the last allocated continuation slot is valid")
@@ -1000,8 +1000,8 @@ function T.animation_callback_schema_accepts_picture_two_phase_entry_motion()
   )
 end
 
-function T.particle_effect_schema_closes_emitter_resources_and_every_position_pair()
-  local resourceCases = {}
+function T.particle_effect_schema_closes_emitter_ordinals_and_every_position_pair()
+  local emitterCases = {}
   local positions = {
     "solo-player",
     "solo-enemy",
@@ -1012,7 +1012,7 @@ function T.particle_effect_schema_closes_emitter_resources_and_every_position_pa
   }
   for _, attacker in ipairs(positions) do
     for _, target in ipairs(positions) do
-      resourceCases[attacker .. "/" .. target] = "battle/particle-emitter/test"
+      emitterCases[attacker .. "/" .. target] = 2
     end
   end
   Assert.isTrue(
@@ -1020,47 +1020,58 @@ function T.particle_effect_schema_closes_emitter_resources_and_every_position_pa
       op = "create-parameterized-battler-effect",
       taskKind = "battler-effect-continuation",
       actionProfile = "particle-emitter-default",
-      emitterPosition = "solo-player",
-      resource = "battle/particle-emitter/test",
+      systemIndex = 0,
+      emitter = 1,
     })),
-    "direct particle callbacks use a staged emitter resource"
+    "direct particle callbacks name a source emitter ordinal of their system"
   )
   Assert.isTrue(
     schema().assertProgram(program({
       op = "create-parameterized-battler-effect",
       taskKind = "battler-effect-continuation",
       actionProfile = "particle-emitter-target-battler-relative",
-      emitterPosition = "solo-player",
-      resourceCases = resourceCases,
+      systemIndex = 0,
+      emitterCases = emitterCases,
       runtimeSelection = "battler-particle-position-pair",
     })),
-    "dynamic dispatch preserves each semantic emitter resource pair"
+    "dynamic dispatch preserves each semantic emitter ordinal pair"
   )
-  resourceCases["solo-player/solo-enemy"] = "source-assert"
+  emitterCases["solo-player/solo-enemy"] = "source-assert"
   Assert.isTrue(
     schema().assertProgram(program({
       op = "create-parameterized-battler-effect",
       taskKind = "battler-effect-continuation",
       actionProfile = "particle-emitter-target-battler-relative",
-      emitterPosition = "solo-player",
-      resourceCases = resourceCases,
+      systemIndex = 0,
+      emitterCases = emitterCases,
       runtimeSelection = "battler-particle-position-pair",
     })),
     "source assertion cells remain explicit and closed"
   )
-  resourceCases["solo-player/solo-enemy"] = "native-selector-4"
+  emitterCases["solo-player/solo-enemy"] = "native-selector-4"
   local ok = pcall(
     schema().assertProgram,
     program({
       op = "create-parameterized-battler-effect",
       taskKind = "battler-effect-continuation",
       actionProfile = "particle-emitter-target-battler-relative",
-      emitterPosition = "solo-player",
-      resourceCases = resourceCases,
+      systemIndex = 0,
+      emitterCases = emitterCases,
       runtimeSelection = "battler-particle-position-pair",
     })
   )
-  Assert.isFalse(ok, "native resource selectors cannot enter runtime resource cases")
+  Assert.isFalse(ok, "native selectors cannot enter runtime emitter cases")
+  ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-default",
+      systemIndex = 16,
+      emitter = 0,
+    })
+  )
+  Assert.isFalse(ok, "system slots index only the sixteen source particle systems")
 end
 
 function T.managed_sprite_requires_four_base_resources_and_allows_optional_multi_resources()
@@ -1154,16 +1165,26 @@ end
 function T.operation_fields_reject_values_outside_their_declared_kind()
   local cases = {
     {
-      valid = { op = "create-battler-effect", resource = "battle/particle/a", emitterPosition = "solo-player" },
-      field = "emitterPosition",
-      invalid = "native-position-3",
-      diagnostic = "emitterPosition is unknown",
+      valid = {
+        op = "create-battler-effect",
+        resource = "battle/particle/a",
+        systemIndex = 0,
+        taskKind = "battle-particle-system",
+      },
+      field = "systemIndex",
+      invalid = 99,
+      diagnostic = "systemIndex must be an integer in 0..15",
     },
     {
-      valid = { op = "create-battler-effect", resource = "battle/particle/a", emitterPosition = "solo-player" },
+      valid = {
+        op = "create-battler-effect",
+        resource = "battle/particle/a",
+        systemIndex = 0,
+        taskKind = "battle-particle-system",
+      },
       field = "resource",
       invalid = nil,
-      diagnostic = "requires a particle resource and emitter position",
+      diagnostic = "requires a particle resource and system index",
     },
     {
       valid = {
@@ -1228,8 +1249,8 @@ function T.operation_fields_reject_values_outside_their_declared_kind()
         op = "create-parameterized-battler-effect",
         taskKind = "battler-effect-continuation",
         actionProfile = "particle-emitter-default",
-        emitterPosition = "solo-player",
-        resource = "battle/particle-emitter/test",
+        systemIndex = 0,
+        emitter = 0,
       },
       field = "actionProfile",
       invalid = "native-profile-1",
@@ -1240,12 +1261,12 @@ function T.operation_fields_reject_values_outside_their_declared_kind()
         op = "create-parameterized-battler-effect",
         taskKind = "battler-effect-continuation",
         actionProfile = "particle-emitter-default",
-        emitterPosition = "solo-player",
-        resource = "battle/particle-emitter/test",
+        systemIndex = 0,
+        emitter = 0,
       },
       field = "actionProfile",
       invalid = nil,
-      diagnostic = "requires a semantic action profile and emitter position",
+      diagnostic = "requires a semantic action profile and system index",
     },
     {
       valid = { op = "branch-on-parameter", values = { 0, 1 }, branchTarget = 1 },
@@ -1322,7 +1343,7 @@ end
 
 function T.effect_resources_require_semantic_payload_identity()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "synthetic-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "set-parameter", values = { 0, 1 } }),
@@ -1358,14 +1379,14 @@ end
 function T.effect_context_is_a_closed_typed_layout_and_resources_cover_instruction_keys()
   local resourceKey = "battle/particle/test"
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "typed-context-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
       op = "create-battler-effect",
       resource = resourceKey,
-      emitterPosition = "solo-enemy",
-      taskKind = "battler-effect-continuation",
+      systemIndex = 0,
+      taskKind = "battle-particle-system",
     }),
     dependencies = { resourceKey },
     resources = {
@@ -1394,7 +1415,7 @@ end
 -- provider cannot resolve never validates.
 function T.effect_sounds_name_shared_sequence_symbols_without_staged_payloads()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "voiced-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "play-sound", sound = "SEQ_SE_DP_050" }),
@@ -1417,59 +1438,47 @@ function T.effect_sounds_name_shared_sequence_symbols_without_staged_payloads()
   Assert.isFalse(pcall(schema().assertEffect, effect), "effects stage no private sound payloads")
 end
 
-function T.position_pair_particle_resources_are_closed_over_staged_emitters()
-  local resourceKey = "battle/particle-emitter/content-addressed"
-  local resourceCases = {}
-  local positions = {
-    "solo-player",
-    "solo-enemy",
-    "player-side-slot-1",
-    "enemy-side-slot-1",
-    "player-side-slot-2",
-    "enemy-side-slot-2",
-  }
-  for _, attacker in ipairs(positions) do
-    for _, target in ipairs(positions) do
-      resourceCases[attacker .. "/" .. target] = "source-assert"
-    end
-  end
-  resourceCases["solo-player/solo-enemy"] = resourceKey
+function T.particle_system_instructions_are_closed_over_their_staged_particle_resource()
+  local resourceKey = "battle/particle/closure"
   local effect = {
-    schema = "g4-battle-effect-v3",
-    key = "particle-emitter-closure",
+    schema = "g4-battle-effect-v4",
+    key = "particle-system-closure",
     catalogIdentity = "synthetic-catalog",
     program = program({
-      op = "create-parameterized-battler-effect",
-      taskKind = "battler-effect-continuation",
-      actionProfile = "particle-emitter-target-battler-relative",
-      emitterPosition = "solo-player",
-      resourceCases = resourceCases,
-      runtimeSelection = "battler-particle-position-pair",
+      op = "create-battler-effect",
+      resource = resourceKey,
+      systemIndex = 0,
+      taskKind = "battle-particle-system",
     }),
     dependencies = { resourceKey },
     resources = {
       [resourceKey] = {
-        kind = "particle-emitter",
-        payload = "data/generated/battle/resources/particle-emitter.lua",
+        kind = "particle",
+        payload = "data/generated/battle/resources/particle.lua",
         contentIdentity = string.rep("d", 40),
       },
     },
     requiredContext = {},
   }
-  Assert.isTrue(schema().assertEffect(effect), "semantic emitter cases resolve to staged resources")
+  Assert.isTrue(schema().assertEffect(effect), "a system load resolves to its staged particle resource")
+  effect.resources[resourceKey].kind = "texture"
+  Assert.isFalse(pcall(schema().assertEffect, effect), "a system load requires a particle resource")
   effect.resources[resourceKey].kind = "particle"
-  local wrongKind = pcall(schema().assertEffect, effect)
-  Assert.isFalse(wrongKind, "emitter selections require normalized particle-emitter resources")
-  effect.resources[resourceKey].kind = "particle-emitter"
   effect.resources[resourceKey] = nil
   effect.dependencies = {}
-  local ok = pcall(schema().assertEffect, effect)
-  Assert.isFalse(ok, "resource cases cannot reference an unstaged emitter")
+  Assert.isFalse(pcall(schema().assertEffect, effect), "a system load cannot reference an unstaged resource")
+  effect.dependencies = { resourceKey }
+  effect.resources[resourceKey] = {
+    kind = "particle-emitter",
+    payload = "data/generated/battle/resources/particle.lua",
+    contentIdentity = string.rep("d", 40),
+  }
+  Assert.isFalse(pcall(schema().assertEffect, effect), "the retired per-emitter resource kind never validates")
 end
 
 function T.vanished_picture_operation_requires_source_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "vanished-picture-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1492,7 +1501,7 @@ end
 
 function T.position_offset_callback_declares_its_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "position-offset-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1533,7 +1542,7 @@ function T.interpolated_picture_effect_declares_its_sprite_context_table()
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "sprite-context-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -1552,7 +1561,7 @@ end
 
 function T.effect_resource_descriptors_accept_typed_multicell_formats()
   local effect = {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "synthetic-multicell-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "set-parameter", values = { 0, 1 } }),

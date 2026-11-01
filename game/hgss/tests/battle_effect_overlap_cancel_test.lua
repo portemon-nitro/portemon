@@ -13,6 +13,7 @@
 -- the shared program shape; the recorder doubles record only.
 
 local Assert = require("tests.support.Assert")
+local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
@@ -149,17 +150,7 @@ function T.overlapping_tasks_cancel_and_replace_without_stale_restores()
     local resources = {}
     function resources.resolve(name)
       journal.acquired[#journal.acquired + 1] = name
-      local params = {}
-      for index = 1, 42 do
-        params[index] = 0
-      end
-      params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-      return {
-        key = name,
-        kind = "particle-emitter",
-        payloadPath = "probe/particle-emitter",
-        data = { features = { "alpha", "random" }, params = params },
-      }
+      return BattleParticleLeaseFixture.resolve(name)
     end
     function resources.release(lease)
       journal.released[#journal.released + 1] = lease

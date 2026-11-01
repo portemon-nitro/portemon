@@ -13,6 +13,7 @@
 -- the shared program shape; the recorder doubles record only.
 
 local Assert = require("tests.support.Assert")
+local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
@@ -186,17 +187,7 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
   end
   local resources = {}
   function resources.resolve(key)
-    local params = {}
-    for index = 1, 42 do
-      params[index] = 0
-    end
-    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return {
-      key = key,
-      kind = "particle-emitter",
-      payloadPath = "probe/particle-emitter",
-      data = { features = { "alpha", "random" }, params = params },
-    }
+    return BattleParticleLeaseFixture.resolve(key)
   end
   function resources.release(_lease) end
   local context = {
@@ -208,7 +199,7 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
   for _, kind in ipairs(kinds) do
     local args = {}
     if kind == Factory.PARTICLE_CONTINUATION_KIND then
-      args = { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" }
+      args = { systemIndex = 0, emitter = 0 }
     end
     local ok, task = pcall(Factory.create, kind, args, context, services)
     if not ok then

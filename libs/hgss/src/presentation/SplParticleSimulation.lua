@@ -758,6 +758,18 @@ function M.addEmitter(sim, id, group, record)
   return runtime
 end
 
+---@param sim SplParticleSimulation
+---@param runtime table<string, unknown> runtime returned by addEmitter
+---@return boolean live true while the emitter is still in the simulation
+function M.hasEmitter(sim, runtime)
+  for _, live in ipairs(sim.emitters) do
+    if live == runtime then
+      return true
+    end
+  end
+  return false
+end
+
 -- Removes one emitter and every particle and child it owns at once, as the
 -- retail emitter deletion does. Removing a runtime that already left is a no-op.
 ---@param sim SplParticleSimulation

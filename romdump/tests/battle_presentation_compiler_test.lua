@@ -499,62 +499,53 @@ local function u32le(value)
   return u16le(value % 65536) .. u16le(math.floor(value / 65536))
 end
 
-local function apsMember(emitterRecords, resourceRecords)
-  return " APS12_1"
-    .. u16le(#emitterRecords)
-    .. u16le(#resourceRecords)
-    .. string.rep("\0", 0x20 - 0x0c)
-    .. table.concat(emitterRecords)
-    .. table.concat(resourceRecords)
-end
+-- Retail SPL resource members (layout per the SPL resource structs the
+-- emitter compiler reads): a header, emitter records, then texture blocks.
+local SELF_DESTRUCT_FLAG = 2 ^ 14
 
--- Optional emitter section sizes in flag-bit order, matching the container
--- decoder so synthetic members stay well-formed while the producer decides
--- which traits normalize and which fail the build.
-local SECTION_SIZES_IN_FLAG_ORDER = {
-  { bit = 8, size = 0x0c },
-  { bit = 9, size = 0x0c },
-  { bit = 10, size = 0x08 },
-  { bit = 11, size = 0x0c },
-  { bit = 16, size = 0x14 },
-  { bit = 24, size = 0x08 },
-  { bit = 25, size = 0x08 },
-  { bit = 26, size = 0x10 },
-  { bit = 27, size = 0x04 },
-  { bit = 28, size = 0x08 },
-  { bit = 29, size = 0x10 },
-}
-
-local function apsEmitter(flags)
-  local parts = { u32le(flags), string.rep("\1", 0x58 - 4) }
-  for _, section in ipairs(SECTION_SIZES_IN_FLAG_ORDER) do
-    if math.floor(flags / 2 ^ section.bit) % 2 == 1 then
-      parts[#parts + 1] = string.rep("\2", section.size)
-    end
+local function splMember(emitterRecords, textureCount)
+  local parts = { " APS12_1" .. u16le(#emitterRecords) .. u16le(textureCount) .. string.rep("\0", 20) }
+  for _, record in ipairs(emitterRecords) do
+    parts[#parts + 1] = record
+  end
+  for _ = 1, textureCount do
+    local texels = string.rep("\0", 1024)
+    local palette = string.rep("\0", 2)
+    parts[#parts + 1] = u32le(0x53505420)
+      .. u32le(6 + 2 * 16 + 2 * 256)
+      .. u32le(#texels)
+      .. u32le(32 + #texels)
+      .. u32le(#palette)
+      .. string.rep("\0", 8)
+      .. u32le(32 + #texels + #palette)
+      .. texels
+      .. palette
   end
   return table.concat(parts)
 end
 
-local function apsResource(texture, palette, textureReference)
-  texture = texture or string.rep("\3", 16)
-  palette = palette or string.rep("\4", 8)
-  local descriptorFlags = 0
-  if textureReference ~= nil then
-    descriptorFlags = 2 ^ 17 + textureReference * 2 ^ 18
-    texture = ""
-  end
-  local paletteOffset = 0x20 + #texture
-  local resourceSize = 0x20 + #texture + #palette
-  return u32le(0)
-    .. u32le(descriptorFlags)
-    .. u32le(#texture)
-    .. u32le(paletteOffset)
-    .. u32le(#palette)
+local function splEmitter(flag)
+  return u32le(flag)
+    .. string.rep("\0", 56)
+    .. u16le(18)
+    .. u16le(15)
+    .. string.rep("\0", 4)
+    .. string.char(1, 31, 0, 0)
+    .. u32le(1)
     .. u32le(0)
+    .. u16le(0)
+    .. u16le(0)
     .. u32le(0)
-    .. u32le(resourceSize)
-    .. texture
-    .. palette
+end
+
+-- The overlay image the producer reads the battler emitter placement table
+-- from: zero everywhere but the first retail vector.
+local PLACEMENT_RAM = 0x02236800
+
+local function placementOverlay()
+  local bytes = { string.rep("\0", 0x7C), u32le(0xFFFFDA70), u32le(0xFFFFEAA8), u32le(0x40) }
+  bytes[#bytes + 1] = string.rep("\0", 6 * 288)
+  return table.concat(bytes)
 end
 
 -- Compiles one effect through the real producer while the inner command
@@ -571,6 +562,9 @@ local function compileParticleEffect(effectKey, particleBlobs, particleInstructi
     end,
     metadata = function()
       return { sha1 = string.rep("a", 40) }
+    end,
+    readOverlay = function()
+      return placementOverlay(), { ramAddress = PLACEMENT_RAM }
     end,
     openNarc = function(_, archiveSymbol)
       if archiveSymbol == route.archiveSymbol then
@@ -602,7 +596,7 @@ local function compileParticleEffect(effectKey, particleBlobs, particleInstructi
         entry = "main",
         instructions = particleInstructions,
         subprograms = {},
-        taskKinds = { "battler-effect-continuation" },
+        taskKinds = { "battle-particle-system" },
       }
     end,
   }
@@ -631,14 +625,10 @@ local function particleInstructionsFor(resourceKey)
     {
       op = "create-battler-effect",
       resource = resourceKey,
-      emitterPosition = "solo-enemy",
-      taskKind = "battler-effect-continuation",
+      systemIndex = 1,
+      taskKind = "battle-particle-system",
     },
   }
-end
-
-local function texturedEmitterFlags()
-  return 0x200 + 0x800 + 0x1000000 + 0x2000000
 end
 
 local function assertExactDrawable(bundle, resourceKey, what)
@@ -664,78 +654,47 @@ local function assertExactDrawable(bundle, resourceKey, what)
   return texture
 end
 
-function T.particle_emitters_stage_without_opaque_source_words_and_with_exact_drawable_textures()
+function T.particle_members_stage_as_compiled_emitters_exact_textures_and_placements()
   local tackle = "battle/particle/tackle"
-  local blob = apsMember({ apsEmitter(texturedEmitterFlags()) }, { apsResource() })
+  local blob = splMember({ splEmitter(SELF_DESTRUCT_FLAG), splEmitter(0) }, 2)
   local effect = assertProducerEffect(
     compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "the textured particle archive"
+    "the compiled particle member"
   )
   local descriptor = effect.resources[tackle]
-  Assert.notNil(descriptor, "the compiled effect stages its selected particle archive")
-  Assert.equal(descriptor.kind, "particle", "the particle archive keeps its resource kind")
+  Assert.notNil(descriptor, "the compiled effect stages its selected particle system")
+  Assert.equal(descriptor.kind, "particle", "the particle system keeps its resource kind")
   local payload = effect.resourcePayloads[descriptor.payload]
-  Assert.equal(type(payload), "table", "the staged particle payload is a record")
-  local emitters = payload.emitters
-  Assert.equal(type(emitters), "table", "the staged particle payload carries emitter state")
-  Assert.isTrue(#emitters >= 1, "the staged particle payload carries at least one emitter")
-  for index, emitter in ipairs(emitters) do
-    Assert.isNil(emitter.baseRecord, "emitter " .. index .. " carries no opaque source base record")
-    Assert.isNil(emitter.sections, "emitter " .. index .. " carries no opaque source sections")
-    Assert.isNil(emitter.calculations, "emitter " .. index .. " carries no opaque source calculations")
-    Assert.isTrue(type(emitter.flags) ~= "number", "emitter " .. index .. " carries no raw source flag word")
+  Assert.equal(payload.seed, 0, "the system opens the retail zero particle stream")
+  Assert.equal(#payload.emitters, 2, "every source emitter stages in order")
+  Assert.isNil(payload.emitters[1].persistent, "a self-destroying emitter carries no persistent flag")
+  Assert.isTrue(payload.emitters[2].persistent, "an emitter without the self-destruct flag stays until removed")
+  Assert.isNil(payload.emitters[1].flag, "no raw source flag word crosses into the payload")
+  Assert.equal(#payload.textures, 2, "every source texture is listed")
+  for _, texture in ipairs(payload.textures) do
+    local staged = assertExactDrawable(effect, texture.image, "particle texture " .. texture.image)
+    Assert.equal(texture.width, staged.width, "the texture list carries the staged width")
   end
-  local textureCount = 0
-  for key, resource in pairs(effect.resources) do
-    if resource.kind == "texture" then
-      textureCount = textureCount + 1
-      assertExactDrawable(effect, key, "staged texture " .. key)
-    end
-  end
-  Assert.isTrue(textureCount >= 1, "the embedded source texture stages at least one drawable")
+  local placement = payload.placements["solo-player"][1]
+  Assert.near(placement.x, -9616 / 4096, 1e-9, "the placement table keeps the retail fixed-point x")
+  Assert.near(placement.y, -5464 / 4096, 1e-9, "the placement table keeps the retail fixed-point y")
+  Assert.equal(#payload.placements["enemy-side-slot-2"], 2, "each position carries both perspective vectors")
 end
 
-local function textureLink(entry)
-  if type(entry.textureKey) == "string" then
-    return entry.textureKey
-  end
-  if type(entry.assetKey) == "string" then
-    return entry.assetKey
-  end
-  return nil
-end
-
-function T.shared_particle_textures_stage_once_and_resolve_every_reference()
+function T.undecodable_or_unreproduced_particle_members_stage_an_explicit_unsupported_marker()
   local tackle = "battle/particle/tackle"
-  local firstPalette = string.rep("\4", 8)
-  local secondPalette = string.rep("\5", 8)
-  local blob = apsMember({ apsEmitter(texturedEmitterFlags()) }, {
-    apsResource(nil, firstPalette),
-    apsResource(nil, secondPalette, 0),
-  })
-  local effect = assertProducerEffect(
-    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "the texture-sharing particle archive"
-  )
-  local payload = effect.resourcePayloads[assert(effect.resources[tackle], "the particle archive is staged").payload]
-  Assert.equal(type(payload.resources), "table", "the staged particle payload keeps its resource table")
-  Assert.equal(#payload.resources, 2, "both source resources normalize")
-  local firstLink = textureLink(payload.resources[1])
-  local secondLink = textureLink(payload.resources[2])
-  Assert.notNil(firstLink, "the embedded texture names its staged drawable")
-  Assert.equal(secondLink, firstLink, "the shared texture reference resolves to the one staged drawable")
-  local textureCount = 0
-  local paletteCount = 0
-  for key, resource in pairs(effect.resources) do
-    if resource.kind == "texture" then
-      textureCount = textureCount + 1
-      assertExactDrawable(effect, key, "shared texture " .. key)
-    elseif resource.kind == "palette" then
-      paletteCount = paletteCount + 1
-    end
+  for name, blob in pairs({
+    unreproduced = splMember({ splEmitter(SELF_DESTRUCT_FLAG + 2 ^ 20) }, 1),
+    truncated = splMember({ splEmitter(SELF_DESTRUCT_FLAG) }, 1):sub(1, 100),
+  }) do
+    local effect = assertProducerEffect(
+      compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
+      "the " .. name .. " particle member"
+    )
+    local payload = effect.resourcePayloads[effect.resources[tackle].payload]
+    Assert.equal(type(payload.unsupported), "string", name .. " members stage their cause, never invented motion")
+    Assert.isNil(payload.emitters, name .. " members stage no emitters")
   end
-  Assert.equal(textureCount, 1, "the shared texture uploads exactly once")
-  Assert.equal(paletteCount, 2, "each distinct source palette stages its own payload")
 end
 
 local Rgb555 = require("libs.codec.src.Rgb555")
@@ -1004,100 +963,6 @@ function T.separately_loaded_sprite_palette_stages_decoded_color_records()
   Assert.equal(type(payload.colors), "table", "the sprite palette stages decoded color records")
   Assert.equal(#payload.colors, 16, "the sprite palette stages one full palette")
   Assert.equal(payload.colors[1].r, 255, "the first entry keeps its decoded red channel")
-end
-
-function T.unrecognized_emitter_flags_fail_the_effect_without_staging()
-  local tackle = "battle/particle/tackle"
-  local blob = apsMember({ apsEmitter(2 ^ 31) }, { apsResource() })
-  assertProducerFailure(
-    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "an emitter with unrecognized source flags"
-  )
-end
-
-function T.truncated_particle_members_fail_without_staging()
-  local tackle = "battle/particle/tackle"
-  local shortResource = u32le(0)
-    .. u32le(0)
-    .. u32le(4)
-    .. u32le(0x24)
-    .. u32le(0)
-    .. u32le(0)
-    .. u32le(0)
-    .. u32le(0x23)
-    .. "\3\3\3"
-  local blob = apsMember({ apsEmitter(texturedEmitterFlags()) }, { shortResource })
-  assertProducerFailure(
-    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "a truncated particle member"
-  )
-end
-
-local function apsFlaggedResource(texture, palette, textureFlags)
-  local paletteOffset = 0x20 + #texture
-  local resourceSize = 0x20 + #texture + #palette
-  return u32le(0)
-    .. u32le(textureFlags)
-    .. u32le(#texture)
-    .. u32le(paletteOffset)
-    .. u32le(#palette)
-    .. u32le(0)
-    .. u32le(0)
-    .. u32le(resourceSize)
-    .. texture
-    .. palette
-end
-
-function T.particle_texture_decodes_source_size_codes_to_exact_drawables()
-  local tackle = "battle/particle/tackle"
-  local blob = apsMember({ apsEmitter(texturedEmitterFlags()) }, {
-    apsFlaggedResource(string.rep("\9", 256), string.rep("\7", 8), 0x10116),
-  })
-  local effect = assertProducerEffect(
-    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "the source-coded particle texture"
-  )
-  local textureKey = nil
-  for key, descriptor in pairs(effect.resources) do
-    if descriptor.kind == "texture" then
-      textureKey = key
-    end
-  end
-  Assert.notNil(textureKey, "the source-coded texture stages its drawable key")
-  local drawable = assertExactDrawable(effect, textureKey, "the source-coded texture")
-  Assert.equal(drawable.width, 16, "the size codes select the native texture width")
-  Assert.equal(drawable.height, 16, "the size codes select the native texture height")
-  local paletteCount = 0
-  for _, descriptor in pairs(effect.resources) do
-    if descriptor.kind == "palette" then
-      paletteCount = paletteCount + 1
-      local staged = effect.resourcePayloads[descriptor.payload]
-      Assert.equal(#staged.colors, 4, "the staged palette decodes every RGB555 entry")
-    end
-  end
-  Assert.equal(paletteCount, 1, "the source-coded texture stages its own palette")
-end
-
-function T.particle_texture_length_mismatch_fails_without_staging()
-  local tackle = "battle/particle/tackle"
-  local blob = apsMember({ apsEmitter(texturedEmitterFlags()) }, {
-    apsFlaggedResource(string.rep("\9", 100), string.rep("\7", 8), 0x10116),
-  })
-  assertProducerFailure(
-    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "a texture whose length mismatches its size codes"
-  )
-end
-
-function T.headerless_texture_without_unique_dimensions_fails()
-  local tackle = "battle/particle/tackle"
-  local blob = apsMember({ apsEmitter(texturedEmitterFlags()) }, {
-    apsFlaggedResource(string.rep("\9", 16), string.rep("\7", 4), 0),
-  })
-  assertProducerFailure(
-    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-    "a headerless texture with ambiguous dimensions"
-  )
 end
 
 -- The vanished-picture callback is a direct picture operation, not a

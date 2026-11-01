@@ -2472,28 +2472,27 @@ local function drawEncounterOverlay(graphics, view, lower)
   restoreColor(graphics, r, g, b, a)
 end
 
--- Draws the live encounter terrain and ball particles over the main screen.
--- The 3D layer sits above the faded BG and OBJ planes, so the particles are
--- not tinted by the encounter fade.
+-- Draws live SPL particle systems over the main screen. The 3D layer sits
+-- above the faded BG and OBJ planes, so particles are not tinted by the
+-- encounter fade and draw over the battler pictures.
 ---@param graphics table<string, unknown> injected host graphics
----@param view table<string, unknown> internal semantic snapshot
-local function drawEncounterParticles(graphics, view)
-  for _, field in ipairs({ "encounterParticleSystems", "ballParticleSystems" }) do
-    local systems = view[field] --[[@as { simulation: SplParticleSimulation, textures: table<integer, table<string, unknown>> }[]?]]
-    for _, system in ipairs(systems or {}) do
-      ---@param runtime table<string, unknown>
-      ---@param particle table<string, unknown>
-      ---@param child table<string, unknown>|nil
-      ---@return love.Image
-      local function resolveTexture(runtime, particle, child)
-        local record = child or runtime.record --[[@as table<string, unknown>]]
-        local texNo = child ~= nil and child.texNo or particle.texNo
-        local image = assert(system.textures[texNo], "particle texture is staged")
-        local repeating = record.texRepeat --[[@as { s: integer, t: integer }]]
-        if (repeating.s ~= 0 or repeating.t ~= 0) and image.setWrap ~= nil then
-          image:setWrap("repeat", "repeat")
-        end
-        return image
+---@param systems table<integer, { simulation: SplParticleSimulation, textures: table<integer, table<string, unknown>> }>|nil live systems in creation order
+local function drawParticleSystems(graphics, systems)
+  if systems == nil then
+    return
+  end
+  for _, system in ipairs(systems) do
+    ---@param runtime table<string, unknown>
+    ---@param particle table<string, unknown>
+    ---@param child table<string, unknown>|nil
+    ---@return love.Image
+    local function resolveTexture(runtime, particle, child)
+      local record = child or runtime.record --[[@as table<string, unknown>]]
+      local texNo = child ~= nil and child.texNo or particle.texNo
+      local image = assert(system.textures[texNo], "particle texture is staged")
+      local repeating = record.texRepeat --[[@as { s: integer, t: integer }]]
+      if (repeating.s ~= 0 or repeating.t ~= 0) and image.setWrap ~= nil then
+        image:setWrap("repeat", "repeat")
       end
       SplParticleDraw.draw(
         graphics,
@@ -2520,8 +2519,10 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
   elseif paneId == "detail" then
     drawDetail(resources, view)
     local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+    drawParticleSystems(graphics, view.moveParticleSystems)
     drawEncounterOverlay(graphics, view, false)
-    drawEncounterParticles(graphics, view)
+    drawParticleSystems(graphics, view.encounterParticleSystems)
+    drawParticleSystems(graphics, view.ballParticleSystems)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)
     drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, true)

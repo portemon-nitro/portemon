@@ -17,7 +17,7 @@ end
 
 local function baseEffect()
   return {
-    schema = "g4-battle-effect-v3",
+    schema = "g4-battle-effect-v4",
     key = "synthetic-lower-probe",
     catalogIdentity = "synthetic-catalog",
     program = {

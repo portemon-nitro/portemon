@@ -121,50 +121,45 @@ function T.independently_corrected_effects_keep_their_own_selected_members(romFs
   end
 end
 
--- TACKLE is the pinned decoding sample for the particle archive at member
--- 64: its emitters must normalize without opaque source words and its
--- embedded texture must stage as one exact RGBA drawable.
-function T.particle_effect_stages_decoded_emitters_and_one_exact_texture(romFs, versionId)
+-- The three staged particle effects load their SPL member as one particle
+-- system payload: compiled emitters, exact RGBA textures, and the retail
+-- emitter placement table the creation callbacks index. TACKLE and SUPERSONIC
+-- are move effects; the sleep status carries the asleep member.
+local PARTICLE_EFFECTS = {
+  { key = "TACKLE", resource = "battle/particle/tackle", emitters = 2 },
+  { key = "SUPERSONIC", resource = "battle/particle/supersonic", emitters = 1 },
+  { key = "BATTLE_ANIMATION_ASLEEP", resource = "battle/particle/asleep", emitters = 10 },
+}
+
+function T.particle_effects_stage_compiled_emitters_textures_and_placements(romFs, versionId)
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   local factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   local sources = require("romdump.src.config.BattleAnimationSources")
-  local effect = assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "TACKLE")
-  local resourceKey = "battle/particle/tackle"
-  local descriptor = effect.resources[resourceKey]
-  Assert.notNil(descriptor, "TACKLE stages its selected particle archive")
-  Assert.equal(descriptor.kind, "particle", "the selected archive keeps its particle kind")
-  local payload = effect.resourcePayloads[descriptor.payload]
-  Assert.equal(type(payload), "table", "the staged particle payload is a record")
-  Assert.equal(type(payload.emitters), "table", "the staged payload carries emitter state")
-  Assert.isTrue(#payload.emitters >= 1, "the staged payload carries at least one emitter")
-  for index, emitter in ipairs(payload.emitters) do
-    Assert.isNil(emitter.baseRecord, "emitter " .. index .. " carries no opaque source base record")
-    Assert.isNil(emitter.sections, "emitter " .. index .. " carries no opaque source sections")
-    Assert.isNil(emitter.calculations, "emitter " .. index .. " carries no opaque source calculations")
-    Assert.isTrue(type(emitter.flags) ~= "number", "emitter " .. index .. " carries no raw source flag word")
-  end
-  local textureCount = 0
-  for key, resource in pairs(effect.resources) do
-    if resource.kind == "texture" then
-      textureCount = textureCount + 1
-      local texture = effect.resourcePayloads[resource.payload]
-      Assert.equal(type(texture), "table", "staged texture " .. key .. " is a record")
-      Assert.isTrue(
-        type(texture.width) == "number" and texture.width % 1 == 0 and texture.width > 0,
-        "staged texture " .. key .. " declares a positive pixel width"
-      )
-      Assert.isTrue(
-        type(texture.height) == "number" and texture.height % 1 == 0 and texture.height > 0,
-        "staged texture " .. key .. " declares a positive pixel height"
-      )
-      Assert.equal(
-        #texture.rgba8888,
-        texture.width * texture.height * 4,
-        "staged texture " .. key .. " carries exactly one RGBA quadruple per pixel"
-      )
+  for _, expected in ipairs(PARTICLE_EFFECTS) do
+    local effect =
+      assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, expected.key)
+    local descriptor = effect.resources[expected.resource]
+    Assert.notNil(descriptor, expected.key .. " stages its particle system")
+    Assert.equal(descriptor.kind, "particle", expected.key .. " keeps the particle kind")
+    local payload = effect.resourcePayloads[descriptor.payload]
+    Assert.equal(#payload.emitters, expected.emitters, expected.key .. " stages every source emitter")
+    Assert.isTrue(#payload.textures >= 1, expected.key .. " stages its textures")
+    for _, texture in ipairs(payload.textures) do
+      local staged = effect.resources[texture.image]
+      Assert.notNil(staged, expected.key .. " stages each particle texture as a resource")
+      local pixels = effect.resourcePayloads[staged.payload]
+      Assert.equal(#pixels.rgba8888, pixels.width * pixels.height * 4, "a particle texture is exact RGBA")
+    end
+    for _, instruction in ipairs(effect.program.instructions) do
+      Assert.isNil(instruction.emitterPosition, "particle instructions name a system slot, never a battler slot")
     end
   end
-  Assert.isTrue(textureCount >= 1, "the embedded source texture stages at least one drawable")
+  local tackle = compiler.compileEffect(romFs, { versionId = versionId }, "TACKLE")
+  local payload = tackle.resourcePayloads[tackle.resources["battle/particle/tackle"].payload]
+  -- sBattleAnimEmitterPositions[solo player][perspective 0] is the first
+  -- retail vector: x -9616, y -5464 in 1/4096 world units.
+  Assert.near(payload.placements["solo-player"][1].x, -9616 / 4096, 1e-9, "the placement table keeps the retail x")
+  Assert.near(payload.placements["solo-player"][1].y, -5464 / 4096, 1e-9, "the placement table keeps the retail y")
 end
 
 -- Each ready dump runs the smoke on its own reader; a version without a

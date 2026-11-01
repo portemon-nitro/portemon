@@ -400,6 +400,21 @@ BattleAnimationSources.BATTLER_PICTURE_TARGETS = {
   [7] = "first-battler-state-five",
 }
 
+-- sBattleAnimEmitterPositions (battle_anim_battler_util.c) in the overlay 7
+-- data: per battler type, 24 fx32 vectors indexed by particle perspective type
+-- plus twice the position kind. Emitter callbacks read kind 0, which is the
+-- first vector of each perspective pair.
+BattleAnimationSources.EMITTER_PLACEMENTS = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x0223687C,
+  vectorBytes = 12,
+  vectorsPerBattlerType = 24,
+  battlerTypeCount = 6,
+  perspectiveCount = 2,
+  unit = 4096,
+}
+
 -- Native SPL members with a source-resolved semantic identity.
 BattleAnimationSources.PARTICLE_RESOURCES = {
   [64] = "battle/particle/tackle",
@@ -1120,9 +1135,13 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       vanished = operands[4] ~= 0,
     }
   elseif selector == 65 then
-    local spriteContextSlot = operands[3] or 0
-    if spriteContextSlot > 70 then
-      return nil, "particle emitter path callback has an invalid sprite-context slot"
+    -- BattleAnimFunc_MoveEmitter: arg 0 is the emitter slot, args 1-2 the
+    -- offsets, arg 3 the start delay, arg 4 the motion duration (arg 5 is
+    -- the unused amplitude), arg 6 the direction, arg 7 the frame window
+    -- (start high, end low), and arg 8 the wave flag.
+    local emitterSlot = operands[3] or 0
+    if emitterSlot > 70 then
+      return nil, "particle emitter path callback has an invalid emitter slot"
     end
     local pairOrders = {
       [0] = "attacker-target",
@@ -1132,26 +1151,25 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
     if pairOrder == nil then
       return nil, "particle emitter path callback has an invalid battler pair order"
     end
-    local packedProgress = operands[10] or 0
-    local completionLimit = packedProgress % 0x10000
-    if completionLimit == 0 then
-      completionLimit = 0xFF
+    local packedFrames = operands[10] or 0
+    local endFrame = packedFrames % 0x10000
+    if endFrame == 0 then
+      endFrame = 0xFF
     end
     return {
       callback = "battle-particle-emitter-battler-path",
       taskKind = "battle-particle-emitter-battler-path",
       context = "battle-particle-emitter",
       parameters = {
-        spriteContextSlot = spriteContextSlot,
+        emitterSlot = emitterSlot,
         offsetX = signed16(operands[4]),
         offsetY = signed16(operands[5]),
-        leadingInterpolationSteps = signed16(operands[6]),
-        sinePeriodDivisor = signed16(operands[7]),
-        interpolationDurationTicks = (operands[8] or 0) % 0x10000,
+        delayTicks = signed16(operands[6]),
+        durationTicks = signed16(operands[7]),
         pairOrder = pairOrder,
-        initialInterpolationSteps = math.floor(packedProgress / 0x10000),
-        completionLimit = completionLimit,
-        sinusoidalOffset = (operands[11] or 0) ~= 0,
+        startFrame = math.floor(packedFrames / 0x10000),
+        endFrame = endFrame,
+        wave = (operands[11] or 0) ~= 0,
       },
     }
   elseif selector == 66 then
@@ -1862,7 +1880,7 @@ function BattleAnimationSources.resolveBattlerParticleAction(opcode, operands)
     local resourceOperand = opcode == 46 and 2 or 3
     return {
       actionProfile = profile,
-      sourceEmitterSelections = { resource = operands[resourceOperand] },
+      sourceEmitterSelections = { emitter = operands[resourceOperand] },
       taskKind = taskKind,
     }
   end

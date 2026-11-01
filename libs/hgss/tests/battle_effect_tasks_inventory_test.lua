@@ -15,6 +15,7 @@ local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local T = {}
 
 local PARTICLE_KINDS = {
+  ["battle-particle-system"] = true,
   ["battler-effect-continuation"] = true,
   ["battle-particle-emitter-battler-path"] = true,
   ["battle-particle-emitter-curved-battler-path"] = true,

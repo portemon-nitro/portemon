@@ -178,11 +178,11 @@ local function pairCases(invalidPair)
   local cases = {}
   for _, attacker in ipairs(STABLE_POSITIONS) do
     for _, target in ipairs(STABLE_POSITIONS) do
-      cases[attacker .. "/" .. target] = "battle/particle-emitter/standby"
+      cases[attacker .. "/" .. target] = 0
     end
   end
   cases[invalidPair] = "source-assert"
-  cases["solo-enemy/solo-player"] = "battle/particle-emitter/candidate-4"
+  cases["solo-enemy/solo-player"] = 4
   return cases
 end
 
@@ -499,9 +499,9 @@ function T.invalid_position_pair_fails_naming_its_pair_without_leasing()
         op = "create-parameterized-battler-effect",
         taskKind = "battler-effect-continuation",
         actionProfile = "particle-emitter-target-battler-relative",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
         runtimeSelection = "battler-particle-position-pair",
-        resourceCases = pairCases("solo-player/solo-enemy"),
+        emitterCases = pairCases("solo-player/solo-enemy"),
       },
       { op = "wait-for-battler-effects" },
     },

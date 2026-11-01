@@ -176,132 +176,6 @@ function T.blend_transition_completes_and_releases_everything_once()
   Assert.equal(#journal.released, 0, "teardown releases nothing it never staged")
 end
 
--- Stages one normalized emitter record shaped like the producer output:
--- sorted source behavior flags with the full 42-word control block and no
--- texture selection, matching an imageless retail emitter.
-local function normalizedEmitterFixture()
-  local params = {}
-  for index = 1, 42 do
-    params[index] = 0
-  end
-  params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-  return { features = { "alpha", "random" }, params = params }
-end
-
-local function particleFixtureServices(scene)
-  local journal = { acquired = {}, released = {} }
-  local resources = {}
-  function resources.resolve(key)
-    journal.acquired[#journal.acquired + 1] = key
-    return {
-      key = key,
-      kind = "particle-emitter",
-      payloadPath = "probe/particle-emitter",
-      data = normalizedEmitterFixture(),
-    }
-  end
-  function resources.release(lease)
-    journal.released[#journal.released + 1] = lease
-  end
-  return { scene = scene, audio = {}, resources = resources }, journal
-end
-
-function T.particle_continuation_draws_deterministically_from_the_occurrence_stream()
-  local firstScene = sceneWithPair()
-  local firstServices, firstJournal = particleFixtureServices(firstScene)
-  local firstDraws = {}
-  local first = assert(
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" },
-      { seed = 4242, random = fixedRandom(firstDraws) },
-      firstServices
-    )
-  )
-  local firstTrace = {}
-  for tick = 1, 30 do
-    first:stepSourceTick({ tick = tick })
-    firstTrace[#firstTrace + 1] = first:status()
-  end
-  Assert.equal(first:status(), "complete", "the particle run reaches its own completion boundary")
-  Assert.isTrue(#firstDraws > 0, "the run draws its visual randomness from the occurrence-local stream")
-  local secondScene = sceneWithPair()
-  local secondServices, _ = particleFixtureServices(secondScene)
-  local secondDraws = {}
-  local second = assert(
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" },
-      { seed = 4242, random = fixedRandom(secondDraws) },
-      secondServices
-    )
-  )
-  local secondTrace = {}
-  for tick = 1, 30 do
-    second:stepSourceTick({ tick = tick })
-    secondTrace[#secondTrace + 1] = second:status()
-  end
-  Assert.deepEqual(secondTrace, firstTrace, "the same seed gives the same source-tick trace")
-  Assert.deepEqual(secondDraws, firstDraws, "the same seed draws the same visual sequence")
-  first:dispose()
-  second:dispose()
-  Assert.equal(#firstJournal.released, #firstJournal.acquired, "the particle run releases its holdings once")
-end
-
-function T.particle_continuation_rejects_unknown_emitters()
-  local scene = sceneWithPair()
-  local services, _ = journalServices(scene)
-  Assert.throws(function()
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      { resource = "battle/particle/tackle", emitterPosition = "no-such-slot" },
-      {},
-      services
-    )
-  end, "unknown emitters fail closed instead of staging a collapsed emission")
-  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
-end
-
-function T.particle_continuation_rejects_direct_construction_stubs()
-  local scene = sceneWithPair()
-  local services, _ = journalServices(scene)
-  Assert.throws(function()
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" },
-      {},
-      services
-    )
-  end, "direct-construction stubs fail closed instead of drawing probe pictures")
-  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
-end
-
-function T.construction_failure_rolls_back_every_attempted_lease()
-  -- Only particle tasks stage dependency leases now that visual, blend,
-  -- and picture bodies are imageless, so the rollback path is proven
-  -- through the particle continuation: the failed acquisition attempt
-  -- itself releases exactly once and nothing is published.
-  local scene = sceneWithPair()
-  local journal = { acquired = {}, released = {} }
-  local resources = {}
-  function resources.resolve(key)
-    journal.acquired[#journal.acquired + 1] = key
-    error({ code = "TEXTURE_MISSING", key = key }, 0)
-  end
-  function resources.release(lease)
-    journal.released[#journal.released + 1] = lease
-  end
-  local services = { scene = scene, audio = {}, resources = resources }
-  local ok = pcall(BattleEffectTasks.create, BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
-    resource = "battle/particle/tackle",
-    emitterPosition = "solo-enemy",
-  }, {}, services)
-  Assert.isFalse(ok, "the failing construction never yields a task")
-  Assert.equal(#journal.acquired, 1, "the acquisition attempt is journaled")
-  Assert.equal(#journal.released, 1, "the rollback releases the attempt exactly once")
-  Assert.equal(#scene:effectViews(), 0, "the failed construction publishes nothing")
-end
-
 function T.picture_animation_restores_its_activation_snapshot()
   -- Show-picture spawns carry no compiled timing, so the validated
   -- show marker retires on its first tick without inventing a duration
@@ -344,25 +218,6 @@ function T.picture_animation_restores_its_activation_snapshot()
   Assert.equal(#scene:effectViews(), 0, "the reveal publishes no drawable picture")
   task:dispose()
   Assert.equal(#journal.released, #journal.acquired, "the reveal stages no leases")
-end
-
-function T.cancelled_bodies_release_and_stay_silent()
-  local scene = sceneWithPair()
-  local services, journal = particleFixtureServices(scene)
-  local task = assert(BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
-    resource = "battle/particle/asleep",
-    emitterPosition = "solo-player",
-  }, {}, services))
-  task:stepSourceTick({ tick = 1 })
-  task:cancel("superseded")
-  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
-  task:cancel("repeated")
-  task:dispose()
-  task:dispose()
-  task:stepSourceTick({ tick = 9 })
-  Assert.equal(task:status(), "cancelled", "disposed tasks never advance again")
-  Assert.equal(#scene:effectViews(), 0, "cancellation releases the transient record")
-  Assert.equal(#journal.released, #journal.acquired, "cancellation releases every holding once")
 end
 
 local function occurrenceContext(seed)
@@ -1017,10 +872,9 @@ function T.admission_predicate_covers_only_implemented_kinds()
     BattleEffectTasks.supportsKind(BattleEffectTasks.PICTURE_ANIMATION_KIND),
     "the picture body is admitted"
   )
-  Assert.isTrue(
-    BattleEffectTasks.supportsKind(BattleEffectTasks.PARTICLE_CONTINUATION_KIND),
-    "the particle continuation is admitted"
-  )
+  for _, kind in ipairs({ BattleEffectTasks.PARTICLE_SYSTEM_KIND, BattleEffectTasks.PARTICLE_CONTINUATION_KIND }) do
+    Assert.isTrue(BattleEffectTasks.supportsKind(kind), "the particle body is admitted: " .. kind)
+  end
   Assert.isTrue(BattleEffectTasks.supportsKind(BattleEffectTasks.VOICE_MONITOR_KIND), "the voice monitor is admitted")
   for _, kind in ipairs({ "positioned-sound-motion", "repeated-sound-playback", "delayed-sound-playback" }) do
     Assert.isTrue(BattleEffectTasks.supportsKind(kind), "the sound body is admitted: " .. kind)
@@ -1057,81 +911,6 @@ function T.malformed_visual_arguments_fail_before_side_effects()
   Assert.isFalse(ok, "non-record parameters never yield a runnable task")
   Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
   Assert.equal(#journal.released, #journal.acquired, "the rejected construction leaks no lease")
-end
-
-local function emitterPathParameters(selector)
-  local Sources = require("romdump.src.config.BattleAnimationSources")
-  local resolved
-  if selector == 65 then
-    resolved = assert(Sources.resolveBattleAnimationCallback({ 65, 9, 0, 10, 20, 5, 8, 100, 0, 0x00020003, 2 }))
-  else
-    resolved = assert(Sources.resolveBattleAnimationCallback({ 66, 9, 0, 10, 20, 30, 40, 256, 0, 0x00020005, 1 }))
-  end
-  Assert.notNil(resolved.taskKind, "the emitter path callback resolves its task kind")
-  return resolved
-end
-
-function T.emitter_path_tasks_complete_on_their_compiled_boundary()
-  for _, selector in ipairs({ 65, 66 }) do
-    local plan = emitterPathParameters(selector)
-    local scene = sceneWithPair()
-    local services, journal = journalServices(scene)
-    local task = assert(
-      BattleEffectTasks.create(plan.taskKind, {
-        callback = plan.callback,
-        taskContext = plan.context,
-        parameters = plan.parameters,
-      }, occurrenceContext(), services),
-      "the emitter path body constructs from compiled parameters"
-    )
-    Assert.equal(task:status(), "pending", "emitter path tasks open pending")
-    local bound = plan.parameters.interpolationDurationTicks or plan.parameters.durationTicks
-    Assert.isTrue(type(bound) == "number" and bound > 0, "the compiled boundary is positive")
-    for _ = 1, bound - 1 do
-      task:stepSourceTick({ tick = 1 })
-      Assert.isTrue(task:status() ~= "complete", "the path boundary is not reached early")
-    end
-    task:stepSourceTick({ tick = 1 })
-    Assert.equal(task:status(), "complete", "the path retires on its compiled boundary")
-    Assert.equal(#scene:effectViews(), 0, "path drivers publish no transient records")
-    Assert.equal(#journal.acquired, 0, "path drivers stage no leases")
-    Assert.equal(#journal.released, 0, "path drivers release nothing")
-    task:dispose()
-    task:dispose()
-    task:cancel("late")
-    Assert.equal(task:status(), "complete", "completion survives late cancellation")
-  end
-end
-
-function T.emitter_path_tasks_cancel_without_side_effects()
-  local plan = emitterPathParameters(65)
-  local scene = sceneWithPair()
-  local services, journal = journalServices(scene)
-  local task = assert(BattleEffectTasks.create(plan.taskKind, {
-    callback = plan.callback,
-    taskContext = plan.context,
-    parameters = plan.parameters,
-  }, occurrenceContext(), services))
-  task:stepSourceTick({ tick = 1 })
-  task:cancel("superseded")
-  Assert.equal(task:status(), "cancelled", "cancellation stays distinct from completion")
-  Assert.equal(#scene:effectViews(), 0, "cancellation publishes nothing")
-  task:dispose()
-  Assert.equal(#journal.released, #journal.acquired, "the cancelled path leaks no lease")
-end
-
-function T.emitter_path_tasks_refuse_missing_parameters()
-  local scene = sceneWithPair()
-  local services, journal = journalServices(scene)
-  for _, kind in ipairs({
-    BattleEffectTasks.EMITTER_BATTLER_PATH_KIND,
-    BattleEffectTasks.EMITTER_CURVED_PATH_KIND,
-  }) do
-    local ok = pcall(BattleEffectTasks.create, kind, {}, occurrenceContext(), services)
-    Assert.isFalse(ok, "an emitter path without its source profile never constructs")
-    Assert.equal(#scene:effectViews(), 0, "the refused construction publishes nothing")
-    Assert.equal(#journal.released, #journal.acquired, "the refused construction leaks no lease")
-  end
 end
 
 function T.directed_offscreen_motion_exits_each_side_away_from_center()

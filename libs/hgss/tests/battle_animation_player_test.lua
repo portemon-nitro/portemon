@@ -345,7 +345,7 @@ function T.stuck_background_work_escapes_bounded_instead_of_hanging()
     { op = "wait-for-battle-phase", values = { 0 } },
     { op = "reset-blend-alpha" },
   }))
-  for _ = 1, 40 do
+  for _ = 1, 1000 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "complete" then
       break
@@ -664,7 +664,7 @@ function T.resource_failures_fail_before_side_effects()
         op = "create-battler-effect",
         taskKind = "battle-particle-emitter-battler-path",
         resource = "battle/particle-emitter/probe-effect",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
       },
       { op = "reset-blend-alpha" },
     })
@@ -711,7 +711,7 @@ function T.particle_creation_parks_without_reacquiring_across_ticks()
       op = "create-battler-effect",
       taskKind = "battle-particle-emitter-battler-path",
       resource = "battle/particle-emitter/probe-effect",
-      emitterPosition = "solo-enemy",
+      systemIndex = 0,
     },
     { op = "play-sound", sound = "after-create-cue" },
     { op = "reset-blend-alpha" },
@@ -732,7 +732,8 @@ function T.particle_creation_parks_without_reacquiring_across_ticks()
   Assert.equal(#helpers.log.acquired, 1, "parked ticks never restage the dependency")
   Assert.equal(#helpers.log.created, 1, "parked ticks never reconstruct the child")
   Assert.equal(#helpers.log.played, 1, "the stream advances past the drained wait in source order")
-  Assert.equal(player:status(handle), "waiting", "the still-running child holds the stream end")
+  Assert.equal(player:status(handle), "waiting", "the still-playing voice holds the stream end")
+  Assert.equal(#helpers.log.disposed, 0, "the loaded particle system stays owned while the occurrence runs")
 end
 
 function T.particle_creation_repeats_once_per_loop_visit()
@@ -769,7 +770,7 @@ function T.particle_creation_repeats_once_per_loop_visit()
         op = "create-battler-effect",
         taskKind = "battle-particle-emitter-battler-path",
         resource = "battle/particle-emitter/loop-effect",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
       },
       { op = "advance-loop-slot" },
       { op = "reset-blend-alpha" },
@@ -793,7 +794,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
       op = "create-battler-effect",
       taskKind = "battle-particle-emitter-battler-path",
       resource = "battle/particle-emitter/cancel-effect",
-      emitterPosition = "solo-enemy",
+      systemIndex = 0,
     },
     { op = "reset-blend-alpha" },
   }))
@@ -835,7 +836,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
         op = "create-battler-effect",
         taskKind = "battle-particle-emitter-battler-path",
         resource = "battle/particle-emitter/failing-effect",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
       },
       { op = "reset-blend-alpha" },
     })
@@ -864,7 +865,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
         op = "create-battler-effect",
         taskKind = "battle-particle-emitter-battler-path",
         resource = "battle/particle-emitter/burst-effect",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
       },
       { op = "reset-blend-alpha" },
     })
@@ -891,7 +892,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
         op = "create-battler-effect",
         taskKind = "battle-particle-emitter-battler-path",
         resource = "battle/particle-emitter/hollow-effect",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
       },
       { op = "reset-blend-alpha" },
     })

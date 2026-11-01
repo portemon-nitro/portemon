@@ -390,10 +390,13 @@ local function handleWaitForSound(exec, instruction, index)
 end
 Handlers["wait-for-sound"] = handleWaitForSound
 
--- Bounded backstop behind battler-effects waits: a stuck task can
+-- Bounded backstops behind battler-effects waits: a stuck task can
 -- never hang the occurrence, and the release is journaled instead of
--- passing silently.
+-- passing silently. Live particle emitters run their real lifetimes, so
+-- their bound is generous; raw visual work that never reports completion
+-- releases the wait quickly.
 local EFFECTS_ESCAPE_TICKS = 16
+local PARTICLE_ESCAPE_TICKS = 900
 
 local function handleWaitForBattlerEffects(exec, instruction, index)
   local _ = instruction
@@ -417,7 +420,7 @@ local function handleWaitForBattlerEffects(exec, instruction, index)
     return exec.park(parked)
   end
   wait.parked = wait.parked + 1
-  if wait.parked > EFFECTS_ESCAPE_TICKS then
+  if wait.parked > (exec.count("particle") > 0 and PARTICLE_ESCAPE_TICKS or EFFECTS_ESCAPE_TICKS) then
     exec.note({ op = "wait-for-battler-effects", index = index, escape = "effects-wait backstop" })
     exec.clearWait()
     exec.advance()
@@ -1003,30 +1006,6 @@ local function handleReplaceParametersAndCall(exec, instruction, index)
 end
 Handlers["replace-parameters-and-call"] = handleReplaceParametersAndCall
 
-local function handleCreateBattlerEffect(exec, instruction, index)
-  -- A parked staging wait means this instruction already staged its
-  -- dependency and child on its first visit: resume the wait instead
-  -- of acquiring a second time. A real loop revisit after the wait
-  -- cleared stages anew because no wait is held then.
-  local parked = exec.wait()
-  if parked ~= nil and parked.kind == "staging" and parked.index == index then
-    return executeStagingWait(exec, instruction, index)
-  end
-  if exec.lease(instruction.resource) == nil then
-    return "done"
-  end
-  local record = exec.spawn(instruction.taskKind, "particle", {
-    emitterPosition = instruction.emitterPosition,
-    resource = instruction.resource,
-  })
-  if record == nil then
-    return "done"
-  end
-  exec.note({ op = "create-battler-effect", index = index, task = instruction.taskKind })
-  return executeStagingWait(exec, instruction, index)
-end
-Handlers["create-battler-effect"] = handleCreateBattlerEffect
-
 -- Names the effect behind a position-pair diagnostic: the admitted
 -- event effect key when the occurrence carries one, otherwise the
 -- normalized program identity already recorded on the failure detail.
@@ -1042,95 +1021,10 @@ local function pairEffectName(exec)
   return "unknown effect"
 end
 
-local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
-  if instruction.resourceCases ~= nil then
-    -- Same parked-resumption guard as the plain battler effect: the
-    -- held staging wait already owns this visit's dependency and child.
-    local parked = exec.wait()
-    if parked ~= nil and parked.kind == "staging" and parked.index == index then
-      return executeStagingWait(exec, instruction, index)
-    end
-    local topology = nil
-    if type(exec.topology) == "function" then
-      local ok, resolved = pcall(exec.topology)
-      if ok and type(resolved) == "table" then
-        topology = resolved --[[@as table<string, unknown>]]
-      end
-    end
-    if type(topology) ~= "table" then
-      exec.fail("runtime-selected particle resources need an emitter topology the packet does not carry")
-      return "done"
-    end
-    local attacker = topology.attacker --[[@as table<string, unknown>?]]
-    if type(attacker) ~= "table" or type(attacker.slot) ~= "string" then
-      exec.fail("runtime-selected particle resources need an attacker slot the packet does not carry")
-      return "done"
-    end
-    local targets = topology.targets --[[@as table<integer, table<string, unknown>>?]]
-    if type(targets) ~= "table" or #targets == 0 then
-      exec.fail("runtime-selected particle resources need an event target the packet does not carry")
-      return "done"
-    end
-    local target = nil ---@type table<string, unknown>?
-    if #targets == 1 then
-      target = targets[1]
-    else
-      local ordinal = nil ---@type integer?
-      if type(instruction.targetOrdinal) == "number" then
-        ordinal = instruction.targetOrdinal --[[@as integer]]
-      elseif type(instruction.battlerTarget) == "number" then
-        ordinal = instruction.battlerTarget --[[@as integer]]
-      end
-      if type(ordinal) == "number" and targets[ordinal + 1] ~= nil then
-        target = targets[ordinal + 1]
-      else
-        exec.fail(
-          "runtime-selected particle resources need one event target but the packet carries " .. tostring(#targets)
-        )
-        return "done"
-      end
-    end
-    if type(target) ~= "table" or type(target.slot) ~= "string" then
-      exec.fail("runtime-selected particle resources need a target slot the packet does not carry")
-      return "done"
-    end
-    local pairKey = attacker.slot .. "/" .. target.slot
-    local effectName = pairEffectName(exec)
-    local selected = instruction.resourceCases[pairKey]
-    if selected == nil then
-      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " has no published resource")
-      return "done"
-    end
-    if selected == "source-assert" then
-      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " is a source assertion")
-      return "done"
-    end
-    if type(selected) ~= "string" or selected == "" then
-      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " has no published resource")
-      return "done"
-    end
-    if exec.lease(selected) == nil then
-      return "done"
-    end
-    local record = exec.spawn(instruction.taskKind, "particle", {
-      actionProfile = instruction.actionProfile,
-      emitterPosition = instruction.emitterPosition,
-      resource = selected,
-      continuationSlot = instruction.continuationSlot,
-      values = instruction.values,
-    })
-    if record == nil then
-      return "done"
-    end
-    exec.note({ op = "create-parameterized-battler-effect", index = index, task = instruction.taskKind })
-    return executeStagingWait(exec, instruction, index)
-  end
-  if type(instruction.resource) ~= "string" or instruction.resource == "" then
-    exec.fail("parameterized battler effects stage a semantic particle resource")
-    return "done"
-  end
-  -- Same parked-resumption guard as the plain battler effect: the
-  -- held staging wait already owns this visit's dependency and child.
+-- LoadParticleSystem: stages the system for the occurrence and waits the
+-- source two-tick load delay. The system task owns the simulation until the
+-- script frees it or the occurrence ends.
+local function handleCreateBattlerEffect(exec, instruction, index)
   local parked = exec.wait()
   if parked ~= nil and parked.kind == "staging" and parked.index == index then
     return executeStagingWait(exec, instruction, index)
@@ -1138,18 +1032,107 @@ local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
   if exec.lease(instruction.resource) == nil then
     return "done"
   end
+  local record = exec.spawn(instruction.taskKind, "system", {
+    systemIndex = instruction.systemIndex,
+    resource = instruction.resource,
+  })
+  if record == nil then
+    return "done"
+  end
+  exec.note({ op = "create-battler-effect", index = index, task = instruction.taskKind })
+  return executeStagingWait(exec, instruction, index)
+end
+Handlers["create-battler-effect"] = handleCreateBattlerEffect
+
+-- The one event target a position-pair emitter selection keys on.
+---@param exec BattleAnimationExec player capability facade behind one occurrence
+---@param instruction table<string, unknown> position-pair emitter creation
+---@return string|nil pairKey attacker and target slots, nil after failing the occurrence
+local function emitterPairKey(exec, instruction)
+  local topology = nil
+  if type(exec.topology) == "function" then
+    local ok, resolved = pcall(exec.topology)
+    if ok and type(resolved) == "table" then
+      topology = resolved --[[@as table<string, unknown>]]
+    end
+  end
+  if type(topology) ~= "table" then
+    exec.fail("runtime-selected particle emitters need an emitter topology the packet does not carry")
+    return nil
+  end
+  local attacker = topology.attacker --[[@as table<string, unknown>?]]
+  if type(attacker) ~= "table" or type(attacker.slot) ~= "string" then
+    exec.fail("runtime-selected particle emitters need an attacker slot the packet does not carry")
+    return nil
+  end
+  local targets = topology.targets --[[@as table<integer, table<string, unknown>>?]]
+  if type(targets) ~= "table" or #targets == 0 then
+    exec.fail("runtime-selected particle emitters need an event target the packet does not carry")
+    return nil
+  end
+  local target = nil ---@type table<string, unknown>?
+  if #targets == 1 then
+    target = targets[1]
+  else
+    local ordinal = nil ---@type integer?
+    if type(instruction.targetOrdinal) == "number" then
+      ordinal = instruction.targetOrdinal --[[@as integer]]
+    elseif type(instruction.battlerTarget) == "number" then
+      ordinal = instruction.battlerTarget --[[@as integer]]
+    end
+    if type(ordinal) == "number" and targets[ordinal + 1] ~= nil then
+      target = targets[ordinal + 1]
+    else
+      exec.fail(
+        "runtime-selected particle emitters need one event target but the packet carries " .. tostring(#targets)
+      )
+      return nil
+    end
+  end
+  if type(target) ~= "table" or type(target.slot) ~= "string" then
+    exec.fail("runtime-selected particle emitters need a target slot the packet does not carry")
+    return nil
+  end
+  return attacker.slot .. "/" .. target.slot
+end
+
+-- CreateEmitter variants: adds one emitter of the loaded system. Source
+-- creation runs no delay, so the script continues in the same quantum.
+local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
+  local ordinal = instruction.emitter
+  if instruction.emitterCases ~= nil then
+    local pairKey = emitterPairKey(exec, instruction)
+    if pairKey == nil then
+      return "done"
+    end
+    local effectName = pairEffectName(exec)
+    local selected = instruction.emitterCases[pairKey]
+    if selected == nil then
+      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " has no published emitter")
+      return "done"
+    end
+    if selected == "source-assert" then
+      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " is a source assertion")
+      return "done"
+    end
+    ordinal = selected
+  end
+  if type(ordinal) ~= "number" then
+    exec.fail("parameterized battler effects stage a source emitter ordinal")
+    return "done"
+  end
   local record = exec.spawn(instruction.taskKind, "particle", {
     actionProfile = instruction.actionProfile,
-    emitterPosition = instruction.emitterPosition,
-    resource = instruction.resource,
+    systemIndex = instruction.systemIndex,
+    emitter = ordinal,
     continuationSlot = instruction.continuationSlot,
-    values = instruction.values,
   })
   if record == nil then
     return "done"
   end
   exec.note({ op = "create-parameterized-battler-effect", index = index, task = instruction.taskKind })
-  return executeStagingWait(exec, instruction, index)
+  exec.advance()
+  return "continue"
 end
 Handlers["create-parameterized-battler-effect"] = handleCreateParameterizedBattlerEffect
 
@@ -1171,7 +1154,14 @@ local function handleCreateConfiguredSprite(exec, instruction, index)
 end
 Handlers["create-configured-sprite"] = handleCreateConfiguredSprite
 
+-- FreeParticleSystem: releases one loaded system and its emitters.
 local function handleDestroyBattlerEffect(exec, instruction, index)
+  local system = exec.particles().systems[instruction.values[1]]
+  if system == nil then
+    exec.fail("a particle system is freed before it is loaded")
+    return "done"
+  end
+  system:free()
   return noteVisual(exec, instruction, index)
 end
 Handlers["destroy-battler-effect"] = handleDestroyBattlerEffect
@@ -1346,12 +1336,16 @@ local function handleStartBrightnessTransition(exec, instruction, index)
 end
 Handlers["start-brightness-transition"] = handleStartBrightnessTransition
 
+-- SetParticlePerspective: selects the emitter placement column of one system.
 local function handleSetBattlerStateByte(exec, instruction, index)
+  exec.particles().perspective[instruction.values[1]] = instruction.values[2]
   return noteVisual(exec, instruction, index)
 end
 Handlers["set-battler-state-byte"] = handleSetBattlerStateByte
 
+-- SetParticleFlipY: flips the particle camera of one system.
 local function handleSetBattlerEffectByte(exec, instruction, index)
+  exec.particles().flipY[instruction.values[1]] = instruction.values[2]
   return noteVisual(exec, instruction, index)
 end
 Handlers["set-battler-effect-byte"] = handleSetBattlerEffectByte

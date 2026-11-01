@@ -13,6 +13,7 @@
 -- the shared program shape; the recorder doubles record only.
 
 local Assert = require("tests.support.Assert")
+local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
@@ -130,7 +131,7 @@ function T.contact_projectile_and_wide_shapes_keep_their_own_operation_order()
     "wait-for-battler-effects",
     "reset-battle-presentation",
   }, "projectile work creates its particle effect before awaiting it")
-  Assert.equal(projectile.instructions[1].emitterPosition, "solo-enemy", "the particle leaves its own battler")
+  Assert.equal(projectile.instructions[1].systemIndex, 1, "the particle joins the system slot its word names")
   Assert.equal(
     projectile.instructions[1].resource,
     "battle/particle/tackle",
@@ -221,17 +222,7 @@ function T.shapes_execute_with_source_order_targets_completion_and_audio()
   end
   local resources = {}
   function resources.resolve(key)
-    local params = {}
-    for index = 1, 42 do
-      params[index] = 0
-    end
-    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return {
-      key = key,
-      kind = "particle-emitter",
-      payloadPath = "probe/particle-emitter",
-      data = { features = { "alpha", "random" }, params = params },
-    }
+    return BattleParticleLeaseFixture.resolve(key)
   end
   function resources.release(_lease) end
   local player = assert(Player.new({
@@ -291,11 +282,11 @@ local function pairCases()
   local cases = {}
   for _, attacker in ipairs(PAIR_POSITIONS) do
     for _, target in ipairs(PAIR_POSITIONS) do
-      cases[attacker .. "/" .. target] = "battle/particle-emitter/standby"
+      cases[attacker .. "/" .. target] = 0
     end
   end
-  cases["solo-player/solo-enemy"] = "battle/particle-emitter/candidate-1"
-  cases["solo-enemy/solo-player"] = "battle/particle-emitter/candidate-4"
+  cases["solo-player/solo-enemy"] = 1
+  cases["solo-enemy/solo-player"] = 4
   return cases
 end
 
@@ -308,9 +299,9 @@ local function pairProgram(key)
         op = "create-parameterized-battler-effect",
         taskKind = "battler-effect-continuation",
         actionProfile = "particle-emitter-target-battler-relative",
-        emitterPosition = "solo-enemy",
+        systemIndex = 0,
         runtimeSelection = "battler-particle-position-pair",
-        resourceCases = pairCases(),
+        emitterCases = pairCases(),
       },
       { op = "wait-for-battler-effects" },
     },
@@ -342,15 +333,14 @@ local function runToCompletion(player, handle)
 end
 
 -- Position-pair emitters resolve through the event-time topology: the
--- occurrence leases only the resource published for its own attacker and
--- target slots, spawns its emitter exactly once across parked ticks, and
--- a second occurrence with the reverse pair leases only its own
--- resource without touching the first.
+-- occurrence creates only the emitter ordinal published for its own attacker
+-- and target slots, exactly once, and a second occurrence with the reverse
+-- pair creates only its own.
 -- Native mechanism: the attacker/target particle lookup tables select
 -- the emitter by position pair, with one semantic resource per pair.
 -- Headless: a synthetic pair table with two distinct resources; the
 -- recorder doubles count leases and spawns.
-function T.position_pair_selects_only_its_matching_emitter_resource()
+function T.position_pair_selects_only_its_matching_emitter_ordinal()
   local Player = playerModule()
   local scene = sceneWithPair()
   local leased = {}
@@ -367,7 +357,7 @@ function T.position_pair_selects_only_its_matching_emitter_resource()
   end
   local tasks = {}
   function tasks.create(kind, args, _context, _services)
-    spawned[#spawned + 1] = { kind = kind, resource = args.resource }
+    spawned[#spawned + 1] = { kind = kind, emitter = args.emitter }
     local task = { _state = "running" }
     function task.stepSourceTick(_tick)
       task._state = "complete"
@@ -397,27 +387,15 @@ function T.position_pair_selects_only_its_matching_emitter_resource()
     assert(player:start(pairPlayback(1, "solo-player", 0, "solo-enemy", 1), pairProgram("pair-selection-first")))
   runToCompletion(player, first)
   Assert.equal(player:status(first), "complete", "the matching pair case runs to its own completion")
-  Assert.deepEqual(leased, { "battle/particle-emitter/candidate-1" }, "only the selected pair resource is leased")
-  Assert.equal(#spawned, 1, "the selected pair spawns exactly once across parked ticks")
-  Assert.equal(
-    spawned[1].resource,
-    "battle/particle-emitter/candidate-1",
-    "the spawned emitter carries the selected resource"
-  )
+  Assert.deepEqual(leased, {}, "emitter creation leases nothing beyond the loaded system")
+  Assert.equal(#spawned, 1, "the selected pair spawns exactly once")
+  Assert.equal(spawned[1].emitter, 1, "the spawned emitter carries the selected ordinal")
   local second =
     assert(player:start(pairPlayback(2, "solo-enemy", 1, "solo-player", 0), pairProgram("pair-selection-second")))
   runToCompletion(player, second)
   Assert.equal(player:status(second), "complete", "the reverse pair runs to its own completion")
-  Assert.deepEqual(leased, {
-    "battle/particle-emitter/candidate-1",
-    "battle/particle-emitter/candidate-4",
-  }, "each pair leases only its own resource")
-  Assert.equal(#spawned, 2, "the reverse pair spawns without re-leasing the first pair")
-  Assert.equal(
-    spawned[2].resource,
-    "battle/particle-emitter/candidate-4",
-    "the reverse emitter carries its own selected resource"
-  )
+  Assert.equal(#spawned, 2, "the reverse pair spawns its own emitter")
+  Assert.equal(spawned[2].emitter, 4, "the reverse emitter carries its own selected ordinal")
 end
 
 function T.attacker_dash_stages_timed_afterimages_and_settles()

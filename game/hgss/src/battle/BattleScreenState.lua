@@ -2421,6 +2421,7 @@ function BattleScreenState:view()
     terrainSprites = snapshot.terrainSprites,
     encounterParticleSystems = self._encounterParticles:systems(),
     ballParticleSystems = self._ballParticles:systems(),
+    moveParticleSystems = self._scene:particleSystems(),
     playerTrainer = copyValue((self._pendingFinal or self._latestView or {}).playerTrainer),
     foeTrainers = copyValue((self._pendingFinal or self._latestView or {}).foeTrainers),
     actor = copyValue(snapshot.actor),

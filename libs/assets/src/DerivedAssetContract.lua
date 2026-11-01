@@ -427,7 +427,7 @@ DerivedAssetContract.battlePresentation = {
   cacheFormat = "battle-presentation-cache-v4",
   schema = "g4-battle-presentation-v10",
   sceneSchema = "g4-battle-scene-v4",
-  effectSchema = "g4-battle-effect-v3",
+  effectSchema = "g4-battle-effect-v4",
 }
 
 DerivedAssetContract.encounterCatalog = {
