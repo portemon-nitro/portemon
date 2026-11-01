@@ -41,7 +41,7 @@ source scripts/lib/dev.sh
 
 temp_dirs=()
 cleanup() {
-  for directory in "${temp_dirs[@]}"; do
+  for directory in ${temp_dirs[@]+"${temp_dirs[@]}"}; do
     rm -rf -- "$directory"
   done
 }
@@ -108,10 +108,10 @@ fi
 # kill/wait during cancellation are expected races with a naturally exiting
 # child, not a replacement for the cancellation status.
 terminate_children() {
-  for tracked in "${!pids[@]}"; do
+  for tracked in ${pids[@]+"${!pids[@]}"}; do
     kill -TERM "${pids[$tracked]}" 2>/dev/null || true
   done
-  for tracked in "${!pids[@]}"; do
+  for tracked in ${pids[@]+"${!pids[@]}"}; do
     wait "${pids[$tracked]}" 2>/dev/null || true
   done
   pids=()
@@ -128,12 +128,12 @@ cancel_parallel() {
   exit "$1"
 }
 
-# Match the development container's supported graphics host. Callers may still
-# override either variable for driver diagnosis, but the default test command
-# must create the same offscreen software context on a machine without a
-# desktop session.
-export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-offscreen}"
-export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+# Linux uses the container's offscreen software context. macOS uses its
+# native Cocoa graphics host with the hidden window configured in app/conf.lua.
+if [ "$(uname -s)" = Linux ]; then
+  export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-offscreen}"
+  export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+fi
 
 # The graphics layer is part of the required surface, so a whole-run selection
 # that executes no graphics test fails instead of passing silently. Callers
@@ -167,8 +167,8 @@ read_selection() {
     return 0
   fi
   local version_line="" sha_line=""
-  version_line="$(sed -n 's/^version=//p' -- "$selection_file" | head -n 1)"
-  sha_line="$(sed -n 's/^rom_sha1=//p' -- "$selection_file" | head -n 1)"
+  version_line="$(sed -n 's/^version=//p' "$selection_file" | head -n 1)"
+  sha_line="$(sed -n 's/^rom_sha1=//p' "$selection_file" | head -n 1)"
   if is_version_name "$version_line" && is_content_hash "$sha_line"; then
     select_version="$version_line"
     select_sha="$sha_line"
@@ -191,7 +191,7 @@ write_selection() {
 probe_source() {
   local probe_out=""
   local probe_status=0
-  probe_out="$(love romdump/ --probe-rom "$1")" || probe_status=$?
+  probe_out="$(scripts/lib/love.sh romdump/ --probe-rom "$1")" || probe_status=$?
   if [ "$probe_status" -ne 0 ]; then
     printf '%s\n' "$probe_out"
     echo "test: source validation failed for $1 (exit $probe_status)" >&2
@@ -217,7 +217,7 @@ run_scoped_prepare() {
   done
   local prepare_out=""
   local prepare_status=0
-  prepare_out="$(love romdump/ --prepare-cache --dev --version "$version" "${prepare_args[@]}")" || prepare_status=$?
+  prepare_out="$(scripts/lib/love.sh romdump/ --prepare-cache --dev --version "$version" "${prepare_args[@]}")" || prepare_status=$?
   printf '%s\n' "$prepare_out"
   if [ "$prepare_status" -ne 0 ]; then
     echo "test: scoped cache preparation failed (exit $prepare_status)" >&2
@@ -236,7 +236,7 @@ run_scoped_prepare() {
 # requirements. A misread plan (protocol drift) must fail loudly rather
 # than silently run against a stale cache.
 plan_status=0
-plan="$(love app/ --test --plan "$@")" || plan_status=$?
+plan="$(scripts/lib/love.sh app/ --test --plan "$@")" || plan_status=$?
 if [ "$plan_status" -ne 0 ]; then
   exit "$plan_status"
 fi
@@ -291,15 +291,20 @@ else
 fi
 selection_file="$test_root/selected-rom"
 
-# Exclusive per-ROM mutation lock. Only Linux developer tooling provides it;
-# selections that never mutate need no lock and stay portable.
+# Lock the inherited open file description so it stays locked until this
+# shell and every child close it. macOS ships Perl's flock but no flock CLI.
 take_lock() {
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "test: the private test cache requires flock (Linux developer tooling)" >&2
-    exit 1
+  exec 9>"$1/lock"
+  if [ "$(uname -s)" = Darwin ]; then
+    perl -e 'flock(STDIN, 2) or die "test: cannot lock private cache: $!\n"' <&9
+  else
+    if ! command -v flock >/dev/null 2>&1; then
+      echo "test: the private test cache requires flock" >&2
+      exit 1
+    fi
+    flock 9
   fi
-  exec {lock_fd}>"$1/lock"
-  flock "$lock_fd"
+  lock_fd=9
 }
 
 if [ "$fresh" = 1 ]; then
@@ -312,7 +317,7 @@ if [ "$fresh" = 1 ]; then
   export XDG_DATA_HOME="$fresh_root"
   unset PORTEMON_SAVE_DIR
   echo "== cold import $rom_source into $fresh_root =="
-  love romdump/ --import-rom "$rom_source"
+  scripts/lib/love.sh romdump/ --import-rom "$rom_source"
   if [ "$prepare" != "none" ]; then
     probe_source "$rom_source"
     run_scoped_prepare "$probe_version"
@@ -335,7 +340,7 @@ elif [ -n "$rom_source" ]; then
   if [ ! -f "$rom_dir/rom-ready" ]; then
     echo "== import $rom_source into $data_home =="
     import_status=0
-    love romdump/ --import-rom "$rom_source" || import_status=$?
+    scripts/lib/love.sh romdump/ --import-rom "$rom_source" || import_status=$?
     if [ "$import_status" -ne 0 ]; then
       echo "test: private cache import failed (exit $import_status)" >&2
       exit "$import_status"
@@ -383,7 +388,7 @@ fi
 status=0
 echo "Running tests..."
 if [ "$jobs" -eq 1 ]; then
-  love app/ --test "$@" || status=$?
+  scripts/lib/love.sh app/ --test "$@" || status=$?
 else
   run_dir="$(mktemp -d "${TMPDIR:-/tmp}/portemon-tests.XXXXXXXX")"
   temp_dirs+=("$run_dir")
@@ -399,7 +404,7 @@ else
       export PORTEMON_TEST_WORKERS="$jobs"
       export PORTEMON_TEST_WORKER="$worker"
       export PORTEMON_TEST_ACCEPTANCE_NAMESPACE="${run_token}-w${worker}"
-      exec love app/ --test "$@"
+      exec scripts/lib/love.sh app/ --test "$@"
     ) >"$run_dir/worker-$worker.log" 2>&1 &
     pids[$worker]=$!
   done
@@ -423,7 +428,7 @@ else
       export PORTEMON_TEST_RUN_DIR="$run_dir"
       export PORTEMON_TEST_WORKERS="$jobs"
       export PORTEMON_TEST_AGGREGATE=1
-      exec love app/ --test "$@"
+      exec scripts/lib/love.sh app/ --test "$@"
     ) &
     pids[1]=$!
     if wait "${pids[1]}"; then
@@ -436,6 +441,6 @@ else
   trap - INT TERM
 fi
 if [ -n "${lock_fd:-}" ]; then
-  exec {lock_fd}>&-
+  exec 9>&-
 fi
 exit "$status"

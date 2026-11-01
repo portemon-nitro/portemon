@@ -22,16 +22,6 @@ fi
 # Local default keeps ROM-derived data out of $HOME during development.
 export PORTEMON_SAVE_DIR="${PORTEMON_SAVE_DIR:-$PWD/.cache}"
 
-# Apply the single app-level save-directory override onto the variable
-# LÖVE/PhysFS reads for its save-dir base. This is the one seam a future
-# portable mode will reuse; when PORTEMON_SAVE_DIR is unset, LÖVE uses
-# the OS default per-user location.
-if [ -n "${PORTEMON_SAVE_DIR:-}" ]; then
-  case "$(uname -s)" in
-    # Linux/BSD: PhysFS derives the save-dir base from XDG_DATA_HOME.
-    Linux|*BSD) export XDG_DATA_HOME="$PORTEMON_SAVE_DIR" ;;
-    # macOS/Windows use fixed appdata roots; wire their overrides in when
-    # portable mode lands. For now this keeps dev on those platforms explicit.
-    *) export XDG_DATA_HOME="$PORTEMON_SAVE_DIR" ;;
-  esac
-fi
+# scripts/lib/love.sh maps this data home to LÖVE's platform-specific base.
+# Keep the shell's home directory unchanged for Git and contributor tools.
+export XDG_DATA_HOME="$PORTEMON_SAVE_DIR"

@@ -35,8 +35,8 @@ function T.test_entrypoint_runs_the_incremental_builder_for_real_dependency_fres
   local script = handle:read("*a")
   handle:close()
 
-  contains(script, "love romdump/ --import-rom", "test entrypoint")
-  contains(script, "love romdump/ --prepare-cache", "test entrypoint")
+  contains(script, "scripts/lib/love.sh romdump/ --import-rom", "test entrypoint")
+  contains(script, "scripts/lib/love.sh romdump/ --prepare-cache", "test entrypoint")
   contains(script, "--dev", "test entrypoint")
   Assert.isNil(script:find("--check-derived-cache", 1, true))
 end

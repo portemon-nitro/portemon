@@ -44,7 +44,7 @@ end
 
 local function writeExecutable(path, content)
   writeFile(path, content)
-  os.execute("chmod +x -- " .. shellQuote(path))
+  os.execute("chmod +x " .. shellQuote(path))
 end
 
 local function fileExists(path)
@@ -153,17 +153,17 @@ if [ "$has_plan" = true ]; then
 fi
 target="${1:-}"
 if [ "$target" = "romdump/" ]; then
-  invocation="$record_dir/preparation-${run_tag}-${BASHPID}.log"
+  invocation="$record_dir/preparation-${run_tag}-$$.log"
   {
     printf 'tag=%s\n' "$run_tag"
     printf 'xdg=%s\n' "${XDG_DATA_HOME:-}"
     printf 'argv=%s\n' "$*"
-    printf 'start=%s\n' "$(date +%s.%N)"
+    printf 'start=%s\n' "$(perl -MTime::HiRes=time -e 'printf "%.6f", time')"
   } > "$invocation"
   if [ "${2:-}" = "--probe-rom" ]; then
     rom_path="${3:-}"
     sha="missing"
-    if [ -f "$rom_path" ]; then sha="$(sha1sum -- "$rom_path" | cut -d ' ' -f 1)"; fi
+    if [ -f "$rom_path" ]; then sha="$(shasum -a 1 -- "$rom_path" | cut -d ' ' -f 1)"; fi
     printf 'version=%s\n' "${FAKE_PROBE_VERSION:-heartgold}"
     printf 'rom_sha1=%s\n' "$sha"
   fi
@@ -176,7 +176,7 @@ if [ "$target" = "romdump/" ]; then
   command_status=0
   if [ "${2:-}" = "--prepare-cache" ]; then command_status="${FAKE_PREPARATION_STATUS:-0}"; fi
   if [ "${FAKE_SLOW_PREPARATION:-0}" != "0" ]; then sleep "$FAKE_SLOW_PREPARATION"; fi
-  printf 'end=%s\n' "$(date +%s.%N)" >> "$invocation"
+  printf 'end=%s\n' "$(perl -MTime::HiRes=time -e 'printf "%.6f", time')" >> "$invocation"
   exit "$command_status"
 fi
 if [ "$target" = "app/" ]; then
@@ -187,8 +187,8 @@ if [ "$target" = "app/" ]; then
   if [ -n "${PORTEMON_TEST_WORKER:-}" ]; then
     worker="$PORTEMON_TEST_WORKER"
     echo "$$" > "$record_dir/worker-$worker.pid"
-    : > "$record_dir/worker-$worker.live"
     printf 'xdg=%s\n' "${XDG_DATA_HOME:-}" > "$record_dir/worker-$worker.txt"
+    printf 'workers=%s\n' "$PORTEMON_TEST_WORKERS" >> "$record_dir/worker-$worker.txt"
     term_handler() {
       if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME" ]; then
         echo present > "$record_dir/worker-$worker.xdg-during-term"
@@ -201,6 +201,7 @@ if [ "$target" = "app/" ]; then
       exit 143
     }
     trap term_handler TERM
+    : > "$record_dir/worker-$worker.live"
     if [ "${FAKE_SLOW_WORKER:-0}" != "0" ]; then
       sleep "$FAKE_SLOW_WORKER" &
       child=$!
@@ -326,7 +327,7 @@ local function invocationsWith(invocations, needle)
 end
 
 local function shaOf(path)
-  local handle = popen("sha1sum -- " .. shellQuote(path))
+  local handle = popen("shasum -a 1 -- " .. shellQuote(path))
   local digest = trim((handle:read("*l") or ""):match("^%S+") or "")
   handle:close()
   assert(#digest == 40, "the fixture source has a content identity")
@@ -746,7 +747,7 @@ function T.cancellation_reaps_children_before_releasing_roots_and_keeps_sources_
     local source = root .. "/fixture.nds"
     writeFile(source, "fixture rom bytes for the cancellation run")
     local before = trim((function()
-      local handle = popen("sha1sum -- " .. shellQuote(source))
+      local handle = popen("shasum -a 1 -- " .. shellQuote(source))
       local out = handle:read("*l") or ""
       handle:close()
       return out
@@ -800,15 +801,19 @@ function T.cancellation_reaps_children_before_releasing_roots_and_keeps_sources_
       end
 
       waitUntil(600, 0.1, "a worker to start", function()
-        for worker = 1, 8 do
-          if fileExists(recordDir .. "/worker-" .. worker .. ".live") then
-            return true
-          end
-        end
         if fileExists(recordDir .. "/serial.txt") then
           return true
         end
-        return false
+        local workers = tonumber(fieldOf(recordDir .. "/worker-1.txt", "workers"))
+        if workers == nil then
+          return false
+        end
+        for worker = 1, workers do
+          if not fileExists(recordDir .. "/worker-" .. worker .. ".live") then
+            return false
+          end
+        end
+        return true
       end)
 
       if fileExists(recordDir .. "/serial.txt") then
@@ -855,7 +860,7 @@ function T.cancellation_reaps_children_before_releasing_roots_and_keeps_sources_
       end
       Assert.isTrue(dirExists(dataHome), "the persistent private root survives cancellation")
 
-      local afterHandle = popen("sha1sum -- " .. shellQuote(source))
+      local afterHandle = popen("shasum -a 1 -- " .. shellQuote(source))
       local after = trim(afterHandle:read("*l") or "")
       afterHandle:close()
       Assert.equal(after, before, "the source file must remain untouched")
@@ -1183,6 +1188,62 @@ function T.private_writer_backends_never_leak_into_the_shared_fixture()
     "shared readers never observe private writer output"
   )
   Assert.equal(privateFs:read("data/generated/probe.lua"), "writer", "private writers keep their own output")
+end
+
+-- Real LÖVE storage must follow the shell-selected data home, including writes
+-- and readback, without changing the calling shell's home directory.
+function T.runtime_writes_stay_inside_the_selected_data_home()
+  withTempDirectory(function(root)
+    local probe = root .. "/probe"
+    mkdir(probe)
+    writeFile(
+      probe .. "/conf.lua",
+      [[
+function love.conf(t)
+  t.identity = "portemon"
+  t.modules.window = false
+  t.modules.graphics = false
+  t.modules.audio = false
+end
+]]
+    )
+    writeFile(
+      probe .. "/main.lua",
+      [[
+function love.load()
+  local root = assert(os.getenv("XDG_DATA_HOME"))
+  local save = love.filesystem.getSaveDirectory()
+  assert(save:sub(1, #root + 1) == root .. "/", "save directory escaped selected data home: " .. save)
+  assert(love.filesystem.write("probe", "private"))
+  assert(love.filesystem.read("probe") == "private")
+  print("private storage verified")
+  love.event.quit(0)
+end
+function love.errorhandler(message)
+  io.stderr:write(tostring(message) .. "\n")
+  return function() return 1 end
+end
+]]
+    )
+    local output = root .. "/output"
+    local status = root .. "/status"
+    local handle = popen(table.concat({
+      "bash -c " .. shellQuote(table.concat({
+        "source scripts/lib/dev.sh;",
+        "original_home=$HOME;",
+        "export XDG_DATA_HOME=" .. shellQuote(root .. "/selected data home") .. ";",
+        "scripts/lib/love.sh " .. shellQuote(probe) .. ";",
+        "result=$?;",
+        '[ "$HOME" = "$original_home" ] || exit 99;',
+        "exit $result",
+      }, " ")) .. " >" .. shellQuote(output) .. " 2>&1;",
+      "echo $? >" .. shellQuote(status),
+    }, " "))
+    handle:read("*a")
+    handle:close()
+    Assert.equal(exitStatus(status), "0", readFile(output))
+    contains(readFile(output), "private storage verified")
+  end)
 end
 
 return { tests = T }
