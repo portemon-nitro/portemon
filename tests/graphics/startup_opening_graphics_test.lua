@@ -208,10 +208,9 @@ local function currentStepId(movie)
 end
 
 -- Ticks the movie until it plays the named step of the named scene.
--- A scene arrival spends the retail init call plus three entry stalls
--- before its first case runs: when the seek lands on the handoff itself,
--- updates drain the init stalls so the caller samples the dispatched
--- entry exactly like before.
+-- A scene arrival spends its retail init calls before the first case runs.
+-- When the seek lands on the handoff itself, drain those calls so the
+-- caller samples the undispatched entry.
 ---@param movie table running opening movie
 ---@param sceneNumber integer retail scene position
 ---@param stepId string authored step identity
@@ -219,12 +218,11 @@ end
 local function advanceToSceneStep(movie, sceneNumber, stepId, budget)
   local elapsed = 0
   while elapsed < budget and not movie:isFinished() do
-    if movie:sceneNumber() == sceneNumber and currentStepId(movie) == stepId then
-      local slot = assert(movie.current, "the arrived scene owns its current slot")
-      while slot.handoff ~= nil do
-        movie:updateFixed()
-        slot = assert(movie.current, "the arrived scene owns its current slot")
-      end
+    if
+      movie:sceneNumber() == sceneNumber
+      and currentStepId(movie) == stepId
+      and movie.current.handoff == nil
+    then
       return
     end
     movie:updateFixed()
@@ -232,6 +230,7 @@ local function advanceToSceneStep(movie, sceneNumber, stepId, budget)
   end
   Assert.equal(movie:sceneNumber(), sceneNumber, "playback reaches scene " .. sceneNumber .. " step " .. stepId)
   Assert.equal(currentStepId(movie), stepId, "playback reaches scene " .. sceneNumber .. " step " .. stepId)
+  Assert.isNil(movie.current.handoff, "playback finishes scene initialization within the seek budget")
 end
 
 ---@param r1 number
@@ -2198,10 +2197,7 @@ local function paired_beats_and_flips_keep_both_source_screens_across_every_layo
       guard = guard + 1
     end
     Assert.equal(movie:sceneNumber(), 4, where .. ": playback reaches the paired scene")
-    -- Drain the init call plus three entry stalls before the first case.
-    for _ = 1, 4 do
-      movie:updateFixed()
-    end
+    advanceToSceneStep(movie, 4, currentStepId(movie), 5000)
     advance(movie, 2)
     local before = drawBytes(movie, scope, layout.width, layout.height)
     advance(movie, 20)
@@ -5099,12 +5095,8 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
   while movie:sceneNumber() < 5 do
     movie:updateFixed()
   end
-  -- The newly entered scene spends its init call plus three entry stalls
-  -- before its first case runs: the wipe entry arms the shutter on the
-  -- following update and opens its first center step at once.
-  for _ = 1, 4 do
-    movie:updateFixed()
-  end
+  -- Seek the undispatched wipe entry, then sample its first center step.
+  advanceToSceneStep(movie, 5, "wipe", 5000)
   movie:updateFixed()
   movie:draw()
   local mainShut = sourceBytes(scope, movie.mainCanvas)
@@ -5213,10 +5205,7 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
     while probe:sceneNumber() < 5 do
       probe:updateFixed()
     end
-    -- The probe spends the same init call plus three entry stalls before its wipe entry runs.
-    for _ = 1, 4 do
-      probe:updateFixed()
-    end
+    advanceToSceneStep(probe, 5, "wipe", 5000)
     advance(probe, 9)
     probe:draw()
     Assert.equal(
@@ -7702,12 +7691,15 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
   local entered = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(entered.stepElapsed, 0, "the incoming scene has not run its first tick")
   EntryHolds.assertPhysicalEntry(entered, 3, "upper", "white", "black")
-  -- The init call plus three entry stalls hold the staged entry; the first
-  -- case then stages the rival while the black bottom hold still covers it.
-  for _ = 1, 4 do
+  -- Every init call holds the staged entry; the first case then stages
+  -- the rival while the black bottom hold still covers it.
+  local initCalls = 0
+  while movie.current.handoff == "init" and initCalls < 20 do
     movie:updateFixed()
+    initCalls = initCalls + 1
     Assert.equal(movie.current.stepElapsed, 0, "the init stalls run no case")
   end
+  Assert.isNil(movie.current.handoff, "the scene finishes its init calls")
   movie:updateFixed()
   local staged = assert(movie.current, "the running movie owns its current slot")
   local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")
@@ -8392,9 +8384,11 @@ local T = GraphicsSmoke.suite({
     Assert.equal(jointFrame(slot, "new-bark-town"), idleBark, "new bark freezes after its close")
     Assert.equal(jointFrame(slot, "ecruteak-city"), 0, "ecruteak still waits on its staged first frame")
     movie:draw()
-    local goldenrod = sourceBytes(scope, movie.mainCanvas)
+    local townCanvas = assert(movie.townHi, "the town stage owns its rendered high-resolution image")
+    local scale = townCanvas:getWidth() / 256
+    local goldenrod = sourceBytes(scope, townCanvas)
     Assert.isTrue(
-      regionLit(goldenrod, 256, 0, 80, 120, 191) > 0.5,
+      regionLit(goldenrod, townCanvas:getWidth(), 0, 81 * scale - 1, 120 * scale, 192 * scale - 1) > 0.5,
       "goldenrod opens over ground instead of past its map edge"
     )
     advanceToSceneStep(movie, 3, "show-ecruteak-city", 20000)

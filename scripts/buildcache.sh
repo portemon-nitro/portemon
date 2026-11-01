@@ -45,4 +45,4 @@ if [ "${#args[@]}" -gt 1 ]; then
   exit 2
 fi
 
-exec love romdump/ --build-cache ${args[@]+"${args[@]}"} ${flags[@]+"${flags[@]}"} ${devFlag[@]+"${devFlag[@]}"}
+exec scripts/lib/love.sh romdump/ --build-cache ${args[@]+"${args[@]}"} ${flags[@]+"${flags[@]}"} ${devFlag[@]+"${devFlag[@]}"}

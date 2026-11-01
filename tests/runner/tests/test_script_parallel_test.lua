@@ -36,7 +36,7 @@ local function writeExecutable(path, content)
   local handle = assert(io.open(path, "w"))
   handle:write(content)
   handle:close()
-  os.execute("chmod +x -- " .. shellQuote(path))
+  os.execute("chmod +x " .. shellQuote(path))
 end
 
 local function fileExists(path)

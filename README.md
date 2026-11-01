@@ -21,6 +21,32 @@ scripts/run.sh (run.bat on Windows)
 scripts/test.sh [--filter <substring>] [--rom-source <path-to-nds-or-zip-file>]
 ```
 
+### macOS
+
+Install the pinned LÖVE runtime and contributor tools locally, then launch:
+
+```sh
+scripts/lib/repo-setup.sh --dev --yes
+scripts/run.sh
+```
+
+This works with the system Bash on Apple silicon and Intel Macs. Drag your
+supported US HeartGold or SoulSilver `.nds` or `.zip` file onto the window to
+import it. The native file picker requires the optional bridge described in
+[`app/native/README.md`](app/native/README.md).
+
+Development data stays under `.cache/` in the checkout. To run ROM-dependent
+tests in their separate private cache:
+
+```sh
+scripts/test.sh --rom-source "/absolute/path/to/Pokemon SoulSilver.nds"
+scripts/test.sh --self-test
+scripts/lint.sh --check
+```
+
+macOS tests use a hidden native graphics window and require a logged-in desktop
+session. Linux tests use the offscreen software graphics driver.
+
 ## Acknowledgements
 
 Portémon Nitro was heavily inspired by the

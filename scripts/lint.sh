@@ -56,13 +56,16 @@ lua-language-server --check . --num_threads="2" --checklevel=Hint --logpath="$LU
   >"$LUALS_OUTPUT" 2>&1 &
 luals_pid=$!
 
-mapfile -t LUA_FILES <"$STYLUA_FILES"
-if [ "${#STYLUA_ARGS[@]}" -eq 0 ]; then
+LUA_FILES=()
+while IFS= read -r path; do
+  LUA_FILES+=("$path")
+done <"$STYLUA_FILES"
+if [ "${STYLUA_ARGS[*]-}" = "" ]; then
   echo "==> stylua"
 else
   echo "==> stylua --check"
 fi
-stylua "${STYLUA_ARGS[@]}" "${LUA_FILES[@]}"
+stylua ${STYLUA_ARGS[@]+"${STYLUA_ARGS[@]}"} "${LUA_FILES[@]}"
 
 scripts/lib/check-repository.sh
 scripts/lib/check-invariants.sh

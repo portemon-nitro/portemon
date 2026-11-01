@@ -4,4 +4,4 @@ cd "$(dirname "$0")/.."
 source scripts/lib/dev.sh
 # The daily development boot enables F3-toggleable diagnostics; the overlay
 # starts hidden. A bare `love app/` run is product mode.
-exec love app/ --dev "$@"
+exec scripts/lib/love.sh app/ --dev "$@"
