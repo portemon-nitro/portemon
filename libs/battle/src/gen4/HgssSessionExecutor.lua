@@ -67,6 +67,7 @@ local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 
 ---@alias SpeciesFormFacts table<integer, table<string, unknown>>
+---@alias ShiftOffer table<string, unknown>
 
 ---@class HgssSessionExecutor
 ---@field private _state table<string, unknown>?
@@ -80,6 +81,8 @@ local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
 ---@field private _commitLearningHandler fun(state: table<string, unknown>)?
+---@field private _commitShiftHandler fun(state: table<string, unknown>)?
+---@field private _shiftOfferHandler (fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>): ShiftOffer?)?
 ---@field private _resumeTurnHandler fun(state: table<string, unknown>, budget: integer)
 ---@field private _commitSwitchIntentHandler fun(state: table<string, unknown>)
 ---@field private _decisionLease boolean?
@@ -94,6 +97,13 @@ HgssSessionExecutor.__index = HgssSessionExecutor
 -- generic executor.
 HgssSessionExecutor.RULESET = "hgss:battle"
 HgssSessionExecutor.DECISION_KIND = "action"
+
+-- The saved battle style rides the actual player-controlled
+-- participant's context: production scenarios seat that participant
+-- under this controller, and low-level scenarios without it keep the
+-- predecessor no-offer behavior. The executor owns the string
+-- directly so the battle package never reaches upward for it.
+local PLAYER_CONTROLLER = "player"
 
 HgssSessionExecutor.DEFAULT_ACTION_KINDS = { "attack", "switch", "confirm", "item" }
 
@@ -113,6 +123,16 @@ local function battleKindFor(formatKey, scenarioKind)
     return "wild"
   end
   return "trainer"
+end
+
+-- Eligible Shift topology covers the production application singles key
+-- and the native format key: field scenarios travel as "single" while
+-- headless native scenarios validate as "singles". Every other format
+-- key keeps the predecessor no-offer behavior.
+---@param formatKey string format identity under eligibility lookup
+---@return boolean eligible true while the format is an eligible singles key
+local function singlesFormatFor(formatKey)
+  return formatKey == "single" or formatKey == "singles"
 end
 
 -- Action brackets for turn ordering. Exchanges and item use run on the
@@ -230,6 +250,70 @@ local function checkReplacementShape(replacement)
   end
 end
 
+-- Reads the saved battle style off the actual player-controlled
+-- participant's context without failing: production preparation
+-- projects it there, while style-absent low-level contexts keep the
+-- predecessor no-offer behavior. Malformed present values reject
+-- admission at construction instead.
+---@param state table<string, unknown> live battle state under style lookup
+---@return string? saved shift-or-set style, nil when no player style travels
+local function playerShiftStyle(state)
+  local order = state.participantOrder --[[@as table<integer, unknown>?]]
+  if type(order) ~= "table" then
+    return nil
+  end
+  for _, participantId in
+    ipairs(order --[[@as table<integer, integer>]])
+  do
+    local participant = BattleState.participant(state, participantId --[[@as integer]])
+    if participant.controller == PLAYER_CONTROLLER then
+      local context = participant.context --[[@as table<string, unknown>?]]
+      if type(context) == "table" and context.battleStyle ~= nil then
+        return context.battleStyle --[[@as string]]
+      end
+      return nil
+    end
+  end
+  return nil
+end
+
+---@param shift unknown open shift continuation under validation
+local function checkShiftShape(shift)
+  if type(shift) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("shift continuations must be records", {}))
+  end
+  local record = shift --[[@as table<string, unknown>]]
+  local player = record.player --[[@as table<string, unknown>?]]
+  if type(player) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("shift continuations must name their player entry", {}))
+  end
+  for _, field in ipairs({ "combatant", "activation", "position", "participant" }) do
+    if not isPositiveInt(player[field]) then
+      error(BattleErrors.incompatibleSnapshot("shift continuations must name their player " .. field, {}))
+    end
+  end
+  if not isPositiveInt(record.incoming) then
+    error(BattleErrors.incompatibleSnapshot("shift continuations must freeze their incoming arrival", {}))
+  end
+  if not isPositiveInt(record.foeParticipant) then
+    error(BattleErrors.incompatibleSnapshot("shift continuations must name their foe participant", {}))
+  end
+  local obligations = record.obligations
+  if type(obligations) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("shift continuations must carry their obligations", {}))
+  end
+  checkReplacementShape({ obligations = obligations })
+  local identity = record.identity --[[@as table<string, unknown>?]]
+  if type(identity) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("shift continuations must carry their occurrence identity", {}))
+  end
+  for _, field in ipairs({ "position", "playerActivation", "foeCombatant", "foeActivation", "incoming" }) do
+    if not isPositiveInt(identity[field]) then
+      error(BattleErrors.incompatibleSnapshot("shift identities must name their " .. field, {}))
+    end
+  end
+end
+
 ---@param state table<string, unknown>
 local function checkRestoredShape(state)
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
@@ -246,6 +330,12 @@ local function checkRestoredShape(state)
     local pending = state.pending --[[@as table<string, unknown>]]
     if pending.replacement ~= nil then
       checkReplacementShape(pending.replacement)
+    end
+    -- Held shift opportunities carry the same obligation shape beside
+    -- their frozen incoming identity; snapshots predating the offer
+    -- stay readable because the key is simply absent.
+    if pending.shift ~= nil then
+      checkShiftShape(pending.shift)
     end
     -- Learning suspensions hold the same obligation shape aside while
     -- the recipient answers: replacement work resumes after the reply.
@@ -3638,11 +3728,13 @@ end
 ---@field applyResiduals fun()
 ---@field closeTurn fun()
 ---@field commitLearning fun(state: table<string, unknown>)
+---@field commitShift fun(state: table<string, unknown>)
+---@field shiftOfferFor fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>): ShiftOffer?
 ---@field resumeTurn fun(state: table<string, unknown>, budget: integer)
 ---@field commitSwitchIntent fun(state: table<string, unknown>)
 ---@field bindRuleset fun(ruleset: HgssRuleset)
 ---@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer)
----@field settlePostReplacement fun(state: table<string, unknown>)
+---@field settlePostReplacement fun(state: table<string, unknown>, held: table<integer, table<string, unknown>>?)
 
 ---@param state table<string, unknown>
 ---@param actor table<string, unknown>
@@ -5689,6 +5781,192 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     return true
   end
 
+  --- Freezes the next eligible opposing arrival for the optional Shift
+  --- decision: only eligible local trainer singles qualify, with the
+  --- foe fainted on a living reserve, the player side standing on a
+  --- legal living reserve under the existing shift policy, and no
+  --- mandatory player replacement still open. The frozen reserve comes
+  --- from the same existing selector as the visible send-out, so the
+  --- prompt, redraws, restoration, and cancellation never reroll or
+  --- draw. Returns the frozen offer, or nil to continue normally.
+  ---@param state table<string, unknown> live battle state under replacement work
+  ---@param obligations table<integer, table<string, unknown>> remaining replacement obligations
+  ---@return ShiftOffer? frozen shift offer, nil when no optional decision opens
+  local function shiftOfferFor(state, obligations)
+    if battleKind ~= "trainer" then
+      return nil
+    end
+    if
+      not singlesFormatFor(state.format --[[@as string]])
+    then
+      return nil
+    end
+    if playerShiftStyle(state) ~= "shift" then
+      return nil
+    end
+    local internal = {} ---@type table<integer, table<string, unknown>>
+    for _, obligation in ipairs(obligations) do
+      if not obligation.internal then
+        return nil
+      end
+      internal[#internal + 1] = obligation
+    end
+    if #internal ~= 1 then
+      return nil
+    end
+    local foe = internal[1]
+    local playerId = nil
+    for _, participantId in
+      ipairs(state.participantOrder --[[@as integer[] ]])
+    do
+      if BattleState.participant(state, participantId).controller == PLAYER_CONTROLLER then
+        playerId = participantId
+        break
+      end
+    end
+    if playerId == nil then
+      return nil
+    end
+    if BattleState.participant(state, playerId).side == foe.side then
+      return nil
+    end
+    local playerCombatantId = nil
+    for _, combatantId in
+      ipairs(BattleState.participant(state, playerId).roster --[[@as integer[] ]])
+    do
+      local combatant = BattleState.combatant(state, combatantId)
+      if
+        combatant.active ~= nil
+        and combatant.hp --[[@as integer]]
+          > 0
+      then
+        playerCombatantId = combatantId
+        break
+      end
+    end
+    if playerCombatantId == nil then
+      return nil
+    end
+    local playerCombatant = BattleState.combatant(state, playerCombatantId --[[@as integer]])
+    local active = playerCombatant.active --[[@as table<string, unknown>]]
+    local position = active.position --[[@as integer]]
+    local foeReserves = eligibleReserves(state, foe.participant --[[@as integer]], {})
+    if #foeReserves == 0 then
+      return nil
+    end
+    local playerReserves = eligibleReserves(state, playerId --[[@as integer]], {})
+    if #playerReserves == 0 then
+      return nil
+    end
+    local heldTrap = playerCombatant.trap
+    if heldTrap == nil then
+      heldTrap = volatileTrapOf(state, playerCombatantId --[[@as integer]], speciesFacts)
+    end
+    local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+    local shedShell = Bridge.wrap(state):effectiveHeldItem(playerCombatantId --[[@as integer]]) == "SHED_SHELL"
+    local legal = false
+    for _, reserve in ipairs(playerReserves) do
+      local verdict = Switching.eligible({
+        position = position,
+        incoming = reserve,
+        reason = "shift",
+        style = "shift",
+        topology = { activePerSide = 1 },
+        trap = heldTrap,
+        shedShell = shedShell,
+        reserves = playerReserves,
+        reserved = {},
+        fainted = faintedIds(state),
+      })
+      if verdict.ok then
+        legal = true
+        break
+      end
+    end
+    if not legal then
+      return nil
+    end
+    return {
+      player = {
+        combatant = playerCombatantId,
+        activation = active.activation,
+        position = position,
+        participant = playerId,
+      },
+      foe = foe,
+      incoming = foeReserves[1],
+      foeParticipant = foe.participant,
+      obligations = internal,
+    }
+  end
+
+  --- Opens one ordinary action decision for the held shift occurrence:
+  --- the player side answers exactly one legal switch or the empty
+  --- stay confirm while the frozen foe arrival waits offstage. The
+  --- occurrence identity ties the position, the player entry token,
+  --- the fainted foe entry, and the frozen incoming, so redraws,
+  --- restores, and stale replies can never replay or split it.
+  ---@param state table<string, unknown> live battle state under replacement work
+  ---@param offer ShiftOffer frozen shift offer under publication
+  local function buildShiftBatch(state, offer)
+    local context = BattleContext.wrap(state)
+    local counter = state.batchCounter --[[@as integer]] + 1
+    state.batchCounter = counter
+    local stored = {} ---@type table<integer, table<string, unknown>>
+    for _, obligation in
+      ipairs(offer.obligations --[[@as table<integer, table<string, unknown>>]])
+    do
+      stored[#stored + 1] = {
+        combatant = obligation.combatant,
+        activation = obligation.activation,
+        position = obligation.position,
+        participant = obligation.participant,
+        controller = obligation.controller,
+        side = obligation.side,
+        internal = obligation.internal,
+      }
+    end
+    local player = offer.player --[[@as table<string, unknown>]]
+    local foe = offer.foe --[[@as table<string, unknown>]]
+    state.pending = {
+      batch = { id = counter, epoch = counter, requests = {} },
+      submitted = {},
+      reserved = { replacements = {}, items = {} },
+      shift = {
+        player = {
+          combatant = player.combatant,
+          activation = player.activation,
+          position = player.position,
+          participant = player.participant,
+        },
+        incoming = offer.incoming,
+        foeParticipant = offer.foeParticipant,
+        obligations = stored,
+        identity = {
+          position = player.position,
+          playerActivation = player.activation,
+          foeCombatant = foe.combatant,
+          foeActivation = foe.activation,
+          incoming = offer.incoming,
+        },
+      },
+    }
+    context:pushFrame({
+      kind = "round",
+      version = 1,
+      cursor = "awaiting_replies",
+      state = { round = state.round },
+    })
+    local owner = BattleState.participant(state, player.participant --[[@as integer]])
+    context:requestDecision({
+      controller = owner.controller,
+      kind = HgssSessionExecutor.DECISION_KIND,
+      actors = { { combatant = player.combatant, activation = player.activation } },
+      legalChoices = { kinds = { "switch", "confirm" } },
+    })
+    state.status = "waiting"
+  end
+
   --- Finishes the turn once every reward child is done: mandatory
   --- replacements precede the next ordinary action batch, and the
   --- terminal result follows only after every replacement resolves.
@@ -5710,6 +5988,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         -- The turn frame above already closed; the replacement batch opens
         -- its own below.
         buildReplacementBatch(state, pending)
+        return
+      end
+      -- The optional Shift offer precedes the held foe send-out: freeze
+      -- the already selected arrival and suspend on one stay-or-switch
+      -- decision instead of entering the reserve.
+      local offer = shiftOfferFor(state, pending)
+      if offer ~= nil then
+        buildShiftBatch(state, offer)
         return
       end
       local claimed = {} ---@type table<integer, boolean>
@@ -5746,14 +6032,121 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   -- Settles replacements after a commit-time entry pass: hazard faints
   -- queued by the entrant's arrival drain through rewards into mandatory
   -- replacement or the terminal result, exactly like the turn-close tail.
+  -- Held shift obligations ride along so a learning suspension keeps
+  -- the frozen foe replacement beside the fresh hazard work.
   ---@param state table<string, unknown> live battle state under replacement work
-  local function settlePostReplacement(state)
+  ---@param held table<integer, table<string, unknown>>? frozen foe obligations held for the offer
+  local function settlePostReplacement(state, held)
     local obligations = drainObligations(state)
+    if held ~= nil then
+      for _, obligation in ipairs(held) do
+        obligations[#obligations + 1] = obligation
+      end
+    end
     if not drainRewardChildren(state, obligations) then
       return
     end
     state.progressionChildren = {}
     finishTurn(state, obligations)
+  end
+
+  --- Consumes the one accepted shift reply: a legal switch runs the
+  --- existing exchange/entry cleanup for the selected reserve, then
+  --- the held foe arrival and its hazards resume; staying releases
+  --- the held arrival directly. Hazard faints on either arrival drain
+  --- through the ordinary faint ownership like any replacement.
+  ---@param state table<string, unknown> live battle state under shift commit
+  local function commitShift(state)
+    local pending = state.pending --[[@as table<string, unknown>]]
+    assert(type(pending) == "table" and type(pending.shift) == "table", "shift commits over its own batch")
+    local shift = pending.shift --[[@as table<string, unknown>]]
+    local requests = DecisionBatch.requests(state)
+    assert(#requests == 1, "shift batches suspend on one offer")
+    local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
+    local reply = submitted[
+      requests[1].requestId --[[@as integer]]
+    ]
+    assert(type(reply) == "table", "shift commits only after its reply is stored")
+    local choices = reply.choices --[[@as table<integer, table<string, unknown>>]]
+    assert(type(choices) == "table" and #choices == 1, "shift replies answer once")
+    local choice = choices[1]
+    local player = shift.player --[[@as table<string, unknown>]]
+    local context = BattleContext.wrap(state)
+    if choice.kind == "switch" then
+      local payload = choice.payload --[[@as table<string, unknown>]]
+      local reserve = payload.replacement --[[@as integer]]
+      local combatant = BattleState.combatant(state, player.combatant --[[@as integer]])
+      local held = combatant.trap
+      if held == nil then
+        held = volatileTrapOf(state, player.combatant --[[@as integer]], speciesFacts)
+      end
+      local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+      local frame = Switching.start({
+        position = player.position,
+        outgoing = { combatant = player.combatant, activation = player.activation },
+        incoming = reserve,
+        reason = "shift",
+        style = "shift",
+        topology = { activePerSide = 1 },
+        trap = held,
+        shedShell = Bridge.wrap(state):effectiveHeldItem(player.combatant --[[@as integer]]) == "SHED_SHELL",
+        reserves = eligibleReserves(state, player.participant --[[@as integer]], {}),
+        reserved = {},
+        fainted = faintedIds(state),
+      })
+      local stepped = Switching.step({}, frame)
+      assert(stepped.done == true, "shift exchanges settle without interception")
+      local outgoingStatus = context:statusOf(player.combatant --[[@as integer]])
+      if
+        Bridge.wrap(state):abilityOf(player.combatant --[[@as integer]]) == "NATURAL_CURE" and outgoingStatus ~= nil
+      then
+        context:cureStatus(player.combatant --[[@as integer]], outgoingStatus, {
+          kind = "ability",
+          key = "NATURAL_CURE",
+          combatant = player.combatant,
+        })
+      end
+      BattleState.leave(state, player.position --[[@as integer]])
+      local activation = BattleState.enter(state, reserve --[[@as integer]], player.position --[[@as integer]])
+      settleEntry(state, player.combatant --[[@as integer]], reserve --[[@as integer]], activation)
+      noteEntry(state, moneySet, reserve --[[@as integer]])
+      noteBattleEntry(state, reserve --[[@as integer]])
+      context:emit("switch", { kind = "shift", combatant = player.combatant }, {
+        position = player.position,
+        from = player.combatant,
+        to = reserve,
+      })
+      settleEntryTiming(state, reserve --[[@as integer]])
+    else
+      assert(choice.kind == "confirm", "shift answers switch or stay")
+    end
+    local obligations = shift.obligations --[[@as table<integer, table<string, unknown>>]]
+    local claimed = {} ---@type table<integer, boolean>
+    for _, obligation in ipairs(obligations) do
+      local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+      assert(#reserves > 0, "held foe replacements keep their reserve")
+      local frozen = shift.incoming --[[@as integer]]
+      local held = false
+      for _, candidate in ipairs(reserves) do
+        if candidate == frozen then
+          held = true
+        end
+      end
+      assert(held, "held foe replacements keep their frozen arrival")
+      claimed[frozen] = true
+      enterReserve(state, moneySet, obligation, frozen)
+      settleEntryTiming(state, frozen)
+    end
+    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+    local roundFrame = frames[#frames]
+    assert(roundFrame ~= nil and roundFrame.kind == "round", "shift commits its round frame")
+    frames[#frames] = nil
+    state.pending = nil
+    state.queue = {}
+    -- An arrival's entry pass banks hazard faints with the faint
+    -- owner: drain them through rewards into mandatory replacement or
+    -- the terminal result exactly like the turn-close tail.
+    settlePostReplacement(state)
   end
 
   local function closeTurn()
@@ -5904,8 +6297,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     applyResiduals = applyResiduals,
     closeTurn = closeTurn,
     commitLearning = commitLearning,
+    commitShift = commitShift,
     settleEntryTiming = settleEntryTiming,
     settlePostReplacement = settlePostReplacement,
+    shiftOfferFor = shiftOfferFor,
   }
 end
 
@@ -6031,6 +6426,25 @@ local function wrap(
   live.queue = live.queue or {}
   live.schedule = live.schedule or freshSchedule()
   live.faints = live.faints or {}
+  -- The saved battle style travels on the actual player-controlled
+  -- participant's context: a present unknown style rejects admission
+  -- here, while absent low-level contexts keep no-offer behavior.
+  for _, participantId in
+    ipairs(live.participantOrder --[[@as table<integer, integer>]])
+  do
+    local participant = BattleState.participant(live, participantId --[[@as integer]])
+    if participant.controller == PLAYER_CONTROLLER then
+      local context = participant.context --[[@as table<string, unknown>?]]
+      if type(context) == "table" and context.battleStyle ~= nil then
+        local style = context.battleStyle --[[@as string]]
+        if style ~= "shift" and style ~= "set" then
+          error(BattleErrors.input("the saved battle style must be shift or set", {
+            battleStyle = tostring(context.battleStyle),
+          }))
+        end
+      end
+    end
+  end
   -- Knockout-reward continuations travel beside the faint queue: open
   -- reward children with their battle-owned copies, the per-opponent
   -- participation records keyed by enemy entry, and the accumulated
@@ -6365,6 +6779,10 @@ function HgssSessionExecutor:_bindLifecycle()
   -- The learning continuation closes over the same turn seam but is not
   -- a scheduled lifecycle phase, so the executor holds it directly.
   self._commitLearningHandler = turnHandlers.commitLearning
+  -- The held shift offer commits through the same seam: one accepted
+  -- reply settles the frozen occurrence exactly once.
+  self._commitShiftHandler = turnHandlers.commitShift
+  self._shiftOfferHandler = turnHandlers.shiftOfferFor
   self._resumeTurnHandler = turnHandlers.resumeTurn
   self._commitSwitchIntentHandler = turnHandlers.commitSwitchIntent
   -- Entry timing and post-replacement settlement close over the same
@@ -6456,6 +6874,13 @@ function HgssSessionExecutor:_commitLearning(state)
   commit(state)
 end
 
+---@param state table<string, unknown> live battle state under shift commit
+function HgssSessionExecutor:_commitShift(state)
+  local commit = self._commitShiftHandler
+  assert(type(commit) == "function", "shift commits after lifecycle binding")
+  commit(state)
+end
+
 ---@param state table<string, unknown> live battle state under replacement commit
 function HgssSessionExecutor:_commitReplacement(state)
   local pending = state.pending --[[@as table<string, unknown>]]
@@ -6486,6 +6911,85 @@ function HgssSessionExecutor:_commitReplacement(state)
     end
   end
   local claimed = {} ---@type table<integer, boolean>
+  -- Holds internal foe replacements for the optional Shift offer once
+  -- mandatory player entries settle. Only trainer singles under Shift
+  -- take this path: every other style, format, or kind keeps the
+  -- legacy settlement order below untouched.
+  local held = {} ---@type table<integer, table<string, unknown>>
+  for _, obligation in ipairs(obligations) do
+    if obligation.internal then
+      held[#held + 1] = obligation
+    end
+  end
+  local offerCheck = self._shiftOfferHandler
+  if
+    #held > 0
+    and #held < #obligations
+    and type(offerCheck) == "function"
+    and self._battleKind == "trainer"
+    and singlesFormatFor(state.format --[[@as string]])
+    and playerShiftStyle(state) == "shift"
+  then
+    for _, obligation in ipairs(obligations) do
+      if not obligation.internal then
+        local picked = picks[
+          obligation.combatant --[[@as integer]]
+        ]
+        assert(picked ~= nil, "open replacements commit only with every reply stored")
+        local live = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+        local kept = false
+        for _, candidate in ipairs(live) do
+          if candidate == picked then
+            kept = true
+          end
+        end
+        assert(kept, "replacement replies hold their reserve through suspension")
+        claimed[picked] = true
+        enterReserve(state, self._moneyUpItems, obligation, picked)
+        local settleArrival = self._settleEntryTiming
+        assert(type(settleArrival) == "function", "replacement entries run through the bound timing seam")
+        settleArrival(state, picked)
+      end
+    end
+    if offerCheck(state, held) ~= nil then
+      local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+      local roundFrame = frames[#frames]
+      assert(roundFrame ~= nil and roundFrame.kind == "round", "replacement commits its round frame")
+      frames[#frames] = nil
+      state.pending = nil
+      state.queue = {}
+      -- The mandatory entries settled above: hazard faints from their
+      -- arrivals drain beside the held foe replacement, exactly like
+      -- the turn-close tail, so the offer opens over settled state.
+      local settleHeld = self._settlePostReplacement
+      assert(type(settleHeld) == "function", "hazard faints drain through the bound turn seam")
+      settleHeld(state, held)
+      return
+    end
+    -- The gate declined over settled mandatory entries (for example a
+    -- trapped player side): the held foe replacements enter through
+    -- the existing internal owner instead of an offer.
+    for _, obligation in ipairs(held) do
+      local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
+      assert(#reserves > 0, "held internal replacements keep their reserve")
+      local reserve = reserves[1]
+      claimed[reserve] = true
+      enterReserve(state, self._moneyUpItems, obligation, reserve)
+      local settleArrival = self._settleEntryTiming
+      assert(type(settleArrival) == "function", "replacement entries run through the bound timing seam")
+      settleArrival(state, reserve)
+    end
+    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+    local roundFrame = frames[#frames]
+    assert(roundFrame ~= nil and roundFrame.kind == "round", "replacement commits its round frame")
+    frames[#frames] = nil
+    state.pending = nil
+    state.queue = {}
+    local settleReplacements = self._settlePostReplacement
+    assert(type(settleReplacements) == "function", "hazard faints drain through the bound turn seam")
+    settleReplacements(state)
+    return
+  end
   for _, obligation in ipairs(obligations) do
     local reserve ---@type integer
     if obligation.internal then
@@ -6498,13 +7002,13 @@ function HgssSessionExecutor:_commitReplacement(state)
       ]
       assert(picked ~= nil, "open replacements commit only with every reply stored")
       local live = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
-      local held = false
+      local kept = false
       for _, candidate in ipairs(live) do
         if candidate == picked then
-          held = true
+          kept = true
         end
       end
-      assert(held, "replacement replies hold their reserve through suspension")
+      assert(kept, "replacement replies hold their reserve through suspension")
       reserve = picked
     end
     claimed[reserve] = true
@@ -6577,6 +7081,79 @@ local function checkReplacementBinding(state, replacement, choice, staged)
   ]
   if taken ~= nil then
     return BattleErrors.input("replacements are reserved once per batch", {})
+  end
+  return nil
+end
+
+--- Validates one shift reply against the held occurrence without
+--- touching the field: the actor must still hold the frozen player
+--- entry, switches must name a legal living benched reserve under the
+--- existing shift policy, and staying carries an empty confirm
+--- payload. Stale or illegal replies fail with the held arrival
+--- frozen.
+---@param state table<string, unknown> live battle state under reply validation
+---@param shift table<string, unknown> open shift continuation under validation
+---@param choice table<string, unknown> shift reply choice under validation
+---@param staged table<string, unknown> reservation maps staged for the reply under admission
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts for the trap read
+---@return table<string, unknown>? input error, or nil when the shift reply binds
+local function checkShiftBinding(state, shift, choice, staged, speciesFacts)
+  local actor = choice.actor --[[@as table<string, unknown>]]
+  local payload = choice.payload --[[@as table<string, unknown>]]
+  local player = shift.player --[[@as table<string, unknown>]]
+  if actor.combatant ~= player.combatant or actor.activation ~= player.activation then
+    return BattleErrors.input("replies must address exactly the requested entries", {})
+  end
+  if choice.kind == "confirm" then
+    if payload.replacement ~= nil or payload.decision ~= nil or payload.slot ~= nil then
+      return BattleErrors.input("staying carries an empty payload", {})
+    end
+    return nil
+  end
+  if choice.kind ~= "switch" then
+    return BattleErrors.input("shift replies switch or stay", {})
+  end
+  local reserve = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
+    payload.replacement --[[@as integer]]
+  ]
+  if reserve == nil then
+    return BattleErrors.input("replacements must name a declared combatant", {})
+  end
+  if reserve.participant ~= player.participant then
+    return BattleErrors.input("replacements must share the actor roster", {})
+  end
+  if reserve.active ~= nil then
+    return BattleErrors.input("replacements must start benched", {})
+  end
+  if
+    reserve.hp --[[@as integer]]
+    <= 0
+  then
+    return BattleErrors.input("replacements must be living", {})
+  end
+  local combatant = BattleState.combatant(state, player.combatant --[[@as integer]])
+  if combatant.active == nil then
+    return BattleErrors.input("shift replies address the standing entry", {})
+  end
+  local heldTrap = combatant.trap
+  if heldTrap == nil then
+    heldTrap = volatileTrapOf(state, player.combatant --[[@as integer]], speciesFacts)
+  end
+  local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+  local verdict = Switching.eligible({
+    position = player.position,
+    incoming = payload.replacement,
+    reason = "shift",
+    style = "shift",
+    topology = { activePerSide = 1 },
+    trap = heldTrap,
+    shedShell = Bridge.wrap(state):effectiveHeldItem(player.combatant --[[@as integer]]) == "SHED_SHELL",
+    reserves = eligibleReserves(state, player.participant --[[@as integer]], {}),
+    reserved = stagedSiblingReserves(staged, payload.replacement --[[@as integer]]),
+    fainted = faintedIds(state),
+  })
+  if not verdict.ok then
+    return BattleErrors.input("the exchange is not eligible", { reason = verdict.reason })
   end
   return nil
 end
@@ -6680,6 +7257,12 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     -- below cannot hold, so obligations bind instead. Stale pre-faint
     -- actions still fail here when they name no open obligation.
     return checkReplacementBinding(state, openBatch.replacement --[[@as table<string, unknown>]], choice, staged)
+  end
+  if openBatch ~= nil and openBatch.shift ~= nil then
+    -- Shift batches address the standing player entry for one optional
+    -- exchange: only its legal switch fragments and the empty stay
+    -- confirm bind, so ordinary action checks never widen the offer.
+    return checkShiftBinding(state, openBatch.shift --[[@as table<string, unknown>]], choice, staged, speciesFacts)
   end
   if openBatch ~= nil and openBatch.switchIntent ~= nil and choice.kind ~= "switch" then
     return BattleErrors.input("pivot replies choose a replacement", {})
@@ -7453,6 +8036,68 @@ local function replacementActorOptions(state, actor, admitted, battleKind)
   return entry
 end
 
+--- Projects the stay-or-switch options for the held shift occurrence:
+--- the actor discriminator is kind "shift", its allowed fragments
+--- are the existing legal switch choices plus one empty stay confirm,
+--- and the frozen incoming arrival rides alongside for the minimal
+--- presentation preview. Projection never draws, reserves, or steps.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actor table<string, unknown> addressed player entry under projection
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@return table<string, unknown> shift options for the actor
+local function shiftActorOptions(state, actor, admitted, battleKind)
+  local entry = {
+    combatant = actor.combatant,
+    activation = actor.activation,
+    kind = "shift",
+    choices = {},
+  } --[[@as table<string, unknown>]]
+  local pending = state.pending --[[@as table<string, unknown>]]
+  local shift = nil
+  if type(pending) == "table" then
+    shift = pending.shift --[[@as table<string, unknown>?]]
+  end
+  if shift == nil then
+    return entry
+  end
+  local player = shift.player --[[@as table<string, unknown>]]
+  if player.combatant ~= actor.combatant or player.activation ~= actor.activation then
+    return entry
+  end
+  entry.incoming = shift.incoming
+  entry.foeParticipant = shift.foeParticipant
+  local choices = entry.choices --[[@as table<integer, table<string, unknown>>]]
+  for _, reserve in
+    ipairs(eligibleReserves(state, player.participant --[[@as integer]], {}))
+  do
+    local choice = {
+      actor = fragmentActor(actor),
+      kind = "switch",
+      payload = { replacement = reserve },
+    } --[[@as table<string, unknown>]]
+    choices[#choices + 1] = probedOption(
+      state,
+      choice,
+      "switch:" .. reserve,
+      "switch",
+      reserveDisplay(state, reserve),
+      admitted,
+      battleKind,
+      nil,
+      nil
+    )
+  end
+  local stay = {
+    actor = fragmentActor(actor),
+    kind = "confirm",
+    payload = {},
+  } --[[@as table<string, unknown>]]
+  choices[#choices + 1] =
+    probedOption(state, stay, "shift:stay", "stay", { decision = "stay" }, admitted, battleKind, nil, nil)
+  return entry
+end
+
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param request table<string, unknown> open learning prompt under projection
 ---@param actor table<string, unknown> addressed recipient under projection
@@ -7556,6 +8201,12 @@ function HgssSessionExecutor:decisionOptions(requestId)
       actors[#actors + 1] =
         learningActorOptions(state, wanted, actor, self._admitted, self._battleKind, self._moveFacts)
     end
+  elseif pending.shift ~= nil then
+    for _, actor in
+      ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
+    do
+      actors[#actors + 1] = shiftActorOptions(state, actor, self._admitted, self._battleKind)
+    end
   elseif pending.replacement ~= nil then
     for _, actor in
       ipairs(wanted.actors --[[@as table<integer, table<string, unknown>>]])
@@ -7624,6 +8275,8 @@ function HgssSessionExecutor:advance(operationBudget)
       local completed = state.pending --[[@as table<string, unknown>]]
       if completed.replacement ~= nil then
         self:_commitReplacement(state)
+      elseif completed.shift ~= nil then
+        self:_commitShift(state)
       elseif completed.learning ~= nil then
         self:_commitLearning(state)
       elseif completed.switchIntent ~= nil then

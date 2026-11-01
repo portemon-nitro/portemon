@@ -1928,7 +1928,8 @@ function BattleScreenState:_snapshot()
     if (self._showTimelineMessage or timelineMessageActive) and timelineMessage ~= "" then
       message = timelineMessage
     else
-      message = commandPrompt or timelineMessage
+      local shiftPrompt = self:_shiftPrompt()
+      message = shiftPrompt or commandPrompt or timelineMessage
     end
   end
   local acting = nil
@@ -2226,6 +2227,7 @@ function BattleScreenState:_snapshot()
       target = self._manifest.menus.target.screens,
       twoOption = self._manifest.menus.twoOption.screens,
     },
+    twoOption = copyValue(self:_shiftTwoOption()),
     hudPatchSpans = self._manifest.hud.patchSpans,
     cursor = self._manifest.hud.cursor,
     menuText = self:_menuText(),
@@ -2515,6 +2517,7 @@ function BattleScreenState:view()
     targets = copyValue(snapshot.targetCandidates),
     staged = copyValue(snapshot.stagedChoices),
     childIntent = snapshot.childIntent,
+    childView = snapshot.childView,
   }
 end
 
@@ -2584,6 +2587,7 @@ function BattleScreenState:status()
     mode = self._mode,
     ready = self:_ready(),
     request = copyValue(self._request),
+    selection = self._selection,
     presentation = plan,
     error = self._error,
     completion = completion,
@@ -4451,8 +4455,143 @@ function BattleScreenState:_initialTargetSelection(candidates, rangeKey)
   return nil
 end
 
+-- Opens the optional Shift prompt over the held foe arrival: the staged
+-- question names the frozen incoming mon while Yes opens the party
+-- picker and No answers stay. The kernel keeps owning the decision;
+-- this mode only routes one epoch-bound reply per offer.
+function BattleScreenState:_enterShiftPrompt()
+  self._targetCandidates = nil
+  self._targetRangeKey = nil
+  self._pendingMoveId = nil
+  self:cancelPointerCapture()
+  self._notice = nil
+  self._subflows:closeChild()
+  self._child = nil
+  self._selection = "yes"
+  self._mode = "shift"
+end
+
+---@return table<string, unknown>? shift actor entry behind the held offer, nil without one
+function BattleScreenState:_shiftActor()
+  if self._options == nil or type(self._options.actors) ~= "table" then
+    return nil
+  end
+  for _, actor in
+    ipairs(self._options.actors --[[@as table<integer, unknown>]])
+  do
+    if
+      type(actor) == "table" and (actor --[[@as table<string, unknown>]]).kind == "shift"
+    then
+      return actor --[[@as table<string, unknown>]]
+    end
+  end
+  return nil
+end
+
+---@return string? staged Shift question naming the frozen arrival, nil outside the offer
+function BattleScreenState:_shiftPrompt()
+  if self._mode ~= "shift" then
+    return nil
+  end
+  local actor = self:_shiftActor()
+  if actor == nil then
+    return nil
+  end
+  local preview = actor.preview --[[@as table<string, unknown>?]]
+  if type(preview) ~= "table" then
+    return nil
+  end
+  local classKey = preview.trainerClassKey
+  local trainerName = preview.trainerName
+  local incomingName = preview.incomingName
+  if type(classKey) ~= "string" or classKey == "" then
+    return nil
+  end
+  if type(trainerName) ~= "string" or trainerName == "" then
+    return nil
+  end
+  if type(incomingName) ~= "string" or incomingName == "" then
+    return nil
+  end
+  local className = stagedBattleText(self._manifest, "battle/trainer-class/" .. classKey, {})
+  return stagedBattleText(self._manifest, "battle/prompt/shift-offer", { className, trainerName, incomingName })
+end
+
+---@return table<string, unknown>? staged Yes/No labels behind the Shift prompt, nil outside the offer
+function BattleScreenState:_shiftTwoOption()
+  if self._mode ~= "shift" or self:_shiftActor() == nil then
+    return nil
+  end
+  local menus = assert(self._manifest.menus, "shift prompts require the staged menu catalog") --[[@as table<string, unknown>]]
+  local routes = assert(menus.routes, "shift prompts require staged source routes") --[[@as table<string, unknown>]]
+  local route = assert(routes["menu/yes-no"], "shift prompts select the source yes-no route") --[[@as table<string, unknown>]]
+  local selected = {}
+  for _, key in
+    ipairs(route.messageEntries --[[@as table<integer, string>]])
+  do
+    selected[key] = true
+  end
+  assert(
+    selected["label/yes"] == true and selected["label/no"] == true,
+    "the selected text set stages both source labels"
+  )
+  local messages = assert(self._manifest.messages, "shift prompts require staged message entries") --[[@as table<string, unknown>]]
+  local entries = assert(messages.entries, "shift prompts require semantic message entries") --[[@as table<string, table<string, unknown>>]]
+  local topRecord = assert(entries["label/yes"], "the top source option has a staged label")
+  local bottomRecord = assert(entries["label/no"], "the bottom source option has a staged label")
+  return {
+    route = "menu/yes-no",
+    top = menuLabelText(topRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
+    bottom = menuLabelText(bottomRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
+  }
+end
+
+-- Seals the provided empty stay fragment for the held offer: prompt
+-- cancel, No, and party cancel all answer stay exactly once without a
+-- second offer. A missing stay fragment fails the screen instead of
+-- inventing a reply.
+function BattleScreenState:_sealShiftStay()
+  local actor = self:_shiftActor()
+  local stay = nil
+  if type(actor) == "table" and type(actor.choices) == "table" then
+    for _, choice in
+      ipairs(actor.choices --[[@as table<integer, unknown>]])
+    do
+      if
+        type(choice) == "table" and (choice --[[@as table<string, unknown>]]).id == "shift:stay"
+      then
+        stay = (choice --[[@as table<string, unknown>]]).choice
+        break
+      end
+    end
+  end
+  if type(stay) ~= "table" then
+    self._mode = "failed"
+    self._error = "the shift offer carries its stay fragment for launch " .. self._launchId
+    return
+  end
+  if self._child ~= nil then
+    self._subflows:closeChild()
+    self._child = nil
+  end
+  self:_seal(copyValue(stay --[[@as table<string, unknown>]]))
+end
+
+-- Answers the Shift prompt from one semantic edge: Yes opens the
+-- existing party picker in the shift purpose while anything else seals
+-- the provided stay fragment.
+---@param choice string yes-or-no answer behind the Shift prompt
+function BattleScreenState:_activateShift(choice)
+  if choice == "yes" then
+    self:_openVoluntaryChild("party", "shift")
+    return
+  end
+  self:_sealShiftStay()
+end
+
 -- Moves the prompt to the acting entry: command selection for ordinary
--- turns, or the forced child for replacement and learning decisions.
+-- turns, the Shift question for held foe arrivals, or the forced child
+-- for replacement and learning decisions.
 function BattleScreenState:_enterActorPrompt()
   self._targetCandidates = nil
   self._targetRangeKey = nil
@@ -4460,6 +4599,10 @@ function BattleScreenState:_enterActorPrompt()
   self:cancelPointerCapture()
   self._notice = nil
   local mode = self:_modeForOptions(self._options)
+  if mode == "shift" then
+    self:_enterShiftPrompt()
+    return
+  end
   if mode ~= "child" then
     self._subflows:closeChild()
     self._mode = "command"
@@ -5199,6 +5342,18 @@ function BattleScreenState:_consume(event)
       -- identical fragment as keyboard confirm on every layout.
       -- Keyboard focus still moves through navigate; command and move
       -- presses keep their focus bookkeeping above.
+    elseif self._mode == "shift" then
+      -- A prompt tap arms its Yes/No cell and moves the selection so the
+      -- matched release settles the identical fragment as keyboard input.
+      local control = event.control --[[@as table<string, unknown>?]]
+      if
+        type(control) == "table"
+        and control.scope == "shift"
+        and (control.id == "confirm" or control.id == "back")
+      then
+        self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
+        self._selection = control.id == "confirm" and "yes" or "no"
+      end
     elseif self._mode == "narration" or self._mode == "outcome" then
       -- A dialogue tap arms exactly like a command press so the matched
       -- release can acknowledge the shown page; an unmatched press never
@@ -5228,6 +5383,15 @@ function BattleScreenState:_consume(event)
         local control = event.control --[[@as table<string, unknown>?]]
         if type(control) == "table" and control.scope == self._mode then
           self._timeline:ack()
+        end
+      elseif self._mode == "shift" then
+        local control = event.control --[[@as table<string, unknown>?]]
+        if
+          type(control) == "table"
+          and control.scope == "shift"
+          and (control.id == "confirm" or control.id == "back")
+        then
+          self:_activateShift(control.id == "confirm" and "yes" or "no")
         end
       else
         self:_startButtonFeedback(self._mode, event.control.id --[[@as string]], armed)
@@ -5274,6 +5438,8 @@ function BattleScreenState:_confirm()
     else
       self:_activateTarget(selection)
     end
+  elseif self._mode == "shift" and type(self._selection) == "string" then
+    self:_activateShift(self._selection --[[@as string]])
   elseif self._mode == "narration" or self._mode == "intro" then
     self._timeline:ack()
   elseif self._mode == "outcome" then
@@ -5429,7 +5595,12 @@ function BattleScreenState:_submitMove(entry)
 end
 
 function BattleScreenState:_cancel()
-  if self._mode == "target" then
+  if self._mode == "shift" then
+    -- Cancelling the Shift prompt answers stay without a second
+    -- offer, matching the source replacement subscript.
+    self:_playCancelFeedback()
+    self:_sealShiftStay()
+  elseif self._mode == "target" then
     self:_activateTarget("cancel")
   elseif self._mode == "moves" then
     self._mode = "command"
@@ -5456,8 +5627,14 @@ end
 -- Cancels the open child: a voluntary child returns to the acting
 -- entry prompt, a later forced entry steps back to the earlier entry
 -- with its staged fragment intact, and the first forced entry refuses.
+-- A cancelled Shift picker answers stay without a second offer.
 function BattleScreenState:_cancelChild()
   if self._child == nil then
+    return
+  end
+  if self._child.purpose == "shift" then
+    self:_playCancelFeedback()
+    self:_sealShiftStay()
     return
   end
   if self._child.purpose == "replacement" and self._request ~= nil and self._actorIndex > 1 then
@@ -5482,6 +5659,15 @@ end
 
 ---@param direction string? navigation direction under selection
 function BattleScreenState:_navigate(direction)
+  if self._mode == "shift" then
+    if
+      type(direction) == "string"
+      and (direction == "up" or direction == "down" or direction == "left" or direction == "right")
+    then
+      self._selection = self._selection == "yes" and "no" or "yes"
+    end
+    return
+  end
   if self._mode == "target" then
     self:_navigateTargets(direction)
     return
@@ -5626,6 +5812,11 @@ end
 ---@return string mode for the request actor kind
 function BattleScreenState:_modeForOptions(options)
   if type(options) == "table" and type(options.actors) == "table" then
+    for _, actor in ipairs(options.actors) do
+      if type(actor) == "table" and actor.kind == "shift" then
+        return "shift"
+      end
+    end
     for _, actor in ipairs(options.actors) do
       if type(actor) == "table" and (actor.kind == "replacement" or actor.kind == "learn_move") then
         return "child"

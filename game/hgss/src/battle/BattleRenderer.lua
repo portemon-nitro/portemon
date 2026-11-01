@@ -926,6 +926,12 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
   if view.cursorVisible ~= true or type(view.selection) ~= "string" then
     return
   end
+  -- The Shift prompt tracks Yes/No while the source two-option planes
+  -- name their confirm/back cells: resolve the answer onto its cell.
+  local wanted = view.selection
+  if view.mode == "shift" and type(wanted) == "string" then
+    wanted = wanted == "yes" and "confirm" or wanted == "no" and "back" or wanted
+  end
   local selected = nil
   if layout == "command" and type(view.commands) == "table" then
     for index, command in ipairs(view.commands) do
@@ -936,7 +942,7 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
     end
   else
     for _, region in ipairs(regions) do
-      if region.id == view.selection then
+      if region.id == wanted then
         selected = region
         break
       end
@@ -1921,6 +1927,28 @@ local function drawControls(resources, view, layout, regions)
         end
       elseif id == "cancel" then
         label("menu", menuText.cancel, CANCEL_ANCHOR, true, offsetY, sourcePalette(view, "menu", 2, 10, 11, 12))
+      elseif
+        layout == "two-option"
+        and view.mode == "shift"
+        and (id == "confirm" or id == "back")
+        and type(view.twoOption) == "table"
+      then
+        -- The held Shift offer names its Yes/No answers through the
+        -- source two-option planes: confirm takes Yes, back takes No.
+        local options = view.twoOption --[[@as table<string, unknown>]]
+        local content = id == "confirm" and options.top or options.bottom
+        if type(content) == "string" then
+          local palette = id == "confirm" and sourcePalette(view, "menu", 2, 1, 2, 3)
+            or sourcePalette(view, "menu", 2, 10, 11, 12)
+          label(
+            "menu",
+            content,
+            { x = box.x + math.floor(box.w / 2), y = box.y + math.floor(box.h / 2) + 3 },
+            true,
+            offsetY,
+            palette
+          )
+        end
       elseif id:match("^target:") ~= nil then
         local index = tonumber(id:match("^target:(%d+)$")) --[[@as integer]]
         local candidate = targetCandidate(view, id)

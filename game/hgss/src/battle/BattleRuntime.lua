@@ -622,6 +622,11 @@ function BattleRuntime:_publishFrame(frame, exposed)
       local options = session:decisionOptions((exposed --[[@as table<string, unknown>]]).requestId)
       if options ~= nil then
         detached.options = copyValue(options)
+        if
+          not self:_attachShiftPreview(snapshot, detached.options --[[@as table<string, unknown>]])
+        then
+          return false
+        end
       end
     end
     context.request = detached
@@ -663,6 +668,37 @@ function BattleRuntime:_publishFrame(frame, exposed)
   local packet = BattlePresentationModel.packet(beforeView, { events = events }, afterView, context)
   self._lastView = afterView
   self._presentation.present(packet)
+  return true
+end
+
+---@param snapshot table<string, unknown> detached live battle snapshot under preview
+---@param options table<string, unknown> detached decision options carrying the shift actor
+---@return boolean previewed true once every shift actor carries its minimal preview
+function BattleRuntime:_attachShiftPreview(snapshot, options)
+  local actors = options.actors --[[@as table<integer, unknown>?]]
+  if type(actors) ~= "table" then
+    return true
+  end
+  for _, actor in
+    ipairs(actors --[[@as table<integer, unknown>]])
+  do
+    if
+      type(actor) == "table" and (actor --[[@as table<string, unknown>]]).kind == "shift"
+    then
+      local ok, preview = pcall(
+        BattlePresentationModel.shiftPreview,
+        snapshot,
+        options,
+        self._scenario,
+        { catalog = self:_factCatalog() }
+      )
+      if not ok then
+        self:_fail(tostring(preview))
+        return false
+      end
+      (actor --[[@as table<string, unknown>]]).preview = preview
+    end
+  end
   return true
 end
 
@@ -1076,6 +1112,35 @@ end
 function BattleRuntime:_buildSession()
   local record = copyValue(self._scenario)
   assert(type(record) == "table", "session builds need their scenario")
+  -- The saved battle style reaches the actual player-controlled
+  -- participant's context: production preparation projects it there by
+  -- controller identity, never by assuming participant or side one. A
+  -- present malformed style is invalid, while sessions without the
+  -- player fact record keep their style-absent no-offer behavior.
+  local player = self._player --[[@as table<string, unknown>?]]
+  if type(player) == "table" and type(player.record) == "table" then
+    local options = (player.record --[[@as table<string, unknown>]]).options --[[@as table<string, unknown>?]]
+    if type(options) == "table" and options.battleStyle ~= nil then
+      local style = options.battleStyle --[[@as string]]
+      if style ~= "shift" and style ~= "set" then
+        error("the saved battle style must be shift or set", 0)
+      end
+      for _, participant in
+        ipairs(record.participants --[[@as table<integer, unknown>]])
+      do
+        if
+          type(participant) == "table"
+          and (participant --[[@as table<string, unknown>]]).controller == BattleRuntime.PLAYER_CONTROLLER
+        then
+          local entry = participant --[[@as table<string, unknown>]]
+          if type(entry.context) ~= "table" then
+            entry.context = {}
+          end
+          (entry.context --[[@as table<string, unknown>]]).battleStyle = style
+        end
+      end
+    end
+  end
   -- An explicit construction seed drives the battle stream, so equal
   -- seeds with equal scenarios and replies replay equal mechanics and
   -- randomness regardless of presentation pacing. Without one the
