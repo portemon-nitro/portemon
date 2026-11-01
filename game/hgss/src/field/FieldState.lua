@@ -120,6 +120,7 @@ end
 ---@field _battleWindows table<string, unknown>? borrowed battle window services
 ---@field _battlePresentationBinding integer? factory binding identity behind the envelope
 ---@field presentationResources FieldPresentationResources?
+---@field _optionsPresentationFactory (fun(): table<string, unknown>)? installed field-lifetime options factory identity
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
 ---@field _celebiBlur table<string, unknown>? lazy field-scene capture presenter
 ---@field _hoOhAppearanceRenderer table<string, unknown>? lazy Bell Tower cutscene model presenter
@@ -226,6 +227,18 @@ function FieldState.new(game, options)
   }, FieldState)
   local ok, err = pcall(function()
     self.presentationResources = FieldPresentationResources.new(runtime --[[@as FieldPresentationResourcesRuntime]])
+    -- The concrete field-lifetime options presentation factory: the
+    -- catalogue consumes it per open without holding GPU owners itself.
+    -- The closure owns no resources; a still-open child is disposed by the
+    -- application host before the presentation resources below release.
+    do
+      local resources = assert(self.presentationResources, "the options factory needs its resources")
+      local function factory()
+        return resources:openOptionsPresentation()
+      end
+      runtime.optionsPresentationFactory = factory
+      self._optionsPresentationFactory = factory
+    end
     local width, height = love.graphics.getDimensions()
     -- The initial presentation-geometry sync: pointer input must work
     -- before the user has resized the window, so the runtime computes and
@@ -2315,6 +2328,16 @@ function FieldState:dispose()
   if self.actorPresentation then
     self.actorPresentation:dispose()
     self.actorPresentation = nil
+  end
+  -- The options presentation binding clears only while still current:
+  -- a replaced factory belongs to its own owner. The application host
+  -- above already disposed any open child, so no per-open port outlives
+  -- the resources below.
+  if self.runtime ~= nil and self._optionsPresentationFactory ~= nil then
+    if self.runtime.optionsPresentationFactory == self._optionsPresentationFactory then
+      self.runtime.optionsPresentationFactory = nil
+    end
+    self._optionsPresentationFactory = nil
   end
   -- Borrowers release before their owner: pooled renderer and provider
   -- leases return to the session image owner while it is still alive,

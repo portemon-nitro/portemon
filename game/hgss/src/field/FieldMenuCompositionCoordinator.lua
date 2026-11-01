@@ -33,6 +33,7 @@ local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
+local OptionsScreenState = require("game.hgss.src.options.OptionsScreenState")
 local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreenState")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 
@@ -157,6 +158,79 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     local composition = assert(runtime.pokegear, "the gear application requires the composed feature")
     return composition.screenFactory({ kind = "browse" })
   end
+  local function optionsFactory()
+    -- The options factory stages one detached draft over the live record:
+    -- validation runs at Confirm through this coordinator, the app-wide
+    -- volume travels through the borrowed port, channel previews reach the
+    -- live sink, and the menu-local sample prints through its own dialogue
+    -- printer. A real volume port is required here; headless runtimes that
+    -- omit it cannot open the menu. The per-open presentation port resolves
+    -- only in presented mode; headless composition stays non-rendering but
+    -- fully semantic.
+    local coordinator = self
+    local playerData = assert(runtime.playerData, "the options application requires the live player data")
+    local liveOptions = assert(playerData.options, "the options application requires the live player options")
+    local audioPreferences =
+      assert(runtime.audioPreferences, "the options application requires the app-wide volume port")
+    local uiManifest = assert(runtime.uiManifest, "the options application requires the field-UI manifest")
+    local function measureDisplay()
+      return runtime.presentationDisplay
+    end
+    local function channelPreview(mode)
+      local sink = runtime.audioSink
+      if sink ~= nil then
+        sink:setChannelMode(mode)
+      end
+    end
+    local function prepare(values)
+      return coordinator:preparePlayerOptions(values)
+    end
+    local port = nil
+    if runtime.optionsPresentationFactory ~= nil then
+      port = runtime.optionsPresentationFactory()
+    end
+    -- The menu-local sample borrows the same paginated layout, cadence
+    -- shapes, and continue cursor the field dialogue uses, paced by the
+    -- draft policy and never accelerated by gameplay input.
+    local previewPrinter = nil
+    local dialogueFrames = uiManifest.dialogueFrames
+    if dialogueFrames ~= nil and dialogueFrames.continueCursor ~= nil and runtime.fontDef ~= nil then
+      local fontMetrics = FieldDialogueTheme.fontMetrics(runtime.fontDef)
+      local function formatLayout(formatted)
+        return DialogueLayout.layout(
+          formatted.tokens,
+          fontMetrics,
+          { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
+        )
+      end
+      ---@type table<string, unknown>? menu-local sample audio host carrying play
+      local audio = runtime.audio
+      if audio == nil then
+        local function silentPlay() end
+        audio = {
+          play = silentPlay,
+        }
+      end
+      previewPrinter = FieldDialogueController.new({
+        layout = formatLayout,
+        policy = TextSpeedPolicy.forSpeed(assert(liveOptions.textSpeed, "the preview needs the live text speed")),
+        audio = audio,
+        continueCursor = dialogueFrames.continueCursor,
+      })
+    end
+    return OptionsScreenState.new({
+      playerOptions = liveOptions,
+      volume = audioPreferences.read(),
+      preparePlayerOptions = prepare,
+      audioPreferences = audioPreferences,
+      applyChannelMode = channelPreview,
+      effect = playSequence,
+      semantic = assert(uiManifest.options, "the options application requires the generated options section"),
+      measureDisplay = measureDisplay,
+      presentationPort = port,
+      previewPrinter = previewPrinter,
+    })
+  end
   local function pokedexFactory()
     -- The pokedex factory delegates immediately to the leaf composition:
     -- no browser state lives in this upper module and no graphics load
@@ -184,6 +258,10 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     {
       id = FieldApplicationIds.POKEDEX,
       factory = pokedexFactory,
+    },
+    {
+      id = FieldApplicationIds.OPTIONS,
+      factory = optionsFactory,
     },
   }
 end

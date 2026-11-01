@@ -13,7 +13,9 @@ local OptionsWidgets = {}
 ---@alias OptionsWidgets.Point { x: number, y: number }
 ---@alias OptionsWidgets.Color { r: number, g: number, b: number, a: number? }
 ---@alias OptionsWidgets.Ink { foreground: OptionsWidgets.Color, shadow: OptionsWidgets.Color }
----@alias OptionsWidgets.TextCollaborator { drawTextWithPalette: fun(self: OptionsWidgets.TextCollaborator, line: string, x: number, y: number, ink: OptionsWidgets.Color), textWidth: fun(self: OptionsWidgets.TextCollaborator, line: string): number }
+---@class OptionsWidgets.TextCollaborator caller text service behind label painting
+---@field drawTextWithPalette fun(self: OptionsWidgets.TextCollaborator, line: string, x: number, y: number, ink: OptionsWidgets.Color)
+---@field windowBackgroundColor fun(self: OptionsWidgets.TextCollaborator): number[]
 ---@alias OptionsWidgets.SequenceFrame { image: string, atlas: OptionsWidgets.Rect, offset: OptionsWidgets.Point, ticks: integer }
 ---@alias OptionsWidgets.CompiledSequence { frames: OptionsWidgets.SequenceFrame[], loop: boolean, bounds: OptionsWidgets.Rect }
 ---@alias OptionsWidgets.ChoiceStates { unselected: OptionsWidgets.CompiledSequence, selected: OptionsWidgets.CompiledSequence }
@@ -117,7 +119,7 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
----@param text OptionsWidgets.TextCollaborator caller text collaborator (drawTextWithPalette, textWidth)
+---@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param choice OptionsWidgets.ChoiceStates { unselected, selected } compiled choice sequences
 ---@param anchor OptionsWidgets.Point control anchor in logical pixels
 ---@param label string caller-provided value label
@@ -137,7 +139,7 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
----@param text OptionsWidgets.TextCollaborator caller text collaborator (drawTextWithPalette, textWidth)
+---@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param arrows OptionsWidgets.ArrowSet { left = { idle, pressed }, right = { idle, pressed } }
 ---@param leftAnchor OptionsWidgets.Point left arrow anchor in logical pixels
 ---@param rightAnchor OptionsWidgets.Point right arrow anchor in logical pixels
@@ -220,7 +222,7 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
----@param text OptionsWidgets.TextCollaborator caller text collaborator (drawTextWithPalette, textWidth)
+---@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param action OptionsWidgets.ActionStates { normal, focused, pressed, pressedFocused } compiled footer sequences
 ---@param anchor OptionsWidgets.Point action anchor in logical pixels
 ---@param label string caller-provided footer label

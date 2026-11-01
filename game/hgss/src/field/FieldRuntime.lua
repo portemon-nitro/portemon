@@ -647,6 +647,7 @@ end
 ---@field dayNight fun(): string?
 ---@field audioOutput table<string, unknown>?
 ---@field audioPreferences table<string, function>? borrowed app-wide volume port for the Options factory
+---@field optionsPresentationFactory (fun(): FieldPresentationResources.OptionsPresentationPort)? field-lifetime per-open options presentation factory, installed by the presented state and absent in headless runtimes
 ---@field derivedAssets table<string, function>?
 ---@field audio FieldAudioController? production-composed audio service (absent when only a recording script adapter is injected, without an audio-output host)
 ---@field mapMusicDayNight (fun(): string)? production-composed day/night band source for the map-music lookup (present whenever the production composition exists)

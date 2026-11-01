@@ -43,6 +43,7 @@ local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local MailboxRenderer = require("libs.hgss.src.ui.MailboxRenderer")
 local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 local FieldMapNameRenderer = require("game.hgss.src.field.FieldMapNameRenderer")
+local OptionsRenderer = require("game.hgss.src.options.OptionsRenderer")
 local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRenderer")
 
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
@@ -104,6 +105,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
 ---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
 ---@field summaryManifest table<string, unknown>? validated generated Summary family
+---@field _optionsRenderer OptionsRenderer? the one retained per-open options resource owner
 ---@field _pokedexBinding integer? installed pokedex preparation binding identity
 ---@field pokedexResources PokedexPresentationResources? the one lazily owned field pokedex preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
@@ -445,11 +447,30 @@ local function buildPresenters(owner)
     }, { view = status.view, assets = assets, compact = status.compact }, plan)
     drawApplicationFrames(hostGraphics, owner, plan)
   end
+  -- The options presenter draws the committed per-open renderer through
+  -- the resolved plan: pending preparation keeps the existing host cover
+  -- and the failed state surfaces its cause. Drawing never prepares.
+  ---@param presentation table<string, unknown>?
+  local function drawOptions(presentation, _)
+    local status = assert(presentation, "the options application presents its status")
+    if status.preparing then
+      return
+    end
+    local plan = assert(status.presentation, "the options application presents its plan")
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", "options drawing requires its host graphics namespace")
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      optionsRenderer = assert(owner._optionsRenderer, "options renderer is unavailable"),
+    }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
+  end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,
     [FieldApplicationIds.TRAINER_CARD] = drawTrainerCard,
     [FieldApplicationIds.BAG] = drawBag,
     [FieldApplicationIds.POKEDEX] = drawPokedex,
+    [FieldApplicationIds.OPTIONS] = drawOptions,
   }
 end
 
@@ -1177,6 +1198,13 @@ end
 
 function FieldPresentationResources:dispose()
   self.presenters = nil
+  -- A still-open options child returns its renderer here: borrowed owners
+  -- are released after this, so the per-open leases return first.
+  if self._optionsRenderer ~= nil then
+    local renderer = assert(self._optionsRenderer, "a retained options renderer disposes before release")
+    self._optionsRenderer = nil
+    renderer:dispose()
+  end
   if self.dialogueRenderer then
     self.dialogueRenderer:release()
     self.dialogueRenderer = nil
@@ -1481,6 +1509,40 @@ function FieldPresentationResources:pokedex()
   })
   self.pokedexResources = created
   return created
+end
+
+-- Creates one per-open options resource owner and returns the narrow
+-- dot-call preparation port the screen steps: prepare advances the pooled
+-- chrome toward readiness without blocking, dispose releases the owned
+-- leases and clears only this same retained renderer, exactly once. A
+-- duplicate open is a composition error; a stale dispose never clears a
+-- newer owner. Field teardown also releases a still-held renderer, so
+-- either disposal order is safe.
+---@class FieldPresentationResources.OptionsPresentationPort narrow per-open dot-call preparation port
+---@field prepare fun(): boolean step pooled chrome toward readiness without blocking
+---@field dispose fun() release owned leases and clear only the same retained renderer, exactly once
+---@return FieldPresentationResources.OptionsPresentationPort
+function FieldPresentationResources:openOptionsPresentation()
+  assert(self._optionsRenderer == nil, "one options presentation owns the presented lifetime")
+  local renderer = OptionsRenderer.new({
+    cacheFs = self.cacheFs,
+    manifest = assert(self.uiManifest, "options presentation requires the field-UI manifest"),
+    imagePool = assert(self._imagePool, "options presentation borrows the shared image owner"),
+    text = assert(self.textRenderer, "options presentation borrows the field text renderer"),
+    window = assert(self.windowRenderer, "options presentation borrows the field window renderer"),
+  })
+  self._optionsRenderer = renderer
+  local port = {}
+  function port.prepare()
+    return renderer:prepare()
+  end
+  function port.dispose()
+    if self._optionsRenderer == renderer then
+      self._optionsRenderer = nil
+    end
+    renderer:dispose()
+  end
+  return port
 end
 
 -- Synchronizes the field-owned cached frame with the committed player
