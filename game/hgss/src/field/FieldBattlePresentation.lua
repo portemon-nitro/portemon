@@ -3565,6 +3565,14 @@ function FieldBattlePresentation:_buildPort(descriptor)
     return host.submit(reply)
   end
   local launchSpeed = descriptor.textSpeed or "mid"
+  -- The production descriptor always carries the frozen scene snapshot;
+  -- a hand-built descriptor without one keeps the historical always-on
+  -- launch, matching the screen default below.
+  local launchScene = descriptor.battleScene
+  if launchScene == nil then
+    launchScene = true
+  end
+  assert(type(launchScene) == "boolean", "presented battle launches carry the player scene choice")
   local envelope = self
   local function onResultMusic(word)
     return envelope:_startResultMusic(word)
@@ -3576,6 +3584,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     musicRole = self._musicRole,
     musicBanks = self:_audioBanks(),
     textSpeed = launchSpeed,
+    battleScene = launchScene,
     submit = submit,
     onResultMusic = onResultMusic,
     measureDisplay = self._measureDisplay,

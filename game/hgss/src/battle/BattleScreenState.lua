@@ -413,6 +413,7 @@ end
 ---@field battleMenus table<string, unknown>? borrowed field-owned native menu renderers and manifests
 ---@field summary table<string, unknown>? borrowed field Summary application dependencies for evolution learning
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
+---@field battleScene boolean? scene choice for this launch, defaulting to On for previous callers
 ---@field musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
@@ -1276,6 +1277,13 @@ function BattleScreenState.new(opts)
   end
   -- gBattleEncounterFadeColors is black for the three cave backgrounds.
   local background = assert(BattlePresentationCache.parseSceneKey(sceneKey), "the scene key was validated").background
+  -- The frozen launch scene choice rides into the cue player: previous
+  -- callers without one keep the historical always-on route.
+  local launchScene = opts.battleScene
+  if launchScene == nil then
+    launchScene = true
+  end
+  assert(type(launchScene) == "boolean", "the battle screen carries its launch scene choice")
   self._timeline = BattleTimeline.new({
     encounterFadeColor = background:match("^cave_") and "black" or "white",
     ballFadeColor = ballFadeColor,
@@ -1287,6 +1295,7 @@ function BattleScreenState.new(opts)
     messageText = resolveBattleText,
     messageTextContext = self,
     textSpeed = opts.textSpeed or "mid",
+    battleScene = launchScene,
     effects = effects,
     faintAppearance = faintAppearance,
   })

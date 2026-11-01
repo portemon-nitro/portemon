@@ -1,16 +1,13 @@
--- Frozen acceptance for the animation and text-speed options through the
--- cue player: mechanics stay identical with effects on or off, the
--- disabled path keeps its native waits and essential visual updates
--- including the Transform exception, and print pacing never changes
--- mechanics or effect task duration. Native mechanism: the
--- move-animation option handling with its animation-suppression flag and
--- the explicit Transform allowance, where the disabled path still runs
--- the native wait subscript instead of skipping
--- (BtlCmd_PlayMoveAnimation in src/battle/battle_command.c). Headless:
--- hand-built delivery-shaped packets drive the real cue player under two
--- print pacings; no dump capability is needed. The setup guards below are
--- green on the current boundary; the appearance and player gates stay red
--- until the native playback lands.
+-- On-path behavior for the animation and text-speed options through the
+-- cue player: print pacing never changes mechanics, the Transform
+-- appearance update applies, and effect-keyed strikes run their selected
+-- program through the real player. Native mechanism: the connected
+-- player, task factory, and scene behind the cue player
+-- (BtlCmd_PlayMoveAnimation in src/battle/battle_command.c). Scene Off
+-- suppression lives in the dedicated scene suite; these cases pin the
+-- unchanged On baseline and the shared default. Headless: hand-built
+-- delivery-shaped packets drive the real cue player under two print
+-- pacings; no dump capability is needed.
 
 local Assert = require("tests.support.Assert")
 local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")

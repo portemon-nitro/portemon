@@ -19,6 +19,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire
 ---@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, round, action, effect key, and source phase
 ---@field _announced table<string, boolean> narrated attack occurrences by the same occurrence identity
+---@field _battleScene boolean frozen launch scene choice; false omits optional move-animation roots
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
 ---@field _battlers table<integer, table<string, unknown>> displayed facts by combatant identity
 ---@field _order integer[] player-first combatant identities for view order
@@ -156,6 +157,7 @@ end
 ---@field itemName (fun(item: string): string?)? display-name resolver for item identities
 ---@field battleItemUse (fun(item: string): table<string, unknown>?)? generated battle-use facts for item narration
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
+---@field battleScene boolean? scene choice for this launch, defaulting to On for previous callers
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
 ---@field encounterFadeColor "white"|"black" gBattleEncounterFadeColors entry of the scene background
 ---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
@@ -175,6 +177,14 @@ function BattleTimeline.new(opts)
     "the encounter animation needs its background fade color"
   )
   local revealPolicy = TextSpeedPolicy.forSpeed(opts.textSpeed or "mid")
+  -- Previous cue-player callers predate the scene choice and keep the
+  -- historical always-on route; production always passes the frozen
+  -- launch snapshot.
+  local sceneOn = opts.battleScene
+  if sceneOn == nil then
+    sceneOn = true
+  end
+  assert(type(sceneOn) == "boolean", "scene suppression carries a launch scene choice")
   return setmetatable({
     _sound = opts.sound,
     _moveName = opts.moveName,
@@ -188,6 +198,7 @@ function BattleTimeline.new(opts)
     _messageText = opts.messageText,
     _messageTextContext = opts.messageTextContext,
     _revealPolicy = revealPolicy,
+    _battleScene = sceneOn,
     _effects = opts.effects,
     _ballParticleStarts = {},
     _nativeSeen = {},
@@ -865,10 +876,60 @@ local function beginNativeEffect(self, cue)
   end
 end
 
+-- Source scene gate behind BtlCmd_PlayMoveAnimation: only the optional
+-- move-animation roots obey the frozen launch choice, keyed on the
+-- executed move rather than the selected command so indirect calls
+-- follow the move actually performed. Transform always plays, and
+-- non-move cues (status, entry, capture, arrival, decisions) always play.
+-- The gated set mirrors the kernel move routes that select a visual
+-- program; the disabled route contributes no synthetic wait because the
+-- source subscript_0291_WaitMoveAnimation is End alone.
+local SCENE_GATED_ORIGINS = {
+  ["move-used"] = true,
+  struck = true,
+  missed = true,
+  protected = true,
+  charged = true,
+  delayed = true,
+  mimicked = true,
+  immune = true,
+  ["multi-hit"] = true,
+  strike = true,
+}
+
+---@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
+---@return string? executed move identity, nil when no move was executed
+local function executedMoveOf(event)
+  local move = event.move --[[@as table<string, unknown>?]]
+  if type(move) == "table" and type(move.executed) == "string" and move.executed ~= "" then
+    return move.executed --[[@as string]]
+  end
+  return nil
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
+---@return boolean admitted true unless Scene Off omits this optional root
+local function sceneAdmitsEffect(self, event)
+  if self._battleScene ~= false then
+    return true
+  end
+  if SCENE_GATED_ORIGINS[event.kind] ~= true then
+    return true
+  end
+  local executed = executedMoveOf(event)
+  if executed == nil or executed == "TRANSFORM" then
+    return true
+  end
+  return false
+end
+
 -- Queues one native-effect cue for an effect-keyed source event behind
 -- its attack announcement and ahead of the event's hit and health work.
 -- A malformed source action identity claims nothing: the outcome still
--- narrates, but no visual is assigned to another user's action.
+-- narrates, but no visual is assigned to another user's action. A Scene
+-- Off omission still claims the occurrence so redeliveries and later
+-- hits queue nothing new.
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
@@ -887,6 +948,9 @@ local function enqueueNativeEffect(self, event, packet)
     return
   end
   self._nativeSeen[identity] = true
+  if not sceneAdmitsEffect(self, event) then
+    return
+  end
   local hitOrdinal = event.hitIndex
   if type(hitOrdinal) ~= "number" then
     local payload = event.payload --[[@as table<string, unknown>?]]
