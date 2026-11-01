@@ -653,7 +653,6 @@ local function checkEmitterChild(child, textures, context, field)
     texNo = true,
     textureImage = true,
     texRepeat = true,
-    rotationType = true,
   }, context, CODE_SCENE, field)
   for _, name in ipairs({ "useScaleAnm", "useAlphaAnm", "followEmitter", "useChildColor" }) do
     checkBool(child[name], context, field .. "." .. name)

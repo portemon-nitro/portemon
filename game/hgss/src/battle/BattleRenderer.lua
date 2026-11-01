@@ -2494,12 +2494,9 @@ local function drawParticleSystems(graphics, systems)
       if (repeating.s ~= 0 or repeating.t ~= 0) and image.setWrap ~= nil then
         image:setWrap("repeat", "repeat")
       end
-      SplParticleDraw.draw(
-        graphics,
-        system.simulation,
-        { centerX = 128, centerY = 96, resolveTexture = resolveTexture }
-      )
+      return image
     end
+    SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
   end
 end
 
