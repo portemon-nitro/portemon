@@ -574,6 +574,10 @@ function FieldStatePresentationFixture.iconHost()
       note("portrait", pageId)
       return true
     end,
+    requestBattlePresentation = function(urgency)
+      note("battle-presentation", urgency)
+      return true
+    end,
     requestAudioBank = function(bankId, _)
       assert(type(bankId) == "number", "audio bank demand carries its bank")
       note("audio-bank", bankId)

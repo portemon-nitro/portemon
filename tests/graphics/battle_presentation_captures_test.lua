@@ -1252,34 +1252,28 @@ local function countSourceMatches(capture, source, rect, offsetX, offsetY)
   return matches, occupied
 end
 
--- Counts pixels matching a nearest-neighbor half-size presentation of an
--- original 80x80 staged portrait. The source portrait remains untouched.
-local function countHalfScalePortraitMatches(capture, source, rect, offsetX, offsetY, phaseX, phaseY)
+-- The host's native nearest filter is the reference for half-size portraits.
+-- At 0.5 scale pixel centers sit on texel boundaries: interpolation precision
+-- can select different members of a 2x2 footprint across the image, so one
+-- global CPU row/column phase does not describe the rendered sample grid.
+local function halfScalePortraitReference(scope, source, rect, pictureOffset, width, height)
   Assert.equal(source:getWidth(), 80, "the staged portrait keeps its 80-pixel source width")
   Assert.equal(source:getHeight(), 80, "the staged portrait keeps its 80-pixel source height")
-  local matches, occupied = 0, 0
-  for y = 0, 39 do
-    for x = 0, 39 do
-      -- Nearest filtering selects one pixel from each 2x2 source footprint;
-      -- the host pixel-center convention determines which row and column.
-      local sx, sy = x * 2 + (phaseX or 1), y * 2 + (phaseY or 1)
-      local _, _, _, alpha = source:getPixel(sx, sy)
-      if alpha > 0.5 then
-        occupied = occupied + 1
-        local r1, g1, b1, a1 = capture:getPixel(rect.x + (offsetX or 0) + x, rect.y + (offsetY or 0) + y)
-        local r2, g2, b2, a2 = source:getPixel(sx, sy)
-        if
-          quantize(r1) == quantize(r2)
-          and quantize(g1) == quantize(g2)
-          and quantize(b1) == quantize(b2)
-          and quantize(a1) == quantize(a2)
-        then
-          matches = matches + 1
-        end
-      end
-    end
-  end
-  return matches, occupied
+  local image = scope:own(love.graphics.newImage(source))
+  image:setFilter("nearest", "nearest")
+  local target = scope:own(love.graphics.newCanvas(width, height, { format = "rgba8", readable = true }))
+  local priorCanvas = love.graphics.getCanvas()
+  love.graphics.push("all")
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setShader()
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.setBlendMode("alpha", "alphamultiply")
+  love.graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
+  love.graphics.draw(image, rect.x, rect.y + pictureOffset, 0, 0.5, 0.5)
+  love.graphics.setCanvas(priorCanvas)
+  love.graphics.pop()
+  return scope:own(target:newImageData())
 end
 
 -- Counts pixels in a rendered scene rectangle that differ from the
@@ -2286,30 +2280,8 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
 
         local source = assert(portraitCells["mon:" .. portrait.selector], versionId .. " stages " .. portrait.selector)
         local pictureOffset = (pictureOffsetByPosition[portrait.position] or 0) * spot.scale
-        local renderedRect = {
-          x = rect.x,
-          y = math.floor(rect.y + pictureOffset + 0.5),
-          width = rect.width,
-          height = rect.height,
-        }
-        local matches, occupied = 0, 0
-        for pixelOffsetY = -1, 1 do
-          for phaseY = 0, 1 do
-            for phaseX = 0, 1 do
-              local alignedRect = {
-                x = renderedRect.x,
-                y = renderedRect.y + pixelOffsetY,
-                width = renderedRect.width,
-                height = renderedRect.height,
-              }
-              local phaseMatches, phaseOccupied =
-                countHalfScalePortraitMatches(first, source, alignedRect, 0, 0, phaseX, phaseY)
-              if phaseOccupied > 0 and phaseMatches / phaseOccupied > matches / math.max(occupied, 1) then
-                matches, occupied = phaseMatches, phaseOccupied
-              end
-            end
-          end
-        end
+        local reference = halfScalePortraitReference(scope, source, rect, pictureOffset, width, height)
+        local matches, occupied = countSourceMatches(first, reference, rect, 0, 0)
         Assert.isTrue(occupied > 100, versionId .. " has visible source pixels for " .. portrait.selector)
         local matchThreshold = pictureOffset == 0 and 0.9 or 0.8
         Assert.isTrue(
@@ -2322,7 +2294,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
             .. "/"
             .. tostring(occupied)
             .. ", y="
-            .. tostring(renderedRect.y)
+            .. tostring(rect.y + pictureOffset)
             .. ", pictureOffset="
             .. tostring(pictureOffset)
             .. ")"
