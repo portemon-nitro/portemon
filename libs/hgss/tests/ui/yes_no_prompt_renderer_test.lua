@@ -121,6 +121,7 @@ local function sharedAtlasManifest()
   local current = manifest()
   FieldUiFixture.addStartMenuIconContract(current)
   FieldUiFixture.addNamingSemantics(current)
+  FieldUiFixture.addOptionsContract(current)
   current.assets[SHARED_ATLAS_ASSET] = { image = SHARED_ATLAS_PATH, width = 192, height = 32 }
   local compact = current.yesNoPrompt.shapes.compact
   compact.yes.normal = { asset = SHARED_ATLAS_ASSET, rect = { x = 0, y = 0, width = 48, height = 32 } }

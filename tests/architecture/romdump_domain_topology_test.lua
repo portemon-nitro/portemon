@@ -138,6 +138,7 @@ local DOMAINS = {
     "MartCacheWriter",
     "MoveIconAssetCompiler",
     "MoveIconCacheWriter",
+    "OptionsAssetCompiler",
     "G2dDecoder",
     "G2dRasterizer",
     "PartyAssetCompiler",

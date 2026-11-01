@@ -21,6 +21,7 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local OptionsAssetCompiler = require("romdump.src.digest.ui.OptionsAssetCompiler")
 local manifestConfig = require("romdump.src.config.FieldUiAssets")
 
 local FieldUiCompiler = {}
@@ -2057,6 +2058,30 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
   }
 end
 
+local function compileOptions(romFs, deps, assets, manifestAssets)
+  local bundle, err = OptionsAssetCompiler.compile(romFs, romFs:version())
+  if bundle == nil then
+    assert(err ~= nil, "a failed options compile carries its failure")
+    error(err, 0)
+  end
+  for path, bytes in pairs(bundle.files) do
+    if assets[path] ~= nil then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the options compiler publishes a duplicate output path",
+        { path = path }
+      )
+    end
+    assets[path] = bytes
+  end
+  for _, dep in ipairs(bundle.dependencies) do
+    deps[#deps + 1] = dep
+  end
+  manifestAssets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] =
+    { image = bundle.atlas.image, width = bundle.atlas.width, height = bundle.atlas.height }
+  return bundle.section
+end
+
 local function compileAll(romFs, sha1hex, hashLua)
   local assets = {}
   local manifestAssets = {}
@@ -2069,6 +2094,7 @@ local function compileAll(romFs, sha1hex, hashLua)
   local trainerCard = compileTrainerCard(romFs, sha1hex, deps, assets, manifestAssets)
   local yesNoPrompt = compileYesNoPrompt(romFs, sha1hex, deps, assets, manifestAssets)
   local namingScreen = compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
+  local options = compileOptions(romFs, deps, assets, manifestAssets)
 
   local manifest = {
     schema = FieldUiAssetCache.SCHEMA,
@@ -2080,6 +2106,7 @@ local function compileAll(romFs, sha1hex, hashLua)
     trainerCard = trainerCard,
     yesNoPrompt = yesNoPrompt,
     namingScreen = namingScreen,
+    options = options,
   }
   local ok, err = FieldUiAssetCache.validateManifest(manifest)
   if not ok then

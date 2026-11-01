@@ -349,9 +349,14 @@ DerivedAssetContract.fieldEmotes = {
 -- notification projection (the source caller-window tile geometry plus the
 -- shared ringing animation frames), so a stale pre-change cache without
 -- that section must fail readiness.
+-- fieldUi schema 23: the manifest carries the required source-derived
+-- option-control section (semantic labels with lowered token streams,
+-- small/wide choice pills with unselected baseline faces, frame arrows,
+-- footer action chrome, frame preview text, and the native tick rate), so
+-- a stale cache without it must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v22",
+  schema = "g4-field-ui-v23",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

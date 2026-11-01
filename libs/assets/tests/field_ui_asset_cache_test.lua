@@ -310,7 +310,7 @@ local function validManifest()
       }
     end)(),
   }
-  return FieldUiFixture.addNamingSemantics(built)
+  return FieldUiFixture.addOptionsContract(FieldUiFixture.addNamingSemantics(built))
 end
 
 local function publishedCache(manifest)
