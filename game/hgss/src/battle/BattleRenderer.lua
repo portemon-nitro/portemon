@@ -2448,9 +2448,35 @@ local function drawCompactScene(resources, view, content)
   graphics.pop()
 end
 
--- Task_PlayEncounterAnimation palette work as screen-wide overlays: the
--- main screen blends toward its fade color by coefficient/16, and the lower
--- screen shows the opaque gray ramp, then reveals from white.
+-- Task_PlayEncounterAnimation palette work: the main screen fades through
+-- its own per-plane RGB555 palette state (encounterPalette), sampled by
+-- the scene and sprite draws, so no wash may cover the composed scene or
+-- the particle planes. The lower screen paints its opaque background gray
+-- plane during the ramp; the white reveal rides the sub-plane palette
+-- state instead of a uniform wash.
+---@param graphics table<string, unknown> injected host graphics
+---@param lower table<string, unknown>? recorded lower fade state
+local function drawEncounterLowerPlane(graphics, lower)
+  if type(lower) ~= "table" then
+    return
+  end
+  local level = lower.level
+  if type(level) ~= "number" then
+    return
+  end
+  if level < 0 then
+    level = 0
+  elseif level > 16 then
+    level = 16
+  end
+  local fiveBit = math.floor((31 * level) / 16)
+  local gray = fiveBit / 31
+  local r, g, b, a = saveColor(graphics)
+  graphics.setColor(gray, gray, gray, 1)
+  graphics.rectangle("fill", 0, 0, 256, 192)
+  restoreColor(graphics, r, g, b, a)
+end
+
 ---@param graphics table<string, unknown> injected host graphics
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param lower boolean true for the lower screen's overlay
@@ -2459,28 +2485,9 @@ local function drawEncounterOverlay(graphics, view, lower)
   if opening == nil then
     return
   end
-  local r, g, b, a = saveColor(graphics)
   if lower then
-    local state = opening.encounterLower --[[@as table<string, unknown>?]]
-    if state ~= nil then
-      if type(state.level) == "number" then
-        local gray = state.level / 16
-        graphics.setColor(gray, gray, gray, 1)
-        graphics.rectangle("fill", 0, 0, 256, 192)
-      elseif type(state.whiteCoefficient) == "number" and state.whiteCoefficient > 0 then
-        graphics.setColor(1, 1, 1, state.whiteCoefficient / 16)
-        graphics.rectangle("fill", 0, 0, 256, 192)
-      end
-    end
-  else
-    local flash = opening.encounterFlash --[[@as table<string, unknown>?]]
-    if flash ~= nil and type(flash.coefficient) == "number" and flash.coefficient > 0 then
-      local channel = flash.color == "white" and 1 or 0
-      graphics.setColor(channel, channel, channel, flash.coefficient / 16)
-      graphics.rectangle("fill", 0, 0, 256, 192)
-    end
+    drawEncounterLowerPlane(graphics, opening.encounterLower --[[@as table<string, unknown>?]])
   end
-  restoreColor(graphics, r, g, b, a)
 end
 
 -- Draws live SPL particle systems over the main screen. The 3D layer sits

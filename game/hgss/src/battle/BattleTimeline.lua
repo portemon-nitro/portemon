@@ -1,4 +1,5 @@
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+local BattleEncounterPalette = require("game.hgss.src.battle.BattleEncounterPalette")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 
@@ -35,6 +36,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _trainerPictures table<string, table<string, unknown>> staged trainer frame and throw metadata
 ---@field _terrainSlideTracks table<integer, { role: "player"|"foe", delay: integer, elapsed: integer, direction: integer, targetX: integer, speed: integer }> source timing for both terrain bases
 ---@field _encounterFadeColor "white"|"black" background fade color of the encounter animation
+---@field _encounterSource BattleEncounterPalette.Source? staged source palette buffers and fill behind the encounter evaluator
+---@field _encounterPalette BattleEncounterPalette? per-battle source palette evaluator, nil while no source art is staged
 ---@field _encounterAnimation { elapsed: integer }? Task_PlayEncounterAnimation frame counter, nil while no animation runs
 ---@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
 ---@field _names table<integer, string> visible names by combatant identity across packets
@@ -158,6 +161,7 @@ end
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 ---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire, absent without a screen owner
 ---@field encounterFadeColor "white"|"black" gBattleEncounterFadeColors entry of the scene background
+---@field encounterSource BattleEncounterPalette.Source? staged source palette buffers and fill behind the encounter evaluator, absent without staged art
 ---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
@@ -183,6 +187,8 @@ function BattleTimeline.new(opts)
     _battleItemUse = opts.battleItemUse,
     _ballFadeColor = opts.ballFadeColor,
     _encounterFadeColor = opts.encounterFadeColor,
+    _encounterSource = opts.encounterSource,
+    _encounterPalette = nil,
     _encounterAnimation = nil,
     _faintAppearance = opts.faintAppearance,
     _messageText = opts.messageText,
@@ -417,6 +423,7 @@ function BattleTimeline:reset(view)
   self._terrainSlideTracks = {}
   self._wildIntroTrack = nil
   self._encounterAnimation = nil
+  self._encounterPalette = nil
   self._ballParticleStarts = {}
   self._captureBall = nil
   -- A fresh opening starts new actions: occurrence and narration claims
@@ -434,6 +441,7 @@ function BattleTimeline:dispose()
   self._terrainSlideTracks = {}
   self._wildIntroTrack = nil
   self._encounterAnimation = nil
+  self._encounterPalette = nil
 end
 
 ---@param cue table<string, unknown>
@@ -3263,6 +3271,14 @@ function BattleTimeline:intro(view, wild)
   -- PlayEncounterAnimation starts its task in the script's first tick on
   -- every encounter path.
   self._encounterAnimation = { elapsed = 0 }
+  if self._encounterSource ~= nil then
+    self._encounterPalette = BattleEncounterPalette.new({
+      battleType = wild and "wild" or "trainer",
+      source = self._encounterSource,
+    })
+  else
+    self._encounterPalette = nil
+  end
   for _, battler in ipairs(self:battlers()) do
     local shown = self:_shown(battler.combatant --[[@as integer]])
     if shown ~= nil then
@@ -3637,6 +3653,10 @@ local function tickEncounterAnimation(self)
     emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterSettle))
   end
   if frame >= ENCOUNTER_END + 1 then
+    if self._encounterPalette ~= nil then
+      self._encounterPalette:beginLateFade()
+      presentation.encounterPalette = self._encounterPalette:snapshot()
+    end
     presentation.encounterFrame = nil
     presentation.encounterFlash = nil
     presentation.encounterLower = nil
@@ -3644,18 +3664,32 @@ local function tickEncounterAnimation(self)
     return
   end
   presentation.encounterFrame = frame
+  if self._encounterPalette ~= nil then
+    self._encounterPalette:tick(frame)
+    presentation.encounterPalette = self._encounterPalette:snapshot()
+  end
   if frame < ENCOUNTER_FADE_START then
     presentation.encounterLower = { level = 0 }
     return
   end
   if frame < ENCOUNTER_RESTORE then
-    local step = math.min(ENCOUNTER_FADE_STEPS, frame - ENCOUNTER_FADE_START)
-    presentation.encounterFlash = { color = self._encounterFadeColor, coefficient = step }
+    local step = math.min(ENCOUNTER_FADE_STEPS, 2 * (frame - ENCOUNTER_FADE_START))
+    presentation.encounterFlash = {
+      color = self._encounterFadeColor,
+      coefficient = step,
+      mainBgMask = BattleEncounterPalette.MAIN_BG_MASK,
+      mainObjMask = BattleEncounterPalette.MAIN_OBJ_MASK,
+    }
     presentation.encounterLower = { level = math.min(ENCOUNTER_FADE_STEPS, frame - ENCOUNTER_FADE_START + 1) }
     return
   end
-  local remaining = ENCOUNTER_FADE_STEPS - (frame - ENCOUNTER_RESTORE)
-  presentation.encounterFlash = { color = self._encounterFadeColor, coefficient = remaining }
+  local remaining = math.max(0, ENCOUNTER_FADE_STEPS - 2 * (frame - ENCOUNTER_RESTORE))
+  presentation.encounterFlash = {
+    color = self._encounterFadeColor,
+    coefficient = remaining,
+    mainBgMask = BattleEncounterPalette.MAIN_BG_MASK,
+    mainObjMask = BattleEncounterPalette.MAIN_OBJ_MASK,
+  }
   presentation.encounterLower = { whiteCoefficient = remaining }
 end
 

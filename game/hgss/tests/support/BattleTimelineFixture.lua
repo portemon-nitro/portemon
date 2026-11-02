@@ -123,10 +123,42 @@ local function installTrainerPictures(timeline, view)
   end
 end
 
+---@return table staged synthetic source palette buffers and fill for headless encounter tests
+local function syntheticEncounterSource()
+  -- Synthetic 256-entry RGB555 buffers with distinct colors per
+  -- sixteen-color bank. The seeds and overrides mirror the frozen
+  -- encounter palette expectations: banks stay distinguishable, one
+  -- equal-RGB pair spans object banks 2 and 5, and the transparent
+  -- slots carry their native clears.
+  local function stagedBuffer(seed)
+    local buffer = {}
+    for index = 0, 255 do
+      local bank = math.floor(index / 16)
+      buffer[index + 1] = (seed + bank * 173 + index * 7) % 32768
+    end
+    return buffer
+  end
+  local source = {
+    mainBg = stagedBuffer(11),
+    mainObj = stagedBuffer(409),
+    subBg = stagedBuffer(97),
+    subObj = stagedBuffer(501),
+    fill = 24 + 12 * 32 + 3 * 1024,
+  }
+  local shared = 7 + 13 * 32 + 29 * 1024
+  source.mainObj[41] = shared
+  source.mainObj[89] = shared
+  source.mainBg[1] = 0
+  source.subBg[1] = 0
+  source.subObj[1] = 31 + 31 * 32 + 31 * 1024
+  return source
+end
+
 ---@param opts game.hgss.src.battle.BattleTimeline.Options?
 ---@return game.hgss.src.battle.BattleTimeline
 function BattleTimelineFixture.new(opts)
   opts = opts or {}
+  opts.encounterSource = opts.encounterSource or syntheticEncounterSource()
   opts.messageText = opts.messageText or resolve
   opts.encounterFadeColor = opts.encounterFadeColor or "white"
   opts.moveName = opts.moveName or function(move)

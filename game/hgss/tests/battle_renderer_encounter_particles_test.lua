@@ -1,6 +1,6 @@
--- The encounter terrain particles draw over the main screen after the fade
--- overlay, and the move particle systems draw in the detail pane, from the
--- live systems the screen publishes in its view.
+-- The encounter terrain particles draw over the palette-faded main scene,
+-- untinted by its per-plane fades, and the move particle systems draw in
+-- the detail pane, from the live systems the screen publishes in its view.
 
 local Assert = require("tests.support.Assert")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
@@ -34,7 +34,10 @@ local function recordingGraphics(log)
   return graphics
 end
 
-local function drawDetail(graphics, view)
+---@param graphics table<string, unknown> injected host graphics
+---@param view table<string, unknown> internal semantic snapshot
+---@param scene table<string, unknown>? staged scene drawable, nil while unavailable
+local function drawDetail(graphics, view, scene)
   local palette = {}
   for index = 0, 15 do
     palette[index + 1] = { r = index, g = index, b = index }
@@ -50,7 +53,7 @@ local function drawDetail(graphics, view)
     windows = { drawWindow = function() end },
     assets = {
       drawable = function()
-        return nil
+        return scene
       end,
     },
     frameKey = "default",
@@ -81,33 +84,37 @@ local function runningSystems()
   return owner:systems(), images
 end
 
-function T.live_particles_draw_after_the_encounter_fade_overlay()
+function T.live_particles_draw_over_the_palette_faded_scene()
   local idle = {}
   drawDetail(recordingGraphics(idle), { encounterParticleSystems = {} })
   for _, entry in ipairs(idle) do
     Assert.isTrue(entry.kind ~= "draw", "an idle encounter draws no particle quads")
   end
   local systems, images = runningSystems()
+  local scene = {}
   local log = {}
   drawDetail(recordingGraphics(log), {
     encounterParticleSystems = systems,
     openingPresentation = {
       playerTrainerVisible = false,
       foeTrainerVisible = false,
-      encounterFlash = { color = "white", coefficient = 8 },
+      encounterFlash = { color = "white", coefficient = 8, mainBgMask = 0xF3FF, mainObjMask = 0x3FFF },
     },
-  })
-  local overlayIndex, firstParticle = nil, nil
+  }, scene)
+  local sceneDraw, firstParticle = nil, nil
   for index, entry in ipairs(log) do
-    if entry.kind == "rectangle" then
-      overlayIndex = overlayIndex or index
+    if entry.kind == "draw" and entry.image == scene then
+      sceneDraw = index
     elseif entry.kind == "draw" and entry.image == images[1] and firstParticle == nil then
       firstParticle = index
     end
   end
-  Assert.notNil(overlayIndex, "the fade overlay draws")
+  Assert.notNil(sceneDraw, "the palette-faded scene stages under the encounter fade")
   Assert.notNil(firstParticle, "live particles draw their staged texture")
-  Assert.isTrue(firstParticle > overlayIndex, "particles draw over the fade, untinted by it")
+  Assert.isTrue(firstParticle > (sceneDraw or 0), "particles draw over the faded scene, untinted by it")
+  for _, entry in ipairs(log) do
+    Assert.isTrue(entry.kind ~= "rectangle", "no fullscreen wash covers the palette-faded scene")
+  end
 end
 
 function T.move_particle_systems_draw_their_textures_in_the_detail_pane()
