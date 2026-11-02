@@ -616,4 +616,54 @@ function T.tests.idle_setters_reject_active_owners()
   harness.partyMenu.dispose()
 end
 
+function T.tests.legacy_save_without_new_options_opens_with_defaults()
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+  -- A persisted record predating the scene/sound/speed options carries
+  -- only the original fields; opening the menu must default the absent
+  -- ones instead of crashing, and must not mutate the live record until
+  -- Confirm.
+  local liveOptions = { textSpeed = "mid", textFrame = 0, battleStyle = "shift" }
+  local volume = { current = 80 }
+  local port = {
+    read = function()
+      return volume.current
+    end,
+    preview = function(value)
+      volume.previewed = value
+    end,
+    commit = function(value)
+      volume.current = value
+    end,
+    restore = function()
+      volume.previewed = volume.current
+    end,
+  }
+  local runtime = {
+    playerData = { profile = {}, options = liveOptions },
+    playerDataContext = { charmap = CHARMAP, frameIndexes = FRAME_INDEXES },
+    audioPreferences = port,
+    uiManifest = { options = {} },
+  }
+  local coordinator = Coordinator.new(runtime)
+  local factory = nil
+  for _, descriptor in ipairs(coordinator:applicationDescriptors()) do
+    if descriptor.id == FieldApplicationIds.OPTIONS then
+      factory = descriptor.factory
+    end
+  end
+  Assert.notNil(factory, "the field catalogue registers the options destination")
+  local screen = factory()
+  local status = screen:status()
+  local byId = {}
+  for _, row in ipairs(assert(status.rows, "status carries its rows")) do
+    byId[row.id] = row
+  end
+  Assert.equal(byId.battleScene.value, true, "an absent scene switch defaults on")
+  Assert.equal(byId.soundMode.value, "stereo", "an absent channel mode defaults to stereo")
+  Assert.equal(byId.battleSpeed.value, 1, "an absent presentation speed defaults to single rate")
+  Assert.isNil(liveOptions.battleScene, "opening the menu mutates nothing until Confirm")
+  screen:dispose()
+end
+
 return T

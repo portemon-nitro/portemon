@@ -296,7 +296,39 @@ end
 
 ---@return table<string, unknown> the controller snapshot for resolvers and renderers
 function OptionsScreenState:_view()
-  return self:status()
+  local rows = {}
+  for _, rowId in ipairs(OptionsInterface.ROW_IDS) do
+    rows[#rows + 1] = {
+      id = rowId,
+      kind = OptionsInterface.rowKind(rowId),
+      label = self:_rowLabel(rowId),
+      value = draftValue(rowId, self._draft),
+      valueLabel = self:_valueLabel(rowId, self._draft),
+      valueIndex = draftIndex(rowId, self._draft),
+      valueCount = OptionsInterface.valueCount(rowId),
+    }
+  end
+  local labels = self:_labels()
+  return {
+    open = self._phase == "open",
+    preparing = self._preparing,
+    rows = rows,
+    focusId = self._focusId,
+    scrollOffset = self._scrollOffset,
+    dirty = self:_draftDirty(),
+    legacyNote = self._legacyNote or nil,
+    preview = { textSpeed = self._draft.textSpeed, textFrame = self._draft.textFrame },
+    footer = {
+      confirm = {
+        enabled = not self._preparing and self._phase == "open",
+        label = (labels ~= nil and labels.confirm ~= nil and labels.confirm.text) or "CONFIRM",
+      },
+      quit = {
+        label = (labels ~= nil and labels.quit ~= nil and labels.quit.text) or "QUIT",
+      },
+    },
+    error = self._error,
+  }
 end
 
 ---@param rowId string
@@ -406,44 +438,12 @@ function OptionsScreenState:_draftDirty()
   return draft.volume ~= self._baselineVolume
 end
 
--- The presentation snapshot: semantic fields plus the session plan when
--- presented. Fresh tables per call; no live renderer, pool, or port leaks
--- into the status.
+-- The presentation snapshot: the semantic view plus the session plan
+-- when presented. Fresh tables per call; no live renderer, pool, or port
+-- leaks into the status.
 ---@return table<string, unknown>
 function OptionsScreenState:status()
-  local rows = {}
-  for _, rowId in ipairs(OptionsInterface.ROW_IDS) do
-    rows[#rows + 1] = {
-      id = rowId,
-      kind = OptionsInterface.rowKind(rowId),
-      label = self:_rowLabel(rowId),
-      value = draftValue(rowId, self._draft),
-      valueLabel = self:_valueLabel(rowId, self._draft),
-      valueIndex = draftIndex(rowId, self._draft),
-      valueCount = OptionsInterface.valueCount(rowId),
-    }
-  end
-  local labels = self:_labels()
-  local status = {
-    open = self._phase == "open",
-    preparing = self._preparing,
-    rows = rows,
-    focusId = self._focusId,
-    scrollOffset = self._scrollOffset,
-    dirty = self:_draftDirty(),
-    legacyNote = self._legacyNote or nil,
-    preview = { textSpeed = self._draft.textSpeed, textFrame = self._draft.textFrame },
-    footer = {
-      confirm = {
-        enabled = not self._preparing and self._phase == "open",
-        label = (labels ~= nil and labels.confirm ~= nil and labels.confirm.text) or "CONFIRM",
-      },
-      quit = {
-        label = (labels ~= nil and labels.quit ~= nil and labels.quit.text) or "QUIT",
-      },
-    },
-    error = self._error,
-  }
+  local status = self:_view()
   if self._session ~= nil then
     status.presentation = self._session:plan()
   end

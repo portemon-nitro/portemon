@@ -170,6 +170,16 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     local coordinator = self
     local playerData = assert(runtime.playerData, "the options application requires the live player data")
     local liveOptions = assert(playerData.options, "the options application requires the live player options")
+    -- Persisted records predating the scene/sound/speed options carry
+    -- only the original fields: canonicalize through the player-data
+    -- owner so the detached draft starts from the documented defaults
+    -- instead of crashing the strict screen. The live record stays
+    -- untouched until Confirm adopts the six fields at once.
+    local validationContext =
+      assert(runtime.playerDataContext, "the options application requires the generated validation context")
+    local canonicalOptions, invalid = PlayerData.validateOptions(liveOptions, validationContext)
+    assert(canonicalOptions ~= nil, "the options application requires valid live player options: " .. tostring(invalid))
+    assert(type(canonicalOptions) == "table")
     local audioPreferences =
       assert(runtime.audioPreferences, "the options application requires the app-wide volume port")
     local uiManifest = assert(runtime.uiManifest, "the options application requires the field-UI manifest")
@@ -213,13 +223,13 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
       end
       previewPrinter = FieldDialogueController.new({
         layout = formatLayout,
-        policy = TextSpeedPolicy.forSpeed(assert(liveOptions.textSpeed, "the preview needs the live text speed")),
+        policy = TextSpeedPolicy.forSpeed(assert(canonicalOptions.textSpeed, "the preview needs the live text speed")),
         audio = audio,
         continueCursor = dialogueFrames.continueCursor,
       })
     end
     return OptionsScreenState.new({
-      playerOptions = liveOptions,
+      playerOptions = canonicalOptions,
       volume = audioPreferences.read(),
       preparePlayerOptions = prepare,
       audioPreferences = audioPreferences,

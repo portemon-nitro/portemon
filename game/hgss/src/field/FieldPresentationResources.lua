@@ -1511,6 +1511,47 @@ function FieldPresentationResources:pokedex()
   return created
 end
 
+-- Adapts the shared palette-triple text renderer to the option-widget
+-- collaborator: widgets paint each label twice (a 1px shadow offset, then
+-- the face) with one flat 0..1 color per pass, while FieldTextRenderer
+-- recolors the glyph mask from one byte-valued
+-- foreground/shadow/background triple per draw. Each pass therefore paints
+-- the whole glyph shape solid in its color (foreground and shadow slots
+-- agree) over transparent glyph background, and the offset between passes
+-- remains the only shadow. The shared owner is borrowed, never retained.
+---@param fieldText FieldTextRenderer the shared presented text owner
+---@return OptionsWidgets.TextCollaborator the borrowed widget text collaborator
+local function adaptOptionsText(fieldText)
+  local text = {}
+  function text:drawTextWithPalette(line, x, y, ink)
+    assert(type(line) == "string", "option labels are caller-provided strings")
+    assert(type(ink) == "table", "option labels need their ink color")
+    local function byte(channel)
+      local value = ink[channel]
+      assert(
+        type(value) == "number" and value >= 0 and value <= 1,
+        "option ink channel " .. channel .. " must be a 0..1 component"
+      )
+      return value * 255
+    end
+    local alpha = ink.a
+    if alpha == nil then
+      alpha = 1
+    end
+    assert(type(alpha) == "number" and alpha >= 0 and alpha <= 1, "option ink alpha must be a 0..1 component")
+    local solid = { r = byte("r"), g = byte("g"), b = byte("b"), a = alpha }
+    fieldText:drawTextWithPalette(line, x, y, {
+      foreground = solid,
+      shadow = solid,
+      background = { r = 0, g = 0, b = 0, a = 0 },
+    })
+  end
+  function text:windowBackgroundColor()
+    return fieldText:windowBackgroundColor()
+  end
+  return text
+end
+
 -- Creates one per-open options resource owner and returns the narrow
 -- dot-call preparation port the screen steps: prepare advances the pooled
 -- chrome toward readiness without blocking, dispose releases the owned
@@ -1528,7 +1569,7 @@ function FieldPresentationResources:openOptionsPresentation()
     cacheFs = self.cacheFs,
     manifest = assert(self.uiManifest, "options presentation requires the field-UI manifest"),
     imagePool = assert(self._imagePool, "options presentation borrows the shared image owner"),
-    text = assert(self.textRenderer, "options presentation borrows the field text renderer"),
+    text = adaptOptionsText(assert(self.textRenderer, "options presentation borrows the field text renderer")),
     window = assert(self.windowRenderer, "options presentation borrows the field window renderer"),
   })
   self._optionsRenderer = renderer
