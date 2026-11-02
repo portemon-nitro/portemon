@@ -8,25 +8,15 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local ChoiceGroup = require("libs.ui.src.ChoiceGroup")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local OptionsRows = require("game.hgss.src.options.OptionsRows")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local Slider = require("libs.ui.src.Slider")
 
 ---@class OptionsInterface
 local OptionsInterface = {}
 
-OptionsInterface.ROW_IDS = {
-  "textSpeed",
-  "battleScene",
-  "battleStyle",
-  "soundMode",
-  "textFrame",
-  "volume",
-  "battleSpeed",
-}
+OptionsInterface.ROW_IDS = OptionsRows.ROW_IDS
 OptionsInterface.FOOTER_IDS = { "confirm", "quit" }
-OptionsInterface.TEXT_CHOICES = { "mid", "fast", "fastest" }
-OptionsInterface.SPEED_STOPS = { 1, 2, 4 }
-OptionsInterface.VOLUME_COUNT = 101
 OptionsInterface.ROW_HEIGHT = 24
 OptionsInterface.HEADER_HEIGHT = 24
 OptionsInterface.FOOTER_HEIGHT = 24
@@ -144,31 +134,13 @@ end
 ---@param rowId string
 ---@return string "choice"|"cycle"|"slider"
 function OptionsInterface.rowKind(rowId)
-  if rowId == "volume" or rowId == "battleSpeed" then
-    return "slider"
-  end
-  if rowId == "textFrame" then
-    return "cycle"
-  end
-  return "choice"
+  return OptionsRows.rowKind(rowId)
 end
 
 ---@param rowId string
 ---@return integer the published value stop count
 function OptionsInterface.valueCount(rowId)
-  if rowId == "textSpeed" then
-    return #OptionsInterface.TEXT_CHOICES
-  end
-  if rowId == "textFrame" then
-    return 20
-  end
-  if rowId == "volume" then
-    return OptionsInterface.VOLUME_COUNT
-  end
-  if rowId == "battleSpeed" then
-    return #OptionsInterface.SPEED_STOPS
-  end
-  return 2
+  return OptionsRows.valueCount(rowId)
 end
 
 -- Lays one row's concrete control geometry inside the 256-wide logical
@@ -496,7 +468,7 @@ function OptionsInterface.dual(context, view)
     panes[#panes + 1] = { id = upper.id, placement = geometry.placements[upper.id], interactive = false }
   end
   panes[#panes + 1] = { id = lower.id, placement = placement, interactive = true }
-  local content = buildContent(24, 144, 168, { x = 0, y = 0, width = 256, height = 192 }, view)
+  local content = buildContent(24, 144, 168, { x = 16, y = 152, width = 216, height = 32 }, view)
   return {
     panes = panes,
     frames = geometry.frames or {},

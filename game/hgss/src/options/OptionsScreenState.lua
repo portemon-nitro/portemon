@@ -9,6 +9,7 @@
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local OptionsInterface = require("game.hgss.src.options.OptionsInterface")
+local OptionsRows = require("game.hgss.src.options.OptionsRows")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 
@@ -68,12 +69,6 @@ local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 local SAVE_SOUND = "SEQ_SE_DP_SAVE"
 local BUTTON_SOUND = "SEQ_SE_DP_BUTTON9"
 
-local TEXT_KEYS = { "mid", "fast", "fastest" }
-local SCENE_KEYS = { true, false }
-local STYLE_KEYS = { "shift", "set" }
-local MODE_KEYS = { "stereo", "mono" }
-local SPEED_VALUES = { 1, 2, 4 }
-
 local function copyOptions(options)
   return {
     textSpeed = options.textSpeed,
@@ -83,61 +78,6 @@ local function copyOptions(options)
     textFrame = options.textFrame,
     battleSpeed = options.battleSpeed,
   }
-end
-
----@param value unknown
----@return integer index
-local function textIndex(value)
-  for index, key in ipairs(TEXT_KEYS) do
-    if key == value then
-      return index
-    end
-  end
-  error("unknown text speed " .. tostring(value), 0)
-end
-
----@param value unknown
----@return integer index
-local function sceneIndex(value)
-  for index, key in ipairs(SCENE_KEYS) do
-    if key == value then
-      return index
-    end
-  end
-  error("unknown battle scene " .. tostring(value), 0)
-end
-
----@param value unknown
----@return integer index
-local function styleIndex(value)
-  for index, key in ipairs(STYLE_KEYS) do
-    if key == value then
-      return index
-    end
-  end
-  error("unknown battle style " .. tostring(value), 0)
-end
-
----@param value unknown
----@return integer index
-local function modeIndex(value)
-  for index, key in ipairs(MODE_KEYS) do
-    if key == value then
-      return index
-    end
-  end
-  error("unknown sound mode " .. tostring(value), 0)
-end
-
----@param value unknown
----@return integer index
-local function speedIndex(value)
-  for index, stop in ipairs(SPEED_VALUES) do
-    if stop == value then
-      return index
-    end
-  end
-  error("unknown battle speed " .. tostring(value), 0)
 end
 
 ---@param rowId string
@@ -154,44 +94,14 @@ end
 ---@param draft OptionsScreenState.Draft
 ---@return integer index
 local function draftIndex(rowId, draft)
-  if rowId == "textSpeed" then
-    return textIndex(draft.textSpeed)
-  elseif rowId == "battleScene" then
-    return sceneIndex(draft.battleScene)
-  elseif rowId == "battleStyle" then
-    return styleIndex(draft.battleStyle)
-  elseif rowId == "soundMode" then
-    return modeIndex(draft.soundMode)
-  elseif rowId == "textFrame" then
-    assert(type(draft.textFrame) == "number", "frame drafts stay numeric")
-    return draft.textFrame + 1
-  elseif rowId == "volume" then
-    assert(type(draft.volume) == "number", "volume drafts stay numeric")
-    return draft.volume + 1
-  end
-  assert(rowId == "battleSpeed", "unknown options row " .. tostring(rowId))
-  return speedIndex(draft.battleSpeed)
+  return OptionsRows.indexFor(rowId, draftValue(rowId, draft))
 end
 
 ---@param rowId string
 ---@param index integer
 ---@return unknown value
 local function valueAt(rowId, index)
-  if rowId == "textSpeed" then
-    return TEXT_KEYS[index]
-  elseif rowId == "battleScene" then
-    return SCENE_KEYS[index]
-  elseif rowId == "battleStyle" then
-    return STYLE_KEYS[index]
-  elseif rowId == "soundMode" then
-    return MODE_KEYS[index]
-  elseif rowId == "textFrame" then
-    return index - 1
-  elseif rowId == "volume" then
-    return index - 1
-  end
-  assert(rowId == "battleSpeed", "unknown options row " .. tostring(rowId))
-  return SPEED_VALUES[index]
+  return OptionsRows.valueAt(rowId, index)
 end
 
 ---@class OptionsScreenState.Options
@@ -306,6 +216,7 @@ function OptionsScreenState:_view()
       valueLabel = self:_valueLabel(rowId, self._draft),
       valueIndex = draftIndex(rowId, self._draft),
       valueCount = OptionsInterface.valueCount(rowId),
+      choiceLabels = OptionsRows.choiceLabels(rowId, self:_labels()),
     }
   end
   local labels = self:_labels()
@@ -369,45 +280,12 @@ end
 ---@param draft OptionsScreenState.Draft
 ---@return string
 function OptionsScreenState:_valueLabel(rowId, draft)
+  if OptionsRows.rowKind(rowId) == "choice" then
+    local ordered = assert(OptionsRows.choiceLabels(rowId, self:_labels()), "choice rows label every stop")
+    return assert(ordered[OptionsRows.indexFor(rowId, draftValue(rowId, draft))], "choice stops stay labeled")
+  end
   local labels = self:_labels()
-  if rowId == "textSpeed" then
-    local names = { mid = "MID", fast = "FAST", fastest = "TURBO" }
-    local key = assert(draft.textSpeed, "text drafts carry their speed")
-    if labels ~= nil and labels.textSpeedValues ~= nil and labels.textSpeedValues[key] ~= nil then
-      local entry = labels.textSpeedValues[key]
-      if type(entry.text) == "string" then
-        return entry.text
-      end
-    end
-    return assert(names[key], "unknown text speed " .. tostring(key))
-  elseif rowId == "battleScene" then
-    local key = draft.battleScene and "on" or "off"
-    if labels ~= nil and labels.battleSceneValues ~= nil and labels.battleSceneValues[key] ~= nil then
-      local entry = labels.battleSceneValues[key]
-      if type(entry.text) == "string" then
-        return entry.text
-      end
-    end
-    return draft.battleScene and "ON" or "OFF"
-  elseif rowId == "battleStyle" then
-    local key = assert(draft.battleStyle, "style drafts carry their style")
-    if labels ~= nil and labels.battleStyleValues ~= nil and labels.battleStyleValues[key] ~= nil then
-      local entry = labels.battleStyleValues[key]
-      if type(entry.text) == "string" then
-        return entry.text
-      end
-    end
-    return key == "shift" and "SHIFT" or "SET"
-  elseif rowId == "soundMode" then
-    local key = assert(draft.soundMode, "mode drafts carry their mode")
-    if labels ~= nil and labels.soundModeValues ~= nil and labels.soundModeValues[key] ~= nil then
-      local entry = labels.soundModeValues[key]
-      if type(entry.text) == "string" then
-        return entry.text
-      end
-    end
-    return key == "stereo" and "STEREO" or "MONO"
-  elseif rowId == "textFrame" then
+  if rowId == "textFrame" then
     local frame = assert(draft.textFrame, "frame drafts carry their frame")
     if labels ~= nil and labels.frameValues ~= nil and labels.frameValues[frame] ~= nil then
       local entry = labels.frameValues[frame]

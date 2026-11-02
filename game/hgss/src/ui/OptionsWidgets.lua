@@ -1,11 +1,12 @@
 -- Concrete painting for the generated option controls: choice pills and
 -- baseline faces, frame arrow cycles, project-authored slider rails with
 -- thumbs and focus treatment, and footer action chrome with caller labels.
--- Every visual state resolves through the semantic options manifest and
--- draws through the borrowed image-pool lease; the module borrows its
--- lease, text collaborator, and graphics namespace per call and retains no
--- state, images, quads, or settings. Missing art fails explicitly and the
--- borrowed graphics color is restored even on failure.
+-- Every visual state resolves through prepared caller-owned viewports: the
+-- renderer builds each frame Quad once outside draw and lends a lookup,
+-- so this module never allocates images or quads. Missing art fails explicitly and the
+-- borrowed graphics color is restored even on failure. The module borrows its
+-- lease, lookup, text collaborator, and graphics namespace per call and
+-- retains no state.
 
 local OptionsWidgets = {}
 
@@ -85,7 +86,7 @@ local function frameAt(sequence, ageTicks, what)
   return sequence.frames[#sequence.frames]
 end
 
-local function drawFrame(graphics, chrome, frame, anchorX, anchorY, what)
+local function drawFrame(graphics, chrome, quadFor, frame, anchorX, anchorY, what)
   assert(type(frame) == "table", what .. " frame is required")
   assert(type(frame.image) == "string" and frame.image ~= "", what .. " frame must name its atlas")
   assert(type(frame.atlas) == "table", what .. " frame must carry its atlas rect")
@@ -104,7 +105,9 @@ local function drawFrame(graphics, chrome, frame, anchorX, anchorY, what)
   then
     error(what .. " frame escapes its atlas rect", 0)
   end
-  local quad = graphics.newQuad(atlas.x, atlas.y, atlas.width, atlas.height, imageWidth, imageHeight)
+  assert(type(quadFor) == "function", what .. " drawing borrows its prepared quad lookup")
+  local quad = quadFor(frame)
+  assert(quad ~= nil, what .. " frame was never prepared")
   chrome:drawQuad(graphics, quad, anchorX + offset.x, anchorY + offset.y)
 end
 
@@ -119,6 +122,7 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
+---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad caller-owned prepared viewport lookup
 ---@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param choice OptionsWidgets.ChoiceStates { unselected, selected } compiled choice sequences
 ---@param anchor OptionsWidgets.Point control anchor in logical pixels
@@ -127,18 +131,31 @@ end
 ---@param ink OptionsWidgets.Ink { foreground, shadow } label ink roles
 ---@param selected boolean whether the selected pill replaces the face patch
 ---@param ageTicks integer source ticks since the state was entered
-function OptionsWidgets.drawChoice(graphics, chrome, text, choice, anchor, label, labelAnchor, ink, selected, ageTicks)
+function OptionsWidgets.drawChoice(
+  graphics,
+  chrome,
+  quadFor,
+  text,
+  choice,
+  anchor,
+  label,
+  labelAnchor,
+  ink,
+  selected,
+  ageTicks
+)
   assert(type(choice) == "table" and choice.unselected ~= nil and choice.selected ~= nil, "choice needs both states")
   local anchorPoint = point(anchor, "choice anchor")
   withColor(graphics, function()
     local sequence = selected and choice.selected or choice.unselected
-    drawFrame(graphics, chrome, frameAt(sequence, ageTicks, "choice"), anchorPoint.x, anchorPoint.y, "choice")
+    drawFrame(graphics, chrome, quadFor, frameAt(sequence, ageTicks, "choice"), anchorPoint.x, anchorPoint.y, "choice")
     drawLabel(text, label, labelAnchor, ink)
   end)
 end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
+---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad caller-owned prepared viewport lookup
 ---@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param arrows OptionsWidgets.ArrowSet { left = { idle, pressed }, right = { idle, pressed } }
 ---@param leftAnchor OptionsWidgets.Point left arrow anchor in logical pixels
@@ -151,6 +168,7 @@ end
 function OptionsWidgets.drawCycle(
   graphics,
   chrome,
+  quadFor,
   text,
   arrows,
   leftAnchor,
@@ -168,8 +186,24 @@ function OptionsWidgets.drawCycle(
   withColor(graphics, function()
     local leftSequence = pressed == "left" and arrows.left.pressed or arrows.left.idle
     local rightSequence = pressed == "right" and arrows.right.pressed or arrows.right.idle
-    drawFrame(graphics, chrome, frameAt(leftSequence, ageTicks, "left arrow"), leftPoint.x, leftPoint.y, "arrow")
-    drawFrame(graphics, chrome, frameAt(rightSequence, ageTicks, "right arrow"), rightPoint.x, rightPoint.y, "arrow")
+    drawFrame(
+      graphics,
+      chrome,
+      quadFor,
+      frameAt(leftSequence, ageTicks, "left arrow"),
+      leftPoint.x,
+      leftPoint.y,
+      "arrow"
+    )
+    drawFrame(
+      graphics,
+      chrome,
+      quadFor,
+      frameAt(rightSequence, ageTicks, "right arrow"),
+      rightPoint.x,
+      rightPoint.y,
+      "arrow"
+    )
     drawLabel(text, value, valueAnchor, ink)
   end)
 end
@@ -222,6 +256,7 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
+---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad caller-owned prepared viewport lookup
 ---@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param action OptionsWidgets.ActionStates { normal, focused, pressed, pressedFocused } compiled footer sequences
 ---@param anchor OptionsWidgets.Point action anchor in logical pixels
@@ -230,7 +265,19 @@ end
 ---@param ink OptionsWidgets.Ink { foreground, shadow } label ink roles
 ---@param state string one of normal, focused, pressed, pressedFocused
 ---@param ageTicks integer source ticks since the state was entered
-function OptionsWidgets.drawAction(graphics, chrome, text, action, anchor, label, labelAnchor, ink, state, ageTicks)
+function OptionsWidgets.drawAction(
+  graphics,
+  chrome,
+  quadFor,
+  text,
+  action,
+  anchor,
+  label,
+  labelAnchor,
+  ink,
+  state,
+  ageTicks
+)
   assert(
     state == "normal" or state == "focused" or state == "pressed" or state == "pressedFocused",
     "footer actions draw a compiled state"
@@ -238,7 +285,15 @@ function OptionsWidgets.drawAction(graphics, chrome, text, action, anchor, label
   assert(type(action) == "table" and action[state] ~= nil, "footer actions carry every compiled state")
   local anchorPoint = point(anchor, "action anchor")
   withColor(graphics, function()
-    drawFrame(graphics, chrome, frameAt(action[state], ageTicks, "action"), anchorPoint.x, anchorPoint.y, "action")
+    drawFrame(
+      graphics,
+      chrome,
+      quadFor,
+      frameAt(action[state], ageTicks, "action"),
+      anchorPoint.x,
+      anchorPoint.y,
+      "action"
+    )
     drawLabel(text, label, labelAnchor, ink)
   end)
 end

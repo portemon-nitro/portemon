@@ -846,4 +846,36 @@ function T.tests.presented_preview_press_stays_open_while_outside_down_closes()
   Assert.equal(opened.applied(), 0, "an outside dismissal never applies")
 end
 
+function T.tests.discrete_rows_publish_an_ordered_label_for_every_stop()
+  local opened = openMenu()
+  local state = opened.state
+  local function labelsOf(id)
+    local row = rowById(state:status(), id)
+    return row, row.choiceLabels
+  end
+  local speedRow, speedLabels = labelsOf("textSpeed")
+  Assert.deepEqual(speedLabels, { "MID", "FAST", "TURBO" }, "text speed labels every stop including Turbo")
+  Assert.equal(speedRow.valueIndex, 3, "the draft opens on the fastest stop")
+  Assert.equal(speedLabels[speedRow.valueIndex], speedRow.valueLabel, "the current value matches its stop label")
+  local _, sceneLabels = labelsOf("battleScene")
+  Assert.deepEqual(sceneLabels, { "ON", "OFF" }, "battle scene labels both stops")
+  local _, styleLabels = labelsOf("battleStyle")
+  Assert.deepEqual(styleLabels, { "SHIFT", "SET" }, "battle style labels both stops")
+  local _, modeLabels = labelsOf("soundMode")
+  Assert.deepEqual(modeLabels, { "STEREO", "MONO" }, "sound mode labels both stops")
+  for _, id in ipairs({ "textFrame", "volume", "battleSpeed" }) do
+    local row = rowById(state:status(), id)
+    Assert.isNil(row.choiceLabels, id .. " shows one current value instead of stop labels")
+  end
+  Assert.equal(rowById(state:status(), "textFrame").valueLabel, "TYPE 1", "the frame shows its current value")
+  Assert.equal(rowById(state:status(), "volume").valueLabel, "80%", "volume shows its current percent")
+  Assert.equal(rowById(state:status(), "battleSpeed").valueLabel, "1x", "battle speed shows its current stop")
+  state:updateFixed({ { type = "navigate", direction = "left" } })
+  local movedRow, movedLabels = labelsOf("textSpeed")
+  Assert.deepEqual(movedLabels, { "MID", "FAST", "TURBO" }, "selecting another stop keeps every label")
+  Assert.equal(movedRow.valueIndex, 2, "the selection moves to the fast stop")
+  Assert.equal(movedRow.valueLabel, "FAST", "only the pill state changes, not the label set")
+  Assert.equal(movedLabels[movedRow.valueIndex], "FAST", "the new selection matches its own stop label")
+end
+
 return T

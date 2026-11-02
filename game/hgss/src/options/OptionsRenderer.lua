@@ -15,7 +15,12 @@ local OptionsWidgets = require("game.hgss.src.ui.OptionsWidgets")
 ---@field _text OptionsWidgets.TextCollaborator borrowed text collaborator
 ---@field _window OptionsRenderer.WindowCollaborator borrowed window collaborator
 ---@field _tokens integer[] owned pending request tokens
+---@field _tokenRoles table<integer, string[]> request token to the semantic roles it serves
+---@field _tokenPaths table<integer, string> request token to its generated image path
 ---@field _leases table[] owned acquired image leases
+---@field _leaseByRole table<string, ImageAssetPoolLease> semantic role to its acquired image lease
+---@field _leaseByPath table<string, ImageAssetPoolLease> generated image path to its acquired image lease
+---@field _quadByFrame table<table, love.Quad> prepared viewport per immutable compiled frame
 ---@field _ready boolean
 ---@field _disposed boolean
 local OptionsRenderer = {}
@@ -29,6 +34,7 @@ local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest"
 ---@field choices table<string, unknown>
 ---@field arrows table<string, unknown>
 ---@field actions table<string, unknown>
+---@field backdrops table<string, string> semantic role to its indexed backdrop asset key
 ---@field framePreviewText table<integer, table<string, unknown>>?
 ---@field animationTickSeconds number?
 ---@alias OptionsRenderer.Rect { x: number, y: number, width: number, height: number }
@@ -61,7 +67,12 @@ function OptionsRenderer.new(opts)
     _text = text,
     _window = opts.window,
     _tokens = {},
+    _tokenRoles = {},
+    _tokenPaths = {},
     _leases = {},
+    _leaseByRole = {},
+    _leaseByPath = {},
+    _quadByFrame = {},
     _ready = false,
     _disposed = false,
   }, OptionsRenderer)
@@ -72,23 +83,33 @@ function OptionsRenderer:_section()
   local manifest = self._manifest
   local section = manifest.options
   assert(type(section) == "table", "the field-UI manifest carries the options section")
-  assert(section.version == 1, "the options section carries its locked version")
+  assert(section.version == 2, "the options section carries its locked version")
   return section
 end
 
--- Requests every unique required chrome atlas path once through the shared
--- pool. Pending interests accumulate under this owner; the pool keeps the
--- shared GPU objects.
+-- Requests every unique required art path once through the shared pool:
+-- the packed chrome atlas frames plus the two semantic source backdrops
+-- resolved through the manifest asset index, never hardcoded producer
+-- paths. Pending interests accumulate under this owner; the pool keeps the
+-- shared GPU objects. Each request remembers the semantic roles it serves
+-- so one shared path never acquires twice.
 function OptionsRenderer:_requestChrome()
   local section = self:_section()
   local seen = {}
-  local function add(path)
-    if type(path) ~= "string" or seen[path] then
-      return
+  local function add(path, role)
+    if type(path) ~= "string" or path == "" then
+      error(role .. " art path is required", 0)
     end
-    seen[path] = true
-    local token = self._imagePool:request(path, POOLED_SAMPLER, "demand")
-    self._tokens[#self._tokens + 1] = token
+    local entry = seen[path]
+    if entry == nil then
+      local token = self._imagePool:request(path, POOLED_SAMPLER, "demand")
+      entry = { token = token, roles = {} }
+      seen[path] = entry
+      self._tokens[#self._tokens + 1] = token
+      self._tokenRoles[token] = entry.roles
+      self._tokenPaths[token] = path
+    end
+    entry.roles[#entry.roles + 1] = role
   end
   local choices = assert(section.choices, "the options section carries its choice sequences")
   for _, size in ipairs({ "small", "wide" }) do
@@ -96,7 +117,7 @@ function OptionsRenderer:_requestChrome()
     for _, state in ipairs({ "unselected", "selected" }) do
       local sequence = assert(group[state], "choices carry both states")
       for _, frame in ipairs(assert(sequence.frames, "choices carry frames")) do
-        add(frame.image)
+        add(frame.image, "chrome")
       end
     end
   end
@@ -106,16 +127,57 @@ function OptionsRenderer:_requestChrome()
     for _, state in ipairs({ "idle", "pressed" }) do
       local sequence = assert(pair[state], "arrows carry idle and pressed states")
       for _, frame in ipairs(assert(sequence.frames, "arrows carry frames")) do
-        add(frame.image)
+        add(frame.image, "chrome")
       end
     end
   end
-  local actions = assert(section.actions, "the options section carries its footer actions")
+  local actions = assert(section.actions, "the options section carries footer actions")
   for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
     local sequence = assert(actions[state], "actions carry every compiled state")
     for _, frame in ipairs(assert(sequence.frames, "actions carry frames")) do
-      add(frame.image)
+      add(frame.image, "chrome")
     end
+  end
+  local backdrops = assert(section.backdrops, "the options section carries its source backdrops")
+  local assets = assert(self._manifest.assets, "the field-UI manifest indexes its assets")
+  for _, role in ipairs({ "controls", "preview" }) do
+    local assetKey = assert(backdrops[role], "the options section carries its " .. role .. " backdrop role")
+    local entry = assert(assets[assetKey], "the " .. role .. " backdrop indexes its asset")
+    add(assert(entry.image, "the " .. role .. " backdrop asset carries its image path"), role)
+  end
+end
+
+-- Prebuilds one stable viewport per unique immutable compiled frame
+-- outside draw, using the acquired image dimensions for that frame's own
+-- atlas path. Draw resolves these by frame identity and never allocates.
+function OptionsRenderer:_buildQuads()
+  local graphics = assert(love and love.graphics, "options chrome preparation requires its host graphics")
+  local section = self:_section()
+  local seen = {}
+  local function add(sequence, what)
+    for _, frame in ipairs(assert(sequence.frames, what .. " carry frames")) do
+      if not seen[frame] then
+        seen[frame] = true
+        local lease = assert(self._leaseByPath[frame.image], what .. " resolves its prepared lease")
+        local image = assert(lease.image, what .. " lease carries its resolved image")
+        local width, height = image:getWidth(), image:getHeight()
+        self._quadByFrame[frame] =
+          graphics.newQuad(frame.atlas.x, frame.atlas.y, frame.atlas.width, frame.atlas.height, width, height)
+      end
+    end
+  end
+  for _, size in ipairs({ "small", "wide" }) do
+    local group = assert(section.choices[size], "the options section carries its " .. size .. " choices")
+    add(assert(group.unselected, "choices carry both states"), "choices." .. size .. ".unselected")
+    add(assert(group.selected, "choices carry both states"), "choices." .. size .. ".selected")
+  end
+  for _, side in ipairs({ "left", "right" }) do
+    local pair = assert(section.arrows[side], "arrows carry both sides")
+    add(assert(pair.idle, "arrows carry idle and pressed states"), "arrows." .. side .. ".idle")
+    add(assert(pair.pressed, "arrows carry idle and pressed states"), "arrows." .. side .. ".pressed")
+  end
+  for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
+    add(assert(section.actions[state], "actions carry every compiled state"), "actions." .. state)
   end
 end
 
@@ -151,10 +213,30 @@ function OptionsRenderer:prepare()
     end
   end
   local ok, err = pcall(function()
+    local byToken = {}
     for _, token in ipairs(self._tokens) do
-      self._leases[#self._leases + 1] = self._imagePool:acquire(token)
+      local lease = self._imagePool:acquire(token)
+      byToken[token] = lease
+      self._leases[#self._leases + 1] = lease
     end
     self._tokens = {}
+    for token, lease in pairs(byToken) do
+      for _, role in ipairs(assert(self._tokenRoles[token], "prepared requests carry their roles")) do
+        if self._leaseByRole[role] == nil then
+          self._leaseByRole[role] = lease
+        end
+      end
+      local path = assert(self._tokenPaths[token], "prepared requests carry their path")
+      if self._leaseByPath[path] == nil then
+        self._leaseByPath[path] = lease
+      end
+      self._tokenRoles[token] = nil
+      self._tokenPaths[token] = nil
+    end
+    assert(self._leaseByRole.chrome ~= nil, "prepared chrome carries its lease")
+    assert(self._leaseByRole.controls ~= nil, "prepared controls carry their backdrop lease")
+    assert(self._leaseByRole.preview ~= nil, "prepared preview carries its backdrop lease")
+    self:_buildQuads()
   end)
   if not ok then
     self:_releaseOwned()
@@ -164,10 +246,12 @@ function OptionsRenderer:prepare()
   return true
 end
 
--- Paints one resolved plan: header, the clipped scrolling rows with
--- source-derived controls, the local preview sample, and the fixed
--- footer with its focus treatment. Rows outside the published viewport
--- never draw; draw acquires nothing and leaves shared owners alone.
+-- Paints one resolved plan: each pane first paints its own semantic
+-- source backdrop, then the controls/content pane paints the header, the
+-- clipped scrolling rows translated by the list offset, the local preview
+-- sample, and the fixed footer, while the preview pane paints only the
+-- sample window. Rows outside the published viewport never draw; draw
+-- acquires nothing and leaves shared owners alone.
 ---@param view table<string, unknown> the screen semantic snapshot
 ---@param plan table<string, unknown> the resolved plan
 function OptionsRenderer:draw(view, plan)
@@ -177,13 +261,12 @@ function OptionsRenderer:draw(view, plan)
   assert(type(plan) == "table" and type(plan.content) == "table", "options draw needs its content")
   local graphics = assert(love and love.graphics, "options drawing requires its host graphics namespace")
   local content = assert(plan.content, "the plan carries its options content")
-  local chrome = assert(self._leases[1], "prepared chrome carries its lease")
-  -- Every generated option frame shares the one packed chrome atlas, so a
-  -- single lease paints all states; a second atlas would need per-frame
-  -- lease selection here instead of this first-lease shortcut.
-  assert(#self._leases == 1, "option chrome packs into one shared atlas lease")
+  local chrome = assert(self._leaseByRole.chrome, "prepared chrome carries its lease")
   local section = self:_section()
   local ink = { foreground = { r = 1, g = 1, b = 1, a = 1 }, shadow = { r = 0, g = 0, b = 0, a = 1 } }
+  local function quadFor(frame)
+    return assert(self._quadByFrame[frame], "prepared chrome carries every drawn frame")
+  end
   local function drawRows()
     for _, row in ipairs(assert(content.rows, "content carries its rows")) do
       if not row.clipped then
@@ -195,32 +278,55 @@ function OptionsRenderer:draw(view, plan)
           end
         end
         assert(rowView ~= nil, "every laid-out row has a published value")
-        self:_drawRow(graphics, chrome, section, ink, row, rowView, view)
+        self:_drawRow(graphics, chrome, quadFor, section, ink, row, rowView, view)
       end
     end
   end
   for _, pane in ipairs(assert(plan.panes, "the plan carries its panes")) do
-    if pane.interactive then
+    local paneId = assert(pane.id, "panes carry their semantic id")
+    if paneId == "preview" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
-        local viewport = assert(content.listViewport, "content carries its list viewport")
-        LogicalSurface.clip(graphics, viewport, drawRows)
-        self:_drawLegacyNote(ink, view)
+        self:_drawBackdrop(graphics, "preview")
         self:_drawPreview(graphics, section, ink, content, view)
-        self:_drawFooter(graphics, chrome, section, ink, content, view)
       end)
+    elseif paneId == "controls" or paneId == "content" then
+      LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
+        self:_drawBackdrop(graphics, "controls")
+        local viewport = assert(content.listViewport, "content carries its list viewport")
+        LogicalSurface.clip(graphics, viewport, function()
+          graphics.push("all")
+          graphics.translate(0, viewport.y - content.scrollOffset)
+          drawRows()
+          graphics.pop()
+        end)
+        self:_drawLegacyNote(ink, view)
+        if paneId == "content" then
+          self:_drawPreview(graphics, section, ink, content, view)
+        end
+        self:_drawFooter(graphics, chrome, quadFor, section, ink, content, view)
+      end)
+    else
+      error("unknown options pane " .. tostring(paneId), 0)
     end
   end
 end
 
 ---@param graphics love.graphics
+---@param role string "controls"|"preview" the semantic backdrop role
+function OptionsRenderer:_drawBackdrop(graphics, role)
+  local lease = assert(self._leaseByRole[role], "prepared backdrops carry their " .. role .. " lease")
+  lease:draw(graphics, 0, 0)
+end
+
+---@param graphics love.graphics
 ---@param chrome ImageAssetPoolLease
+---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad prepared viewport per immutable compiled frame
 ---@param section OptionsRenderer.Section
 ---@param ink OptionsWidgets.Ink
 ---@param row OptionsInterface.RowLayout
 ---@param rowView table<string, unknown>
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawRow(graphics, chrome, section, ink, row, rowView, view)
-  local _ = view
+function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, ink, row, rowView, view)
   local text = assert(self._text, "options rows borrow the text service")
   text:drawTextWithPalette(
     assert(rowView.label, "rows carry their label"),
@@ -261,6 +367,7 @@ function OptionsRenderer:_drawRow(graphics, chrome, section, ink, row, rowView, 
     OptionsWidgets.drawCycle(
       graphics,
       chrome,
+      quadFor,
       text,
       assert(section.arrows, "the section carries arrows"),
       control.leftArrow,
@@ -276,20 +383,21 @@ function OptionsRenderer:_drawRow(graphics, chrome, section, ink, row, rowView, 
   local choiceRects = assert(control.choices, "choice rows carry choice rects")
   local index = assert(rowView.valueIndex, "rows carry their value stop")
   for choiceIndex, rect in ipairs(choiceRects) do
+    local label = assert(rowView.choiceLabels[choiceIndex], "every option stop is labeled")
     OptionsWidgets.drawChoice(
       graphics,
       chrome,
+      quadFor,
       text,
       group,
       { x = rect.x, y = rect.y },
-      choiceIndex == index and assert(rowView.valueLabel, "rows carry their value label") or "",
+      label,
       { x = rect.x, y = rect.y },
       ink,
       choiceIndex == index,
       0
     )
   end
-  local _ = selected
 end
 
 ---@param _ love.graphics
@@ -339,11 +447,12 @@ end
 
 ---@param graphics love.graphics
 ---@param chrome ImageAssetPoolLease
+---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad prepared viewport per immutable compiled frame
 ---@param section OptionsRenderer.Section
 ---@param ink OptionsWidgets.Ink
 ---@param content OptionsInterface.ContentGeometry
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawFooter(graphics, chrome, section, ink, content, view)
+function OptionsRenderer:_drawFooter(graphics, chrome, quadFor, section, ink, content, view)
   local footer = assert(content.footer, "content carries its footer")
   local text = assert(self._text, "the footer borrows the text service")
   local actions = assert(section.actions, "the section carries footer actions")
@@ -359,6 +468,7 @@ function OptionsRenderer:_drawFooter(graphics, chrome, section, ink, content, vi
   OptionsWidgets.drawAction(
     graphics,
     chrome,
+    quadFor,
     text,
     actions,
     footer.confirmRect,
@@ -371,6 +481,7 @@ function OptionsRenderer:_drawFooter(graphics, chrome, section, ink, content, vi
   OptionsWidgets.drawAction(
     graphics,
     chrome,
+    quadFor,
     text,
     actions,
     footer.quitRect,
@@ -389,12 +500,17 @@ function OptionsRenderer:_releaseOwned()
     end)
   end
   self._tokens = {}
+  self._tokenRoles = {}
+  self._tokenPaths = {}
   for _, lease in ipairs(self._leases) do
     pcall(function()
       self._imagePool:release(lease)
     end)
   end
   self._leases = {}
+  self._leaseByRole = {}
+  self._leaseByPath = {}
+  self._quadByFrame = {}
   self._ready = false
 end
 
