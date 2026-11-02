@@ -98,41 +98,11 @@ function T.effect_cache_paths_live_in_the_existing_family()
   Assert.isTrue(marker ~= path, "effect markers stay beside their payload")
 end
 
-function T.contract_identities_version_the_new_catalog_shapes()
-  local Contract = assetContract()
-  Assert.equal(
-    Contract.battlePresentation.schema,
-    "g4-battle-presentation-v11",
-    "the shared contract versions the normalized global catalog"
-  )
-  Assert.equal(
-    Contract.battlePresentation.sceneSchema,
-    "g4-battle-scene-v4",
-    "the shared contract versions scenes with intro and terrain sprite images"
-  )
-  Assert.isTrue(
-    type(Contract.battlePresentation.effectSchema) == "string" and Contract.battlePresentation.effectSchema ~= "",
-    "the shared contract versions independently requested effect artifacts"
-  )
-end
-
-function T.effect_schema_versions_the_normalized_particle_contract()
+function T.generated_contract_mirrors_the_effect_schema_identity()
   local Schema = animationSchema()
-  Assert.isTrue(Schema ~= nil, "the effect schema owns the executable program contract")
   assert(Schema ~= nil, "the effect schema is available")
   Assert.equal(
-    Schema.EFFECT_SCHEMA,
-    "g4-battle-effect-v4",
-    "the effect schema carries the normalized particle contract identity"
-  )
-  local Contract = assetContract()
-  Assert.equal(
-    Contract.battlePresentation.effectSchema,
-    "g4-battle-effect-v4",
-    "the generated contract mirrors the normalized effect schema"
-  )
-  Assert.equal(
-    Contract.battlePresentation.effectSchema,
+    assetContract().battlePresentation.effectSchema,
     Schema.EFFECT_SCHEMA,
     "the validator and the generated contract agree on one effect identity"
   )

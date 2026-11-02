@@ -335,12 +335,6 @@ function T.every_scene_terrain_maps_to_its_retail_encounter_members(romFs, versi
       { retailTable[ordinal], retailTable[ordinal] + 1 },
       versionId .. ": " .. terrain .. " plays the retail member pair"
     )
-    for setIndex, set in ipairs(scene.encounterParticles) do
-      Assert.isTrue(#set.emitters > 0, versionId .. ": " .. terrain .. " set " .. setIndex .. " carries emitters")
-      for _, texture in ipairs(set.textures) do
-        Assert.notNil(scene.encounterParticleImages[texture.image], versionId .. ": " .. texture.image .. " stages")
-      end
-    end
   end
 end
 

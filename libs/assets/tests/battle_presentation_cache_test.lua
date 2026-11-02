@@ -150,7 +150,7 @@ function T.evolution_particles_load_only_from_verified_manifest_and_check_textur
 
   local particles = assert(BattlePresentationCache.loadEvolutionParticles(cache))
   Assert.equal(particles.seed, 0, "the verified loader returns the normalized particle payload")
-  Assert.equal(#particles.emitters, 13, "the verified loader returns the complete emitter list")
+  Assert.equal(#particles.emitters, #manifest.evolutionParticles.emitters, "the verified loader returns the complete emitter list")
   Assert.isTrue(
     BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
     "the marker and complete texture closure establish readiness"

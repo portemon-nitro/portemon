@@ -372,8 +372,7 @@ function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pos
       select = { playMode = "forward", frames = { cursorFrame(13, 1), cursorFrame(14, 1) } },
     },
   })
-  Assert.notNil(child, "the source cursor animation composes with the evolution child: " .. tostring(openErr))
-  assert(child ~= nil, "the evolution cursor child composes")
+  assert(child ~= nil, tostring(openErr))
   local ticks = 0
   local heldPrinter = false
   local function advanceUntil(predicate)
@@ -410,11 +409,7 @@ function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pos
   end)
   local idleFrame = (ticks % 5) < 2 and 11 or 12
   Assert.equal(firstMenu.learnMenu.cursor.role, "idle", "the first menu reveals the scene's original idle animation")
-  Assert.equal(
-    firstMenu.learnMenu.cursor.sourceFrame,
-    idleFrame,
-    "the hidden idle cursor has kept its source age after " .. ticks .. " source ticks"
-  )
+  Assert.equal(firstMenu.learnMenu.cursor.sourceFrame, idleFrame, "the hidden idle cursor has kept its source age")
   child:input({ { type = "navigate", direction = "down" } })
   child:input({ { type = "confirm" } })
   local stopMenu = advanceUntil(function(view)

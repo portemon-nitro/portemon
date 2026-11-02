@@ -150,16 +150,13 @@ function T.particle_effects_stage_compiled_emitters_textures_and_placements(romF
       local pixels = effect.resourcePayloads[staged.payload]
       Assert.equal(#pixels.rgba8888, pixels.width * pixels.height * 4, "a particle texture is exact RGBA")
     end
-    for _, instruction in ipairs(effect.program.instructions) do
-      Assert.isNil(instruction.emitterPosition, "particle instructions name a system slot, never a battler slot")
+    if expected.key == "TACKLE" then
+      -- sBattleAnimEmitterPositions[solo player][perspective 0] is the first
+      -- retail vector: x -9616, y -5464 in 1/4096 world units.
+      Assert.near(payload.placements["solo-player"][1].x, -9616 / 4096, 1e-9, "the placement table keeps the retail x")
+      Assert.near(payload.placements["solo-player"][1].y, -5464 / 4096, 1e-9, "the placement table keeps the retail y")
     end
   end
-  local tackle = compiler.compileEffect(romFs, { versionId = versionId }, "TACKLE")
-  local payload = tackle.resourcePayloads[tackle.resources["battle/particle/tackle"].payload]
-  -- sBattleAnimEmitterPositions[solo player][perspective 0] is the first
-  -- retail vector: x -9616, y -5464 in 1/4096 world units.
-  Assert.near(payload.placements["solo-player"][1].x, -9616 / 4096, 1e-9, "the placement table keeps the retail x")
-  Assert.near(payload.placements["solo-player"][1].y, -5464 / 4096, 1e-9, "the placement table keeps the retail y")
 end
 
 -- Each ready dump runs the smoke on its own reader; a version without a

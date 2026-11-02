@@ -82,6 +82,11 @@ local function runningSystems()
 end
 
 function T.live_particles_draw_after_the_encounter_fade_overlay()
+  local idle = {}
+  drawDetail(recordingGraphics(idle), { encounterParticleSystems = {} })
+  for _, entry in ipairs(idle) do
+    Assert.isTrue(entry.kind ~= "draw", "an idle encounter draws no particle quads")
+  end
   local systems, images = runningSystems()
   local log = {}
   drawDetail(recordingGraphics(log), {
@@ -132,14 +137,6 @@ function T.move_particle_systems_draw_their_textures_in_the_detail_pane()
     end
   end
   Assert.isTrue(drawn >= 1, "a live move particle draws its staged texture")
-end
-
-function T.no_live_systems_draw_no_particles()
-  local log = {}
-  drawDetail(recordingGraphics(log), { encounterParticleSystems = {} })
-  for _, entry in ipairs(log) do
-    Assert.isTrue(entry.kind ~= "draw", "an idle encounter draws no particle quads")
-  end
 end
 
 function T.evolution_panes_draw_staged_layers_pictures_window_and_live_particles()

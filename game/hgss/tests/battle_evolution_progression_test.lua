@@ -641,51 +641,7 @@ local function runEvolutionHandsFree(rig, budget)
       end
     end
   end
-  local screenStatus = rig.screen:status()
-  local child = rig.screen:_snapshot().childView
-  local childPresentation = type(child) == "table" and child.presentation or nil
-  local menu = type(childPresentation) == "table" and childPresentation.learnMenu or nil
-  local completion = rig.screen._completion
-  local childStatus = type(rig.screen._completionChild) == "table" and rig.screen._completionChild:status() or nil
-  local childEffects = type(rig.screen._completionChild) == "table" and rig.screen._completionChild:effects() or {}
-  error(
-    "the offered evolution never settled back to the field (stage="
-      .. tostring(type(screenStatus.completion) == "table" and screenStatus.completion.stage)
-      .. ", child="
-      .. tostring(type(child) == "table" and child.kind)
-      .. ", phase="
-      .. tostring(type(child) == "table" and child.phase)
-      .. ", menu="
-      .. tostring(type(menu) == "table" and menu.kind)
-      .. ", focus="
-      .. tostring(type(menu) == "table" and menu.focus)
-      .. ", selecting="
-      .. tostring(type(menu) == "table" and menu.selecting)
-      .. ", printer="
-      .. tostring(type(completion) == "table" and completion.printerMessageId)
-      .. ", active="
-      .. tostring(rig.screen._timeline:messageActive())
-      .. ", busy="
-      .. tostring(rig.screen._timeline:busy())
-      .. ", pending="
-      .. tostring(type(childStatus) == "table" and childStatus.printerPending)
-      .. ", printWhat="
-      .. tostring(type(childStatus) == "table" and childStatus.printWhat)
-      .. ", message="
-      .. tostring(rig.screen._timeline:message())
-      .. ", effectCursor="
-      .. tostring(type(completion) == "table" and completion.effectCursor)
-      .. ", effects="
-      .. tostring(#childEffects)
-      .. ", palette="
-      .. tostring(type(completion) == "table" and completion.paletteFade ~= nil)
-      .. ", assets="
-      .. tostring(rig.screen._assets:state())
-      .. ", screen="
-      .. tostring(screenStatus.mode)
-      .. ", error="
-      .. tostring(screenStatus.error)
-  )
+  error("the offered evolution never settled back to the field (screen=" .. tostring(rig.screen:status().mode) .. ")", 0)
 end
 
 local function singleTackle()
@@ -1087,14 +1043,7 @@ function T.cancelled_first_member_yields_to_the_second()
       break
     end
   end
-  Assert.isTrue(
-    secondOffered,
-    "declining the first member still offers the second (screen="
-      .. tostring(rig.screen:status().mode)
-      .. ", error="
-      .. tostring(rig.screen:status().error)
-      .. ")"
-  )
+  Assert.isTrue(secondOffered, "declining the first member still offers the second")
   runEvolutionHandsFree(rig, 1500)
   Assert.equal(rig.battle:status().phase, "complete", "the yielded sequence still returns to the field")
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
@@ -1138,15 +1087,7 @@ function T.declined_evolution_registers_no_caught_flag()
       error("the declined evolution failed: " .. tostring(rig.battle:status().error), 0)
     end
   end
-  Assert.equal(
-    rig.battle:status().phase,
-    "complete",
-    "the declined evolution still returns to the field (screen="
-      .. tostring(rig.screen:status().mode)
-      .. ", error="
-      .. tostring(rig.screen:status().error)
-      .. ")"
-  )
+  Assert.equal(rig.battle:status().phase, "complete", "the declined evolution still returns to the field")
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
   Assert.isFalse(dex:isCaught("TOTODILE"), "the declined evolution registers no caught flag")
   rig.battle:dispose()
@@ -1272,15 +1213,7 @@ function T.declined_evolution_counts_nothing()
       error("the declined evolution failed: " .. tostring(rig.battle:status().error), 0)
     end
   end
-  Assert.equal(
-    rig.battle:status().phase,
-    "complete",
-    "the declined evolution still returns to the field (screen="
-      .. tostring(rig.screen:status().mode)
-      .. ", error="
-      .. tostring(rig.screen:status().error)
-      .. ")"
-  )
+  Assert.equal(rig.battle:status().phase, "complete", "the declined evolution still returns to the field")
   Assert.equal(rig.party:partyMon(0).species, "EEVEE", "the declined member publishes nothing")
   Assert.equal(stats:uniqueCount(), 0, "the declined evolution counts nothing")
   Assert.equal(stats:score(), 0, "the declined evolution awards no points")

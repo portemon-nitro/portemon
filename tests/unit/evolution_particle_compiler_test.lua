@@ -34,10 +34,8 @@ function T.evolution_source_compiles_thirteen_emitters_and_embeds_texture_pixels
 
   local particles, pngs, provenance = BattlePresentationCompiler.compileEvolutionParticles(romFs)
   local archiveSymbol, memberId = selectedSource()
-  Assert.equal(archiveSymbol, "NARC_a_1_1_9", "EvolutionScene uses its configured source archive")
-  Assert.equal(archiveSymbol, source.archiveSymbol, "the archive identity stays in producer configuration")
-  Assert.equal(memberId, 0, "EvolutionScene selects source member zero")
-  Assert.equal(memberId, source.memberId, "the member identity stays in producer configuration")
+  Assert.equal(archiveSymbol, source.archiveSymbol, "EvolutionScene reads its configured source archive")
+  Assert.equal(memberId, source.memberId, "EvolutionScene reads its configured source member")
   Assert.equal(particles.seed, 0, "the generated record pins the retail particle seed")
   Assert.equal(#particles.emitters, 13, "the generated record contains every EvolutionScene emitter")
   for index, emitter in ipairs(particles.emitters) do

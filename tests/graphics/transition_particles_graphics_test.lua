@@ -74,23 +74,19 @@ local function drawLayer(scope, aboveSprites, destination)
   return scope:own(target:newImageData())
 end
 
-function T.particle_layer_draws_under_the_retail_camera_scaled_to_the_viewport(scope)
-  local image = drawLayer(scope, true, { x = 0, y = 0, width = 512, height = 384 })
+function T.particle_layer_scales_with_the_viewport_and_priority_decides_sprite_cover(scope)
+  local above = drawLayer(scope, true, { x = 0, y = 0, width = 512, height = 384 })
   -- At double scale the 48 pixel particle spans 96 pixels around (256, 192).
-  local red, green = image:getPixel(256 + 40, 192)
+  local red, green = above:getPixel(256 + 40, 192)
   Assert.near(red, 1, 0.02, "the layer covers pixels inside the scaled particle")
   Assert.near(green, 1, 0.02, "the particle keeps its white texture")
-  red, green = image:getPixel(256 + 60, 192)
+  red, green = above:getPixel(256 + 60, 192)
   Assert.near(red, 1, 0.02, "the field stays visible outside the particle")
   Assert.near(green, 0, 0.02, "the particle does not extend past its scaled extent")
-end
+  local _, coveredGreen = above:getPixel(256, 192)
+  Assert.near(coveredGreen, 1, 0.02, "an outranking layer draws white over the blue sprite")
 
-function T.particle_priority_decides_whether_the_layer_covers_the_sprite_plane(scope)
-  local destination = { x = 0, y = 0, width = 512, height = 384 }
-  local above = drawLayer(scope, true, destination)
-  local _, aboveGreen = above:getPixel(256, 192)
-  Assert.near(aboveGreen, 1, 0.02, "an outranking layer draws white over the blue sprite")
-  local below = drawLayer(scope, false, destination)
+  local below = drawLayer(scope, false, { x = 0, y = 0, width = 512, height = 384 })
   local belowRed, belowGreen, belowBlue = below:getPixel(256, 192)
   Assert.near(belowBlue, 1, 0.02, "a layer at the sprite priority draws behind the sprite")
   Assert.near(belowRed + belowGreen, 0, 0.02, "the sprite covers the layer where they overlap")
