@@ -519,9 +519,10 @@ local function fixture(opts)
   end
 
   -- The synthetic options archive: the curated member selection the
-  -- producer compiles (palettes 0/1 with the baseline face palette 2,
-  -- chars 4/5/6 with the face char 7, cells 9/10/11/12, animations
-  -- 13/14/15/16, and the 256x256 baseline face screen 17). The pill cell
+  -- producer compiles (palettes 0/1 with the MAIN base palette 2 and the
+  -- SUB base palette 3, chars 4/5/6 with the MAIN base char 7 and the SUB
+  -- base char 8, cells 9/10/11/12, animations 13/14/15/16, the 256x256
+  -- MAIN base screen 17, and the 256x256 SUB base screen 19). The pill cell
   -- bank carries both sizes (32x16 small, 64x32 wide); every animation
   -- bank carries the sequence count its set selects (two pill sizes, idle
   -- plus pressed arrows, four footer states). Member numbers are the
@@ -533,12 +534,14 @@ local function fixture(opts)
   options[1] = palette16()
   options[2] = palette16()
   options[3] = palette16()
+  options[4] = palette16()
   -- Forty tiles per sprite char bank: the 64x32 wide pill spans 32
   -- consecutive tiles from its base under 1D mapping.
   options[5] = charData(40)
   options[6] = charData(40)
   options[7] = charData(40)
   options[8] = charData(8)
+  options[9] = charData(8, 5)
   options[10] = cellBank({
     { { x = 0, y = 0, tile = 0, pal = 0, shape = 1, size = 2 } },
     { { x = 0, y = 0, tile = 1, pal = 0, shape = 1, size = 3 } },
@@ -561,6 +564,13 @@ local function fixture(opts)
       entries[i] = 1
     end
     options[18] = screenDataWH(256, 256, entries)
+  end
+  do
+    local entries = {}
+    for i = 1, 1024 do
+      entries[i] = 1
+    end
+    options[20] = screenDataWH(256, 256, entries)
   end
 
   -- The synthetic resource-list archive: members 20/21/22/23 carry one

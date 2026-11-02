@@ -1283,6 +1283,34 @@ function FieldUiFixture.optionsChromeBytes()
   return PngWriter.encode(width, height, table.concat(rows))
 end
 
+-- The two synthetic option backdrops: one flat distinct opaque color each
+-- (controls teal, preview amber), so sampling the wrong role is a pixel
+-- mismatch. Both are exactly the 256x192 field screen.
+FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH = "assets/generated/field/ui/options-controls-background.png"
+FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH = "assets/generated/field/ui/options-preview-background.png"
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsControlsBackgroundColor()
+  return 24, 120, 200
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsPreviewBackgroundColor()
+  return 210, 110, 30
+end
+
+---@return string png
+function FieldUiFixture.optionsControlsBackgroundBytes()
+  local r, g, b = FieldUiFixture.optionsControlsBackgroundColor()
+  return PngWriter.encode(256, 192, string.rep(string.char(r, g, b, 255), 256 * 192))
+end
+
+---@return string png
+function FieldUiFixture.optionsPreviewBackgroundBytes()
+  local r, g, b = FieldUiFixture.optionsPreviewBackgroundColor()
+  return PngWriter.encode(256, 192, string.rep(string.char(r, g, b, 255), 256 * 192))
+end
+
 ---@param manifest table
 ---@return table manifest
 function FieldUiFixture.addOptionsContract(manifest)
@@ -1291,6 +1319,16 @@ function FieldUiFixture.addOptionsContract(manifest)
     image = FieldUiFixture.OPTIONS_CHROME_PATH,
     width = width,
     height = height,
+  }
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND] = {
+    image = FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
+    width = 256,
+    height = 192,
+  }
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND] = {
+    image = FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
+    width = 256,
+    height = 192,
   }
   local image = FieldUiFixture.OPTIONS_CHROME_PATH
   -- Synthetic semantic labels: shape-minimal {text, tokens} records that
@@ -1332,7 +1370,11 @@ function FieldUiFixture.addOptionsContract(manifest)
     return { frames = frames, loop = loop, bounds = bounds }
   end
   manifest.options = {
-    version = 1,
+    version = 2,
+    backdrops = {
+      controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
+      preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+    },
     labels = labels,
     animationTickSeconds = 1 / 60,
     framePreviewText = framePreviewText,
@@ -1401,6 +1443,8 @@ end
 ---@param cache CacheFs
 function FieldUiFixture.writeOptionsPngs(cache)
   cache:write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
+  cache:write(FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH, FieldUiFixture.optionsControlsBackgroundBytes())
+  cache:write(FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH, FieldUiFixture.optionsPreviewBackgroundBytes())
 end
 
 return FieldUiFixture

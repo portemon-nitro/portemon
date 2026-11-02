@@ -354,9 +354,13 @@ DerivedAssetContract.fieldEmotes = {
 -- small/wide choice pills with unselected baseline faces, frame arrows,
 -- footer action chrome, frame preview text, and the native tick rate), so
 -- a stale cache without it must fail readiness.
+-- fieldUi schema 24: the option-control section carries the required
+-- opaque 256x192 controls and preview backdrops (the MAIN and SUB base
+-- planes) as indexed assets under semantic role keys, so a stale cache
+-- without them must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v23",
+  schema = "g4-field-ui-v24",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

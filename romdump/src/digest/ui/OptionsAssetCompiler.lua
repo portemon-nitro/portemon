@@ -455,6 +455,57 @@ local function compileSequence(set, animation, image, frames, role)
   return sequence
 end
 
+-- Renders one opaque 256x192 option backdrop from its audited base triple:
+-- the full 256x256 source map with palette-zero normalized to the same
+-- palette's opaque backdrop color, cropped to the top visible viewport.
+-- Private to this module; the compiled bundle carries the staged bytes.
+---@param archive Narc
+---@param dependencies table[]
+---@param chars table<integer, OptionsAssetCompiler.CharData>
+---@param palettes table<integer, OptionsAssetCompiler.PaletteData>
+---@param base { paletteMember: integer, charMember: integer, screenMember: integer }
+---@param image string staged output path
+---@param role string
+---@return string png
+---@return { image: string, width: integer, height: integer }
+local function renderBackdrop(archive, dependencies, chars, palettes, base, image, role)
+  local screenBytes = decodeMember(archive, base.screenMember, "options-backdrop:" .. base.screenMember)
+  dependencies[#dependencies + 1] = {
+    name = OptionsSources.archive.symbol .. ":member:" .. base.screenMember,
+    sha1 = Hashing.sha1hex(screenBytes),
+  }
+  local screen = decodeG2d(screenBytes, "decodeScreen", base.screenMember) --[[@as OptionsAssetCompiler.ScreenData]]
+  if screen.width ~= 256 or screen.height ~= 256 then
+    sourceError("the options backdrop is not the audited 256x256 surface", {
+      role = role,
+      member = base.screenMember,
+      width = screen.width,
+      height = screen.height,
+    })
+  end
+  local charData = chars[base.charMember]
+  if charData == nil then
+    sourceError("the options backdrop char is not decoded", { role = role, member = base.charMember })
+  end
+  local palette = palettes[base.paletteMember]
+  if palette == nil then
+    sourceError("the options backdrop palette is not decoded", { role = role, member = base.paletteMember })
+  end
+  assert(charData ~= nil and palette ~= nil, "a missing options backdrop bank fails above")
+  local render = G2dRasterizer.renderScreen(
+    charData,
+    { colors = palette.colors },
+    screen,
+    { asset = "options backdrop", member = base.screenMember },
+    { backdrop = true }
+  )
+  local rows = {}
+  for y = 0, 191 do
+    rows[#rows + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
+  end
+  return PngWriter.encode(256, 192, table.concat(rows)), { image = image, width = 256, height = 192 }
+end
+
 ---@param romFs RomFs
 ---@param versionId string
 ---@return table<string, unknown>? bundle
@@ -479,8 +530,8 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     }
     local palettes = {}
     -- The sprite-bank palettes resolve through the resdat lists; the
-    -- baseline face palette decodes directly alongside them.
-    local paletteMembers = { OptionsSources.members.facePalette }
+    -- MAIN and SUB base palettes decode directly alongside them.
+    local paletteMembers = { OptionsSources.members.facePalette, OptionsSources.members.previewPalette }
     for _, memberId in ipairs(OptionsSources.members.palettes) do
       paletteMembers[#paletteMembers + 1] = memberId
     end
@@ -492,7 +543,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       palettes[memberId] = decodeResource(archive, memberId, "decodePalette")
     end
     local chars = {}
-    local charMembers = { OptionsSources.members.faceChar }
+    local charMembers = { OptionsSources.members.faceChar, OptionsSources.members.previewChar }
     for _, memberId in ipairs(OptionsSources.members.chars) do
       charMembers[#charMembers + 1] = memberId
     end
@@ -699,11 +750,40 @@ function OptionsAssetCompiler.compile(romFs, versionId)
         end
       end
     end
+    -- The two opaque base backdrops: the MAIN base behind the controls
+    -- and the SUB base behind the preview, each staged as its own file
+    -- and indexed asset beside the packed chrome atlas.
+    local controlsImage = FieldUiAssetCache.assetDir() .. "/options-controls-background.png"
+    local previewImage = FieldUiAssetCache.assetDir() .. "/options-preview-background.png"
+    local controlsPng, controlsAsset = renderBackdrop(
+      archive,
+      dependencies,
+      chars,
+      palettes,
+      OptionsSources.bases.controls,
+      controlsImage,
+      "options:backdrop:controls"
+    )
+    local previewPng, previewAsset = renderBackdrop(
+      archive,
+      dependencies,
+      chars,
+      palettes,
+      OptionsSources.bases.preview,
+      previewImage,
+      "options:backdrop:preview"
+    )
     local files = {
       [image] = PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)),
+      [controlsImage] = controlsPng,
+      [previewImage] = previewPng,
     }
     local section = {
-      version = 1,
+      version = 2,
+      backdrops = {
+        controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
+        preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+      },
       labels = labels,
       choices = {
         small = { unselected = unselectedSmall, selected = selectedSmall },
@@ -727,6 +807,10 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       files = files,
       dependencies = dependencies,
       atlas = { image = image, width = atlasWidth, height = atlasHeight },
+      backgrounds = {
+        { key = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND, asset = controlsAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND, asset = previewAsset },
+      },
     }
   end, function(err)
     if Errors.is(err) then

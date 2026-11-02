@@ -142,7 +142,7 @@ end
 function T.compiled_section_carries_the_locked_semantic_shapes(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 1)
+  Assert.equal(section.version, 2)
   local DisplayTiming = require("libs.nds.src.gx.DisplayTiming")
   Assert.equal(section.animationTickSeconds, 1 / DisplayTiming.REFRESH_HZ)
   local labels = assert(section.labels, "the section carries its labels")
@@ -308,11 +308,96 @@ function T.compiled_pixels_match_the_decoded_source_art(romFs, versionId)
   end
 end
 
+function T.backdrops_derive_from_the_audited_base_screens(romFs, versionId)
+  local bundle = compileOptions(romFs, versionId)
+  local section = assert(bundle.section, "the compiler returns its semantic section")
+  Assert.equal(section.version, 2, "the options section carries its backdrop contract")
+  Assert.equal(
+    section.backdrops.controls,
+    FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
+    "the controls backdrop carries its semantic role"
+  )
+  Assert.equal(
+    section.backdrops.preview,
+    FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+    "the preview backdrop carries its semantic role"
+  )
+  local controlsImage = FieldUiAssetCache.assetDir() .. "/options-controls-background.png"
+  local previewImage = FieldUiAssetCache.assetDir() .. "/options-preview-background.png"
+  local controlsBytes = assert(bundle.files[controlsImage], "the controls backdrop is staged")
+  local previewBytes = assert(bundle.files[previewImage], "the preview backdrop is staged")
+  local function stagedRgba(bytes, what)
+    local width, height, rgba = PngReader.rgba(bytes)
+    Assert.equal(width, 256, what .. " width")
+    Assert.equal(height, 192, what .. " height")
+    return rgba
+  end
+  local controlsRgba = stagedRgba(controlsBytes, "the controls backdrop")
+  local previewRgba = stagedRgba(previewBytes, "the preview backdrop")
+  local Sources = optionsSources()
+  local archive = assert(romFs:openNarc(Sources.archive.symbol))
+  local function decoded(kind, memberId)
+    local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
+    assert(decodedValue, tostring(err and err.message or err))
+    return decodedValue
+  end
+  -- The expected visible viewport: an audited source map with palette-zero
+  -- normalized to the same palette's opaque backdrop, cropped to the top
+  -- 256x192 rows (or fewer for a shorter source plane).
+  local function expectedRgba(charMember, paletteMember, screenMember, expectFull)
+    local char = decoded("decodeChar", charMember)
+    local palette = decoded("decodePalette", paletteMember)
+    local screen = decoded("decodeScreen", screenMember)
+    if expectFull then
+      Assert.equal(screen.width, 256, "screen " .. screenMember .. " width")
+      Assert.equal(screen.height, 256, "screen " .. screenMember .. " height")
+    end
+    local render = G2dRasterizer.renderScreen(
+      char,
+      { colors = palette.colors },
+      screen,
+      { asset = "options", member = screenMember },
+      { backdrop = true }
+    )
+    local rows = {}
+    for y = 0, math.min(191, render.height - 1) do
+      rows[#rows + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
+    end
+    return table.concat(rows)
+  end
+  Assert.equal(controlsRgba, expectedRgba(7, 2, 17, true), "the controls backdrop matches the MAIN base")
+  Assert.equal(previewRgba, expectedRgba(8, 3, 19, true), "the preview backdrop matches the SUB base")
+  Assert.isTrue(
+    controlsRgba ~= expectedRgba(7, 2, 18, false),
+    "the controls backdrop is not the separate selection layer"
+  )
+  Assert.isTrue(controlsRgba ~= previewRgba, "the two backdrop roles carry distinct rasters")
+  local function assertOpaque(rgba, what)
+    for index = 4, #rgba, 4 do
+      if string.byte(rgba, index) ~= 255 then
+        Assert.fail(what .. " pixel " .. math.floor(index / 4) .. " is not opaque")
+      end
+    end
+  end
+  assertOpaque(controlsRgba, "the controls backdrop")
+  assertOpaque(previewRgba, "the preview backdrop")
+  local names = {}
+  for _, dep in ipairs(bundle.dependencies) do
+    names[dep.name] = true
+  end
+  for _, memberId in ipairs({ 2, 7, 17, 3, 8, 19 }) do
+    Assert.isTrue(
+      names[Sources.archive.symbol .. ":member:" .. memberId] == true,
+      "the producer hashes backdrop member " .. memberId
+    )
+  end
+end
+
 function T.field_ui_compilation_publishes_ready_options(romFs, versionId)
   local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
   local bundle = assert(FieldUiCompiler.compile(romFs))
   local options = assert(bundle.manifest.options, "the field-UI class carries its options section")
-  Assert.equal(options.version, 1)
+  Assert.equal(options.version, 2)
   Assert.isTrue(bundle.manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] ~= nil, "the chrome atlas is indexed")
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest), "the extended class still validates")
   local cache = CacheFs.forVersion(versionId, FakeCache.new())

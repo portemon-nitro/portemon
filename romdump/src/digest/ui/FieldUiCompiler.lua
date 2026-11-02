@@ -2079,6 +2079,17 @@ local function compileOptions(romFs, deps, assets, manifestAssets)
   end
   manifestAssets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] =
     { image = bundle.atlas.image, width = bundle.atlas.width, height = bundle.atlas.height }
+  for _, background in ipairs(assert(bundle.backgrounds, "the options compiler publishes its backdrop index")) do
+    if manifestAssets[background.key] ~= nil then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the options compiler publishes a duplicate backdrop asset",
+        { key = background.key }
+      )
+    end
+    manifestAssets[background.key] =
+      { image = background.asset.image, width = background.asset.width, height = background.asset.height }
+  end
   return bundle.section
 end
 

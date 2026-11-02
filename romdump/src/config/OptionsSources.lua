@@ -4,7 +4,7 @@
 -- The audit basis is the retail ROM: members are identified by decoding
 -- every member of the options archive through the production G2D decoders
 -- and cross-checking the char/palette/cell/animation sets through the
--- resource lists and headers; screens 18 and 19 (the full backing planes)
+-- resource lists and headers; the screen-18 selection overlay
 -- and the Button Mode label row stay outside this contract. Pure data and
 -- pure functions; no I/O. Never imported by runtime: libs/assets, game,
 -- and script packages must not require this module.
@@ -30,11 +30,11 @@ OptionsSources.resdat = {
 
 -- Audited member groups inside the options archive (zero-based).
 -- Palettes 0 and 1 and chars 4, 5, and 6 serve the sprite sets through
--- the resdat lists; palette 2 and char 7 serve the baseline face outside
+-- the resdat lists; palette 2 and char 7 serve the MAIN base outside
 -- those lists. Char 7 carries the 128-tile baseline face bank the
--- unselected patches crop; screen 17 is the 256x256 baseline face.
--- Screen 18 and the full screen 19 are backing planes the menu never
--- ships. Char 8 and palette 3 stay outside the selected sets.
+-- unselected patches crop; screen 17 is the 256x256 MAIN base. The SUB
+-- base pairs palette 3 and char 8 with screen 19. Screen 18 is the
+-- separate MAIN selected-row overlay, never an opaque base.
 OptionsSources.members = {
   palettes = { 0, 1 },
   facePalette = 2,
@@ -43,7 +43,29 @@ OptionsSources.members = {
   cells = { 9, 10, 11, 12 },
   animations = { 13, 14, 15, 16 },
   faceScreen = 17,
+  previewPalette = 3,
+  previewChar = 8,
+  previewScreen = 19,
 }
+
+-- The two opaque base planes the generated backdrops compile, keyed by
+-- their display binding. The selection overlay screen 18 stays outside
+-- this table: it animates the selected row on MAIN_0, it never backs
+-- the full plane.
+OptionsSources.bases = {
+  controls = { display = "MAIN" },
+  preview = { display = "SUB" },
+}
+
+OptionsSources.bases.controls.paletteMember = OptionsSources.members.facePalette
+OptionsSources.bases.controls.charMember = OptionsSources.members.faceChar
+OptionsSources.bases.controls.screenMember = OptionsSources.members.faceScreen
+OptionsSources.bases.preview.paletteMember = OptionsSources.members.previewPalette
+OptionsSources.bases.preview.charMember = OptionsSources.members.previewChar
+OptionsSources.bases.preview.screenMember = OptionsSources.members.previewScreen
+
+-- The selected-row overlay member: a MAIN animation layer, not a base.
+OptionsSources.selectionOverlayScreen = 18
 
 -- Resource-set relationships transcribed from the options header set: each
 -- entry names the char/palette/cell/animation resource ids the resdat lists

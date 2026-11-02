@@ -132,6 +132,8 @@ FieldUiAssetCache.ASSET = {
   YES_NO_PROMPT_NO_NORMAL = "hgss.yes_no_prompt.no_normal",
   YES_NO_PROMPT_NO_SELECTED = "hgss.yes_no_prompt.no_selected",
   OPTIONS_CHROME = "hgss.options.chrome",
+  OPTIONS_CONTROLS_BACKGROUND = "hgss.options.controls_background",
+  OPTIONS_PREVIEW_BACKGROUND = "hgss.options.preview_background",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -537,10 +539,48 @@ local function checkOptionsSequence(sequence, what, atlases, assets)
 end
 
 local function checkOptions(s, atlases, assets)
-  if type(s.version) ~= "number" or s.version ~= 1 then
-    reject("options.version must be 1", { version = s.version })
+  if type(s.version) ~= "number" or s.version ~= 2 then
+    reject("options.version must be 2", { version = s.version })
   end
-  demandCount(s, 7, "options must carry exactly its version, labels, controls, previews, and tick rate", {})
+  demandCount(
+    s,
+    8,
+    "options must carry exactly its version, backdrops, labels, choices, arrows, actions, frame previews, and tick rate",
+    {}
+  )
+  local backdrops = s.backdrops
+  if type(backdrops) ~= "table" then
+    reject("options.backdrops must be a table", {})
+  end
+  demandCount(backdrops, 2, "options.backdrops must carry exactly the controls and preview roles", {})
+  local expectedRoles = {
+    controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
+    preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+  }
+  for role, assetKey in pairs(expectedRoles) do
+    if backdrops[role] ~= assetKey then
+      reject("options.backdrops." .. role .. " must reference its indexed backdrop asset", {
+        role = role,
+        value = backdrops[role],
+      })
+    end
+    local dims = atlases[assetKey]
+    if type(dims) ~= "table" then
+      reject("options.backdrops." .. role .. " must reference an indexed asset", { role = role })
+    end
+    if dims.width ~= 256 or dims.height ~= 192 then
+      reject("options.backdrops." .. role .. " must be the 256x192 field screen", {
+        role = role,
+        width = dims.width,
+        height = dims.height,
+      })
+    end
+  end
+  for role in pairs(backdrops) do
+    if expectedRoles[role] == nil then
+      reject("options.backdrops carries an unknown role", { role = role })
+    end
+  end
   if
     type(s.animationTickSeconds) ~= "number"
     or s.animationTickSeconds ~= s.animationTickSeconds

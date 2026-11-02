@@ -1041,6 +1041,52 @@ function T.stale_prompt_less_manifest_schema_is_rejected()
   Assert.isFalse(ok, "a manifest on the previous schema without the prompt section is stale")
 end
 
+-- The option-control section carries exactly the two indexed backdrop
+-- roles (controls and preview) at the 256x192 field size under manifest
+-- version 2. A missing role, an extra role, a swapped or unindexed asset
+-- id, a missized indexed asset, or the previous version 1 shape is stale.
+function T.options_backdrops_require_the_two_indexed_roles()
+  local manifest = validManifest()
+  Assert.equal(manifest.options.version, 2, "the fixture carries the current options section")
+  Assert.equal(manifest.options.backdrops.controls, FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND)
+  Assert.equal(manifest.options.backdrops.preview, FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND)
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the two indexed 256x192 backdrops validate")
+  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v24")
+  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v24")
+  local cases = {
+    ["missing preview role"] = function(o)
+      o.backdrops.preview = nil
+    end,
+    ["extra role"] = function(o)
+      o.backdrops.overlay = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND
+    end,
+    ["swapped roles"] = function(o)
+      o.backdrops.controls, o.backdrops.preview = o.backdrops.preview, o.backdrops.controls
+    end,
+    ["unindexed asset id"] = function(o)
+      o.backdrops.preview = "hgss.options.missing"
+    end,
+    ["missing section"] = function(o)
+      o.backdrops = nil
+    end,
+    ["previous version"] = function(o)
+      o.version = 1
+    end,
+  }
+  for name, mutate in pairs(cases) do
+    local broken = validManifest()
+    mutate(broken.options)
+    local ok, err = FieldUiAssetCache.validateManifest(broken)
+    Assert.isFalse(ok, "the malformed options backdrop contract is rejected (" .. name .. ")")
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  local missized = validManifest()
+  missized.assets[FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND].width = 128
+  local ok, err = FieldUiAssetCache.validateManifest(missized)
+  Assert.isFalse(ok, "a missized indexed backdrop asset is rejected")
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+end
+
 function T.prompt_section_rejects_wrong_dimensions()
   local cases = {
     function(s)
