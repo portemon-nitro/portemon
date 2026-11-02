@@ -533,10 +533,10 @@ function T.doubles_battles_never_offer_the_switch()
   session:dispose()
 end
 
--- A simultaneous knockout replaces the player first: the mandatory
--- replacement precedes the optional offer, and the offer follows once
--- the player side stands again.
-function T.simultaneous_knockout_replaces_the_player_first_then_offers()
+-- A simultaneous knockout replaces both sides without an offer: the
+-- mandatory player arrival settles first, the foe arrival follows, and
+-- the next ordinary turn opens with no optional exchange.
+function T.simultaneous_knockout_replaces_both_sides_without_an_offer()
   local contracts = SessionFixture.sessionContracts()
   local Executor = executorOwner()
   local playerLead = { id = 1, mon = SessionFixture.makeMon(11) }
@@ -594,7 +594,7 @@ function T.simultaneous_knockout_replaces_the_player_first_then_offers()
       end
     end
   end
-  Assert.notNil(mandatory, "the mandatory player replacement precedes the offer")
+  Assert.notNil(mandatory, "the mandatory player replacement precedes the foe arrival")
   local options = session:decisionOptions((mandatory --[[@as table]]).requestId)
   local fragment = nil
   for _, actor in ipairs(options.actors or {}) do
@@ -607,9 +607,24 @@ function T.simultaneous_knockout_replaces_the_player_first_then_offers()
   Assert.notNil(fragment, "the mandatory replacement names its reserve")
   local ok, replyErr = session:submit(SessionFixture.replyFor(mandatory --[[@as table]], { fragment }))
   Assert.isTrue(ok, "the mandatory replacement is accepted: " .. tostring(replyErr))
-  local offered = session:advance(1024)
-  Assert.equal(offered.status, "waiting", "the held foe replacement suspends on the offer")
-  Assert.notNil(findShiftRequest(session, offered), "the standing player side is offered the switch")
+  local resumed = session:advance(1024)
+  Assert.equal(resumed.status, "waiting", "the mutual knockout settles into the next decision")
+  Assert.isNil(findShiftRequest(session, resumed), "a mutual knockout never offers the switch")
+  local sawAction = false
+  for _, request in ipairs(resumed.request.requests) do
+    local resumedOptions = session:decisionOptions(request.requestId)
+    Assert.notNil(resumedOptions, "the next turn projects its options")
+    for _, actor in ipairs(resumedOptions.actors or {}) do
+      Assert.isTrue(
+        type(actor) ~= "table" or (actor.kind ~= "shift" and actor.kind ~= "replacement"),
+        "the next turn carries no exchange actor"
+      )
+      if type(actor) == "table" and actor.kind == "action" then
+        sawAction = true
+      end
+    end
+  end
+  Assert.isTrue(sawAction, "the next ordinary turn follows without an offer")
   session:dispose()
 end
 

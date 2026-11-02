@@ -6911,86 +6911,41 @@ function HgssSessionExecutor:_commitReplacement(state)
     end
   end
   local claimed = {} ---@type table<integer, boolean>
-  -- Holds internal foe replacements for the optional Shift offer once
-  -- mandatory player entries settle. Only trainer singles under Shift
-  -- take this path: every other style, format, or kind keeps the
-  -- legacy settlement order below untouched.
-  local held = {} ---@type table<integer, table<string, unknown>>
-  for _, obligation in ipairs(obligations) do
-    if obligation.internal then
-      held[#held + 1] = obligation
-    end
-  end
-  local offerCheck = self._shiftOfferHandler
-  if
-    #held > 0
-    and #held < #obligations
-    and type(offerCheck) == "function"
-    and self._battleKind == "trainer"
-    and singlesFormatFor(state.format --[[@as string]])
-    and playerShiftStyle(state) == "shift"
-  then
+  -- A batch that already carries a compulsory player entry settles
+  -- without opening an optional exchange for the same occurrence.
+  -- Order the local view so compulsory entries settle before the
+  -- internally selected foe arrivals in trainer singles under Shift;
+  -- every other batch keeps its stored order.
+  local ordered = obligations
+  do
+    local external = 0
     for _, obligation in ipairs(obligations) do
       if not obligation.internal then
-        local picked = picks[
-          obligation.combatant --[[@as integer]]
-        ]
-        assert(picked ~= nil, "open replacements commit only with every reply stored")
-        local live = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
-        local kept = false
-        for _, candidate in ipairs(live) do
-          if candidate == picked then
-            kept = true
-          end
-        end
-        assert(kept, "replacement replies hold their reserve through suspension")
-        claimed[picked] = true
-        enterReserve(state, self._moneyUpItems, obligation, picked)
-        local settleArrival = self._settleEntryTiming
-        assert(type(settleArrival) == "function", "replacement entries run through the bound timing seam")
-        settleArrival(state, picked)
+        external = external + 1
       end
     end
-    if offerCheck(state, held) ~= nil then
-      local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-      local roundFrame = frames[#frames]
-      assert(roundFrame ~= nil and roundFrame.kind == "round", "replacement commits its round frame")
-      frames[#frames] = nil
-      state.pending = nil
-      state.queue = {}
-      -- The mandatory entries settled above: hazard faints from their
-      -- arrivals drain beside the held foe replacement, exactly like
-      -- the turn-close tail, so the offer opens over settled state.
-      local settleHeld = self._settlePostReplacement
-      assert(type(settleHeld) == "function", "hazard faints drain through the bound turn seam")
-      settleHeld(state, held)
-      return
+    if
+      external > 0
+      and external < #obligations
+      and self._battleKind == "trainer"
+      and singlesFormatFor(state.format --[[@as string]])
+      and playerShiftStyle(state) == "shift"
+    then
+      local view = {} ---@type table<integer, table<string, unknown>>
+      for _, obligation in ipairs(obligations) do
+        if not obligation.internal then
+          view[#view + 1] = obligation
+        end
+      end
+      for _, obligation in ipairs(obligations) do
+        if obligation.internal then
+          view[#view + 1] = obligation
+        end
+      end
+      ordered = view
     end
-    -- The gate declined over settled mandatory entries (for example a
-    -- trapped player side): the held foe replacements enter through
-    -- the existing internal owner instead of an offer.
-    for _, obligation in ipairs(held) do
-      local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
-      assert(#reserves > 0, "held internal replacements keep their reserve")
-      local reserve = reserves[1]
-      claimed[reserve] = true
-      enterReserve(state, self._moneyUpItems, obligation, reserve)
-      local settleArrival = self._settleEntryTiming
-      assert(type(settleArrival) == "function", "replacement entries run through the bound timing seam")
-      settleArrival(state, reserve)
-    end
-    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-    local roundFrame = frames[#frames]
-    assert(roundFrame ~= nil and roundFrame.kind == "round", "replacement commits its round frame")
-    frames[#frames] = nil
-    state.pending = nil
-    state.queue = {}
-    local settleReplacements = self._settlePostReplacement
-    assert(type(settleReplacements) == "function", "hazard faints drain through the bound turn seam")
-    settleReplacements(state)
-    return
   end
-  for _, obligation in ipairs(obligations) do
+  for _, obligation in ipairs(ordered) do
     local reserve ---@type integer
     if obligation.internal then
       local reserves = eligibleReserves(state, obligation.participant --[[@as integer]], claimed)
