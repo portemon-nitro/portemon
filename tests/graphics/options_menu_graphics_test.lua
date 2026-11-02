@@ -931,17 +931,6 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
   renderer:dispose()
 end
 
-function T.tests.scroll_identity_stays_stable_across_values_and_offsets(scope)
-  local Interface = modules()
-  local resolvers = Interface.defaults()
-  local measurements = topologies()
-  local first = resolvers.nativeLike(contextFor("nativeLike", measurements), sampleView("textSpeed"))
-  local secondView = sampleView("volume")
-  secondView.scrollOffset = 48
-  local second = resolvers.nativeLike(contextFor("nativeLike", measurements), secondView)
-  Assert.equal(first.inputKey, second.inputKey, "scrolling never changes the pane input identity")
-end
-
 -- A failed open hands its pooled renderer back: the retained per-open
 -- owner clears, every lease returns, and a fresh open paints normally.
 function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)

@@ -1,12 +1,14 @@
--- Integrated Options journeys through the production field composition:
--- the Start Menu unlock/capability gate, the seven-setting child, the
--- two-scope confirmation contract, cancellation/failure restoration,
--- ordinary Save/reload durability, and the battle-launch consumer
--- wiring through one real deterministic trainer battle per scene value.
--- Acceptance stops before GPU rendering; audio output is a deterministic
--- recording fake and the save root is isolated per boot. This suite
--- proves the menu, persistence, field next-use, and battle wiring
--- through real composition.
+-- The one real Options journey through the production field composition:
+-- the Start Menu unlock, the seven-setting child, an abandoned draft that
+-- changes nothing durable, a confirmed draft across both persistence
+-- scopes, ordinary Save/reload durability, and the battle-launch consumer
+-- wiring through one real deterministic trainer battle under Scene Off,
+-- Shift, and double speed. Cancellation details, legacy records, and
+-- failed writes stay pinned by cheaper owner tests; Scene On admission and
+-- the remaining speeds live with their battle owners. Acceptance stops
+-- before GPU rendering; audio output is a deterministic recording fake
+-- and the save root is isolated per boot. This suite proves the menu,
+-- persistence, field next-use, and battle wiring through real composition.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -240,17 +242,10 @@ local function loadStoredRuntime(game)
   return installVolumePort(game)
 end
 
--- Drives footer focus from the volume row: down to battle speed, then
--- down once more onto confirm.
-local function navigateToOptionsConfirm(game, state)
-  pressKey(game, state, "s")
-  pressKey(game, state, "s")
-end
-
-function T.tests.options_opens_from_the_unlocked_start_menu_with_seven_settings()
+function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives_save_reload()
   withGame(function(game)
     local state = hostCallbacks(game)
-    installVolumePort(game)
+    local port = installVolumePort(game)
     local view = openOptions(game, state)
     Assert.deepEqual(rowIds(view), {
       "textSpeed",
@@ -264,35 +259,37 @@ function T.tests.options_opens_from_the_unlocked_start_menu_with_seven_settings(
     Assert.isTrue(view.footer ~= nil and view.footer.confirm ~= nil, "the footer carries confirm")
     Assert.isTrue(view.footer.quit ~= nil, "the footer carries quit")
     Assert.equal(view.focusId, "textSpeed", "the menu opens focused on the first row")
+    -- An abandoned draft changes nothing durable: edit, Quit, reopen.
+    local committedSpeed = game.runtime.playerData.options.textSpeed
+    local committedVolume = port:read()
+    pressKey(game, state, "a")
+    optionsView(game)
     cancel(game)
     game:advanceUntil("quit returns to the rebuilt start menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.menu
     end, 120)
-    local rebuilt = menuStatus(game)
     Assert.equal(
-      cursorActionId(rebuilt),
-      OPTIONS_ACTION,
-      "the return remembers the options selection"
+      game.runtime.playerData.options.textSpeed,
+      committedSpeed,
+      "quit leaves the live player record untouched"
     )
+    Assert.equal(port:read(), committedVolume, "quit leaves the committed volume untouched")
     closeStartMenu(game)
-  end)
-end
-
-function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives_save_reload()
-  withGame(function(game)
-    local state = hostCallbacks(game)
-    local port = installVolumePort(game)
-    local view = openOptions(game, state)
-    Assert.equal(view.focusId, "textSpeed", "editing starts on the first row")
+    -- The committed draft keeps Shift, turns Scene Off, doubles the
+    -- presentation speed, and raises text speed and volume.
+    openOptions(game, state)
     pressKey(game, state, "a")
-    for _ = 1, 5 do
+    pressKey(game, state, "s")
+    pressKey(game, state, "d")
+    for _ = 1, 4 do
       pressKey(game, state, "s")
     end
-    local edited = optionsView(game)
-    Assert.equal(edited.focusId, "volume", "five downs reach the volume row")
     pressKey(game, state, "d")
     pressKey(game, state, "d")
-    navigateToOptionsConfirm(game, state)
+    pressKey(game, state, "s")
+    pressKey(game, state, "d")
+    pressKey(game, state, "s")
+    Assert.equal(optionsView(game).focusId, "confirm", "the edited rows reach the footer confirm")
     confirm(game)
     game:advanceUntil("confirm returns to the rebuilt start menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.menu
@@ -301,6 +298,21 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
       game.runtime.playerData.options.textSpeed,
       "fast",
       "the confirmed text speed lands on the live player record"
+    )
+    Assert.equal(
+      game.runtime.playerData.options.battleScene,
+      false,
+      "the confirmed record carries Scene Off"
+    )
+    Assert.equal(
+      game.runtime.playerData.options.battleStyle,
+      "shift",
+      "the confirmed record keeps Shift"
+    )
+    Assert.equal(
+      game.runtime.playerData.options.battleSpeed,
+      2,
+      "the confirmed record carries double speed"
     )
     Assert.equal(port:read(), 82, "the confirmed volume publishes through the app-wide port")
     game:setWorldState({ flag = FLAG_GOT_SAVE })
@@ -313,118 +325,29 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
     game:advanceUntil("the ordinary save publishes", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.closed and game.lifecycle.saveWrites > 0
     end, 240)
-  local reloadedPort = loadStoredRuntime(game)
+    local reloadedPort = loadStoredRuntime(game)
     game:waitForFieldEntry()
     Assert.equal(
       game.runtime.playerData.options.textSpeed,
       "fast",
       "the ordinary save retains the confirmed player option across reload"
     )
+    Assert.equal(
+      game.runtime.playerData.options.battleScene,
+      false,
+      "the ordinary save retains Scene Off across reload"
+    )
+    Assert.equal(
+      game.runtime.playerData.options.battleSpeed,
+      2,
+      "the ordinary save retains double speed across reload"
+    )
     Assert.equal(reloadedPort:read(), 82, "the app-wide volume carries across the save boundary")
-  end)
-end
-
-function T.tests.options_cancel_restores_the_committed_baseline()
-  withGame(function(game)
-    local state = hostCallbacks(game)
-    local port = installVolumePort(game)
-    local committedSpeed = game.runtime.playerData.options.textSpeed
-    local committedVolume = port:read()
-    openOptions(game, state)
-    pressKey(game, state, "a")
-    optionsView(game)
-    cancel(game)
-    game:advanceUntil("cancel returns to the rebuilt start menu", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    Assert.equal(
-      game.runtime.playerData.options.textSpeed,
-      committedSpeed,
-      "cancel leaves the live player record untouched"
-    )
-    Assert.equal(port:read(), committedVolume, "cancel leaves the committed volume untouched")
-    closeStartMenu(game)
-  end)
-end
-
--- A legacy Slow record opens staged: the draft carries Mid with a
--- readable note, Quit preserves the Slow record, and Confirm adopts Mid.
-function T.tests.options_legacy_slow_quit_preserves_while_confirm_adopts_mid()
-  withGame(function(game)
-    local state = hostCallbacks(game)
-    installVolumePort(game)
-    game.runtime.playerData.options.textSpeed = "slow"
-    local staged = openOptions(game, state)
-    local stagedRow = nil
-    for _, row in ipairs(assert(staged.rows, "the options status must publish its rows")) do
-      if row.id == "textSpeed" then
-        stagedRow = row
-      end
-    end
-    Assert.notNil(stagedRow, "the staged menu publishes its text row")
-    Assert.equal(stagedRow.value, "mid", "a legacy Slow draft stages Mid")
-    Assert.isTrue(staged.legacyNote ~= nil, "the staging explains that Confirm replaces Slow")
-    cancel(game)
-    game:advanceUntil("quit returns to the rebuilt start menu", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    Assert.equal(
-      game.runtime.playerData.options.textSpeed,
-      "slow",
-      "quit preserves the legacy Slow record"
-    )
-    closeStartMenu(game)
-    openOptions(game, state)
-    for _ = 1, 7 do
-      pressKey(game, state, "s")
-    end
-    Assert.equal(optionsView(game).focusId, "confirm", "seven downs reach the footer confirm")
-    confirm(game)
-    game:advanceUntil("confirm returns to the rebuilt start menu", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    Assert.equal(
-      game.runtime.playerData.options.textSpeed,
-      "mid",
-      "confirm adopts the staged Mid through the real factory"
-    )
-    closeStartMenu(game)
-  end)
-end
-
-function T.tests.options_volume_failure_keeps_the_menu_open_with_draft_intact()
-  withGame(function(game)
-    local state = hostCallbacks(game)
-    local port = installVolumePort(game)
-    local committedSpeed = game.runtime.playerData.options.textSpeed
-    openOptions(game, state)
-    pressKey(game, state, "a")
-    for _ = 1, 5 do
-      pressKey(game, state, "s")
-    end
-    pressKey(game, state, "d")
-    local realCommit = port.commit
-    port.commit = function(percent)
-      error("SAVE_WRITE_FAILED: injected storage failure", 0)
-    end
-    navigateToOptionsConfirm(game, state)
-    confirm(game)
-    game:step()
-    game:step()
-    local view = optionsView(game)
-    Assert.isTrue(view.open, "a failed confirm keeps the menu open")
-    Assert.isTrue(view.error ~= nil, "a failed confirm publishes a readable error")
-    Assert.equal(
-      game.runtime.playerData.options.textSpeed,
-      committedSpeed,
-      "a failed confirm never touches the live player record"
-    )
-    port.commit = realCommit
-    confirm(game)
-    game:advanceUntil("the retry confirms after recovery", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    closeStartMenu(game)
+    -- The live values wire into real battles: double speed steps two
+    -- quanta per tick, and the trainer fight offers the Shift exchange
+    -- while Scene Off omits the optional move program.
+    driveMenuSpeedLeg(game)
+    driveMenuBattleLeg(game, "launch-options-scene-off", 0)
   end)
 end
 
@@ -873,66 +796,6 @@ local function driveMenuSpeedLeg(game)
   end)
   pcall(function()
     envelope:dispose()
-  end)
-end
-
--- Confirming style/scene/speed rows through the real menu wires them into
--- real deterministic trainer battles: the Shift offer appears, the move
--- animation omits under Scene Off and admits under Scene On, and double
--- speed steps two quanta.
-function T.tests.options_confirm_wires_style_scene_and_speed_into_a_real_trainer_battle()
-  withGame(function(game)
-    local state = hostCallbacks(game)
-    installVolumePort(game)
-    openOptions(game, state)
-    pressKey(game, state, "s")
-    pressKey(game, state, "d")
-    pressKey(game, state, "s")
-    pressKey(game, state, "d")
-    pressKey(game, state, "a")
-    pressKey(game, state, "s")
-    pressKey(game, state, "s")
-    pressKey(game, state, "s")
-    pressKey(game, state, "s")
-    pressKey(game, state, "d")
-    pressKey(game, state, "s")
-    Assert.equal(optionsView(game).focusId, "confirm", "the edited rows reach the footer confirm")
-    confirm(game)
-    game:advanceUntil("confirm returns to the rebuilt start menu", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    local confirmed = game.runtime.playerData.options
-    Assert.equal(confirmed.battleStyle, "shift", "the confirmed record carries Shift")
-    Assert.equal(confirmed.battleScene, false, "the confirmed record carries Scene Off")
-    Assert.equal(confirmed.battleSpeed, 2, "the confirmed record carries double speed")
-    Assert.equal(confirmed.textSpeed, "fastest", "untouched rows keep their baseline")
-    driveMenuSpeedLeg(game)
-    driveMenuBattleLeg(game, "launch-options-scene-off", 0)
-    closeStartMenu(game)
-    openOptions(game, state)
-    pressKey(game, state, "s")
-    pressKey(game, state, "a")
-    for _ = 1, 6 do
-      pressKey(game, state, "s")
-    end
-    Assert.equal(optionsView(game).focusId, "confirm", "the scene row reaches the footer confirm")
-    confirm(game)
-    game:advanceUntil("the scene confirm returns to the rebuilt start menu", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-    Assert.equal(game.runtime.playerData.options.battleScene, true, "the second confirm adopts Scene On")
-    Assert.equal(
-      game.runtime.playerData.options.battleStyle,
-      "shift",
-      "the second confirm preserves Shift"
-    )
-    Assert.equal(
-      game.runtime.playerData.options.battleSpeed,
-      2,
-      "the second confirm preserves double speed"
-    )
-    driveMenuBattleLeg(game, "launch-options-scene-on", 1)
-    closeStartMenu(game)
   end)
 end
 

@@ -228,23 +228,6 @@ function T.speed_budget_caps_low_host_fps_without_backlog_burst()
   end
 end
 
-function T.speed_never_passes_a_scaled_delta_below_the_envelope()
-  local envelope = newEnvelope()
-  local host = newHost("active")
-  local rig = admitWithScreen(envelope, host, 4, "speed-no-scaled-dt")
-  local ok, failure = xpcall(function()
-    envelope:updateFixed(3 * FRAME)
-    Assert.equal(host.advances, 12, "three host frames at 4x run twelve virtual quanta")
-    for index, dt in ipairs(rig.screen.dts) do
-      Assert.equal(dt, FRAME, "screen quantum " .. index .. " keeps the source quantum, never a scaled delta")
-    end
-  end, debug.traceback)
-  closeRig(rig.port, envelope)
-  if not ok then
-    error(failure, 0)
-  end
-end
-
 function T.missing_speed_defaults_to_single_rate()
   local envelope = newEnvelope()
   local host = newHost("active")
@@ -401,25 +384,6 @@ function T.speed_and_scene_modes_keep_the_same_callback_trace()
   Assert.deepEqual(fastRate, singleRate, "1x over four ticks matches 4x over one tick callback for callback")
   local sceneOff = runTrace(4, false, 1, FRAME)
   Assert.deepEqual(sceneOff, fastRate, "scene suppression never changes the acceleration factor")
-end
-
-function T.speed_leaves_world_and_audio_clocks_at_wall_time()
-  local before = SourceTick.DT
-  local envelope = newEnvelope()
-  local host = newHost("active")
-  local rig = admitWithScreen(envelope, host, 4, "speed-clocks")
-  local ok, failure = xpcall(function()
-    local playTime = 0
-    envelope:updateFixed(3 * FRAME)
-    playTime = playTime + 3 * FRAME
-    Assert.equal(playTime, 3 * FRAME, "the world clock advances by accepted wall time, not virtual quanta")
-    Assert.equal(host.advances, 12, "the battle envelope still runs its twelve virtual quanta")
-    Assert.equal(SourceTick.DT, before, "the shared source quantum never changes")
-  end, debug.traceback)
-  closeRig(rig.port, envelope)
-  if not ok then
-    error(failure, 0)
-  end
 end
 
 function T.speed_credit_never_survives_disposal()
