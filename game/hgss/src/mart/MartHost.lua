@@ -54,7 +54,7 @@ function MartHost.new(opts)
   assert(type(service.openBuy) == "function" and type(service.openSell) == "function", "mart host requires sessions")
   assert(type(localDate) == "function" and type(stockResolver) == "function", "mart host providers must be functions")
   assert(type(createBuy) == "function" and type(createSell) == "function", "mart child factories must be functions")
-  assert(type(profile.badges) == "number" and type(profile.nationalDex) == "boolean", "mart profile facts are required")
+  assert(type(profile.badges) == "table" and type(profile.nationalDex) == "boolean", "mart profile facts are required")
   return setmetatable({
     _service = service,
     _catalog = catalog,

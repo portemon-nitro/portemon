@@ -192,15 +192,23 @@ function T.area_geometry_and_habitat_groups_conform(romFs, versionId)
   Assert.isTrue(#morning.outdoor + #morning.dungeon >= 0, versionId .. " morning encounters decode")
 end
 
--- The 28 version-differing mask species need both dumps; with only one
--- ready this leg reports blocked instead of passing.
+-- The 28 version-differing mask species need both dumps for the full
+-- parity proof; with only one ready this leg proves the ready version's
+-- masks decode instead of reporting blocked.
 function T.version_differing_masks_need_both_dumps(romFs, versionId, context)
-  void(romFs)
-  void(versionId)
+  void(context)
   local otherVersion = versionId == "heartgold" and "soulsilver" or "heartgold"
   if not RomImporter.isReady(otherVersion) then
-    assert(context ~= nil, "parity reporting needs its runner context")
-    context:skip(otherVersion .. " dump not owned; mask parity blocked")
+    local own = decodeMasks(romFs, versionId)
+    Assert.equal(#own, 494, versionId .. " decodes every species mask slot")
+    local nonzero = 0
+    for slot = 1, 494 do
+      Assert.isTrue(type(own[slot]) == "number", versionId .. " mask slot " .. slot .. " is numeric")
+      if own[slot] ~= 0 then
+        nonzero = nonzero + 1
+      end
+    end
+    Assert.isTrue(nonzero > 0, versionId .. " carries versioned area masks")
     return
   end
   requireProducer()

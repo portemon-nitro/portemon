@@ -100,7 +100,7 @@ local function worldWith(warps, spawns, rig)
       end,
       applyAvatarTransitions = stub(),
     },
-    profile = { badges = 0 },
+    profile = { badges = {} },
     weather = { change = stub() },
     reactions = { dispatch = stub() },
     warps = warps,
@@ -167,7 +167,7 @@ end
 local function contextWith()
   return {
     mapId = 176,
-    badges = 0,
+    badges = {},
     fieldUse = { cave = true, escapeAllowed = true, teleportAllowed = true },
   }
 end

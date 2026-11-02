@@ -463,7 +463,7 @@ function FieldScripts.new(opts)
   end
 
   -- The live badge progression borrows the supplied profile: badge reads
-  -- observe the persisted mask and awards mutate it in place. Without a
+  -- observe the persisted set and awards mutate it in place. Without a
   -- profile no facade is synthesized, so badge operations keep their
   -- missing-service fault instead of reading zero badges.
   local progression = nil

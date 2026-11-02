@@ -34,7 +34,7 @@ local function record(overrides)
         gender = 0,
         trainerId = 0,
         money = 3000,
-        badges = 0,
+        badges = {},
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
@@ -118,7 +118,7 @@ end
 function T.routing_identity_stays_strict_while_domain_state_passes_through()
   Assert.notNil(GameSave.normalize(record()))
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.normalize(record({ schema = "g4-game-save-v11" }))
+    return GameSave.normalize(record({ schema = "g4-game-save-v12" }))
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.normalize(record({ schema = "g4-field-save-v3" }))
@@ -173,7 +173,7 @@ function T.supported_history_migrates_to_current_without_generated_caches()
   local migrated = assert(GameSave.normalize(v3record()))
   Assert.equal(migrated.schema, GameSave.SCHEMA)
   Assert.equal(migrated.saveId, "save-00000001")
-  Assert.equal(migrated.playerData.profile.badges, 0)
+  Assert.deepEqual(migrated.playerData.profile.badges, {}, "the v3 mask converts to the empty badge set")
   Assert.equal(migrated.playerData.profile.nationalDex, false)
   Assert.deepEqual(migrated.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" })
   Assert.deepEqual(migrated.mart, MartSave.empty())

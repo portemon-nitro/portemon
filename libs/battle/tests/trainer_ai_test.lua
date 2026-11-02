@@ -1042,7 +1042,7 @@ local function playerFacts(money)
       gender = 0,
       trainerId = 1,
       money = money,
-      badges = 0,
+      badges = {},
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,

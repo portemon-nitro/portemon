@@ -4,6 +4,7 @@
 -- collaborator but the terrain/collision grid is production code.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerAvatarState = require("libs.hgss.src.actors.FieldPlayerAvatarState")
@@ -169,7 +170,7 @@ local function setup(map, player, avatar)
         return avatar:applyTransitions()
       end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function()
         error("traversal world tests cover no weather change", 2)

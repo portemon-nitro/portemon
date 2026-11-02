@@ -849,7 +849,7 @@ function T.tests.selectors_resolve_every_family_branch_in_source_order()
     { { eggHatched = true }, "elm-hatch" },
     { { everstone = true }, "elm-everstone" },
     { { rockets = true }, "elm-rockets" },
-    { { badges = 8, rockets = false }, "elm-early" },
+    { { badges = { zephyr = true }, rockets = false }, "elm-early" },
     { { gameClear = true }, "elm-clear" },
     { { ssTicket = true }, "elm-ticket" },
     { { pokerus = true }, "elm-pokerus" },
@@ -868,7 +868,12 @@ function T.tests.selectors_resolve_every_family_branch_in_source_order()
   check("elm", { localMap = true, panicCall = true }, "elm-local-map", "the local map precedes the panic call")
   check("elm", { localMap = false, panicCall = true }, "elm-panic", "a false local map falls through to panic")
   check("elm", { eggEvent = true, eggGift = true }, "elm-egg", "the egg call precedes its gift state")
-  check("elm", { badges = 3, rockets = true }, "elm-rockets", "rockets precede the badge default")
+  check(
+    "elm",
+    { badges = { zephyr = true }, rockets = true },
+    "elm-rockets",
+    "rockets precede the badge default"
+  )
   check("elm", { gameClear = true, pokerus = true }, "elm-clear", "the clear state precedes pokerus")
   check("elm", { ssTicket = true, pokerus = true }, "elm-ticket", "the ticket precedes pokerus")
 
@@ -1339,7 +1344,7 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
       gender = 0,
       trainerId = 1,
       money = 3000,
-      badges = 0,
+      badges = {},
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,

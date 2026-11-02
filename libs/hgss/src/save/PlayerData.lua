@@ -116,10 +116,12 @@ local function validate(record, context)
       })
     end
   end
-  -- Badge state stays in the canonical profile: validation delegates the
-  -- 16-bit mask discipline to the durable progression owner.
-  if not PlayerProgression.isMask(profile.badges) then
-    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player badges must be a 16-bit mask", {
+  -- Badge state stays in the canonical profile as an open key-value set:
+  -- validation delegates the set discipline to the durable progression
+  -- owner, and normalization below copies the set so the validated
+  -- record never aliases caller-owned badge state.
+  if not PlayerProgression.isBadgeSet(profile.badges) then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player badges must be an open badge set", {
       badges = profile.badges,
     })
   end
@@ -158,6 +160,10 @@ local function validate(record, context)
       battleStyle = options.battleStyle,
     })
   end
+  local badges = {}
+  for key, owned in pairs(profile.badges) do
+    badges[key] = owned
+  end
   return {
     profile = {
       name = profile.name,
@@ -165,7 +171,7 @@ local function validate(record, context)
       gender = profile.gender,
       trainerId = trainerId,
       money = money,
-      badges = profile.badges,
+      badges = badges,
       nationalDex = profile.nationalDex,
       runningShoes = profile.runningShoes,
       runningShoesLock = profile.runningShoesLock,

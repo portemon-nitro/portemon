@@ -93,7 +93,7 @@ local function worldWith(warps, spawns, travel)
       queueAvatarTransition = stub(),
       applyAvatarTransitions = stub(),
     },
-    profile = { badges = 0 },
+    profile = { badges = {} },
     weather = { change = stub() },
     reactions = { dispatch = stub() },
     warps = warps,
@@ -404,7 +404,7 @@ local function flyWorldWith(overrides)
       queueAvatarTransition = stub(),
       applyAvatarTransitions = stub(),
     },
-    profile = { badges = 0 },
+    profile = { badges = {} },
     weather = { change = stub() },
     reactions = { dispatch = stub() },
     camera = function()
@@ -599,7 +599,7 @@ local function performingWorldWith(overrides)
       queueAvatarTransition = stub(),
       applyAvatarTransitions = stub(),
     },
-    profile = { badges = 0 },
+    profile = { badges = {} },
     weather = { change = stub() },
     reactions = { dispatch = stub() },
     party = overrides.noParty and nil or {

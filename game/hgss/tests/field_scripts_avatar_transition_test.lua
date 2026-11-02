@@ -191,7 +191,7 @@ local function build(files, avatarComposition)
     eventState = FieldEventState.new(),
     actors = stubActors(),
     player = player,
-    profile = { gender = 0, name = "Gold", badges = 0 },
+    profile = { gender = 0, name = "Gold", badges = {} },
     dialogue = {
       isModal = function()
         return false

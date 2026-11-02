@@ -1365,6 +1365,27 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       instruction.target = #instructions + 1
     end
   end
+  -- Contest-branch fallthrough arms end before the branch target: a reset
+  -- there closes its own arm, so reaching it drains past the stream end
+  -- instead of falling through into the exclusive contest arm and
+  -- reusing a freed particle system (STRING_SHOT stages its load once
+  -- before the branch and destroys it in each arm).
+  for _, instruction in ipairs(instructions) do
+    if
+      instruction.op == "branch-on-interpreter-state"
+      and type(instruction.values) == "table"
+      and instruction.values[1] == 1
+      and type(instruction.branchTarget) == "number"
+    then
+      local boundary = instruction.branchTarget
+      if boundary > 1 and boundary <= #instructions + 1 then
+        local closing = instructions[boundary - 1]
+        if closing ~= nil and closing.op == "reset-battle-presentation" then
+          closing.target = #instructions + 1
+        end
+      end
+    end
+  end
   return instructions, instructionOffsets
 end
 

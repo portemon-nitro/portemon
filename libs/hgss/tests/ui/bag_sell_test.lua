@@ -19,7 +19,7 @@ local function resources(money)
   root.items.ITEM_1.price = 1
   local itemCatalog = ItemCatalog.new(root)
   local bag = HgssBagService.new({ catalog = itemCatalog, bag = BagSave.empty() })
-  local profile = { money = money, badges = 0, nationalDex = false }
+  local profile = { money = money, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

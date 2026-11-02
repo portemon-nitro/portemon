@@ -46,13 +46,11 @@ end
 
 local function resolveStandard(context, catalog)
   local badges = context.badges
-  assert(
-    type(badges) == "number" and badges % 1 == 0 and badges >= 0 and badges <= 65535,
-    "mart resolver requires a 16-bit badge snapshot"
-  )
+  assert(type(badges) == "table", "mart resolver requires an open badge set snapshot")
   local count = 0
-  for index = 0, 15 do
-    if math.floor(badges / (2 ^ index)) % 2 == 1 then
+  for key, owned in pairs(badges) do
+    assert(type(key) == "string" and key ~= "", "mart badge keys are non-empty strings")
+    if owned == true then
       count = count + 1
     end
   end

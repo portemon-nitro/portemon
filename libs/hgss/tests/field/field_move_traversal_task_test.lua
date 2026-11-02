@@ -3,6 +3,7 @@
 -- explicit fixtures. Only the geography is synthetic.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
@@ -178,7 +179,7 @@ local function setup(map, player, avatar)
         return avatar:applyTransitions()
       end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     party = {
       knowsMove = function(_, key)
         return knownMoves[key] == true
@@ -223,7 +224,7 @@ local function shoreRig()
   local player = FieldPlayer.new({ currentMap = map, fieldX = 2, fieldZ = 3, surfaceId = 0, facing = "south" })
   local avatar = rigAvatar("walking")
   local context = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     mapSymbol = "test-water",
     mapId = 61,
     fieldUse = {},

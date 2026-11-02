@@ -30,7 +30,7 @@ local function resources(balance, potionName, medicinePocketName)
   local items = ItemCatalog.new(root)
   local bag = HgssBagService.new({ catalog = items, bag = BagSave.empty() })
   local service = MartService.new({
-    profile = { money = balance or 1000, badges = 0, nationalDex = false },
+    profile = { money = balance or 1000, badges = {}, nationalDex = false },
     bag = bag,
     itemCatalog = items,
     catalog = { cards = {}, apricorns = {}, seals = {}, decorations = {} },
@@ -787,7 +787,7 @@ local function watchedResources(balance, entryCount)
     return rawItem(self, key)
   end
   local bag = HgssBagService.new({ catalog = items, bag = BagSave.empty() })
-  local profile = { money = balance or 1000, badges = 0, nationalDex = false }
+  local profile = { money = balance or 1000, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

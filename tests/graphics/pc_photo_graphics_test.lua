@@ -2,6 +2,7 @@
 -- renderer receives the immutable view snapshot.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CollisionFixture = require("tests.support.CollisionFixture")
@@ -965,7 +966,7 @@ local function menuWorldPorts()
       queueAvatarTransition = function() end,
       applyAvatarTransitions = function() end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function() end,
     },

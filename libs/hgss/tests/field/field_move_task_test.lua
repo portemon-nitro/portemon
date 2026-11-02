@@ -7,6 +7,7 @@
 -- illumination, or single-owner admission at this boundary.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -167,7 +168,7 @@ end
 
 local function context(overrides)
   local base = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     unionOrColosseum = false,
     mapSymbol = "test-map",
     mapId = 61,
@@ -267,7 +268,7 @@ local function ports(manager, eventState, map, overrides)
         return nil
       end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function(_, weatherId)
         weatherChanged[#weatherChanged + 1] = weatherId

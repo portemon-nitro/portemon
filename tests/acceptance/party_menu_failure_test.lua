@@ -443,7 +443,7 @@ local function validPlayerData()
       gender = 0,
       trainerId = 1,
       money = 3000,
-      badges = 0,
+      badges = {},
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
@@ -554,7 +554,7 @@ function T.tests.missing_travel_saves_while_broken_envelopes_reject_with_file_pr
   Assert.isTrue(store:save(withoutTravel), "a record without travel facts still saves; field restore owns that state")
   local before = snapshotBytes(backend, saveId)
   local envelopeBroken = validRecord(saveId)
-  envelopeBroken.schema = "g4-game-save-v11"
+  envelopeBroken.schema = "g4-game-save-v12"
   local ok, failure = pcall(function()
     return store:save(envelopeBroken)
   end)
@@ -601,7 +601,7 @@ function T.tests.v3_record_migrates_through_store_load()
   Assert.equal(loaded.schema, GameSave.SCHEMA, "load exposes the current migrated schema")
   Assert.isNil(loaded.battleFrontier, "v3 migration carries no Frontier bucket")
 
-  Assert.equal(loaded.playerData.profile.badges, 0, "migration starts with zero badges")
+  Assert.deepEqual(loaded.playerData.profile.badges, {}, "migration starts with zero badges")
   Assert.deepEqual(loaded.fieldTravel, { lastHealSpawn = "SPAWN_NEW_BARK" }, "migration seeds the mother spawn")
   Assert.equal(loaded.playerData.profile.name, "GOLD", "migration preserves the profile")
 end

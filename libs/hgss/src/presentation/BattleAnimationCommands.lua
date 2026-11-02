@@ -202,10 +202,11 @@ local function successors(instructions, index)
   if op == "source-assertion" then
     return next
   end
-  if op ~= "call-subprogram" and op ~= "skip-words" then
+  local isJump = op == "skip-words" or (op == "reset-battle-presentation" and type(instruction.target) == "number")
+  if op ~= "call-subprogram" and not isJump then
     link(index + 1)
   end
-  if op == "skip-words" then
+  if isJump then
     link(instruction.target)
   else
     link(instruction.branchTarget)
@@ -809,13 +810,17 @@ end
 Handlers["source-assertion"] = handleSourceAssertion
 
 local function handleResetBattlePresentation(exec, instruction, index)
-  local _ = instruction
-  -- The normalized reset applies presentation-state restoration inline
-  -- and never ends the occurrence on its own: lowered branch and call
-  -- layouts provably emit instructions past a reset, so completion stays
-  -- with the stream-end boundary and its source-condition verify.
+  -- The normalized reset applies presentation-state restoration inline.
+  -- Most resets fall through to the following instruction; a reset that
+  -- closes a contest-branch fallthrough arm carries its stream-end target
+  -- and drains there instead of falling through into the exclusive
+  -- contest arm.
   exec.note({ op = "reset-battle-presentation", index = index })
-  exec.advance()
+  if type(instruction.target) == "number" then
+    exec.jump(instruction.target)
+  else
+    exec.advance()
+  end
   return "continue"
 end
 Handlers["reset-battle-presentation"] = handleResetBattlePresentation

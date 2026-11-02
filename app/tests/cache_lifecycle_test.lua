@@ -90,7 +90,7 @@ local function record(saveId, overrides)
         gender = 0,
         trainerId = 0,
         money = 3000,
-        badges = 0,
+        badges = {},
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
@@ -1094,13 +1094,26 @@ local function supportedFieldMapId(host)
   error("no supported field map for the selection", 0)
 end
 
----@param context table runner context for capability skips
----@param fn fun(App: table, harness: table)
-local function withLiveApp(context, fn)
+---@return string? ready version identity for live provisioning, preferring HeartGold
+local function liveVersion()
   local RomImporter = require("romdump.src.source.RomImporter")
-  if not RomImporter.isReady(VERSION) then
+  if RomImporter.isReady("heartgold") then
+    return "heartgold"
+  end
+  if RomImporter.isReady("soulsilver") then
+    return "soulsilver"
+  end
+  return nil
+end
+
+---@param context table runner context for capability skips
+---@param fn fun(App: table, harness: table, versionId: string)
+local function withLiveApp(context, fn)
+  local versionId = liveVersion()
+  if versionId == nil then
     context:skip("no ready user-owned HGSS dump")
   end
+  local RomImporter = require("romdump.src.source.RomImporter")
   local App = require("app.src.App")
   local HgssGame = require("game.hgss.src.HgssGame")
   local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -1227,7 +1240,7 @@ local function withLiveApp(context, fn)
       },
     }, { __index = realLove })
   )
-  local ok, err = pcall(fn, App, harness)
+  local ok, err = pcall(fn, App, harness, versionId)
   restoreStartupTitle()
   rawset(_G, "love", realLove)
   restoreFirstPlayCompletion(completionOriginals)
@@ -1261,8 +1274,8 @@ local function selectVersion(App, versionId)
 end
 
 function T.drop_during_pending_work_retires_interest_before_source_closure(context)
-  withLiveApp(context, function(App, harness)
-    local provisioner = selectVersion(App, VERSION)
+  withLiveApp(context, function(App, harness, versionId)
+    local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
     local host = provisioner:gameHost()
     local mapId = supportedFieldMapId(host)
@@ -1299,8 +1312,8 @@ function T.drop_during_pending_work_retires_interest_before_source_closure(conte
 end
 
 function T.cancelled_selection_still_guards_raw_import_behind_source_closure(context)
-  withLiveApp(context, function(App, harness)
-    local provisioner = selectVersion(App, VERSION)
+  withLiveApp(context, function(App, harness, versionId)
+    local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)
@@ -1324,7 +1337,7 @@ function T.cancelled_selection_still_guards_raw_import_behind_source_closure(con
 end
 
 function T.cancelled_preparation_leaves_persisted_save_bytes_unchanged(context)
-  withLiveApp(context, function(App, harness)
+  withLiveApp(context, function(App, harness, versionId)
     local saveFs = SaveFs.global()
     local store = GameSaveStore.new(saveFs)
     local catalogBefore = saveFs:read(GameSaveStore.CATALOG_PATH)
@@ -1333,14 +1346,14 @@ function T.cancelled_preparation_leaves_persisted_save_bytes_unchanged(context)
     local gamePath = "games/" .. saveId .. ".lua"
     local catalogSeeded = assert(saveFs:read(GameSaveStore.CATALOG_PATH), "seeding publishes a catalog")
     local gameSeeded = assert(saveFs:read(gamePath), "seeding publishes the save body")
-    local provisioner = selectVersion(App, VERSION)
+    local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)
     pumpApp(App, harness, 6)
     assert(App.state, "selection must install a preparation state"):keypressed("escape", nil, nil)
     Assert.isNil(App.provisioner, "cancellation detaches the selection back to the selector")
-    selectVersion(App, VERSION)
+    selectVersion(App, versionId)
     pumpApp(App, harness, 4)
     Assert.equal(
       saveFs:read(GameSaveStore.CATALOG_PATH),
@@ -1358,10 +1371,10 @@ function T.cancelled_preparation_leaves_persisted_save_bytes_unchanged(context)
 end
 
 function T.same_version_reselection_reuses_one_service_with_fresh_interest(context)
-  withLiveApp(context, function(App, harness)
+  withLiveApp(context, function(App, harness, versionId)
     -- One production route: a cold boot-menu entry remains at the boot
     -- source gate until its required source and selected pair are admitted.
-    App._bootMainMenu({ VERSION })
+    App._bootMainMenu({ versionId })
     attachWorker(harness)
     pumpApp(App, harness, 4)
     Assert.equal(#harness.launches, 0, "a cold boot-menu entry must wait for preparation, not launch directly")
@@ -1373,7 +1386,7 @@ function T.same_version_reselection_reuses_one_service_with_fresh_interest(conte
     local mapId = supportedFieldMapId(firstHost)
     pumpApp(App, harness, 6)
     assert(App.state, "selection must install a preparation state"):keypressed("escape", nil, nil)
-    local second = selectVersion(App, VERSION)
+    local second = selectVersion(App, versionId)
     pumpApp(App, harness, 4)
     Assert.equal(controllerPool(harness), pool, "reselection reuses the one process pool")
     Assert.isTrue(App.epoch > firstEpoch, "reselection mints a fresh epoch on the shared pool")
@@ -1418,9 +1431,9 @@ function T.same_version_reselection_reuses_one_service_with_fresh_interest(conte
 end
 
 function T.worker_failure_surfaces_in_preparation_without_further_requests(context)
-  withLiveApp(context, function(App, harness)
+  withLiveApp(context, function(App, harness, versionId)
     local RomImporter = require("romdump.src.source.RomImporter")
-    local provisioner = selectVersion(App, VERSION)
+    local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)
@@ -1470,13 +1483,13 @@ function T.worker_failure_surfaces_in_preparation_without_further_requests(conte
     )
     Assert.isNil(App.importer, "cancellation after failure modifies no raw files")
     Assert.equal(#harness.importers, 0, "cancellation after failure starts no import")
-    Assert.isTrue(RomImporter.isReady(VERSION), "the previous raw dump is untouched by the failed preparation")
+    Assert.isTrue(RomImporter.isReady(versionId), "the previous raw dump is untouched by the failed preparation")
   end)
 end
 
 function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
-  withLiveApp(context, function(App, harness)
-    local provisioner = selectVersion(App, VERSION)
+  withLiveApp(context, function(App, harness, versionId)
+    local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)

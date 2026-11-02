@@ -121,7 +121,7 @@ local function composeSelf(overrides)
     scripts = { worldState = worldState },
     dexKnowledge = dexKnowledge,
     uiManifest = overrides.uiManifest or manifestWithIcons(),
-    playerData = { profile = { name = "PLAYER", badges = 0, runningShoes = false, runningShoesLock = false } },
+    playerData = { profile = { name = "PLAYER", badges = {}, runningShoes = false, runningShoesLock = false } },
     playerAvatar = {
       durableState = function()
         return "walking"

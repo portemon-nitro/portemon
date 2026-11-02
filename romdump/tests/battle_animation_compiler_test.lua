@@ -3550,6 +3550,33 @@ function T.interpreter_state_task_branch_preserves_count_and_consumed_word_paths
   Assert.equal(program.instructions[3].op, "noop", "the true path remains a parsed instruction boundary")
 end
 
+function T.contest_branch_fallthrough_reset_drains_past_the_exclusive_arm()
+  -- STRING_SHOT stages its particle system once before a contest branch
+  -- and destroys it in each arm: the battle (fallthrough) arm must drain
+  -- past the stream end instead of falling through into the exclusive
+  -- contest arm and reusing the freed system.
+  local program = assert(compiler().compile({
+    key = "contest-fallthrough-reset",
+    stream = table.concat({ u32(71), u32(2), u32(4), u32(54) }),
+  }))
+  Assert.equal(program.instructions[1].op, "branch-on-interpreter-state", "opcode 71 keeps its branch")
+  Assert.equal(program.instructions[1].alternateTarget, 2, "the battle arm continues immediately")
+  Assert.equal(program.instructions[1].branchTarget, 3, "the contest arm starts past the battle arm")
+  Assert.equal(program.instructions[2].op, "reset-battle-presentation", "the battle arm closes its reset")
+  Assert.equal(
+    program.instructions[2].target,
+    4,
+    "the arm-closing reset drains past the stream end instead of falling through"
+  )
+  Assert.equal(program.instructions[3].op, "noop", "the contest arm stays reachable through its branch")
+  Assert.isTrue(require("libs.assets.src.battle.BattleAnimationSchema").assertProgram({
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }))
+end
+
 function T.nested_branch_compilation_visits_each_source_target_before_boundary_validation()
   local program = compiler().compile({
     key = "nested-branch-targets",

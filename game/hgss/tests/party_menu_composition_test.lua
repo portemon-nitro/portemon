@@ -7,6 +7,7 @@
 -- own behavioral contracts.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -160,7 +161,7 @@ end
 
 local function sources(overrides)
   local value = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     mapSymbol = "MAP_ROUTE_29",
     mapId = 200,
     fieldUse = fieldUse(),
@@ -258,7 +259,7 @@ local function worldPorts(overrides)
       queueAvatarTransition = function() end,
       applyAvatarTransitions = function() end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function() end,
     },
@@ -386,7 +387,7 @@ function T.tests.queued_work_flows_through_the_real_policy()
   local refused = composition.fieldMoves:queue({
     move = "cut",
     slot = 0,
-    context = FieldMoveContext.capture(sources({ badges = 0 })),
+    context = FieldMoveContext.capture(sources({ badges = {} })),
   })
   Assert.equal(refused.kind, "need_badge", "a badgeless cutter is refused, got " .. tostring(refused.kind))
   composition.dispose()

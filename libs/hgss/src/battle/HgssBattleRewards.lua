@@ -23,8 +23,10 @@ local HgssBattleRewards = {}
 
 -- Native blackout penalty by earned badge count, capped at eight badges:
 -- badge counts 0 through 8 scale the debit by 2, 4, 6, 9, 12, 16, 20,
--- 25, 30. The table is indexed by min(badges, 8); the base factor below
--- multiplies the strongest own party level before the penalty applies.
+-- 25, 30. The table is indexed by min(badges, 8), so open-ended counts
+-- from modded badge sets still cap at the native full-set penalty; the
+-- base factor below multiplies the strongest own party level before the
+-- penalty applies.
 local BLACKOUT_BASE_PER_LEVEL = 4
 local BLACKOUT_BADGE_PENALTY = { 2, 4, 6, 9, 12, 16, 20, 25, 30 }
 
@@ -162,8 +164,8 @@ function HgssBattleRewards.planLoss(args)
     error("blackout planning requires non-negative integer money on hand", 0)
   end
   local badges = args.badges or 0
-  if type(badges) ~= "number" or badges % 1 ~= 0 or badges < 0 or badges > 16 then
-    error("blackout planning requires a badge count in 0..16", 0)
+  if type(badges) ~= "number" or badges % 1 ~= 0 or badges < 0 then
+    error("blackout planning requires a non-negative integer badge count", 0)
   end
   local strongest = checkLevels(args.partyLevels)
   local penalty = BLACKOUT_BADGE_PENALTY[math.min(badges, 8) + 1]

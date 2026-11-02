@@ -56,7 +56,7 @@ function T.tests.action_facing_filler_stays_in_the_current_logical_map()
             gender = 0,
             trainerId = 1,
             money = 3000,
-            badges = 0,
+            badges = {},
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,

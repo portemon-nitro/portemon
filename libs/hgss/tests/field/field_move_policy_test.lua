@@ -4,11 +4,12 @@
 -- refusal; checks never mutate HP/PP state (contexts are value records).
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 
 local T = {}
 
-local ALL_BADGES = 0xFFFF
+local ALL_BADGES = BadgeSets.all()
 
 local function fieldUse(overrides)
   local value = {
@@ -57,7 +58,7 @@ local function context(overrides)
 end
 
 local function noBadges()
-  return 0
+  return BadgeSets.empty()
 end
 
 function T.unknown_moves_are_rejected()
@@ -134,7 +135,7 @@ function T.waterfall_checks_surfing_before_rising()
   local surfing = context({ avatarMode = "surfing", facingWaterfall = true })
   Assert.equal(FieldMovePolicy.check("waterfall", context({ facingWaterfall = true })).kind, "not_here")
   Assert.equal(
-    FieldMovePolicy.check("waterfall", context({ avatarMode = "surfing", facingWaterfall = true, badges = 0 })).kind,
+    FieldMovePolicy.check("waterfall", context({ avatarMode = "surfing", facingWaterfall = true, badges = {} })).kind,
     "need_badge"
   )
   Assert.equal(FieldMovePolicy.check("waterfall", surfing).kind, "ok")
@@ -154,7 +155,7 @@ end
 function T.whirlpool_checks_surfing_before_glacier()
   Assert.equal(FieldMovePolicy.check("whirlpool", context({ facingWhirlpool = true })).kind, "not_here")
   Assert.equal(
-    FieldMovePolicy.check("whirlpool", context({ avatarMode = "surfing", facingWhirlpool = true, badges = 0 })).kind,
+    FieldMovePolicy.check("whirlpool", context({ avatarMode = "surfing", facingWhirlpool = true, badges = {} })).kind,
     "need_badge"
   )
   Assert.equal(

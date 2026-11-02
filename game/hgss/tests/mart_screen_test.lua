@@ -183,7 +183,7 @@ local function serviceFixture()
     local key = "CARD_" .. index
     catalog.cards[key] = { itemKey = key, ownershipIndex = index }
   end
-  local profile = { money = 500, badges = 0, nationalDex = false }
+  local profile = { money = 500, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

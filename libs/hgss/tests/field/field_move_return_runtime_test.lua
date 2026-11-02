@@ -104,7 +104,7 @@ end
 local function contextWith()
   return {
     mapId = 176,
-    badges = 0,
+    badges = {},
     fieldUse = { cave = true, escapeAllowed = true, teleportAllowed = true },
   }
 end
@@ -112,7 +112,7 @@ end
 local function flyContextWith()
   return {
     mapId = 33,
-    badges = 16,
+    badges = { storm = true },
     fieldUse = { flyAllowed = true },
   }
 end

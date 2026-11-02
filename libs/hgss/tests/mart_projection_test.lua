@@ -53,7 +53,7 @@ local function openSession(options)
     reads.bag = reads.bag + 1
     return rawQuantity(self, key)
   end
-  local profile = { money = options.money or 1000, badges = 0, nationalDex = false }
+  local profile = { money = options.money or 1000, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

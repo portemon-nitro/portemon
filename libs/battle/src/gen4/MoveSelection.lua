@@ -16,8 +16,10 @@ local MoveSelection = {}
 
 -- Profile level caps by badge count for traded mons: no badge obeys to
 -- 10, two badges to 30, four to 50, six to 70, and a full set to 100.
--- Odd counts hold the lower tier. Used only when the profile carries an
--- explicit badge count; otherwise the profile cap applies directly.
+-- Odd counts hold the lower tier; counts above eight hold the full-set
+-- cap. Used only when the profile carries an explicit badge count or an
+-- open badge set (every owned key counts); otherwise the profile cap
+-- applies directly.
 local BADGE_CAPS = {
   [0] = 10,
   [1] = 10,
@@ -272,12 +274,22 @@ local function obedienceCap(profile)
     error(BattleErrors.input("obedience reads its profile facts", {}))
   end
   local facts = profile --[[@as table<string, unknown>]]
+  if type(facts.badges) == "table" then
+    local count = 0
+    for key, owned in pairs(facts.badges) do
+      if type(key) ~= "string" or key == "" or owned ~= true then
+        error(BattleErrors.input("obedience reads an open badge set", {}))
+      end
+      count = count + 1
+    end
+    return BADGE_CAPS[math.min(count, 8)]
+  end
   if type(facts.badges) == "number" then
     local badges = facts.badges --[[@as integer]]
-    if badges % 1 ~= 0 or badges < 0 or badges > 8 then
+    if badges % 1 ~= 0 or badges < 0 then
       error(BattleErrors.input("obedience reads an explicit badge count", {}))
     end
-    return BADGE_CAPS[badges]
+    return BADGE_CAPS[math.min(badges, 8)]
   end
   if type(facts.maxObedientLevel) == "number" then
     return facts.maxObedientLevel --[[@as integer]]

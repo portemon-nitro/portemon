@@ -48,7 +48,7 @@ local function harness()
             gender = 0,
             trainerId = 1,
             money = 3000,
-            badges = 0,
+            badges = {},
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
@@ -307,8 +307,8 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
         strongest = derived.level
       end
     end
-    local badges = game.runtime.playerData.profile.badges or 0
-    Assert.equal(badges, 0, "the fresh profile settles the loss without badges")
+    local badges = game.runtime.playerData.profile.badges or {}
+    Assert.deepEqual(badges, {}, "the fresh profile settles the loss without badges")
     -- Without badges the native penalty is 2, so the debit is the
     -- strongest live level times the base factor 4 times 2.
     local expectedDebit = math.min(moneyBefore, strongest * 8)

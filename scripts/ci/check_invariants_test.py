@@ -27,20 +27,12 @@ STYLUA_SOURCE = REPO_ROOT / ".stylua.toml"
 LINT_SOURCE = REPO_ROOT / "scripts" / "lint.sh"
 SCOPE_SOURCE = REPO_ROOT / "scripts" / "lib" / "scope.sh"
 REPO_CHECK_SOURCE = REPO_ROOT / "scripts" / "lib" / "check-repository.sh"
-REPO_SETUP_SOURCE = REPO_ROOT / "scripts" / "lib" / "repo-setup.sh"
 
 
-def _pinned_love_version() -> str:
-    """Read the pinned LÖVE release from the setup script under test.
-
-    The ``love`` double below must satisfy the setup script's own version
-    gate, so the pin is parsed from the production constant instead of
-    freezing a literal that a normal version bump would silently stale.
-    """
-    for line in REPO_SETUP_SOURCE.read_text(encoding="utf-8").splitlines():
-        if line.startswith('LOVE_VERSION="') and line.endswith('"'):
-            return line[len('LOVE_VERSION="') : -1]
-    raise AssertionError("repo-setup must pin LOVE_VERSION")
+# The pinned LÖVE release the lint gate's `love` double must satisfy.
+# Explicitly maintained fixture: keep in sync with LOVE_VERSION in
+# scripts/lib/repo-setup.sh when the pinned runtime changes.
+PINNED_LOVE_VERSION = "11.5"
 
 # Fixed core modules the invariant gate must always account for.
 REQUIRED_CORE_FILES = (
@@ -534,7 +526,7 @@ def _init_lint_repo(root: Path, fixtures: dict[str, str]) -> tuple[Path, Path]:
     love_stub.write_text(
         "#!/usr/bin/env bash\n"
         'if [ "${1:-}" = "--version" ]; then\n'
-        f'  echo "LOVE {_pinned_love_version()} (Mysterious Mysteries)"\n'
+        f'  echo "LOVE {PINNED_LOVE_VERSION} (Mysterious Mysteries)"\n'
         "fi\n"
         "exit 0\n",
         encoding="utf-8",

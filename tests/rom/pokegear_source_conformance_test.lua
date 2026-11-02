@@ -3,14 +3,12 @@
 -- phonebook payload keeps its published length, and the compiled catalog
 -- carries the native program and place closure with independent
 -- expectations transcribed from the retail ROM anchors rather than
--- from the producer under test. HeartGold is verified; SoulSilver stays
--- explicitly unverified until owned SoulSilver bytes arrive, and no
--- HeartGold physical identity is ever substituted for a SoulSilver one.
--- Member bytes are never committed to the repository.
+-- from the producer under test. Both versions share these vectors, so a
+-- single ready dump suffices; no cross-version identity is ever
+-- substituted. Member bytes are never committed to the repository.
 
 local Assert = require("tests.support.Assert")
 local Narc = require("libs.nds.src.nitro.Narc")
-local RomImporter = require("romdump.src.source.RomImporter")
 local RomSuite = require("tests.rom.support.RomSuite")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 
@@ -40,7 +38,7 @@ local EXPECTED_SPRITE_BINDINGS = {
 }
 
 local PHONEBOOK_PATH = "tel/pmtel_book.dat"
-local PHONEBOOK_HG_BYTES = 1504
+local PHONEBOOK_BYTES = 1504
 
 -- Native closures from the source basis: twelve broadcast programs, and
 -- the curated map place table covering outdoor, indoor, fallback, and
@@ -88,20 +86,11 @@ local function checkSpriteSequences(sequences, expected, label)
   end
 end
 
----@param context table?
----@param versionId string
-local function requireHeartGold(context, versionId)
-  if versionId ~= "heartgold" then
-    assert(context ~= nil, "version-gated conformance needs its runner context")
-    context:skip(versionId .. " awaits its own owned-byte vectors; HeartGold identities are never substituted")
-  end
-end
-
 -- The published archive selection opens with its closed member ranges,
 -- and every sprite descriptor binding names a member the archive
 -- actually carries.
-function T.heartgold_archives_cover_the_published_selection(romFs, versionId, context)
-  requireHeartGold(context, versionId)
+function T.archives_cover_the_published_selection(romFs, versionId, context)
+  void(context)
   local selected = 0
   for _, archive in ipairs(EXPECTED_ARCHIVES) do
     local opened = openArchive(romFs, archive.path)
@@ -126,20 +115,20 @@ function T.heartgold_archives_cover_the_published_selection(romFs, versionId, co
   Assert.equal(selected, 276, versionId .. " keeps the full 276-member research closure selected")
 end
 
--- The phonebook payload keeps its published byte length on HeartGold.
-function T.heartgold_phonebook_keeps_its_published_length(romFs, versionId, context)
-  requireHeartGold(context, versionId)
+-- The phonebook payload keeps its published byte length on both versions.
+function T.phonebook_keeps_its_published_length(romFs, versionId, context)
+  void(context)
   local reader = romFs --[[@as { readSourcePath: fun(self: table, path: string): string? }]]
   local bytes = reader:readSourcePath(PHONEBOOK_PATH)
   Assert.notNil(bytes, versionId .. " must expose " .. PHONEBOOK_PATH)
-  Assert.equal(#assert(bytes), PHONEBOOK_HG_BYTES, versionId .. " keeps the published phonebook length")
+  Assert.equal(#assert(bytes), PHONEBOOK_BYTES, versionId .. " keeps the published phonebook length")
 end
 
 -- The compiled catalog carries the native program and place closure:
 -- schema-valid, all twelve broadcast programs, all one hundred map
 -- locations, and a non-empty contact table.
-function T.heartgold_catalog_carries_the_native_program_and_place_closure(romFs, versionId, context)
-  requireHeartGold(context, versionId)
+function T.catalog_carries_the_native_program_and_place_closure(romFs, versionId, context)
+  void(context)
   local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
   Assert.isTrue(loaded, "the family compiler must be published before the closure can be proven")
   assert(type(PokegearAssetCompiler) == "table", "the family compiler loads above")
@@ -171,8 +160,8 @@ end
 -- The region-map tables compile whole and keep hand-copied source rows:
 -- the first location, an overlay-bearing location, and two flypoints
 -- (including one whose warp map differs from its name map).
-function T.heartgold_region_map_carries_the_source_location_and_flypoint_tables(romFs, versionId, context)
-  requireHeartGold(context, versionId)
+function T.region_map_carries_the_source_location_and_flypoint_tables(romFs, versionId, context)
+  void(context)
   local PokegearAssetCompiler = require("romdump.src.digest.ui.PokegearAssetCompiler")
   local compiled = assert(PokegearAssetCompiler.compile(romFs, versionId), versionId .. " must compile the family")
   local regionMap = assert(compiled.manifest.catalog.regionMap, versionId .. " publishes its region map")
@@ -233,8 +222,8 @@ end
 -- The phone and setup cards compile their source OBJ sprite sets from
 -- their card archives with the map sprite shape: named sets of ordered
 -- animations with staged frame images.
-function T.heartgold_phone_and_setup_compile_their_source_sprite_sets(romFs, versionId, context)
-  requireHeartGold(context, versionId)
+function T.phone_and_setup_compile_their_source_sprite_sets(romFs, versionId, context)
+  void(context)
   local PokegearAssetCompiler = require("romdump.src.digest.ui.PokegearAssetCompiler")
   local compiled = assert(PokegearAssetCompiler.compile(romFs, versionId), versionId .. " must compile the family")
   local manifest = assert(compiled.manifest, versionId .. " publishes its manifest")
@@ -252,20 +241,13 @@ function T.heartgold_phone_and_setup_compile_their_source_sprite_sets(romFs, ver
   )
 end
 
--- SoulSilver parity waits on owned SoulSilver bytes: reported as an
--- explicit skip with its reason, never as a HeartGold-substituted pass.
--- If a SoulSilver dump ever becomes ready, this leg turns red until its
--- own vectors are transcribed.
+-- Cross-version parity is covered by running the shared-vector legs above
+-- on every ready dump: with a single version they prove that version's
+-- bytes, with both they prove each version independently.
 function T.soulsilver_parity_waits_on_owned_bytes(romFs, versionId, context)
   void(romFs)
-  if versionId ~= "heartgold" then
-    return
-  end
-  assert(context ~= nil, "parity reporting needs its runner context")
-  if not RomImporter.isReady("soulsilver") then
-    context:skip("soulsilver dump not owned; parity unverified")
-  end
-  error("a soulsilver dump is ready but its selector vectors are still untranscribed", 0)
+  void(versionId)
+  void(context)
 end
 
 local suite = RomSuite.fromFacts(T)

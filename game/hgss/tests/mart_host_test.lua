@@ -81,14 +81,19 @@ local function hostOptions(overrides)
   local options = {
     service = service,
     catalog = catalog,
-    profile = { badges = 19, nationalDex = true, runningShoes = false, runningShoesLock = false },
+    profile = {
+      badges = { zephyr = true, hive = true, storm = true },
+      nationalDex = true,
+      runningShoes = false,
+      runningShoesLock = false,
+    },
     localDate = function()
       return { year = 2026, month = 10, day = 3 }
     end,
     stockResolver = function(descriptor, context, catalogPair)
       state.resolves = state.resolves + 1
       Assert.isTrue(descriptor.kind == "standard" or descriptor.kind == "athlete")
-      Assert.equal(context.badges, 19)
+      Assert.deepEqual(context.badges, { zephyr = true, hive = true, storm = true })
       Assert.isTrue(context.nationalDex)
       Assert.equal(context.weekday, 6)
       Assert.equal(context.dayOrdinal, 100000)
@@ -97,7 +102,7 @@ local function hostOptions(overrides)
       Assert.equal(context.readVariable(0x123), 0)
       Assert.equal(catalogPair, catalog)
       local resolvedKind = descriptor.kind
-      context.badges = 0
+      context.badges = {}
       descriptor.kind = "sell"
       return { key = resolvedKind, entries = {} }
     end,

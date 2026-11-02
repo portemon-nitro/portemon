@@ -185,9 +185,12 @@ function T.blackout_caps_the_corrected_debit_to_money_on_hand()
     pcall(Rewards.planLoss, { money = 50, partyLevels = {}, badges = 8 }),
     "an empty level array never plans"
   )
-  Assert.isFalse(
-    pcall(Rewards.planLoss, { money = 50, partyLevels = { 10 }, badges = 17 }),
-    "a badge count past sixteen never plans"
+  local overfull = Rewards.planLoss({ money = 100000, partyLevels = { 10 }, badges = 17 })
+  local fullSet = Rewards.planLoss({ money = 100000, partyLevels = { 10 }, badges = 8 })
+  Assert.equal(
+    overfull.amount,
+    fullSet.amount,
+    "a badge count past eight shares the eight-badge penalty"
   )
 end
 
@@ -222,7 +225,7 @@ local function playerRecord(money)
       gender = 0,
       trainerId = 1,
       money = money,
-      badges = 3,
+      badges = { zephyr = true, hive = true },
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
@@ -237,7 +240,7 @@ function T.player_money_facts_cap_and_floor_through_the_committer()
   local record, context = playerRecord(999900)
   local prize = PlayerData.prepareBattleChanges(record, context, { moneyDelta = 50000 })
   Assert.equal(prize.profile.money, 999999, "prize overflow past the ceiling is lost")
-  Assert.equal(prize.profile.badges, 3, "unrelated profile facts carry over")
+  Assert.deepEqual(prize.profile.badges, { zephyr = true, hive = true }, "unrelated profile facts carry over")
   local poor, poorContext = playerRecord(100)
   local debit = PlayerData.prepareBattleChanges(poor, poorContext, { moneyDelta = -500 })
   Assert.equal(debit.profile.money, 0, "blackout debit never drops below zero")

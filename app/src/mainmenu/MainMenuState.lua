@@ -57,12 +57,12 @@ local function globalActions()
 end
 
 -- The real badge count for the save card, read from the durable
--- progression owner. Profiles without a valid mask (older saves) show
+-- progression owner. Profiles without a valid set (older saves) show
 -- zero rather than failing the menu.
 ---@param profile table<string, unknown>|nil
 ---@return integer
 local function badgeCount(profile)
-  if type(profile) ~= "table" or not PlayerProgression.isMask(profile.badges) then
+  if type(profile) ~= "table" or not PlayerProgression.isBadgeSet(profile.badges) then
     return 0
   end
   return PlayerProgression.new(profile):badgeCount()

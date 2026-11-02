@@ -2060,7 +2060,7 @@ end
 
 function T.continue_card_shows_the_durable_badge_count()
   local entry = catalogEntry("save-00000001", "Goldie", 4980)
-  entry.playerData.profile.badges = (2 ^ 0) + (2 ^ 1) + (2 ^ 4)
+  entry.playerData.profile.badges = { zephyr = true, hive = true, storm = true }
   local drawn = scaledDrawnMenu({ entry }, 640, 480)
   Assert.equal(drawn.view.saves[1].badgeCount, 3)
   local seen = false

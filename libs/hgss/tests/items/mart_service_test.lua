@@ -35,7 +35,7 @@ local function resources(options)
     local key = "CARD_" .. index
     martCatalog.cards[key] = { itemKey = "ITEM_" .. (index + 30), ownershipIndex = index }
   end
-  local profile = { money = options.money or 1000, badges = 0, nationalDex = false }
+  local profile = { money = options.money or 1000, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

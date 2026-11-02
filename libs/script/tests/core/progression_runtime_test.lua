@@ -20,7 +20,7 @@ local function progression()
     gender = 0,
     trainerId = 0,
     money = 3000,
-    badges = 0,
+    badges = {},
     runningShoes = false,
     runningShoesLock = false,
     rivalName = "Silver",
@@ -73,13 +73,31 @@ function T.check_award_and_count_round_trip_through_real_progression()
   Assert.equal(run.services.world.vars.V_COUNT, 1, "a repeated award counts once")
 end
 
+function T.modded_badge_keys_round_trip_through_the_opcodes()
+  local service = progression()
+  local run = runWith(service)
+  Assert.equal(
+    Runtime.executeNode({ op = "check_badge", badge = "mod:ember", result = var("V_CHECK") }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(run.services.world.vars.V_CHECK, 0)
+  Assert.equal(Runtime.executeNode({ op = "award_badge", badge = "mod:ember" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(
+    Runtime.executeNode({ op = "check_badge", badge = "mod:ember", result = var("V_CHECK") }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(run.services.world.vars.V_CHECK, 1)
+  Assert.equal(Runtime.executeNode({ op = "count_badges", result = var("V_COUNT") }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(run.services.world.vars.V_COUNT, 1, "a modded badge counts alongside retail badges")
+end
+
 function T.award_running_shoes_sets_the_profile_flag_through_the_service()
   local profile = {
     name = "GOLD",
     gender = 0,
     trainerId = 0,
     money = 3000,
-    badges = 0,
+    badges = {},
     runningShoes = false,
     runningShoesLock = false,
     rivalName = "Silver",
@@ -97,7 +115,7 @@ function T.check_running_shoes_writes_one_or_zero_from_the_profile_flag()
     gender = 0,
     trainerId = 0,
     money = 3000,
-    badges = 0,
+    badges = {},
     runningShoes = false,
     runningShoesLock = false,
     rivalName = "Silver",

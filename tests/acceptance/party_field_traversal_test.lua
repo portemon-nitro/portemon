@@ -14,6 +14,7 @@
 -- suites this change does not touch.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
@@ -167,7 +168,7 @@ local function surfContext(game)
   local runtime = game.runtime
   local profile = assert(runtime.playerData and runtime.playerData.profile, "live profile required")
   return {
-    badges = assert(profile.badges, "live badge mask required"),
+    badges = assert(profile.badges, "live badge set required"),
     mapSymbol = runtime.runtimeMap.mapSymbol,
     mapId = runtime.runtimeMap.mapId,
     fieldUse = runtime.runtimeMap.fieldData.fieldUse,
@@ -522,7 +523,7 @@ local function rigWorld(player, avatar, map, applied)
         return avatar:applyTransitions()
       end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function()
         error("pure traversal rig covers no weather change", 2)
@@ -539,7 +540,7 @@ end
 
 local function rigContext(overrides)
   local context = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     mapSymbol = "test-water",
     mapId = 61,
     fieldUse = {},

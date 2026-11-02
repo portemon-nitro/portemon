@@ -40,7 +40,7 @@ function T.tests.weather_and_map_music_use_the_injected_local_clock()
       versionId = "heartgold",
       location = { mapSymbol = "MAP_NEW_BARK_ELMS_LAB_1F", fieldX = 6, fieldZ = 6, facing = "south" },
       playerData = {
-        profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+        profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = {} },
         options = { textSpeed = "mid", textFrame = 0 },
       },
       fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },

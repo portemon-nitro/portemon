@@ -163,7 +163,7 @@ function FieldMoveWorld.new(ports)
     _zoom = nil,
     _fadeLease = nil,
   }, FieldMoveWorld)
-  assert(type(world._profile.badges) == "number", "field world profile must carry its badge mask")
+  assert(type(world._profile.badges) == "table", "field world profile must carry its open badge set")
   assert(type(world._maps:current()) == "table", "field world maps must describe the live map")
   if world._warps ~= nil then
     assert(type(world._warps.startWarp) == "function", "warps port must start warps")

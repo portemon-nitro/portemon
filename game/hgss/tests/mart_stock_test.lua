@@ -1,6 +1,7 @@
 -- HGSS vanilla stock selection and source policy tests.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local VanillaMartStock = require("game.hgss.src.mart.VanillaMartStock")
 
@@ -54,7 +55,7 @@ end
 
 local function context(overrides)
   local value = {
-    badges = 0,
+    badges = {},
     nationalDex = false,
     runningShoes = false,
     runningShoesLock = false,
@@ -82,7 +83,7 @@ end
 
 function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
   for badgeCount = 0, 16 do
-    local mask = badgeCount == 0 and 0 or (0x8000 + 2 ^ (badgeCount - 1) - 1)
+    local badges = BadgeSets.first(badgeCount)
     local tier = badgeCount == 0 and 1
       or badgeCount <= 2 and 2
       or badgeCount <= 4 and 3
@@ -93,7 +94,7 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
     local hidden = resolve(
       { kind = "standard" },
       context({
-        badges = mask,
+        badges = badges,
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
@@ -106,7 +107,7 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
     local shown = resolve(
       { kind = "standard" },
       context({
-        badges = mask,
+        badges = badges,
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
@@ -133,6 +134,26 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
     end
     Assert.deepEqual(hiddenNonBalls, shownNonBalls, "flag preserves all other entries and their order")
   end
+end
+
+function T.modded_badges_count_alongside_retail_badges()
+  local mixed = resolve(
+    { kind = "standard" },
+    context({
+      badges = { zephyr = true, ["mod:ember"] = true },
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+      rivalName = "Silver",
+      readFlag = function()
+        return true
+      end,
+    })
+  )
+  -- Two owned keys, one retail and one modded, reach tier 2 with eight
+  -- entries including the leading Poké Ball.
+  Assert.equal(#mixed.entries, 8, "a modded badge counts toward the stock tier")
+  Assert.equal(mixed.entries[1].displayItemKey, "POKE_BALL")
 end
 
 function T.special_filter_follows_flag_and_leaves_lists_without_pokeballs_unchanged()

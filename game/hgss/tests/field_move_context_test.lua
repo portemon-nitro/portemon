@@ -26,7 +26,7 @@ end
 
 local function sources(overrides)
   local value = {
-    badges = 3,
+    badges = { zephyr = true, hive = true },
     mapSymbol = "MAP_ROUTE_29",
     mapId = 200,
     fieldUse = fieldUse(),
@@ -56,7 +56,7 @@ end
 function T.capture_copies_every_fact_without_aliasing()
   local input = sources()
   local context = FieldMoveContext.capture(input)
-  Assert.equal(context.badges, 3)
+  Assert.deepEqual(context.badges, { zephyr = true, hive = true })
   Assert.equal(context.mapSymbol, "MAP_ROUTE_29")
   Assert.equal(context.mapId, 200)
   Assert.equal(context.avatarMode, "walking")
@@ -64,9 +64,9 @@ function T.capture_copies_every_fact_without_aliasing()
   Assert.isTrue(context.followingMon)
   Assert.isNil(context.facingObstacle)
   Assert.isFalse(context.unionOrColosseum)
-  input.badges = 0
+  input.badges = {}
   input.fieldUse.flyAllowed = false
-  Assert.equal(context.badges, 3)
+  Assert.deepEqual(context.badges, { zephyr = true, hive = true })
   Assert.isTrue(context.fieldUse.flyAllowed)
 end
 
@@ -124,6 +124,11 @@ function T.malformed_sources_fail_loudly()
   Assert.throws(function()
     local broken = sources()
     broken.badges = -1
+    FieldMoveContext.capture(broken)
+  end)
+  Assert.throws(function()
+    local broken = sources()
+    broken.badges = { zephyr = false }
     FieldMoveContext.capture(broken)
   end)
 end

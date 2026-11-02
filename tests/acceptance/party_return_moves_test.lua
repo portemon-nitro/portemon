@@ -249,7 +249,7 @@ local function returnContext(game)
   local runtime = game.runtime
   local profile = assert(runtime.playerData and runtime.playerData.profile, "live profile required")
   return {
-    badges = assert(profile.badges, "live badge mask required"),
+    badges = assert(profile.badges, "live badge set required"),
     mapSymbol = runtime.runtimeMap.mapSymbol,
     mapId = runtime.runtimeMap.mapId,
     fieldUse = runtime.runtimeMap.fieldData.fieldUse,

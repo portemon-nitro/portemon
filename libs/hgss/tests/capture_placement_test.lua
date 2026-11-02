@@ -230,7 +230,7 @@ function T.full_party_capture_spills_to_the_first_empty_box_slot()
       gender = 0,
       trainerId = 1,
       money = 3000,
-      badges = 3,
+      badges = { zephyr = true, hive = true },
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,

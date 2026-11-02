@@ -1,8 +1,9 @@
 name: CI
 
 # Binding correctness CI on every push and pull request. `static` owns
-# Python CI-tool contracts and static checks; the `test` matrix runs the
-# repository test command on Linux and both Mac architectures. Unit,
+# Python CI-tool contracts and static checks; `test` runs the full
+# repository test command with runner self-tests on Linux; `macos-smoke`
+# boots the actual application once on Apple Silicon with no ROM. Unit,
 # component, and real graphics smoke tests are required. ROM-conformance and
 # acceptance tests report explicit optional skips because CI has no
 # user-owned cartridge dump.
@@ -42,11 +43,7 @@ jobs:
         run: scripts/lint.sh --check
 
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, macos-15, macos-15-intel]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
 
     steps:
@@ -56,7 +53,6 @@ jobs:
         run: scripts/lib/repo-setup.sh --yes
 
       - name: Install offscreen graphics dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0
@@ -67,3 +63,71 @@ jobs:
       - name: Run runner self-tests
         if: ${{ !cancelled() }}
         run: scripts/test.sh --self-test
+
+  macos-smoke:
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install LÖVE runtime
+        run: scripts/lib/repo-setup.sh --yes
+
+      # Minimal Apple Silicon launch smoke: boot the actual application with
+      # a fresh, isolated save directory and no ROM, prove the startup
+      # reached its initial window/ROM-selection state instead of the LÖVE
+      # error screen, then terminate and reap the process.
+      - name: Application launch smoke
+        run: |
+          set -euo pipefail
+          smoke_save="$(mktemp -d)"
+          smoke_log="$(mktemp)"
+          smoke_pid=""
+          cleanup_smoke() {
+            if [ -n "$smoke_pid" ] && kill -0 "$smoke_pid" 2>/dev/null; then
+              kill -TERM "$smoke_pid" 2>/dev/null || true
+              wait "$smoke_pid" 2>/dev/null || true
+            fi
+            rm -rf -- "$smoke_save"
+            rm -f -- "$smoke_log"
+          }
+          trap cleanup_smoke EXIT
+          export PORTEMON_SAVE_DIR="$smoke_save"
+          scripts/run.sh >"$smoke_log" 2>&1 &
+          smoke_pid=$!
+          # The boot must survive its first seconds: an immediate exit is a
+          # startup failure, and the captured diagnostics name the cause.
+          for _ in $(seq 1 20); do
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then
+              wait "$smoke_pid" 2>/dev/null || true
+              echo "smoke: the application exited during startup" >&2
+              cat -- "$smoke_log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          # Survival alone proves nothing: LÖVE keeps a failed boot on its
+          # error screen, but it always prints the failure (`Error:` plus a
+          # `stack traceback`) to the captured output first.
+          if grep -E -i '^Error:|stack traceback|boot\.lua|\.lua:[0-9]+:' "$smoke_log"; then
+            echo "smoke: startup diagnostics report a boot failure" >&2
+            cat -- "$smoke_log" >&2
+            exit 1
+          fi
+          echo "smoke: the application stayed up with clean startup diagnostics"
+          cat -- "$smoke_log" >&2
+          kill -TERM "$smoke_pid" || true
+          for _ in $(seq 1 15); do
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if kill -0 "$smoke_pid" 2>/dev/null; then
+            echo "smoke: the application ignored SIGTERM" >&2
+            exit 1
+          fi
+          smoke_status=0
+          wait "$smoke_pid" || smoke_status=$?
+          echo "smoke: the application terminated (status $smoke_status)"

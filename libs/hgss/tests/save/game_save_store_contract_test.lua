@@ -109,7 +109,7 @@ local function record(saveId, versionId, overrides)
         gender = 0,
         trainerId = 0,
         money = 3000,
-        badges = 0,
+        badges = {},
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
@@ -572,7 +572,7 @@ function T.metadata_listing_exposes_v4_envelopes_without_normalization()
   -- stays a v4 record on disk, and the future record stays unreadable.
   backend.files[gamePath(v4Id)] = LuaWriter.encode(v4Payload(v4Id, "heartgold"))
   local unknown = record(unknownId, "heartgold")
-  unknown.schema = "g4-game-save-v11"
+  unknown.schema = "g4-game-save-v12"
   backend.files[gamePath(unknownId)] = LuaWriter.encode(unknown)
 
   local metadata = assert(store:listMetadata())
@@ -607,7 +607,7 @@ function T.metadata_listing_distinguishes_historical_from_current_and_future_sch
   local current = record(currentId, "soulsilver")
   current.schema = GameSave.SCHEMA
   local future = record(futureId, "heartgold")
-  future.schema = "g4-game-save-v11"
+  future.schema = "g4-game-save-v12"
   store:publishFirst(record(historicalId, "heartgold"))
   store:publishFirst(current)
   store:publishFirst(record(futureId, "heartgold"))

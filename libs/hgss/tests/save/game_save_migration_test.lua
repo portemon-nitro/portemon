@@ -284,11 +284,11 @@ end
 function T.future_schemas_reject_while_known_envelopes_stay_listable()
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     local value = currentRecord()
-    value.schema = "g4-game-save-v11"
+    value.schema = "g4-game-save-v12"
     return GameSave.normalize(value)
   end)
   local envelope, envelopeErr = GameSave.metadata({
-    schema = "g4-game-save-v11",
+    schema = "g4-game-save-v12",
     saveId = "save-00000001",
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -569,7 +569,9 @@ local function v8record(overrides)
     saveId = "save-00000009",
     versionId = "heartgold",
     playTimeSeconds = 42,
-    playerData = { profile = { name = "GOLD" } },
+    -- A real v8 profile carries the retail badge mask forward from v4;
+    -- the v10 step converts it to the open set.
+    playerData = { profile = { name = "GOLD", badges = 0 } },
     world = { flags = {}, variables = {} },
     party = { members = {} },
     bag = { items = {} },
@@ -599,7 +601,7 @@ function T.v9_migration_adds_only_the_default_rival_name()
   source.playerData.profile.runningShoes = true
   source.playerData.profile.runningShoesLock = false
   local migrated = GameSave.migrateV9(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v9 step advances the envelope")
+  Assert.equal(migrated.schema, GameSave.LEGACY_V10_SCHEMA, "the v9 step advances the envelope")
   Assert.equal(source.schema, GameSave.LEGACY_V9_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.playerData.profile.rivalName, "migration never mutates its source record")
   Assert.equal(migrated.playerData.profile.rivalName, PlayerData.DEFAULT_RIVAL_NAME)
@@ -612,6 +614,75 @@ function T.v9_migration_adds_only_the_default_rival_name()
   Assert.equal(normalized.playerData.profile.rivalName, PlayerData.DEFAULT_RIVAL_NAME)
   local _, err = GameSave.normalize(v8record({ schema = GameSave.LEGACY_V9_SCHEMA, playerData = {} }))
   Assert.equal(err and err.code, "GAME_SAVE_BUCKET_INVALID", "a v9 save without a profile is not repaired")
+end
+
+-- The v10 step converts the retail mask to the open badge set: every set
+-- bit becomes its canonical retail key in native order, every other field
+-- and bucket passes through untouched, and the source is not mutated.
+local function v10record(overrides)
+  local value = v8record(overrides)
+  value.schema = GameSave.LEGACY_V10_SCHEMA
+  value.playerData = {
+    profile = {
+      name = "GOLD",
+      gender = 0,
+      trainerId = 1,
+      money = 3000,
+      badges = 0,
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+      rivalName = "Silver",
+    },
+    options = { textFrame = 0, textSpeed = "mid", battleStyle = "shift" },
+  }
+  for key, replacement in pairs(overrides or {}) do
+    rawset(value, key, replacement)
+  end
+  return value
+end
+
+function T.v10_migration_converts_the_mask_to_retail_keys()
+  local source = v10record()
+  -- Bits 0 (zephyr), 3 (fog), and 15 (earth), in native order.
+  source.playerData.profile.badges = 2 ^ 0 + 2 ^ 3 + 2 ^ 15
+  local migrated = GameSave.migrateV10(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v10 step advances the envelope")
+  Assert.equal(source.schema, GameSave.LEGACY_V10_SCHEMA, "migration leaves its input untouched")
+  Assert.equal(source.playerData.profile.badges, 2 ^ 0 + 2 ^ 3 + 2 ^ 15, "migration never mutates its source mask")
+  Assert.deepEqual(
+    migrated.playerData.profile.badges,
+    { zephyr = true, fog = true, earth = true },
+    "every set bit becomes its canonical retail key"
+  )
+  Assert.equal(migrated.playerData.profile.name, "GOLD")
+  Assert.deepEqual(migrated.world, source.world, "migration preserves world state exactly")
+  local empty = GameSave.migrateV10(v10record())
+  Assert.deepEqual(empty.playerData.profile.badges, {}, "a badge-less mask migrates to the empty set")
+  local full = v10record()
+  full.playerData.profile.badges = 0xFFFF
+  local migratedFull = GameSave.migrateV10(full)
+  local count = 0
+  for _ in pairs(migratedFull.playerData.profile.badges) do
+    count = count + 1
+  end
+  Assert.equal(count, 16, "a full mask migrates to all sixteen retail keys")
+  local normalized = assert(GameSave.normalize(v10record()))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v10 through the badge-set step")
+  Assert.deepEqual(normalized.playerData.profile.badges, {}, "normalization converts the v10 mask")
+end
+
+function T.v10_migration_rejects_malformed_profiles_and_masks()
+  for _, mask in ipairs({ -1, 0x10000, 1.5, "3", true, nil }) do
+    local source = v10record()
+    source.playerData.profile.badges = mask
+    local _, err = pcall(GameSave.migrateV10, source)
+    Assert.isTrue(Errors.is(err), "mask " .. tostring(mask) .. " is not repaired")
+    Assert.equal(err.code, "GAME_SAVE_BUCKET_INVALID")
+  end
+  local _, err = pcall(GameSave.migrateV10, v10record({ playerData = {} }))
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "GAME_SAVE_BUCKET_INVALID", "a v10 save without a profile is not repaired")
 end
 
 function T.v8_migration_adds_only_the_companion_bucket()

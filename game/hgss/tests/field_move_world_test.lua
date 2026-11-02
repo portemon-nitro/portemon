@@ -7,6 +7,7 @@
 -- drift into reported failure, never retargeting.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local Errors = require("libs.errors.src.Errors")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
@@ -194,7 +195,7 @@ local function ports(manager, eventState, map, overrides)
       end,
     },
     player = playerFacade(),
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function(_, weatherId)
         weatherChanged[#weatherChanged + 1] = weatherId
@@ -548,7 +549,7 @@ end
 function T.capture_context_validates_sources_loudly()
   local filled = setup()
   local sources = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     mapSymbol = "test-map",
     mapId = 61,
     fieldUse = {

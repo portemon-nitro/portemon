@@ -284,9 +284,19 @@ manual_hint() {
   esac
 }
 
+# One consent gate for every install into scripts/bin/. The caller
+# supplies the diagnostic naming what is missing or what was found versus
+# what the repository needs; this function owns the `--yes` authorization,
+# the noninteractive refusal, the terminal prompt with its accepted
+# answers, and the installation and failure reporting.
 offer_install() {
   local tool="$1"
-  echo "repo-setup: $(describe_tool "$tool") was not found on PATH." >&2
+  local notice="${2:-}"
+  if [ -n "$notice" ]; then
+    echo "repo-setup: $notice" >&2
+  else
+    echo "repo-setup: $(describe_tool "$tool") was not found on PATH." >&2
+  fi
   if [ "$ASSUME_YES" = 1 ]; then
     install_tool "$tool"
     return "$?"
@@ -310,57 +320,35 @@ offer_install() {
 
 # Prints the installed LÖVE version (such as 11.5) taken from the first
 # line of `love --version` (for example "LOVE 11.5 (Mysterious
-# Mysteries)"). Prints nothing and fails when the probe itself fails or
-# its output is unrecognizable: an unverified runtime is never a match.
+# Mysteries)"). The release token must be a bare dotted number: a
+# malformed or development-suffixed answer such as
+# "LOVE 11.5-development" is never the pinned release. Prints nothing and
+# fails when the probe itself fails or its output is unrecognizable: an
+# unverified runtime is never a match.
 love_version() {
   local output
   if ! output="$(love --version 2>/dev/null)"; then
     return 1
   fi
-  local detected
-  detected="$(printf '%s\n' "$output" | head -n 1 | sed -n 's/^LOVE \([0-9][0-9.]*\).*/\1/p')"
-  if [ -z "$detected" ]; then
-    return 1
-  fi
-  printf '%s\n' "$detected"
-}
-
-# A mismatched or unverified `love` reports what was found and what the
-# repository needs before offering the pinned install into scripts/bin/,
-# which leads PATH for repo scripts without touching the system install.
-# Mirrors offer_install's consent rules: --yes installs unattended, a
-# missing terminal fails with the remediation, and a terminal prompts.
-offer_love_reinstall() {
-  local detected="$1"
-  if [ -z "$detected" ]; then
-    detected="unknown"
-  fi
-  echo "repo-setup: found LÖVE $detected on PATH, but this repository requires LÖVE $LOVE_VERSION." >&2
-  if [ "$ASSUME_YES" = 1 ]; then
-    install_tool love
-    return "$?"
-  fi
-  if [ ! -t 0 ]; then
-    echo "repo-setup: no prompt possible without a terminal; re-run with --yes to install LÖVE $LOVE_VERSION into scripts/bin automatically." >&2
-    manual_hint love
-    return 1
-  fi
-  local reply=""
-  printf 'Install LÖVE %s into scripts/bin from the official release download? [y/N] ' "$LOVE_VERSION" >&2
-  read -r reply || reply=""
-  case "$reply" in
-    [yY] | [yY][eE][sS]) install_tool love ;;
-    *)
-      manual_hint love
-      return 1
-      ;;
+  local first token
+  first="$(printf '%s\n' "$output" | head -n 1)"
+  case "$first" in
+    "LOVE "*) token="${first#LOVE }" ;;
+    *) return 1 ;;
   esac
+  token="${token%% *}"
+  case "$token" in
+    "" | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+  esac
+  printf '%s\n' "$token"
 }
 
 # An installed `love` may predate the pinned runtime, so its version is
-# validated before reuse: a missing executable keeps the existing install
-# offer, a matching version is reused silently, and anything else goes
-# through the reinstall offer above.
+# validated before reuse: a missing executable keeps the install offer, a
+# matching version is reused silently, and anything else goes through the
+# same install offer with a diagnostic naming what was found and what the
+# repository needs. The offer installs into scripts/bin/, which leads PATH
+# for repo scripts without touching the system install.
 ensure_love() {
   if ! command -v love >/dev/null 2>&1; then
     offer_install love || return "$?"
@@ -372,7 +360,10 @@ ensure_love() {
   if [ "$detected" = "$LOVE_VERSION" ]; then
     return 0
   fi
-  offer_love_reinstall "$detected" || return "$?"
+  if [ -z "$detected" ]; then
+    detected="unknown"
+  fi
+  offer_install love "found LÖVE $detected on PATH, but this repository requires LÖVE $LOVE_VERSION." || return "$?"
   installed_any=1
 }
 

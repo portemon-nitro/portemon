@@ -1588,7 +1588,7 @@ local OPERATIONS = {
   ["source-assertion"] = { fields = { "target", "cursorRule" } },
   ["reserve-loop-slot"] = { values = true, fields = { "branchTarget", "resumeTarget", "cursorRule" } },
   ["advance-loop-slot"] = { fields = { "cursorRule" } },
-  ["reset-battle-presentation"] = {},
+  ["reset-battle-presentation"] = { fields = { "target" } },
   ["call-subprogram"] = {
     fields = { "branchTarget", "cursorRule", "returnTarget" },
     check = checkSubprogramCall,

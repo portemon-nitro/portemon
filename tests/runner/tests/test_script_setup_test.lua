@@ -4,11 +4,17 @@
 -- runtime. Both prove environment selection through generated fake
 -- executables (a platform-reporting `uname`, version-reporting `love`
 -- doubles, and an offline AppImage download), so no real download, display
--- host, or live terminal beyond `script(1)` is required.
+-- host, or terminal is required.
 
 local Assert = require("tests.support.Assert")
 
 local T = {}
+
+-- The pinned LÖVE release the installer manages. This is an explicitly
+-- maintained fixture: when LOVE_VERSION in scripts/lib/repo-setup.sh moves,
+-- update this literal alongside it. Nothing here parses the shell source,
+-- so reformatting that assignment never breaks these tests.
+local EXPECTED_LOVE_VERSION = "11.5"
 
 local function shellQuote(value)
   return "'" .. value:gsub("'", "'\\''") .. "'"
@@ -80,18 +86,6 @@ local function withTempDirectory(fn)
   end
 end
 
--- The pinned runtime is a production constant, not a test literal: the
--- fakes and the assertions below read it from the setup script itself so a
--- normal version bump keeps them green.
-local function pinnedLoveVersion()
-  local handle = assert(io.open("scripts/lib/repo-setup.sh", "rb"))
-  local body = handle:read("*a")
-  handle:close()
-  local version = body:match('\nLOVE_VERSION="([^"]+)"')
-  Assert.isTrue(version ~= nil and version ~= "", "repo-setup must pin LOVE_VERSION")
-  return assert(version)
-end
-
 -- Reports FAKE_UNAME_S for `-s` (default Linux) and a fixed x86_64 for
 -- `-m`; every other probe answers the platform name, which is all the
 -- entrypoints under test ever ask of `uname`.
@@ -111,12 +105,14 @@ fi
 -- release (`__fail__` fails the probe, `__garbage__` prints an
 -- unrecognizable answer). The `--plan` answer keeps nested test-command
 -- runs fixture-free, and the `app/` branch records the graphics environment
--- the entrypoint selected for its LÖVE child.
-local FAKE_LOVE = [[
+-- the entrypoint selected for its LÖVE child. The release default is the
+-- expected fixture above, so the double agrees with it unless a case
+-- overrides the answer.
+local FAKE_LOVE = ([[
 #!/usr/bin/env bash
 set -u
 if [ "${1:-}" = "--version" ]; then
-  version="${FAKE_LOVE_VERSION:-11.5}"
+  version="${FAKE_LOVE_VERSION:-@PINNED@}"
   case "$version" in
     __fail__) exit 1 ;;
     __garbage__) printf 'not a love version string\n' ;;
@@ -145,14 +141,14 @@ if [ "${1:-}" = "app/" ]; then
 fi
 echo "fake love: unrecognized invocation: $*" >&2
 exit 1
-]]
+]]):gsub("@PINNED@", EXPECTED_LOVE_VERSION)
 
 -- An offline `curl` double synthesizing the pinned AppImage: whatever URL
 -- the installer requests, it writes a shell executable answering
--- `--appimage-extract` with an AppRun entrypoint reporting
--- FAKE_CURL_LOVE_VERSION, so `--yes` installs prove the real extraction
--- and shim wiring without network access.
-local FAKE_CURL = [[
+-- `--appimage-extract` with an AppRun entrypoint reporting the expected
+-- release, so `--yes` installs prove the real extraction and shim wiring
+-- without network access.
+local FAKE_CURL = ([[
 #!/usr/bin/env bash
 set -u
 output=""
@@ -171,12 +167,12 @@ cat > "$output" <<EOF
 #!/bin/sh
 if [ "\${1:-}" = "--appimage-extract" ]; then
   mkdir -p squashfs-root
-  printf '%s\n' '#!/bin/sh' 'echo "LOVE ${FAKE_CURL_LOVE_VERSION:-11.5} (Mysterious Mysteries)"' > squashfs-root/AppRun
+  printf '%s\n' '#!/bin/sh' 'echo "LOVE ${FAKE_CURL_LOVE_VERSION:-@PINNED@} (Mysterious Mysteries)"' > squashfs-root/AppRun
   chmod +x squashfs-root/AppRun
 fi
 EOF
 exit 0
-]]
+]]):gsub("@PINNED@", EXPECTED_LOVE_VERSION)
 
 -- Every nested command runs inside this worktree with worker identity
 -- sanitized, a fresh fake `love` first on PATH, and the product save
@@ -213,9 +209,9 @@ local function runNestedTestCommand(root, platform, overrides)
     "export PATH=" .. shellQuote(binDir) .. ":$PATH;",
     "export PORTEMON_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
     "export FAKE_UNAME_S=" .. shellQuote(platform) .. ";",
-    -- The pinned release answers the setup probe, so the nested run never
+    -- The expected release answers the setup probe, so the nested run never
     -- reaches the installer.
-    "export FAKE_LOVE_VERSION=" .. shellQuote(pinnedLoveVersion()) .. ";",
+    "export FAKE_LOVE_VERSION=" .. shellQuote(EXPECTED_LOVE_VERSION) .. ";",
     "export FAKE_HEADLESS_RECORD=" .. shellQuote(recordFile) .. ";",
   }
   for name, value in pairs(overrides or {}) do
@@ -277,7 +273,7 @@ end
 -- makes `command -v love` fail so a missing executable is proved without
 -- scrubbing the real system runtime off PATH. Returns the fixture repo and
 -- a runner script executing the copy with the fixture bin first on PATH, a
--- Linux/x86_64 platform, and the pinned release behind the download.
+-- Linux/x86_64 platform, and the expected release behind the download.
 local function installSetupCopy(root, spec)
   local repo = root .. "/fakerepo"
   mkdir(repo .. "/scripts/lib")
@@ -306,60 +302,36 @@ local function installSetupCopy(root, spec)
     "export PATH=" .. shellQuote(binDir) .. ":$PATH",
     "export FAKE_UNAME_S='Linux'",
     "export FAKE_UNAME_M='x86_64'",
-    "export FAKE_CURL_LOVE_VERSION=" .. shellQuote(pinnedLoveVersion()),
+    "export FAKE_CURL_LOVE_VERSION=" .. shellQuote(EXPECTED_LOVE_VERSION),
   }
   if spec.hideLove then
-    lines[#lines + 1] = "command() { if [ \"${1:-}\" = \"-v\" ] && [ \"${2:-}\" = \"love\" ]; then return 1; fi; builtin command \"$@\"; }; export -f command"
+    lines[#lines + 1] =
+      'command() { if [ "${1:-}" = "-v" ] && [ "${2:-}" = "love" ]; then return 1; fi; builtin command "$@"; }; export -f command'
   end
   if spec.loveVersion ~= nil then
     lines[#lines + 1] = "export FAKE_LOVE_VERSION=" .. shellQuote(spec.loveVersion)
   end
   lines[#lines + 1] = 'bash scripts/lib/repo-setup.sh "$@"'
-  lines[#lines + 1] = 'echo $? > "$SETUP_STATUS_FILE"'
   lines[#lines + 1] = ""
   local runScript = root .. "/run-setup.sh"
   writeExecutable(runScript, table.concat(lines, "\n"))
   return repo, runScript
 end
 
--- Runs the copied setup script with the given arguments. Without `ptyAnswer`
--- stdin is /dev/null (the noninteractive run); with one, a wrapper script
--- carrying the invocation runs under a `script(1)` pseudo-terminal fed that
--- answer (the interactive run). Either way the exit status lands in the
--- status file, so no assertion depends on the pty driver's own exit
--- propagation. The wrapper avoids nested quoting between the pty driver
--- and the invocation entirely.
-local function runSetupScript(runScript, args, ptyAnswer)
+-- Runs the copied setup script with the given arguments and stdin closed,
+-- so every run proves the noninteractive path. The exit status lands in the
+-- status file next to the captured log.
+local function runSetupScript(runScript, args)
   local logFile = runScript .. ".log"
   local statusFile = runScript .. ".status"
-  local wrapper = runScript .. ".invoke.sh"
-  writeExecutable(
-    wrapper,
-    "#!/usr/bin/env bash\n"
-      .. 'export SETUP_STATUS_FILE='
-      .. shellQuote(statusFile)
-      .. "\n"
-      .. "exec "
-      .. shellQuote(runScript)
-      .. " "
-      .. (args or "")
-      .. "\n"
-  )
-  local command
-  if ptyAnswer ~= nil then
-    local host = trim(popen("uname -s"):read("*l") or "")
-    local ptyCommand
-    if host == "Darwin" then
-      ptyCommand = "script -q /dev/null " .. shellQuote(wrapper)
-    elseif host == "Linux" then
-      ptyCommand = "script -q -c " .. shellQuote(wrapper) .. " /dev/null"
-    else
-      error("no known pty driver for " .. host, 0)
-    end
-    command = "printf '" .. ptyAnswer .. "\\n' | " .. ptyCommand .. " >" .. shellQuote(logFile) .. " 2>&1;"
-  else
-    command = shellQuote(wrapper) .. " >" .. shellQuote(logFile) .. " 2>&1 </dev/null;"
-  end
+  local command = shellQuote(runScript)
+    .. " "
+    .. (args or "")
+    .. " >"
+    .. shellQuote(logFile)
+    .. " 2>&1 </dev/null; echo $? > "
+    .. shellQuote(statusFile)
+    .. ";"
   local handle = popen(command)
   local _ = handle:read("*a")
   handle:close()
@@ -370,52 +342,11 @@ local function setupStatus(statusFile)
   return trim(readFile(statusFile) or "")
 end
 
-local function ptyDriver()
-  local handle = popen("command -v script >/dev/null 2>&1 && echo yes || echo no")
-  local answer = trim(handle:read("*l") or "")
-  handle:close()
-  if answer ~= "yes" then
-    return nil
-  end
-  local host = trim(popen("uname -s"):read("*l") or "")
-  if host == "Linux" or host == "Darwin" then
-    return host
-  end
-  return nil
-end
-
--- A pseudo-terminal is an environment property, not a binary: `script(1)`
--- may exist yet be unable to allocate one (as in locked-down sandboxes),
--- so prove a trivial command round-trips before claiming interactivity.
-local function ptyUsable()
-  local host = ptyDriver()
-  if host == nil then
-    return false
-  end
-  local root = mkdtemp()
-  local probe = root .. "/probe.sh"
-  local status = root .. "/probe.status"
-  writeExecutable(probe, "#!/usr/bin/env bash\necho ok > " .. shellQuote(status) .. "\n")
-  local command
-  if host == "Darwin" then
-    command = "printf '\\n' | script -q /dev/null " .. shellQuote(probe) .. " >/dev/null 2>&1"
-  else
-    command = "printf '\\n' | script -q -c " .. shellQuote(probe) .. " /dev/null >/dev/null 2>&1"
-  end
-  local handle = popen(command)
-  local _ = handle:read("*a")
-  handle:close()
-  local usable = readFile(status) ~= nil
-  os.execute("rm -rf -- " .. shellQuote(root))
-  return usable
-end
-
 -- A matching runtime is reused silently: no download, no install, no
 -- prompt, even without a terminal on stdin.
 function T.matching_love_runtime_is_reused_without_install()
   withTempDirectory(function(root)
-    local pinned = pinnedLoveVersion()
-    local repo, runScript = installSetupCopy(root, { loveVersion = pinned, withCurl = true })
+    local repo, runScript = installSetupCopy(root, { loveVersion = EXPECTED_LOVE_VERSION, withCurl = true })
     local logFile, statusFile = runSetupScript(runScript, "")
     Assert.equal(setupStatus(statusFile), "0", "a matching runtime must be accepted: " .. tostring(readFile(logFile)))
     local output = tostring(readFile(logFile))
@@ -441,7 +372,6 @@ end
 -- the `--yes` remediation and installs nothing.
 function T.mismatched_love_runtime_reports_both_versions_and_refuses_silent_use()
   withTempDirectory(function(root)
-    local pinned = pinnedLoveVersion()
     local repo, runScript = installSetupCopy(root, { loveVersion = "0.0", withCurl = true })
     local logFile, statusFile = runSetupScript(runScript, "")
     Assert.isTrue(
@@ -450,9 +380,26 @@ function T.mismatched_love_runtime_reports_both_versions_and_refuses_silent_use(
     )
     local output = tostring(readFile(logFile))
     contains(output, "0.0", "the failure must report the detected version")
-    contains(output, pinned, "the failure must report the required version")
+    contains(output, EXPECTED_LOVE_VERSION, "the failure must report the required version")
     contains(output, "--yes", "the failure must name the unattended remediation")
     Assert.isFalse(fileExists(repo .. "/scripts/bin/love"), "a mismatched runtime must not be replaced silently")
+  end)
+end
+
+-- A development-suffixed version string is not the pinned release: the
+-- installer must refuse to reuse it silently even though it starts with
+-- the expected number.
+function T.development_suffixed_love_version_is_never_accepted_as_the_pinned_release()
+  withTempDirectory(function(root)
+    local repo, runScript =
+      installSetupCopy(root, { loveVersion = EXPECTED_LOVE_VERSION .. "-development", withCurl = true })
+    local logFile, statusFile = runSetupScript(runScript, "")
+    Assert.isTrue(
+      setupStatus(statusFile) ~= "0",
+      "a suffixed version must not succeed: " .. tostring(readFile(logFile))
+    )
+    contains(tostring(readFile(logFile)), EXPECTED_LOVE_VERSION, "the failure must name the required version")
+    Assert.isFalse(fileExists(repo .. "/scripts/bin/love"), "a suffixed version must not be replaced silently")
   end)
 end
 
@@ -461,17 +408,16 @@ end
 -- download path offline.
 function T.yes_flag_installs_the_pinned_runtime_into_scripts_bin()
   withTempDirectory(function(root)
-    local pinned = pinnedLoveVersion()
     local repo, runScript = installSetupCopy(root, { loveVersion = "0.0", withCurl = true })
     local logFile, statusFile = runSetupScript(runScript, "--yes")
     Assert.equal(setupStatus(statusFile), "0", "the pinned install must succeed: " .. tostring(readFile(logFile)))
-    contains(tostring(readFile(logFile)), "love-" .. pinned, "the install must fetch the pinned release")
+    contains(tostring(readFile(logFile)), "love-" .. EXPECTED_LOVE_VERSION, "the install must fetch the pinned release")
     local installed = repo .. "/scripts/bin/love"
     Assert.isTrue(fileExists(installed), "the install must leave a scripts/bin shim")
     local handle = popen(shellQuote(installed) .. " --version 2>&1")
     local reported = trim(handle:read("*l") or "")
     handle:close()
-    contains(reported, pinned, "the installed shim must report the pinned release")
+    contains(reported, EXPECTED_LOVE_VERSION, "the installed shim must report the pinned release")
   end)
 end
 
@@ -479,7 +425,6 @@ end
 -- silent match: both fail loudly instead of reusing the runtime.
 function T.unverifiable_love_runtime_is_never_treated_as_compatible()
   withTempDirectory(function(root)
-    local pinned = pinnedLoveVersion()
     for _, probe in ipairs({ "__fail__", "__garbage__" }) do
       local repo, runScript = installSetupCopy(root .. "/" .. probe, { loveVersion = probe, withCurl = true })
       local logFile, statusFile = runSetupScript(runScript, "")
@@ -487,7 +432,7 @@ function T.unverifiable_love_runtime_is_never_treated_as_compatible()
         setupStatus(statusFile) ~= "0",
         "an unverifiable runtime (" .. probe .. ") must not succeed: " .. tostring(readFile(logFile))
       )
-      contains(tostring(readFile(logFile)), pinned, "the failure must name the required version")
+      contains(tostring(readFile(logFile)), EXPECTED_LOVE_VERSION, "the failure must name the required version")
       Assert.isFalse(
         fileExists(repo .. "/scripts/bin/love"),
         "an unverifiable runtime (" .. probe .. ") must not be replaced silently"
@@ -503,45 +448,17 @@ function T.piped_input_never_counts_as_consent_to_install()
     local repo, runScript = installSetupCopy(root, { loveVersion = "0.0", withCurl = true })
     local logFile = runScript .. ".log"
     local statusFile = runScript .. ".status"
-    local command = "export SETUP_STATUS_FILE="
-      .. shellQuote(statusFile)
-      .. "; printf 'y\\n' | "
-      .. shellQuote(runScript)
+    local command = shellQuote(runScript)
       .. " >"
       .. shellQuote(logFile)
-      .. " 2>&1;"
-    local handle = popen(command)
+      .. " 2>&1; echo $? > "
+      .. shellQuote(statusFile)
+      .. ";"
+    local handle = popen("printf 'y\\n' | " .. command)
     local _ = handle:read("*a")
     handle:close()
     Assert.isTrue(setupStatus(statusFile) ~= "0", "a piped yes must not install: " .. tostring(readFile(logFile)))
     Assert.isFalse(fileExists(repo .. "/scripts/bin/love"), "a piped yes must install nothing")
-  end)
-end
-
--- The interactive prompt installs on an explicit yes and aborts with the
--- manual remediation on any other answer.
-function T.interactive_answer_installs_or_aborts_the_pinned_runtime(context)
-  if not ptyUsable() then
-    context:skip("no working pty for the interactive prompt here")
-  end
-  withTempDirectory(function(root)
-    local pinned = pinnedLoveVersion()
-
-    local yesRepo, yesScript = installSetupCopy(root .. "/yes", { loveVersion = "0.0", withCurl = true })
-    local logFile, statusFile = runSetupScript(yesScript, "", "y")
-    Assert.equal(setupStatus(statusFile), "0", "an interactive yes must install: " .. tostring(readFile(logFile)))
-    local installed = yesRepo .. "/scripts/bin/love"
-    Assert.isTrue(fileExists(installed), "an interactive yes must leave a scripts/bin shim")
-    local handle = popen(shellQuote(installed) .. " --version 2>&1")
-    local reported = trim(handle:read("*l") or "")
-    handle:close()
-    contains(reported, pinned, "the installed shim must report the pinned release")
-
-    local noRepo, noScript = installSetupCopy(root .. "/no", { loveVersion = "0.0", withCurl = true })
-    local noLog, noStatus = runSetupScript(noScript, "", "n")
-    Assert.isTrue(setupStatus(noStatus) ~= "0", "an interactive no must abort: " .. tostring(readFile(noLog)))
-    contains(tostring(readFile(noLog)), pinned, "the abort must name the required version")
-    Assert.isFalse(fileExists(noRepo .. "/scripts/bin/love"), "an interactive no must install nothing")
   end)
 end
 

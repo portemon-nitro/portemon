@@ -163,7 +163,7 @@ local function errorRecords(emitted)
 end
 
 local function liveProfile()
-  return { gender = 0, name = "Gold", trainerId = 1, money = 3000, badges = 0 }
+  return { gender = 0, name = "Gold", trainerId = 1, money = 3000, badges = {} }
 end
 
 function T.tests.award_then_check_observes_the_live_profile_mask()

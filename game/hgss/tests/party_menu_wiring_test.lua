@@ -6,6 +6,7 @@
 -- beside them. No planning vocabulary here.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local BagActionPolicy = require("libs.hgss.src.ui.BagActionPolicy")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -113,7 +114,7 @@ end
 
 local function sources(overrides)
   local value = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     mapSymbol = "MAP_ROUTE_29",
     mapId = 200,
     fieldUse = fieldUse(),
@@ -211,7 +212,7 @@ local function worldPorts(overrides)
       queueAvatarTransition = function() end,
       applyAvatarTransitions = function() end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function() end,
     },
@@ -296,49 +297,49 @@ local function treeActor(kind)
 end
 
 local CAPABILITY_MATRIX = {
-  { capability = "cut", setup = { badges = 0xFFFF, facingActor = treeActor("cut_tree") }, expect = "ok" },
-  { capability = "cut", setup = { badges = 0 }, expect = "need_badge", reason = "hive" },
-  { capability = "cut", setup = { badges = 0xFFFF }, expect = "not_here" },
-  { capability = "surf", setup = { badges = 0xFFFF, surfEdge = true }, expect = "ok" },
-  { capability = "surf", setup = { badges = 0, surfEdge = true }, expect = "need_badge", reason = "fog" },
+  { capability = "cut", setup = { badges = BadgeSets.all(), facingActor = treeActor("cut_tree") }, expect = "ok" },
+  { capability = "cut", setup = { badges = {} }, expect = "need_badge", reason = "hive" },
+  { capability = "cut", setup = { badges = BadgeSets.all() }, expect = "not_here" },
+  { capability = "surf", setup = { badges = BadgeSets.all(), surfEdge = true }, expect = "ok" },
+  { capability = "surf", setup = { badges = {}, surfEdge = true }, expect = "need_badge", reason = "fog" },
   {
     capability = "surf",
-    setup = { badges = 0xFFFF, surfEdge = true, avatarMode = "surfing" },
+    setup = { badges = BadgeSets.all(), surfEdge = true, avatarMode = "surfing" },
     expect = "already_surfing",
   },
-  { capability = "fly", setup = { badges = 0xFFFF }, expect = "ok" },
-  { capability = "fly", setup = { badges = 0 }, expect = "need_badge", reason = "storm" },
+  { capability = "fly", setup = { badges = BadgeSets.all() }, expect = "ok" },
+  { capability = "fly", setup = { badges = {} }, expect = "need_badge", reason = "storm" },
   {
     capability = "strength",
-    setup = { badges = 0xFFFF, facingActor = treeActor("strength_boulder") },
+    setup = { badges = BadgeSets.all(), facingActor = treeActor("strength_boulder") },
     expect = "ok",
   },
-  { capability = "flash", setup = { badges = 0xFFFF, weatherId = 11 }, expect = "ok" },
-  { capability = "flash", setup = { badges = 0xFFFF }, expect = "not_here" },
+  { capability = "flash", setup = { badges = BadgeSets.all(), weatherId = 11 }, expect = "ok" },
+  { capability = "flash", setup = { badges = BadgeSets.all() }, expect = "not_here" },
   {
     capability = "rock_smash",
-    setup = { badges = 0xFFFF, facingActor = treeActor("smash_rock") },
+    setup = { badges = BadgeSets.all(), facingActor = treeActor("smash_rock") },
     expect = "ok",
   },
-  { capability = "rock_smash", setup = { badges = 0 }, expect = "need_badge", reason = "zephyr" },
-  { capability = "dig", setup = { badges = 0xFFFF, caveMap = true }, expect = "ok" },
-  { capability = "dig", setup = { badges = 0xFFFF }, expect = "not_here" },
-  { capability = "teleport", setup = { badges = 0xFFFF }, expect = "ok" },
+  { capability = "rock_smash", setup = { badges = {} }, expect = "need_badge", reason = "zephyr" },
+  { capability = "dig", setup = { badges = BadgeSets.all(), caveMap = true }, expect = "ok" },
+  { capability = "dig", setup = { badges = BadgeSets.all() }, expect = "not_here" },
+  { capability = "teleport", setup = { badges = BadgeSets.all() }, expect = "ok" },
   {
     capability = "waterfall",
-    setup = { badges = 0xFFFF, avatarMode = "surfing", facingWaterfall = true },
+    setup = { badges = BadgeSets.all(), avatarMode = "surfing", facingWaterfall = true },
     expect = "ok",
   },
   {
     capability = "whirlpool",
-    setup = { badges = 0xFFFF, avatarMode = "surfing", facingWhirlpool = true },
+    setup = { badges = BadgeSets.all(), avatarMode = "surfing", facingWhirlpool = true },
     expect = "ok",
   },
-  { capability = "rock_climb", setup = { badges = 0xFFFF, climbTile = true }, expect = "ok" },
-  { capability = "headbutt", setup = { badges = 0xFFFF, headbuttTree = true }, expect = "ok" },
-  { capability = "headbutt", setup = { badges = 0xFFFF }, expect = "not_here" },
-  { capability = "sweet_scent", setup = { badges = 0xFFFF }, expect = "ok" },
-  { capability = "chatter", setup = { badges = 0xFFFF }, expect = "ok" },
+  { capability = "rock_climb", setup = { badges = BadgeSets.all(), climbTile = true }, expect = "ok" },
+  { capability = "headbutt", setup = { badges = BadgeSets.all(), headbuttTree = true }, expect = "ok" },
+  { capability = "headbutt", setup = { badges = BadgeSets.all() }, expect = "not_here" },
+  { capability = "sweet_scent", setup = { badges = BadgeSets.all() }, expect = "ok" },
+  { capability = "chatter", setup = { badges = BadgeSets.all() }, expect = "ok" },
 }
 
 function T.tests.capability_limits_are_honest_and_closed()
@@ -392,7 +393,7 @@ end
 
 local function admissionRuntime(composition, client, readerOverrides)
   local readers = {
-    playerData = { profile = { badges = 0 } },
+    playerData = { profile = { badges = {} } },
     runtimeMap = {
       mapSymbol = "MAP_ROUTE_29",
       mapId = 200,
@@ -490,7 +491,7 @@ function T.tests.rock_smash_and_headbutt_menu_use_runs_their_menu_scripts_with_t
     end,
   }
   local runtime = admissionRuntime(composition, client, {
-    playerData = { profile = { badges = 0xFFFF } },
+    playerData = { profile = { badges = BadgeSets.all() } },
     actors = rockActors,
   })
   runtime.scripts.worldState = {
@@ -578,7 +579,7 @@ function T.tests.busy_second_request_is_refused_without_touching_the_first()
     startApplicationScript = function()
       error("a busy admission must never schedule", 0)
     end,
-  }, { playerData = { profile = { badges = 0xFFFF } } })
+  }, { playerData = { profile = { badges = BadgeSets.all() } } })
   local ok, err = pcall(runtime._admitFieldAction, runtime, "pokemon.field_move", { move = "cut", slot = 0 })
   Assert.isFalse(ok, "a busy second admission must raise")
   Assert.isTrue(tostring(err):find("busy", 1, true) ~= nil, "the refusal names the held operation: " .. tostring(err))
@@ -706,7 +707,7 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
     saveId = "save-wiring",
     versionId = "heartgold",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 0 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = {} },
       options = { textSpeed = "mid", textFrame = 0 },
     },
     fieldTravel = require("libs.hgss.src.field.FieldTravelState").new({ lastHealSpawn = "SPAWN_NEW_BARK" }),

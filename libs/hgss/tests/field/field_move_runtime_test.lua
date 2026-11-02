@@ -5,6 +5,7 @@
 -- planning revalidates; commit happens exactly once through advance.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 local FieldMoveRuntime = require("libs.hgss.src.field.FieldMoveRuntime")
 
@@ -26,7 +27,7 @@ local T = {}
 
 local function context(overrides)
   local base = {
-    badges = 0xFFFF,
+    badges = BadgeSets.all(),
     unionOrColosseum = false,
     mapSymbol = "test-map",
     mapId = 61,
@@ -132,7 +133,7 @@ end
 
 function T.queue_refuses_without_badge_before_the_application_closes()
   local runtime = open()
-  local poor = context({ badges = 0 })
+  local poor = context({ badges = {} })
   local outcome = runtime:queue({ move = "cut", slot = 0, partyRevision = 4, context = poor })
   Assert.equal(outcome.kind, "need_badge", "admission decides eligibility, got " .. tostring(outcome.kind))
   Assert.isFalse(runtime:isBusy(), "a refused queue holds nothing")
@@ -234,7 +235,7 @@ function T.teleport_resolves_through_the_real_world()
       queueAvatarTransition = stub(),
       applyAvatarTransitions = stub(),
     },
-    profile = { badges = 0 },
+    profile = { badges = {} },
     weather = { change = stub() },
     reactions = { dispatch = stub() },
     spawns = {

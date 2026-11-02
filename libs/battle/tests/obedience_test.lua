@@ -145,6 +145,41 @@ function T.obedience_inputs_are_validated_not_defaulted()
   Assert.isTrue(DomainErrors.is(missingCap), "a missing profile cap fails as invalid input")
 end
 
+-- The open badge set feeds the obedience cap by count: two owned keys
+-- obey to 30 like two badges, and counts above eight hold the full-set
+-- cap. A malformed set fails as invalid input instead of guessing.
+function T.obedience_counts_the_open_badge_set_with_a_full_set_cap()
+  local Selection = selectionOwner("usable-move and forced-action checks own move selection")
+  local function obeyWith(badges, level)
+    return Selection.obey({
+      actor = { combatant = 1 },
+      requestedMove = "TACKLE",
+      origin = { traded = true },
+      level = level,
+      profile = { badges = badges },
+      stream = BattleRng.new(FIXED_SEED),
+    })
+  end
+  Assert.isTrue(
+    obeyWith({ zephyr = true, hive = true }, 30).obeys,
+    "two owned keys obey at the two-badge tier"
+  )
+  Assert.equal(
+    obeyWith({ zephyr = true, hive = true }, 30).executingMove,
+    "TACKLE",
+    "an under-cap outsider keeps the ordered move"
+  )
+  local overfull = {}
+  for index = 1, 20 do
+    overfull["mod:gym" .. index] = true
+  end
+  Assert.isTrue(obeyWith(overfull, 100).obeys, "counts above eight hold the full-set cap")
+  local malformed = Assert.throws(function()
+    obeyWith({ zephyr = false }, 50)
+  end)
+  Assert.isTrue(DomainErrors.is(malformed), "a malformed badge set fails as invalid input")
+end
+
 -- Frustration reads explicit friendship facts: with everything else
 -- fixed, zero friendship strikes far harder than full friendship, and a
 -- missing friendship fact fails at validation instead of falling back to

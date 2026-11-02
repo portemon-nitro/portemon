@@ -44,7 +44,7 @@ local function record(overrides)
       gender = 0,
       trainerId = 0,
       money = 3000,
-      badges = 0,
+      badges = {},
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
@@ -95,7 +95,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
       gender = 0,
       trainerId = 7,
       money = 3000,
-      badges = 3,
+      badges = { zephyr = true, hive = true },
       nationalDex = false,
       runningShoes = true,
       runningShoesLock = true,
@@ -314,10 +314,13 @@ function T.validation_requires_the_font_and_frame_context()
   end)
 end
 
-function T.badge_masks_round_trip_and_reject_non_masks()
-  local validated = assert(PlayerData.validate(record({ profile = { badges = 0xFFFF } }), context()))
-  Assert.equal(validated.profile.badges, 0xFFFF)
-  for _, badges in ipairs({ -1, 0x10000, 1.5, "3" }) do
+function T.badge_sets_round_trip_copied_and_reject_non_sets()
+  local input = record({ profile = { badges = { zephyr = true, ["mod:ember"] = true } } })
+  local validated = assert(PlayerData.validate(input, context()))
+  Assert.deepEqual(validated.profile.badges, { zephyr = true, ["mod:ember"] = true })
+  input.profile.badges.plain = true
+  Assert.isNil(validated.profile.badges.plain, "validation copies the badge set instead of aliasing it")
+  for _, badges in ipairs({ -1, 0x10000, 1.5, "3", 0, { "zephyr" }, { zephyr = false }, { zephyr = 1 } }) do
     throwsCode("PLAYER_DATA_INVALID", function()
       local _, err = PlayerData.validate(record({ profile = { badges = badges } }), context())
       error(err)

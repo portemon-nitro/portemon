@@ -91,7 +91,7 @@ local function composition()
   local itemCatalog = ItemCatalog.new(itemRoot)
   local bag = HgssBagService.new({ catalog = itemCatalog, bag = BagSave.empty() })
   Assert.isTrue(bag:add("POTION", 120), "the Bag fixture contains a stack beyond the sale limit")
-  local profile = { money = 0, badges = 0, nationalDex = false }
+  local profile = { money = 0, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

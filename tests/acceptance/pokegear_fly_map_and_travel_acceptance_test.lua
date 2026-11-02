@@ -48,12 +48,12 @@ local function outdoorContext()
 end
 
 -- Eligibility context satisfying the real badge, map-policy, and escort
--- checks for Fly: the storm badge bit, a fly-permitting map, and no
+-- checks for Fly: the storm badge, a fly-permitting map, and no
 -- follower, costume, safari, or park restriction.
 ---@return table
 local function eligibleFlyContext()
   return {
-    badges = 16,
+    badges = { storm = true },
     fieldUse = { flyAllowed = true },
     humanFollower = false,
     rocketCostume = false,

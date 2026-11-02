@@ -45,7 +45,7 @@ local function labHarness()
             gender = 0,
             trainerId = 1,
             money = 3000,
-            badges = 0,
+            badges = {},
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,

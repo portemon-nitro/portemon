@@ -1,6 +1,7 @@
 -- The composed Party flow reads a held letter in an owned read-only child.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -170,7 +171,7 @@ local function worldPorts()
       queueAvatarTransition = function() end,
       applyAvatarTransitions = function() end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = { change = function() end },
     reactions = { dispatch = function() end },
   }
@@ -234,7 +235,7 @@ local function makeComposition(attachMail)
     end,
     cancelIconPreparation = function() end,
     contextSources = function()
-      return { badges = 0xFFFF, mapSymbol = "MAP_TEST", fieldUse = {}, avatarMode = "walking" }
+      return { badges = BadgeSets.all(), mapSymbol = "MAP_TEST", fieldUse = {}, avatarMode = "walking" }
     end,
     worldPorts = worldPorts(),
   })

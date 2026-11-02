@@ -29,7 +29,20 @@ local function runtime()
 end
 
 function T.canonical_indicator_preserves_bright_background(scope, context)
-  local cache = CacheFs.forVersion("heartgold")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local RomImporter = require("romdump.src.source.RomImporter")
+  local versionId = nil
+  for _, candidate in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(candidate) then
+      versionId = candidate
+      break
+    end
+  end
+  if versionId == nil then
+    context:skip("canonical field-effect model is unavailable")
+    return
+  end
+  local cache = CacheFs.forVersion(versionId)
   if not cache:exists(FieldEffectAssetCache.indexPath()) then
     context:skip("canonical field-effect model is unavailable")
     return

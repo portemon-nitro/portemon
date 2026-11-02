@@ -333,7 +333,7 @@ end
 local function mapGateContext(flyAllowed)
   return {
     mapId = 33,
-    badges = 16,
+    badges = { storm = true },
     fieldUse = { flyAllowed = flyAllowed },
     humanFollower = false,
     rocketCostume = false,

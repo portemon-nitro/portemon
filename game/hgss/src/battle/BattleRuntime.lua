@@ -2044,10 +2044,20 @@ function BattleRuntime:_commitRewards(result)
     if type(profile) ~= "table" then
       error("player money facts carry their profile", 0)
     end
+    -- The blackout debit scales with the owned badge count: the open set
+    -- counts every key, whether retail or modded.
+    local badgeCount = 0
+    if type(profile.badges) == "table" then
+      for _, owned in pairs(profile.badges) do
+        if owned == true then
+          badgeCount = badgeCount + 1
+        end
+      end
+    end
     return HgssBattleRewards.planLoss({
       money = profile.money,
       partyLevels = self:_sideLevels(true),
-      badges = profile.badges or 0,
+      badges = badgeCount,
     })
   end
   return {}

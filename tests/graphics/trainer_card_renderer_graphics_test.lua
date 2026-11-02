@@ -235,7 +235,20 @@ end
 -- job is placement and composition). Skips explicitly when no UI class is
 -- present in the shared derived cache.
 function T.canonical_golden_matches_the_real_generated_card_pixel_for_pixel(scope, context)
-  local cache = CacheFs.forVersion("heartgold")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local RomImporter = require("romdump.src.source.RomImporter")
+  local versionId = nil
+  for _, candidate in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(candidate) then
+      versionId = candidate
+      break
+    end
+  end
+  if versionId == nil then
+    context:skip("no field-UI class in the shared derived cache")
+    return
+  end
+  local cache = CacheFs.forVersion(versionId)
   if cache:getInfo(FieldUiAssetCache.manifestPath()) == nil then
     context:skip("no field-UI class in the shared derived cache")
     return

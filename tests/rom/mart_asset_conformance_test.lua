@@ -311,7 +311,7 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
   end
 
   local vanilla = resolve({ kind = "standard" }, {
-    badges = 0,
+    badges = {},
     nationalDex = false,
     runningShoes = false,
     runningShoesLock = false,
@@ -345,7 +345,7 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
   for selector = 0, 29 do
     for _, flag09A in ipairs({ false, true }) do
       local special = resolve({ kind = "special", selector = selector }, {
-        badges = 0,
+        badges = {},
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
@@ -375,7 +375,7 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
 
   for selector, rows in ipairs(bundle.catalog.sealStocks) do
     local seals = resolve({ kind = "seal", selector = selector - 1 }, {
-      badges = 0,
+      badges = {},
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
@@ -400,7 +400,7 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
     for _, nationalDex in ipairs({ false, true }) do
       local stockIndex = weekday + (nationalDex and 7 or 0)
       local athlete = resolve({ kind = "athlete" }, {
-        badges = 0,
+        badges = {},
         nationalDex = nationalDex,
         weekday = weekday,
         dayOrdinal = 1,
@@ -424,7 +424,7 @@ function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(r
   for _, prefix in ipairs({ 0, 5, 6, 11, 12, 23, 24, 26, 27 }) do
     local group = math.min(math.floor(prefix / 6), 4)
     local cards = resolve({ kind = "data_cards" }, {
-      badges = 0,
+      badges = {},
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,

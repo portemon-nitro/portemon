@@ -5,20 +5,22 @@
 -- table it returns is freshly built from validated inputs.
 
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 
 local FieldMoveContext = {}
 
 local CARDINALS = { north = true, south = true, east = true, west = true }
 local AVATAR_MODES = { walking = true, cycling = true, surfing = true, rocket = true }
 
-local function isMask(value)
-  return type(value) == "number"
-    and value == value
-    and value ~= math.huge
-    and value ~= -math.huge
-    and value % 1 == 0
-    and value >= 0
-    and value <= 0xFFFF
+-- The context copies the open badge set so eligibility checks observe a
+-- detached snapshot: later awards never rewrite an admitted decision.
+local function copyBadges(badges)
+  assert(PlayerProgression.isBadgeSet(badges), "field context badges must be an open badge set")
+  local copy = {}
+  for key, owned in pairs(badges) do
+    copy[key] = owned
+  end
+  return copy
 end
 
 local function isBool(value)
@@ -35,7 +37,7 @@ end
 ---@return table<string, unknown> the copied read-only context record
 function FieldMoveContext.capture(sources)
   assert(type(sources) == "table", "field context capture requires service reads")
-  assert(isMask(sources.badges), "field context badges must be a 16-bit mask")
+  local badges = copyBadges(sources.badges)
   assert(type(sources.mapSymbol) == "string" and sources.mapSymbol ~= "", "field context needs a map symbol")
   assert(
     type(sources.mapId) == "number" and sources.mapId % 1 == 0 and sources.mapId >= 0,
@@ -87,7 +89,7 @@ function FieldMoveContext.capture(sources)
     obstacle = actor.obstacleKind
   end
   return {
-    badges = sources.badges,
+    badges = badges,
     unionOrColosseum = use.unionOrColosseum,
     mapSymbol = sources.mapSymbol,
     mapId = sources.mapId,

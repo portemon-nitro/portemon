@@ -6,8 +6,9 @@
 --
 -- Source basis: the retail ROM's field-move checks (field_move.c) and the
 -- Escape Rope item check. Badge semantics follow the durable progression
--- order. Checks answer eligibility only; moves whose execution is not yet
--- implemented report that at the runtime layer.
+-- owner: the context carries the open badge set. Checks answer
+-- eligibility only; moves whose execution is not yet implemented report
+-- that at the runtime layer.
 
 local FieldMovePolicy = {}
 
@@ -28,29 +29,13 @@ FieldMovePolicy.MOVE_KEYS = {
   "chatter",
 }
 
--- Badge bit per semantic badge key, following the progression order.
-local BADGE_BITS = {
-  zephyr = 0,
-  hive = 1,
-  plain = 2,
-  fog = 3,
-  storm = 4,
-  mineral = 5,
-  glacier = 6,
-  rising = 7,
-  boulder = 8,
-  cascade = 9,
-  thunder = 10,
-  rainbow = 11,
-  soul = 12,
-  marsh = 13,
-  volcano = 14,
-  earth = 15,
-}
-
+-- Badge ownership over the open badge set the context carries: any owned
+-- key counts, whether retail or modded. The gates below name the canonical
+-- retail keys; unowned keys simply read as missing.
 local function hasBadge(badges, key)
-  local bit = assert(BADGE_BITS[key], "unknown badge key " .. tostring(key))
-  return (math.floor(badges / (2 ^ bit)) % 2) == 1
+  assert(type(badges) == "table", "field checks require the open badge set")
+  assert(type(key) == "string" and key ~= "", "field checks name a badge key")
+  return badges[key] == true
 end
 
 local function fieldUse(context)

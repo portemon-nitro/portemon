@@ -15,7 +15,8 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v10"
+GameSave.SCHEMA = "g4-game-save-v11"
+GameSave.LEGACY_V10_SCHEMA = "g4-game-save-v10"
 GameSave.LEGACY_V9_SCHEMA = "g4-game-save-v9"
 GameSave.LEGACY_V8_SCHEMA = "g4-game-save-v8"
 GameSave.LEGACY_V7_SCHEMA = "g4-game-save-v7"
@@ -172,7 +173,8 @@ end
 
 -- Pure v3 -> v4 migration: copies every known field without mutating the
 -- input, initializes the badge mask to zero (old profiles had no badge
--- owner, so no achievement is invented), and falls back to the documented
+-- owner, so no achievement is invented; the mask converts to the open
+-- badge set at the v10 step), and falls back to the documented
 -- mother-spawn respawn with no cave entrance. The result still passes
 -- through canonical v4 validation afterwards; this step never repairs
 -- malformed current data.
@@ -396,8 +398,46 @@ function GameSave.migrateV9(record)
     Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v9 player profile is required for migration", {})
   end
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V10_SCHEMA
   migrated.playerData.profile.rivalName = PlayerData.DEFAULT_RIVAL_NAME
+  return migrated
+end
+
+-- v10 profiles carry badges as a retail 16-bit mask: the step converts
+-- set bits to the canonical retail keys in native order and leaves every
+-- other field and bucket as it was. Malformed profiles and masks are
+-- reported, never repaired.
+---@param record table<string, unknown> a v10 save record
+---@return table<string, unknown> the migrated v11 record
+function GameSave.migrateV10(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V10_SCHEMA, "GameSave.migrateV10 requires v10")
+  if type(record.playerData) ~= "table" or type(record.playerData.profile) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v10 player profile is required for migration", {})
+  end
+  local mask = record.playerData.profile.badges
+  if
+    type(mask) ~= "number"
+    or mask ~= mask
+    or mask == math.huge
+    or mask == -math.huge
+    or mask % 1 ~= 0
+    or mask < 0
+    or mask > 0xFFFF
+  then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v10 player badges must be a 16-bit mask", {
+      badges = mask,
+    })
+  end
+  local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
+  local migrated = deepCopy(record)
+  local badges = {}
+  for index, key in ipairs(PlayerProgression.BADGE_ORDER) do
+    if (math.floor(mask / (2 ^ (index - 1))) % 2) == 1 then
+      badges[key] = true
+    end
+  end
+  migrated.schema = GameSave.SCHEMA
+  migrated.playerData.profile.badges = badges
   return migrated
 end
 
@@ -431,6 +471,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V10_SCHEMA
       and record.schema ~= GameSave.LEGACY_V9_SCHEMA
       and record.schema ~= GameSave.LEGACY_V8_SCHEMA
       and record.schema ~= GameSave.LEGACY_V7_SCHEMA
@@ -515,6 +556,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V10_SCHEMA
       and schema ~= GameSave.LEGACY_V9_SCHEMA
       and schema ~= GameSave.LEGACY_V8_SCHEMA
       and schema ~= GameSave.LEGACY_V7_SCHEMA
@@ -546,6 +588,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V9_SCHEMA then
       current = GameSave.migrateV9(current)
+    end
+    if current.schema == GameSave.LEGACY_V10_SCHEMA then
+      current = GameSave.migrateV10(current)
     end
     return canonicalizeCurrent(current)
   end)

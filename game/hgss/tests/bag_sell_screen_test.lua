@@ -92,7 +92,7 @@ local function composition(quantity, effect)
   local itemCatalog = ItemCatalog.new(itemRoot)
   local bag = HgssBagService.new({ catalog = itemCatalog, bag = BagSave.empty() })
   Assert.isTrue(bag:add("POTION", quantity), "the real Bag accepts the sale fixture")
-  local profile = { money = 0, badges = 0, nationalDex = false }
+  local profile = { money = 0, badges = {}, nationalDex = false }
   local service = MartService.new({
     profile = profile,
     bag = bag,

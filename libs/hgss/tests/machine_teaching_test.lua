@@ -128,7 +128,7 @@ function T.hm_teaches_without_consumption_and_field_still_requires_its_badge()
   Assert.equal(after.moves[3].pp, 30, "the entry carries full base power points")
 
   local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
-  local check = FieldMovePolicy.check("cut", { badges = 0 })
+  local check = FieldMovePolicy.check("cut", { badges = {} })
   Assert.equal(check.kind, "need_badge", "field use still requires its badge after teaching")
   Assert.equal(check.badge, "hive", "the badge requirement names its source gate")
 end
@@ -267,7 +267,7 @@ function T.teaching_stores_plain_entries_and_grants_no_field_permission()
     Assert.isTrue(entry.ppUps >= 0 and entry.ppUps <= 3, "power-point ups stay plain counts")
   end
   local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
-  Assert.equal(FieldMovePolicy.check("cut", { badges = 0 }).kind, "need_badge", "teaching never marks field permission")
+  Assert.equal(FieldMovePolicy.check("cut", { badges = {} }).kind, "need_badge", "teaching never marks field permission")
 end
 
 return { tests = T }

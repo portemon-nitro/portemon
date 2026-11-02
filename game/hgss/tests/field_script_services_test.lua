@@ -142,7 +142,7 @@ local function driveSlice(services, id, steps)
     eventState = FieldEventState.new(),
     actors = stubActors(),
     player = { fieldX = 1, fieldZ = 2, worldY = 0, facing = "south" },
-    profile = { gender = 0, name = "Gold", badges = 0 },
+    profile = { gender = 0, name = "Gold", badges = {} },
     dialogue = { isModal = noop },
     messageProvider = {},
     layout = function()

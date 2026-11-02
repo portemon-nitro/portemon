@@ -40,7 +40,7 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
     terrainDependencyHash = "terrain-heartgold",
     facing = "south",
     playerData = {
-      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = 3 },
+      profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000, badges = { zephyr = true, hive = true } },
       options = { textFrame = 0, textSpeed = "mid" },
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },

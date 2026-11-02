@@ -8,6 +8,7 @@
 -- and storage composition; no ROM, GPU, or product cache is touched.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -106,7 +107,7 @@ local function menuSelf(overrides)
     scripts = { worldState = overrides.worldState or worldWith({}) },
     dexKnowledge = overrides.dexKnowledge,
     uiManifest = manifestWithIcons(),
-    playerData = { profile = { name = "PLAYER", badges = 0, runningShoes = false, runningShoesLock = false } },
+    playerData = { profile = { name = "PLAYER", badges = {}, runningShoes = false, runningShoesLock = false } },
     playerAvatar = {
       durableState = function()
         return "walking"
@@ -343,7 +344,7 @@ local function worldPorts()
       queueAvatarTransition = function() end,
       applyAvatarTransitions = function() end,
     },
-    profile = { badges = 0xFFFF },
+    profile = { badges = BadgeSets.all() },
     weather = {
       change = function() end,
     },
@@ -380,7 +381,7 @@ local function boxDeps(overrides)
     end,
     cancelIconPreparation = function() end,
     contextSources = function()
-      return { badges = 0xFFFF, mapSymbol = "MAP_ROUTE_29", mapId = 200, fieldUse = fieldUse() }
+      return { badges = BadgeSets.all(), mapSymbol = "MAP_ROUTE_29", mapId = 200, fieldUse = fieldUse() }
     end,
     worldPorts = worldPorts(),
     summaryManifest = {
