@@ -435,7 +435,8 @@ local function fixture(opts)
   -- producer compiles (palettes 0/1 with the MAIN base palette 2 and the
   -- SUB base palette 3, chars 4/5/6 with the MAIN base char 7 and the SUB
   -- base char 8, cells 9/10/11/12, animations 13/14/15/16, the 256x256
-  -- MAIN base screen 17, and the 256x256 SUB base screen 19). The pill cell
+  -- MAIN base screen 17, the 256x56 MAIN selection-layer screen 18, and
+  -- the 256x256 SUB base screen 19). The pill cell
   -- bank carries both sizes (32x16 small, 64x32 wide); every animation
   -- bank carries the sequence count its set selects. Member numbers are
   -- the producer-side selection (this is the romdump-side test).
@@ -476,6 +477,16 @@ local function fixture(opts)
       entries[i] = 1
     end
     options[18] = screenDataWH(256, 256, entries)
+  end
+  do
+    -- Member 18 is the separate MAIN selection layer: the audited
+    -- 256x56 tilemap (never an opaque base), so the strip crop has a
+    -- real source map to sample.
+    local entries = {}
+    for i = 1, 224 do
+      entries[i] = 1
+    end
+    options[19] = screenDataWH(256, 56, entries)
   end
   do
     local entries = {}

@@ -19,12 +19,30 @@ local T = {
   tests = {},
 }
 
+-- Private worker-readable namespace for this suite's synthetic option art.
+-- Never a real game version: the pool worker resolves every image through
+-- this version's love-backend root, and teardown removes only this root
+-- after pool disposal, so suites never share staged bytes or touch ROM
+-- derived files.
+local ISOLATED_VERSION = "test-options-wiring"
+
+local function ownPool(scope, pool)
+  scope:own({
+    release = function()
+      pcall(function()
+        pool:dispose()
+      end)
+      CacheFs.forVersion(ISOLATED_VERSION):removeTree("")
+    end,
+  })
+end
+
 local function optionsCache()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local cache = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addOptionsContract(manifest)
   cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
-  CacheFs.forVersion("heartgold"):write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
+  FieldUiFixture.writeOptionsPngs(CacheFs.forVersion(ISOLATED_VERSION))
   return cache, manifest
 end
 
@@ -77,11 +95,7 @@ local function preparedWiring(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local palettes = {}
   local tokenLines = {}
   local stubText = {}
@@ -199,6 +213,45 @@ function T.tests.token_lines_forward_to_the_shared_glyph_renderer(scope)
   Assert.isTrue(tokenLines[1].tokens == tokens, "tokens forward without copying")
   Assert.equal(tokenLines[1].x, 7, "the line keeps its horizontal origin")
   Assert.equal(tokenLines[1].y, 9, "the line keeps its vertical origin")
+end
+
+-- This suite stages its own complete synthetic image set under its own
+-- disposable namespace: the namespace starts clean without the other suite
+-- having run first, carries all four required roles where the pool worker
+-- reads them, and never equals a real game version.
+function T.tests.stages_a_private_complete_image_set(scope)
+  local workerVisible = CacheFs.forVersion(ISOLATED_VERSION)
+  workerVisible:removeTree("")
+  Assert.isNil(
+    workerVisible:read(FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH),
+    "the private namespace starts clean without another suite running first"
+  )
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
+  Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
+  Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
+  Assert.equal(manifest.options.version, 3, "the staged section carries its selection-layer contract")
+  Assert.equal(
+    manifest.options.selectionOverlay,
+    FieldUiFixture.optionsSelectionOverlayKey(),
+    "the staged section indexes its selected-row strip"
+  )
+  for _, path in ipairs({
+    FieldUiFixture.OPTIONS_CHROME_PATH,
+    FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+  }) do
+    Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
+  end
+  local overlay = assert(
+    manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()],
+    "the selected-row strip asset is indexed"
+  )
+  Assert.equal(overlay.width, 256, "the selected-row strip width")
+  Assert.equal(overlay.height, 24, "the selected-row strip height")
 end
 
 return GraphicsSmoke.suite(T.tests)

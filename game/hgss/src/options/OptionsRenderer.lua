@@ -35,6 +35,7 @@ local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest"
 ---@field arrows table<string, unknown>
 ---@field actions table<string, unknown>
 ---@field backdrops table<string, string> semantic role to its indexed backdrop asset key
+---@field selectionOverlay string required indexed selected-row strip asset key
 ---@field framePreviewText table<integer, table<string, unknown>>?
 ---@field animationTickSeconds number?
 ---@alias OptionsRenderer.Rect { x: number, y: number, width: number, height: number }
@@ -83,7 +84,7 @@ function OptionsRenderer:_section()
   local manifest = self._manifest
   local section = manifest.options
   assert(type(section) == "table", "the field-UI manifest carries the options section")
-  assert(section.version == 2, "the options section carries its locked version")
+  assert(section.version == 3, "the options section carries its locked version")
   return section
 end
 
@@ -145,6 +146,9 @@ function OptionsRenderer:_requestChrome()
     local entry = assert(assets[assetKey], "the " .. role .. " backdrop indexes its asset")
     add(assert(entry.image, "the " .. role .. " backdrop asset carries its image path"), role)
   end
+  local overlayKey = assert(section.selectionOverlay, "the options section carries its selection overlay role")
+  local overlay = assert(assets[overlayKey], "the selection overlay indexes its asset")
+  add(assert(overlay.image, "the selection overlay asset carries its image path"), "selectionOverlay")
 end
 
 -- Prebuilds one stable viewport per unique immutable compiled frame
@@ -236,6 +240,7 @@ function OptionsRenderer:prepare()
     assert(self._leaseByRole.chrome ~= nil, "prepared chrome carries its lease")
     assert(self._leaseByRole.controls ~= nil, "prepared controls carry their backdrop lease")
     assert(self._leaseByRole.preview ~= nil, "prepared preview carries its backdrop lease")
+    assert(self._leaseByRole.selectionOverlay ~= nil, "prepared selection overlay carries its lease")
     self:_buildQuads()
   end)
   if not ok then

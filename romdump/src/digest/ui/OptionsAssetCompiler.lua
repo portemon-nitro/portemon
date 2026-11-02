@@ -506,6 +506,58 @@ local function renderBackdrop(archive, dependencies, chars, palettes, base, imag
   return PngWriter.encode(256, 192, table.concat(rows)), { image = image, width = 256, height = 192 }
 end
 
+-- Renders the transparent selected-row strip from the separate MAIN
+-- selection layer: the audited 256x56 source map rasterized with
+-- palette-zero kept transparent, cropped to source rows 16..39 (the
+-- documented zero-row offset is -8, so logical row top y=24 samples rows
+-- 16..39). Private to this module; the compiled bundle carries the
+-- staged bytes.
+---@param archive Narc
+---@param dependencies table[]
+---@param chars table<integer, OptionsAssetCompiler.CharData>
+---@param palettes table<integer, OptionsAssetCompiler.PaletteData>
+---@param image string staged output path
+---@param role string
+---@return string png
+---@return { image: string, width: integer, height: integer }
+local function renderSelectionOverlay(archive, dependencies, chars, palettes, image, role)
+  local screenMember = OptionsSources.selectionOverlayScreen
+  local screenBytes = decodeMember(archive, screenMember, "options-selection-overlay")
+  dependencies[#dependencies + 1] = {
+    name = OptionsSources.archive.symbol .. ":member:" .. screenMember,
+    sha1 = Hashing.sha1hex(screenBytes),
+  }
+  local screen = decodeG2d(screenBytes, "decodeScreen", screenMember) --[[@as OptionsAssetCompiler.ScreenData]]
+  if screen.width ~= 256 or screen.height ~= 56 then
+    sourceError("the options selection overlay is not the audited 256x56 surface", {
+      role = role,
+      member = screenMember,
+      width = screen.width,
+      height = screen.height,
+    })
+  end
+  local charData = chars[OptionsSources.members.faceChar]
+  if charData == nil then
+    sourceError("the options selection overlay char is not decoded", { role = role })
+  end
+  local palette = palettes[OptionsSources.members.facePalette]
+  if palette == nil then
+    sourceError("the options selection overlay palette is not decoded", { role = role })
+  end
+  assert(charData ~= nil and palette ~= nil, "a missing options selection bank fails above")
+  local render = G2dRasterizer.renderScreen(
+    charData,
+    { colors = palette.colors },
+    screen,
+    { asset = "options selection overlay", member = screenMember }
+  )
+  local strip = {}
+  for y = 16, 39 do
+    strip[#strip + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
+  end
+  return PngWriter.encode(256, 24, table.concat(strip)), { image = image, width = 256, height = 24 }
+end
+
 ---@param romFs RomFs
 ---@param versionId string
 ---@return table<string, unknown>? bundle
@@ -773,17 +825,22 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       previewImage,
       "options:backdrop:preview"
     )
+    local overlayImage = FieldUiAssetCache.assetDir() .. "/options-selection-overlay.png"
+    local overlayPng, overlayAsset =
+      renderSelectionOverlay(archive, dependencies, chars, palettes, overlayImage, "options:selection-overlay")
     local files = {
       [image] = PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)),
       [controlsImage] = controlsPng,
       [previewImage] = previewPng,
+      [overlayImage] = overlayPng,
     }
     local section = {
-      version = 2,
+      version = 3,
       backdrops = {
         controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
         preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
       },
+      selectionOverlay = FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
       labels = labels,
       choices = {
         small = { unselected = unselectedSmall, selected = selectedSmall },
@@ -810,6 +867,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       backgrounds = {
         { key = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND, asset = controlsAsset },
         { key = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND, asset = previewAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY, asset = overlayAsset },
       },
     }
   end, function(err)

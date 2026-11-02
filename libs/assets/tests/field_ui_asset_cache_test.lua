@@ -1042,20 +1042,53 @@ function T.stale_prompt_less_manifest_schema_is_rejected()
 end
 
 -- The option-control section carries exactly the two indexed backdrop
--- roles (controls and preview) at the 256x192 field size under manifest
--- version 2. A missing role, an extra role, a swapped or unindexed asset
--- id, a missized indexed asset, or the previous version 1 shape is stale.
+-- roles (controls and preview) at the 256x192 field size plus the required
+-- transparent 256x24 selected-row strip under manifest version 3. A missing
+-- strip role, an extra role, a swapped or unindexed asset id, a missized
+-- indexed asset, or a previous version shape is stale.
 function T.options_backdrops_require_the_two_indexed_roles()
-  local manifest = validManifest()
-  Assert.equal(manifest.options.version, 2, "the fixture carries the current options section")
+  local overlayKey = "hgss.options.selection_overlay"
+  -- The complete synthetic section the producer must emit: the curated v2
+  -- shape upgraded with the required transparent strip. Built locally so
+  -- the shared legacy fixtures keep proving the current runtime contract
+  -- until the producer/validator land the new section.
+  local function completeManifest()
+    local manifest = validManifest()
+    manifest.options.version = 3
+    manifest.options.selectionOverlay = overlayKey
+    manifest.assets[overlayKey] = {
+      image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+      width = 256,
+      height = 24,
+    }
+    return manifest
+  end
+  local manifest = completeManifest()
+  Assert.equal(manifest.options.version, 3, "the fixture carries the current options section")
+  Assert.equal(
+    manifest.options.selectionOverlay,
+    overlayKey,
+    "the fixture indexes its selected-row strip"
+  )
+  Assert.equal(
+    FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
+    overlayKey,
+    "the asset index names the selected-row strip"
+  )
   Assert.equal(manifest.options.backdrops.controls, FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND)
   Assert.equal(manifest.options.backdrops.preview, FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND)
-  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the two indexed 256x192 backdrops validate")
-  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v24")
-  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v24")
+  local overlayEntry = assert(manifest.assets[overlayKey], "the selected-row strip asset is indexed")
+  Assert.equal(overlayEntry.width, 256, "the selected-row strip width")
+  Assert.equal(overlayEntry.height, 24, "the selected-row strip height")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the indexed backdrops and strip validate")
+  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v25")
+  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v25")
   local cases = {
     ["missing preview role"] = function(o)
       o.backdrops.preview = nil
+    end,
+    ["missing selection overlay role"] = function(o)
+      o.selectionOverlay = nil
     end,
     ["extra role"] = function(o)
       o.backdrops.overlay = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND
@@ -1066,25 +1099,76 @@ function T.options_backdrops_require_the_two_indexed_roles()
     ["unindexed asset id"] = function(o)
       o.backdrops.preview = "hgss.options.missing"
     end,
+    ["unindexed overlay asset id"] = function(o)
+      o.selectionOverlay = "hgss.options.missing"
+    end,
     ["missing section"] = function(o)
       o.backdrops = nil
     end,
     ["previous version"] = function(o)
+      o.version = 2
+    end,
+    ["first version"] = function(o)
       o.version = 1
     end,
   }
   for name, mutate in pairs(cases) do
-    local broken = validManifest()
+    local broken = completeManifest()
     mutate(broken.options)
     local ok, err = FieldUiAssetCache.validateManifest(broken)
     Assert.isFalse(ok, "the malformed options backdrop contract is rejected (" .. name .. ")")
     Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
   end
-  local missized = validManifest()
+  local missized = completeManifest()
   missized.assets[FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND].width = 128
   local ok, err = FieldUiAssetCache.validateManifest(missized)
   Assert.isFalse(ok, "a missized indexed backdrop asset is rejected")
   Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedStrip = completeManifest()
+  missizedStrip.assets[overlayKey].height = 32
+  local stripOk, stripErr = FieldUiAssetCache.validateManifest(missizedStrip)
+  Assert.isFalse(stripOk, "a missized selected-row strip is rejected")
+  Assert.equal(assert(stripErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missingImage = completeManifest()
+  missingImage.assets[overlayKey] = nil
+  local imageOk, imageErr = FieldUiAssetCache.validateManifest(missingImage)
+  Assert.isFalse(imageOk, "a missing indexed strip image is rejected")
+  Assert.equal(assert(imageErr).code, "FIELD_UI_MANIFEST_INVALID")
+end
+
+-- The selected-row strip carries no source identities: a manifest that
+-- leaks a member, NARC, or alias identity through the options section is
+-- rejected, and a foreign strip key never resolves to the indexed asset.
+function T.options_selection_overlay_rejects_source_identities_and_foreign_keys()
+  local overlayKey = "hgss.options.selection_overlay"
+  local function completeManifest()
+    local manifest = validManifest()
+    manifest.options.version = 3
+    manifest.options.selectionOverlay = overlayKey
+    manifest.assets[overlayKey] = {
+      image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+      width = 256,
+      height = 24,
+    }
+    return manifest
+  end
+  local complete = completeManifest()
+  Assert.isTrue(
+    FieldUiAssetCache.validateManifest(complete),
+    "a manifest carrying the indexed strip validates"
+  )
+  local leaked = completeManifest()
+  leaked.options.selectionOverlayMember = 18
+  local leakedOk, leakedErr = FieldUiAssetCache.validateManifest(leaked)
+  Assert.isFalse(leakedOk, "a source member identity in the options section is rejected")
+  Assert.equal(assert(leakedErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local foreign = completeManifest()
+  foreign.options.selectionOverlay = "hgss.options.foreign_strip"
+  foreign.assets["hgss.options.foreign_strip"] =
+    { image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, width = 256, height = 24 }
+  local foreignOk, foreignErr = FieldUiAssetCache.validateManifest(foreign)
+  Assert.isFalse(foreignOk, "a foreign strip key is rejected")
+  Assert.equal(assert(foreignErr).code, "FIELD_UI_MANIFEST_INVALID")
 end
 
 function T.prompt_section_rejects_wrong_dimensions()

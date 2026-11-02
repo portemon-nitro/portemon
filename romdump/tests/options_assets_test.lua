@@ -142,7 +142,7 @@ end
 function T.compiled_section_carries_the_locked_semantic_shapes(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 2)
+  Assert.equal(section.version, 3)
   local DisplayTiming = require("libs.nds.src.gx.DisplayTiming")
   Assert.equal(section.animationTickSeconds, 1 / DisplayTiming.REFRESH_HZ)
   local labels = assert(section.labels, "the section carries its labels")
@@ -308,10 +308,82 @@ function T.compiled_pixels_match_the_decoded_source_art(romFs, versionId)
   end
 end
 
+-- The selected-row strip is the native MAIN selection layer, not an
+-- opaque base: the staged 256x24 transparent PNG reproduces the decoded
+-- selection screen rows 16..39 exactly (the documented zero-row offset is
+-- -8, so logical row top y=24 samples screen rows 16..39), keeps
+-- palette-zero transparent, hashes the selection member, and never equals
+-- the opaque MAIN backing.
+function T.selection_strip_matches_the_native_selected_row_layer(romFs, versionId)
+  local bundle = compileOptions(romFs, versionId)
+  local section = assert(bundle.section, "the compiler returns its semantic section")
+  Assert.equal(section.version, 3, "the options section carries its selection-layer contract")
+  local overlayKey = "hgss.options.selection_overlay"
+  Assert.equal(section.selectionOverlay, overlayKey, "the section indexes its selected-row strip")
+  Assert.equal(
+    FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
+    overlayKey,
+    "the runtime asset index names the selected-row strip"
+  )
+  local Sources = optionsSources()
+  local overlayImage = FieldUiAssetCache.assetDir() .. "/options-selection-overlay.png"
+  local overlayBytes = assert(
+    bundle.files[overlayImage],
+    "the selected-row strip is staged as its indexed PNG"
+  )
+  local width, height, rgba = PngReader.rgba(overlayBytes)
+  Assert.equal(width, 256, "the selected-row strip width")
+  Assert.equal(height, 24, "the selected-row strip height")
+  local archive = assert(romFs:openNarc(Sources.archive.symbol))
+  local function decoded(kind, memberId)
+    local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
+    assert(decodedValue, tostring(err and err.message or err))
+    return decodedValue
+  end
+  local char = decoded("decodeChar", Sources.members.faceChar)
+  local palette = decoded("decodePalette", Sources.members.facePalette)
+  local screen = decoded("decodeScreen", Sources.selectionOverlayScreen)
+  Assert.equal(screen.width, 256, "the selection screen width")
+  Assert.equal(screen.height, 56, "the selection screen height")
+  local render = G2dRasterizer.renderScreen(
+    char,
+    { colors = palette.colors },
+    screen,
+    { asset = "options", member = Sources.selectionOverlayScreen }
+  )
+  local expected = {}
+  for y = 16, 39 do
+    expected[#expected + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
+  end
+  Assert.equal(rgba, table.concat(expected), "every strip pixel matches the native selection layer")
+  local transparent, total = 0, 256 * 24
+  for index = 4, #rgba, 4 do
+    if string.byte(rgba, index) == 0 then
+      transparent = transparent + 1
+    end
+  end
+  Assert.isTrue(transparent > 0, "the strip keeps source-zero transparent")
+  Assert.isTrue(transparent < total, "the strip still carries opaque selection artwork")
+  local names = {}
+  for _, dep in ipairs(bundle.dependencies) do
+    names[dep.name] = true
+  end
+  Assert.isTrue(
+    names[Sources.archive.symbol .. ":member:" .. Sources.selectionOverlayScreen] == true,
+    "the producer hashes the selection screen member"
+  )
+  local controlsBytes = assert(
+    bundle.files[FieldUiAssetCache.assetDir() .. "/options-controls-background.png"],
+    "the controls backdrop is staged"
+  )
+  local _, _, controlsRgba = PngReader.rgba(controlsBytes)
+  Assert.isTrue(rgba ~= controlsRgba, "the strip is not the opaque MAIN backing")
+end
+
 function T.backdrops_derive_from_the_audited_base_screens(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 2, "the options section carries its backdrop contract")
+  Assert.equal(section.version, 3, "the options section carries its backdrop contract")
   Assert.equal(
     section.backdrops.controls,
     FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
@@ -397,7 +469,7 @@ function T.field_ui_compilation_publishes_ready_options(romFs, versionId)
   local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
   local bundle = assert(FieldUiCompiler.compile(romFs))
   local options = assert(bundle.manifest.options, "the field-UI class carries its options section")
-  Assert.equal(options.version, 2)
+  Assert.equal(options.version, 3)
   Assert.isTrue(bundle.manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] ~= nil, "the chrome atlas is indexed")
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest), "the extended class still validates")
   local cache = CacheFs.forVersion(versionId, FakeCache.new())

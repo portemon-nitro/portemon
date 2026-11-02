@@ -34,20 +34,30 @@ end
 
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
+-- Private worker-readable namespace for this suite's synthetic option art.
+-- Never a real game version: the pool worker resolves every image through
+-- this version's love-backend root, and teardown removes only this root
+-- after pool disposal, so suites never share staged bytes or touch ROM
+-- derived files.
+local ISOLATED_VERSION = "test-options-menu"
+
+local function ownPool(scope, pool)
+  scope:own({
+    release = function()
+      pcall(function()
+        pool:dispose()
+      end)
+      CacheFs.forVersion(ISOLATED_VERSION):removeTree("")
+    end,
+  })
+end
+
 local function optionsCache()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local cache = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addOptionsContract(manifest)
   cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
-  CacheFs.forVersion("heartgold"):write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
-  CacheFs.forVersion("heartgold"):write(
-    FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
-    FieldUiFixture.optionsControlsBackgroundBytes()
-  )
-  CacheFs.forVersion("heartgold"):write(
-    FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
-    FieldUiFixture.optionsPreviewBackgroundBytes()
-  )
+  FieldUiFixture.writeOptionsPngs(CacheFs.forVersion(ISOLATED_VERSION))
   return cache, manifest
 end
 
@@ -217,11 +227,7 @@ function T.tests.preparing_renderer_paints_and_returns_leases_to_baseline(scope)
   local _, Renderer = modules()
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local before = pool:stats()
   local renderer = Renderer.new({
     cacheFs = cache,
@@ -288,11 +294,7 @@ local function preparedPainter(scope)
   local _, Renderer = modules()
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local text = recordingText()
   local window = recordingWindow()
   local renderer = Renderer.new({
@@ -383,11 +385,7 @@ local function preparedPlacedPainter(scope)
   local _, Renderer = modules()
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local text = recordingPlacedText()
   local window = recordingWindow()
   local renderer = Renderer.new({
@@ -590,11 +588,7 @@ function T.tests.pane_backing_stays_opaque_while_host_pixels_outside_stay_untouc
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local renderer = Renderer.new({
     cacheFs = cache,
     manifest = manifest,
@@ -640,11 +634,7 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   local resolvers = Interface.defaults()
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local baseline = pool:stats()
   local realNewQuad = love.graphics.newQuad
   local quadCalls = 0
@@ -828,11 +818,7 @@ local function tokenPainter(scope)
   local _, Renderer = modules()
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local text = recordingTokenText()
   local window = recordingWindow()
   local renderer = Renderer.new({
@@ -939,11 +925,7 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      pool:dispose()
-    end,
-  })
+  ownPool(scope, pool)
   local stubText = {}
   function stubText.drawTextWithPalette(_, _, _, _, _) end
   function stubText.drawLine(_, _, _, _)
@@ -1041,6 +1023,45 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   screen:dispose()
   Assert.isNil(resources._optionsRenderer, "disposal releases the fresh renderer")
   Assert.equal(pool:stats().pinnedBytes, baseline, "the fresh disposal returns every lease")
+end
+
+-- Every suite stages its own complete synthetic image set under its own
+-- disposable namespace: the namespace starts clean without another suite
+-- having run first, carries all four required roles where the pool worker
+-- reads them, and never equals a real game version.
+function T.tests.stages_a_private_complete_image_set(scope)
+  local workerVisible = CacheFs.forVersion(ISOLATED_VERSION)
+  workerVisible:removeTree("")
+  Assert.isNil(
+    workerVisible:read(FieldUiFixture.OPTIONS_CHROME_PATH),
+    "the private namespace starts clean without another suite running first"
+  )
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
+  Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
+  Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
+  Assert.equal(manifest.options.version, 3, "the staged section carries its selection-layer contract")
+  Assert.equal(
+    manifest.options.selectionOverlay,
+    FieldUiFixture.optionsSelectionOverlayKey(),
+    "the staged section indexes its selected-row strip"
+  )
+  for _, path in ipairs({
+    FieldUiFixture.OPTIONS_CHROME_PATH,
+    FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+  }) do
+    Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
+  end
+  local overlay = assert(
+    manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()],
+    "the selected-row strip asset is indexed"
+  )
+  Assert.equal(overlay.width, 256, "the selected-row strip width")
+  Assert.equal(overlay.height, 24, "the selected-row strip height")
 end
 
 return GraphicsSmoke.suite(T.tests)

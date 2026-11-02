@@ -134,6 +134,7 @@ FieldUiAssetCache.ASSET = {
   OPTIONS_CHROME = "hgss.options.chrome",
   OPTIONS_CONTROLS_BACKGROUND = "hgss.options.controls_background",
   OPTIONS_PREVIEW_BACKGROUND = "hgss.options.preview_background",
+  OPTIONS_SELECTION_OVERLAY = "hgss.options.selection_overlay",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -539,13 +540,13 @@ local function checkOptionsSequence(sequence, what, atlases, assets)
 end
 
 local function checkOptions(s, atlases, assets)
-  if type(s.version) ~= "number" or s.version ~= 2 then
-    reject("options.version must be 2", { version = s.version })
+  if type(s.version) ~= "number" or s.version ~= 3 then
+    reject("options.version must be 3", { version = s.version })
   end
   demandCount(
     s,
-    8,
-    "options must carry exactly its version, backdrops, labels, choices, arrows, actions, frame previews, and tick rate",
+    9,
+    "options must carry exactly its version, backdrops, selection overlay, labels, choices, arrows, actions, frame previews, and tick rate",
     {}
   )
   local backdrops = s.backdrops
@@ -580,6 +581,21 @@ local function checkOptions(s, atlases, assets)
     if expectedRoles[role] == nil then
       reject("options.backdrops carries an unknown role", { role = role })
     end
+  end
+  if s.selectionOverlay ~= FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY then
+    reject("options.selectionOverlay must reference its indexed selected-row strip asset", {
+      value = s.selectionOverlay,
+    })
+  end
+  local strip = atlases[FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY]
+  if type(strip) ~= "table" then
+    reject("options.selectionOverlay must reference an indexed asset", {})
+  end
+  if strip.width ~= 256 or strip.height ~= 24 then
+    reject("options.selectionOverlay must be the 256x24 selected-row strip", {
+      width = strip.width,
+      height = strip.height,
+    })
   end
   if
     type(s.animationTickSeconds) ~= "number"

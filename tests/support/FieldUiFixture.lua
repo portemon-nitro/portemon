@@ -1288,6 +1288,41 @@ end
 -- mismatch. Both are exactly the 256x192 field screen.
 FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH = "assets/generated/field/ui/options-controls-background.png"
 FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH = "assets/generated/field/ui/options-preview-background.png"
+FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH = "assets/generated/field/ui/options-selection-overlay.png"
+
+-- The generated selected-row strip key. The runtime asset index owns the
+-- canonical constant once the producer publishes the strip; the fixture
+-- falls back to the same literal so synthetic manifests keep validating
+-- through the contract change without repeating the raw string per call.
+---@return string
+function FieldUiFixture.optionsSelectionOverlayKey()
+  return FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY or "hgss.options.selection_overlay"
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsSelectionOverlayBorderColor()
+  return 140, 40, 180
+end
+
+-- The synthetic selected-row strip: a 256x24 surface with a distinct
+-- opaque border and a transparent center, so a painter that samples the
+-- wrong role, drops alpha, or fills palette-zero opaque is a pixel
+-- mismatch. Mirrors the generated contract dimensions exactly.
+---@return string png
+function FieldUiFixture.optionsSelectionOverlayBytes()
+  local r, g, b = FieldUiFixture.optionsSelectionOverlayBorderColor()
+  local rows = {}
+  for y = 0, 23 do
+    for x = 0, 255 do
+      if x < 4 or x >= 252 or y < 4 or y >= 20 then
+        rows[#rows + 1] = string.char(r, g, b, 255)
+      else
+        rows[#rows + 1] = string.char(0, 0, 0, 0)
+      end
+    end
+  end
+  return PngWriter.encode(256, 24, table.concat(rows))
+end
 
 ---@return integer, integer, integer
 function FieldUiFixture.optionsControlsBackgroundColor()
@@ -1330,6 +1365,11 @@ function FieldUiFixture.addOptionsContract(manifest)
     width = 256,
     height = 192,
   }
+  manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()] = {
+    image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+    width = 256,
+    height = 24,
+  }
   local image = FieldUiFixture.OPTIONS_CHROME_PATH
   -- Synthetic semantic labels: shape-minimal {text, tokens} records that
   -- satisfy the generated contract without copying retail message bytes.
@@ -1370,11 +1410,12 @@ function FieldUiFixture.addOptionsContract(manifest)
     return { frames = frames, loop = loop, bounds = bounds }
   end
   manifest.options = {
-    version = 2,
+    version = 3,
     backdrops = {
       controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
       preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
     },
+    selectionOverlay = FieldUiFixture.optionsSelectionOverlayKey(),
     labels = labels,
     animationTickSeconds = 1 / 60,
     framePreviewText = framePreviewText,
@@ -1445,6 +1486,7 @@ function FieldUiFixture.writeOptionsPngs(cache)
   cache:write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
   cache:write(FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH, FieldUiFixture.optionsControlsBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH, FieldUiFixture.optionsPreviewBackgroundBytes())
+  cache:write(FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, FieldUiFixture.optionsSelectionOverlayBytes())
 end
 
 return FieldUiFixture
