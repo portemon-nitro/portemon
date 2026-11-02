@@ -70,6 +70,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _cover integer current opaque-black cover coefficient on the 0..16 scale
 ---@field _accumulator number source-frame time held toward the next cover step
 ---@field _revealingBattle boolean true once the constructed battle starts its reveal
+---@field _entrySourceVisible boolean true once the accepted tick published the first native battle visual
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start note, set once the staged track voices
 ---@field _musicBankIds integer[]? admission snapshot behind the gated music start, refreshed while empty
@@ -1002,6 +1003,7 @@ function FieldBattlePresentation.new(opts)
     _cover = 0,
     _accumulator = 0,
     _revealingBattle = false,
+    _entrySourceVisible = false,
     _musicStarted = false,
     _musicNote = nil,
     _musicBankIds = nil,
@@ -3407,6 +3409,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._cover = 0
   self._accumulator = 0
   self._revealingBattle = false
+  self._entrySourceVisible = false
   self._musicStarted = false
   self._musicNote = nil
   self._musicBankIds = nil
@@ -4343,6 +4346,7 @@ function FieldBattlePresentation:updateFixed(dt)
       screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
       self:_observeScreenFailure()
     end
+    self:_releaseEntryCover()
   end
   if self._accumulator + FieldBattlePresentation.SOURCE_EPSILON >= FieldBattlePresentation.SOURCE_FRAME then
     local discarded =
@@ -4443,8 +4447,24 @@ function FieldBattlePresentation:_stepCover()
     self:_stepCoverUp()
     return
   end
-  -- Leaving and active hold full cover until the constructed battle
-  -- proves exact-asset readiness; the reveal then runs beside the intro.
+  -- Battle entry holds full opaque cover while no native battle visual
+  -- exists: the accepted tick that publishes the first source frame
+  -- releases the blanket atomically below, never as an eight-tick alpha
+  -- blend over live source frames.
+  if phase == "leaving" or phase == "active" then
+    if not self._entrySourceVisible and not self._pendingFailed then
+      if self._cover < FieldBattlePresentation.COVER_MAX then
+        self:_stepCoverUp()
+      end
+      return
+    end
+    -- A failed launch holds its cover where the failure left it:
+    -- opaque when the field already hid, untouched while the live
+    -- field still stands, so input still releases behind it.
+    if self._pendingFailed then
+      return
+    end
+  end
   if self._revealingBattle then
     self:_stepCoverDown()
     return
@@ -4465,6 +4485,37 @@ function FieldBattlePresentation:_stepCoverDown()
   if self._cover > 0 then
     self._cover = math.max(0, self._cover - FieldBattlePresentation.COVER_STEP)
   end
+end
+
+-- Releases the entry blanket atomically once the accepted tick publishes
+-- the first native-renderable battle visual: after the host and screen
+-- advanced, a ready first frame drops the opaque cover to zero in the
+-- same tick instead of blending over live source frames. Runs inside the
+-- fixed update only; draws never release. Sends no host notification:
+-- the covering handshake already completed before the field left, and
+-- later terminal/return phases keep their own notifications.
+function FieldBattlePresentation:_releaseEntryCover()
+  if self._entrySourceVisible then
+    return
+  end
+  if self._launchId == nil then
+    return
+  end
+  local status = self._lastStatus
+  local phase = status ~= nil and status.phase or nil
+  if phase ~= "leaving" and phase ~= "active" then
+    return
+  end
+  local screen = self._screen
+  if screen == nil then
+    return
+  end
+  local ok, ready = pcall(screen.firstNativeBattleFrameReady, screen)
+  if not ok or ready ~= true then
+    return
+  end
+  self._cover = 0
+  self._entrySourceVisible = true
 end
 
 -- Polls exact-asset readiness through the port's idempotent entry: true
@@ -4647,6 +4698,18 @@ function FieldBattlePresentation:_observeScreenFailure()
       self._screen = nil
     end
     self._innerPort = nil
+    -- A dropped screen owns no visual. When entry never confirmed
+    -- readiness (unacknowledged port entry), the live field still
+    -- stands: release the cover so input releases behind it. When a
+    -- battle visual released, the reveal ran, or entry confirmed, hold
+    -- opaque black instead of exposing a half-revealed battle or a
+    -- stale field frame. A missing asset after confirmed readiness
+    -- therefore keeps black while a pre-entry failure keeps the field.
+    if self._entrySourceVisible or self._revealingBattle or self:_portEnterReady() then
+      self._cover = FieldBattlePresentation.COVER_MAX
+    else
+      self._cover = 0
+    end
   end
 end
 
@@ -4687,6 +4750,7 @@ function FieldBattlePresentation:_dropLaunch()
   self._innerPort = nil
   self._lastStatus = nil
   self._revealingBattle = false
+  self._entrySourceVisible = false
   self._musicStarted = false
   self._musicNote = nil
   self._musicBankIds = nil

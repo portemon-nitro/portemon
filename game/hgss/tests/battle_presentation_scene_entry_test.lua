@@ -427,11 +427,9 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
     for _, texture in ipairs(set.textures) do
       local drawable = nil
       if withholdSet ~= setIndex then
-        drawable =
-          StubLease.new("encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":" .. setIndex .. ":" .. texture.id)
+        drawable = StubLease.new("encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":" .. setIndex .. ":" .. texture.id)
       end
-      textures[#textures + 1] =
-        { id = texture.id, width = texture.width, height = texture.height, drawable = drawable }
+      textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, drawable = drawable }
     end
     layer.encounterParticles[setIndex] =
       { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = textures }
@@ -517,10 +515,7 @@ local function openEncounterRig(opts)
       screen:updateFixed(ENCOUNTER_TICK)
       if allowFailure ~= true then
         local status = screen:status()
-        Assert.isTrue(
-          status.mode ~= "failed",
-          "the readiness screen never fails: " .. tostring(status.error)
-        )
+        Assert.isTrue(status.mode ~= "failed", "the readiness screen never fails: " .. tostring(status.error))
       end
     end
     return screen:status()
@@ -613,10 +608,7 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   )
   rig.stage(stagedEncounterLayer(60, 43, nil))
   rig.pump(5)
-  Assert.isTrue(
-    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
-    "entry admits the staged scene"
-  )
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   rig.pump(1)
   local first = rig.screen:view()
@@ -641,7 +633,9 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
     Assert.equal(
       stepped.openingPresentation.encounterFrame,
       1 + step,
-      "source tick " .. step .. " after draw and remeasure advances the task, got "
+      "source tick "
+        .. step
+        .. " after draw and remeasure advances the task, got "
         .. tostring(stepped.openingPresentation.encounterFrame)
     )
   end
@@ -661,11 +655,7 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   rig.pump(1)
   local sixtyFirst = rig.screen:view()
   Assert.equal(sixtyFirst.openingPresentation.encounterFrame, 61, "the task runs on while the first system is gone")
-  Assert.equal(
-    #sixtyFirst.encounterParticleSystems,
-    1,
-    "the retired first system leaves the second running"
-  )
+  Assert.equal(#sixtyFirst.encounterParticleSystems, 1, "the retired first system leaves the second running")
   rig.pump(1)
   local sixtySecond = rig.screen:view()
   Assert.equal(sixtySecond.openingPresentation.encounterFrame, 62, "the task reaches the second retirement tick")
@@ -685,16 +675,8 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   local settled = rig.screen:view()
   Assert.isNil(settled.openingPresentation.encounterFrame, "the ended task publishes no further frame")
   Assert.equal(#settled.encounterParticleSystems, 0, "retired systems leave the draw list")
-  Assert.equal(
-    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart),
-    1,
-    "the opening sound voices exactly once"
-  )
-  Assert.equal(
-    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle),
-    1,
-    "the settle sound voices exactly once"
-  )
+  Assert.equal(voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart), 1, "the opening sound voices exactly once")
+  Assert.equal(voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle), 1, "the settle sound voices exactly once")
 end
 
 -- A second member whose textures never stage fails the launch at its
@@ -703,10 +685,7 @@ function T.missing_second_member_fails_the_launch_at_its_start_tick()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, 2))
   rig.pump(5)
-  Assert.isTrue(
-    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
-    "entry admits the staged scene"
-  )
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   local status = rig.pump(20, true)
   Assert.equal(status.mode, "failed", "a missing second member fails the launch at frame 20")
@@ -726,16 +705,113 @@ function T.missing_first_member_fails_before_the_first_source_tick()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, 1))
   rig.pump(5)
-  Assert.isTrue(
-    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
-    "entry admits the staged scene"
-  )
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   local status = rig.pump(2, true)
   Assert.equal(status.mode, "failed", "a missing first member fails before the first source tick")
   Assert.isTrue(
     type(status.error) == "string" and status.error:find(ENCOUNTER_SCENE_KEY, 1, true) ~= nil,
     "the failure names the staged scene, got " .. tostring(status.error)
+  )
+end
+
+-- The fixed grass-day handoff through the real staged cache: the task
+-- publishes one source frame per accepted tick, both member systems
+-- start on their native ticks with their native voices, the bank fade
+-- metadata selects the native masks at the native frames, and the late
+-- bank operation arms at its native frame. The trace below records every
+-- listed native frame; pixel-exactness against the original game stays
+-- uncertified here (no original-game frame captures exist in the repo).
+function T.grass_day_handoff_matches_the_native_task_schedule()
+  local Trace = require("tests.support.BattleHandoffTrace")
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43, nil))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+  local trace = Trace.new(ENCOUNTER_SCENE_KEY)
+  local observed = {}
+  local ticks = 0
+  while ticks < 90 do
+    rig.pump(1)
+    ticks = ticks + 1
+    local view = rig.screen:view()
+    local opening = view.openingPresentation
+    local frame = type(opening) == "table" and opening.encounterFrame or nil
+    local systems = view.encounterParticleSystems
+    local members, emitters = {}, {}
+    if type(systems) == "table" then
+      for _, system in ipairs(systems) do
+        members[#members + 1] = tostring(system.setIndex)
+        local live = system.simulation ~= nil and system.simulation.emitters or {}
+        emitters[#emitters + 1] = #live
+      end
+    end
+    trace:observe({
+      taskFrame = frame,
+      cover = 0,
+      scene = ENCOUNTER_SCENE_KEY,
+      members = members,
+      activeEmitters = emitters,
+    })
+    observed[ticks] = {
+      frame = frame,
+      systems = type(systems) == "table" and #systems or 0,
+      opening = opening,
+    }
+    if frame == nil and ticks > 70 then
+      break
+    end
+  end
+  Assert.equal(observed[1].frame, 1, "the first accepted tick publishes source frame 1")
+  Assert.equal(observed[1].systems, 1, "the first member starts on frame 1")
+  Assert.isTrue(observed[1].opening.encounterPalette ~= nil, "the first source frame carries the staged plane snapshot")
+  Assert.equal(voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart), 1, "the opening voice sounds on frame 1")
+  for tick = 2, 19 do
+    Assert.equal(observed[tick].frame, tick, "the task counts one frame per source tick at tick " .. tick)
+    Assert.equal(observed[tick].systems, 1, "only the first member runs before frame 20")
+  end
+  Assert.equal(observed[10].opening.encounterFlash.mainBgMask, 0xF3FF, "the fade selects the native main BG mask")
+  Assert.equal(observed[10].opening.encounterFlash.mainObjMask, 0x3FFF, "the fade selects the native main OBJ mask")
+  Assert.equal(observed[18].frame, 18, "the task still counts through the late fade approach")
+  Assert.equal(observed[20].frame, 20, "the task reaches the second member start")
+  Assert.equal(observed[20].systems, 2, "the second member starts on frame 20")
+  Assert.equal(observed[23].frame, 23, "the task reaches the settle voice")
+  Assert.equal(
+    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle),
+    1,
+    "the settle voice sounds exactly once on frame 23"
+  )
+  Assert.equal(observed[25].systems, 2, "both members run through the mid fade")
+  Assert.equal(observed[28].frame, 28, "the task reaches the restore frame")
+  Assert.equal(observed[36].frame, 36, "the task runs on through the restore tail")
+  Assert.equal(observed[45].systems, 2, "both members run through the late approach")
+  Assert.equal(observed[50].frame, 50, "the task reaches the late bank frame")
+  Assert.isTrue(observed[50].opening.encounterPalette ~= nil, "the late bank frame carries the plane snapshot")
+  Assert.equal(
+    observed[50].opening.encounterPalette.lateBgMask,
+    0x0C00,
+    "the late operation selects the native main BG bank pair"
+  )
+  Assert.isNil(observed[50].opening.encounterFlash, "the late operation retires the main fade metadata")
+  local endedAt = nil
+  for tick = 51, 90 do
+    if observed[tick] ~= nil and observed[tick].frame == nil then
+      endedAt = tick
+      break
+    end
+  end
+  Assert.notNil(endedAt, "the task ends after the second member retires")
+  Assert.equal(observed[endedAt].systems, 0, "retired members leave the draw list")
+  Assert.equal(
+    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart),
+    1,
+    "the opening voice still sounds exactly once"
+  )
+  Assert.equal(
+    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle),
+    1,
+    "the settle voice still sounds exactly once"
   )
 end
 

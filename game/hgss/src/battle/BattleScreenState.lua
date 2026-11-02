@@ -102,6 +102,8 @@ local Mon = require("libs.mons.src.Mon")
 ---@field _terminalRequest table<string, unknown>? mirrored terminal request identity behind the completion barrier
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
+---@field _sceneKey string staged battle scene identity behind the launch
+---@field _encounterSourceKey string? staged scene identity behind the installed encounter source, nil while unstaged
 ---@field _queue table<integer, table<string, unknown>> queued raw input batches
 ---@field _notice string? transient refusal banner
 ---@field _showTimelineMessage boolean whether a source-selected event message temporarily replaces the command prompt
@@ -1070,6 +1072,8 @@ function BattleScreenState.new(opts)
   end
   assert(type(sceneKey) == "string" and sceneKey ~= "", "the battle screen resolves its scene identity")
   local self = setmetatable({
+    _sceneKey = sceneKey,
+    _encounterSourceKey = nil,
     _launchId = opts.launchId,
     _manifest = manifest,
     _model = opts.model,
@@ -6019,6 +6023,172 @@ function BattleScreenState:_reconcile(view)
   apply(view.foes)
 end
 
+-- Converts one staged 8-bit channel to its five-bit source value with
+-- round-to-nearest, inverting the staged palette expansion.
+---@param channel integer staged 0..255 channel
+---@return integer five-bit source channel
+local function fiveBit(channel)
+  return math.floor((channel * 31 + 127) / 255)
+end
+
+-- Converts one staged 256-entry RGB888 palette to its 256 RGB555 source
+-- words. Returns nil when the staged colors cannot express the source
+-- buffers, so the opening runs palette-less exactly as before instead
+-- of fading from guessed banks.
+---@param colors table<integer, table<string, integer>> staged palette color array
+---@return integer[]? detached RGB555 words, nil without staged provenance
+local function rgb555Words(colors)
+  if type(colors) ~= "table" or #colors ~= 256 then
+    return nil
+  end
+  local words = {}
+  for index = 1, 256 do
+    local color = colors[index]
+    if
+      type(color) ~= "table"
+      or type(color.r) ~= "number"
+      or type(color.g) ~= "number"
+      or type(color.b) ~= "number"
+      or color.r % 1 ~= 0
+      or color.g % 1 ~= 0
+      or color.b % 1 ~= 0
+      or color.r < 0
+      or color.g < 0
+      or color.b < 0
+      or color.r > 255
+      or color.g > 255
+      or color.b > 255
+    then
+      return nil
+    end
+    words[index] = fiveBit(color.r) + fiveBit(color.g) * 32 + fiveBit(color.b) * 1024
+  end
+  return words
+end
+
+-- Derives the encounter palette source buffers from one staged battle
+-- scene layer: the main background words come from the staged BG3
+-- palette, the main object words from that same intro-visible art
+-- provenance until per-pixel object bank companions exist, and the lower
+-- planes carry their native battle-setup fills (sub background black,
+-- sub object white). The background fill follows the staged fade color.
+-- Returns nil when the layer carries no usable BG3 provenance.
+---@param layer table<string, unknown> staged battle scene layer
+---@param fadeBlack boolean true while the staged fade targets black
+---@return table<string, unknown>? detached source buffers and fill, nil without provenance
+local function encounterSourceOf(layer, fadeBlack)
+  local palette = layer.palette --[[@as table<string, unknown>?]]
+  local colors = type(palette) == "table" and palette.colors or nil
+  local mainWords = type(colors) == "table" and rgb555Words(colors --[[@as table]]) or nil
+  if mainWords == nil then
+    return nil
+  end
+  if type(layer.characters) ~= "string" or type(layer.map) ~= "table" then
+    return nil
+  end
+  local mainObj = {}
+  for index = 1, 256 do
+    mainObj[index] = mainWords[index]
+  end
+  local subBg = {}
+  for _ = 1, 256 do
+    subBg[#subBg + 1] = 0
+  end
+  local white = 31 + 31 * 32 + 31 * 1024
+  local subObj = {}
+  for _ = 1, 256 do
+    subObj[#subObj + 1] = white
+  end
+  return {
+    mainBg = mainWords,
+    mainObj = mainObj,
+    subBg = subBg,
+    subObj = subObj,
+    fill = fadeBlack and 0 or white,
+  }
+end
+
+-- Stages the encounter palette source once the battle scene layer lands:
+-- the timeline builds its evaluator from these buffers with the opening.
+-- A layer without BG3 provenance leaves the opening palette-less, exactly
+-- as before. Runs on fixed updates only, never from draws.
+function BattleScreenState:_stageEncounterSource()
+  if self._encounterSourceKey ~= nil then
+    return
+  end
+  local layer = self._assets:sceneLayer()
+  if type(layer) ~= "table" then
+    return
+  end
+  local sets = layer.encounterParticles
+  if type(sets) ~= "table" or #sets == 0 then
+    -- A landed scene without any staged encounter systems runs no
+    -- encounter task at all. Envelope-less direct-driven screens stage
+    -- scene art but never the two SPL systems; cancel before the first
+    -- tick so no source frame, voice, or palette state publishes.
+    -- Corrupt staging (a table missing a required start index) still
+    -- fails loudly in _stepEncounterParticles instead of canceling.
+    self._timeline:cancelEncounterTask()
+    return
+  end
+  local background = BattlePresentationCache.parseSceneKey(self._sceneKey)
+  local fadeBlack = type(background) == "table"
+    and background.background ~= nil
+    and type(background.background) == "string"
+    and background.background:match("^cave_") ~= nil
+  local source = encounterSourceOf(layer, fadeBlack == true)
+  if source == nil then
+    return
+  end
+  self._timeline:stageEncounterSource(source)
+  self._encounterSourceKey = type(layer.sceneKey) == "string" and layer.sceneKey or self._sceneKey
+end
+
+-- Reports whether the screen owns its first native-renderable battle
+-- visual: the launch is live, the exact staged scene closure (intro art
+-- with its palette source and the required particle sets) is present,
+-- and the opening task published its first source frame. Read-only:
+-- never advances clocks, voices, particles, or input.
+---@return boolean ready true once the first source battle frame is presentable
+function BattleScreenState:firstNativeBattleFrameReady()
+  if self._disposed or self._mode == "failed" or self._mode == "disposed" then
+    return false
+  end
+  if self._assets:state() ~= "ready" then
+    return false
+  end
+  local layer = self._assets:sceneLayer()
+  if type(layer) ~= "table" then
+    return false
+  end
+  local introLayer = layer.introLayer --[[@as table<string, unknown>?]]
+  if type(introLayer) ~= "table" or introLayer.drawable == nil then
+    return false
+  end
+  if self._encounterSourceKey == nil then
+    return false
+  end
+  -- The first visual needs its first emitter set staged with texture
+  -- handles; a set that arrives without its closure fails the launch
+  -- instead of starting late.
+  local sets = layer.encounterParticles --[[@as table<string, unknown>?]]
+  local first = type(sets) == "table" and sets[1] or nil
+  local textures = type(first) == "table" and first.textures or nil
+  if type(textures) ~= "table" then
+    return false
+  end
+  for _, texture in ipairs(textures) do
+    if type(texture) ~= "table" or texture.drawable == nil then
+      return false
+    end
+  end
+  local opening = self._timeline:openingPresentation()
+  if type(opening) ~= "table" or opening.encounterFrame == nil then
+    return false
+  end
+  return true
+end
+
 -- Steps the encounter terrain particles with the opening timeline: the
 -- timeline's animation frame starts each staged set exactly on its start
 -- tick, and a reset opening drops them. A set whose start tick arrives
@@ -6172,6 +6342,10 @@ function BattleScreenState:updateFixed(dt)
       if self._mode == "failed" then
         break
       end
+      -- The encounter palette source stages from the landed scene once
+      -- per accepted tick before the cue player runs, so the task's
+      -- first frame already carries its staged plane snapshot.
+      self:_stageEncounterSource()
       self:_advanceButtonFeedback()
       self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable, function(cue)
         return self:_soundCueComplete(cue)

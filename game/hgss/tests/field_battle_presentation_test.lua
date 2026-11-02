@@ -4170,6 +4170,363 @@ function T.dropped_launches_release_leaf_maps_while_the_core_persists()
   end
 end
 
+-- The entry cover stays opaque while the native field transition runs and
+-- the exact battle-first-frame assets stage, then releases atomically on
+-- the same accepted tick that publishes the first source battle frame:
+-- no fractional 16->14->12 blanket may cover a running source intro.
+function T.entry_cover_releases_atomically_on_the_first_visible_battle_tick()
+  local Trace = require("tests.support.BattleHandoffTrace")
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
+    local envelope, binding, doubles =
+      bindEnvelope(runtime, versionId, dualMeasurement("entry-cover-atomic:dual"), uploadCapableGraphics())
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local context = assert(doubles.descriptors[1].transitionContext)
+      local trace = Trace.new("wild/" .. tostring(context.terrain) .. "/" .. tostring(context.timeOfDay))
+      local releasedAt, firstFramedAt, fullCoverAt = nil, nil, nil
+      local ticks = 0
+      while ticks < 1200 do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        local screen = envelope:liveScreen()
+        local frame, members, emitters = nil, { "none" }, { 0 }
+        if screen ~= nil then
+          local view = screen:view()
+          local opening = view.openingPresentation
+          if type(opening) == "table" then
+            frame = opening.encounterFrame
+          end
+          local staged = view.encounterParticleSystems
+          if type(staged) == "table" and #staged > 0 then
+            members, emitters = {}, {}
+            for _, system in ipairs(staged) do
+              members[#members + 1] = tostring(system.setIndex)
+              local live = system.simulation ~= nil and system.simulation.emitters or {}
+              emitters[#emitters + 1] = #live
+            end
+          end
+        end
+        local launch = runtime.battleCoordinator._battleLaunch
+        local demands = envelope:preparedDemands()
+        local scene = nil
+        if type(demands) == "table" and type(demands[1]) == "table" then
+          scene = type(demands[1].scenes) == "table" and demands[1].scenes[1] or nil
+        end
+        local cover = envelope:cover().coefficient
+        trace:observe({
+          hostPhase = launch ~= nil and launch.phase or nil,
+          taskFrame = frame,
+          cover = cover,
+          scene = scene,
+          members = members,
+          activeEmitters = emitters,
+        })
+        if frame ~= nil and firstFramedAt == nil then
+          firstFramedAt = ticks
+        end
+        if cover == 16 and fullCoverAt == nil then
+          fullCoverAt = ticks
+        end
+        if cover == 0 and frame ~= nil then
+          releasedAt = ticks
+          break
+        end
+      end
+      Assert.notNil(firstFramedAt, "the covered launch publishes its first source battle frame")
+      Assert.notNil(releasedAt, "the entry cover releases onto the running source intro")
+      local fractional = {}
+      for _, row in ipairs(trace:framedRows()) do
+        if row.cover ~= 0 and row.cover ~= 16 then
+          fractional[#fractional + 1] = "frame=" .. tostring(row.taskFrame) .. " cover=" .. tostring(row.cover)
+        end
+      end
+      Assert.equal(
+        #fractional,
+        0,
+        "no fractional blanket covers a running source battle frame: " .. table.concat(fractional, " ")
+      )
+      local rows = trace:rows()
+      local before = rows[releasedAt - 1]
+      Assert.notNil(before, "the release has a preceding accepted tick")
+      Assert.equal(before.cover, 16, "the entry cover releases 16->0 in one accepted tick")
+      if fullCoverAt ~= nil then
+        for index = fullCoverAt, releasedAt - 1 do
+          Assert.equal(
+            rows[index].cover,
+            16,
+            "the last field black holds opaque until the atomic release at tick " .. tostring(index)
+          )
+        end
+      end
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    envelope:dispose()
+  end
+end
+
+-- A delayed scene worker with two display remeasures still holds the
+-- source task, its voices and its particles until the first usable
+-- visual, releases the entry cover atomically on that tick, keeps full
+-- black across a mid-intro failure, and still settles a second battle
+-- cleanly on the same envelope.
+function T.delayed_readiness_holds_the_task_until_an_atomic_release_with_safe_terminal_cover()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  local Trace = require("tests.support.BattleHandoffTrace")
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
+    local measurement = dualMeasurement("delayed-entry-atomic:dual")
+    local envelope, binding, doubles = bindEnvelope(runtime, versionId, measurement, uploadCapableGraphics())
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local context = assert(doubles.descriptors[1].transitionContext)
+      local trace = Trace.new("wild/" .. tostring(context.terrain) .. "/" .. tostring(context.timeOfDay))
+      local startedVoices = function()
+        local count = 0
+        for _, voice in ipairs(doubles.audio.plays) do
+          if voice == BattleAudio.SINK_SOUNDS.encounterStart then
+            count = count + 1
+          end
+        end
+        return count
+      end
+      -- Two display remeasures land early in the staging window while no
+      -- battle visual exists yet. The trace below then proves the task
+      -- starts at frame 1 with its first member and its single opening
+      -- voice on the first visual, with contiguous frames across the
+      -- remeasures.
+      local function observedVisual()
+        local screen = envelope:liveScreen()
+        if screen == nil then
+          return nil, 0
+        end
+        local view = screen:view()
+        local opening = view.openingPresentation
+        local frame = type(opening) == "table" and opening.encounterFrame or nil
+        local staged = view.encounterParticleSystems
+        return frame, type(staged) == "table" and #staged or 0
+      end
+      -- The first usable visual starts the task at frame 1; the cover
+      -- must go 16->0 on that same accepted tick with contiguous frames.
+      local releasedAt, firstFramedAt = nil, nil
+      local lastFrame = nil
+      local ticks = 0
+      while ticks < 1200 do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        if ticks == 20 then
+          measurement.signature = "delayed-entry-atomic:resized-1"
+          measurement.width = 512
+        elseif ticks == 40 then
+          measurement.signature = "delayed-entry-atomic:resized-2"
+          measurement.width = 256
+        end
+        local frame, systems = observedVisual()
+        local launch = runtime.battleCoordinator._battleLaunch
+        trace:observe({
+          hostPhase = launch ~= nil and launch.phase or nil,
+          taskFrame = frame,
+          cover = envelope:cover().coefficient,
+          members = { tostring(systems) .. "systems" },
+        })
+        if frame ~= nil then
+          if firstFramedAt == nil then
+            firstFramedAt = ticks
+          end
+          if lastFrame ~= nil then
+            Assert.equal(frame, lastFrame + 1, "resizes never skip or repeat a source task tick")
+          end
+          lastFrame = frame
+        end
+        if envelope:cover().coefficient == 0 and frame ~= nil then
+          releasedAt = ticks
+          break
+        end
+      end
+      Assert.notNil(firstFramedAt, "the admitted worker publishes its first source battle frame")
+      Assert.notNil(releasedAt, "the admitted worker releases the entry cover")
+      local framed = trace:framedRows()
+      Assert.isTrue(#framed >= 1, "the admitted worker publishes source battle frames")
+      Assert.equal(framed[1].taskFrame, 1, "the task starts at source frame 1 on the first visual")
+      for _, row in ipairs(trace:rows()) do
+        if row.taskFrame == nil then
+          Assert.deepEqual(
+            row.members,
+            { "0systems" },
+            "no particle stages before the first source frame at tick " .. tostring(row.tick)
+          )
+        else
+          break
+        end
+      end
+      local fractional = {}
+      for _, row in ipairs(trace:framedRows()) do
+        if row.cover ~= 0 and row.cover ~= 16 then
+          fractional[#fractional + 1] = "frame=" .. tostring(row.taskFrame) .. " cover=" .. tostring(row.cover)
+        end
+      end
+      Assert.equal(
+        #fractional,
+        0,
+        "no fractional blanket covers a running source battle frame: " .. table.concat(fractional, " ")
+      )
+      local rows = trace:rows()
+      Assert.equal(rows[releasedAt - 1].cover, 16, "the delayed entry releases 16->0 in one accepted tick")
+      Assert.equal(startedVoices(), 1, "the opening voice sounds exactly once on the first visual")
+      -- The first battle settles its win so a second launch on the same
+      -- envelope proves clean reuse with no dangling leases across
+      -- battles.
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the first battle settles its win")
+      -- A second battle on the same envelope releases atomically onto
+      -- its own first visual; faulting that launch mid-intro keeps full
+      -- black, drops its screen, and faults the runtime with the probe
+      -- cause exactly once instead of quietly returning to the field.
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      local relaunchedAt, relaunchTicks = nil, 0
+      while relaunchTicks < 1200 and relaunchedAt == nil do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        relaunchTicks = relaunchTicks + 1
+        local live = envelope:liveScreen()
+        local frame = nil
+        if live ~= nil then
+          local shown = live:view().openingPresentation
+          if type(shown) == "table" then
+            frame = shown.encounterFrame
+          end
+        end
+        if envelope:cover().coefficient == 0 and frame ~= nil then
+          relaunchedAt = relaunchTicks
+        end
+      end
+      Assert.notNil(relaunchedAt, "the second entry releases onto its running source intro")
+      local live = assert(envelope:liveScreen(), "the second launch owns a live screen before the fault")
+      live._mode = "failed"
+      live._error = "probe delayed-entry failure"
+      runtime:update(SourceTick.DT)
+      envelope:updateFixed(TICK)
+      Assert.equal(envelope:cover().coefficient, 16, "the failure keeps full black")
+      Assert.isNil(envelope:liveScreen(), "the failure drops its screen")
+      local survived, raised = pcall(function()
+        for _ = 1, 10 do
+          runtime:update(SourceTick.DT)
+          envelope:updateFixed(TICK)
+        end
+      end)
+      Assert.isFalse(survived, "a lost renderer faults the runtime with its cause")
+      Assert.isTrue(
+        tostring(raised):find("probe delayed-entry failure", 1, true) ~= nil,
+        "the fault carries the original screen error: " .. tostring(raised)
+      )
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    envelope:dispose()
+  end
+end
+
+-- A trainer cut-in enters the same native battle introduction as a wild
+-- encounter: the foe trainer stages its slide cues, the source task
+-- publishes its frames with the single opening voice, and the launch
+-- settles into command instead of wedging behind the cut-in.
+function T.trainer_cut_in_receives_the_native_battle_introduction()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, doubles =
+      bindEnvelope(runtime, versionId, dualMeasurement("trainer-cut-in-intro:dual"), uploadCapableGraphics())
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "trainer", details = { trainer = 4 } })
+      waitConstructed(runtime, envelope)
+      -- The cut-in delivery follows construction by source ticks: the
+      -- first packet installs the opening before the native task
+      -- publishes frames, so the presentation is awaited, not assumed.
+      local screen = assert(envelope:liveScreen(), "the cut-in constructs its battle")
+      local opening = nil
+      local waited = 0
+      while waited < 900 and opening == nil do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        waited = waited + 1
+        local live = envelope:liveScreen()
+        if live == nil then
+          break
+        end
+        screen = live
+        local shown = live:view().openingPresentation
+        if type(shown) == "table" then
+          opening = shown
+        end
+      end
+      opening = assert(opening, "the cut-in publishes its opening presentation")
+      Assert.isTrue(opening.foeTrainerVisible, "the cut-in stages the foe trainer front picture")
+      Assert.isTrue(
+        type(opening.trainerSlides) == "table" and #opening.trainerSlides > 0,
+        "the cut-in stages trainer slide cues"
+      )
+      local framedAt, ticks = nil, 0
+      while ticks < 900 do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        local live = envelope:liveScreen()
+        if live == nil then
+          break
+        end
+        local shown = live:view().openingPresentation
+        if type(shown) == "table" and shown.encounterFrame ~= nil then
+          framedAt = ticks
+          break
+        end
+      end
+      Assert.notNil(framedAt, "the cut-in runs the native introduction task")
+      local started = 0
+      for _, voice in ipairs(doubles.audio.plays) do
+        if voice == BattleAudio.SINK_SOUNDS.encounterStart then
+          started = started + 1
+        end
+      end
+      Assert.equal(started, 1, "the cut-in voices the opening cue exactly once")
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 15000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the cut-in battle settles its win")
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    envelope:dispose()
+  end
+end
 return {
   tests = T,
   metadata = {

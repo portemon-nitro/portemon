@@ -39,6 +39,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _encounterSource BattleEncounterPalette.Source? staged source palette buffers and fill behind the encounter evaluator
 ---@field _encounterPalette BattleEncounterPalette? per-battle source palette evaluator, nil while no source art is staged
 ---@field _encounterAnimation { elapsed: integer, phase: "init"|"fade"|"wait", secondStarted: boolean, secondActive: boolean, lateArmed: boolean }? Task_PlayEncounterAnimation state, nil while no animation runs
+---@field _encounterWild boolean? wild encounter behind the installed opening, set with the opening
 ---@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
@@ -190,6 +191,7 @@ function BattleTimeline.new(opts)
     _encounterSource = opts.encounterSource,
     _encounterPalette = nil,
     _encounterAnimation = nil,
+    _encounterWild = nil,
     _faintAppearance = opts.faintAppearance,
     _messageText = opts.messageText,
     _messageTextContext = opts.messageTextContext,
@@ -424,6 +426,7 @@ function BattleTimeline:reset(view)
   self._wildIntroTrack = nil
   self._encounterAnimation = nil
   self._encounterPalette = nil
+  self._encounterWild = nil
   self._ballParticleStarts = {}
   self._captureBall = nil
   -- A fresh opening starts new actions: occurrence and narration claims
@@ -442,6 +445,7 @@ function BattleTimeline:dispose()
   self._wildIntroTrack = nil
   self._encounterAnimation = nil
   self._encounterPalette = nil
+  self._encounterWild = nil
 end
 
 ---@param cue table<string, unknown>
@@ -3268,6 +3272,7 @@ function BattleTimeline:intro(view, wild)
   self._trainerSlideTracks = trainerTracks
   self._terrainSlideTracks = terrainTracks
   self._wildIntroTrack = nil
+  self._encounterWild = wild
   -- PlayEncounterAnimation starts its task in the script's first tick on
   -- every encounter path.
   self._encounterAnimation =
@@ -3656,6 +3661,10 @@ local function tickEncounterAnimation(self)
     presentation.encounterFrame = nil
     presentation.encounterFlash = nil
     presentation.encounterLower = nil
+    -- The retired palette snapshot must not linger: settled draws
+    -- sample the scene without a source fade, so a stale snapshot
+    -- would ride the scene sampler past the task it describes.
+    presentation.encounterPalette = nil
     self._encounterAnimation = nil
     return
   end
@@ -4737,6 +4746,51 @@ end
 ---@return table<string, unknown>? detached visibility facts for the current intro stage
 function BattleTimeline:openingPresentation()
   return self._openingPresentation ~= nil and copyValue(self._openingPresentation) or nil
+end
+
+-- Stages the encounter palette source buffers behind the task evaluator:
+-- the owning screen derives them once from its staged battle scene while
+-- covered. A source staged before the opening builds the evaluator with
+-- the installed opening kind; a source arriving after the opening but
+-- before the task's first tick builds it from that same kind. Sources
+-- arriving once the task runs never rebuild the running evaluator.
+-- Safe to repeat with the staged buffers.
+---@param self BattleTimeline
+---@param source BattleEncounterPalette.Source staged source palette buffers and fill
+function BattleTimeline:stageEncounterSource(source)
+  assert(type(source) == "table", "staged encounter sources arrive as records")
+  self._encounterSource = source
+  if self._encounterPalette ~= nil then
+    return
+  end
+  local track = self._encounterAnimation
+  if track ~= nil and track.elapsed ~= 0 then
+    return
+  end
+  if self._openingPresentation == nil then
+    return
+  end
+  self._encounterPalette = BattleEncounterPalette.new({
+    battleType = self._encounterWild == false and "trainer" or "wild",
+    source = source,
+  })
+end
+
+-- Drops a not-yet-started encounter task when the owning screen lands a
+-- scene without any staged encounter systems: envelope-less direct-driven
+-- screens stage scene art but never the two SPL systems, so there is no
+-- Task_PlayEncounterAnimation to replay and the settled battle renders
+-- without source frames, voices, or palette state. Only applies before
+-- the first task tick; a ticking task is unaffected, and a table that
+-- claims systems but misses a required start index still fails loudly in
+-- the screen router. Safe to repeat.
+---@param self BattleTimeline
+function BattleTimeline:cancelEncounterTask()
+  local track = self._encounterAnimation
+  if track ~= nil and track.elapsed == 0 then
+    self._encounterAnimation = nil
+    self._encounterPalette = nil
+  end
 end
 
 -- Receives the second emitter system's started/active status from the
