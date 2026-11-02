@@ -174,6 +174,130 @@ local function rowById(status, id)
   error("row " .. id .. " is not published", 0)
 end
 
+local function fakePresentationPort()
+  local port = { disposes = 0 }
+  function port.prepare()
+    return true
+  end
+  function port.dispose()
+    port.disposes = port.disposes + 1
+  end
+  return port
+end
+
+local function singleMeasurement(signature)
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  return {
+    width = 512,
+    height = 384,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 512, height = 384 },
+      role = "world",
+      touch = true,
+    }),
+    pixelRatio = 1,
+    signature = signature or "options-presented",
+  }
+end
+
+local function dualMeasurement(signature)
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  return {
+    width = 512,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, role = "world", touch = true },
+      { id = "sub", rect = { x = 256, y = 0, width = 256, height = 192 }, role = "auxiliary", touch = true }
+    ),
+    pixelRatio = 1,
+    signature = signature or "options-presented-dual",
+  }
+end
+
+local function openPresentedMenu(opts)
+  opts = opts or {}
+  local State = stateModule()
+  local prepare, applied, candidate = fakePrepare()
+  local port = fakeAudioPort(opts.volume == nil and 80 or opts.volume)
+  local played, effect = fakeEffects()
+  local channels = {}
+  local measurement = opts.measurement
+  if measurement == nil then
+    if opts.dual then
+      measurement = dualMeasurement(opts.signature)
+    else
+      measurement = singleMeasurement(opts.signature)
+    end
+  end
+  local presentationPort = fakePresentationPort()
+  local state = State.new({
+    playerOptions = canonicalOptions(opts.playerOptions),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(mode)
+      channels[#channels + 1] = mode
+    end,
+    effect = effect,
+    semantic = { labels = semanticLabels() },
+    measureDisplay = function()
+      return measurement
+    end,
+    presentationPort = presentationPort,
+  })
+  state:updateFixed({})
+  return {
+    state = state,
+    port = port,
+    played = played,
+    channels = channels,
+    applied = applied,
+    candidate = candidate,
+    presentationPort = presentationPort,
+  }
+end
+
+local function presentationPane(status, id)
+  local presentation = assert(status.presentation, "presented status carries its plan")
+  local panes = assert(presentation.panes, "the plan carries its panes")
+  for _, pane in ipairs(panes) do
+    if pane.id == id then
+      return pane
+    end
+  end
+  error("pane " .. tostring(id) .. " is not published", 0)
+end
+
+local function hostForLogical(pane, lx, ly)
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local hx, hy = LayoutGeometry.logicalToHost(pane.placement, lx, ly)
+  return hx, hy
+end
+
+local function findLogicalForHit(Interface, content, predicate)
+  for y = 0, 191 do
+    for x = 0, 255 do
+      local hit = Interface.hitTest(content, x, y)
+      if predicate(hit, x, y) then
+        return x, y, hit
+      end
+    end
+  end
+  error("no logical point matched the wanted control", 0)
+end
+
+local function findLogicalForListGap(Interface, content)
+  for y = 0, 191 do
+    for x = 0, 255 do
+      if Interface.inList(content, x, y) then
+        return x, y
+      end
+    end
+  end
+  error("no empty list gap is published", 0)
+end
+
 function T.tests.seven_rows_publish_in_order_with_footer_actions()
   local opened = openMenu()
   local status = opened.state:status()
@@ -599,6 +723,127 @@ function T.tests.vertical_list_drag_scrolls_without_editing_values()
   state:updateFixed({ { type = "scroll", delta = 48 } })
   Assert.equal(state:status().scrollOffset, 48, "a wheel scroll moves the list")
   Assert.equal(state:status().focusId, "textSpeed", "scrolling keeps the row focus")
+end
+
+function T.tests.presented_touch_edits_choice_and_confirms()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu()
+  local state = opened.state
+  Assert.isTrue(state:status().presentation ~= nil, "the presented menu publishes its plan")
+  local status = state:status()
+  local content = assert(status.presentation.content, "the plan carries its content")
+  local pane = presentationPane(status, "content")
+  local lx, ly = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "soundMode" and hit.control == "value" and hit.index == 2
+  end)
+  local hx, hy = hostForLogical(pane, lx, ly)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = hx, y = hy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.equal(rowById(state:status(), "soundMode").value, "mono", "touch on the second choice selects mono")
+  status = state:status()
+  content = assert(status.presentation.content, "the plan carries its content")
+  pane = presentationPane(status, "content")
+  local cx, cy = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "confirm"
+  end)
+  local chx, chy = hostForLogical(pane, cx, cy)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = chx, y = chy } })
+  Assert.isNil(state:takeResult(), "press alone never confirms")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = chx, y = chy } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "a matching release on confirm closes")
+  Assert.equal(opened.applied(), 1, "the presented confirm applies once")
+end
+
+function T.tests.presented_slider_list_and_capture_identity()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu()
+  local state = opened.state
+  for _ = 1, 5 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "volume", "five downs reach the volume row")
+  local settled = state:status().scrollOffset
+  Assert.isTrue(settled > 0, "focusing the volume row scrolls it into view")
+  local status = state:status()
+  local content = assert(status.presentation.content, "the plan carries its content")
+  local pane = presentationPane(status, "content")
+  local _, railY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "volume"
+  end)
+  local startX, endX = nil, nil
+  for x = 0, 255 do
+    local hit = Interface.hitTest(content, x, railY)
+    if hit ~= nil and hit.target == "volume" and hit.index == 20 then
+      startX = x
+    end
+    if hit ~= nil and hit.target == "volume" and hit.index == 80 then
+      endX = x
+    end
+  end
+  Assert.isTrue(startX ~= nil and endX ~= nil, "the slider rail spans both percent stops")
+  local startHx, startHy = hostForLogical(pane, startX, railY)
+  local endHx, endHy = hostForLogical(pane, endX, railY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = startHx, y = startHy } })
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:0", x = endHx, y = endHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = endHx, y = endHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 79, "dragging the rail between stops edits the percent")
+  Assert.equal(state:status().scrollOffset, settled, "a slider drag never scrolls")
+  Assert.isNil(state:takeResult(), "releasing the slider closes nothing")
+  status = state:status()
+  content = assert(status.presentation.content, "the plan carries its content")
+  pane = presentationPane(status, "content")
+  local gapX, gapY = findLogicalForListGap(Interface, content)
+  local gapHx, gapHy = hostForLogical(pane, gapX, gapY)
+  local dragLy = math.max(0, gapY - 30)
+  local dragHx, dragHy = hostForLogical(pane, gapX, dragLy)
+  local soundBefore = rowById(state:status(), "soundMode").value
+  local scrollBefore = state:status().scrollOffset
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = gapHx, y = gapHy } })
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = dragHx, y = dragHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = dragHx, y = dragHy } })
+  Assert.isTrue(state:status().scrollOffset > scrollBefore, "dragging an empty list gap scrolls")
+  Assert.equal(rowById(state:status(), "soundMode").value, soundBefore, "a list drag edits no value")
+  Assert.isNil(state:takeResult(), "a list drag closes nothing")
+  status = state:status()
+  content = assert(status.presentation.content, "the plan carries its content")
+  pane = presentationPane(status, "content")
+  local confirmX, confirmY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "confirm"
+  end)
+  local quitX, quitY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "quit"
+  end)
+  local confirmHx, confirmHy = hostForLogical(pane, confirmX, confirmY)
+  local quitHx, quitHy = hostForLogical(pane, quitX, quitY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = confirmHx, y = confirmHy } })
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:3", x = quitHx, y = quitHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:3", x = quitHx, y = quitHy } })
+  Assert.isNil(state:takeResult(), "a second pointer never activates")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = confirmHx, y = confirmHy } })
+  Assert.isNil(state:takeResult(), "a stale release never activates")
+  state:updateFixed({ { type = "pointer_cancel", pointerId = "touch:2" } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = confirmHx, y = confirmHy } })
+  Assert.isNil(state:takeResult(), "a cancelled press never activates on release")
+  Assert.isTrue(state:status().open, "the menu stays open after cancelled presses")
+end
+
+function T.tests.presented_preview_press_stays_open_while_outside_down_closes()
+  local opened = openPresentedMenu({ dual = true })
+  local state = opened.state
+  local status = state:status()
+  Assert.isTrue(status.presentation ~= nil, "the dual menu publishes its plan")
+  local previewPane = presentationPane(status, "preview")
+  local previewHx, previewHy = hostForLogical(previewPane, 128, 96)
+  local soundBefore = rowById(status, "soundMode").value
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = previewHx, y = previewHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = previewHx, y = previewHy } })
+  Assert.isNil(state:takeResult(), "a press on the preview pane closes nothing")
+  Assert.isTrue(state:status().open, "the preview press leaves the menu open")
+  Assert.equal(rowById(state:status(), "soundMode").value, soundBefore, "the preview press edits no value")
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 300 } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "a true outside down closes once")
+  Assert.isNil(state:takeResult(), "the outside close emits exactly once")
+  Assert.equal(opened.applied(), 0, "an outside dismissal never applies")
 end
 
 return T

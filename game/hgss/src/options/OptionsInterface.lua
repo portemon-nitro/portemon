@@ -404,24 +404,11 @@ local function mapOptionsInput(event, view, plan)
     return { type = "dismiss" }
   end
   if event.type == "pointer_down" or event.type == "pointer_move" or event.type == "pointer_up" then
-    local content = assert(plan.content, "the options plan carries its content")
-    local hit = OptionsInterface.hitTest(content, event.x, event.y)
-    if hit == nil then
-      if event.type == "pointer_down" then
-        return nil
-      end
-      return { type = "pointer-gesture", phase = event.type, x = event.x, y = event.y, hit = nil }
-    end
-    return {
-      type = "pointer-gesture",
-      phase = event.type,
-      x = event.x,
-      y = event.y,
-      hit = hit,
-    }
+    event.hit = OptionsInterface.hitTest(assert(plan.content, "the options plan carries its content"), event.x, event.y)
+    return event
   end
   if event.type == "pointer_cancel" then
-    return { type = "pointer-gesture", phase = "pointer_cancel" }
+    return event
   end
   return event
 end
