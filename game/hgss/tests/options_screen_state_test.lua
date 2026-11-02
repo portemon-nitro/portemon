@@ -79,24 +79,33 @@ local function fakeAudioPort(committed)
   return port
 end
 
--- The prepared-application closure records whether the six player fields
--- were adopted; abandoning it changes nothing.
+-- The prepared attempt records whether the six player fields were
+-- adopted; abandoning it changes nothing. Rollback stays a recorded
+-- no-op beside the counter so ordering tests observe the new contract.
 local function fakePrepare()
   local applied = 0
+  local rolledBack = 0
   local lastCandidate = nil
   local function prepare(values)
     lastCandidate = values
     local consumed = false
-    return function()
+    local transaction = {}
+    function transaction.apply()
       Assert.isFalse(consumed, "the prepared application applies exactly once")
       consumed = true
       applied = applied + 1
     end
+    function transaction.rollback()
+      rolledBack = rolledBack + 1
+    end
+    return transaction
   end
   return prepare, function()
     return applied
   end, function()
     return lastCandidate
+  end, function()
+    return rolledBack
   end
 end
 
@@ -137,7 +146,7 @@ end
 local function openMenu(opts)
   opts = opts or {}
   local State = stateModule()
-  local prepare, applied, candidate = fakePrepare()
+  local prepare, applied, candidate, rolledBack = fakePrepare()
   local port = fakeAudioPort(opts.volume == nil and 80 or opts.volume)
   if opts.failCommit ~= nil then
     port.failNextCommit = opts.failCommit
@@ -162,6 +171,7 @@ local function openMenu(opts)
     channels = channels,
     applied = applied,
     candidate = candidate,
+    rolledBack = rolledBack,
   }
 end
 
@@ -484,15 +494,24 @@ function T.tests.confirm_follows_prepare_commit_then_apply()
     order[#order + 1] = "commit"
     return realCommit(percent)
   end
+  local realPrepare = opened.state._preparePlayerOptions
+  opened.state._preparePlayerOptions = function(values)
+    local transaction = realPrepare(values)
+    local realApply = transaction.apply
+    transaction.apply = function()
+      order[#order + 1] = "apply"
+      return realApply()
+    end
+    return transaction
+  end
   local state = opened.state
-  state:updateFixed({ { type = "navigate", direction = "right" } })
+  state:updateFixed({ { type = "navigate", direction = "left" } })
   state:updateFixed({ { type = "activate", id = "confirm" } })
-  order[#order + 1] = "applied:" .. tostring(opened.applied())
   local result = state:takeResult()
   Assert.deepEqual(result, { kind = "close" }, "confirm emits one close result")
-  Assert.equal(opened.applied(), 1, "the prepared closure applies exactly once")
+  Assert.equal(opened.applied(), 1, "the prepared attempt applies exactly once")
   Assert.equal(port:read(), 80, "an untouched volume stays committed")
-  Assert.deepEqual(order, { "commit", "applied:1" }, "volume commits before the player application")
+  Assert.deepEqual(order, { "apply", "commit" }, "the player step runs before durable volume publication")
 end
 
 function T.tests.confirm_publishes_an_edited_volume_once()
@@ -521,7 +540,8 @@ function T.tests.failed_volume_commit_keeps_menu_open_with_draft_and_baseline()
   Assert.equal(state:status().dirty, true, "the draft carries the staged edits")
   state:updateFixed({ { type = "activate", id = "confirm" } })
   Assert.isNil(state:takeResult(), "a failed confirm emits no close result")
-  Assert.equal(opened.applied(), 0, "a failed confirm never applies player options")
+  Assert.equal(opened.applied(), 1, "a failed publication attempted the player step once")
+  Assert.equal(opened.rolledBack(), 1, "a failed publication restores the player step")
   Assert.equal(opened.port:read(), 80, "the committed volume is unchanged")
   local status = state:status()
   Assert.isTrue(status.open, "the menu stays open")
@@ -529,7 +549,8 @@ function T.tests.failed_volume_commit_keeps_menu_open_with_draft_and_baseline()
   Assert.isTrue(status.dirty, "the draft is preserved for retry")
   state:updateFixed({ { type = "activate", id = "confirm" } })
   Assert.deepEqual(state:takeResult(), { kind = "close" }, "a retry after recovery confirms")
-  Assert.equal(opened.applied(), 1, "the retry applies once")
+  Assert.equal(opened.applied(), 2, "the retry runs its own fresh attempt")
+  Assert.equal(opened.rolledBack(), 1, "the retry needed no further restoration")
 end
 
 function T.tests.cancel_restores_audio_and_leaves_player_options_alone()
@@ -1126,6 +1147,249 @@ function T.tests.discrete_rows_publish_an_ordered_label_for_every_stop()
   Assert.equal(movedRow.valueIndex, 2, "the selection moves to the fast stop")
   Assert.equal(movedRow.valueLabel, "FAST", "only the pill state changes, not the label set")
   Assert.equal(movedLabels[movedRow.valueIndex], "FAST", "the new selection matches its own stop label")
+end
+
+-- A live-consumer failure during the player step never reaches durable
+-- volume publication: the menu stays open with its draft and a readable
+-- failure, and a fresh preparation retries cleanly.
+function T.tests.failed_player_application_keeps_volume_unpublished_and_draft_open()
+  local State = stateModule()
+  local port = fakeAudioPort(80)
+  local played, effect = fakeEffects()
+  local channels = {}
+  local commitsBefore = port.commits
+  local rollbackCalls = 0
+  local attempts = 0
+  local function prepare(_)
+    attempts = attempts + 1
+    if attempts == 1 then
+      return {
+        apply = function()
+          error("injected live setter failure", 0)
+        end,
+        rollback = function()
+          rollbackCalls = rollbackCalls + 1
+        end,
+      }
+    end
+    return {
+      apply = function() end,
+      rollback = function() end,
+    }
+  end
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(mode)
+      channels[#channels + 1] = mode
+    end,
+    effect = effect,
+    semantic = { labels = semanticLabels() },
+  })
+  state:updateFixed({ { type = "navigate", direction = "left" } })
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.isNil(state:takeResult(), "a failed player step emits no close")
+  Assert.equal(port.commits, commitsBefore, "a failed player step never publishes volume")
+  Assert.equal(rollbackCalls, 1, "a failed player step restores the committed player state")
+  Assert.isTrue(#channels >= 1, "the still-open draft preview is reapplied after restoration")
+  local status = state:status()
+  Assert.isTrue(status.open, "the menu stays open")
+  Assert.isTrue(status.error ~= nil, "a readable failure is published")
+  Assert.isTrue(status.dirty, "the draft is preserved for retry")
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "a fresh preparation retries cleanly")
+  Assert.equal(attempts, 2, "the retry prepares again instead of reusing the consumed attempt")
+end
+
+-- A durable volume failure after a successful player step restores the
+-- committed player state while the draft stays editable for retry.
+function T.tests.failed_volume_publication_restores_player_and_keeps_draft_for_retry()
+  local State = stateModule()
+  local port = fakeAudioPort(80)
+  port.failNextCommit = "SAVE_WRITE_FAILED: injected storage failure"
+  local played, effect = fakeEffects()
+  local channels = {}
+  local order = {}
+  local rollbackCalls = 0
+  local attempts = 0
+  local function prepare(_)
+    attempts = attempts + 1
+    return {
+      apply = function()
+        order[#order + 1] = "apply"
+      end,
+      rollback = function()
+        rollbackCalls = rollbackCalls + 1
+      end,
+    }
+  end
+  local realCommit = port.commit
+  port.commit = function(percent)
+    order[#order + 1] = "commit"
+    return realCommit(percent)
+  end
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(mode)
+      channels[#channels + 1] = mode
+    end,
+    effect = effect,
+    semantic = { labels = semanticLabels() },
+  })
+  state:updateFixed({ { type = "navigate", direction = "left" } })
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.deepEqual(order, { "apply", "commit" }, "the player step runs before durable volume publication")
+  Assert.isNil(state:takeResult(), "a failed publication emits no close")
+  Assert.equal(port:read(), 80, "the committed volume is unchanged")
+  Assert.equal(rollbackCalls, 1, "a failed publication restores the committed player state")
+  Assert.isTrue(#channels >= 1, "the still-open draft preview is reapplied after restoration")
+  local status = state:status()
+  Assert.isTrue(status.open, "the menu stays open")
+  Assert.isTrue(status.error ~= nil, "a readable failure is published")
+  Assert.isTrue(status.dirty, "the draft is preserved for retry")
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "a fresh preparation publishes both scopes once")
+  Assert.equal(attempts, 2, "the retry prepares again instead of reusing the consumed attempt")
+  Assert.equal(port:read(), 80, "the retried volume publishes at the draft level")
+end
+
+-- When restoration itself fails the menu raises terminally with both
+-- causes instead of advertising a safe retry.
+function T.tests.failed_restoration_is_terminal_and_names_both_causes()
+  local State = stateModule()
+  local port = fakeAudioPort(80)
+  local played, effect = fakeEffects()
+  local function prepare(_)
+    return {
+      apply = function()
+        error("injected live setter failure", 0)
+      end,
+      rollback = function()
+        error("injected restore failure", 0)
+      end,
+    }
+  end
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(_) end,
+    effect = effect,
+    semantic = { labels = semanticLabels() },
+  })
+  local ok, err = pcall(function()
+    state:updateFixed({ { type = "activate", id = "confirm" } })
+  end)
+  Assert.isFalse(ok, "an unrestorable failure raises terminally")
+  local message = tostring(err)
+  Assert.isTrue(message:find("injected live setter failure", 1, true) ~= nil, "the terminal error names the original cause")
+  Assert.isTrue(message:find("injected restore failure", 1, true) ~= nil, "the terminal error names the restore cause")
+  Assert.isNil(state:takeResult(), "a terminal failure emits no close")
+end
+
+-- A successful confirmation settles before optional feedback so a
+-- feedback failure cannot duplicate durable publication.
+function T.tests.successful_confirm_marks_closed_before_feedback()
+  local State = stateModule()
+  local port = fakeAudioPort(80)
+  local applyCalls = 0
+  local function prepare(_)
+    return {
+      apply = function()
+        applyCalls = applyCalls + 1
+      end,
+      rollback = function()
+        error("a successful confirmation never rolls back", 0)
+      end,
+    }
+  end
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(_) end,
+    effect = function(_)
+      error("injected feedback failure", 0)
+    end,
+    semantic = { labels = semanticLabels() },
+  })
+  local ok, err = pcall(function()
+    state:updateFixed({ { type = "activate", id = "confirm" } })
+  end)
+  Assert.isFalse(ok, "the feedback failure still propagates")
+  Assert.isTrue(tostring(err):find("injected feedback failure", 1, true) ~= nil, "the propagated cause is the feedback")
+  Assert.equal(applyCalls, 1, "the player step ran exactly once")
+  Assert.equal(port.commits, 1, "durable volume published exactly once")
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "the settled close is still available")
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.equal(applyCalls, 1, "a settled confirmation never republishes")
+  Assert.equal(port.commits, 1, "a settled confirmation never republishes volume")
+  Assert.isNil(state:takeResult(), "the result emits exactly once")
+end
+
+-- A preview failure during construction releases the partial session
+-- while the factory-owned port stays with its owner; a fresh open with
+-- complete generated text succeeds.
+function T.tests.failed_preview_construction_keeps_port_with_owner_and_allows_a_fresh_open()
+  local State = stateModule()
+  local port = fakeAudioPort(80)
+  local presentationPort = fakePresentationPort()
+  local measurement = singleMeasurement("options-construction-failure")
+  local played, effect = fakeEffects()
+  local printer = livePrinter("mid")
+  local prepare, _, _, _ = fakePrepare()
+  local ok, err = pcall(function()
+    State.new({
+      playerOptions = canonicalOptions(),
+      volume = port:read(),
+      preparePlayerOptions = prepare,
+      audioPreferences = port,
+      applyChannelMode = function(_) end,
+      effect = effect,
+      semantic = { labels = semanticLabels() },
+      measureDisplay = function()
+        return measurement
+      end,
+      presentationPort = presentationPort,
+      previewPrinter = printer,
+    })
+  end)
+  Assert.isFalse(ok, "a missing generated preview message fails construction")
+  Assert.isTrue(err ~= nil, "the failure propagates its cause")
+  Assert.equal(presentationPort.disposes, 0, "a failed construction never disposes the factory-owned port")
+  Assert.isFalse(printer:isModal(), "a failed construction leaves no live preview")
+  local freshPort = fakeAudioPort(80)
+  local freshPresentation = fakePresentationPort()
+  local freshPrinter = livePrinter("mid")
+  local records = previewSection(defaultMarkers)
+  local freshPrepare, freshApplied = fakePrepare()
+  local fresh = State.new({
+    playerOptions = canonicalOptions(),
+    volume = freshPort:read(),
+    preparePlayerOptions = freshPrepare,
+    audioPreferences = freshPort,
+    applyChannelMode = function(_) end,
+    effect = effect,
+    semantic = { labels = semanticLabels(), framePreviewText = records },
+    measureDisplay = function()
+      return measurement
+    end,
+    presentationPort = freshPresentation,
+    previewPrinter = freshPrinter,
+  })
+  fresh:updateFixed({})
+  Assert.isTrue(fresh:status().open, "a fresh open works after a construction failure")
+  Assert.isTrue(fresh:status().preview.visibleLines ~= nil, "the fresh preview prints")
+  fresh:dispose()
+  Assert.equal(freshPresentation.disposes, 1, "the fresh screen still owns its port exactly once")
+  Assert.equal(presentationPort.disposes, 0, "the failed port is never double-released")
 end
 
 return T

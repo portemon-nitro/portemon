@@ -14,7 +14,7 @@ local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 
 ---@class OptionsScreenState
----@field _preparePlayerOptions fun(values: OptionsScreenState.PlayerOptions): fun()? the player-options one-use closure factory
+---@field _preparePlayerOptions fun(values: OptionsScreenState.PlayerOptions): { apply: fun(), rollback: fun() }? the player-options one-attempt factory
 ---@field _audio OptionsScreenState.VolumePort the borrowed app-wide volume port
 ---@field _applyChannelMode fun(mode: string) the live sink channel preview/restore collaborator
 ---@field _effect fun(sequence: string) the source UI sound boundary
@@ -105,10 +105,27 @@ local function valueAt(rowId, index)
   return OptionsRows.valueAt(rowId, index)
 end
 
+-- Restores a failed confirmation attempt: a restoration failure is
+-- terminal and names both the original cause and the restore cause.
+---@param transaction { apply: fun(), rollback: fun() }
+---@param cause unknown the original apply/publication failure
+local function rollbackOrRaise(transaction, cause)
+  local restored, restoreErr = pcall(transaction.rollback)
+  if not restored then
+    error(
+      "options confirmation failed and restoration failed: "
+        .. tostring(cause)
+        .. "; restoration: "
+        .. tostring(restoreErr),
+      0
+    )
+  end
+end
+
 ---@class OptionsScreenState.Options
 ---@field playerOptions OptionsScreenState.PlayerOptions the six committed player fields
 ---@field volume integer the committed app-wide percent
----@field preparePlayerOptions fun(values: OptionsScreenState.PlayerOptions): fun()? the player-options one-use application closure factory
+---@field preparePlayerOptions fun(values: OptionsScreenState.PlayerOptions): { apply: fun(), rollback: fun() }? the player-options one-attempt factory
 ---@field audioPreferences OptionsScreenState.VolumePort the borrowed app-wide volume port
 ---@field applyChannelMode fun(mode: string) the live sink channel preview/restore collaborator
 ---@field effect fun(sequence: string) the source UI sound boundary
@@ -169,20 +186,18 @@ function OptionsScreenState.new(opts)
     self._draft.textSpeed = "mid"
     self._legacyNote = true
   end
-  local built = true
-  local buildErr = nil
-  if self._presentationPort ~= nil then
-    built, buildErr = pcall(function()
+  local built, buildErr = pcall(function()
+    if self._presentationPort ~= nil then
       assert(self._measureDisplay ~= nil, "a presented options screen requires the display facts")
       self._session = ApplicationPresentation.new(OptionsInterface.defaults(), opts.overrides)
       self._session:resolve(self:_measured(), self:_view())
-    end)
-  end
+    end
+    self:_restartPreview()
+  end)
   if not built then
     self:_releaseOwned()
     error(buildErr, 0)
   end
-  self:_restartPreview()
   return self
 end
 
@@ -510,37 +525,46 @@ function OptionsScreenState:_moveFocus(direction)
   self._effect(SELECT_SOUND)
 end
 
--- The fixed confirmation order: validate and prepare the six player
--- fields first, publish the app-wide volume second, then run the
--- prevalidated synchronous application. A recoverable storage failure
--- leaves the menu open with its draft and baseline intact.
+-- The fixed confirmation order: prepare the reversible six-field
+-- attempt, run its player application, then publish the app-wide volume
+-- as the final durable step. Either failure restores the committed
+-- player state, reapplies the still-open draft channel preview, and
+-- leaves the menu open with its draft. Success settles before feedback.
 function OptionsScreenState:_confirm()
   if self._phase ~= "open" or self._preparing then
     return
   end
   self._error = nil
   local candidate = copyOptions(self._draft)
-  local apply, invalid = self._preparePlayerOptions(candidate)
-  if apply == nil then
+  local transaction, invalid = self._preparePlayerOptions(candidate)
+  if transaction == nil then
     self._error = (type(invalid) == "table" and invalid.message) or tostring(invalid)
     return
   end
-  local published, failure = pcall(self._audio.commit, self._draft.volume)
-  if not published then
-    self._error = tostring(failure)
+  local applied, applyErr = pcall(transaction.apply)
+  if not applied then
+    rollbackOrRaise(transaction, applyErr)
+    self._applyChannelMode(self._draft.soundMode)
+    self._error = tostring(applyErr)
     return
   end
-  apply()
+  local published, volumeErr = pcall(self._audio.commit, self._draft.volume)
+  if not published then
+    rollbackOrRaise(transaction, volumeErr)
+    self._applyChannelMode(self._draft.soundMode)
+    self._error = tostring(volumeErr)
+    return
+  end
   self._committed = true
-  self._capture = nil
-  self._effect(SAVE_SOUND)
-  self._effect(BUTTON_SOUND)
   self._phase = "closed"
   self._result = { kind = "close" }
+  self._capture = nil
   if self._previewOpen and self._previewPrinter ~= nil then
     self._previewPrinter:close()
     self._previewOpen = false
   end
+  self._effect(SAVE_SOUND)
+  self._effect(BUTTON_SOUND)
 end
 
 -- Every uncommitted terminal path restores the committed baseline: the

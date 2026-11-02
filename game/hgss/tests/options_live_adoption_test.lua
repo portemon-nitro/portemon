@@ -405,8 +405,8 @@ function T.tests.next_dialogue_uses_the_committed_speed_without_a_reload()
   harness.dialogue:open({ id = "baseline", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
   Assert.isFalse(stepsToDone(harness.dialogue, 4), "the mid cadence must still be revealing after four steps")
   harness.dialogue:close()
-  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
-  apply()
+  local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  attempt.apply()
   harness.dialogue:open({ id = "adopted", message = dialogueMessage(), allowCancel = false, frameIndex = 1 })
   Assert.isTrue(stepsToDone(harness.dialogue, 4), "the committed fastest cadence finishes the same text quickly")
   harness.dialogue:close()
@@ -415,8 +415,8 @@ end
 
 function T.tests.next_signpost_and_script_uses_observe_the_committed_values()
   local harness = openHarness()
-  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
-  apply()
+  local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  attempt.apply()
   harness.signpost:printTyped(signMessage())
   for _ = 1, 2 do
     harness.signpost:updateFixed({})
@@ -443,8 +443,8 @@ function T.tests.future_menu_children_capture_the_current_policy_at_creation()
     end)(),
     TextSpeedPolicy.forSpeed("mid")
   )
-  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
-  apply()
+  local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  attempt.apply()
   local flow = before.makeBagFlow()
   Assert.notNil(flow, "menu flows still construct after adoption")
   local fresh = TextSpeedPolicy.forSpeed(harness.playerData.options.textSpeed)
@@ -487,15 +487,15 @@ function T.tests.preparation_validates_without_mutating_and_applies_exactly_once
   Assert.isNil(broken, "an invalid candidate never prepares")
   Assert.isTrue(Errors.is(err), "an invalid candidate reports a structured failure")
   Assert.deepEqual(harness.playerData.options, before.options, "a refused preparation mutates nothing")
-  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
   Assert.deepEqual(harness.playerData.options, before.options, "preparation alone mutates nothing")
-  apply()
+  attempt.apply()
   Assert.isTrue(rawequal(harness.playerData.profile, profileIdentity), "adoption keeps the live profile identity")
   Assert.isTrue(rawequal(harness.playerData.options, optionsIdentity), "adoption keeps the live options table")
   Assert.deepEqual(harness.playerData.options, changedOptions())
   Assert.equal(harness.playerData.profile.money, 3000, "adoption touches options, never the profile")
   Assert.throws(function()
-    apply()
+    attempt.apply()
   end, "a consumed application faults instead of publishing twice")
   local revalidated = assert(
     PlayerData.validate(
@@ -525,7 +525,7 @@ function T.tests.abandoned_preparation_and_stale_application_change_nothing()
   }
   assert(harness.coordinator:preparePlayerOptions(changedOptions()))
   Assert.deepEqual(harness.playerData.options, snapshot, "abandoning a preparation changes nothing")
-  local apply = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  local stale = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
   harness.playerData = {
     profile = harness.playerData.profile,
     options = {
@@ -538,7 +538,7 @@ function T.tests.abandoned_preparation_and_stale_application_change_nothing()
     },
   }
   Assert.throws(function()
-    apply()
+    stale.apply()
   end, "an application after a record replacement faults before writing")
   harness.partyMenu.dispose()
 end
@@ -664,6 +664,156 @@ function T.tests.legacy_save_without_new_options_opens_with_defaults()
   Assert.equal(byId.battleSpeed.value, 1, "an absent presentation speed defaults to single rate")
   Assert.isNil(liveOptions.battleScene, "opening the menu mutates nothing until Confirm")
   screen:dispose()
+end
+
+-- A factory failure before handoff releases the owned port while a
+-- fresh open with complete generated text succeeds on a new port.
+function T.tests.failed_factory_open_releases_owned_port_and_permits_a_fresh_open()
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+  local liveOptions = {
+    textSpeed = "mid",
+    textFrame = 0,
+    battleStyle = "shift",
+    battleScene = true,
+    soundMode = "stereo",
+    battleSpeed = 1,
+  }
+  local ports = {}
+  local runtime = {
+    playerData = { profile = {}, options = liveOptions },
+    playerDataContext = { charmap = CHARMAP, frameIndexes = FRAME_INDEXES },
+    audioPreferences = {
+      read = function()
+        return 80
+      end,
+      preview = function(_) end,
+      commit = function(_) end,
+      restore = function() end,
+    },
+    uiManifest = {
+      options = {},
+      dialogueFrames = { continueCursor = CURSOR },
+    },
+    fontDef = { glyphs = { [0] = { advance = 8 } } },
+    presentationDisplay = stubMeasurement(),
+  }
+  runtime.optionsPresentationFactory = function()
+    local port = { disposes = 0 }
+    function port.prepare()
+      return true
+    end
+    function port.dispose()
+      port.disposes = port.disposes + 1
+    end
+    ports[#ports + 1] = port
+    return port
+  end
+  local coordinator = Coordinator.new(runtime)
+  local factory = nil
+  for _, descriptor in ipairs(coordinator:applicationDescriptors()) do
+    if descriptor.id == FieldApplicationIds.OPTIONS then
+      factory = descriptor.factory
+    end
+  end
+  Assert.notNil(factory, "the field catalogue registers the options destination")
+  local ok, err = pcall(factory)
+  Assert.isFalse(ok, "a missing generated preview message fails the open")
+  Assert.isTrue(err ~= nil, "the failure propagates its cause")
+  Assert.equal(#ports, 1, "the failed open admitted exactly one port")
+  Assert.equal(ports[1].disposes, 1, "the failed open releases its owned port exactly once")
+  runtime.uiManifest.options = {
+    framePreviewText = {
+      [0] = {
+        text = "HI",
+        tokens = {
+          { kind = "glyph", text = "H", code = 1 },
+          { kind = "glyph", text = "I", code = 1 },
+          { kind = "eos" },
+        },
+      },
+    },
+  }
+  local screen = factory()
+  Assert.isTrue(screen:status().open, "a fresh open works after a factory failure")
+  Assert.equal(#ports, 2, "the fresh open admits a new port")
+  Assert.equal(ports[1].disposes, 1, "the failed port is never double-released")
+  screen:dispose()
+  Assert.equal(ports[2].disposes, 1, "the fresh screen still owns its port exactly once")
+  Assert.equal(ports[1].disposes, 1, "disposal never touches the failed port again")
+end
+
+-- A mid-sequence live failure restores every earlier consumer and the
+-- exact raw saved slots; a fresh attempt then publishes cleanly.
+function T.tests.partial_setter_failure_restores_every_consumer_and_raw_slots()
+  local harness = openHarness()
+  harness.audioSink = {
+    mode = "stereo",
+    setChannelMode = function(self, mode)
+      assert(mode == "stereo" or mode == "mono", "channel preview stays stereo or mono")
+      self.mode = mode
+    end,
+  }
+  local before = {
+    textSpeed = "mid",
+    textFrame = 0,
+    battleStyle = "shift",
+    battleScene = true,
+    soundMode = "stereo",
+    battleSpeed = 1,
+  }
+  Assert.deepEqual(harness.playerData.options, before, "the harness opens on its committed record")
+  local transaction = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  Assert.isTrue(type(transaction.apply) == "function", "preparation returns its one-use application")
+  Assert.isTrue(type(transaction.rollback) == "function", "preparation returns its idempotent restoration")
+  local realFrame = harness.scripts.dialogueHost.setFrameIndex
+  harness.scripts.dialogueHost.setFrameIndex = function()
+    error("injected script frame failure", 0)
+  end
+  local ok, applyErr = pcall(transaction.apply)
+  Assert.isFalse(ok, "the injected setter failure propagates")
+  harness.scripts.dialogueHost.setFrameIndex = realFrame
+  transaction.rollback()
+  Assert.deepEqual(harness.playerData.options, before, "restoration keeps the exact raw saved slots")
+  harness.dialogue:open({ id = "restored", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
+  Assert.isFalse(stepsToDone(harness.dialogue, 4), "the restored mid cadence still reveals slowly")
+  harness.dialogue:close()
+  local fresh = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  fresh.apply()
+  Assert.deepEqual(harness.playerData.options, changedOptions(), "a fresh attempt publishes the canonical set")
+  fresh.rollback()
+  Assert.deepEqual(harness.playerData.options, before, "restoration after success returns to the raw baseline")
+  harness.partyMenu.dispose()
+end
+
+-- Records predating newer switches restore absent slots as absent while
+-- live collaborators fall back to their documented defaults.
+function T.tests.restoration_keeps_absent_old_save_slots_absent()
+  local harness = openHarness()
+  harness.audioSink = {
+    mode = "stereo",
+    setChannelMode = function(self, mode)
+      self.mode = mode
+    end,
+  }
+  harness.playerData.options.battleScene = nil
+  harness.playerData.options.soundMode = nil
+  harness.playerData.options.battleSpeed = nil
+  local transaction = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  transaction.apply()
+  Assert.equal(harness.playerData.options.battleScene, false, "the attempt stages its canonical scene")
+  transaction.rollback()
+  Assert.isNil(harness.playerData.options.battleScene, "restoration keeps the absent scene slot absent")
+  Assert.isNil(harness.playerData.options.soundMode, "restoration keeps the absent channel slot absent")
+  Assert.isNil(harness.playerData.options.battleSpeed, "restoration keeps the absent speed slot absent")
+  Assert.equal(harness.playerData.options.textSpeed, "mid", "present slots return to their raw values")
+  Assert.equal(harness.audioSink.mode, "stereo", "the live channel returns to its default")
+  transaction.rollback()
+  Assert.isNil(harness.playerData.options.battleScene, "a second restoration stays a no-op")
+  local idle = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
+  idle.rollback()
+  Assert.isNil(harness.playerData.options.battleScene, "a never-applied attempt restores nothing")
+  harness.partyMenu.dispose()
 end
 
 return T

@@ -500,7 +500,7 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
     },
     volume = 80,
     preparePlayerOptions = function()
-      return function() end
+      return { apply = function() end, rollback = function() end }
     end,
     audioPreferences = port,
     applyChannelMode = function() end,
@@ -940,6 +940,118 @@ function T.tests.scroll_identity_stays_stable_across_values_and_offsets(scope)
   secondView.scrollOffset = 48
   local second = resolvers.nativeLike(contextFor("nativeLike", measurements), secondView)
   Assert.equal(first.inputKey, second.inputKey, "scrolling never changes the pane input identity")
+end
+
+-- A failed open hands its pooled renderer back: the retained per-open
+-- owner clears, every lease returns, and a fresh open paints normally.
+function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
+  local Resources = require("game.hgss.src.field.FieldPresentationResources")
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  local stubText = {}
+  function stubText.drawTextWithPalette(_, _, _, _, _) end
+  function stubText.drawLine(_, _, _, _)
+    return "drawn"
+  end
+  function stubText.textWidth(_, _)
+    return 8
+  end
+  function stubText.drawTokenLine(_, _, _, _) end
+  function stubText.windowBackgroundColor()
+    return { 0.1, 0.2, 0.3, 1 }
+  end
+  local stubWindow = {}
+  function stubWindow.drawWindow(_, _, _, _) end
+  function stubWindow.drawApplicationFrame(_, _, _) end
+  local resources = setmetatable({
+    cacheFs = cache,
+    uiManifest = manifest,
+    _imagePool = pool,
+    textRenderer = stubText,
+    windowRenderer = stubWindow,
+  }, Resources)
+  scope:own({
+    release = function()
+      if resources._optionsRenderer ~= nil then
+        resources._optionsRenderer:dispose()
+        resources._optionsRenderer = nil
+      end
+    end,
+  })
+  local baseline = pool:stats().pinnedBytes
+  local frameIndexes = {}
+  for slot = 0, 19 do
+    frameIndexes[slot] = true
+  end
+  local runtime = {
+    playerData = {
+      profile = {},
+      options = {
+        textSpeed = "mid",
+        textFrame = 0,
+        battleStyle = "shift",
+        battleScene = true,
+        soundMode = "stereo",
+        battleSpeed = 1,
+      },
+    },
+    playerDataContext = { frameIndexes = frameIndexes },
+    audioPreferences = {
+      read = function()
+        return 80
+      end,
+      preview = function(_) end,
+      commit = function(_) end,
+      restore = function() end,
+    },
+    uiManifest = {
+      options = {},
+      dialogueFrames = { continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 } },
+    },
+    fontDef = { glyphs = { [0] = { advance = 8 } } },
+    presentationDisplay = topologies().nativeLike,
+  }
+  runtime.optionsPresentationFactory = function()
+    return resources:openOptionsPresentation()
+  end
+  local coordinator = Coordinator.new(runtime)
+  local factory = nil
+  for _, descriptor in ipairs(coordinator:applicationDescriptors()) do
+    if descriptor.id == FieldApplicationIds.OPTIONS then
+      factory = descriptor.factory
+    end
+  end
+  Assert.notNil(factory, "the field catalogue registers the options destination")
+  local ok, err = pcall(factory)
+  Assert.isFalse(ok, "a missing generated preview message fails the open")
+  Assert.isTrue(err ~= nil, "the failure propagates its cause")
+  Assert.isNil(resources._optionsRenderer, "the failed open retains no per-open renderer")
+  Assert.equal(pool:stats().pinnedBytes, baseline, "the failed open returns every lease")
+  runtime.uiManifest.options = {
+    framePreviewText = {
+      [0] = {
+        text = "HI",
+        tokens = {
+          { kind = "glyph", text = "H", code = 1 },
+          { kind = "glyph", text = "I", code = 1 },
+          { kind = "eos" },
+        },
+      },
+    },
+  }
+  local screen = factory()
+  Assert.isTrue(screen:status().open, "a fresh open works after the failure")
+  Assert.notNil(resources._optionsRenderer, "the fresh open retains its renderer while open")
+  screen:dispose()
+  Assert.isNil(resources._optionsRenderer, "disposal releases the fresh renderer")
+  Assert.equal(pool:stats().pinnedBytes, baseline, "the fresh disposal returns every lease")
 end
 
 return GraphicsSmoke.suite(T.tests)

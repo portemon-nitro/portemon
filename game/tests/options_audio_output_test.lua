@@ -411,8 +411,8 @@ end
 function T.confirmed_mono_reaches_the_live_sink_through_the_validated_closure()
   local sink = recordingSink()
   local harness = coordinatorHarness(validatedPlayerData("stereo"), sink)
-  local apply = assert(harness.coordinator:preparePlayerOptions(confirmedOptions("mono")))
-  apply()
+  local attempt = assert(harness.coordinator:preparePlayerOptions(confirmedOptions("mono")))
+  attempt.apply()
   Assert.equal(harness.playerData.options.soundMode, "mono", "the closure adopts the confirmed mode")
   Assert.deepEqual(sink.modes, { "mono" }, "the closure updates the live sink scalar exactly once")
 end
@@ -420,20 +420,20 @@ end
 function T.confirmed_stereo_reaches_the_live_sink_and_a_nil_sink_stays_valid()
   local sink = recordingSink()
   local harness = coordinatorHarness(validatedPlayerData("mono"), sink)
-  local apply = assert(harness.coordinator:preparePlayerOptions(confirmedOptions("stereo")))
-  apply()
+  local attempt = assert(harness.coordinator:preparePlayerOptions(confirmedOptions("stereo")))
+  attempt.apply()
   Assert.deepEqual(sink.modes, { "stereo" }, "the closure carries stereo back to a mono sink")
   local headless = coordinatorHarness(validatedPlayerData("stereo"), nil)
-  local headlessApply = assert(headless.coordinator:preparePlayerOptions(confirmedOptions("mono")))
-  headlessApply()
+  local headlessAttempt = assert(headless.coordinator:preparePlayerOptions(confirmedOptions("mono")))
+  headlessAttempt.apply()
   Assert.equal(headless.playerData.options.soundMode, "mono", "the headless path adopts options without a sink")
 end
 
 function T.malformed_mode_fails_at_validation_before_any_sink_update()
   local sink = recordingSink()
   local harness = coordinatorHarness(validatedPlayerData("stereo"), sink)
-  local apply, err = harness.coordinator:preparePlayerOptions(confirmedOptions("quad"))
-  Assert.isNil(apply, "a malformed mode prepares nothing")
+  local attempt, err = harness.coordinator:preparePlayerOptions(confirmedOptions("quad"))
+  Assert.isNil(attempt, "a malformed mode prepares nothing")
   Assert.isTrue(
     err ~= nil and Errors.is(err) and err.code == FieldErrors.PLAYER_DATA_INVALID,
     "a malformed mode fails at option validation, got " .. tostring(err)
