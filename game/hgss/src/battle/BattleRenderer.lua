@@ -2493,19 +2493,13 @@ local function drawParticleSystems(graphics, systems)
     return
   end
   for _, system in ipairs(systems) do
-    ---@param runtime table<string, unknown>
+    ---@param _ table<string, unknown>
     ---@param particle table<string, unknown>
     ---@param child table<string, unknown>|nil
-    ---@return love.Image
-    local function resolveTexture(runtime, particle, child)
-      local record = child or runtime.record --[[@as table<string, unknown>]]
+    ---@return table<string, unknown>|userdata staged texture handle behind the particle
+    local function resolveTexture(_, particle, child)
       local texNo = child ~= nil and child.texNo or particle.texNo
-      local image = assert(system.textures[texNo], "particle texture is staged")
-      local repeating = record.texRepeat --[[@as { s: integer, t: integer }]]
-      if (repeating.s ~= 0 or repeating.t ~= 0) and image.setWrap ~= nil then
-        image:setWrap("repeat", "repeat")
-      end
-      return image
+      return assert(system.textures[texNo], "particle texture is staged")
     end
     SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
   end

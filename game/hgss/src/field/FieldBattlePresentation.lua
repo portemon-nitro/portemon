@@ -39,10 +39,11 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _enrolledUploads table<string, boolean> staged image paths already enrolled this launch
 ---@field _warmPinned table<string, FieldBattlePresentation.PooledHandle> scene-independent borrows kept across launches
 ---@field _warmPaths table<string, string> staged image path behind each warm pin, for exact reuse matching
----@field _warmTickets { key: string, path: string, token: integer }[] pending speculative pool tickets in enrollment order
+---@field _warmSamplers table<string, table<string, string>> pool sampler behind each warm pin, for exact reuse matching
+---@field _warmTickets { key: string, path: string, sampler: table<string, string>?, token: integer }[] pending speculative pool tickets in enrollment order
 ---@field _warmDesired string? predicted scene key the speculative ledger currently serves
 ---@field _warmFailed table<string, string> latched speculative failures by staged image path for the desired scene
----@field _warmPlan { sceneKey: string, record: BattlePresentationCache.SceneRecord, ordered: { key: string, path: string }[] }? validated one-prediction scene plan behind pending image tickets
+---@field _warmPlan { sceneKey: string, record: BattlePresentationCache.SceneRecord, ordered: { key: string, path: string, sampler: table<string, string>? }[] }? validated one-prediction scene plan behind pending image tickets
 ---@field _warmPlanFailure string? terminal speculative planning failure behind the desired scene
 ---@field _warmBg3Key string? scene key behind the staged speculative BG3 source values
 ---@field _warmBg3 table<string, unknown>? staged speculative BG3 characters/map/palette source values by exact scene
@@ -184,6 +185,25 @@ end
 -- construction below, so pooled borrows draw identically.
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
+-- Encounter particle textures whose compiled records repeat sample wrapped
+-- on both axes. One physical borrow serves every viewport of its file, and
+-- wrapping is harmless for its non-repeating viewports.
+local REPEAT_SAMPLER = { wrapX = "repeat", wrapY = "repeat", minFilter = "nearest", magFilter = "nearest" }
+
+-- Whether a stored warm sampler already satisfies a required one: samplers
+-- compare by wrap state, so a repeating demand never shares a clamped
+-- borrow under one logical key. An unknown stored sampler is the shared
+-- clamped default.
+---@param stored table<string, string>? sampler behind the live pin
+---@param required table<string, string> sampler behind the current demand
+---@return boolean matching
+local function sameSampler(stored, required)
+  if stored == nil then
+    return required.wrapX == "clamp" and required.wrapY == "clamp"
+  end
+  return stored.wrapX == required.wrapX and stored.wrapY == required.wrapY
+end
+
 -- Fixed drawables every graphical launch reaches for, pinned at the
 -- envelope lifetime: HUD composites, command surfaces, and the shadow
 -- never vary by scene, so a repeat battle reuses the same borrow
@@ -232,21 +252,95 @@ end
 ---@field path string cache-relative staged texture image
 ---@field set integer 1-based encounter emitter set
 ---@field texture table<string, unknown> staged texture record
+---@field sampler table<string, string> pool sampler behind the staged borrow
 
 -- The encounter particle textures of one staged scene record in set, then
--- texture order. Their drawable keys belong to the scene group.
+-- texture order. Their drawable keys belong to the scene group. Each entry
+-- carries the pool sampler its compiled records need: any parent, child,
+-- or texture-animation repeat over its file unions to a wrapping borrow,
+-- so one physical handle stays valid for every viewport of the file.
+-- Textures no record repeats keep the shared clamped sampler.
 ---@param sceneKey string validated scene key
 ---@param record table<string, unknown> validated scene record
 ---@return FieldBattlePresentation.ParticleEntry[]
 local function particleEntries(sceneKey, record)
+  local sets = record.encounterParticles --[[@as table<integer, table<string, unknown>>]]
+  local repeats = {} ---@type table<integer, table<integer, { s: boolean, t: boolean }>>
+  for setIndex, set in ipairs(sets) do
+    local byTexture = {} ---@type table<integer, { s: boolean, t: boolean }>
+    repeats[setIndex] = byTexture
+    local textures = set.textures --[[@as table<integer, table<string, unknown>>]]
+    local images = {} ---@type table<integer, string>
+    for id, texture in pairs(textures) do
+      if type(id) == "number" and type(texture) == "table" and type(texture.image) == "string" then
+        images[id] = texture.image --[[@as string]]
+      end
+    end
+    local function mark(textureId, repeatPowers)
+      if type(textureId) ~= "number" then
+        return
+      end
+      local repS = type(repeatPowers) == "table" and repeatPowers.s or 0
+      local repT = type(repeatPowers) == "table" and repeatPowers.t or 0
+      if repS == 0 and repT == 0 then
+        return
+      end
+      local slot = byTexture[textureId]
+      if slot == nil then
+        slot = { s = false, t = false }
+        byTexture[textureId] = slot
+      end
+      if repS ~= 0 then
+        slot.s = true
+      end
+      if repT ~= 0 then
+        slot.t = true
+      end
+    end
+    local function markImage(image, repeatPowers)
+      if type(image) ~= "string" then
+        return
+      end
+      for id, path in pairs(images) do
+        if path == image then
+          mark(id, repeatPowers)
+        end
+      end
+    end
+    for _, emitter in
+      ipairs(set.emitters --[[@as table<integer, table<string, unknown>>]])
+    do
+      mark(emitter.texture, emitter.texRepeat)
+      markImage(emitter.textureImage, emitter.texRepeat)
+      local child = emitter.child --[[@as table<string, unknown>?]]
+      if type(child) == "table" then
+        mark(child.texNo, child.texRepeat)
+        markImage(child.textureImage, child.texRepeat)
+      end
+      local anim = emitter.textureAnim --[[@as table<string, unknown>?]]
+      if type(anim) == "table" and type(anim.textures) == "table" then
+        for _, textureId in
+          ipairs(anim.textures --[[@as table<integer, integer>]])
+        do
+          mark(textureId, emitter.texRepeat)
+        end
+      end
+    end
+  end
   local entries = {}
-  for setIndex, set in ipairs(record.encounterParticles) do
-    for _, texture in ipairs(set.textures) do
+  for setIndex, set in ipairs(sets) do
+    for _, texture in
+      ipairs(set.textures --[[@as table<integer, table<string, unknown>>]])
+    do
+      local slot = (repeats[setIndex] or {})[
+        texture.id --[[@as integer]]
+      ]
       entries[#entries + 1] = {
         key = "scene-particle:" .. sceneKey .. ":" .. setIndex .. ":" .. texture.id,
         path = texture.image,
         set = setIndex,
         texture = texture,
+        sampler = (slot ~= nil and (slot.s or slot.t)) and REPEAT_SAMPLER or POOLED_SAMPLER,
       }
     end
   end
@@ -359,6 +453,9 @@ local function retireWarmGroups(envelope, keepScene)
       if envelope._warmPaths ~= nil then
         envelope._warmPaths[key] = nil
       end
+      if envelope._warmSamplers ~= nil then
+        envelope._warmSamplers[key] = nil
+      end
       if pool ~= nil and record ~= nil then
         pcall(pool.release, pool, record.lease)
       end
@@ -397,20 +494,26 @@ end
 -- ticket instead of stacking a second enrollment behind it.
 ---@param envelope FieldBattlePresentation
 ---@param pool table<string, unknown> borrowed shared generated-image owner
----@param entries { key: string, path: string }[] key/path pairs in adoption order
+---@param entries { key: string, path: string, sampler: table<string, string>? }[] key/path/sampler triples in adoption order
 ---@param ticketed table<string, boolean> keys already holding a live ticket
 local function enrollWarmEntries(envelope, pool, entries, ticketed)
   for _, entry in ipairs(entries) do
+    local sampler = entry.sampler or POOLED_SAMPLER
     local pinned = envelope._warmPinned[entry.key] ---@type FieldBattlePresentation.PooledHandle?
-    if pinned ~= nil and envelope._warmPaths[entry.key] ~= entry.path then
+    if
+      pinned ~= nil
+      and (envelope._warmPaths[entry.key] ~= entry.path or not sameSampler(envelope._warmSamplers[entry.key], sampler))
+    then
       envelope._warmPinned[entry.key] = nil
       envelope._warmPaths[entry.key] = nil
+      envelope._warmSamplers[entry.key] = nil
       pcall(pool.release, pool, pinned.lease)
       pinned = nil
     end
     if pinned == nil and ticketed[entry.key] ~= true and envelope._warmFailed[entry.path] == nil then
-      local token = pool:request(entry.path, POOLED_SAMPLER, "prefetch")
-      envelope._warmTickets[#envelope._warmTickets + 1] = { key = entry.key, path = entry.path, token = token }
+      local token = pool:request(entry.path, sampler, "prefetch")
+      envelope._warmTickets[#envelope._warmTickets + 1] =
+        { key = entry.key, path = entry.path, sampler = sampler, token = token }
       ticketed[entry.key] = true
       envelope._enrolledUploads[entry.path] = true
     end
@@ -500,6 +603,9 @@ local function retireIncompleteWarmGroups(envelope)
         envelope._warmPinned[key] = nil
         if envelope._warmPaths ~= nil then
           envelope._warmPaths[key] = nil
+        end
+        if envelope._warmSamplers ~= nil then
+          envelope._warmSamplers[key] = nil
         end
         if pool ~= nil then
           pcall(pool.release, pool, record.lease)
@@ -916,6 +1022,7 @@ function FieldBattlePresentation.new(opts)
     _enrolledUploads = {},
     _warmPinned = {},
     _warmPaths = {},
+    _warmSamplers = {},
     _warmTickets = {},
     _warmPlan = nil,
     _warmPlanFailure = nil,
@@ -949,12 +1056,13 @@ end
 ---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged page path behind diagnostics
 ---@param token integer? already-enrolled pool ticket to await instead of requesting again
+---@param sampler table<string, string>? pool sampler behind a fresh request, clamped by default
 ---@return table<string, unknown>? resolved page lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function borrowPage(envelope, key, path, token)
+local function borrowPage(envelope, key, path, token, sampler)
   local pool = assert(envelope._pool, "pooled battle uploads borrow the shared image owner")
   if token == nil then
-    token = pool:request(path, POOLED_SAMPLER, "demand")
+    token = pool:request(path, sampler or POOLED_SAMPLER, "demand")
   end
   local stalled = 0
   while true do
@@ -993,23 +1101,38 @@ end
 ---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged image path behind diagnostics
 ---@param token integer? already-enrolled pool ticket to await instead of requesting again
+---@param sampler table<string, string>? pool sampler behind a fresh request, clamped by default
 ---@return table<string, unknown>? resolved drawable lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function acquirePooled(envelope, key, path, token)
+local function acquirePooled(envelope, key, path, token, sampler)
   -- A matching warm pin answers with no new borrow: the envelope owns
   -- the borrow across launches, and the scene staging closure calls
   -- here directly instead of through the drawable fast path. An
   -- orphaned launch ticket behind the hit is cancelled instead of
-  -- retained unclaimed.
+  -- retained unclaimed. A pin behind a changed path or sampler is stale:
+  -- it returns once so a repeating demand never shares a clamped handle.
+  local wanted = sampler or POOLED_SAMPLER
   local pinned = envelope._warmPinned[key]
   if pinned ~= nil and envelope._warmPaths ~= nil and envelope._warmPaths[key] == path then
-    if token ~= nil then
-      local pool = envelope._pool
-      if pool ~= nil then
-        pcall(pool.cancel, pool, token)
+    if sameSampler(envelope._warmSamplers[key], wanted) then
+      if token ~= nil then
+        local pool = envelope._pool
+        if pool ~= nil then
+          pcall(pool.cancel, pool, token)
+        end
       end
+      return pinned.handle
     end
-    return pinned.handle
+    envelope._warmPinned[key] = nil
+    envelope._warmPaths[key] = nil
+    envelope._warmSamplers[key] = nil
+    local stalePool = envelope._pool
+    if stalePool ~= nil then
+      pcall(stalePool.release, stalePool, pinned.lease)
+    end
+    if envelope._leases[key] ~= nil and envelope._leases[key].handle == pinned.handle then
+      envelope._leases[key] = nil
+    end
   end
   -- A pre-enrolled ticket from preparation rides instead of a fresh
   -- request so the drawable awaits the shared decode instead of
@@ -1017,7 +1140,7 @@ local function acquirePooled(envelope, key, path, token)
   if token == nil then
     token = takePendingUpload(envelope, path)
   end
-  local lease, failure = borrowPage(envelope, key, path, token)
+  local lease, failure = borrowPage(envelope, key, path, token, wanted)
   if lease == nil then
     return nil, failure
   end
@@ -1027,6 +1150,8 @@ local function acquirePooled(envelope, key, path, token)
   if envelope._warmPinned[key] ~= nil then
     envelope._warmPaths = envelope._warmPaths or {}
     envelope._warmPaths[key] = path
+    envelope._warmSamplers = envelope._warmSamplers or {}
+    envelope._warmSamplers[key] = wanted
   end
   return lease
 end
@@ -2070,6 +2195,9 @@ function FieldBattlePresentation:_preparationServices()
                 if envelope._warmPaths ~= nil then
                   envelope._warmPaths[key] = nil
                 end
+                if envelope._warmSamplers ~= nil then
+                  envelope._warmSamplers[key] = nil
+                end
                 local attemptPool = envelope._pool
                 if attemptPool ~= nil then
                   pcall(attemptPool.release, attemptPool, attemptPin.lease)
@@ -2101,7 +2229,7 @@ function FieldBattlePresentation:_preparationServices()
               { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = {} }
           end
           for _, entry in ipairs(particles) do
-            local drawable, failure = acquirePooled(envelope, entry.key, entry.path)
+            local drawable, failure = acquirePooled(envelope, entry.key, entry.path, nil, entry.sampler)
             if drawable == nil then
               return failAttempt(assert(failure, "encounter particle lease failures carry a reason"))
             end
@@ -2946,6 +3074,9 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   if self._warmPaths == nil then
     self._warmPaths = {}
   end
+  if self._warmSamplers == nil then
+    self._warmSamplers = {}
+  end
   if self._warmDesired ~= sceneKey then
     cancelWarmTickets(self)
     retireIncompleteWarmGroups(self)
@@ -3072,7 +3203,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       self._warmPlanFailure = cause
       return false, cause
     end
-    local grouped = {} ---@type { key: string, path: string }[]
+    local grouped = {} ---@type { key: string, path: string, sampler: table<string, string>? }[]
     local particles = registerParticleEntries(self, sceneKey, stagedRecord)
     local groupKeys = warmSceneKeys(self, sceneKey)
     grouped[#grouped + 1] = { key = groupKeys[1], path = BattlePresentationCache.sceneImagePath(sceneKey) }
@@ -3080,9 +3211,9 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     grouped[#grouped + 1] = { key = groupKeys[3], path = terrainSprites.player.image }
     grouped[#grouped + 1] = { key = groupKeys[4], path = terrainSprites.foe.image }
     for _, entry in ipairs(particles) do
-      grouped[#grouped + 1] = { key = entry.key, path = entry.path }
+      grouped[#grouped + 1] = { key = entry.key, path = entry.path, sampler = entry.sampler }
     end
-    local planned = {} ---@type { key: string, path: string }[]
+    local planned = {} ---@type { key: string, path: string, sampler: table<string, string>? }[]
     for _, entry in ipairs(grouped) do
       planned[#planned + 1] = entry
     end
@@ -3154,7 +3285,11 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   local settled = self._warmBg3Key == sceneKey
   if settled then
     for _, entry in ipairs(ordered) do
-      if self._warmPinned[entry.key] == nil or self._warmPaths[entry.key] ~= entry.path then
+      if
+        self._warmPinned[entry.key] == nil
+        or self._warmPaths[entry.key] ~= entry.path
+        or not sameSampler(self._warmSamplers[entry.key], entry.sampler or POOLED_SAMPLER)
+      then
         settled = false
         break
       end
@@ -3165,7 +3300,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   end
   -- Poll every ticket without blocking; the first failure names its
   -- scene, key, and path while the remaining tickets stay pending.
-  local readyTicket = nil ---@type { key: string, path: string, token: integer }?
+  local readyTicket = nil ---@type { key: string, path: string, sampler: table<string, string>?, token: integer }?
   local index = 1
   while index <= #self._warmTickets do
     local ticket = self._warmTickets[index]
@@ -3214,6 +3349,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   end
   self._warmPinned[ticketKey] = { lease = lease, handle = lease }
   self._warmPaths[ticketKey] = ticketPath
+  self._warmSamplers[ticketKey] = readyTicket.sampler or POOLED_SAMPLER
   if warmGroupComplete(self, sceneKey) then
     retireWarmGroups(self, sceneKey)
   end
@@ -4607,6 +4743,9 @@ function FieldBattlePresentation:dispose()
     self._warmPinned[key] = nil
     if self._warmPaths ~= nil then
       self._warmPaths[key] = nil
+    end
+    if self._warmSamplers ~= nil then
+      self._warmSamplers[key] = nil
     end
     if pool ~= nil then
       pool:release(pinned.lease)

@@ -18,9 +18,23 @@ local function image(name)
 end
 
 local function recorder()
-  local graphics = { calls = {}, color = nil }
-  function graphics.newQuad(x, y, w, h)
-    return { w = w, h = h, x = x, y = y }
+  local graphics = { calls = {}, color = nil, shaders = {}, shader = nil }
+  function graphics.newQuad(x, y, w, h, imgW, imgH)
+    return { w = w, h = h, x = x, y = y, imgW = imgW, imgH = imgH }
+  end
+  function graphics.newShader()
+    local shader = { sends = {} }
+    function shader.send(_, name, value)
+      shader.sends[#shader.sends + 1] = { name = name, value = value }
+    end
+    graphics.shaders[#graphics.shaders + 1] = shader
+    return shader
+  end
+  function graphics.getShader()
+    return graphics.shader
+  end
+  function graphics.setShader(shader)
+    graphics.shader = shader
   end
   function graphics.setColor(r, g, b, a)
     graphics.color = { r, g, b, a }
@@ -183,6 +197,72 @@ function T.directional_billboard_rotates_along_velocity()
   SplParticleDraw.draw(graphics, sim, options({ [0] = image("a") }))
   Assert.equal(graphics.calls[1].rotation, 0, "a +y velocity aligns the quad x-axis with screen x")
   Assert.equal(graphics.calls[1].sy, 2 * 24 * 2 / 8, "screen-parallel motion stretches the y extent")
+end
+
+function T.pooled_indexed_lease_draws_through_its_own_palette_sampler()
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local graphics = recorder()
+  local source = {}
+  function source.setFilter() end
+  local palette = {}
+  function palette.setFilter() end
+  function palette.getWidth()
+    return 4
+  end
+  -- Production leases expose only width/height/drawQuad: no raw
+  -- getWidth/getHeight/setWrap, so shared drawing must route through
+  -- the lease instead of unwrapping its image.
+  local lease = setmetatable({
+    image = source,
+    palette = palette,
+    kind = "r8",
+    width = 8,
+    height = 8,
+  }, ImageAssetPool.Lease)
+  local sim = simulate({ runtime(record({ texRepeat = { s = 1, t = 0 } }), { particle() }) })
+  SplParticleDraw.draw(graphics, sim, options({ [0] = lease }))
+  Assert.equal(#graphics.calls, 1, "one pooled particle draws")
+  local call = graphics.calls[1]
+  Assert.isTrue(call.image == source, "the palette shader draws the index image, never the lease handle")
+  Assert.equal(call.quad.w, 16, "the x2 repeat power tiles the sampled viewport")
+  Assert.equal(call.quad.h, 8, "the unrepeated axis keeps its source height")
+  Assert.equal(call.quad.imgW, 8, "the quad keeps the unrepeated source width")
+  Assert.equal(call.quad.imgH, 8, "the quad keeps the unrepeated source height")
+  Assert.deepEqual(call.color, { 1, 0, 1, 1 }, "the lease draw carries the particle color")
+  local shader = graphics.shaders[1]
+  Assert.notNil(shader, "the indexed draw binds the sampling shader")
+  local sends = {}
+  for _, send in ipairs(shader.sends) do
+    sends[send.name] = send.value
+  end
+  Assert.isTrue(sends.u_usePalette == true, "the indexed draw enables palette sampling")
+  Assert.isTrue(sends.u_palette == palette, "the indexed draw binds the lease palette")
+  Assert.isTrue(graphics.shader == nil, "the draw restores the previous shader")
+  Assert.deepEqual(graphics.color, { 1, 1, 1, 1 }, "the draw color resets")
+end
+
+function T.raw_images_keep_directional_and_child_first_draws()
+  local graphics = recorder()
+  local rec = record({
+    drawType = 1,
+    dbbScale = 4096,
+    drawChildFirst = true,
+    child = { drawType = 1, texRepeat = { s = 0, t = 0 }, texNo = 9 },
+  })
+  local sim = simulate({
+    runtime(rec, { particle({ vx = 0, vy = 1, vz = 0 }) }, { particle({ vx = 0, vy = 1, vz = 0, rtt = 16384 }) }),
+  })
+  SplParticleDraw.draw(graphics, sim, options({ [0] = image("a"), child = image("c") }))
+  Assert.equal(#graphics.calls, 2, "parent and directional child both draw through raw images")
+  Assert.equal(
+    graphics.calls[1].image.name .. graphics.calls[2].image.name,
+    "ca",
+    "children draw before parents when the emitter asks for it"
+  )
+  for _, call in ipairs(graphics.calls) do
+    Assert.equal(call.rotation, 0, "screen-parallel motion aligns the quad x-axis")
+    Assert.equal(call.sy, 2 * 24 * 2 / 8, "screen-parallel motion stretches the y extent")
+  end
 end
 
 function T.directional_children_follow_their_velocity_with_the_emitter_stretch()

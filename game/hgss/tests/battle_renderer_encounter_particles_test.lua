@@ -356,4 +356,74 @@ function T.evolution_panes_draw_staged_layers_pictures_window_and_live_particles
   )
 end
 
+function T.encounter_particles_draw_pooled_leases_without_raw_draws()
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local sets = Fixture.sets("grass/day/forest")
+  local sources, leases = {}, {}
+  for _, set in ipairs(sets) do
+    for _, texture in ipairs(set.textures) do
+      local source = {}
+      function source.setFilter() end
+      local palette = {}
+      function palette.setFilter() end
+      function palette.getWidth()
+        return 4
+      end
+      -- Production leases expose only width/height/drawQuad: no raw
+      -- getWidth/getHeight/setWrap for shared drawing to misuse.
+      local lease = setmetatable({
+        image = source,
+        palette = palette,
+        kind = "r8",
+        width = texture.width,
+        height = texture.height,
+      }, ImageAssetPool.Lease)
+      texture.drawable = lease
+      sources[#sources + 1] = source
+      leases[#leases + 1] = lease
+    end
+  end
+  local owner = BattleEncounterParticles.new()
+  for frame = 1, 8 do
+    owner:step(frame, sets)
+  end
+  local graphics = FakeGraphics.new()
+  drawDetail(graphics, {
+    encounterParticleSystems = owner:systems(),
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      encounterFlash = { color = "white", coefficient = 8 },
+    },
+  })
+  Assert.isTrue(#graphics.draws >= 1, "live pooled particles draw")
+  for _, draw in ipairs(graphics.draws) do
+    for _, lease in ipairs(leases) do
+      Assert.isTrue(draw.image ~= lease, "shared drawing never draws a lease as a raw image")
+    end
+  end
+  local pooled = 0
+  for _, draw in ipairs(graphics.draws) do
+    for _, source in ipairs(sources) do
+      if draw.image == source then
+        pooled = pooled + 1
+        Assert.equal(draw.quad.w, 32, "the pooled quad spans its lease width")
+        Assert.equal(draw.quad.imgW, 32, "the pooled quad keeps its source reference width")
+      end
+    end
+  end
+  Assert.isTrue(pooled >= 1, "pooled index images draw through their palette shader")
+  local paletteBound = false
+  for _, shader in ipairs(graphics.shaders) do
+    for _, send in ipairs(shader.sends) do
+      if send.name == "u_usePalette" and send.value == true then
+        paletteBound = true
+      end
+    end
+  end
+  Assert.isTrue(paletteBound, "an indexed lease enables palette sampling")
+  Assert.isTrue(graphics.getShader() == nil, "particle drawing restores the caller shader")
+end
+
 return { tests = T }

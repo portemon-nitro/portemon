@@ -1,4 +1,6 @@
 local Assert = require("tests.support.Assert")
+local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -1900,6 +1902,126 @@ function T.battle_music_waits_for_staged_files_and_suspends_with_the_start()
   Assert.equal(envelope:musicNote(), "started:" .. MUSIC_ROLE, "the staged start records its note")
   envelope:_startBattleMusic()
   Assert.equal(#controller.plays, 1, "the music start latches exactly once")
+  envelope:dispose()
+end
+
+-- Encounter particle textures carrying source repeat flags are admitted
+-- under a repeat sampler on both the idle and foreground routes, and the
+-- particle renderer never mutates the staged sampler at draw time.
+function T.repeating_particle_textures_keep_repeat_samplers_from_warmup_to_draw()
+  local record = sceneRecord(SCENE_KEY)
+  local repeated = record.encounterParticles[1]
+  repeated.emitters[1].texRepeat = { s = 1, t = 0 }
+  -- A schema-valid child generation referencing the same texture file:
+  -- the parent repeats x2 while the child repeats x4 on the other axis.
+  local template = record.encounterParticles[2].emitters[1].child
+  local child = {}
+  for key, value in pairs(template) do
+    child[key] = value
+  end
+  child.texNo = 0
+  child.textureImage = repeated.textures[1].image
+  child.texRepeat = { s = 0, t = 2 }
+  repeated.emitters[1].child = child
+  local repeatedPath = repeated.textures[1].image
+  local pool = scriptedPool(0, {})
+  local admissions = {}
+  local baseRequest = pool.request
+  function pool:request(path, sampler, priority)
+    admissions[#admissions + 1] = { path = path, sampler = sampler, priority = priority }
+    return baseRequest(self, path, sampler, priority)
+  end
+  local envelope = warmEnvelope(dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY)), pool, nearHost({}, true))
+  driveWarmup(envelope, SCENE_KEY, 1, 64)
+  local services = envelope:_preparationServices()
+  local ready, failure = prepareScene(services)
+  Assert.isTrue(ready, "the scene with repeating particles prepares: " .. tostring(failure))
+  local repeatedSamplers = {}
+  for _, admission in ipairs(admissions) do
+    if admission.path == repeatedPath then
+      repeatedSamplers[#repeatedSamplers + 1] = admission.sampler
+    end
+  end
+  Assert.isTrue(#repeatedSamplers >= 1, "the repeating particle texture is admitted through the pool")
+  for _, sampler in ipairs(repeatedSamplers) do
+    Assert.deepEqual(
+      { sampler.wrapX, sampler.wrapY },
+      { "repeat", "repeat" },
+      "parent x2 and child x4 repeats on one file union to a repeat sampler"
+    )
+  end
+  for _, admission in ipairs(admissions) do
+    if admission.path ~= repeatedPath then
+      Assert.deepEqual(
+        { admission.sampler.wrapX, admission.sampler.wrapY },
+        { "clamp", "clamp" },
+        "non-repeating scene art keeps the shared clamp sampler: " .. admission.path
+      )
+    end
+  end
+  local spy = { wraps = 0 }
+  function spy.getWidth()
+    return 32
+  end
+  function spy.getHeight()
+    return 32
+  end
+  function spy.setWrap()
+    spy.wraps = spy.wraps + 1
+  end
+  local function liveParticle(texNo)
+    return {
+      x = 0,
+      y = 0,
+      z = 0,
+      ex = 0,
+      ey = 0,
+      ez = 0,
+      vx = 0,
+      vy = 0,
+      vz = 0,
+      baseAlpha = 31,
+      animAlpha = 31,
+      baseScale = 4096,
+      animScale = 4096,
+      colorRgb = { r = 31, g = 31, b = 31 },
+      rtt = 0,
+      texNo = texNo,
+    }
+  end
+  local simulation = {
+    emitters = {
+      { record = repeated.emitters[1], particles = { liveParticle(0) }, children = { liveParticle(0) } },
+    },
+  }
+  local graphics = FakeGraphics.new()
+  BattleRenderer.drawPane({
+    graphics = graphics,
+    text = { drawTextForRole = function() end },
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function()
+        return nil
+      end,
+    },
+    frameKey = "default",
+  }, {
+    battlers = {},
+    effectInstances = {},
+    hudPatchSpans = {},
+    message = "",
+    textPalettes = { narration = { colors = {} } },
+    encounterParticleSystems = { { simulation = simulation, textures = { [0] = spy } } },
+  }, "detail", {})
+  Assert.equal(spy.wraps, 0, "particle drawing never mutates the staged sampler")
+  local sizes = {}
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == spy then
+      sizes[#sizes + 1] = draw.quad.w .. "x" .. draw.quad.h
+    end
+  end
+  table.sort(sizes)
+  Assert.deepEqual(sizes, { "32x128", "64x32" }, "repeated viewports sample beyond [0,1] for both generations")
   envelope:dispose()
 end
 
