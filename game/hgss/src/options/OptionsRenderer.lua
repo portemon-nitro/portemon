@@ -287,7 +287,7 @@ function OptionsRenderer:draw(view, plan)
     if paneId == "preview" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
         self:_drawBackdrop(graphics, "preview")
-        self:_drawPreview(graphics, section, ink, content, view)
+        self:_drawPreview(graphics, content, view)
       end)
     elseif paneId == "controls" or paneId == "content" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
@@ -301,7 +301,7 @@ function OptionsRenderer:draw(view, plan)
         end)
         self:_drawLegacyNote(ink, view)
         if paneId == "content" then
-          self:_drawPreview(graphics, section, ink, content, view)
+          self:_drawPreview(graphics, content, view)
         end
         self:_drawFooter(graphics, chrome, quadFor, section, ink, content, view)
       end)
@@ -400,33 +400,54 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, ink, row, 
   end
 end
 
----@param _ love.graphics
----@param section OptionsRenderer.Section
----@param ink OptionsWidgets.Ink
+-- Paints the menu-local sample: the draft-frame border, then the already
+-- revealed printer token lines clipped to the preview inset. An
+-- unrevealed sample draws a blank framed window; nothing static ever
+-- substitutes for the printer status.
+---@param graphics love.graphics
 ---@param content OptionsInterface.ContentGeometry
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawPreview(_, section, ink, content, view)
+function OptionsRenderer:_drawPreview(graphics, content, view)
   local preview = content.preview
   if preview == nil then
     return
   end
   local window = assert(self._window, "the preview borrows the window service")
   local text = assert(self._text, "the preview borrows the text service")
-  local frame = (view.preview ~= nil and view.preview.textFrame) or 0
+  local previewView = view.preview
+  local frame = (previewView ~= nil and previewView.textFrame) or 0
   window:drawWindow(
     { x = preview.x, y = preview.y, width = preview.width, height = preview.height },
     frame,
     text:windowBackgroundColor()
   )
-  local labels = section.labels or {}
-  local sample = "SAMPLE"
-  if labels.framePreviewText ~= nil then
-    local entry = labels.framePreviewText[(view.preview ~= nil and view.preview.textFrame) or 0]
-    if entry ~= nil and type(entry.text) == "string" then
-      sample = entry.text
-    end
+  if previewView == nil then
+    return
   end
-  text:drawTextWithPalette(sample, preview.x + 4, preview.y + 4, ink.foreground)
+  local lines = previewView.scrollLines or previewView.visibleLines
+  if lines == nil then
+    return
+  end
+  assert(type(text.drawTokenLine) == "function", "the preview borrows its token-line drawing")
+  local lineHeight = previewView.lineHeight or 16
+  local lineSpacing = previewView.lineSpacing or 0
+  local scrollOffset = 0
+  if previewView.scrollLines ~= nil then
+    scrollOffset = previewView.scrollOffsetY or 0
+  end
+  local originX = preview.x + 4
+  local lineY = preview.y + 4 - scrollOffset
+  LogicalSurface.clip(graphics, {
+    x = preview.x + 4,
+    y = preview.y + 4,
+    width = preview.width - 8,
+    height = preview.height - 8,
+  }, function()
+    for _, line in ipairs(lines) do
+      text:drawTokenLine(line.tokens or line, originX, lineY)
+      lineY = lineY + lineHeight + lineSpacing
+    end
+  end)
 end
 
 -- Paints the staged legacy-Slow migration note in the header band above

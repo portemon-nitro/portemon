@@ -799,6 +799,138 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   Assert.equal(resettled.pinnedBytes, baseline2.pinnedBytes, "the fresh renderer releases its leases")
 end
 
+local function recordingTokenText()
+  local text = { tokenDraws = {}, draws = {}, background = { 0.1, 0.2, 0.3, 1 } }
+  function text.drawTextWithPalette(_, line, x, y, _)
+    text.draws[#text.draws + 1] = { line = line, x = x, y = y }
+  end
+  function text.textWidth(_, str)
+    return #str * 8
+  end
+  function text.drawTokenLine(_, tokens, x, y)
+    text.tokenDraws[#text.tokenDraws + 1] = { tokens = tokens, x = x, y = y }
+  end
+  function text.windowBackgroundColor()
+    return text.background
+  end
+  return text
+end
+
+local function sourceLine(word)
+  local tokens = {}
+  for index = 1, #word do
+    tokens[#tokens + 1] = { kind = "glyph", code = 0x0120 + index, text = word:sub(index, index) }
+  end
+  return tokens
+end
+
+local function tokenPainter(scope)
+  local _, Renderer = modules()
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  local text = recordingTokenText()
+  local window = recordingWindow()
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = text,
+    window = window,
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the painter prepares: " .. tostring(failure))
+  return renderer, text, window
+end
+
+local function assertNoStaticSample(text)
+  for _, draw in ipairs(text.draws) do
+    Assert.isTrue(draw.line ~= "SAMPLE", "no static sample text paints")
+  end
+end
+
+function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope)
+  local Interface = modules()
+  local renderer, text, window = tokenPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = sampleView("textFrame")
+  view.preview = {
+    textSpeed = "mid",
+    textFrame = 0,
+    visibleLines = { sourceLine("ZERO"), sourceLine("AB") },
+    lineHeight = 16,
+    lineSpacing = 2,
+  }
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local preview = assert(plan.content.preview, "the native plan carries its preview")
+  drawPlan(scope, renderer, view, plan, 512, 384)
+  Assert.equal(window.lastFrame, 0, "the preview border uses the draft frame")
+  Assert.equal(#text.tokenDraws, 2, "every visible token line draws once")
+  Assert.equal(text.tokenDraws[1].tokens[1].text, "Z", "frame zero paints its own source glyphs")
+  Assert.equal(text.tokenDraws[1].x, preview.x + 4, "token lines keep the preview inset")
+  Assert.equal(text.tokenDraws[1].y, preview.y + 4, "the first line starts at the preview top")
+  Assert.equal(
+    text.tokenDraws[2].y,
+    preview.y + 4 + 16 + 2,
+    "later lines advance by the printer line geometry"
+  )
+  assertNoStaticSample(text)
+  text.tokenDraws = {}
+  text.draws = {}
+  view.preview = {
+    textSpeed = "mid",
+    textFrame = 7,
+    visibleLines = { sourceLine("SEVEN") },
+    lineHeight = 16,
+    lineSpacing = 2,
+  }
+  local plan7 = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  drawPlan(scope, renderer, view, plan7, 512, 384)
+  Assert.equal(window.lastFrame, 7, "the frame edit repaints the draft border")
+  Assert.equal(#text.tokenDraws, 1, "the new frame paints its own visible lines")
+  Assert.equal(text.tokenDraws[1].tokens[1].text, "S", "frame seven paints distinct source glyphs")
+  assertNoStaticSample(text)
+  text.tokenDraws = {}
+  text.draws = {}
+  local dualPlan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), view)
+  Assert.deepEqual(
+    dualPlan.content.preview,
+    { x = 16, y = 152, width = 216, height = 32 },
+    "the dual preview window stays inside the upper pane"
+  )
+  drawPlan(scope, renderer, view, dualPlan, 512, 192)
+  Assert.equal(window.lastFrame, 7, "the dual preview keeps the draft border")
+  Assert.equal(#text.tokenDraws, 1, "the dual preview pane paints the sample once")
+  Assert.equal(text.tokenDraws[1].tokens[1].text, "S", "the dual preview paints the same source glyphs")
+  Assert.isTrue(
+    text.tokenDraws[1].x >= 16 and text.tokenDraws[1].x < 16 + 216,
+    "dual token lines stay inside the upper preview pane"
+  )
+  assertNoStaticSample(text)
+  text.tokenDraws = {}
+  text.draws = {}
+  view.preview = { textSpeed = "mid", textFrame = 7 }
+  local unrevealed = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  drawPlan(scope, renderer, view, unrevealed, 512, 384)
+  Assert.equal(#text.tokenDraws, 0, "an unrevealed sample draws a blank framed window")
+  assertNoStaticSample(text)
+  renderer:dispose()
+end
+
 function T.tests.scroll_identity_stays_stable_across_values_and_offsets(scope)
   local Interface = modules()
   local resolvers = Interface.defaults()

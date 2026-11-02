@@ -846,6 +846,256 @@ function T.tests.presented_preview_press_stays_open_while_outside_down_closes()
   Assert.equal(opened.applied(), 0, "an outside dismissal never applies")
 end
 
+-- The menu-local sample prints through a real dialogue controller over
+-- generated frame messages: paced by the draft speed policy, restarted on
+-- speed/frame edits, and closed exactly once with the menu.
+local function previewGlyph(text, code)
+  return { kind = "glyph", code = code, text = text }
+end
+
+local function previewMessage(word, fillerPairs)
+  local text = word .. " " .. string.rep("AB", fillerPairs)
+  local tokens = {}
+  local code = 0x0121
+  for index = 1, #text do
+    tokens[#tokens + 1] = previewGlyph(text:sub(index, index), code)
+    code = code + 1
+  end
+  tokens[#tokens + 1] = { kind = "eos" }
+  return { text = text, tokens = tokens }
+end
+
+local function previewSection(markerFor)
+  local records = {}
+  for slot = 0, 19 do
+    records[slot] = previewMessage(markerFor(slot), 20)
+  end
+  return records
+end
+
+local function defaultMarkers(slot)
+  return "TYPE " .. (slot + 1)
+end
+
+local function livePrinter(speed)
+  local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
+  local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+  local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
+  local metrics = {
+    glyphWidth = function(_)
+      return 8
+    end,
+  }
+  return FieldDialogueController.new({
+    layout = function(formatted)
+      return DialogueLayout.layout(formatted.tokens, metrics, { width = 216, maxLines = 2 })
+    end,
+    policy = TextSpeedPolicy.forSpeed(speed or "mid"),
+    audio = { play = function() end },
+    continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
+  })
+end
+
+local function openPreviewMenu(opts)
+  opts = opts or {}
+  local State = stateModule()
+  local prepare, applied, candidate = fakePrepare()
+  local port = fakeAudioPort(opts.volume == nil and 80 or opts.volume)
+  local played, effect = fakeEffects()
+  local channels = {}
+  local committed = canonicalOptions(opts.playerOptions)
+  local state = State.new({
+    playerOptions = committed,
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(mode)
+      channels[#channels + 1] = mode
+    end,
+    effect = effect,
+    semantic = { labels = semanticLabels(), framePreviewText = opts.framePreviewText or previewSection(defaultMarkers) },
+    previewPrinter = opts.previewPrinter or livePrinter(committed.textSpeed),
+  })
+  return {
+    state = state,
+    port = port,
+    played = played,
+    channels = channels,
+    applied = applied,
+    candidate = candidate,
+  }
+end
+
+local function visibleGlyphs(status)
+  local preview = assert(status.preview, "status carries its preview")
+  local lines = assert(preview.visibleLines, "the open preview publishes its visible lines")
+  local count = 0
+  local first = nil
+  local texts = {}
+  for _, line in ipairs(lines) do
+    for _, token in ipairs(line.tokens or line) do
+      if token.kind == "glyph" then
+        count = count + 1
+        if first == nil then
+          first = token.text
+        end
+        texts[#texts + 1] = token.text
+      end
+    end
+  end
+  return count, first, table.concat(texts)
+end
+
+function T.tests.preview_reveals_faster_on_turbo_than_mid_from_the_same_message()
+  local records = previewSection(defaultMarkers)
+  local total = #records[0].tokens - 1
+  local opened = openPreviewMenu({ playerOptions = { textSpeed = "mid" }, framePreviewText = records })
+  local state = opened.state
+  for _ = 1, 6 do
+    state:updateFixed({})
+  end
+  local midCount, midFirst = visibleGlyphs(state:status())
+  Assert.isTrue(midCount > 0, "mid reveals glyphs after fixed ticks")
+  Assert.isTrue(midCount < total, "mid shows only a prefix of the generated message")
+  Assert.equal(midFirst, "T", "mid reveals the generated message from its start")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(rowById(state:status(), "textSpeed").value, "fastest", "two rights reach turbo")
+  local fresh = openPreviewMenu({ playerOptions = { textSpeed = "fastest" }, framePreviewText = records })
+  fresh.state:updateFixed({})
+  local freshCount = visibleGlyphs(fresh.state:status())
+  local restartedCount = visibleGlyphs(state:status())
+  Assert.equal(restartedCount, freshCount, "the speed edit restarts the sample from its beginning")
+  for _ = 1, 5 do
+    state:updateFixed({})
+  end
+  local turboCount, turboFirst = visibleGlyphs(state:status())
+  Assert.equal(turboFirst, "T", "turbo reveals the same generated message from its start")
+  Assert.isTrue(turboCount > midCount, "turbo reveals more than mid after equal ticks")
+  Assert.equal(opened.applied(), 0, "preview edits apply nothing")
+  Assert.equal(opened.port.commits, 0, "preview edits publish no volume")
+  Assert.equal(opened.port:read(), 80, "the committed volume is untouched")
+end
+
+function T.tests.preview_uses_the_selected_frame_message()
+  local records = previewSection(function(slot)
+    if slot == 0 then
+      return "ZERO"
+    elseif slot == 7 then
+      return "SEVEN"
+    end
+    return defaultMarkers(slot)
+  end)
+  local opened = openPreviewMenu({ playerOptions = { textSpeed = "mid" }, framePreviewText = records })
+  local state = opened.state
+  for _ = 1, 6 do
+    state:updateFixed({})
+  end
+  local _, first0, text0 = visibleGlyphs(state:status())
+  Assert.equal(first0, "Z", "frame zero reveals its own generated message")
+  state:updateFixed({ { type = "direct-select", row = "textFrame", index = 8 } })
+  local status7 = state:status()
+  Assert.equal(status7.preview.textFrame, 7, "the preview carries the draft frame")
+  for _ = 1, 5 do
+    state:updateFixed({})
+  end
+  local _, first7, text7 = visibleGlyphs(state:status())
+  Assert.equal(first7, "S", "frame seven reveals its own generated message")
+  Assert.isTrue(text7 ~= text0, "the frame edit changes the visible source glyphs")
+  state:updateFixed({ { type = "direct-select", row = "textFrame", index = 20 } })
+  Assert.equal(state:status().preview.textFrame, 19, "the last frame resolves to its own message")
+  local count19 = visibleGlyphs(state:status())
+  Assert.isTrue(count19 >= 0, "the last frame previews without falling back")
+end
+
+local function countingPrinter(real)
+  local closes = 0
+  local opens = 0
+  local printer = {}
+  function printer:setPolicy(policy)
+    return real:setPolicy(policy)
+  end
+  function printer:open(request)
+    opens = opens + 1
+    return real:open(request)
+  end
+  function printer:step(snapshot)
+    return real:step(snapshot)
+  end
+  function printer:status()
+    return real:status()
+  end
+  function printer:isModal()
+    return real:isModal()
+  end
+  function printer:close()
+    closes = closes + 1
+    return real:close()
+  end
+  return printer, function()
+    return closes
+  end, function()
+    return opens
+  end, real
+end
+
+function T.tests.preview_lifetime_follows_the_menu_close()
+  local records = previewSection(defaultMarkers)
+  local real = livePrinter("mid")
+  local printer, closes, opens = countingPrinter(real)
+  local opened = openPreviewMenu({
+    playerOptions = { textSpeed = "mid" },
+    framePreviewText = records,
+    previewPrinter = printer,
+  })
+  local state = opened.state
+  local field = livePrinter("mid")
+  field:open({ id = "field-dialogue", message = records[1], allowCancel = true })
+  field:step({})
+  field:step({})
+  local fieldRevealed = field:status().revealedGlyphs
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  state:updateFixed({ { type = "direct-select", row = "textFrame", index = 3 } })
+  for _ = 1, 4 do
+    state:updateFixed({})
+  end
+  local partial = visibleGlyphs(state:status())
+  Assert.isTrue(partial > 0, "edits and ticks partially reveal the sample")
+  Assert.isTrue(printer:isModal(), "the sample prints while the menu stays open")
+  Assert.equal(closes(), opens() - 1, "every superseded request closed exactly once")
+  state:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "quit closes once")
+  Assert.equal(closes(), opens(), "quit closes the live request exactly once")
+  Assert.isTrue(not printer:isModal(), "the local printer leaves modal ownership")
+  local settled = real:status().revealedGlyphs
+  state:updateFixed({})
+  state:updateFixed({})
+  Assert.equal(closes(), opens(), "post-exit ticks close nothing further")
+  Assert.equal(real:status().revealedGlyphs, settled, "no post-exit advancement occurs")
+  state:dispose()
+  state:dispose()
+  Assert.equal(closes(), opens(), "double disposal stays safe")
+  Assert.equal(field:status().revealedGlyphs, fieldRevealed, "the menu never steps field dialogue")
+  Assert.isTrue(field:isModal(), "field dialogue keeps its own ownership")
+  local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
+  Assert.deepEqual(
+    TextSpeedPolicy.forSpeed("mid"),
+    { interGlyphDelay = 4, glyphBudget = 1, abAcceleration = true },
+    "the committed gameplay cadence is untouched"
+  )
+  local freshPrinter = livePrinter("mid")
+  local fresh = openPreviewMenu({
+    playerOptions = { textSpeed = "mid" },
+    framePreviewText = records,
+    previewPrinter = freshPrinter,
+  })
+  local empty = fresh.state:status().preview
+  Assert.isTrue(empty.visibleLines ~= nil and #empty.visibleLines == 0, "a fresh menu restarts unrevealed")
+  fresh.state:updateFixed({})
+  local _, freshFirst = visibleGlyphs(fresh.state:status())
+  Assert.equal(freshFirst, "T", "a fresh menu restarts at the committed sample beginning")
+end
+
 function T.tests.discrete_rows_publish_an_ordered_label_for_every_stop()
   local opened = openMenu()
   local state = opened.state

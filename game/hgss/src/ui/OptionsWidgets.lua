@@ -17,6 +17,7 @@ local OptionsWidgets = {}
 ---@class OptionsWidgets.TextCollaborator caller text service behind label painting
 ---@field drawTextWithPalette fun(self: OptionsWidgets.TextCollaborator, line: string, x: number, y: number, ink: OptionsWidgets.Color)
 ---@field windowBackgroundColor fun(self: OptionsWidgets.TextCollaborator): number[]
+---@field drawTokenLine fun(self: OptionsWidgets.TextCollaborator, tokens: MessageToken[], x: number, y: number) caller token-line drawing behind the live preview
 ---@alias OptionsWidgets.SequenceFrame { image: string, atlas: OptionsWidgets.Rect, offset: OptionsWidgets.Point, ticks: integer }
 ---@alias OptionsWidgets.CompiledSequence { frames: OptionsWidgets.SequenceFrame[], loop: boolean, bounds: OptionsWidgets.Rect }
 ---@alias OptionsWidgets.ChoiceStates { unselected: OptionsWidgets.CompiledSequence, selected: OptionsWidgets.CompiledSequence }

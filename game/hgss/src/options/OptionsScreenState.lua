@@ -63,6 +63,7 @@ OptionsScreenState.__index = OptionsScreenState
 ---@field restore fun()
 ---@class OptionsScreenState.Semantic
 ---@field labels table<string, unknown>?
+---@field framePreviewText table<integer, table<string, unknown>>?
 
 local SELECT_SOUND = "SEQ_SE_DP_SELECT"
 local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
@@ -187,9 +188,7 @@ end
 
 function OptionsScreenState:_releaseOwned()
   if self._previewOpen and self._previewPrinter ~= nil then
-    pcall(function()
-      self._previewPrinter:close()
-    end)
+    self._previewPrinter:close()
     self._previewOpen = false
   end
   if self._session ~= nil then
@@ -228,7 +227,7 @@ function OptionsScreenState:_view()
     scrollOffset = self._scrollOffset,
     dirty = self:_draftDirty(),
     legacyNote = self._legacyNote or nil,
-    preview = { textSpeed = self._draft.textSpeed, textFrame = self._draft.textFrame },
+    preview = self:_previewView(),
     footer = {
       confirm = {
         enabled = not self._preparing and self._phase == "open",
@@ -255,6 +254,24 @@ local function fallbackRowLabel(rowId)
     battleSpeed = "BATTLE SPEED",
   }
   return assert(labels[rowId], "unknown options row " .. tostring(rowId))
+end
+
+-- The preview snapshot: the draft speed/frame plus the currently revealed
+-- token lines borrowed from the menu-local printer. A headless screen
+-- without a printer publishes only the draft pair; the borrowed lines stay
+-- valid until the next printer step and are never retained across ticks.
+---@return table<string, unknown>
+function OptionsScreenState:_previewView()
+  local preview = { textSpeed = self._draft.textSpeed, textFrame = self._draft.textFrame }
+  if self._previewOpen and self._previewPrinter ~= nil then
+    local status = self._previewPrinter:status()
+    preview.visibleLines = status.visibleLines
+    preview.scrollLines = status.scrollLines
+    preview.lineHeight = status.lineHeight
+    preview.lineSpacing = status.lineSpacing
+    preview.scrollOffsetY = status.scrollOffsetY
+  end
+  return preview
 end
 
 ---@return table<string, unknown>? generated labels or nil
@@ -337,40 +354,32 @@ function OptionsScreenState:_restartPreview()
     return
   end
   if self._previewOpen then
-    pcall(function()
-      printer:close()
-    end)
+    printer:close()
     self._previewOpen = false
   end
   if self._phase ~= "open" then
     return
   end
   local message = self:_previewMessage()
-  if message == nil then
-    printer:setPolicy(TextSpeedPolicy.forSpeed(self._draft.textSpeed))
-    return
-  end
-  local ok = pcall(function()
-    printer:setPolicy(TextSpeedPolicy.forSpeed(self._draft.textSpeed))
-    printer:open({
-      id = "options-preview",
-      message = message,
-      frameIndex = self._draft.textFrame,
-      allowCancel = false,
-    })
-  end)
-  if ok then
-    self._previewOpen = true
-  end
+  printer:setPolicy(TextSpeedPolicy.forSpeed(self._draft.textSpeed))
+  printer:open({
+    id = "options-preview",
+    message = message,
+    frameIndex = self._draft.textFrame,
+    allowCancel = false,
+  })
+  self._previewOpen = true
 end
 
----@return FieldMessageProvider.FormattedMessage? formatted preview message tokens
+---@return FieldMessageProvider.FormattedMessage formatted preview message tokens
 function OptionsScreenState:_previewMessage()
-  local labels = self:_labels()
-  if labels == nil or labels.framePreviewText == nil then
-    return nil
-  end
-  return labels.framePreviewText[self._draft.textFrame] --[[@as FieldMessageProvider.FormattedMessage]]
+  local semantic = assert(self._semantic, "the options preview needs its generated section")
+  local message = assert(
+    semantic.framePreviewText[self._draft.textFrame],
+    "the selected frame requires its generated preview message"
+  )
+  assert(type(message.tokens) == "table" and #message.tokens > 0, "the options preview uses a formatted token stream")
+  return message --[[@as FieldMessageProvider.FormattedMessage]]
 end
 
 -- Applies one validated row value to the draft with its reversible
@@ -529,9 +538,7 @@ function OptionsScreenState:_confirm()
   self._phase = "closed"
   self._result = { kind = "close" }
   if self._previewOpen and self._previewPrinter ~= nil then
-    pcall(function()
-      self._previewPrinter:close()
-    end)
+    self._previewPrinter:close()
     self._previewOpen = false
   end
 end
@@ -550,9 +557,7 @@ function OptionsScreenState:_quit()
   self._phase = "closed"
   self._result = { kind = "close" }
   if self._previewOpen and self._previewPrinter ~= nil then
-    pcall(function()
-      self._previewPrinter:close()
-    end)
+    self._previewPrinter:close()
     self._previewOpen = false
   end
 end
@@ -753,9 +758,7 @@ function OptionsScreenState:updateFixed(uiInput)
     self:_applyEvent(event)
   end
   if self._previewPrinter ~= nil and self._previewOpen then
-    pcall(function()
-      self._previewPrinter:step({})
-    end)
+    self._previewPrinter:step({})
   end
   if self._session ~= nil then
     if self._presentationPort ~= nil and self._preparing then

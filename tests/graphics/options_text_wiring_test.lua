@@ -44,9 +44,25 @@ local function measurement()
 end
 
 local function sampleView()
+  local Interface = require("game.hgss.src.options.OptionsInterface")
   local rows = {}
   for _, id in ipairs({ "textSpeed", "battleScene", "battleStyle", "soundMode", "textFrame", "volume", "battleSpeed" }) do
-    rows[#rows + 1] = { id = id, label = id:upper(), valueLabel = "V", value = 1, valueIndex = 1, valueCount = 2 }
+    local choiceLabels = nil
+    if Interface.rowKind(id) == "choice" then
+      choiceLabels = {}
+      for stop = 1, Interface.valueCount(id) do
+        choiceLabels[stop] = id:upper() .. "_S" .. stop
+      end
+    end
+    rows[#rows + 1] = {
+      id = id,
+      label = id:upper(),
+      valueLabel = "V",
+      value = 1,
+      valueIndex = 1,
+      valueCount = Interface.valueCount(id),
+      choiceLabels = choiceLabels,
+    }
   end
   return {
     open = true,
@@ -67,9 +83,14 @@ local function preparedWiring(scope)
     end,
   })
   local palettes = {}
+  local tokenLines = {}
   local stubText = {}
   function stubText:drawTextWithPalette(_, _, _, palette)
     palettes[#palettes + 1] = palette
+  end
+  function stubText:drawLine(tokens, x, y)
+    tokenLines[#tokenLines + 1] = { tokens = tokens, x = x, y = y }
+    return "drawn"
   end
   function stubText:windowBackgroundColor()
     return { 0.1, 0.2, 0.3, 1 }
@@ -102,7 +123,7 @@ local function preparedWiring(scope)
     end
     ready = port.prepare()
   end
-  return resources, palettes
+  return resources, palettes, tokenLines
 end
 
 local function drawNative(scope, renderer, view)
@@ -162,6 +183,22 @@ function T.tests.shadow_pass_paints_black_before_the_white_face(scope)
     { r = 255, g = 255, b = 255 },
     "the face pass paints the glyph shape solid white"
   )
+end
+
+function T.tests.token_lines_forward_to_the_shared_glyph_renderer(scope)
+  local resources, _, tokenLines = preparedWiring(scope)
+  local adapter = assert(
+    resources._optionsRenderer and resources._optionsRenderer._text,
+    "open presentation retains its text adapter"
+  )
+  Assert.equal(type(adapter.drawTokenLine), "function", "the options adapter draws token lines")
+  local tokens = { { kind = "glyph", code = 1, text = "A" } }
+  local result = adapter:drawTokenLine(tokens, 7, 9)
+  Assert.equal(result, "drawn", "the adapter returns the shared renderer result")
+  Assert.equal(#tokenLines, 1, "one token line forwards to the shared renderer")
+  Assert.isTrue(tokenLines[1].tokens == tokens, "tokens forward without copying")
+  Assert.equal(tokenLines[1].x, 7, "the line keeps its horizontal origin")
+  Assert.equal(tokenLines[1].y, 9, "the line keeps its vertical origin")
 end
 
 return GraphicsSmoke.suite(T.tests)

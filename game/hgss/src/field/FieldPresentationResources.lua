@@ -1549,6 +1549,9 @@ local function adaptOptionsText(fieldText)
   function text:windowBackgroundColor()
     return fieldText:windowBackgroundColor()
   end
+  function text:drawTokenLine(tokens, x, y)
+    return fieldText:drawLine(tokens, x, y)
+  end
   return text
 end
 
