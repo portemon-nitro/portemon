@@ -20,6 +20,18 @@ local function popen(command)
   return assert(io.popen(command))
 end
 
+-- Content identity for small fixture sources. macOS and CI runners ship
+-- `shasum`, while minimal Linux hosts only guarantee coreutils'
+-- `sha1sum`; prefer the former so supported hosts keep their exact
+-- command and fall back to the latter elsewhere.
+local function sha1Command(path)
+  return "if command -v shasum >/dev/null 2>&1; then shasum -a 1 -- "
+    .. shellQuote(path)
+    .. "; else sha1sum -- "
+    .. shellQuote(path)
+    .. "; fi"
+end
+
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
 end
@@ -134,14 +146,21 @@ end
 local SANITIZE_ENV =
   "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE PORTEMON_TEST_PREPARED_REQUIREMENTS PORTEMON_DERIVED_CACHE_READY PORTEMON_REQUIRE_ROM_TESTS;"
 
--- Generated fake `love`: plan mode is delegated to the real binary so the
--- runner's actual selection rules apply; ROM preparation records its data
--- home and arguments per invocation (and emulates a content-keyed probe
--- answer when asked); test execution records the data home it observed.
--- Slow knobs simulate long imports and workers without any real build.
+-- Generated fake `love`: the setup probe is answered with the pinned
+-- release this repository requires (see LOVE_VERSION in
+-- scripts/lib/repo-setup.sh); plan mode is delegated to the real binary
+-- so the runner's actual selection rules apply; ROM preparation records
+-- its data home and arguments per invocation (and emulates a content-keyed
+-- probe answer when asked); test execution records the data home it
+-- observed. Slow knobs simulate long imports and workers without any real
+-- build.
 local FAKE_LOVE = [[
 #!/usr/bin/env bash
 set -u
+if [ "${1:-}" = "--version" ]; then
+  echo "LOVE 11.5 (Mysterious Mysteries)"
+  exit 0
+fi
 record_dir="${FAKE_ISOLATION_RECORD_DIR:?missing record dir}"
 run_tag="${FAKE_RUN_TAG:-run}"
 has_plan=false
@@ -163,7 +182,10 @@ if [ "$target" = "romdump/" ]; then
   if [ "${2:-}" = "--probe-rom" ]; then
     rom_path="${3:-}"
     sha="missing"
-    if [ -f "$rom_path" ]; then sha="$(shasum -a 1 -- "$rom_path" | cut -d ' ' -f 1)"; fi
+    if [ -f "$rom_path" ]; then
+      if command -v shasum >/dev/null 2>&1; then sha="$(shasum -a 1 -- "$rom_path" | cut -d ' ' -f 1)";
+      else sha="$(sha1sum -- "$rom_path" | cut -d ' ' -f 1)"; fi
+    fi
     printf 'version=%s\n' "${FAKE_PROBE_VERSION:-heartgold}"
     printf 'rom_sha1=%s\n' "$sha"
   fi
@@ -327,7 +349,7 @@ local function invocationsWith(invocations, needle)
 end
 
 local function shaOf(path)
-  local handle = popen("shasum -a 1 -- " .. shellQuote(path))
+  local handle = popen(sha1Command(path))
   local digest = trim((handle:read("*l") or ""):match("^%S+") or "")
   handle:close()
   assert(#digest == 40, "the fixture source has a content identity")
@@ -747,7 +769,7 @@ function T.cancellation_reaps_children_before_releasing_roots_and_keeps_sources_
     local source = root .. "/fixture.nds"
     writeFile(source, "fixture rom bytes for the cancellation run")
     local before = trim((function()
-      local handle = popen("shasum -a 1 -- " .. shellQuote(source))
+      local handle = popen(sha1Command(source))
       local out = handle:read("*l") or ""
       handle:close()
       return out
@@ -860,7 +882,7 @@ function T.cancellation_reaps_children_before_releasing_roots_and_keeps_sources_
       end
       Assert.isTrue(dirExists(dataHome), "the persistent private root survives cancellation")
 
-      local afterHandle = popen("shasum -a 1 -- " .. shellQuote(source))
+      local afterHandle = popen(sha1Command(source))
       local after = trim(afterHandle:read("*l") or "")
       afterHandle:close()
       Assert.equal(after, before, "the source file must remain untouched")

@@ -366,18 +366,33 @@ end
 
 -- Advances through the retail exit call into `sceneNumber` and past its
 -- init call plus entry stalls, so the next fixed update runs the scene's
--- first case.
+-- first case. The staging length stays unnamed here: it is an ear-tuned
+-- count the handoff test pins, so scenarios only need the boundary
+-- between staging and the first case. The optional probe runs on every
+-- staging update for invariants that must hold while staging.
 ---@param movie table opening movie
 ---@param sceneNumber integer scene to enter
-local function enterScene(movie, sceneNumber)
-  while movie:sceneNumber() < sceneNumber do
+---@param probe fun(slot: table)? per-staging-update invariant under inspection
+local function enterScene(movie, sceneNumber, probe)
+  local ticks = 0
+  while movie:sceneNumber() < sceneNumber and ticks < 20000 do
     movie:updateFixed()
+    ticks = ticks + 1
   end
-  local current = movie.current
-  while current ~= nil and current.handoff ~= nil do
+  Assert.equal(movie:sceneNumber(), sceneNumber, "playback reaches scene " .. sceneNumber)
+  local staging = 0
+  while staging < 12 do
+    local current = assert(movie.current, "the movie owns its current slot while staging")
+    if current.handoff == nil then
+      return
+    end
+    if probe ~= nil then
+      probe(current)
+    end
     movie:updateFixed()
-    current = movie.current
+    staging = staging + 1
   end
+  error("scene " .. sceneNumber .. " never left its entry staging", 0)
 end
 
 -- A scene-five filler that stages art and finishes on a bare duration:
@@ -867,11 +882,26 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
   otherMovie:dispose()
   Assert.isTrue(movie:isFinished(), "the movie finishes within its bounded run")
   Assert.equal(entries[2], 90 + 1, "scene 2 still starts on its authored tick after scene 1's exit call")
+  -- The close step holds exactly the wipe's ten authored ticks: probe a
+  -- fresh run from the close-step start (scene 2's second step) through
+  -- the scene 3 entry, so the tuned entry staging never enters the math.
+  -- The open step costs its authored 25 ticks, the close its 10, and the
+  -- exit call one more.
+  local holdGraphics = movieGraphics()
+  local holdProbe = openMovie(scenes, cacheFs, holdGraphics)
+  enterScene(holdProbe, 2)
+  local closeTicks = 0
+  while holdProbe:sceneNumber() < 3 and closeTicks < 200 do
+    holdProbe:updateFixed()
+    closeTicks = closeTicks + 1
+  end
+  Assert.equal(holdProbe:sceneNumber(), 3, "the probe reaches scene 3")
   Assert.equal(
-    entries[3],
-    91 + 4 + 35 + 1,
-    "the close step holds exactly the wipe's ten authored ticks between scene 2's init stalls and exit calls"
+    closeTicks,
+    25 + 10 + 1,
+    "the close step holds exactly the wipe's ten authored ticks plus the exit call"
   )
+  holdProbe:dispose()
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the wipe step leaves no handle behind")
 end
@@ -1367,13 +1397,13 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
     ticks = ticks + 1
   end
   Assert.equal(movie:sceneNumber(), 5, "playback reaches the shutter scene")
-  -- The newly entered scene spends its init call plus three entry stalls,
-  -- and its first case runs on the following update: its entry arms the
-  -- ordered line shutter there and opens the first main step.
-  for _ = 1, 4 do
-    movie:updateFixed()
-    Assert.isNil(movie.current.shutter, "the init stalls arm no shutter")
-  end
+  -- The entry staging arms no shutter; the tuned staging length is the
+  -- handoff test's contract, so this scenario only needs the boundary:
+  -- the first case arms the ordered line shutter there and opens the
+  -- first main step.
+  enterScene(movie, 5, function(slot)
+    Assert.isNil(slot.shutter, "the init stalls arm no shutter")
+  end)
   movie:updateFixed()
   local slot = assert(movie.current, "the running movie owns its current slot")
   local step = assert(slot.manifest.timeline.steps[slot.stepIndex], "the movie stays on a known step")

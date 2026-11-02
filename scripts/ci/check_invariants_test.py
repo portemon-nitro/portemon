@@ -27,6 +27,20 @@ STYLUA_SOURCE = REPO_ROOT / ".stylua.toml"
 LINT_SOURCE = REPO_ROOT / "scripts" / "lint.sh"
 SCOPE_SOURCE = REPO_ROOT / "scripts" / "lib" / "scope.sh"
 REPO_CHECK_SOURCE = REPO_ROOT / "scripts" / "lib" / "check-repository.sh"
+REPO_SETUP_SOURCE = REPO_ROOT / "scripts" / "lib" / "repo-setup.sh"
+
+
+def _pinned_love_version() -> str:
+    """Read the pinned LÖVE release from the setup script under test.
+
+    The ``love`` double below must satisfy the setup script's own version
+    gate, so the pin is parsed from the production constant instead of
+    freezing a literal that a normal version bump would silently stale.
+    """
+    for line in REPO_SETUP_SOURCE.read_text(encoding="utf-8").splitlines():
+        if line.startswith('LOVE_VERSION="') and line.endswith('"'):
+            return line[len('LOVE_VERSION="') : -1]
+    raise AssertionError("repo-setup must pin LOVE_VERSION")
 
 # Fixed core modules the invariant gate must always account for.
 REQUIRED_CORE_FILES = (
@@ -508,10 +522,24 @@ def _init_lint_repo(root: Path, fixtures: dict[str, str]) -> tuple[Path, Path]:
         target.chmod(0o755)
     bin_dir = root / "test-bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("love", "stylua", "lua-language-server"):
+    for name in ("stylua", "lua-language-server"):
         stub = bin_dir / name
         stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)
+    # The lint gate ensures its toolchain through repo-setup.sh, which
+    # validates the installed LÖVE release: the double must answer the
+    # version probe with the pinned release so the lint outcome stays
+    # decided by the invariant checks alone.
+    love_stub = bin_dir / "love"
+    love_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "--version" ]; then\n'
+        f'  echo "LOVE {_pinned_love_version()} (Mysterious Mysteries)"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    love_stub.chmod(0o755)
     return root, bin_dir
 
 

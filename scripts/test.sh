@@ -128,12 +128,15 @@ cancel_parallel() {
   exit "$1"
 }
 
-# Linux uses the container's offscreen software context. macOS uses its
-# native Cocoa graphics host with the hidden window configured in app/conf.lua.
-if [ "$(uname -s)" = Linux ]; then
-  export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-offscreen}"
-  export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
-fi
+# Linux and the BSDs use the container's offscreen software context. macOS
+# uses its native Cocoa graphics host with the hidden window configured in
+# app/conf.lua.
+case "$(uname -s)" in
+  Linux|*BSD)
+    export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-offscreen}"
+    export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+    ;;
+esac
 
 # The graphics layer is part of the required surface, so a whole-run selection
 # that executes no graphics test fails instead of passing silently. Callers
@@ -292,18 +295,16 @@ fi
 selection_file="$test_root/selected-rom"
 
 # Lock the inherited open file description so it stays locked until this
-# shell and every child close it. macOS ships Perl's flock but no flock CLI.
+# shell and every child close it. The short Perl process locks the
+# description shared with file descriptor 9, so the parent shell retains
+# the lock after Perl exits, throughout preparation and test execution.
 take_lock() {
   exec 9>"$1/lock"
-  if [ "$(uname -s)" = Darwin ]; then
-    perl -e 'flock(STDIN, 2) or die "test: cannot lock private cache: $!\n"' <&9
-  else
-    if ! command -v flock >/dev/null 2>&1; then
-      echo "test: the private test cache requires flock" >&2
-      exit 1
-    fi
-    flock 9
+  if ! command -v perl >/dev/null 2>&1; then
+    echo "test: the private test cache requires perl" >&2
+    exit 1
   fi
+  perl -e 'flock(STDIN, 2) or die "test: cannot lock private cache: $!\n"' <&9
   lock_fd=9
 }
 

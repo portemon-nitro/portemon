@@ -3,7 +3,7 @@
 #
 # Usage: scripts/lib/repo-setup.sh [--dev] [--yes]
 #
-# Without flags this ensures the local core.hooksPath and the `love`
+# Without flags this ensures the local core.hooksPath and the pinned `love`
 # runtime; --dev additionally ensures the lint tools `stylua` and
 # `lua-language-server`. Every missing tool is offered for install, one
 # tool at a time, into scripts/bin/ from that tool's official release
@@ -308,6 +308,74 @@ offer_install() {
   esac
 }
 
+# Prints the installed LÖVE version (such as 11.5) taken from the first
+# line of `love --version` (for example "LOVE 11.5 (Mysterious
+# Mysteries)"). Prints nothing and fails when the probe itself fails or
+# its output is unrecognizable: an unverified runtime is never a match.
+love_version() {
+  local output
+  if ! output="$(love --version 2>/dev/null)"; then
+    return 1
+  fi
+  local detected
+  detected="$(printf '%s\n' "$output" | head -n 1 | sed -n 's/^LOVE \([0-9][0-9.]*\).*/\1/p')"
+  if [ -z "$detected" ]; then
+    return 1
+  fi
+  printf '%s\n' "$detected"
+}
+
+# A mismatched or unverified `love` reports what was found and what the
+# repository needs before offering the pinned install into scripts/bin/,
+# which leads PATH for repo scripts without touching the system install.
+# Mirrors offer_install's consent rules: --yes installs unattended, a
+# missing terminal fails with the remediation, and a terminal prompts.
+offer_love_reinstall() {
+  local detected="$1"
+  if [ -z "$detected" ]; then
+    detected="unknown"
+  fi
+  echo "repo-setup: found LÖVE $detected on PATH, but this repository requires LÖVE $LOVE_VERSION." >&2
+  if [ "$ASSUME_YES" = 1 ]; then
+    install_tool love
+    return "$?"
+  fi
+  if [ ! -t 0 ]; then
+    echo "repo-setup: no prompt possible without a terminal; re-run with --yes to install LÖVE $LOVE_VERSION into scripts/bin automatically." >&2
+    manual_hint love
+    return 1
+  fi
+  local reply=""
+  printf 'Install LÖVE %s into scripts/bin from the official release download? [y/N] ' "$LOVE_VERSION" >&2
+  read -r reply || reply=""
+  case "$reply" in
+    [yY] | [yY][eE][sS]) install_tool love ;;
+    *)
+      manual_hint love
+      return 1
+      ;;
+  esac
+}
+
+# An installed `love` may predate the pinned runtime, so its version is
+# validated before reuse: a missing executable keeps the existing install
+# offer, a matching version is reused silently, and anything else goes
+# through the reinstall offer above.
+ensure_love() {
+  if ! command -v love >/dev/null 2>&1; then
+    offer_install love || return "$?"
+    installed_any=1
+    return 0
+  fi
+  local detected=""
+  detected="$(love_version 2>/dev/null)" || detected=""
+  if [ "$detected" = "$LOVE_VERSION" ]; then
+    return 0
+  fi
+  offer_love_reinstall "$detected" || return "$?"
+  installed_any=1
+}
+
 ensure_hooks
 
 tools=(love)
@@ -316,6 +384,10 @@ if [ "$WITH_DEV" = 1 ]; then
 fi
 installed_any=0
 for tool in "${tools[@]}"; do
+  if [ "$tool" = love ]; then
+    ensure_love || exit "$?"
+    continue
+  fi
   if command -v "$tool" >/dev/null 2>&1; then
     continue
   fi

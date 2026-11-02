@@ -439,13 +439,12 @@ local function cardFactories(runtime, shared)
     -- The Call/Sort context labels and the action/sort option labels
     -- resolve through the phone text bank (bank 271), following the
     -- setup-menu bank pattern: entries 0 through 7 name the menus in
-    -- source context-menu order (Call, Sort, Quit, Title, Alphabet,
-    -- Location, Move, Quit), entries 20 through 27 the tooltips. The
-    -- bank is held only while the sixteen labels are copied; the
-    -- controller owns plain strings afterwards, and a failed read
-    -- releases the bank while keeping its original failure.
-    local PokegearSources = require("romdump.src.config.PokegearSources")
-    local phoneBank = PokegearSources.phoneMenuMessageBank
+    -- source sContextMenuParam option order (Call, Sort, Quit, Title,
+    -- Alphabet, Location, Move, Quit), entries 20 through 27 the
+    -- tooltips. The bank is held only while the sixteen labels are
+    -- copied; the controller owns plain strings afterwards, and a
+    -- failed read releases the bank while keeping its original failure.
+    local phoneBank = 271
     local provider = checkOwner(runtime.messageProvider, "the live message provider")
     local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bank: integer): table<string, unknown>?, Errors.Error?]]
     local getMessage = provider.get --[[@as fun(self: table<string, unknown>, bank: integer, id: integer): table<string, unknown>?]]

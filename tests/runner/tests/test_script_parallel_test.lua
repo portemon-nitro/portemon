@@ -95,13 +95,20 @@ end
 local SANITIZE_ENV =
   "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE;"
 
--- Shared preamble for every generated fake `love`: answers `--plan` with the
--- exact `prepare=none`/`fresh=0`/`jobs=N` records the real plan protocol requires, using a
--- test-only worker count that never reaches production code, and otherwise
--- falls through to the scenario-specific worker/aggregate body appended below.
+-- Shared preamble for every generated fake `love`: the setup probe is
+-- answered with the pinned release this repository requires (see
+-- LOVE_VERSION in scripts/lib/repo-setup.sh); `--plan` is answered with
+-- the exact `prepare=none`/`fresh=0`/`jobs=N` records the real plan
+-- protocol requires, using a test-only worker count that never reaches
+-- production code, and otherwise falls through to the scenario-specific
+-- worker/aggregate body appended below.
 local FAKE_LOVE_PREAMBLE = [[
 #!/usr/bin/env bash
 set -u
+if [ "${1:-}" = "--version" ]; then
+  echo "LOVE 11.5 (Mysterious Mysteries)"
+  exit 0
+fi
 is_plan=false
 for arg in "$@"; do
   if [ "$arg" = "--plan" ]; then

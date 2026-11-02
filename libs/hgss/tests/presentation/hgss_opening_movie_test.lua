@@ -483,18 +483,33 @@ end
 
 -- Advances through the retail exit call into `sceneNumber` and past its
 -- init call plus entry stalls, so the next fixed update runs the scene's
--- first case.
+-- first case. The staging length stays unnamed here: it is an ear-tuned
+-- count the handoff test pins, so scenarios only need the boundary
+-- between staging and the first case. The optional probe runs on every
+-- staging update for invariants that must hold while staging.
 ---@param movie table opening movie
 ---@param sceneNumber integer scene to enter
-local function enterScene(movie, sceneNumber)
-  while movie:sceneNumber() < sceneNumber do
+---@param probe fun(slot: table)? per-staging-update invariant under inspection
+local function enterScene(movie, sceneNumber, probe)
+  local ticks = 0
+  while movie:sceneNumber() < sceneNumber and ticks < 20000 do
     movie:updateFixed()
+    ticks = ticks + 1
   end
-  local current = movie.current
-  while current ~= nil and current.handoff ~= nil do
+  Assert.equal(movie:sceneNumber(), sceneNumber, "playback reaches scene " .. sceneNumber)
+  local staging = 0
+  while staging < 12 do
+    local current = assert(movie.current, "the movie owns its current slot while staging")
+    if current.handoff == nil then
+      return
+    end
+    if probe ~= nil then
+      probe(current)
+    end
     movie:updateFixed()
-    current = movie.current
+    staging = staging + 1
   end
+  error("scene " .. sceneNumber .. " never left its entry staging", 0)
 end
 
 ---@param movie table
@@ -527,12 +542,18 @@ function T.plays_all_five_scenes_in_order_with_their_authored_step_lengths()
   for sceneNumber = 1, 5 do
     Assert.notNil(entries[sceneNumber], "scene " .. sceneNumber .. " is visited")
   end
-  -- Each handoff spends the retail exit call, and each later scene its
-  -- init call plus three entry stalls, around the scene's authored ticks.
+  -- Each handoff spends the retail exit call plus the tuned entry
+  -- staging around the scene's authored ticks. The staging cancels out
+  -- of adjacent spans, so only the authored 40/50 lengths pin the
+  -- schedule here; the staging count itself is the handoff test's
+  -- contract.
   Assert.equal(entries[1], 0, "scene 1 starts on the first tick")
   Assert.equal(entries[2], 90 + 1, "scene 2 starts after scene 1's authored 90 ticks and exit call")
-  Assert.equal(entries[3], 91 + 4 + 40 + 1, "scene 3 starts after scene 2's init stalls, authored 40 ticks, and exit")
-  Assert.equal(entries[4], 136 + 4 + 50 + 1, "scene 4 starts after scene 3's init stalls, authored 50 ticks, and exit")
+  Assert.equal(
+    (entries[4] - entries[3]) - (entries[3] - entries[2]),
+    50 - 40,
+    "adjacent scene spans differ only by their authored 40/50 ticks"
+  )
   Assert.isTrue(entries[5] > entries[4] + 20, "scene 5 waits out the starter effect, never a bare timer")
   movie:dispose()
 end
@@ -541,18 +562,29 @@ function T.simultaneous_events_share_one_tick_without_extra_frames_or_spins()
   local scenes, cacheFs = validPack()
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  local entries, total = playthrough(movie, graphics, 5000)
+  local entries = playthrough(movie, graphics, 5000)
   Assert.notNil(entries[5], "scene 5 is reached")
   -- Retail src/intro_movie.c spends, after the authored beat, the scene's
   -- exit call, then the overlay's done call where IntroMovie_Main returns
-  -- TRUE, then the overlay's exit call: the last scene's own ticks are the
-  -- authored 53 plus its three entry stalls, and the movie finishes two
-  -- calls after its exit call.
+  -- TRUE, then the overlay's exit call. From the first case the last
+  -- scene costs its authored 53 plus those three structural calls, with
+  -- no extra frames or spins around them; the tuned entry staging never
+  -- enters the math.
+  local tailGraphics = movieGraphics()
+  local tail = openMovie(scenes, cacheFs, tailGraphics)
+  enterScene(tail, 5)
+  local tailTicks = 0
+  while not tail:isFinished() and tailTicks < 5000 do
+    tail:updateFixed()
+    tailTicks = tailTicks + 1
+  end
+  Assert.isTrue(tail:isFinished(), "the movie finishes within its bounded run")
   Assert.equal(
-    total - entries[5],
-    4 + 53 + 1 + 2,
-    "scene 5's same-tick wipe and role events cost exactly the authored 53 ticks between its init stalls and the overlay calls"
+    tailTicks,
+    53 + 1 + 2,
+    "scene 5's same-tick wipe and role events cost exactly the authored 53 ticks plus the exit and overlay calls"
   )
+  tail:dispose()
   movie:dispose()
 end
 
@@ -613,14 +645,18 @@ function T.town_and_emitter_steps_stay_live_until_their_effects_complete()
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scenes")
   local scene3draws = #graphics.draws
-  -- The init call plus three entry stalls, the authored 50 town ticks, then the exit call.
-  for _ = 1, 4 + 50 do
+  -- From the first case scene 3 runs its authored 50 town ticks, then
+  -- hands over on its exit call; the tuned entry staging never enters
+  -- the count.
+  enterScene(movie, 3)
+  local scene3ticks = 0
+  while movie:sceneNumber() == 3 and scene3ticks < 2000 do
     movie:updateFixed()
     movie:draw()
+    scene3ticks = scene3ticks + 1
   end
-  Assert.equal(movie:sceneNumber(), 3, "scene 3 holds its authored 50 town ticks after its init stalls")
-  movie:updateFixed()
   Assert.equal(movie:sceneNumber(), 4, "scene 3 hands over on its exit call")
+  Assert.equal(scene3ticks, 50 + 1, "scene 3 holds its authored 50 town ticks plus the exit call")
   Assert.isTrue(#graphics.draws > scene3draws, "every town tick issues its frame")
   local emitterEntryDraws = #graphics.draws
   local emitterTicks = 0
@@ -878,10 +914,19 @@ function T.resize_reflows_without_rewinding_source_time()
     1,
     "the continued run starts in scene two (entered at absolute 91, before the run, never rewound)"
   )
+  -- The continued clock matches an uninterrupted run tick for tick:
+  -- scene three's relative entry plus the 100 pre-run ticks lands on
+  -- the uninterrupted absolute entry, so no staging constant enters
+  -- the math.
+  local refScenes, refCache = validPack()
+  local refGraphics = movieGraphics()
+  local refMovie = openMovie(refScenes, refCache, refGraphics)
+  local refEntries = playthrough(refMovie, refGraphics, 5000)
+  refMovie:dispose()
   Assert.equal(
-    entries[3],
-    36,
-    "scene three enters 36 ticks into the continued run (absolute 136 less 100 pre-run ticks)"
+    entries[3] + 100,
+    refEntries[3],
+    "scene three enters the continued run on its uninterrupted absolute tick"
   )
   movie:dispose()
 end
@@ -1754,8 +1799,10 @@ end
 function T.scene_handoff_spends_the_retail_exit_and_init_calls()
   -- Retail src/intro_movie.c dispatches one scene call per frame: after the
   -- run case completes, the scene's exit call returns TRUE, the next scene
-  -- spends its init call plus three entry stalls, and only the following
-  -- call runs its first case.
+  -- spends its init call plus entry stalls, and only the following call
+  -- runs its first case. The decomp fixes the call structure; the stall
+  -- count itself is tuned by ear against retail video, currently five
+  -- stalls plus the init call.
   local scenes, cacheFs = validPack()
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
@@ -1768,7 +1815,7 @@ function T.scene_handoff_spends_the_retail_exit_and_init_calls()
   local background = function()
     return movie.current.backgrounds.main[0]
   end
-  for _ = 1, 4 do
+  for _ = 1, 6 do
     movie:updateFixed()
     Assert.equal(background().scrollX, 0, "the init stalls stage the scene without running its first case")
   end
@@ -3064,12 +3111,7 @@ function T.visible_town_frame_renders_world_once()
   end
   local graphics = movieGraphics()
   local movie = openMovie(scenes, cacheFs, graphics)
-  while movie:sceneNumber() < 3 do
-    movie:updateFixed()
-  end
-  for _ = 1, 4 do
-    movie:updateFixed()
-  end
+  enterScene(movie, 3)
   movie:updateFixed()
   local slot = assert(movie.current, "the town scene is current")
   Assert.isTrue(slot.townVisible, "the town clip opens the main BG0 stage")
@@ -3165,10 +3207,12 @@ function T.town_stage_draws_on_main_and_stops_without_releasing()
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the town scene")
   Assert.isFalse(movie.current.townVisible, "the town stage contributes nothing before its clip")
-  for _ = 1, 4 do
-    movie:updateFixed()
-    Assert.isFalse(movie.current.townVisible, "the init stalls stage the town scene without running its clip")
-  end
+  -- The tuned entry staging runs no clip; the handoff test pins its
+  -- length, so this scenario only needs the boundary before counting
+  -- the arrive step's own ticks.
+  enterScene(movie, 3, function(slot)
+    Assert.isFalse(slot.townVisible, "the init stalls stage the town scene without running its clip")
+  end)
   -- The town beat runs silently: drawing it would composite staged town
   -- meshes the fake host cannot texture. Scene 3 holds 20 arrive ticks
   -- after its init call and stops its town at the eleventh hold tick, so
@@ -6248,13 +6292,16 @@ function T.starter_emitter_count_stays_within_its_scene_bound()
     ticks = ticks + 1
   end
   Assert.equal(movie:sceneNumber(), 4, "playback reaches the starter scene")
-  -- The init call plus three entry stalls, then the three starter ticks.
-  for _ = 1, 4 + 3 do
+  -- The tuned entry staging starts no group; the handoff test pins its
+  -- length, so this scenario counts groups from the first case: each of
+  -- the three starter ticks starts exactly one group of three.
+  enterScene(movie, 4)
+  for group = 1, 3 do
     movie:updateFixed()
     movie:draw()
+    local slot = assert(movie.current, "the running movie owns its current slot")
+    Assert.equal(#slot.emitters, group * 3, "starter group " .. group .. " joins live emitters on its tick")
   end
-  local slot = assert(movie.current, "the running movie owns its current slot")
-  Assert.equal(#slot.emitters, 9, "three starter groups stay live together")
   local ok, failure = pcall(function()
     for _ = 1, 3 do
       movie:updateFixed()
@@ -6409,16 +6456,17 @@ function T.staged_sprites_stay_visible_while_the_physical_bottom_holds_black_unt
     ticks = ticks + 1
   end
   Assert.equal(movie:sceneNumber(), 3, "playback reaches the third scene")
+  -- The tuned entry staging runs no case; the handoff test pins its
+  -- length, so this scenario only needs the boundary: the staged entry
+  -- holds, then the first case stages the rival while the black bottom
+  -- hold still covers it.
+  enterScene(movie, 3, function(slot)
+    Assert.equal(slot.stepElapsed, 0, "the init stalls run no case")
+    checkEntryHolds(slot, 3)
+  end)
   local entered = assert(movie.current, "the running movie owns its current slot")
   Assert.equal(entered.stepElapsed, 0, "the incoming scene has not run its first tick")
   checkEntryHolds(entered, 3)
-  -- The init call plus three entry stalls hold the staged entry; the first
-  -- case then stages the rival while the black bottom hold still covers it.
-  for _ = 1, 4 do
-    movie:updateFixed()
-    Assert.equal(movie.current.stepElapsed, 0, "the init stalls run no case")
-    checkEntryHolds(movie.current, 3)
-  end
   movie:updateFixed()
   local staged = assert(movie.current, "the running movie owns its current slot")
   local silver = assert(staged.spriteInstances["silver-silhouette"], "the entry tick stages the rival instance")

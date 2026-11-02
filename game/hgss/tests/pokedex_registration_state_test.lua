@@ -57,10 +57,11 @@ local function settleTicks(text, hold)
   return nil
 end
 
--- The explicit post-text hold lasts sixty internal ticks while an
--- identical default announcement keeps its short hold: the override
--- reproduces the source thirty-update wait without changing ordinary
--- narration.
+-- The explicit post-text hold lasts sixty source ticks while an
+-- identical default announcement carries no hold of its own: post-print
+-- holds carry only the script wait behind the line, so a hold-free line
+-- releases on its first post-print tick and the override costs the
+-- remaining fifty-nine.
 function T.explicit_announcement_hold_uses_sixty_internal_ticks()
   local defaultTicks = settleTicks("X", nil)
   local overrideTicks = settleTicks("X", 60)
@@ -69,8 +70,8 @@ function T.explicit_announcement_hold_uses_sixty_internal_ticks()
   Assert.isTrue(defaultTicks <= 40, "the default announcement keeps its short post-text wait")
   Assert.equal(
     overrideTicks - defaultTicks,
-    48,
-    "an explicit sixty-tick hold extends the identical announcement by the source thirty updates"
+    59,
+    "an explicit sixty-tick hold extends the identical hold-free announcement by fifty-nine ticks"
   )
 end
 
