@@ -12,6 +12,12 @@
 
 local Assert = require("tests.support.Assert")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local BattleScreenFixture = require("game.hgss.tests.support.BattleScreenFixture")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local EncounterParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
+local StubLease = require("tests.support.StubLease")
+local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 local function stagedImageWidth(image)
@@ -333,6 +339,404 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   Assert.isTrue(#survivor >= 1, "the surviving foe still draws after the arrival settles")
   local survivorX = nominalOrigin(DOUBLES_SETTLED[3], 0)
   Assert.equal(pictureLeft(survivor[1]), survivorX, "the surviving foe never leaves its settled edge")
+end
+
+-- The retail encounter opening through the real screen gate: admission
+-- waits for the staged scene, the first source tick publishes frame 1
+-- with the first member and its voice, draws and remeasure advance
+-- nothing, and the task ends only after the second member retires.
+-- Texture handles are strict pool leases through the production holder;
+-- readiness is the holder state behind the runtime entry gate, never a
+-- frame-count tolerance in the test.
+local ENCOUNTER_SCENE_KEY = "general/grass/day"
+-- The production battle screen consumes one presentation source tick per
+-- accepted update, exactly as the runtime delivers it; the encounter task
+-- advances once per such tick.
+local SourceTick = require("libs.hgss.src.field.SourceTick")
+local ENCOUNTER_TICK = SourceTick.DT
+
+---@return table recording voice sink behind the live screen
+local function recordingEncounterAudio()
+  local audio = { voices = {} }
+  function audio:play(symbol)
+    audio.voices[#audio.voices + 1] = symbol
+    return true
+  end
+  function audio:playPanned(symbol, _)
+    audio.voices[#audio.voices + 1] = symbol
+    return true
+  end
+  function audio:playMusic(symbol)
+    audio.voices[#audio.voices + 1] = symbol
+    return true
+  end
+  function audio:playFanfare(symbol)
+    audio.voices[#audio.voices + 1] = symbol
+    return true
+  end
+  return audio
+end
+
+-- Stages one synthetic scene layer in the shape the production holder
+-- adopts: BG3 payload plus the two encounter emitter sets with
+-- lease-shaped texture handles. A withheld set models an empty image
+-- closure for that set.
+---@param firstLife integer emitter lifespan for the first set
+---@param secondLife integer emitter lifespan for the second set
+---@param withholdSet integer? set index staged without texture handles, nil for a complete layer
+---@return table<string, unknown> staged scene layer
+local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
+  local sets = EncounterParticlesFixture.sizedSets(ENCOUNTER_SCENE_KEY, 1, 1, firstLife, secondLife)
+  local mapEntries = {}
+  for _ = 1, 32 * 32 do
+    mapEntries[#mapEntries + 1] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  local paletteColors = {}
+  for _ = 1, 256 do
+    paletteColors[#paletteColors + 1] = { r = 0, g = 0, b = 0 }
+  end
+  local layer = {
+    sceneKey = ENCOUNTER_SCENE_KEY,
+    characters = string.rep("\0", 64),
+    colorMode = "8bpp",
+    map = {
+      width = 256,
+      height = 256,
+      entries = mapEntries,
+    },
+    palette = { colors = paletteColors },
+    introLayer = { drawable = StubLease.new("scene-intro:" .. ENCOUNTER_SCENE_KEY), width = 256, height = 192 },
+    terrainSprites = {
+      player = {
+        drawable = StubLease.new("scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player"),
+        width = 64,
+        height = 64,
+        origin = { x = 0, y = 0 },
+      },
+      foe = {
+        drawable = StubLease.new("scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":foe"),
+        width = 64,
+        height = 64,
+        origin = { x = 0, y = 0 },
+      },
+    },
+    encounterParticles = {},
+  }
+  for setIndex, set in ipairs(sets) do
+    local textures = {}
+    for _, texture in ipairs(set.textures) do
+      local drawable = nil
+      if withholdSet ~= setIndex then
+        drawable =
+          StubLease.new("encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":" .. setIndex .. ":" .. texture.id)
+      end
+      textures[#textures + 1] =
+        { id = texture.id, width = texture.width, height = texture.height, drawable = drawable }
+    end
+    layer.encounterParticles[setIndex] =
+      { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = textures }
+  end
+  return layer
+end
+
+---@param opts table? withheldScene true while the scene art stays unstaged
+---@return table live rig with the real screen, port, and recording audio
+local function openEncounterRig(opts)
+  opts = opts or {}
+  local audio = recordingEncounterAudio()
+  local staged = nil
+  local withheld = { ["scene:" .. ENCOUNTER_SCENE_KEY] = opts.withheldScene == true }
+  local images = {}
+  local assets = {}
+  function assets.prepare(_)
+    return true
+  end
+  function assets.sceneLayer()
+    return staged
+  end
+  function assets.drawable(key)
+    if withheld[key] then
+      return nil
+    end
+    if images[key] == nil then
+      local stored = StubLease.new(key)
+      images[key] = stored
+      if key:sub(1, 4) == "mon:" then
+        return { lease = stored, quad = { handle = "quad:" .. key } }
+      end
+      return stored
+    end
+    local stored = images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
+  end
+  function assets.release(_) end
+  local measurement = {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+      "encounter-readiness:dual"
+    ),
+    pixelRatio = 1,
+    signature = "encounter-readiness:dual",
+  }
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  function text.drawTextWithPalette(_, _, _) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  function windows.drawApplicationFrame(_, _) end
+  local launchId = "encounter-readiness-probe"
+  local screen = BattleScreenFixture.new({
+    launchId = launchId,
+    manifest = BattlePresentationManifestFixture.manifest(),
+    model = {},
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = function()
+      return measurement
+    end,
+    assets = assets,
+    text = text,
+    windows = windows,
+    audio = audio,
+    overrides = { sceneKey = ENCOUNTER_SCENE_KEY },
+  })
+  local port = screen:presentationPort()
+  local rig = { screen = screen, port = port, audio = audio, launchId = launchId }
+  function rig.pump(count, allowFailure)
+    for _ = 1, count do
+      screen:updateFixed(ENCOUNTER_TICK)
+      if allowFailure ~= true then
+        local status = screen:status()
+        Assert.isTrue(
+          status.mode ~= "failed",
+          "the readiness screen never fails: " .. tostring(status.error)
+        )
+      end
+    end
+    return screen:status()
+  end
+  function rig.stage(layer)
+    staged = layer
+    withheld["scene:" .. ENCOUNTER_SCENE_KEY] = false
+  end
+  function rig.resize(signature)
+    measurement.signature = signature
+  end
+  return rig
+end
+
+---@param rig table live rig under inspection
+---@param symbol string staged sequence symbol under inspection
+---@return integer voices of the symbol so far
+local function voiceCount(rig, symbol)
+  local count = 0
+  for _, voiced in ipairs(rig.audio.voices) do
+    if voiced == symbol then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+---@param combatant integer
+---@param side integer
+---@param active boolean
+---@param species string
+---@param name string
+---@param portrait string
+---@return table detached battler record
+local function encounterBattler(combatant, side, active, species, name, portrait)
+  return {
+    combatant = combatant,
+    participant = combatant,
+    side = side,
+    controller = side == 1 and "player" or "wild",
+    active = active,
+    hp = 20,
+    maxHp = 20,
+    species = species,
+    form = 0,
+    ballKey = "POKE_BALL",
+    name = name,
+    level = 9,
+    selector = side == 1 and "back" or "front",
+    portraitSelector = portrait,
+    moves = {},
+    experience = 100,
+  }
+end
+
+---@return table detached opening view picturing the wild lead and foe
+local function encounterOpening()
+  return {
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
+    own = { encounterBattler(1, 1, true, "CHIKORITA", "LEAD", "CHIKORITA/f0/male/plain/back") },
+    foes = { encounterBattler(3, 2, true, "RATTATA", "FOE", "RATTATA/f0/male/plain") },
+  }
+end
+
+---@param rig table live rig under test driving
+local function presentOpening(rig)
+  rig.port.present({
+    launchId = rig.launchId,
+    packetId = 1,
+    before = encounterOpening(),
+    after = encounterOpening(),
+    events = {},
+  })
+end
+
+-- The staged scene gates admission, and the first admitted source tick
+-- runs the opening once: frame 1 with the first member and its voice.
+-- Draws and remeasure between fixed steps advance nothing, and the
+-- task ends only after the second member retires.
+function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
+  local rig = openEncounterRig({ withheldScene = true })
+  Assert.isFalse(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    "entry holds while the scene art is not staged"
+  )
+  rig.pump(3)
+  Assert.isFalse(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    "entry still holds without the staged scene"
+  )
+  rig.stage(stagedEncounterLayer(60, 43, nil))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    "entry admits the staged scene"
+  )
+  presentOpening(rig)
+  rig.pump(1)
+  local first = rig.screen:view()
+  Assert.equal(first.openingPresentation.encounterFrame, 1, "the first source tick publishes frame 1")
+  Assert.equal(#first.encounterParticleSystems, 1, "the first member starts on frame 1")
+  Assert.equal(
+    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart),
+    1,
+    "the first source tick voices the opening sound once"
+  )
+  local voicesBefore = #rig.audio.voices
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local held = rig.screen:view()
+  Assert.equal(held.openingPresentation.encounterFrame, 1, "draws never advance the task frame")
+  Assert.equal(#held.encounterParticleSystems, 1, "draws spawn no particles")
+  Assert.equal(#rig.audio.voices, voicesBefore, "draws voice no battle sounds")
+  rig.resize("encounter-readiness:resized")
+  for step = 1, 3 do
+    rig.pump(1)
+    local stepped = rig.screen:view()
+    Assert.equal(
+      stepped.openingPresentation.encounterFrame,
+      1 + step,
+      "source tick " .. step .. " after draw and remeasure advances the task, got "
+        .. tostring(stepped.openingPresentation.encounterFrame)
+    )
+  end
+  local second = rig.screen:view()
+  rig.pump(16)
+  local twentieth = rig.screen:view()
+  Assert.equal(twentieth.openingPresentation.encounterFrame, 20, "the task counts one frame per source tick")
+  Assert.equal(#twentieth.encounterParticleSystems, 2, "the second member starts on frame 20")
+  rig.pump(30)
+  local fiftieth = rig.screen:view()
+  Assert.equal(fiftieth.openingPresentation.encounterFrame, 50, "the task still runs at the late bank fade")
+  Assert.equal(#fiftieth.encounterParticleSystems, 2, "both members run through the frame-50 fade")
+  rig.pump(10)
+  local sixtieth = rig.screen:view()
+  Assert.equal(sixtieth.openingPresentation.encounterFrame, 60, "the task waits while the second system stays active")
+  Assert.equal(#sixtieth.encounterParticleSystems, 2, "both members run through the late fade")
+  rig.pump(1)
+  local sixtyFirst = rig.screen:view()
+  Assert.equal(sixtyFirst.openingPresentation.encounterFrame, 61, "the task runs on while the first system is gone")
+  Assert.equal(
+    #sixtyFirst.encounterParticleSystems,
+    1,
+    "the retired first system leaves the second running"
+  )
+  rig.pump(1)
+  local sixtySecond = rig.screen:view()
+  Assert.equal(sixtySecond.openingPresentation.encounterFrame, 62, "the task reaches the second retirement tick")
+  local silentAfter = nil
+  for tick = 63, 80 do
+    rig.pump(1)
+    if rig.screen:view().openingPresentation.encounterFrame == nil then
+      silentAfter = tick
+      break
+    end
+  end
+  Assert.isTrue(
+    silentAfter ~= nil and silentAfter >= 63 and silentAfter <= 70,
+    "the task ends once after the second system retires, got " .. tostring(silentAfter)
+  )
+  rig.pump(10)
+  local settled = rig.screen:view()
+  Assert.isNil(settled.openingPresentation.encounterFrame, "the ended task publishes no further frame")
+  Assert.equal(#settled.encounterParticleSystems, 0, "retired systems leave the draw list")
+  Assert.equal(
+    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart),
+    1,
+    "the opening sound voices exactly once"
+  )
+  Assert.equal(
+    voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle),
+    1,
+    "the settle sound voices exactly once"
+  )
+end
+
+-- A second member whose textures never stage fails the launch at its
+-- exact start tick instead of starting late or running silent.
+function T.missing_second_member_fails_the_launch_at_its_start_tick()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43, 2))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    "entry admits the staged scene"
+  )
+  presentOpening(rig)
+  local status = rig.pump(20, true)
+  Assert.equal(status.mode, "failed", "a missing second member fails the launch at frame 20")
+  Assert.isTrue(
+    type(status.error) == "string" and status.error:find(ENCOUNTER_SCENE_KEY, 1, true) ~= nil,
+    "the failure names the staged scene, got " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    type(status.error) == "string" and status.error:find("20", 1, true) ~= nil,
+    "the failure names the missed source frame, got " .. tostring(status.error)
+  )
+end
+
+-- A first member whose textures never stage fails before the task can
+-- consume its first source tick.
+function T.missing_first_member_fails_before_the_first_source_tick()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43, 1))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    "entry admits the staged scene"
+  )
+  presentOpening(rig)
+  local status = rig.pump(2, true)
+  Assert.equal(status.mode, "failed", "a missing first member fails before the first source tick")
+  Assert.isTrue(
+    type(status.error) == "string" and status.error:find(ENCOUNTER_SCENE_KEY, 1, true) ~= nil,
+    "the failure names the staged scene, got " .. tostring(status.error)
+  )
 end
 
 return {

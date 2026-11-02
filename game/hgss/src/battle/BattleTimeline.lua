@@ -38,7 +38,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _encounterFadeColor "white"|"black" background fade color of the encounter animation
 ---@field _encounterSource BattleEncounterPalette.Source? staged source palette buffers and fill behind the encounter evaluator
 ---@field _encounterPalette BattleEncounterPalette? per-battle source palette evaluator, nil while no source art is staged
----@field _encounterAnimation { elapsed: integer }? Task_PlayEncounterAnimation frame counter, nil while no animation runs
+---@field _encounterAnimation { elapsed: integer, phase: "init"|"fade"|"wait", secondStarted: boolean, secondActive: boolean, lateArmed: boolean }? Task_PlayEncounterAnimation state, nil while no animation runs
 ---@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
@@ -3270,7 +3270,8 @@ function BattleTimeline:intro(view, wild)
   self._wildIntroTrack = nil
   -- PlayEncounterAnimation starts its task in the script's first tick on
   -- every encounter path.
-  self._encounterAnimation = { elapsed = 0 }
+  self._encounterAnimation =
+    { elapsed = 0, phase = "init", secondStarted = false, secondActive = false, lateArmed = false }
   if self._encounterSource ~= nil then
     self._encounterPalette = BattleEncounterPalette.new({
       battleType = wild and "wild" or "trainer",
@@ -3627,16 +3628,18 @@ local function tickWildIntro(self)
   end
 end
 
--- Task_PlayEncounterAnimation, phase one: its frame counter voices PASA2
--- on frame 1 and PASA3 on frame 23, fades the main screen toward the
--- background color from frame 10 (sixteen steps up, restored from frame
--- 28), and runs the lower screen's gray ramp (one level per frame from
--- frame 10) before revealing it from white from frame 28.
+-- Task_PlayEncounterAnimation: its frame counter voices PASA2 on frame 1
+-- and PASA3 on frame 23, starts the first emitter set on frame 1 and the
+-- second on frame 20, fades the main screen toward the background color
+-- from frame 10 (sixteen steps up, restored from frame 28), arms the late
+-- main background bank fade on frame 50, and ends only after the second
+-- emitter system retires. The lower screen runs its gray ramp (one level
+-- per frame from frame 10) before revealing it from white from frame 28.
 local ENCOUNTER_FADE_STEPS = 16
 local ENCOUNTER_FADE_START = 10
 local ENCOUNTER_RESTORE = 28
 local ENCOUNTER_SETTLE_SOUND = 23
-local ENCOUNTER_END = ENCOUNTER_RESTORE + ENCOUNTER_FADE_STEPS
+local ENCOUNTER_LATE_FADE = 50
 
 ---@param self BattleTimeline
 local function tickEncounterAnimation(self)
@@ -3645,23 +3648,31 @@ local function tickEncounterAnimation(self)
   if track == nil or presentation == nil then
     return
   end
-  local frame = track.elapsed + 1
-  track.elapsed = frame
-  if frame == 1 then
-    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterStart))
-  elseif frame == ENCOUNTER_SETTLE_SOUND then
-    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterSettle))
-  end
-  if frame >= ENCOUNTER_END + 1 then
-    if self._encounterPalette ~= nil then
-      self._encounterPalette:beginLateFade()
-      presentation.encounterPalette = self._encounterPalette:snapshot()
-    end
+  -- The task ends only after the second emitter system retires: the
+  -- owning screen reports its started/active status after stepping both
+  -- systems, so this transition observes the previous tick's retirement.
+  -- A second system that never started is not complete.
+  if track.phase == "wait" and track.secondStarted and not track.secondActive then
     presentation.encounterFrame = nil
     presentation.encounterFlash = nil
     presentation.encounterLower = nil
     self._encounterAnimation = nil
     return
+  end
+  local frame = track.elapsed + 1
+  track.elapsed = frame
+  if frame == 1 then
+    track.phase = "fade"
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterStart))
+  elseif frame == ENCOUNTER_SETTLE_SOUND then
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterSettle))
+  end
+  if frame == ENCOUNTER_LATE_FADE and not track.lateArmed then
+    track.lateArmed = true
+    track.phase = "wait"
+    if self._encounterPalette ~= nil then
+      self._encounterPalette:beginLateFade()
+    end
   end
   presentation.encounterFrame = frame
   if self._encounterPalette ~= nil then
@@ -3684,12 +3695,19 @@ local function tickEncounterAnimation(self)
     return
   end
   local remaining = math.max(0, ENCOUNTER_FADE_STEPS - 2 * (frame - ENCOUNTER_RESTORE))
-  presentation.encounterFlash = {
-    color = self._encounterFadeColor,
-    coefficient = remaining,
-    mainBgMask = BattleEncounterPalette.MAIN_BG_MASK,
-    mainObjMask = BattleEncounterPalette.MAIN_OBJ_MASK,
-  }
+  -- Once the late bank operation arms, the main-fade metadata retires:
+  -- the frame-50 bank-10/11 operation is published only through the
+  -- palette snapshot, so its late mask is never shadowed by the main mask.
+  if track.lateArmed then
+    presentation.encounterFlash = nil
+  else
+    presentation.encounterFlash = {
+      color = self._encounterFadeColor,
+      coefficient = remaining,
+      mainBgMask = BattleEncounterPalette.MAIN_BG_MASK,
+      mainObjMask = BattleEncounterPalette.MAIN_OBJ_MASK,
+    }
+  end
   presentation.encounterLower = { whiteCoefficient = remaining }
 end
 
@@ -4719,6 +4737,24 @@ end
 ---@return table<string, unknown>? detached visibility facts for the current intro stage
 function BattleTimeline:openingPresentation()
   return self._openingPresentation ~= nil and copyValue(self._openingPresentation) or nil
+end
+
+-- Receives the second emitter system's started/active status from the
+-- owning screen after it steps both particle systems on the same fixed
+-- tick; the encounter task reads it on its next tick. Screen-facing only:
+-- timeline drivers without a screen never report, and the task then keeps
+-- its frame count instead of ending on the clock alone. Safe to repeat
+-- and to call after disposal.
+---@param self BattleTimeline
+---@param secondStarted boolean true once the second staged set started
+---@param secondActive boolean true while the second system runs active emitters
+function BattleTimeline:reportEncounterEmitterState(secondStarted, secondActive)
+  local track = self._encounterAnimation
+  if track == nil then
+    return
+  end
+  track.secondStarted = secondStarted == true
+  track.secondActive = secondActive == true
 end
 
 ---@return string currently displayed narration page, possibly empty

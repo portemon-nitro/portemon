@@ -6020,16 +6020,58 @@ function BattleScreenState:_reconcile(view)
 end
 
 -- Steps the encounter terrain particles with the opening timeline: the
--- timeline's animation frame starts each staged set, and a reset opening
--- drops them.
+-- timeline's animation frame starts each staged set exactly on its start
+-- tick, and a reset opening drops them. A set whose start tick arrives
+-- without its staged scene or emitter closure fails the launch with the
+-- scene and frame instead of starting late; the second system's
+-- started/active status feeds back to the timeline before its next task
+-- transition. Reads only; draws never step.
 function BattleScreenState:_stepEncounterParticles()
   local presentation = self._timeline:openingPresentation()
   if presentation == nil then
     self._encounterParticles:clear()
     return
   end
+  local frame = presentation.encounterFrame
   local layer = self._assets:sceneLayer()
-  self._encounterParticles:step(presentation.encounterFrame, layer ~= nil and layer.encounterParticles or nil)
+  local sets = layer ~= nil and layer.encounterParticles or nil
+  local sceneKey = type(layer) == "table" and layer.sceneKey or "unknown scene"
+  -- A staged scene that reaches a start tick without its emitter set fails
+  -- the launch instead of starting late. A holder with no scene status at
+  -- all keeps the legacy clock-only path: its task simply never observes a
+  -- second system and so never completes on emitters alone.
+  if type(sets) == "table" and (frame == 1 or frame == 20) then
+    local required = frame == 1 and 1 or 2
+    if sets[required] == nil then
+      self._mode = "failed"
+      self._error = "battle encounter misses its staged emitter set for launch "
+        .. self._launchId
+        .. ": scene "
+        .. tostring(sceneKey)
+        .. " frame "
+        .. tostring(frame)
+      return
+    end
+  end
+  local stepped, stepError = pcall(function()
+    self._encounterParticles:step(frame, sets)
+  end)
+  if not stepped then
+    self._mode = "failed"
+    self._error = "battle encounter misses its staged emitter closure for launch "
+      .. self._launchId
+      .. ": scene "
+      .. tostring(sceneKey)
+      .. " frame "
+      .. tostring(frame)
+      .. ": "
+      .. tostring(stepError)
+    return
+  end
+  self._timeline:reportEncounterEmitterState(
+    self._encounterParticles:secondStarted(),
+    self._encounterParticles:secondSystemActive()
+  )
 end
 
 -- Steps the ball particles with the cue timeline: effects the timeline
