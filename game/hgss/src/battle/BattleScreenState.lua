@@ -2239,6 +2239,9 @@ function BattleScreenState:_snapshot()
     bgScroll = self._scene:scroll(),
     backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
     effectInstances = self._scene:effectViews(),
+    moveParticleSystems = self._scene:particleSystems(),
+    encounterParticleSystems = self._encounterParticles:systems(),
+    ballParticleSystems = self._ballParticles:systems(),
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
     gaugeFamilies = {

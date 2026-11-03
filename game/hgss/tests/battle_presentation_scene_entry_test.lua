@@ -433,6 +433,8 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
       local drawable = nil
       if withholdSet ~= setIndex then
         drawable = StubLease.new("encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":" .. setIndex .. ":" .. texture.id)
+        drawable.width = texture.width
+        drawable.height = texture.height
       end
       textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, drawable = drawable }
     end
@@ -541,6 +543,17 @@ local function openEncounterRig(opts)
   function rig.resize(signature)
     measurement.signature = signature
   end
+  function rig.compact()
+    measurement.width = 256
+    measurement.height = 192
+    measurement.topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 256, height = 192 },
+      touch = false,
+      role = "world",
+    })
+    measurement.signature = "encounter-readiness:compact"
+  end
   return rig
 end
 
@@ -603,6 +616,95 @@ local function presentOpening(rig)
     after = encounterOpening(),
     events = {},
   })
+end
+
+-- The private render snapshot carries each live particle owner through the
+-- production screen draw in detail and compact layouts. Repeated draws keep
+-- all three simulations and the encounter source frame unchanged.
+function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
+  local rig = openEncounterRig()
+  local ok, err = pcall(function()
+    rig.stage(stagedEncounterLayer(60, 43))
+    rig.pump(5)
+    Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+    presentOpening(rig)
+    rig.pump(1)
+
+    local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
+    local ParticleFixture = require("tests.support.BattleParticleLeaseFixture")
+    local moveSimulation = SplParticleSimulation.new(0, 0)
+    SplParticleSimulation.addEmitter(moveSimulation, 0, nil, ParticleFixture.payload(1).emitters[1])
+    SplParticleSimulation.advance(moveSimulation)
+    local moveTexture = StubLease.new("move-live-particle")
+    moveTexture.width = 8
+    moveTexture.height = 8
+    local moveSystemId = rig.screen._scene:allocParticleSystem({
+      simulation = moveSimulation,
+      textures = { [0] = moveTexture },
+    })
+
+    local ballParticles = ParticleFixture.payload(1)
+    local ballTexture = StubLease.new("ball-live-particle")
+    ballTexture.width = 8
+    ballTexture.height = 8
+    rig.screen._ballParticles:step(
+      { { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } },
+      {},
+      {
+        particles = function()
+          return {
+            seal = {
+              seed = ballParticles.seed,
+              emitters = ballParticles.emitters,
+              textures = ballParticles.textures,
+            },
+          }
+        end,
+        texture = function()
+          return ballTexture
+        end,
+      }
+    )
+
+    -- The first encounter particle starts fully transparent; advance once
+    -- so the production draw boundary receives visible particles.
+    rig.pump(1)
+    local before = rig.screen:view()
+    Assert.equal(#before.encounterParticleSystems, 1, "the encounter owner has a live emitter")
+    Assert.equal(#before.moveParticleSystems, 1, "the scene owner has a live move emitter")
+    Assert.equal(#before.ballParticleSystems, 1, "the ball owner has a live seal emitter")
+    local detail = FakeGraphics.new({})
+    rig.screen:draw({ graphics = detail })
+    for _, handle in ipairs({
+      "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0",
+      "move-live-particle",
+      "ball-live-particle",
+    }) do
+      Assert.isTrue(#drawsOf(detail.draws, handle) >= 1, "detail draws " .. handle)
+    end
+
+    rig.compact()
+    local compact = FakeGraphics.new({})
+    rig.screen:draw({ graphics = compact })
+    rig.screen:draw({ graphics = FakeGraphics.new({}) })
+    for _, handle in ipairs({
+      "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0",
+      "move-live-particle",
+      "ball-live-particle",
+    }) do
+      Assert.isTrue(#drawsOf(compact.draws, handle) >= 1, "compact draws " .. handle)
+    end
+    local after = rig.screen:view()
+    Assert.equal(after.openingPresentation.encounterFrame, before.openingPresentation.encounterFrame, "draws do not advance the encounter timeline")
+    Assert.equal(#after.encounterParticleSystems, #before.encounterParticleSystems, "draws do not step encounter emitters")
+    Assert.equal(#after.moveParticleSystems, #before.moveParticleSystems, "draws do not step move emitters")
+    Assert.equal(#after.ballParticleSystems, #before.ballParticleSystems, "draws do not step ball emitters")
+    rig.screen._scene:releaseParticleSystem(moveSystemId)
+  end)
+  rig.screen:dispose()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 -- The staged scene gates admission, and the first admitted source tick
