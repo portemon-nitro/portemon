@@ -34,9 +34,11 @@ end
 
 -- The live runtime surface the commit owner touches, with the banner owner
 -- attached and every unrelated collaborator reduced to the small recording
--- stand-in the commit path reads.
+-- stand-in the commit path reads. The encounter reset is recorded so the
+-- commit path can prove it rearms the step counters on entry.
 local function commitRuntime()
   local runtime = {
+    encounterResets = 0,
     runtimeMap = mapDouble(60, "MAP_NEW_BARK", 5),
     player = { fieldX = 10, fieldZ = 10, facing = "north" },
     transition = {},
@@ -61,6 +63,9 @@ local function commitRuntime()
       end,
     },
   }
+  function runtime:resetEncounterStepCounters()
+    self.encounterResets = self.encounterResets + 1
+  end
   return runtime
 end
 
@@ -78,6 +83,7 @@ function T.a_completed_warp_announces_the_destination_exactly_once()
     { mapId = 61, mapSectionNativeId = 6 },
     "the announcement carries the destination map and its native section"
   )
+  Assert.equal(runtime.encounterResets, 1, "a completed warp rearms the encounter step counters")
 end
 
 function T.a_same_section_warp_still_announces_the_destination()
@@ -98,6 +104,7 @@ function T.a_discarded_prepared_swap_announces_nothing()
   Assert.equal(#runtime.mapNameBanner.requests, 1, "a completed warp announces the destination once")
   coordinator:abort({ destinationMap = mapDouble(60, "MAP_NEW_BARK", 5) }, {})
   Assert.equal(#runtime.mapNameBanner.requests, 1, "an aborted swap must not announce a destination")
+  Assert.equal(runtime.encounterResets, 1, "an aborted swap leaves the step counters alone")
 end
 
 -- The seamless origin reports a section change exactly when the section

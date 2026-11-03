@@ -3399,8 +3399,9 @@ function FieldRuntime:composeEncounters(compiled)
   local catalog = HgssEncounterCatalog.new(compiled)
   local encounterCacheFs = assert(self.cacheFs, "encounter composition requires its cache")
   local fontDef = FieldFontLoader.load(encounterCacheFs)
+  local monCatalog = assert(self.monCatalog, "encounter composition requires the mon catalog")
   local factory = WildMonFactory.new({
-    catalog = assert(self.monCatalog, "encounter composition requires the mon catalog"),
+    catalog = monCatalog,
     items = assert(self.itemCatalog, "encounter composition requires the item catalog"),
     charmap = fontDef.charmap,
     games = HgssMonService.GAMES,
@@ -3408,11 +3409,18 @@ function FieldRuntime:composeEncounters(compiled)
     game = self.versionId,
     language = self.monLanguage,
   })
+  -- Magnet-pull/static coercion reads live slot types from the mon
+  -- catalog, mirroring the native base-stat scan at selection time:
+  -- the encounter tables carry no duplicated type data.
+  local function slotTypes(species, form)
+    return monCatalog:form(species, form).types
+  end
   self._encounters = HgssEncounterService.new({
     catalog = catalog,
     wildFactory = factory,
     roamers = assert(self.roamerState, "encounter composition requires its roamer state"),
     game = self.versionId,
+    speciesTypes = slotTypes,
   })
 end
 
@@ -3602,18 +3610,38 @@ function FieldRuntime:_consumeCommittedStep()
   end
   local map = session.currentMap --[[@as table<string, unknown>]]
   local method = self:_stepEncounterMethod(map, self.player)
+  -- One repel tick per committed step that reaches method resolution,
+  -- matching the native per-step update: the encounter check below reads
+  -- the post-decrement counter.
+  local repelSteps = self:_consumeRepelStep()
   if method == nil then
+    -- Steps outside encounter tiles never attempt, but they still count
+    -- toward the entry grace.
+    self._encounters:noteStep()
     return
   end
   -- The service resolves encounter tables by table member, never by map
   -- identity: the compiled map carries its source table member for
-  -- exactly this lookup.
+  -- exactly this lookup. The attempt also names the native movement-roll
+  -- facts: the avatar pace behind the committed step and whether the
+  -- arrival tile is very tall grass. Deterrence, held-item, gender, and
+  -- nature facts ride the live party lead; repel and friendship ride the
+  -- first alive mon; the weather names snow for the ability stage.
   local fieldData = map.fieldData --[[@as table<string, unknown>]]
   local memberId = fieldData ~= nil and fieldData.wildEncounterMemberId or nil
   assert(
     type(memberId) == "number" and memberId % 1 == 0,
     "committed steps resolve their map's wild encounter table member"
   )
+  -- Maps without an encounter bank never roll: the native step check
+  -- sits behind the map-level wild-encounter gate, so the ENCDATA_NA
+  -- sentinel counts grace without consulting any table.
+  if memberId == 255 then
+    self._encounters:noteStep()
+    return
+  end
+  local arrival = self:arrivalBehavior(map, self.player)
+  local leadFacts = self:_encounterLeadFacts()
   local result = self:attemptEncounter({
     eventId = session.tick,
     mapId = memberId,
@@ -3622,8 +3650,19 @@ function FieldRuntime:_consumeCommittedStep()
     modifiers = {
       radio = self:_currentRadioEffect(),
       swarm = self:_stepSwarmActive(),
+      locomotion = self:_stepLocomotion(),
+      veryTallGrass = arrival ~= nil and MetatileBehavior.isVeryTallGrass(arrival) or false,
+      facing = self.player.facing,
+      repel = repelSteps > 0,
+      repelSteps = repelSteps,
+      leadAbility = leadFacts.leadAbility,
+      leadNature = leadFacts.leadNature,
+      leadGender = leadFacts.leadGender,
+      followActive = self:_isFollowActive(leadFacts.firstAlive ~= nil),
     },
-    environment = {},
+    lead = leadFacts.lead,
+    firstAlive = leadFacts.firstAlive,
+    environment = { weather = self:_encounterWeather(map) },
     timeOfDay = self:_encounterTimeOfDay(),
     playerProfile = self.playerData.profile,
   })
@@ -3676,7 +3715,9 @@ end
 
 -- Runs one field-move encounter attempt (Rock Smash, Headbutt, Sweet Scent)
 -- over the active map's encounter table member. Field-move attempts are not
--- steps: they consult their tables without advancing any step counter.
+-- steps: they consult their tables without advancing any step counter or
+-- arming repel. The live party lead still rides along for deterrence,
+-- slot-level, held-item, and generation effects.
 ---@param method string rock_smash, headbutt, grass, or surf
 ---@param modifiers table<string, unknown> method modifiers (headbutt slots, sweetScent)
 ---@return table<string, unknown>? attempt result
@@ -3686,17 +3727,22 @@ function FieldRuntime:attemptFieldMoveEncounter(method, modifiers)
   local fieldData = map.fieldData --[[@as table<string, unknown>]]
   local memberId = fieldData.wildEncounterMemberId
   assert(type(memberId) == "number" and memberId % 1 == 0, "field-move encounters resolve their map's table member")
-  local staged = { radio = "none" }
+  local staged = { radio = "none", repel = false }
   for key, value in pairs(modifiers) do
     staged[key] = value
   end
+  local leadFacts = self:_encounterLeadFacts()
+  staged.leadAbility = staged.leadAbility or leadFacts.leadAbility
+  staged.leadNature = staged.leadNature or leadFacts.leadNature
+  staged.leadGender = staged.leadGender or leadFacts.leadGender
   return self:attemptEncounter({
     eventId = session.tick,
     mapId = memberId,
     method = method,
     movement = "field_move",
     modifiers = staged,
-    environment = {},
+    lead = leadFacts.lead,
+    environment = { weather = self:_encounterWeather(map) },
     timeOfDay = self:_encounterTimeOfDay(),
     playerProfile = self.playerData.profile,
   })
@@ -3704,7 +3750,9 @@ end
 
 -- The Sweet Scent encounter roll: the standing tile's step-encounter method
 -- (land or surf), nothing where the tile carries none. The scent always
--- draws an encounter from a table with a rate.
+-- draws an encounter from a table with a rate. Unlike rock smash and
+-- headbutt, the scripted check applies the live swarm and radio-sound
+-- replacements, matching the native land/surf generation paths.
 ---@return table<string, unknown>? attempt result, nil when the tile allows no encounter
 function FieldRuntime:attemptSweetScentEncounter()
   local session = assert(self.session, "sweet scent requires the field session")
@@ -3712,7 +3760,11 @@ function FieldRuntime:attemptSweetScentEncounter()
   if method == nil then
     return nil
   end
-  return self:attemptFieldMoveEncounter(method, { sweetScent = true })
+  return self:attemptFieldMoveEncounter(method, {
+    sweetScent = true,
+    radio = self:_currentRadioEffect(),
+    swarm = self:_stepSwarmActive(),
+  })
 end
 
 -- Admits one prepared step encounter to the presented launch path on its
@@ -3821,6 +3873,157 @@ function FieldRuntime:_isSurfEncounterWater(behavior)
     or behavior == MetatileBehavior.BEHAVIOR.SEA_WATER
     or behavior == 18
     or behavior == 42
+end
+
+-- The avatar pace behind one committed-step encounter attempt: the native
+-- movement roll paces surfing, cycling, and running above walking, so the
+-- attempt facts name the durable avatar state and the completed step's
+-- semantic speed. Without an avatar or a published step the pace reads
+-- as walking.
+---@return string locomotion fact for the encounter attempt
+function FieldRuntime:_stepLocomotion()
+  if self:_isSurfing() then
+    return "surf"
+  end
+  local avatar = self.playerAvatar
+  if avatar ~= nil and type(avatar.status) == "function" then
+    local status = avatar:status()
+    if type(status) == "table" and status.durableState == "cycling" then
+      return "cycle"
+    end
+  end
+  local player = self.player
+  if player ~= nil and type(player.movementTransaction) == "function" then
+    local transaction = player:movementTransaction()
+    if type(transaction) == "table" and transaction.speed == "run" then
+      return "run"
+    end
+  end
+  return "walk"
+end
+
+-- The native snow weather identity behind the ability rate stage: the
+-- decomp checks WEATHER_SNOW exactly, so only snow names a weather
+-- effect while every other arrival reads as none.
+local SNOW_WEATHER_ID = 5
+
+-- Decrements the live repel counter for one committed step and answers
+-- the remaining steps. Without roamer state the counter reads spent and
+-- repel stays inactive instead of faulting.
+---@return integer remaining repel steps
+function FieldRuntime:_consumeRepelStep()
+  local roamers = self.roamerState
+  if type(roamers) ~= "table" then
+    return 0
+  end
+  if type(roamers.stepRepel) == "function" then
+    roamers:stepRepel()
+  end
+  if type(roamers.repelSteps) == "function" then
+    local steps = roamers:repelSteps()
+    if type(steps) == "number" and steps >= 0 then
+      return math.floor(steps)
+    end
+  end
+  return 0
+end
+
+-- Derives the encounter lead facts from the live party: the slot-0 mon
+-- behind ability, deterrence, held-item, gender, and nature effects, plus
+-- the first alive mon behind repel and friendship. Egg slot-0 leads
+-- arrive with no ability, matching the native state init; with no party
+-- or no alive mon the facts stay absent and repel reads inactive rather
+-- than faulting.
+---@return { lead: table<string, unknown>?, leadAbility: string?, leadNature: integer?, leadGender: string?, firstAlive: table<string, unknown>? }
+function FieldRuntime:_encounterLeadFacts()
+  local facts = {}
+  local service = self.monService
+  if type(service) ~= "table" or type(service.partyCount) ~= "function" then
+    return facts
+  end
+  if type(service.partyMon) ~= "function" then
+    return facts
+  end
+  local count = service:partyCount()
+  if type(count) ~= "number" or count < 1 then
+    return facts
+  end
+  local lead = service:partyMon(0)
+  if type(lead) ~= "table" then
+    return facts
+  end
+  facts.lead = lead --[[@as table<string, unknown>]]
+  if lead.isEgg ~= true then
+    local ability = lead.ability
+    if type(ability) == "string" then
+      local EncounterService = require("libs.hgss.src.encounters.HgssEncounterService")
+      local key = string.lower(ability)
+      if EncounterService.LEAD_ABILITIES[key] == true then
+        facts.leadAbility = key
+      end
+    end
+    if type(lead.personality) == "number" then
+      local Personality = require("libs.mons.src.gen4.Personality")
+      facts.leadNature = Personality.nature(lead.personality)
+      local catalog = self.monCatalog
+      if type(catalog) == "table" and type(catalog.species) == "function" then
+        local species = catalog:species(lead.species)
+        if type(species) == "table" and type(species.genderRatio) == "number" then
+          local gender = Personality.gender(species.genderRatio, lead.personality)
+          if gender == "male" or gender == "female" then
+            facts.leadGender = gender
+          end
+        end
+      end
+    end
+  end
+  if type(service.leadAliveSlot) == "function" then
+    local slot = service:leadAliveSlot()
+    if type(slot) == "number" then
+      local alive = service:partyMon(slot)
+      if type(alive) == "table" then
+        facts.firstAlive = alive --[[@as table<string, unknown>]]
+      end
+    end
+  end
+  return facts
+end
+
+-- Names the ability-stage weather for one arrival map: snow exactly,
+-- silence everywhere else, matching the native weather check.
+---@param map table<string, unknown>? arrival map under inspection
+---@return string snow on snow weather, none otherwise
+function FieldRuntime:_encounterWeather(map)
+  if type(map) == "table" and map.effectiveWeatherId == SNOW_WEATHER_ID then
+    return "snow"
+  end
+  return "none"
+end
+
+-- Whether a follower walks behind the player for the fishing bite bonus:
+-- an active follower controller with an alive mon behind it, matching
+-- the native follow check.
+---@param hasAliveMon boolean the party holds an alive mon
+---@return boolean
+function FieldRuntime:_isFollowActive(hasAliveMon)
+  if not hasAliveMon then
+    return false
+  end
+  local following = self.followingMon
+  if type(following) ~= "table" or type(following.isActive) ~= "function" then
+    return false
+  end
+  return following:isActive() == true
+end
+
+-- Resets the step-driven encounter counters on map entry: the native field
+-- system clears both counters whenever a warp completes. Fresh boot needs
+-- no call; the composed service starts cleared.
+function FieldRuntime:resetEncounterStepCounters()
+  local service = self._encounters
+  if service ~= nil then
+    service:resetStepCounters()
+  end
 end
 
 ---@return boolean true while the avatar surfs

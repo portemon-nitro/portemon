@@ -3,7 +3,7 @@
 -- resolution with swarm/radio/night replacements and special contexts, and
 -- wild identity construction with lead-ability coercion and held items.
 -- Rolls and expected outcomes are fixed here from the native branches
--- (per-method interval ladders, replacement targets, and the four-draw
+-- (per-method interval ladders, replacement targets, and the fixed-draw
 -- mon identity order); they are never produced by the modules under test.
 -- The final case integrates the real compiled encounter catalog as
 -- native-source evidence and runs wherever a source ROM is registered.
@@ -172,6 +172,74 @@ function T.slot_selection_covers_every_method_ladder()
   end
 end
 
+function T.type_coercion_collects_only_matching_slots()
+  local Selection = selection()
+  -- The native slot-coercion scan reads each slot's base types and
+  -- keeps the ordered matching indices; the provider answers the
+  -- lower-case mon-catalog type keys per species and form.
+  local slots = {
+    { species = "CHIKORITA", form = 0, minLevel = 4, maxLevel = 4, weight = 20 },
+    { species = "MAGNEMITE", form = 0, minLevel = 5, maxLevel = 5, weight = 20 },
+    { species = "EEVEE", form = 0, minLevel = 6, maxLevel = 6, weight = 10 },
+    { species = "MAGNETON", form = 0, minLevel = 7, maxLevel = 7, weight = 10 },
+  }
+  local function typeOf(species, form)
+    assert(form == 0, "coercion reads the base form")
+    if species == "MAGNEMITE" or species == "MAGNETON" then
+      return { "electric", "steel" }
+    end
+    if species == "CHIKORITA" then
+      return { "grass" }
+    end
+    return { "normal" }
+  end
+  Assert.deepEqual(Selection.matchingTypeSlots(slots, "steel", typeOf), { 2, 4 })
+  Assert.deepEqual(
+    Selection.matchingTypeSlots(slots, "electric", typeOf),
+    { 2, 4 },
+    "either base type matches"
+  )
+  Assert.deepEqual(Selection.matchingTypeSlots(slots, "grass", typeOf), { 1 })
+  Assert.isNil(
+    Selection.matchingTypeSlots(slots, "fire", typeOf),
+    "no matching slot falls through to the normal roll"
+  )
+  local uniform = {
+    { species = "MAGNEMITE", form = 0, minLevel = 5, maxLevel = 5, weight = 50 },
+    { species = "MAGNETON", form = 0, minLevel = 7, maxLevel = 7, weight = 50 },
+  }
+  Assert.isNil(
+    Selection.matchingTypeSlots(uniform, "steel", typeOf),
+    "every slot matching falls through without a pick draw"
+  )
+  -- An unreadable slot (an inert NONE entry with no catalog record)
+  -- reads as no match, matching the native scan that never faults.
+  local function flaky(species, form)
+    assert(form == 0, "coercion reads the base form")
+    if species == "NONE" then
+      error("unknown species NONE", 0)
+    end
+    return typeOf(species, form)
+  end
+  local inert = {
+    { species = "NONE", form = 0, minLevel = 0, maxLevel = 0, weight = 20 },
+    { species = "MAGNEMITE", form = 0, minLevel = 5, maxLevel = 5, weight = 20 },
+  }
+  Assert.deepEqual(Selection.matchingTypeSlots(inert, "steel", flaky), { 2 })
+  rejectionCode(function()
+    Selection.matchingTypeSlots({}, "steel", typeOf)
+  end, "ENCOUNTER_INVALID_INPUT")
+  rejectionCode(function()
+    Selection.matchingTypeSlots(slots, "", typeOf)
+  end, "ENCOUNTER_INVALID_INPUT")
+  rejectionCode(function()
+    Selection.matchingTypeSlots(slots, "steel", nil)
+  end, "ENCOUNTER_INVALID_INPUT")
+  rejectionCode(function()
+    Selection.matchingTypeSlots({ { form = 0, minLevel = 4, maxLevel = 4, weight = 20 } }, "steel", typeOf)
+  end, "ENCOUNTER_INVALID_INPUT")
+end
+
 function T.level_selection_stays_inside_the_source_window()
   local Selection = selection()
   local fixed = { species = "EEVEE", form = 0, minLevel = 8, maxLevel = 8, weight = 10 }
@@ -188,6 +256,45 @@ function T.level_selection_stays_inside_the_source_window()
   end, "ENCOUNTER_INVALID_INPUT")
   rejectionCode(function()
     Selection.selectLevel(window, -1)
+  end, "ENCOUNTER_INVALID_INPUT")
+end
+
+function T.land_level_reads_the_fixed_slot_maximum_without_a_roll()
+  local Selection = selection()
+  -- Native land tables carry one level per slot: generation reads the
+  -- slot maximum with no level roll, so selection takes no roll at all.
+  local fixed = { species = "EEVEE", form = 0, minLevel = 8, maxLevel = 8, weight = 10 }
+  Assert.equal(Selection.selectLandLevel(fixed), 8)
+  local native = { species = "CHIKORITA", form = 0, minLevel = 4, maxLevel = 4, weight = 20 }
+  Assert.equal(Selection.selectLandLevel(native), 4)
+  rejectionCode(function()
+    Selection.selectLandLevel({ species = "EEVEE", minLevel = 8, maxLevel = 300, weight = 10 })
+  end, "ENCOUNTER_INVALID_INPUT")
+  rejectionCode(function()
+    Selection.selectLandLevel({ species = "EEVEE", minLevel = 8, weight = 10 })
+  end, "ENCOUNTER_INVALID_INPUT")
+end
+
+function T.slot_level_reselects_the_highest_matching_slot()
+  local Selection = selection()
+  local day = Fixture.vectorCatalog().tables[11].land.day
+  -- The third land slot (TOTODILE 5) yields to the ninth (TOTODILE 11),
+  -- past the fourth (TOTODILE 6); the first (CHIKORITA 4) yields to the
+  -- twelfth (CHIKORITA 14).
+  Assert.equal(Selection.highestSameSpeciesSlot(day, 3), 9)
+  Assert.equal(Selection.highestSameSpeciesSlot(day, 4), 9, "a lower sibling yields to the highest")
+  Assert.equal(Selection.highestSameSpeciesSlot(day, 9), 9, "the highest slot keeps itself")
+  Assert.equal(Selection.highestSameSpeciesSlot(day, 1), 12, "a lower slot yields across twins")
+  Assert.equal(Selection.highestSameSpeciesSlot(day, 11), 11, "a unique species keeps itself")
+  Assert.equal(Selection.highestSameSpeciesSlot(day, 5), 10, "the fifth land slot yields to the tenth")
+  rejectionCode(function()
+    Selection.highestSameSpeciesSlot(day, 0)
+  end, "ENCOUNTER_INVALID_INPUT")
+  rejectionCode(function()
+    Selection.highestSameSpeciesSlot(day, 13)
+  end, "ENCOUNTER_INVALID_INPUT")
+  rejectionCode(function()
+    Selection.highestSameSpeciesSlot({}, 1)
   end, "ENCOUNTER_INVALID_INPUT")
 end
 
@@ -291,7 +398,9 @@ end
 function T.wild_creation_follows_the_four_draw_identity_order()
   local factory = standardFactory()
   local stream = Fixture.spyStream(0)
-  -- Seed 0 draws: personality 0/59774, ivs 21105/12720, held 36418/58060.
+  -- Seed 0 draws: personality 0/59774, ivs 21105/12720, then the single
+  -- held-item roll 36418. Natively the held item is one percent roll
+  -- against the 45/95 odds table, not two uniform draws.
   local mon = factory:create("CHIKORITA", 5, stream, wildOptions())
   Assert.equal(mon.species, "CHIKORITA")
   Assert.equal(mon.met.level, 5)
@@ -300,10 +409,10 @@ function T.wild_creation_follows_the_four_draw_identity_order()
   Assert.equal(mon.ability, "OVERGROW", "single-ability species keep their only slot")
   Assert.equal(Personality.gender(31, mon.personality), "female", "gender follows the low personality byte")
   Assert.equal(mon.heldItem, "NONE")
-  Assert.equal(stream:calls(), 6, "identity takes four draws plus the two held-item draws")
+  Assert.equal(stream:calls(), 5, "identity takes four draws plus the single held-item roll")
   Assert.deepEqual(
     stream:labels(),
-    { "personality_low", "personality_high", "iv_first", "iv_second", "held_common", "held_rare" }
+    { "personality_low", "personality_high", "iv_first", "iv_second", "held_item" }
   )
   for _, cause in ipairs(stream:causes()) do
     Assert.isTrue(type(cause) == "table" and cause.kind == "encounter", "every draw carries its semantic cause")
@@ -322,19 +431,80 @@ end
 function T.wild_creation_assigns_held_items_from_the_species_entries()
   local catalogs = Fixture.berryCatalogs()
   local factory = wildFactory(catalogs)
-  local common = factory:create("EEVEE", 8, Fixture.spyStream(0), wildOptions())
-  Assert.equal(common.personality, 3917348864)
-  Assert.equal(common.heldItem, "SITRUS_BERRY", "an even common draw keeps the common entry")
-  local rareStream = Fixture.spyStream(1)
-  -- Seed 1 draws: personality 16838/44065, ivs 53998/8119, held 31203/46760.
+  -- Seed 2 draws: personality 33676/28355, ivs 21356/3517, held roll
+  -- 88, inside the common window below ninety-five.
+  local common = factory:create("EEVEE", 8, Fixture.spyStream(2), wildOptions())
+  Assert.equal(common.personality, 1858306956)
+  Assert.deepEqual(common.ivs, { hp = 12, attack = 27, defense = 20, speed = 29, specialAttack = 13, specialDefense = 3 })
+  Assert.equal(common.ability, "RUN_AWAY")
+  Assert.equal(common.heldItem, "SITRUS_BERRY", "a common-window roll keeps the common entry")
+  -- Seed 20 draws: personality 9086/7730, ivs 23619/51762, held roll
+  -- 95, at the rare threshold.
+  local rareStream = Fixture.spyStream(20)
   local rare = factory:create("EEVEE", 8, rareStream, wildOptions())
-  Assert.equal(rare.personality, 2887860678)
-  Assert.equal(rare.heldItem, "CHERI_BERRY", "a failed common roll falls through to the rare entry")
-  Assert.equal(rareStream:calls(), 6)
+  Assert.equal(rare.personality, 506602366)
+  Assert.deepEqual(rare.ivs, { hp = 3, attack = 2, defense = 23, speed = 18, specialAttack = 17, specialDefense = 18 })
+  Assert.equal(rare.heldItem, "CHERI_BERRY", "a rare-window roll keeps the rare entry")
+  Assert.equal(rareStream:calls(), 5)
+  Assert.equal(rareStream:labels()[5], "held_item", "the held item is a single percent roll")
   local plainStream = Fixture.spyStream(0)
   local plain = standardFactory():create("EEVEE", 8, plainStream, wildOptions())
-  Assert.equal(plain.heldItem, "NONE", "species without entries still consume the held draws")
-  Assert.equal(plainStream:calls(), 6, "the held-item trace stays uniform")
+  Assert.equal(plain.heldItem, "NONE", "a roll below forty-five holds nothing")
+  Assert.equal(plainStream:calls(), 5, "the held-item trace stays uniform")
+end
+
+function T.wild_creation_compound_eyes_widens_the_held_windows()
+  local catalogs = Fixture.berryCatalogs()
+  local factory = wildFactory(catalogs)
+  local eyed = { leadAbility = "compoundeyes" }
+  -- Seed 5 draws: personality 18655/46763, ivs 54501/55249, held roll
+  -- 44, below the plain forty-five but inside the widened twenty.
+  local plain = factory:create("EEVEE", 8, Fixture.spyStream(5), wildOptions())
+  Assert.equal(plain.personality, 3064678623)
+  Assert.deepEqual(plain.ivs, { hp = 5, attack = 7, defense = 21, speed = 17, specialAttack = 30, specialDefense = 21 })
+  Assert.equal(plain.heldItem, "NONE", "a narrow roll holds nothing without compound eyes")
+  local widened = factory:create("EEVEE", 8, Fixture.spyStream(5), wildOptions(eyed))
+  Assert.equal(widened.personality, 3064678623, "the widened odds replay the same identity")
+  Assert.deepEqual(widened.ivs, plain.ivs)
+  Assert.equal(widened.heldItem, "SITRUS_BERRY", "compound eyes keeps the common entry from twenty")
+  -- Seed 11 draws: personality 54149/18043, ivs 55256/27640, held roll
+  -- 92, common without eyes but rare once eighty opens the rare window.
+  local common = factory:create("EEVEE", 8, Fixture.spyStream(11), wildOptions())
+  Assert.equal(common.personality, 1182520197)
+  Assert.deepEqual(common.ivs, { hp = 24, attack = 30, defense = 21, speed = 24, specialAttack = 31, specialDefense = 26 })
+  Assert.equal(common.heldItem, "SITRUS_BERRY")
+  local rare = factory:create("EEVEE", 8, Fixture.spyStream(11), wildOptions(eyed))
+  Assert.equal(rare.personality, 1182520197, "the rare window replays the same identity")
+  Assert.equal(rare.heldItem, "CHERI_BERRY", "compound eyes keeps the rare entry from eighty")
+  local stray = Fixture.spyStream(5)
+  local before = stray:calls()
+  rejectionCode(function()
+    factory:create("EEVEE", 8, stray, wildOptions({ leadAbility = "compoundeyes", leadNature = 4 }))
+  end, "ENCOUNTER_INVALID_INPUT")
+  Assert.equal(stray:calls(), before, "mismatched lead facts consume no draws")
+end
+
+function T.wild_creation_matching_held_entries_always_hold()
+  -- Matching common and rare entries hold unconditionally, still
+  -- consuming the single held roll: seed 0 rolls 18, below even the
+  -- widened twenty, yet keeps the shared entry.
+  local factory = wildFactory(Fixture.berryCatalogs({ rare = { item = "SITRUS_BERRY", nativeId = 158 } }))
+  local stream = Fixture.spyStream(0)
+  local mon = factory:create("EEVEE", 8, stream, wildOptions())
+  Assert.equal(mon.personality, 3917348864)
+  Assert.equal(mon.heldItem, "SITRUS_BERRY", "matching entries always hold")
+  Assert.equal(stream:calls(), 5, "the unconditional hold still draws once")
+end
+
+function T.wild_creation_rejects_unknown_held_entries()
+  local factory = wildFactory(Fixture.berryCatalogs({ common = { item = "BOGUS_BERRY", nativeId = 500 } }))
+  -- Seed 2 rolls 88, inside the common window, selecting the unknown entry.
+  local stream = Fixture.spyStream(2)
+  local before = stream:calls()
+  rejectionCode(function()
+    factory:create("EEVEE", 8, stream, wildOptions())
+  end, "ENCOUNTER_INVALID_INPUT")
+  Assert.equal(stream:calls(), before + 5, "the unknown entry fails after its selection draws")
 end
 
 function T.wild_held_item_is_admitted_with_the_final_record_once()
@@ -355,7 +525,7 @@ function T.wild_held_item_is_admitted_with_the_final_record_once()
     return originalProject(...)
   end
   local ok, mon = pcall(function()
-    return factory:create("EEVEE", 8, Fixture.spyStream(0), wildOptions())
+    return factory:create("EEVEE", 8, Fixture.spyStream(2), wildOptions())
   end)
   Mon.validate = originalValidate
   NativeLegality.project = originalProject
@@ -374,13 +544,13 @@ function T.lead_synchronize_coerces_nature_after_its_check_draw()
   local checkStream = Fixture.spyStream(0)
   factory:create("EEVEE", 8, checkStream, wildOptions({ leadAbility = "synchronize", leadNature = 4 }))
   Assert.equal(checkStream:labels()[1], "synchronize", "coercion draws before identity")
-  Assert.equal(checkStream:calls(), 7)
+  Assert.equal(checkStream:calls(), 6)
   -- Seed 42 opens with an odd check draw, so identity proceeds normally.
   local missedStream = Fixture.spyStream(42)
   local missed = factory:create("EEVEE", 8, missedStream, wildOptions({ leadAbility = "synchronize", leadNature = 4 }))
   Assert.equal(missed.personality, 1729288235)
   Assert.equal(Personality.nature(missed.personality), 10, "a failed check keeps the drawn nature")
-  Assert.equal(missedStream:calls(), 7)
+  Assert.equal(missedStream:calls(), 6)
   local before = missedStream:calls()
   rejectionCode(function()
     factory:create("EEVEE", 8, missedStream, wildOptions({ leadAbility = "synchronize" }))
@@ -401,10 +571,54 @@ function T.static_construction_fixes_species_and_level()
   Assert.equal(mon.personality, 3917348864)
   Assert.deepEqual(mon.ivs, { hp = 17, attack = 19, defense = 20, speed = 16, specialAttack = 13, specialDefense = 12 })
   Assert.equal(mon.heldItem, "NONE")
-  Assert.equal(stream:calls(), 6, "scripted construction keeps the uniform trace")
+  Assert.equal(stream:calls(), 5, "scripted construction keeps the uniform trace")
   rejectionCode(function()
     factory:createStatic("CHIKORITA", 5, stream, wildOptions({ leadAbility = "synchronize", leadNature = 1 }))
   end, "ENCOUNTER_INVALID_INPUT")
+end
+
+function T.lead_cute_charm_coerces_the_opposite_gender()
+  local factory = standardFactory()
+  local charmed = { leadAbility = "cute_charm", leadGender = "male" }
+  -- Seed 1 opens with a coercing check draw (16838 mod 3 is 2), so the
+  -- drawn personality is forced female: low byte cleared on the fourth draw.
+  local stream = Fixture.spyStream(1)
+  local mon = factory:create("EEVEE", 8, stream, wildOptions(charmed))
+  Assert.equal(mon.personality, 3538856960)
+  Assert.deepEqual(mon.ivs, { hp = 23, attack = 29, defense = 7, speed = 3, specialAttack = 15, specialDefense = 30 })
+  Assert.equal(Personality.gender(31, mon.personality), "female", "coercion forces the opposite gender")
+  Assert.equal(stream:calls(), 6, "coercion draws its check before identity")
+  Assert.deepEqual(
+    stream:labels(),
+    { "cute_charm", "personality_low", "personality_high", "iv_first", "iv_second", "held_item" }
+  )
+  -- Seed 0 opens with a refusal (0 mod 3 is 0): identity proceeds
+  -- unforced from the second draw on.
+  local plainStream = Fixture.spyStream(0)
+  local plain = factory:create("EEVEE", 8, plainStream, wildOptions(charmed))
+  Assert.equal(plain.personality, 1383197054, "a refused check shifts identity by one draw")
+  Assert.equal(Personality.gender(31, plain.personality), "male")
+  Assert.equal(plainStream:calls(), 6)
+  -- Genderless species never roll the check: SHEDINJA opens on identity.
+  local noneStream = Fixture.spyStream(1)
+  local noneMon = factory:create("SHEDINJA", 8, noneStream, wildOptions(charmed))
+  Assert.equal(noneStream:labels()[1], "personality_low", "genderless species skip the check")
+  Assert.equal(noneStream:calls(), 5)
+  Assert.equal(Personality.gender(255, noneMon.personality), "genderless")
+  local stray = Fixture.spyStream(0)
+  local before = stray:calls()
+  rejectionCode(function()
+    factory:create("EEVEE", 8, stray, wildOptions({ leadAbility = "cute_charm" }))
+  end, "ENCOUNTER_INVALID_INPUT")
+  Assert.equal(stray:calls(), before, "coercion without a lead gender consumes no draws")
+  rejectionCode(function()
+    factory:create("EEVEE", 8, stray, wildOptions({ leadAbility = "cute_charm", leadGender = "unknown" }))
+  end, "ENCOUNTER_INVALID_INPUT")
+  Assert.equal(stray:calls(), before, "coercion with an unknown gender consumes no draws")
+  rejectionCode(function()
+    factory:create("EEVEE", 8, stray, wildOptions({ leadGender = "male" }))
+  end, "ENCOUNTER_INVALID_INPUT")
+  Assert.equal(stray:calls(), before, "a lead gender without cute charm consumes no draws")
 end
 
 function T.compiled_catalog_lookup_preserves_native_order(context)

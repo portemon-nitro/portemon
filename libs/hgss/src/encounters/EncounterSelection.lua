@@ -2,9 +2,14 @@
 -- normative: the opportunity roll is compared against the method rate, the
 -- slot roll walks the ordered per-method interval ladder without merging
 -- equal species, and the level roll resolves inside the selected slot's
--- window. Rolls arrive already normalized; validation rejects out-of-range
--- rates and rolls at this boundary before any draw is consumed. Pure domain
--- module: no love dependency and no random source of its own.
+-- window (land slots carry a single fixed level, read with no roll).
+-- Before the slot roll, a magnet-pull or static lead may coerce the slot:
+-- on a passed 50% gate the pick is a uniform index into the ordered
+-- matching-type slots, and an empty or total match falls through to the
+-- normal roll. Rolls arrive already normalized; validation rejects
+-- out-of-range rates and rolls at this boundary before any draw is
+-- consumed. Pure domain module: no love dependency and no random source
+-- of its own.
 
 local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
@@ -112,6 +117,128 @@ function EncounterSelection.selectLevel(slot, roll)
   checkRangedInteger(roll, 0, EncounterSelection.MAX_DRAW, "encounter roll")
   local span = maxLevel - minLevel + 1
   return minLevel + (roll % span)
+end
+
+-- Reselects the highest-level same-species slot for the slot-level
+-- ability: walks every slot in order, keeping the last strictly higher
+-- same-species maximum, matching the native reseat loop.
+---@param slots table<string, unknown>[] ordered slots
+---@param chosen integer 1-based selected slot index
+---@return integer 1-based reselected slot index
+function EncounterSelection.highestSameSpeciesSlot(slots, chosen)
+  if not Validate.isArray(slots) or #slots == 0 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slots must be a non-empty array", {})
+  end
+  assert(type(slots) == "table", "slot reselection walks its ordered ladder")
+  if type(chosen) ~= "number" or chosen % 1 ~= 0 or chosen < 1 or chosen > #slots then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot selection is outside the ordered ladder", {})
+  end
+  assert(type(chosen) == "number", "slot reselection reads the selected index")
+  local selected = slots[chosen]
+  if type(selected) ~= "table" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. chosen .. " must be a record", {})
+  end
+  assert(type(selected) == "table", "slot reselection reads the selected slot")
+  if type(selected.species) ~= "string" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. chosen .. " carries an invalid species", {})
+  end
+  if type(selected.maxLevel) ~= "number" or selected.maxLevel % 1 ~= 0 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. chosen .. " carries an invalid level", {})
+  end
+  local reseated = chosen
+  local best = selected.maxLevel
+  local species = selected.species
+  for index, slot in ipairs(slots) do
+    if type(slot) ~= "table" then
+      Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. index .. " must be a record", {})
+    end
+    assert(type(slot) == "table", "slot reselection reads every slot")
+    if slot.species == species then
+      local maxLevel = slot.maxLevel
+      if type(maxLevel) ~= "number" or maxLevel % 1 ~= 0 then
+        Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. index .. " carries an invalid level", {})
+      end
+      assert(type(maxLevel) == "number", "slot reselection reads every maximum")
+      if maxLevel > best then
+        best = maxLevel
+        reseated = index
+      end
+    end
+  end
+  return reseated
+end
+
+-- Resolves the ordered 1-based slot indices whose species carries the
+-- target type, for the magnet-pull/static coercion. Either base type
+-- matches, mirroring the native scan over both type slots. An empty or
+-- total match yields nil: with no narrowing the attempt falls through to
+-- the normal slot roll without a pick draw. Unreadable slots (inert
+-- entries with no catalog record) read as no match instead of faulting,
+-- matching the native scan; every other malformed slot fails. The
+-- provider answers the lower-case type keys per species and form.
+---@param slots table<string, unknown>[] ordered slots
+---@param targetType string lower-case type key behind the coercion
+---@param typeOf fun(species: string, form: integer): string[]?
+---@return integer[]? ordered matching indices, or nil without a narrowing match
+function EncounterSelection.matchingTypeSlots(slots, targetType, typeOf)
+  if not Validate.isArray(slots) or #slots == 0 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slots must be a non-empty array", {})
+  end
+  assert(type(slots) == "table", "type coercion walks its ordered ladder")
+  if type(targetType) ~= "string" or targetType == "" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter type coercion requires a known type", {
+      targetType = targetType,
+    })
+  end
+  if type(typeOf) ~= "function" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter type coercion requires a type provider", {})
+  end
+  local matches = {}
+  for index, slot in ipairs(slots) do
+    if type(slot) ~= "table" then
+      Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. index .. " must be a record", {})
+    end
+    if type(slot.species) ~= "string" then
+      Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. index .. " carries an invalid species", {})
+    end
+    local form = slot.form or 0
+    if type(form) ~= "number" or form % 1 ~= 0 then
+      Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot " .. index .. " carries an invalid form", {})
+    end
+    local ok, types = pcall(typeOf, slot.species, form)
+    if ok and type(types) == "table" and Validate.isArray(types) then
+      assert(type(types) == "table", "the provider answers its type keys")
+      for _, typeKey in ipairs(types) do
+        if typeKey == targetType then
+          matches[#matches + 1] = index
+          break
+        end
+      end
+    end
+  end
+  if #matches == 0 or #matches == #slots then
+    return nil
+  end
+  return matches
+end
+
+-- Resolves the level inside one land slot: land tables carry a single
+-- level per slot, so generation reads the slot maximum with no level
+-- roll. Only the maximum is read, matching the native land branch; the
+-- window relationship stays a compiled-schema concern.
+---@param slot table<string, unknown>
+---@return integer
+function EncounterSelection.selectLandLevel(slot)
+  if type(slot) ~= "table" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter level selection requires a slot record", {})
+  end
+  assert(type(slot) == "table", "land level selection reads the slot record")
+  local maxLevel = slot.maxLevel
+  if type(maxLevel) ~= "number" or maxLevel % 1 ~= 0 or maxLevel < 0 or maxLevel > 255 then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "encounter slot carries an invalid level window", {})
+  end
+  assert(type(maxLevel) == "number", "the slot maximum carries the land level")
+  return maxLevel
 end
 
 ---@param member table<string, unknown>

@@ -171,7 +171,8 @@ end
 
 -- Member identities used across the suites: 11 always triggers on grass,
 -- 12 never triggers anywhere, 13 carries a mid grass rate for modifier
--- boundaries, 14 always bites on the old rod with leveled water slots.
+-- boundaries, 14 always bites on the old rod with leveled water slots,
+-- 16 carries a mid old-rod rate for bite-modifier boundaries.
 function EncounterFixture.vectorCatalog()
   local compiled = {
     schema = "vector-encounter-v1",
@@ -182,6 +183,7 @@ function EncounterFixture.vectorCatalog()
       [13] = memberTable(meadowDay(), rates(30, 0, 0, 0, 0, 0), "soulsilver"),
       [14] = memberTable(meadowDay(), rates(0, 0, 0, 100, 0, 0), "soulsilver"),
       [15] = memberTable(meadowDay(), rates(100, 100, 100, 0, 0, 0), "soulsilver"),
+      [16] = memberTable(meadowDay(), rates(0, 0, 0, 50, 0, 0), "soulsilver"),
     },
   }
   local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
@@ -190,9 +192,11 @@ function EncounterFixture.vectorCatalog()
 end
 
 --- A mon catalog where the two-ability species carries observable held
---- item entries, for the wild held-item branches.
+--- item entries, for the wild held-item branches. Optional overrides
+--- replace the common and/or rare entry before the catalog is built.
+---@param overrides { common: table<string, unknown>?, rare: table<string, unknown>? }?
 ---@return { catalog: table, items: table }
-function EncounterFixture.berryCatalogs()
+function EncounterFixture.berryCatalogs(overrides)
   local function deepCopy(value, seen)
     seen = seen or {}
     if type(value) ~= "table" then
@@ -209,8 +213,9 @@ function EncounterFixture.berryCatalogs()
     return out
   end
   local root = deepCopy(CatalogFixture.buildAssetRoot())
-  root.species.EEVEE.heldItems.common = { item = "SITRUS_BERRY", nativeId = 158 }
-  root.species.EEVEE.heldItems.rare = { item = "CHERI_BERRY", nativeId = 149 }
+  local entries = overrides or {}
+  root.species.EEVEE.heldItems.common = entries.common or { item = "SITRUS_BERRY", nativeId = 158 }
+  root.species.EEVEE.heldItems.rare = entries.rare or { item = "CHERI_BERRY", nativeId = 149 }
   local items = ItemFixture.makeCatalog()
   local Catalog = require("libs.mons.src.MonCatalog")
   return { catalog = Catalog.new(root, items), items = items }
@@ -260,11 +265,24 @@ function EncounterFixture.modifiers(overrides)
     roamerKey = nil,
     leadAbility = nil,
     leadNature = nil,
+    locomotion = "walk",
+    veryTallGrass = false,
+    facing = "north",
   }
   for key, value in pairs(overrides or {}) do
     modifiers[key] = value
   end
   return modifiers
+end
+
+--- Advances a fresh service past the native entry grace without drawing:
+--- three counted steps that never prepare, so step tests open on rolling
+--- attempts.
+---@param host table encounter service to advance
+function EncounterFixture.pastGrace(host)
+  host:noteStep()
+  host:noteStep()
+  host:noteStep()
 end
 
 ---@return { species: table<string, boolean>, maps: table<integer, boolean> } selected-reference sets

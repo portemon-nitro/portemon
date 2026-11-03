@@ -1,6 +1,6 @@
 -- Live broadcast music and encounter effects: the shared
 -- sequence-to-effect mapping resolves every music latch, tuned march and
--- lullaby shift land opportunity at the native rate stage while other
+-- lullaby shift land opportunity at the native movement stage while other
 -- methods and tracks stay identical, tuned regional music replaces its
 -- exact land slots with levels and weights kept, stopping clears the
 -- effect at once, a legacy saved music value can never replay without
@@ -154,48 +154,69 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
   checkEffectMapping(Effects)
 
   -- No-music baselines on the mid-rate vector table, fixed from the
-  -- generator: seed 0 triggers, seeds 1 and 7 miss with a single draw.
+  -- generator: seed 24 clears both rolls, seeds 1 and 7 refuse the
+  -- walking movement rate of 20 with a single draw. Land triggers draw
+  -- nine: movement, opportunity, slot, then the six-draw identity (land
+  -- takes no level roll).
   local host = vectorService()
-  local result, draws = attempt(host, 13, "grass", modifiers({ radio = "none" }), 0)
-  Assert.equal(signature(result, draws), "prepared/triggered/EEVEE/lv8/draws9", "the silent baseline triggers seed 0")
+  -- Past the native entry grace: the baselines below open on rolling
+  -- attempts, and the notification draws nothing.
+  host:noteStep()
+  host:noteStep()
+  host:noteStep()
+  local result, draws = attempt(host, 13, "grass", modifiers({ radio = "none" }), 24)
+  Assert.equal(
+    signature(result, draws),
+    "prepared/triggered/CHIKORITA/lv4/draws8",
+    "the silent baseline triggers seed 24"
+  )
   result, draws = attempt(host, 13, "grass", modifiers({ radio = "none" }), 1)
   Assert.equal(signature(result, draws), "none/no_opportunity/draws1", "the silent baseline misses seed 1")
   result, draws = attempt(host, 13, "grass", modifiers({ radio = "none" }), 7)
   Assert.equal(signature(result, draws), "none/no_opportunity/draws1", "the silent baseline misses seed 7")
 
-  -- March raises the staged rate by twenty-five points: rolls at or above
-  -- the silent rate but below the raised rate flip to encounters,
-  -- including the exact raised-rate boundary which still misses, while a
-  -- seed that already triggered keeps its identical mon and draw count.
+  -- March raises the movement rate by twenty-five points: movement rolls
+  -- at or above the silent twenty but below the raised forty-five reach
+  -- the table roll, including seeds that then trigger, while the exact
+  -- raised-movement boundary still misses and a seed that already
+  -- triggered keeps its identical mon and draw count.
   local marchFlips = {
-    { seed = 1, species = "EEVEE", level = 7 },
-    { seed = 7, species = "TOTODILE", level = 5 },
-    { seed = 8, species = "EEVEE", level = 8 },
-    { seed = 11, species = "TOTODILE", level = 5 },
-    { seed = 12, species = "CHIKORITA", level = 4 },
+    { seed = 28, species = "CHIKORITA", level = 4 },
+    { seed = 32, species = "CHIKORITA", level = 4 },
   }
   for _, flip in ipairs(marchFlips) do
     local marchResult, marchDraws = attempt(host, 13, "grass", modifiers({ radio = "march" }), flip.seed)
     Assert.equal(
       signature(marchResult, marchDraws),
-      "prepared/triggered/" .. flip.species .. "/lv" .. flip.level .. "/draws9",
+      "prepared/triggered/" .. flip.species .. "/lv" .. flip.level .. "/draws8",
       "march flips silent miss " .. flip.seed
     )
   end
-  result, draws = attempt(host, 13, "grass", modifiers({ radio = "march" }), 5)
-  Assert.equal(signature(result, draws), "none/no_opportunity/draws1", "the raised-rate boundary still misses")
-  result, draws = attempt(host, 13, "grass", modifiers({ radio = "march" }), 0)
-  Assert.equal(signature(result, draws), "prepared/triggered/EEVEE/lv8/draws9", "march keeps an existing hit identical")
+  result, draws = attempt(host, 13, "grass", modifiers({ radio = "march" }), 18)
+  Assert.equal(signature(result, draws), "none/no_opportunity/draws1", "the raised-movement boundary still misses")
+  result, draws = attempt(host, 13, "grass", modifiers({ radio = "march" }), 24)
+  Assert.equal(
+    signature(result, draws),
+    "prepared/triggered/CHIKORITA/lv4/draws8",
+    "march keeps an existing hit identical"
+  )
 
-  -- Lullaby lowers the staged rate by twenty-five points: rolls below the
-  -- silent rate but at or above the lowered rate flip to misses, while the
-  -- zero roll still triggers with its identical mon.
-  for _, seed in ipairs({ 3, 4, 10 }) do
+  -- Lullaby overflows the walking movement rate: twenty minus
+  -- twenty-five wraps the native unsigned stage to 251 and lands on the
+  -- cap, so every attempt reaches the table roll. Silent movement misses
+  -- become table misses (seeds 1 and 7 take two draws), the silent hit
+  -- stays identical (seed 24), and silent table misses keep their two
+  -- draws (seeds 3, 4, 10).
+  for _, seed in ipairs({ 1, 3, 4, 7, 10 }) do
     result, draws = attempt(host, 13, "grass", modifiers({ radio = "lullaby" }), seed)
-    Assert.equal(signature(result, draws), "none/no_opportunity/draws1", "lullaby flips silent hit " .. seed)
+    Assert.equal(signature(result, draws), "none/no_opportunity/draws2", "lullaby reaches the table on seed " .. seed)
   end
-  result, draws = attempt(host, 13, "grass", modifiers({ radio = "lullaby" }), 0)
-  Assert.equal(signature(result, draws), "prepared/triggered/EEVEE/lv8/draws9", "lullaby keeps the zero roll identical")
+  result, draws = attempt(host, 13, "grass", modifiers({ radio = "lullaby" }), 24)
+  Assert.equal(
+    signature(result, draws),
+    "prepared/triggered/CHIKORITA/lv4/draws8",
+    "lullaby keeps the table hit identical"
+  )
 
   -- Tracks without a rate effect never touch the opportunity path, and
   -- march/lullaby never reach fishing or scripted encounters. Regional

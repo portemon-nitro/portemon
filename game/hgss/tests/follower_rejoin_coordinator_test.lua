@@ -233,6 +233,7 @@ local function world(mode)
     session = {
       beginMapEntry = function() end,
     },
+    resetEncounterStepCounters = function() end,
     zoneController = {},
     fieldTravel = nil,
     followingMonTransition = nil,

@@ -179,6 +179,25 @@ function HgssRoamerState:isSwarmActive()
   return self._swarm == true
 end
 
+-- Reads the live repel counter for encounter preparation.
+---@return integer remaining repel steps
+function HgssRoamerState:repelSteps()
+  return self._repelSteps
+end
+
+-- Decrements the repel counter for one committed step, matching the native
+-- per-step update: a counter already at zero stays there. Returns true on
+-- the step that wears the repel off, the native hook for the map script
+-- the field owns.
+---@return boolean wore off on this step
+function HgssRoamerState:stepRepel()
+  if self._repelSteps <= 0 then
+    return false
+  end
+  self._repelSteps = self._repelSteps - 1
+  return self._repelSteps == 0
+end
+
 ---@param key unknown
 ---@return table<string, unknown>
 function HgssRoamerState:_recordOrRaise(key)

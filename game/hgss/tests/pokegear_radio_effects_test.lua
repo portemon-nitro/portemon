@@ -288,97 +288,133 @@ function T.tests.step_boost_thresholds_follow_the_native_count()
     "libs.hgss.src.encounters.HgssEncounterRate",
     "the encounter opportunity has no transcribed rate-stage policy yet: step counts change no rate"
   )
+  local function movement(overrides)
+    local facts = { locomotion = "walk", veryTallGrass = false, radio = "none" }
+    for key, value in pairs(overrides or {}) do
+      facts[key] = value
+    end
+    return Rate.movementRate(facts)
+  end
+  Assert.equal(movement(), 20, "walking paces the native movement roll at twenty")
+  Assert.equal(movement({ locomotion = "run" }), 40, "running skips the walking reduction")
+  Assert.equal(movement({ locomotion = "cycle" }), 70, "cycling adds thirty to the base forty")
+  Assert.equal(movement({ locomotion = "surf" }), 40, "surfing paces the base forty")
+  Assert.equal(movement({ veryTallGrass = true }), 60, "very tall grass adds forty on foot")
+  Assert.equal(movement({ locomotion = "run", veryTallGrass = true }), 80, "very tall grass adds forty running")
+  Assert.equal(
+    movement({ locomotion = "cycle", veryTallGrass = true }),
+    80,
+    "very tall grass replaces the cycling bonus"
+  )
   local cases = {
-    { steps = 0, want = 10 },
-    { steps = 1, want = 10 },
-    { steps = 2, want = 40 },
-    { steps = 3, want = 50 },
-    { steps = 4, want = 70 },
-    { steps = 9, want = 70 },
+    { steps = 0, want = 20 },
+    { steps = 1, want = 20 },
+    { steps = 2, want = 50 },
+    { steps = 3, want = 60 },
+    { steps = 4, want = 80 },
+    { steps = 9, want = 80 },
   }
   for _, case in ipairs(cases) do
     Assert.equal(
-      Rate.compute({ baseRate = 10, radio = "none", method = "grass", reverseTurnSteps = case.steps }),
+      movement({ reverseTurnSteps = case.steps }),
       case.want,
-      "ten base with " .. case.steps .. " reverse-turn steps stages " .. case.want
+      "walking with " .. case.steps .. " reverse-turn steps stages " .. case.want
     )
   end
 end
 
-function T.tests.music_shifts_land_rates_by_twenty_five_points_before_the_cap()
+function T.tests.music_shifts_movement_rates_by_twenty_five_points_before_the_cap()
   local Rate = requireFeature(
     "libs.hgss.src.encounters.HgssEncounterRate",
     "the encounter opportunity has no transcribed rate-stage policy yet: march and lullaby change no rate"
   )
+  local function movement(overrides)
+    local facts = { locomotion = "walk", veryTallGrass = false, radio = "none" }
+    for key, value in pairs(overrides or {}) do
+      facts[key] = value
+    end
+    return Rate.movementRate(facts)
+  end
   Assert.equal(
-    Rate.compute({ baseRate = 30, radio = "march", method = "grass" }),
-    55,
-    "march raises the staged land rate by twenty-five points"
+    movement({ radio = "march" }),
+    45,
+    "march raises the walking movement rate by twenty-five points"
   )
   Assert.equal(
-    Rate.compute({ baseRate = 30, radio = "lullaby", method = "grass" }),
-    5,
-    "lullaby lowers the staged land rate by twenty-five points"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 90, radio = "march", method = "grass" }),
+    movement({ radio = "lullaby" }),
     100,
-    "the staged rate caps at one hundred"
+    "lullaby overflows the walking movement rate onto the cap (native unsigned wrap)"
   )
   Assert.equal(
-    Rate.compute({ baseRate = 100, radio = "march", method = "grass" }),
-    100,
-    "a full rate stays full under march"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 10, radio = "lullaby", method = "grass" }),
-    0,
-    "the staged rate floors at zero instead of wrapping"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 0, radio = "lullaby", method = "grass" }),
-    0,
-    "an empty rate stays empty under lullaby"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 20, radio = "march", method = "grass", reverseTurnSteps = 3 }),
-    85,
-    "music applies after the step boost"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 80, radio = "lullaby", method = "grass", reverseTurnSteps = 4 }),
-    100,
-    "the cap lands after both the boost and the music"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 40, radio = "march", method = "surf" }),
+    movement({ locomotion = "run", radio = "march" }),
     65,
-    "surfing shares the land-or-surf music stage"
+    "march raises the running movement rate by twenty-five points"
+  )
+  Assert.equal(
+    movement({ locomotion = "surf", radio = "lullaby" }),
+    15,
+    "lullaby lowers the surfing movement rate by twenty-five points"
+  )
+  Assert.equal(
+    movement({ locomotion = "cycle", radio = "march", reverseTurnSteps = 4 }),
+    100,
+    "the movement rate caps at one hundred"
+  )
+  Assert.equal(
+    movement({ radio = "lullaby", reverseTurnSteps = 4 }),
+    55,
+    "turn steps apply before the music"
   )
 end
 
-function T.tests.music_never_reaches_fishing_or_rock_smash_rates()
-  local Rate = requireFeature(
-    "libs.hgss.src.encounters.HgssEncounterRate",
-    "the encounter opportunity has no transcribed rate-stage policy yet: method gates are unowned"
-  )
-  Assert.equal(Rate.compute({ baseRate = 40, radio = "march", method = "fish" }), 40, "march never reaches fishing")
-  Assert.equal(Rate.compute({ baseRate = 40, radio = "lullaby", method = "fish" }), 40, "lullaby never reaches fishing")
-  Assert.equal(
-    Rate.compute({ baseRate = 40, radio = "march", method = "fish", reverseTurnSteps = 4 }),
-    40,
-    "fishing takes neither the boost nor the music"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 40, radio = "march", method = "rock_smash" }),
-    40,
-    "march never reaches rock smash"
-  )
-  Assert.equal(
-    Rate.compute({ baseRate = 40, radio = "lullaby", method = "rock_smash" }),
-    40,
-    "lullaby never reaches rock smash"
-  )
+function T.tests.music_never_reaches_fishing_or_rock_smash_attempts()
+  -- The movement stage only paces land and water steps: fishing and rock
+  -- smash attempts never draw a movement roll, so live music leaves
+  -- their kind, reason, draw count, and mon identical to silence.
+  local host = vectorService()
+  local function signature(result, draws)
+    local parts = { result.kind, tostring(result.reason), "draws" .. draws }
+    if result.encounter ~= nil then
+      local mon = result.encounter.mons[1].mon
+      parts[#parts + 1] = tostring(mon.species)
+      parts[#parts + 1] = "lv" .. tostring(mon.met.level)
+    end
+    return table.concat(parts, "/")
+  end
+  local function attempt(method, movement, mapId, modifiers, seed)
+    local context = EncounterFixture.context({ mapId = mapId, method = method, movement = movement })
+    context.modifiers = modifiers
+    local stream = EncounterFixture.spyStream(seed)
+    return signature(host:attempt(context, stream), stream:calls())
+  end
+  for _, seed in ipairs({ 0, 1, 3 }) do
+    local silentFish = attempt(
+      "fish",
+      "fish",
+      14,
+      EncounterFixture.modifiers({ rod = "old_rod", radio = "none" }),
+      seed
+    )
+    local silentRock = attempt(
+      "rock_smash",
+      "field_move",
+      15,
+      EncounterFixture.modifiers({ radio = "none" }),
+      seed
+    )
+    for _, radio in ipairs({ "march", "lullaby" }) do
+      Assert.equal(
+        attempt("fish", "fish", 14, EncounterFixture.modifiers({ rod = "old_rod", radio = radio }), seed),
+        silentFish,
+        radio .. " leaves the fishing attempt untouched on seed " .. seed
+      )
+      Assert.equal(
+        attempt("rock_smash", "field_move", 15, EncounterFixture.modifiers({ radio = radio }), seed),
+        silentRock,
+        radio .. " leaves the rock smash attempt untouched on seed " .. seed
+      )
+    end
+  end
 end
 
 function T.tests.rate_facts_reject_malformed_input_and_stay_immutable()
@@ -388,57 +424,64 @@ function T.tests.rate_facts_reject_malformed_input_and_stay_immutable()
     "the encounter opportunity has no transcribed rate-stage policy yet: fact validation is unowned"
   )
   local badFacts = {
-    { radio = "none", method = "grass" },
-    { baseRate = -1, radio = "none", method = "grass" },
-    { baseRate = 256, radio = "none", method = "grass" },
-    { baseRate = 30.5, radio = "none", method = "grass" },
-    { baseRate = 30, radio = "unova", method = "grass" },
-    { baseRate = 30, radio = "hoenn", method = "grass" },
-    { baseRate = 30, radio = "none", method = "warp" },
-    { baseRate = 30, radio = "none", method = "grass", reverseTurnSteps = -1 },
-    { baseRate = 30, radio = "none", method = "grass", reverseTurnSteps = 2.5 },
+    { veryTallGrass = false, radio = "none" },
+    { locomotion = "swim", veryTallGrass = false, radio = "none" },
+    { locomotion = "walk", veryTallGrass = false },
+    { locomotion = "walk", veryTallGrass = "sometimes", radio = "none" },
+    { locomotion = "walk", veryTallGrass = false, radio = "unova" },
+    { locomotion = "walk", veryTallGrass = false, radio = "hoenn" },
+    { locomotion = "walk", veryTallGrass = false, radio = "none", reverseTurnSteps = -1 },
+    { locomotion = "walk", veryTallGrass = false, radio = "none", reverseTurnSteps = 2.5 },
   }
   for _, facts in ipairs(badFacts) do
     local err = Assert.throws(function()
-      Rate.compute(facts)
-    end, "malformed rate facts must fail")
+      Rate.movementRate(facts)
+    end, "malformed movement facts must fail")
     Assert.isTrue(Errors.is(err), "the rejection uses the structured error path")
     Assert.equal(assert(err).code, "ENCOUNTER_INVALID_INPUT", "the rejection names its contract")
   end
-  local facts = { baseRate = 30, radio = "march", method = "grass", reverseTurnSteps = 2 }
-  local first = Rate.compute(facts)
-  Assert.equal(first, 85, "thirty base with two reverse-turn steps under march stages eighty-five")
+  local facts = { locomotion = "run", veryTallGrass = false, radio = "march", reverseTurnSteps = 2 }
+  local first = Rate.movementRate(facts)
+  Assert.equal(first, 95, "running with two reverse-turn steps under march stages ninety-five")
   Assert.deepEqual(
     facts,
-    { baseRate = 30, radio = "march", method = "grass", reverseTurnSteps = 2 },
-    "computing a rate never mutates its facts"
+    { locomotion = "run", veryTallGrass = false, radio = "march", reverseTurnSteps = 2 },
+    "staging a rate never mutates its facts"
   )
-  Assert.equal(Rate.compute(facts), first, "rate reads are pure across calls")
+  Assert.equal(Rate.movementRate(facts), first, "rate reads are pure across calls")
 end
 
-function T.tests.radio_applies_before_intimidate_halving()
+function T.tests.radio_stages_movement_while_intimidate_suppresses_selection()
   requireFeature(
     "libs.hgss.src.encounters.HgssEncounterRate",
     "the encounter opportunity has no transcribed rate-stage policy yet: modifier order is unowned"
   )
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local host = vectorService()
+  EncounterFixture.pastGrace(host)
   local _ = CatalogFixture
   local lead = EncounterFixture.mon("TOTODILE", 10, 11)
-  -- March then halve: floor(55 / 2) is 27, so the seed-1 roll of 38 misses
-  -- with a single draw; halving first would stage a different rate.
+  -- Silence refuses seed 1 at the movement roll (38 against the walking
+  -- twenty) after a single draw, before intimidate ever stages.
+  local silent = EncounterFixture.context({ mapId = 13, method = "grass", lead = lead })
+  silent.modifiers = EncounterFixture.modifiers({ radio = "none", leadAbility = "intimidate" })
+  local silentStream = EncounterFixture.spyStream(1)
+  local silentResult = host:attempt(silent, silentStream)
+  Assert.equal(silentResult.kind, "none", "silence misses seed 1 at the movement roll")
+  Assert.equal(silentResult.reason, "no_opportunity", "the miss names its stage")
+  Assert.equal(silentStream:calls(), 1, "a missed movement roll draws once")
+  -- March paces the movement roll while the table rate stays whole:
+  -- seed 1 passes movement (38 under forty-five) then misses the full
+  -- table rate of 30 (roll 65) after two draws, never reaching the
+  -- suppression check.
   local context = EncounterFixture.context({ mapId = 13, method = "grass", lead = lead })
   context.modifiers = EncounterFixture.modifiers({ radio = "march", leadAbility = "intimidate" })
   local stream = EncounterFixture.spyStream(1)
   local result = host:attempt(context, stream)
-  Assert.equal(result.kind, "none", "march under intimidate misses seed 1")
+  Assert.equal(result.kind, "none", "march under intimidate misses seed 1 at the table roll")
   Assert.equal(result.reason, "no_opportunity", "the miss names its stage")
-  Assert.equal(stream:calls(), 1, "a missed opportunity draws once")
-  local plain = EncounterFixture.context({ mapId = 13, method = "grass", lead = lead })
-  plain.modifiers = EncounterFixture.modifiers({ radio = "none", leadAbility = "intimidate" })
-  local plainStream = EncounterFixture.spyStream(0)
-  local plainResult = host:attempt(plain, plainStream)
-  Assert.equal(plainResult.kind, "prepared", "silence under intimidate still triggers the zero roll")
+  Assert.equal(stream:calls(), 2, "a missed table roll draws twice")
+  Assert.deepEqual(stream:labels(), { "movement", "opportunity" })
 end
 
 function T.tests.tuning_rims_prefer_clear_then_weak_then_silence()

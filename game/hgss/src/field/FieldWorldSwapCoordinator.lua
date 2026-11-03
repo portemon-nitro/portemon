@@ -228,6 +228,7 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   end
   runtime.scripts:onMapSwap(prepared.player, runtimeMap)
   runtime.session:beginMapEntry()
+  runtime:resetEncounterStepCounters()
   -- The durable destination is published: one ordinary arrival may announce
   -- the new area, regardless of the source section. Ineligible destinations
   -- are the controller's own compiled-eligibility decision.

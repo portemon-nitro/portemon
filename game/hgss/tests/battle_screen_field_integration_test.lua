@@ -1306,6 +1306,10 @@ function T.tests.opening_walk_reaches_playable_battles()
         game:move("east")
       end
       envelope:updateFixed(TICK)
+      -- A host update spanning several fixed ticks still consumes the
+      -- committed step exactly once, as the sibling grass walk does.
+      runtime:update(3 * TICK)
+      envelope:updateFixed(TICK)
     end
     Assert.isTrue(launched, "the opening walk reaches a real route encounter")
     -- Native paired views: the command root and the Fight move list draw

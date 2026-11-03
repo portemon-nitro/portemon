@@ -38,8 +38,29 @@ local function roamingState()
   return state, stored, refs
 end
 
-function T.roamer_encounters_reuse_the_stored_identity()
-  local state, stored = roamingState()
+function T.repel_steps_decrement_once_per_committed_step()
+  local Roamers = Fixture.requirePresent(ROAMER_MODULE, "stable roaming state and lifecycle")
+  local refs = Fixture.refs()
+  -- A fresh owner counts no repel: stepping at zero wears nothing off.
+  local quiet = Roamers.new({ records = {}, species = refs.species, maps = refs.maps })
+  Assert.equal(quiet:repelSteps(), 0)
+  Assert.isFalse(quiet:stepRepel(), "a counter at zero stays there without wearing off")
+  Assert.equal(quiet:repelSteps(), 0)
+  -- An armed counter decrements once per committed step and reports the
+  -- step that wears it off, matching the native per-step update.
+  local armed = Roamers.new({ records = {}, species = refs.species, maps = refs.maps, repelSteps = 3 })
+  Assert.equal(armed:repelSteps(), 3)
+  Assert.isFalse(armed:stepRepel())
+  Assert.equal(armed:repelSteps(), 2)
+  Assert.isFalse(armed:stepRepel())
+  Assert.equal(armed:repelSteps(), 1)
+  Assert.isTrue(armed:stepRepel(), "the step that reaches zero wears the repel off")
+  Assert.equal(armed:repelSteps(), 0)
+  Assert.isFalse(armed:stepRepel(), "a worn-off repel stays spent")
+  Assert.equal(armed:capture().repelSteps, 0, "the spent counter persists")
+end
+
+function T.roamer_encounters_reuse_the_stored_identity()  local state, stored = roamingState()
   local found = state:prepareEncounter("roamer-eevee")
   Assert.equal(found.key, "roamer-eevee")
   Assert.equal(found.location, 11)

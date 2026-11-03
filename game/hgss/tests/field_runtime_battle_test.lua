@@ -830,6 +830,7 @@ function T.water_modal_and_held_steps_draw_no_opportunity()
       draws = draws + 1
       return { kind = "miss", reason = "no_opportunity" }
     end,
+    noteStep = function() end,
   }
   steppingRuntime({ service = service, behavior = 16 }):_consumeCommittedStep()
   Assert.equal(draws, 0, "stepping onto water on foot draws nothing")
@@ -956,7 +957,12 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
     return runtime, service, worldRng
   end
 
-  local runtime, _, _ = liveField(99)
+  local runtime, service, _ = liveField(2)
+  -- Past the native entry grace without drawing: the notification
+  -- counts steps while the world stream stays untouched.
+  service:noteStep()
+  service:noteStep()
+  service:noteStep()
   local context = attemptContext()
   local result = runtime:attemptEncounter(context)
   Assert.notNil(result, "the field attempt answers through its composed service")
@@ -974,7 +980,10 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
   Assert.equal(context.mapId, 11, "the lookup identity rides through unchanged")
   Assert.isNil(context.met, "the field stages its own copy instead of mutating the caller")
 
-  local authoredRuntime, _, _ = liveField(99)
+  local authoredRuntime, authoredService, _ = liveField(2)
+  authoredService:noteStep()
+  authoredService:noteStep()
+  authoredService:noteStep()
   local authored = attemptContext()
   authored.met = { location = 5, date = { year = 2024, month = 2, day = 29 } }
   local authoredResult = authoredRuntime:attemptEncounter(authored)
@@ -987,7 +996,7 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
     day = authoredMon.met.date.day,
   }, { year = 2024, month = 2, day = 29 }, "an explicitly supplied date is never overwritten")
 
-  local rejectedRuntime, _, rejectedRng = liveField(99)
+  local rejectedRuntime, _, rejectedRng = liveField(2)
   local rejected = attemptContext()
   rejected.met = { location = -1, date = { year = 2026, month = 10, day = 9 } }
   local drawsBefore = rejectedRng:serialize().calls
@@ -1000,7 +1009,10 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
   Assert.isNil(rejectedRuntime.pendingEncounterId, "rejected input holds no preparation")
 
   local headless = liveService()
-  local headlessRng = ScriptRng.new(99)
+  headless:noteStep()
+  headless:noteStep()
+  headless:noteStep()
+  local headlessRng = ScriptRng.new(2)
   local headlessStream = {
     nextU16 = function(_, _, _)
       return headlessRng:nextRaw() % 65536
@@ -1017,6 +1029,576 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
     month = headlessMon.met.date.month,
     day = headlessMon.met.date.day,
   }, { year = 2000, month = 1, day = 1 }, "callers without context keep the neutral date")
+end
+
+-- Committed steps name the native movement-roll facts: the avatar pace and
+-- the very-tall-grass arrival reach the encounter attempt untouched.
+function T.committed_steps_name_the_movement_roll_facts()
+  local cases = {
+    { name = "walking", behavior = 2, avatar = nil, speed = nil, locomotion = "walk", veryTallGrass = false },
+    { name = "running", behavior = 2, avatar = nil, speed = "run", locomotion = "run", veryTallGrass = false },
+    {
+      name = "cycling",
+      behavior = 2,
+      avatar = "cycling",
+      speed = nil,
+      locomotion = "cycle",
+      veryTallGrass = false,
+    },
+    {
+      name = "surfing",
+      behavior = 16,
+      avatar = "surfing",
+      speed = nil,
+      locomotion = "surf",
+      veryTallGrass = false,
+    },
+    {
+      name = "very tall grass",
+      behavior = 3,
+      avatar = nil,
+      speed = nil,
+      locomotion = "walk",
+      veryTallGrass = true,
+    },
+  }
+  for _, case in ipairs(cases) do
+    local avatar = nil
+    if case.avatar ~= nil then
+      local durable = case.avatar
+      avatar = {
+        status = function()
+          return { durableState = durable }
+        end,
+      }
+    end
+    local player = { fieldX = 5, fieldZ = 7, facing = "south" }
+    if case.speed ~= nil then
+      local speed = case.speed
+      player.movementTransaction = function()
+        return { speed = speed }
+      end
+    end
+    local runtime = fakeRuntime({
+      _encounters = {},
+      overworld = nil,
+      player = player,
+      playerAvatar = avatar,
+      session = {
+        tick = 41,
+        takeCommittedStep = function()
+          return { serial = 1, fieldX = 5, fieldZ = 7 }
+        end,
+        mapEntryController = {
+          isActive = function()
+            return false
+          end,
+        },
+        dialogue = {
+          isModal = function()
+            return false
+          end,
+        },
+        currentMap = { fieldData = { wildEncounterMemberId = 11 } },
+      },
+    })
+    local behavior = case.behavior
+    runtime.arrivalBehavior = function()
+      return behavior
+    end
+    local captured = nil
+    runtime.attemptEncounter = function(_, context)
+      captured = context
+      return nil
+    end
+    runtime:_consumeCommittedStep()
+    local context = assert(captured, case.name .. " admits its committed step to an attempt")
+    Assert.equal(context.movement, "step", case.name .. " attempts read as steps")
+    Assert.equal(
+      context.method,
+      case.behavior == 16 and "surf" or "grass",
+      case.name .. " resolves its encounter method"
+    )
+    Assert.equal(context.mapId, 11, case.name .. " keeps the table member lookup")
+    Assert.equal(context.modifiers.locomotion, case.locomotion, case.name .. " names its pace")
+    Assert.equal(context.modifiers.veryTallGrass, case.veryTallGrass, case.name .. " names its grass fact")
+    Assert.equal(context.modifiers.facing, "south", case.name .. " names its step facing")
+  end
+end
+
+-- Steps outside encounter tiles never attempt, but they still count
+-- toward the entry grace through the step notification.
+function T.non_encounter_steps_advance_grace_without_attempting()
+  local reached = false
+  local notified = 0
+  local runtime = fakeRuntime({
+    _encounters = {
+      noteStep = function(self)
+        notified = notified + 1
+      end,
+    },
+    overworld = nil,
+    player = { fieldX = 5, fieldZ = 7, facing = "south" },
+    playerAvatar = nil,
+    session = {
+      tick = 41,
+      takeCommittedStep = function()
+        return { serial = 1, fieldX = 5, fieldZ = 7 }
+      end,
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      currentMap = { fieldData = { wildEncounterMemberId = 11 } },
+    },
+  })
+  runtime.arrivalBehavior = function()
+    return 0
+  end
+  runtime.attemptEncounter = function()
+    reached = true
+    return nil
+  end
+  runtime:_consumeCommittedStep()
+  Assert.isFalse(reached, "ordinary ground never attempts")
+  Assert.equal(notified, 1, "ordinary ground still counts toward the entry grace")
+end
+
+-- Map entries reset the step-driven encounter counters through the
+-- runtime lifecycle owner; an absent service tolerates the call.
+function T.map_entries_reset_the_encounter_step_counters()
+  local resets = 0
+  local runtime = fakeRuntime({
+    _encounters = {
+      resetStepCounters = function()
+        resets = resets + 1
+      end,
+    },
+  })
+  runtime:resetEncounterStepCounters()
+  Assert.equal(resets, 1, "entry resets the encounter counters")
+  local bare = fakeRuntime({ _encounters = nil })
+  bare:resetEncounterStepCounters()
+end
+
+-- Committed steps derive the live party lead facts: the slot-0 ability
+-- maps onto the encounter vocabulary, egg leads map to no ability, and the
+-- first alive mon rides beside the lead for repel and friendship.
+local function leadStepRuntime(overrides)
+  local seen = {}
+  local service = {
+    attempt = function(_, context, _)
+      seen[#seen + 1] = context
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+    noteStep = function() end,
+  }
+  local base = {
+    _encounters = service,
+    player = { fieldX = 5, fieldZ = 7, facing = "south" },
+    session = {
+      tick = 41,
+      takeCommittedStep = function()
+        return { serial = 1, fieldX = 5, fieldZ = 7 }
+      end,
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      currentMap = { fieldData = { wildEncounterMemberId = 11 }, effectiveWeatherId = 5 },
+    },
+  }
+  for key, value in pairs(overrides or {}) do
+    base[key] = value
+  end
+  local runtime = fakeRuntime(base)
+  runtime.arrivalBehavior = function()
+    return 2
+  end
+  local captured = nil
+  runtime.attemptEncounter = function(_, context)
+    captured = context
+    return nil
+  end
+  return runtime, seen, function()
+    return captured
+  end
+end
+
+function T.committed_steps_name_the_live_party_lead_facts()
+  local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
+  local RoamerState = EncounterFixture.requirePresent(
+    "libs.hgss.src.encounters.HgssRoamerState",
+    "stable roaming state owns the live repel counter"
+  )
+  local refs = EncounterFixture.refs()
+  local roamers = RoamerState.new({ records = {}, species = refs.species, maps = refs.maps, repelSteps = 5 })
+  -- A hand-built slot-0 record: the adapter reads the raw domain fields
+  -- and maps the upper-case ability onto the encounter vocabulary.
+  local lead = {
+    species = "TOTODILE",
+    ability = "INTIMIDATE",
+    isEgg = false,
+    personality = 12345,
+    heldItem = "CLEANSE_TAG",
+    friendship = 200,
+    met = { level = 10 },
+    experience = 0,
+  }
+  local monService = {
+    partyCount = function()
+      return 1
+    end,
+    partyMon = function(_, slot)
+      assert(slot == 0, "the lead reads slot zero")
+      return lead
+    end,
+    leadAliveSlot = function()
+      return 0
+    end,
+  }
+  local catalog = { species = function(_)
+    return { genderRatio = 31 }
+  end,
+  }
+  local runtime, _, captured = leadStepRuntime({
+    monService = monService,
+    monCatalog = catalog,
+    roamerState = roamers,
+    followingMon = {
+      isActive = function()
+        return true
+      end,
+    },
+  })
+  runtime:_consumeCommittedStep()
+  local context = assert(captured(), "the committed step attempts with lead facts")
+  Assert.equal(context.modifiers.leadAbility, "intimidate", "the slot-0 ability maps onto the encounter vocabulary")
+  Assert.equal(context.modifiers.leadNature, 20, "the lead nature derives from the personality")
+  Assert.equal(context.modifiers.leadGender, "male", "the lead gender derives from the catalog ratio")
+  Assert.equal(context.lead, lead, "the slot-0 record rides as the lead")
+  Assert.equal(context.firstAlive, lead, "the single-mon party leads its alive facts")
+  Assert.equal(context.modifiers.repel, true, "an armed counter reads active")
+  Assert.equal(context.modifiers.repelSteps, 4, "the committed step ticks the field-owned counter first")
+  Assert.equal(roamers:repelSteps(), 4, "the step decrements the owned counter exactly once")
+  Assert.equal(context.modifiers.followActive, true, "an active follower with an alive mon reads active")
+  Assert.equal(context.environment.weather, "snow", "snow weather names its effect")
+end
+
+function T.committed_steps_map_magnet_pull_and_static_onto_the_vocabulary()
+  local cases = { MAGNET_PULL = "magnet_pull", STATIC = "static" }
+  for ability, expected in pairs(cases) do
+    local lead = {
+      species = "TOTODILE",
+      ability = ability,
+      isEgg = false,
+      personality = 12345,
+      heldItem = "NONE",
+      friendship = 70,
+      met = { level = 10 },
+      experience = 0,
+    }
+    local monService = {
+      partyCount = function()
+        return 1
+      end,
+      partyMon = function(_, slot)
+        assert(slot == 0, "the lead reads slot zero")
+        return lead
+      end,
+      leadAliveSlot = function()
+        return 0
+      end,
+    }
+    local catalog = { species = function(_)
+      return { genderRatio = 31 }
+    end,
+    }
+    local runtime, _, captured = leadStepRuntime({ monService = monService, monCatalog = catalog })
+    runtime:_consumeCommittedStep()
+    local context = assert(captured(), "the committed step attempts with lead facts")
+    Assert.equal(
+      context.modifiers.leadAbility,
+      expected,
+      "the slot-0 ability " .. ability .. " maps onto the encounter vocabulary"
+    )
+  end
+end
+
+-- Composed encounters resolve slot types through the live mon catalog:
+-- with no electric vector slot behind a static lead the passed gate
+-- falls through to the normal roll, but the consumed gate draw proves
+-- the production provider is active (without one the gate draws nothing).
+function T.composed_encounters_coerce_through_the_live_mon_catalog()
+  local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local RoamerState = EncounterFixture.requirePresent(
+    "libs.hgss.src.encounters.HgssRoamerState",
+    "stable roaming state owns the live repel counter"
+  )
+  local cacheFs = {
+    loadLua = function(_)
+      return { schema = FieldFontCache.SCHEMA, charmap = CatalogFixture.CHARMAP }
+    end,
+  }
+  local refs = EncounterFixture.refs()
+  local roamers = RoamerState.new({ records = {}, species = refs.species, maps = refs.maps, repelSteps = 0 })
+  local runtime = fakeRuntime({
+    cacheFs = cacheFs,
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemFixture.makeCatalog(),
+    roamerState = roamers,
+    versionId = "soulsilver",
+    monLanguage = "english",
+  })
+  runtime:composeEncounters(EncounterFixture.vectorCatalog())
+  local service = assert(runtime._encounters, "composition installs the encounter service")
+  service:noteStep()
+  service:noteStep()
+  service:noteStep()
+  local stream = EncounterFixture.spyStream(3)
+  -- Seed 3 draws: movement 15, opportunity 46, gate 54250 even, then the
+  -- normal slot roll 64452 answers slot 4 (roll 52 opens the fourth land
+  -- interval) at fixed level 6.
+  local context = EncounterFixture.context({ lead = EncounterFixture.mon("TOTODILE", 10, 11) })
+  context.modifiers = EncounterFixture.modifiers({ leadAbility = "static" })
+  local result = service:attempt(context, stream)
+  Assert.equal(result.kind, "prepared")
+  local mon = assert(result.encounter.mons[1].mon, "the encounter carries its wild mon")
+  Assert.equal(mon.species, "TOTODILE")
+  Assert.equal(mon.met.level, 6)
+  Assert.deepEqual(stream:labels(), {
+    "movement",
+    "opportunity",
+    "slot_coerce",
+    "slot",
+    "personality_low",
+    "personality_high",
+    "iv_first",
+    "iv_second",
+    "held_item",
+  })
+end
+
+-- Sweet scent stages the standing tile's live music and swarm facts:
+-- natively the scripted check applies the radio-sound replacement and the
+-- land swarm, unlike rock smash and headbutt which roll their slots raw.
+-- Steps on a map without an encounter bank never attempt: the native
+-- step check sits behind the map-level wild-encounter gate, so the
+-- ENCDATA_NA member counts grace without consulting any table.
+function T.steps_without_an_encounter_bank_count_grace_without_attempting()
+  local attempts = 0
+  local noted = 0
+  local service = {
+    attempt = function()
+      attempts = attempts + 1
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+    noteStep = function()
+      noted = noted + 1
+    end,
+  }
+  local runtime = fakeRuntime({
+    _encounters = service,
+    player = { fieldX = 665, fieldZ = 404 },
+    playerData = { profile = {} },
+    session = {
+      setBattleActive = function() end,
+      tick = 7,
+      takeCommittedStep = function()
+        return { serial = 1, fieldX = 665, fieldZ = 404 }
+      end,
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      currentMap = {
+        mapId = 16,
+        mapSectionNativeId = 77,
+        coordinateOrigin = { x = 0, z = 0 },
+        collision = {
+          containsLocal = function()
+            return true
+          end,
+          getLocal = function()
+            return { behavior = 2 }
+          end,
+        },
+        fieldData = { wildEncounterMemberId = 255 },
+      },
+    },
+  })
+  runtime:_consumeCommittedStep()
+  Assert.equal(attempts, 0, "the sentinel member attempts nothing")
+  Assert.equal(noted, 1, "the sentinel step still counts toward entry grace")
+end
+
+function T.sweet_scent_carries_the_live_radio_and_swarm_facts()
+  local Music = require("game.hgss.src.pokegear.radio.Music")
+  local seen = {}
+  local service = {
+    attempt = function(_, context, _)
+      seen[#seen + 1] = context
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+  }
+  local runtime = fakeRuntime({
+    _encounters = service,
+    player = { fieldX = 665, fieldZ = 404 },
+    audio = {
+      currentRadioSequence = function()
+        return Music.HOENN_SEQUENCE
+      end,
+    },
+    roamerState = {
+      isSwarmActive = function()
+        return true
+      end,
+    },
+    pokegearState = {
+      readDailyIdentity = function()
+        return { outbreakSeed = 7 }
+      end,
+    },
+    session = {
+      tick = 9,
+      currentMap = {
+        mapId = 16,
+        mapSectionNativeId = 77,
+        coordinateOrigin = { x = 0, z = 0 },
+        collision = {
+          containsLocal = function()
+            return true
+          end,
+          getLocal = function()
+            return { behavior = 2 }
+          end,
+        },
+        fieldData = { wildEncounterMemberId = 11 },
+      },
+    },
+  })
+  local result = runtime:attemptSweetScentEncounter()
+  Assert.equal(assert(result).kind, "miss", "the capture service misses without a rate")
+  local context = assert(seen[1], "sweet scent attempts over the standing tile")
+  Assert.equal(context.method, "grass")
+  Assert.equal(context.modifiers.sweetScent, true)
+  Assert.equal(context.modifiers.radio, "hoenn", "sweet scent stages the live music replacement")
+  Assert.equal(context.modifiers.swarm, true, "sweet scent stages the live swarm")
+end
+
+function T.committed_steps_read_inactive_repel_without_a_party()
+  local runtime, _, captured = leadStepRuntime({})
+  runtime:_consumeCommittedStep()
+  local context = assert(captured(), "the committed step attempts without lead facts")
+  Assert.isNil(context.lead, "no party means no lead")
+  Assert.isNil(context.firstAlive, "no party means no alive mon")
+  Assert.isNil(context.modifiers.leadAbility, "no party means no ability")
+  Assert.equal(context.modifiers.repel, false, "no roamer state reads inactive")
+  Assert.equal(context.modifiers.repelSteps, 0, "no roamer state reads spent")
+  Assert.equal(context.modifiers.followActive, false, "no follower reads inactive")
+  Assert.equal(context.environment.weather, "snow", "weather derives without a party")
+end
+
+-- Field moves carry the slot-0 lead for deterrence and generation but
+-- never arm repel: the scripted path leaves suppression to the lead
+-- ability alone.
+function T.field_moves_carry_the_lead_without_repel()
+  local lead = {
+    species = "TOTODILE",
+    ability = "INTIMIDATE",
+    isEgg = false,
+    personality = 12345,
+    heldItem = "NONE",
+    friendship = 70,
+    met = { level = 12 },
+    experience = 0,
+  }
+  local monService = {
+    partyCount = function()
+      return 1
+    end,
+    partyMon = function()
+      return lead
+    end,
+    leadAliveSlot = function()
+      return 0
+    end,
+  }
+  local seen = {}
+  local service = {
+    attempt = function(_, context, _)
+      seen[#seen + 1] = context
+      return { kind = "miss", reason = "no_opportunity" }
+    end,
+  }
+  local runtime = fakeRuntime({
+    _encounters = service,
+    monService = monService,
+    session = {
+      tick = 9,
+      currentMap = { mapId = 16, mapSectionNativeId = 77, fieldData = { wildEncounterMemberId = 11 } },
+    },
+  })
+  runtime:attemptFieldMoveEncounter("rock_smash", {})
+  local context = assert(seen[1], "the field move attempts with lead facts")
+  Assert.equal(context.method, "rock_smash")
+  Assert.equal(context.movement, "field_move")
+  Assert.equal(context.modifiers.leadAbility, "intimidate")
+  Assert.equal(context.modifiers.repel, false, "field moves never arm repel")
+  Assert.isNil(context.modifiers.repelSteps, "field moves count no repel")
+  Assert.equal(context.lead, lead, "the slot-0 record rides as the lead")
+  Assert.isNil(context.firstAlive, "field moves need no alive facts")
+  Assert.equal(context.environment.weather, "none", "a map without snow reads none")
+end
+
+function T.egg_leads_arrive_without_an_ability()  -- An egg slot-0 lead maps to no ability while the record still rides
+  -- for its level.
+  local lead = {
+    species = "TOTODILE",
+    ability = "INTIMIDATE",
+    isEgg = true,
+    personality = 12345,
+    heldItem = "NONE",
+    friendship = 70,
+    met = { level = 5 },
+    experience = 0,
+  }
+  local monService = {
+    partyCount = function()
+      return 1
+    end,
+    partyMon = function()
+      return lead
+    end,
+    leadAliveSlot = function()
+      return 0
+    end,
+  }
+  local runtime, _, captured = leadStepRuntime({ monService = monService })
+  runtime:_consumeCommittedStep()
+  local context = assert(captured(), "the committed step attempts with egg facts")
+  Assert.equal(context.lead, lead, "the slot-0 egg still rides as the lead")
+  Assert.isNil(context.modifiers.leadAbility, "an egg lead maps to no ability")
 end
 
 -- The token-guarded per-launch factory binding: one owner, monotonic
@@ -1482,7 +2064,7 @@ function T.boot_composes_the_live_encounter_service(context)
   for _, versionId in ipairs(versions) do
     local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions())
     local ok, err = xpcall(function()
-      local result = runtime:attemptEncounter({
+      local attemptArgs = {
         eventId = 1,
         mapId = runtime.runtimeMap.mapId,
         method = "grass",
@@ -1490,7 +2072,13 @@ function T.boot_composes_the_live_encounter_service(context)
         modifiers = {},
         environment = {},
         timeOfDay = "day",
-      })
+      }
+      -- Past the native entry grace: the first steps refuse before any
+      -- draw, and the refusal draws nothing from the world stream.
+      for _ = 1, 3 do
+        runtime:attemptEncounter(attemptArgs)
+      end
+      local result = runtime:attemptEncounter(attemptArgs)
       Assert.notNil(result, "production boot composes the live encounter service")
       Assert.equal(result.kind, "none", "a zero-rate interior table misses without an encounter")
       Assert.equal(result.reason, "no_opportunity", "zeroed rates miss instead of faulting")
