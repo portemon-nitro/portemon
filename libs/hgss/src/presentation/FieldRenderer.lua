@@ -7,9 +7,25 @@ local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
-local NATIVE_VIEWPORT = {
-  worldViewport = { x = 0, y = 0, width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT },
-}
+-- Resolves the ceil-allocated physical capture dimensions from the live
+-- field viewport. Accepts the viewport record or a bare world rectangle so
+-- capture stays viewport-local: a nonzero viewport origin never shifts the
+-- source-local image pixels.
+---@param viewport table<string, unknown> live field viewport or bare world rectangle
+---@return integer captureWidth
+---@return integer captureHeight
+local function liveCaptureDimensions(viewport)
+  local rectangle = viewport.worldViewport or viewport
+  assert(
+    type(rectangle.width) == "number" and rectangle.width > 0 and rectangle.width < math.huge,
+    "transition capture requires a positive finite live viewport width"
+  )
+  assert(
+    type(rectangle.height) == "number" and rectangle.height > 0 and rectangle.height < math.huge,
+    "transition capture requires a positive finite live viewport height"
+  )
+  return math.ceil(rectangle.width), math.ceil(rectangle.height)
+end
 
 ---@alias FieldRenderer.CaptureLayers { world: GxRenderer.Canvas, objects: GxRenderer.Canvas?, objectCoverage: GxRenderer.Canvas? }
 
@@ -110,8 +126,8 @@ end
 ---@param viewport table<string, unknown>
 ---@param alpha number
 ---@param presentationPixelScale integer?
----@param captureLayers boolean? return the native world's resolved color and object surfaces
----@param captureOnly boolean? omit presentation output and return only the requested native planes
+---@param captureLayers boolean? return the world's resolved color and object surfaces
+---@param captureOnly boolean? omit presentation output and return only the requested planes
 ---@return FieldRenderer.CaptureLayers?
 function FieldRenderer:draw(
   renderEnvironment,
@@ -124,7 +140,7 @@ function FieldRenderer:draw(
   captureLayers,
   captureOnly
 )
-  assert(captureOnly ~= true or captureLayers == true, "capture-only field draws request native planes")
+  assert(captureOnly ~= true or captureLayers == true, "capture-only field draws request planes")
   local viewMatrix = camera:view(alpha)
   local worldProjection = camera:projection()
   local billboardProjection = camera:billboardProjection()
@@ -149,33 +165,38 @@ function FieldRenderer:draw(
   local capture
   if captureLayers then
     local graphics = assert(self._graphics, "field plane capture requires the LÖVE graphics boundary")
-    local nativeTarget = graphics.newCanvas(NativeDisplay.WIDTH, NativeDisplay.HEIGHT, {
+    local captureWidth, captureHeight = liveCaptureDimensions(viewport)
+    local presentationTarget = graphics.newCanvas(captureWidth, captureHeight, {
       format = "rgba8",
       readable = true,
       dpiscale = 1,
     })
     local previousCanvas = graphics.getCanvas()
     local previousViewport = frame.viewport
-    local previousWorldProjection = frame.worldProjection
-    local previousBillboardProjection = frame.billboardProjection
     local previousCaptureLayers = frame.captureLayers
     local ok, result = pcall(function()
-      frame.viewport = NATIVE_VIEWPORT
-      frame.worldProjection = camera:canonicalProjection()
-      frame.billboardProjection = camera:canonicalBillboardProjection()
+      -- Capture through one viewport-local presentation target at the live
+      -- dimensions, using the same ordinary projections as the live field.
+      -- The world snapshot keeps presentation pixels while the source
+      -- transition keeps interpreting native 256x192 commands.
+      frame.viewport = {
+        worldViewport = { x = 0, y = 0, width = captureWidth, height = captureHeight },
+      }
       frame.captureLayers = true
-      graphics.setCanvas(nativeTarget)
+      graphics.setCanvas(presentationTarget)
       local layers = self.gxRenderer:draw(frame)
-      return self:_captureLayers(assert(layers, "GxRenderer must publish requested field planes"))
+      return self:_captureLayers(
+        assert(layers, "GxRenderer must publish requested field planes"),
+        captureWidth,
+        captureHeight
+      )
     end)
     local restored, restoreError = pcall(function()
       graphics.setCanvas(previousCanvas)
       frame.viewport = previousViewport
-      frame.worldProjection = previousWorldProjection
-      frame.billboardProjection = previousBillboardProjection
       frame.captureLayers = previousCaptureLayers
     end)
-    nativeTarget:release()
+    presentationTarget:release()
     if not ok then
       error(result, 0)
     end
@@ -204,8 +225,8 @@ end
 ---@param spriteItems table[]? current field object plane
 ---@param viewport table<string, unknown> current field viewport
 ---@param alpha number current field interpolation alpha
----@param presentationPixelScale integer? presentation scale for native sprite composition
----@return FieldRenderer.CaptureLayers fresh launch-owned native planes
+---@param presentationPixelScale integer? presentation scale for sprite composition
+---@return FieldRenderer.CaptureLayers fresh launch-owned presentation-sized planes
 function FieldRenderer:captureTransitionLayers(
   renderEnvironment,
   camera,
@@ -217,7 +238,7 @@ function FieldRenderer:captureTransitionLayers(
 )
   return assert(
     self:draw(renderEnvironment, camera, worldParts, spriteItems, viewport, alpha, presentationPixelScale, true, true),
-    "transition tick capture publishes its native planes"
+    "transition tick capture publishes its presentation planes"
   )
 end
 
@@ -241,14 +262,21 @@ local function drawTransitionParticles(graphics, particles, destination)
   graphics.pop()
 end
 
----@param capture { world: GxRenderer.Canvas, objects: GxRenderer.Canvas? } immutable native launch planes
+---@param capture { world: GxRenderer.Canvas, objects: GxRenderer.Canvas? } launch-owned presentation-sized planes
 ---@param transitionFrame FieldRenderer.TransitionFrame source transition sprites and coefficients
 ---@param destination { x: number, y: number, width: number, height: number } live field viewport
 function FieldRenderer:drawTransition(capture, transitionFrame, destination)
   local graphics = assert(self._graphics, "transition field composition requires host graphics")
   assert(capture and capture.world, "transition composition requires its launch-owned world plane")
-  assert(capture.world:getWidth() == NativeDisplay.WIDTH, "transition world plane has native width")
-  assert(capture.world:getHeight() == NativeDisplay.HEIGHT, "transition world plane has native height")
+  local captureWidth = capture.world:getWidth()
+  local captureHeight = capture.world:getHeight()
+  assert(captureWidth > 0 and captureHeight > 0, "transition composition requires positive capture planes")
+  if capture.objects ~= nil then
+    assert(
+      capture.objects:getWidth() == captureWidth and capture.objects:getHeight() == captureHeight,
+      "transition object plane matches the captured world plane"
+    )
+  end
   assert(
     type(destination) == "table"
       and type(destination.x) == "number"
@@ -259,8 +287,13 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
       and destination.height > 0,
     "transition destination is a positive live viewport"
   )
-  local scaleX = destination.width / NativeDisplay.WIDTH
-  local scaleY = destination.height / NativeDisplay.HEIGHT
+  -- Native wipe rows, HBlank offsets, sprite anchors, and brightness stay
+  -- in 256x192 source units; physical field pixels blit through the
+  -- capture-to-destination transform.
+  local sourceScaleX = destination.width / NativeDisplay.WIDTH
+  local sourceScaleY = destination.height / NativeDisplay.HEIGHT
+  local captureScaleX = destination.width / captureWidth
+  local captureScaleY = destination.height / captureHeight
   local blend = transitionFrame.blendAlpha and transitionFrame.blendAlpha / 16 or 1
   local wipe = transitionFrame.wipe
   assert(blend >= 0 and blend <= 1, "source blend coefficient stays within 0..16")
@@ -279,10 +312,10 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
             if right > left then
               graphics.rectangle(
                 "fill",
-                destination.x + left * scaleX,
-                destination.y + (y - 1) * scaleY,
-                (right - left) * scaleX,
-                scaleY
+                destination.x + left * sourceScaleX,
+                destination.y + (y - 1) * sourceScaleY,
+                (right - left) * sourceScaleX,
+                sourceScaleY
               )
             end
           end
@@ -295,9 +328,17 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
     if transitionFrame.motionBlur ~= nil then
       local motionBlur = assert(transitionFrame.motionBlur, "encounter motion blur draws while attached")
       assert(not motionBlur._disposed, "disposed encounter motion blur cannot draw")
+      local composite = assert(motionBlur.composite, "encounter motion blur draws its composite plane")
       graphics.setBlendMode("replace", "premultiplied")
       graphics.setColor(1, 1, 1, blend)
-      graphics.draw(motionBlur.composite, destination.x, destination.y, 0, scaleX, scaleY)
+      graphics.draw(
+        composite,
+        destination.x,
+        destination.y,
+        0,
+        destination.width / composite:getWidth(),
+        destination.height / composite:getHeight()
+      )
       graphics.setBlendMode("alpha", "alphamultiply")
     else
       graphics.setColor(1, 1, 1, 1)
@@ -307,48 +348,53 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
           type(scanlineOffsets) == "table" and #scanlineOffsets == NativeDisplay.HEIGHT,
           "source HBlank transitions carry one horizontal offset per native scanline"
         )
-        local imageWidth = capture.world:getWidth()
+        local imageWidth = captureWidth
+        local imageHeight = captureHeight
+        local sampleScaleX = imageWidth / NativeDisplay.WIDTH
+        local sampleScaleY = imageHeight / NativeDisplay.HEIGHT
         local y = 1
         while y <= NativeDisplay.HEIGHT do
           local offset = scanlineOffsets[y]
           assert(type(offset) == "number" and offset % 1 == 0, "source scanline offsets are integer pixels")
-          local sourceX = offset % imageWidth
+          -- HBlank offsets wrap in native units; the wrapped offset samples
+          -- the physical capture at the matching source fraction.
+          local wrappedOffset = offset % NativeDisplay.WIDTH
           local endY = y + 1
           while endY <= NativeDisplay.HEIGHT do
             local nextOffset = scanlineOffsets[endY]
             assert(type(nextOffset) == "number" and nextOffset % 1 == 0, "source scanline offsets are integer pixels")
-            if nextOffset % imageWidth ~= sourceX then
+            if nextOffset % NativeDisplay.WIDTH ~= wrappedOffset then
               break
             end
             endY = endY + 1
           end
-          local sourceY = y - 1
-          local groupHeight = endY - y
+          local sourceY = (y - 1) * sampleScaleY
+          local groupHeight = (endY - y) * sampleScaleY
+          local sourceX = wrappedOffset * sampleScaleX
           local firstWidth = imageWidth - sourceX
-          local firstQuad =
-            graphics.newQuad(sourceX, sourceY, firstWidth, groupHeight, imageWidth, NativeDisplay.HEIGHT)
-          local destinationY = destination.y + sourceY * scaleY
-          graphics.draw(capture.world, firstQuad, destination.x, destinationY, 0, scaleX, scaleY)
+          local firstQuad = graphics.newQuad(sourceX, sourceY, firstWidth, groupHeight, imageWidth, imageHeight)
+          local destinationY = destination.y + (y - 1) * sourceScaleY
+          graphics.draw(capture.world, firstQuad, destination.x, destinationY, 0, captureScaleX, captureScaleY)
           if sourceX > 0 then
-            local secondQuad = graphics.newQuad(0, sourceY, sourceX, groupHeight, imageWidth, NativeDisplay.HEIGHT)
+            local secondQuad = graphics.newQuad(0, sourceY, sourceX, groupHeight, imageWidth, imageHeight)
             graphics.draw(
               capture.world,
               secondQuad,
-              destination.x + firstWidth * scaleX,
+              destination.x + firstWidth * captureScaleX,
               destinationY,
               0,
-              scaleX,
-              scaleY
+              captureScaleX,
+              captureScaleY
             )
           end
           y = endY
         end
       else
-        graphics.draw(capture.world, destination.x, destination.y, 0, scaleX, scaleY)
+        graphics.draw(capture.world, destination.x, destination.y, 0, captureScaleX, captureScaleY)
       end
       if capture.objects ~= nil then
         graphics.setColor(1, 1, 1, 1)
-        graphics.draw(capture.objects, destination.x, destination.y, 0, scaleX, scaleY)
+        graphics.draw(capture.objects, destination.x, destination.y, 0, captureScaleX, captureScaleY)
       end
     end
     local particles = transitionFrame.particleSystem and transitionFrame.particleSystem.draw
@@ -380,11 +426,11 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
         graphics.setColor(tint.r, tint.g, tint.b, blend * opacity)
         graphics.draw(
           sprite.imageHandle,
-          destination.x + x * scaleX,
-          destination.y + y * scaleY,
+          destination.x + x * sourceScaleX,
+          destination.y + y * sourceScaleY,
           rotation,
-          scaleSpriteX * scaleX,
-          scaleSpriteY * scaleY,
+          scaleSpriteX * sourceScaleX,
+          scaleSpriteY * sourceScaleY,
           -sprite.image.origin.x,
           -sprite.image.origin.y
         )
@@ -425,12 +471,18 @@ function FieldRenderer:drawTransition(capture, transitionFrame, destination)
   end
 end
 
----@param seedLayers FieldRenderer.CaptureLayers first previous-frame source planes for the DS capture blend
+---@param seedLayers FieldRenderer.CaptureLayers first previous-frame source planes for the encounter blend
 ---@return FieldRenderer.MotionBlur transition-owned feedback pair
 function FieldRenderer:beginEncounterMotionBlur(seedLayers)
-  assert(seedLayers and seedLayers.world, "encounter motion blur requires its first native world plane")
-  assert(seedLayers.world:getWidth() == NativeDisplay.WIDTH, "motion blur source has native width")
-  assert(seedLayers.world:getHeight() == NativeDisplay.HEIGHT, "motion blur source has native height")
+  assert(seedLayers and seedLayers.world, "encounter motion blur requires its first world plane")
+  local captureWidth, captureHeight = seedLayers.world:getWidth(), seedLayers.world:getHeight()
+  assert(captureWidth > 0 and captureHeight > 0, "encounter motion blur requires positive capture planes")
+  if seedLayers.objects ~= nil then
+    assert(
+      seedLayers.objects:getWidth() == captureWidth and seedLayers.objects:getHeight() == captureHeight,
+      "encounter motion blur object plane matches the captured world plane"
+    )
+  end
   local graphics = assert(self._graphics, "encounter motion blur requires host graphics")
   local motionBlur = {
     _canvases = {},
@@ -439,7 +491,7 @@ function FieldRenderer:beginEncounterMotionBlur(seedLayers)
   }
   local ok, result = pcall(function()
     for _, key in ipairs({ "previous", "current", "composite" }) do
-      local canvas = graphics.newCanvas(NativeDisplay.WIDTH, NativeDisplay.HEIGHT, {
+      local canvas = graphics.newCanvas(captureWidth, captureHeight, {
         format = "rgba8",
         readable = true,
         dpiscale = 1,
@@ -461,8 +513,11 @@ end
 ---@param currentLayers FieldRenderer.CaptureLayers source planes rendered after this source tick's mutations
 function FieldRenderer:stepEncounterMotionBlur(motionBlur, currentLayers)
   assert(not motionBlur._disposed, "disposed encounter motion blur cannot advance")
-  assert(currentLayers.world:getWidth() == NativeDisplay.WIDTH, "motion blur current frame has native width")
-  assert(currentLayers.world:getHeight() == NativeDisplay.HEIGHT, "motion blur current frame has native height")
+  assert(
+    currentLayers.world:getWidth() == motionBlur.previous:getWidth()
+      and currentLayers.world:getHeight() == motionBlur.previous:getHeight(),
+    "motion blur advances only on capture planes matching its feedback dimensions"
+  )
   local graphics = assert(self._graphics)
   graphics.push("all")
   local ok, result = pcall(function()
@@ -488,7 +543,7 @@ function FieldRenderer:stepEncounterMotionBlur(motionBlur, currentLayers)
   end
 end
 
----@param target GxRenderer.Canvas native source output canvas
+---@param target GxRenderer.Canvas physical capture-sized feedback output
 ---@param layers FieldRenderer.CaptureLayers resolved world and object source planes
 function FieldRenderer:_drawMotionBlurLayers(target, layers)
   local graphics = assert(self._graphics)
@@ -521,21 +576,27 @@ end
 ---@field dispose fun(self: FieldRenderer.Capture): boolean
 
 ---@param layers FieldRenderer.CaptureLayers renderer-owned scratch surfaces
+---@param captureWidth integer ceil-allocated live viewport width
+---@param captureHeight integer ceil-allocated live viewport height
 ---@return FieldRenderer.Capture independent surfaces owned by the caller
-function FieldRenderer:_captureLayers(layers)
+function FieldRenderer:_captureLayers(layers, captureWidth, captureHeight)
   local graphics = assert(self._graphics, "field plane capture requires the LÖVE graphics boundary")
+  assert(
+    type(captureWidth) == "number" and captureWidth > 0 and type(captureHeight) == "number" and captureHeight > 0,
+    "transition capture copies its planes at positive physical dimensions"
+  )
   local capture = {
     _canvases = {},
     _disposed = false,
     dispose = FieldRenderer._disposeCapture,
   }
   local ok, result = pcall(function()
-    capture.world = self:_copyCanvas(graphics, layers.world, capture)
+    capture.world = self:_copyCanvas(graphics, layers.world, capture, captureWidth, captureHeight)
     if layers.objects ~= nil then
-      capture.objects = self:_copyCanvas(graphics, layers.objects, capture)
+      capture.objects = self:_copyCanvas(graphics, layers.objects, capture, captureWidth, captureHeight)
     end
     if layers.objectCoverage ~= nil then
-      capture.objectCoverage = self:_copyCanvas(graphics, layers.objectCoverage, capture)
+      capture.objectCoverage = self:_copyCanvas(graphics, layers.objectCoverage, capture, captureWidth, captureHeight)
     end
     return capture
   end)
@@ -549,13 +610,20 @@ end
 ---@param graphics GxRenderer.Graphics
 ---@param source GxRenderer.Canvas
 ---@param capture { _canvases: GxRenderer.Canvas[] } partial capture accumulating its canvases
+---@param targetWidth integer physical capture width
+---@param targetHeight integer physical capture height
 ---@return GxRenderer.Canvas
-function FieldRenderer:_copyCanvas(graphics, source, capture)
-  -- Launch-owned transition planes keep the native pipeline spec: the
-  -- copy composites 1:1 at capture time but upscales to the live
-  -- viewport during the transition, so a default-filtered DPI-following
-  -- canvas would blur and mis-size the frozen field behind the effect.
-  local canvas = graphics.newCanvas(source:getWidth(), source:getHeight(), {
+function FieldRenderer:_copyCanvas(graphics, source, capture, targetWidth, targetHeight)
+  -- Launch-owned transition planes keep the live presentation sampling: the
+  -- copy resamples each renderer-owned scratch plane into an independent
+  -- physical capture through one GPU blit, so a default-filtered
+  -- DPI-following canvas would blur and mis-size the frozen field behind
+  -- the effect.
+  assert(
+    type(targetWidth) == "number" and targetWidth > 0 and type(targetHeight) == "number" and targetHeight > 0,
+    "transition plane copies target positive physical dimensions"
+  )
+  local canvas = graphics.newCanvas(targetWidth, targetHeight, {
     format = "rgba8",
     dpiscale = 1,
   })
@@ -573,7 +641,7 @@ function FieldRenderer:_copyCanvas(graphics, source, capture)
     graphics.setShader()
     graphics.setBlendMode("replace", "premultiplied")
     graphics.setColor(1, 1, 1, 1)
-    graphics.draw(source, 0, 0)
+    graphics.draw(source, 0, 0, 0, targetWidth / source:getWidth(), targetHeight / source:getHeight())
   end)
   local restored, restoreErr = pcall(function()
     graphics.setCanvas(previousCanvas)

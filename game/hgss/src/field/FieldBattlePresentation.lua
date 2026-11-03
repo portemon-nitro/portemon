@@ -3931,9 +3931,15 @@ function FieldBattlePresentation:_stepTransition()
       local frame = transition:frame()
       if frame.requiresCurrentFieldLayers == true then
         local nextCapture = self._captureFieldLayers()
+        local accepted, acceptErr = pcall(transition.acceptFieldLayers, transition, nextCapture)
+        if not accepted then
+          if nextCapture ~= nil then
+            nextCapture:dispose()
+          end
+          error(acceptErr, 0)
+        end
         local previous = self._transitionCapture
         self._transitionCapture = nextCapture
-        transition:acceptFieldLayers(nextCapture)
         if previous ~= nil then
           previous:dispose()
         end

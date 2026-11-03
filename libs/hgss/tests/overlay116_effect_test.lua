@@ -19,6 +19,17 @@ local function camera()
   }, { initialTarget = { x = 0, y = 0, z = 0 } })
 end
 
+local function stubCapturePlane()
+  return {
+    getWidth = function()
+      return 256
+    end,
+    getHeight = function()
+      return 192
+    end,
+  }
+end
+
 function T.overlay116_factory_executes_camera_task_and_owns_motion_blur_until_disposal()
   local fieldCamera = camera()
   local initialCamera = fieldCamera:captureTransitionState()
@@ -31,7 +42,7 @@ function T.overlay116_factory_executes_camera_task_and_owns_motion_blur_until_di
   local function beginMotionBlur(_, layers)
     seeded = seeded + 1
     Assert.equal(layers.sourceTick, 0, "the source motion history starts from the launch frame")
-    return { composite = {}, _disposed = false, dispose = disposeBlur }
+    return { composite = {}, previous = stubCapturePlane(), _disposed = false, dispose = disposeBlur }
   end
   local function stepMotionBlur(_, _, layers)
     stepped = stepped + 1
@@ -47,7 +58,7 @@ function T.overlay116_factory_executes_camera_task_and_owns_motion_blur_until_di
     fieldRenderer = renderer,
   }, { playerGender = "male" })
   effect:start()
-  effect:acceptFieldLayers({ sourceTick = 0 })
+  effect:acceptFieldLayers({ sourceTick = 0, world = stubCapturePlane() })
   local completed = false
   local sourceTick = 0
   local flashAlpha = {}
@@ -59,7 +70,7 @@ function T.overlay116_factory_executes_camera_task_and_owns_motion_blur_until_di
       flashAlpha[#flashAlpha + 1] = frame.whiteFadeAlpha
     end
     if frame.requiresCurrentFieldLayers then
-      effect:acceptFieldLayers({ sourceTick = sourceTick })
+      effect:acceptFieldLayers({ sourceTick = sourceTick, world = stubCapturePlane() })
     end
   end
 
@@ -87,7 +98,7 @@ function T.overlay116_distance_routes_use_distinct_source_parameters()
       disposed = disposed + 1
     end
     local function beginMotionBlur()
-      return { composite = {}, _disposed = false, dispose = disposeBlur }
+      return { composite = {}, previous = stubCapturePlane(), _disposed = false, dispose = disposeBlur }
     end
     local function stepMotionBlur() end
     local renderer = {
@@ -101,14 +112,14 @@ function T.overlay116_distance_routes_use_distinct_source_parameters()
       fieldRenderer = renderer,
     }, { playerGender = "male" })
     effect:start()
-    effect:acceptFieldLayers({})
+    effect:acceptFieldLayers({ world = stubCapturePlane() })
     local complete = false
     local sourceTick = 0
     while not complete and sourceTick < 200 do
       complete = effect:stepSourceTick()
       sourceTick = sourceTick + 1
       if effect:frame().requiresCurrentFieldLayers then
-        effect:acceptFieldLayers({})
+        effect:acceptFieldLayers({ world = stubCapturePlane() })
       end
     end
     Assert.isTrue(complete, "each source camera route reaches its palette-fade terminal")

@@ -37,14 +37,31 @@ function Overlay116Effect:start()
   self._phase = "flash"
 end
 
----@param layers table<string, unknown> freshly captured native field planes
+---@param layers table<string, unknown> freshly captured field planes
 function Overlay116Effect:acceptFieldLayers(layers)
   assert(not self._disposed and self._phase ~= "new", "overlay 116 consumes active source field layers")
   if self._motionBlur == nil then
     self._motionBlur = self._fieldRenderer:beginEncounterMotionBlur(layers)
+  elseif Overlay116Effect._captureDimensionsChanged(self._motionBlur, layers) then
+    -- A viewport resize never advances the source task: build the replacement
+    -- feedback from the current capture first, then release the old triplet
+    -- exactly once after the replacement succeeds.
+    local replacement = self._fieldRenderer:beginEncounterMotionBlur(layers)
+    local previous = self._motionBlur
+    self._motionBlur = replacement
+    previous:dispose()
   else
     self._fieldRenderer:stepEncounterMotionBlur(self._motionBlur, layers)
   end
+end
+
+---@param motionBlur table<string, unknown> owned feedback triplet
+---@param layers table<string, unknown> freshly captured field planes
+---@return boolean true when the feedback dimensions no longer match the capture
+function Overlay116Effect._captureDimensionsChanged(motionBlur, layers)
+  local previous = assert(motionBlur.previous, "encounter motion blur owns its previous feedback plane")
+  local world = assert(layers.world, "encounter motion blur consumes the captured world plane")
+  return previous:getWidth() ~= world:getWidth() or previous:getHeight() ~= world:getHeight()
 end
 
 ---@return boolean complete after the native camera and fade work has ended
