@@ -393,7 +393,7 @@ function OptionsRenderer:draw(view, plan)
           graphics.pop()
         end)
         self:_drawTitle(graphics, view)
-        self:_drawLegacyNote(view)
+        self:drawHeaderFeedback(view)
         self:_drawFooter(graphics, chrome, quadFor, section, content, view)
       end)
     else
@@ -552,6 +552,20 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
     return
   end
   if control.kind == "cycle" then
+    local pressedSide = nil
+    local pressAge = 0
+    local arrowPress = view.pressVisual
+    if type(arrowPress) == "table" and arrowPress.kind == "arrow" then
+      assert(arrowPress.side == "left" or arrowPress.side == "right", "arrow presses name a side")
+      assert(
+        type(arrowPress.ageTicks) == "number"
+          and arrowPress.ageTicks == arrowPress.ageTicks
+          and arrowPress.ageTicks >= 0,
+        "arrow presses carry their source age"
+      )
+      pressedSide = arrowPress.side
+      pressAge = arrowPress.ageTicks
+    end
     OptionsWidgets.drawCycle(
       graphics,
       chrome,
@@ -559,8 +573,8 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
       assert(section.arrows, "the section carries arrows"),
       control.leftArrow.chromeAnchor,
       control.rightArrow.chromeAnchor,
-      nil,
-      0
+      pressedSide,
+      pressAge
     )
     local value = assert(control.value, "cycle rows carry their value geometry")
     local box = { x = value.labelWindow.x, y = labelY, width = value.labelWindow.width, height = 19 }
@@ -666,6 +680,23 @@ function OptionsRenderer:_drawPreview(graphics, previewRect, view)
   end)
 end
 
+-- Paints the bounded header feedback beside the title: a rejected
+-- Confirm shows its authored two-line retry note while the full error
+-- record stays in semantic status for debugging, otherwise the staged
+-- legacy-Slow migration note paints in the same reserved band. Never
+-- over the OPTIONS title and never raw exception text.
+---@param view table<string, unknown>
+function OptionsRenderer:drawHeaderFeedback(view)
+  if view.error ~= nil then
+    -- Two ~9px source-font lines cannot share the 24px header at an 8px
+    -- pitch; stack at 12 so neither line paints into the other.
+    self:_drawPlainLabel("APPLY FAILED", { x = 116, y = 4 }, nil, nil, "normal")
+    self:_drawPlainLabel("RETRY", { x = 116, y = 16 }, nil, nil, "normal")
+    return
+  end
+  self:_drawLegacyNote(view)
+end
+
 -- Paints the staged legacy-Slow migration note in its own bounded header
 -- slot to the right of the title when the draft carries it. One palette
 -- pass per line; the title window is never covered.
@@ -674,13 +705,8 @@ function OptionsRenderer:_drawLegacyNote(view)
   if view.legacyNote == nil then
     return
   end
-<<<<<<< HEAD
-  self:_drawPlainLabel("SLOW BECOMES MID", { x = 112, y = 4 }, nil, nil, "normal")
-  self:_drawPlainLabel("CONFIRM: MID QUIT: SLOW", { x = 112, y = 12 }, nil, nil, "normal")
-=======
   self:_drawPlainLabel("SLOW BECOMES MID", { x = 116, y = 4 }, nil, nil, "normal")
   self:_drawPlainLabel("CONFIRM: MID QUIT: SLOW", { x = 116, y = 16 }, nil, nil, "normal")
->>>>>>> 428651e3 (fixup! options: restore source typography and control placement)
 end
 
 -- Paints the fixed footer: one source action frame per button with the
@@ -707,7 +733,21 @@ function OptionsRenderer:_drawFooter(graphics, chrome, quadFor, section, content
     if focusId == button.id then
       state = "focused"
     end
-    OptionsWidgets.drawAction(graphics, chrome, quadFor, actions, geometry.chromeAnchor, state, 0)
+    local age = 0
+    local press = view.pressVisual
+    if type(press) == "table" and press.kind == "footer" and press.actionId == button.id then
+      assert(
+        type(press.ageTicks) == "number" and press.ageTicks == press.ageTicks and press.ageTicks >= 0,
+        "footer presses carry their source age"
+      )
+      age = press.ageTicks
+      if press.focused then
+        state = "pressedFocused"
+      else
+        state = "pressed"
+      end
+    end
+    OptionsWidgets.drawAction(graphics, chrome, quadFor, actions, geometry.chromeAnchor, state, age)
     local window = assert(geometry.labelWindow, "footer actions carry their label window")
     local centerX = window.x + window.width / 2
     local box = { x = window.x, y = window.y + 6, width = window.width, height = 18 }

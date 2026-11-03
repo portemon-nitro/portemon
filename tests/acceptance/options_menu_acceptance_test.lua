@@ -226,6 +226,11 @@ local function installVolumePort(game)
   return port, gains
 end
 
+-- Forward declarations for the battle-leg drivers defined below the
+-- journey: the journey calls them, so their names must resolve at the
+-- journey's definition point.
+local driveMenuSpeedLeg, driveMenuBattleLeg
+
 -- Reloads the published save record through the actual save store: the
 -- confirmed player options must survive a genuine store round trip.
 local function loadStoredRuntime(game)
@@ -252,13 +257,43 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
       "battleScene",
       "battleStyle",
       "soundMode",
-      "textFrame",
       "volume",
       "battleSpeed",
-    }, "the menu carries exactly the seven settings in order")
+      "textFrame",
+    }, "the menu carries exactly the seven settings in order, frame last")
     Assert.isTrue(view.footer ~= nil and view.footer.confirm ~= nil, "the footer carries confirm")
     Assert.isTrue(view.footer.quit ~= nil, "the footer carries quit")
     Assert.equal(view.focusId, "textSpeed", "the menu opens focused on the first row")
+    -- A genuine field wheel event reaches the options list through the
+    -- real input composition, and the closing frame reveals its selector
+    -- with the matching live preview before the draft is touched.
+    state:wheelmoved(0, -1)
+    game:step()
+    state:wheelmoved(0, -1)
+    game:step()
+    state:wheelmoved(0, -1)
+    game:step()
+    Assert.equal(optionsView(game).scrollOffset, 64, "genuine wheel travel settles the list fully revealed")
+    for _ = 1, 6 do
+      pressKey(game, state, "s")
+    end
+    local framed = optionsView(game)
+    Assert.equal(framed.focusId, "textFrame", "six downs reach the closing frame")
+    Assert.equal(framed.scrollOffset, 64, "the frame rests fully revealed")
+    Assert.equal(
+      framed.preview.textFrame,
+      game.runtime.playerData.options.textFrame,
+      "the live preview follows the draft frame"
+    )
+    local wheeledPlan = assert(framed.presentation, "the presented options expose their plan")
+    local wheeledContent = assert(wheeledPlan.content, "the plan carries its list")
+    Assert.equal(#wheeledContent.rows, 7, "the revealed list keeps all seven rows")
+    Assert.isTrue(wheeledContent.rows[7].previewRect ~= nil, "the revealed frame carries its sample window")
+    for _ = 1, 6 do
+      pressKey(game, state, "w")
+    end
+    Assert.equal(optionsView(game).focusId, "textSpeed", "six ups return to the first row")
+    Assert.equal(optionsView(game).scrollOffset, 0, "returning to the top restores the offset")
     -- An abandoned draft changes nothing durable: edit, Quit, reopen.
     local committedSpeed = game.runtime.playerData.options.textSpeed
     local committedVolume = port:read()
@@ -281,10 +316,12 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
     pressKey(game, state, "a")
     pressKey(game, state, "s")
     pressKey(game, state, "d")
-    for _ = 1, 4 do
+    for _ = 1, 3 do
       pressKey(game, state, "s")
     end
     pressKey(game, state, "d")
+    pressKey(game, state, "d")
+    pressKey(game, state, "s")
     pressKey(game, state, "d")
     pressKey(game, state, "s")
     pressKey(game, state, "d")
@@ -299,21 +336,9 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
       "fast",
       "the confirmed text speed lands on the live player record"
     )
-    Assert.equal(
-      game.runtime.playerData.options.battleScene,
-      false,
-      "the confirmed record carries Scene Off"
-    )
-    Assert.equal(
-      game.runtime.playerData.options.battleStyle,
-      "shift",
-      "the confirmed record keeps Shift"
-    )
-    Assert.equal(
-      game.runtime.playerData.options.battleSpeed,
-      2,
-      "the confirmed record carries double speed"
-    )
+    Assert.equal(game.runtime.playerData.options.battleScene, false, "the confirmed record carries Scene Off")
+    Assert.equal(game.runtime.playerData.options.battleStyle, "shift", "the confirmed record keeps Shift")
+    Assert.equal(game.runtime.playerData.options.battleSpeed, 2, "the confirmed record carries double speed")
     Assert.equal(port:read(), 82, "the confirmed volume publishes through the app-wide port")
     game:setWorldState({ flag = FLAG_GOT_SAVE })
     closeStartMenu(game)
@@ -337,11 +362,7 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
       false,
       "the ordinary save retains Scene Off across reload"
     )
-    Assert.equal(
-      game.runtime.playerData.options.battleSpeed,
-      2,
-      "the ordinary save retains double speed across reload"
-    )
+    Assert.equal(game.runtime.playerData.options.battleSpeed, 2, "the ordinary save retains double speed across reload")
     Assert.equal(reloadedPort:read(), 82, "the app-wide volume carries across the save boundary")
     -- The live values wire into real battles: double speed steps two
     -- quanta per tick, and the trainer fight offers the Shift exchange
@@ -657,7 +678,7 @@ end
 -- values: the Shift offer appears under the confirmed style, the
 -- executed TACKLE admits or omits its animation per the confirmed
 -- scene, and the answered offer releases the frozen arrival.
-local function driveMenuBattleLeg(game, launchId, expectTackleDemands)
+driveMenuBattleLeg = function(game, launchId, expectTackleDemands)
   local rig = openMenuBattle(game, launchId)
   local leadBefore = rig.party:partyMon(0)
   local opening = awaitMenuBattleDecision(rig, "action")
@@ -724,13 +745,10 @@ end
 
 -- Runs one source quantum through the production presentation envelope
 -- with the live confirmed speed: 2x must step two complete quanta.
-local function driveMenuSpeedLeg(game)
+driveMenuSpeedLeg = function(game)
   local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
   local SourceTick = require("libs.hgss.src.field.SourceTick")
-  local liveSpeed = assert(
-    game.runtime.playerData.options.battleSpeed,
-    "the menu wires the live presentation speed"
-  )
+  local liveSpeed = assert(game.runtime.playerData.options.battleSpeed, "the menu wires the live presentation speed")
   Assert.equal(liveSpeed, 2, "the confirmed draft carries double speed")
   local cache = { versionId = "options-menu-speed" }
   function cache:loadLua(_)
@@ -766,8 +784,7 @@ local function driveMenuSpeedLeg(game)
   function host.submit(_)
     return true
   end
-  function host.notify(_, _)
-  end
+  function host.notify(_, _) end
   local port = envelope:factory()({
     launchId = "options-menu-speed",
     kind = "wild",
@@ -783,10 +800,8 @@ local function driveMenuSpeedLeg(game)
   function screen:status()
     return { mode = "ready" }
   end
-  function screen:dispose()
-  end
-  function screen:cancelPointerCapture()
-  end
+  function screen:dispose() end
+  function screen:cancelPointerCapture() end
   envelope._screen = screen
   envelope:updateFixed(SourceTick.DT)
   Assert.equal(host.advances, 2, "double speed advances its launch twice per source tick")

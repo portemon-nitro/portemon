@@ -1678,4 +1678,174 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(overlay.height, 24, "the selected-row strip height")
 end
 
+-- Held, quick, and cancelled presses paint the exact compiled source
+-- frames: the held arrow advances through its pressed sequence in source
+-- ticks, the tapped footer shows its pressed action state, and a press
+-- with no visual record falls back to idle art.
+function T.tests.held_quick_and_cancelled_presses_paint_exact_source_frames(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text = preparedSourcePainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  view.focusId = "textFrame"
+  view.scrollOffset = 64
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function sample(lx, ly)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    return quantizePixel(data, hx, hy)
+  end
+  Assert.deepEqual(sample(123, 112), { 200, 40, 200, 255 }, "the idle arrow paints its idle frame")
+  Assert.deepEqual(sample(132, 176), { 90, 90, 200, 255 }, "the idle footer paints its normal frame")
+  view.pressVisual = { kind = "arrow", side = "left", ageTicks = 0, held = true, focused = true }
+  plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  placement = assert(plan.panes[1].placement, "the pressed plan places its pane")
+  canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  data = scope:own(canvas:newImageData())
+  Assert.deepEqual(sample(123, 112), { 40, 200, 200, 255 }, "a held arrow paints its first pressed frame")
+  Assert.deepEqual(sample(221, 112), { 80, 20, 150, 255 }, "the opposite arrow stays idle during the press")
+  view.pressVisual = { kind = "arrow", side = "left", ageTicks = 4, held = true, focused = true }
+  plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  data = scope:own(canvas:newImageData())
+  Assert.deepEqual(sample(123, 112), { 150, 80, 20, 255 }, "the held arrow advances to its second pressed frame")
+  view.focusId = "confirm"
+  view.pressVisual = { kind = "footer", actionId = "confirm", ageTicks = 0, held = true, focused = true }
+  plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  placement = assert(plan.panes[1].placement, "the footer plan places its pane")
+  canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  data = scope:own(canvas:newImageData())
+  Assert.deepEqual(sample(132, 176), { 90, 90, 90, 255 }, "a pressed footer paints its first pressed frame")
+  view.pressVisual = { kind = "footer", actionId = "confirm", ageTicks = 3, held = false, focused = true }
+  plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  data = scope:own(canvas:newImageData())
+  Assert.deepEqual(sample(132, 176), { 220, 140, 60, 255 }, "the footer tap advances to its second pressed frame")
+  view.pressVisual = nil
+  plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  data = scope:own(canvas:newImageData())
+  Assert.deepEqual(sample(132, 176), { 200, 90, 90, 255 }, "a cancelled press falls back to idle art")
+  renderer:dispose()
+end
+
+-- A rejected confirmation paints a bounded failure note in the reserved
+-- header band beside the intact title, suppresses the migration note,
+-- and disappears once the retry succeeds.
+function T.tests.failed_confirm_paints_a_bounded_header_note_until_retry(scope)
+  local Interface = modules()
+  local renderer, text, _ = preparedPlacedPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  view.legacyNote = true
+  view.error = "SAVE_WRITE_FAILED: disk is full"
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  text.draws = {}
+  drawPlan(scope, renderer, view, plan, 512, 384)
+  local title = findPlacedLine(text.draws, "OPTIONS")
+  Assert.notNil(title, "the title survives a failed confirm")
+  Assert.equal(title.x, 10, "the title keeps its header origin beside the failure note")
+  Assert.equal(title.y, 5, "the title keeps its header row")
+  local failed = findPlacedLine(text.draws, "APPLY FAILED")
+  Assert.notNil(failed, "a failed confirm paints its bounded header note")
+  Assert.isTrue(failed.x >= 116, "the failure note stays right of the title")
+  Assert.isTrue(failed.x + #failed.line * 8 <= 248, "the failure note stays inside the header band")
+  Assert.isTrue(failed.y >= 4 and failed.y <= 22, "the failure note stays inside the fixed header")
+  local retry = findPlacedLine(text.draws, "RETRY")
+  Assert.notNil(retry, "the failure note names its retry")
+  Assert.isTrue(retry.x >= 116, "the retry hint stays right of the title")
+  Assert.isTrue(retry.x + #retry.line * 8 <= 248, "the retry hint stays inside the header band")
+  Assert.isTrue(retry.y >= 4 and retry.y <= 22, "the retry hint stays inside the fixed header")
+  Assert.isNil(findPlacedLine(text.draws, "SLOW BECOMES MID"), "the failure note overrides the migration note")
+  local cleared = headlessSourceView()
+  local clearPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), cleared)
+  text.draws = {}
+  drawPlan(scope, renderer, cleared, clearPlan, 512, 384)
+  Assert.isNil(findPlacedLine(text.draws, "APPLY FAILED"), "a retried confirm clears the header note")
+  Assert.notNil(findPlacedLine(text.draws, "OPTIONS"), "the title paints without a failure")
+  renderer:dispose()
+end
+
+-- The full corrected screen reads clean on every layout: the title at
+-- its header origin, all seven row labels inside their bands, distinct
+-- footer actions, the frame value and its sample only when revealed, the
+-- bounded failure note when set, and no diagnostic marker text.
+function T.tests.corrected_options_screen_reads_clean_on_every_layout(scope)
+  local Interface = modules()
+  local renderer, text, window = preparedPlacedPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local expectedLabels = {
+    "TEXT SPEED",
+    "BATTLE SCENE",
+    "BATTLE STYLE",
+    "SOUND",
+    "FRAME",
+    "VOLUME",
+    "BATTLE SPEED",
+  }
+  for _, case in ipairs({ "dualDisplay", "nativeLike", "wide", "tall" }) do
+    local context = contextFor(case, measurements)
+    local top = headlessSourceView()
+    local topPlan = resolvers[case](context, top)
+    local content = assert(topPlan.content, case .. " publishes its list")
+    Assert.equal(#content.rows, 7, case .. " lays out all seven settings")
+    Assert.equal(content.footer.y, 168, case .. " pins its footer")
+    text.draws = {}
+    window.draws = 0
+    drawPlan(scope, renderer, top, topPlan, measurements[case].width, measurements[case].height)
+    local title = findPlacedLine(text.draws, "OPTIONS")
+    Assert.notNil(title, case .. " paints its title at the top")
+    Assert.equal(title.x, 10, case .. " keeps the title header origin")
+    Assert.equal(title.y, 5, case .. " keeps the title header row")
+    for _, label in ipairs(expectedLabels) do
+      local drawn = findPlacedLine(text.draws, label)
+      if label == "FRAME" then
+        Assert.isNil(drawn, case .. " clips the frame row at the top")
+      else
+        Assert.notNil(drawn, case .. " paints " .. label)
+        Assert.isTrue(drawn.x >= 12 and drawn.x <= 112, case .. " keeps " .. label .. " in its band")
+      end
+    end
+    local confirm = findPlacedLine(text.draws, "CONFIRM")
+    local quit = findPlacedLine(text.draws, "QUIT")
+    Assert.notNil(confirm, case .. " paints its confirm action")
+    Assert.notNil(quit, case .. " paints its quit action")
+    Assert.isTrue(confirm.x < quit.x, case .. " keeps its footer actions distinct")
+    Assert.isTrue(confirm.y >= 168 and quit.y >= 168, case .. " keeps its footer below the list")
+    for _, draw in ipairs(text.draws) do
+      Assert.isNil(draw.line:find("{", 1, true), case .. " paints no diagnostic marker")
+    end
+    Assert.equal(window.draws, 0, case .. " hides the sample at the top")
+    local bottom = headlessSourceView()
+    bottom.focusId = "textFrame"
+    bottom.scrollOffset = 64
+    bottom.error = "SAVE_WRITE_FAILED: disk is full"
+    local bottomPlan = resolvers[case](contextFor(case, measurements), bottom)
+    text.draws = {}
+    window.draws = 0
+    drawPlan(scope, renderer, bottom, bottomPlan, measurements[case].width, measurements[case].height)
+    local frameLabel = findPlacedLine(text.draws, "FRAME")
+    Assert.notNil(frameLabel, case .. " paints its frame row when revealed")
+    local value = findPlacedLine(text.draws, "TYPE 1")
+    Assert.notNil(value, case .. " paints its frame value when revealed")
+    Assert.isTrue(value.x >= 140 and value.x <= 172, case .. " centers its frame value")
+    Assert.equal(window.draws, 1, case .. " paints the revealed sample exactly once")
+    Assert.deepEqual(
+      { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
+      { x = 16, y = 172, width = 216, height = 32 },
+      case .. " nests the revealed sample in its row"
+    )
+    local failed = findPlacedLine(text.draws, "APPLY FAILED")
+    Assert.notNil(failed, case .. " keeps its failure note on the corrected screen")
+    Assert.isTrue(failed.x >= 116 and failed.x + #failed.line * 8 <= 248, case .. " bounds its failure note")
+  end
+  renderer:dispose()
+end
+
 return GraphicsSmoke.suite(T.tests)

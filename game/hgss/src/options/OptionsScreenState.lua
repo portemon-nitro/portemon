@@ -11,7 +11,50 @@ local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local OptionsInterface = require("game.hgss.src.options.OptionsInterface")
 local OptionsRows = require("game.hgss.src.options.OptionsRows")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
+local Slider = require("libs.ui.src.Slider")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
+
+-- The one row-specific stop normalizer: the frame carousel wraps 1..20
+-- in either direction while every other row keeps its bounded clamp.
+---@param rowId string
+---@param candidate integer 1-based candidate stop
+---@return integer normalized 1-based stop
+local function normalizeIndex(rowId, candidate)
+  assert(type(candidate) == "number" and candidate % 1 == 0, "option stops stay integral")
+  if rowId == "textFrame" then
+    return ((candidate - 1) % 20) + 1
+  end
+  local count = OptionsInterface.valueCount(rowId)
+  if candidate < 1 then
+    return 1
+  elseif candidate > count then
+    return count
+  end
+  return candidate
+end
+
+-- Sums one compiled source animation sequence, validating its tick
+-- shape. Missing frames or a nonpositive total fails the presented
+-- screen so a half-wired press never arms silently.
+---@param sequence table<string, unknown> compiled { frames = { { ticks = integer } } }
+---@param what string semantic role for failure detail
+---@return integer total source ticks
+local function sequenceTotal(sequence, what)
+  assert(
+    type(sequence) == "table" and type(sequence.frames) == "table" and #sequence.frames >= 1,
+    what .. " must carry at least one frame"
+  )
+  local total = 0
+  for _, frame in ipairs(sequence.frames) do
+    assert(
+      type(frame.ticks) == "number" and frame.ticks % 1 == 0 and frame.ticks >= 0,
+      what .. " frame durations must be non-negative integers"
+    )
+    total = total + frame.ticks
+  end
+  assert(total > 0, what .. " animation must advance")
+  return total
+end
 
 ---@class OptionsScreenState
 ---@field _preparePlayerOptions fun(values: OptionsScreenState.PlayerOptions): { apply: fun(), rollback: fun() }? the player-options one-attempt factory
@@ -29,6 +72,8 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 ---@field _draft OptionsScreenState.Draft the detached editable copy beside the baseline
 ---@field _legacyNote boolean whether the draft carries the slow-to-mid migration note
 ---@field _disposed boolean
+---@field _pressVisual table<string, unknown>? one visible arrow/footer press in source ticks
+---@field _pendingFooterAction table<string, unknown>? one deferred footer activation during its source sequence
 ---@field _phase string "open"|"closed" menu lifetime
 ---@field _preparing boolean whether the per-open presentation still prepares
 ---@field _committed boolean whether Confirm published exactly once
@@ -64,6 +109,9 @@ OptionsScreenState.__index = OptionsScreenState
 ---@class OptionsScreenState.Semantic
 ---@field labels table<string, unknown>?
 ---@field framePreviewText table<integer, table<string, unknown>>?
+---@field section table<string, unknown>? test-seam nested compiled animation section
+---@field arrows table<string, unknown>? compiled arrow animation states (presented semantic)
+---@field actions table<string, unknown>? compiled footer action states (presented semantic)
 
 local SELECT_SOUND = "SEQ_SE_DP_SELECT"
 local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
@@ -174,6 +222,8 @@ function OptionsScreenState.new(opts)
     _focusId = "textSpeed",
     _scrollOffset = 0,
     _capture = nil,
+    _pressVisual = nil,
+    _pendingFooterAction = nil,
     _previewOpen = false,
   }, OptionsScreenState)
   self._baseline = copyOptions(committed)
@@ -189,8 +239,19 @@ function OptionsScreenState.new(opts)
   local built, buildErr = pcall(function()
     if self._presentationPort ~= nil then
       assert(self._measureDisplay ~= nil, "a presented options screen requires the display facts")
-      self._session = ApplicationPresentation.new(OptionsInterface.defaults(), opts.overrides)
-      self._session:resolve(self:_measured(), self:_view())
+    end
+    if self._measureDisplay ~= nil then
+      local measured = self._measureDisplay()
+      if measured ~= nil then
+        self._session = ApplicationPresentation.new(OptionsInterface.defaults(), opts.overrides)
+        self._session:resolve(measured, self:_view())
+        local section = self:_animationSection()
+        if section ~= nil then
+          self:_validateAnimationSection(section)
+        end
+      elseif self._presentationPort ~= nil then
+        error("a presented options screen requires the display facts", 0)
+      end
     end
     self:_restartPreview()
   end)
@@ -216,6 +277,101 @@ end
 function OptionsScreenState:_measured()
   local measure = assert(self._measureDisplay, "a presented options screen requires the display facts")
   return assert(measure(), "the options screen requires current display facts")
+end
+
+-- The presented source animation section: the test seam nests it under
+-- semantic.section while production presents the whole generated options
+-- section as the semantic record. Absent art means headless-instant
+-- behavior with no visual state. Never mutates source frames.
+---@return table<string, unknown>? compiled arrows/actions section or nil
+function OptionsScreenState:_animationSection()
+  local semantic = self._semantic
+  if type(semantic) ~= "table" then
+    return nil
+  end
+  local nested = semantic.section
+  if type(nested) == "table" then
+    return nested
+  end
+  if semantic.arrows ~= nil or semantic.actions ~= nil then
+    return semantic
+  end
+  return nil
+end
+
+-- Validates one presented source animation section once: both arrow
+-- sides carry idle and pressed states and every footer state carries a
+-- positive total. Headless screens without art skip this entirely.
+---@param section table<string, unknown>
+function OptionsScreenState:_validateAnimationSection(section)
+  local arrows = assert(section.arrows, "the options section carries its arrows")
+  for _, side in ipairs({ "left", "right" }) do
+    local pair = assert(arrows[side], "arrows carry both sides")
+    sequenceTotal(assert(pair.idle, "arrows carry idle and pressed states"), "arrows." .. side .. ".idle")
+    sequenceTotal(assert(pair.pressed, "arrows carry idle and pressed states"), "arrows." .. side .. ".pressed")
+  end
+  local actions = assert(section.actions, "the options section carries footer actions")
+  for _, stateName in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
+    sequenceTotal(assert(actions[stateName], "actions carry every compiled state"), "actions." .. stateName)
+  end
+end
+
+-- Totals one already-validated source sequence for a new press: the
+-- arrow side pressed state or the matching footer pressed state.
+---@param kind string "arrow"|"footer"
+---@param sideOrAction string arrow side or footer action id
+---@param focused boolean whether the pressed control holds focus
+---@return integer? total source ticks, nil without art
+function OptionsScreenState:_pressTotal(kind, sideOrAction, focused)
+  local section = self:_animationSection()
+  if section == nil then
+    return nil
+  end
+  if kind == "arrow" then
+    local arrows = assert(section.arrows, "the options section carries its arrows")
+    local pair = assert(arrows[sideOrAction], "arrows carry both sides")
+    return sequenceTotal(
+      assert(pair.pressed, "arrows carry idle and pressed states"),
+      "arrows." .. sideOrAction .. ".pressed"
+    )
+  end
+  assert(kind == "footer", "press totals name an arrow or footer press")
+  local actions = assert(section.actions, "the options section carries footer actions")
+  local key = focused and "pressedFocused" or "pressed"
+  return sequenceTotal(assert(actions[key], "actions carry every compiled state"), "actions." .. key)
+end
+
+-- Advances one source-tick visual and completes one pending footer
+-- activation: pending clears before invoking so a feedback exception
+-- cannot duplicate the commit. Arrow pulses clear at their one-shot
+-- total; held presses persist on their final frame until release.
+function OptionsScreenState:_advanceVisual()
+  local visual = self._pressVisual
+  if visual ~= nil then
+    visual.ageTicks = visual.ageTicks + 1
+  end
+  local pending = self._pendingFooterAction
+  if pending == nil then
+    if visual ~= nil and visual.held == false and visual.kind == "arrow" then
+      local total = self:_pressTotal("arrow", assert(visual.side, "arrow presses name their side"), false)
+      if total ~= nil and visual.ageTicks >= total then
+        self._pressVisual = nil
+      end
+    end
+    return
+  end
+  pending.remainingTicks = pending.remainingTicks - 1
+  if pending.remainingTicks <= 0 then
+    local id = assert(pending.id, "pending footer actions name their action")
+    self._pendingFooterAction = nil
+    self._pressVisual = nil
+    if id == "confirm" then
+      self:_confirm()
+    else
+      assert(id == "quit", "pending footer actions name confirm or quit")
+      self:_quit()
+    end
+  end
 end
 
 ---@return table<string, unknown> the controller snapshot for resolvers and renderers
@@ -276,7 +432,35 @@ function OptionsScreenState:_view()
       },
     },
     error = self._error,
+    pressVisual = self:_pressSnapshot(),
   }
+end
+
+-- One immutable per-tick visual snapshot for the renderer: never source
+-- frames, only the pressed kind/side/action, the source age, the held
+-- flag, and focus. Nil when no press paints.
+---@return table<string, unknown>?
+function OptionsScreenState:_pressSnapshot()
+  local visual = self._pressVisual
+  if visual == nil then
+    return nil
+  end
+  local snapshot = {
+    kind = visual.kind,
+    ageTicks = visual.ageTicks,
+    held = visual.held,
+    focused = visual.focused,
+  }
+  if visual.side ~= nil then
+    snapshot.side = visual.side
+  end
+  if visual.actionId ~= nil then
+    snapshot.actionId = visual.actionId
+  end
+  if visual.rowId ~= nil then
+    snapshot.rowId = visual.rowId
+  end
+  return snapshot
 end
 
 ---@param rowId string
@@ -502,14 +686,25 @@ end
 ---@param rowId string
 ---@param direction string "left"|"right"
 function OptionsScreenState:_stepRow(rowId, direction)
-  local count = OptionsInterface.valueCount(rowId)
   local index = draftIndex(rowId, self._draft)
+  local candidate = index
   if direction == "left" then
-    index = math.max(1, index - 1)
+    candidate = index - 1
   else
-    index = math.min(count, index + 1)
+    candidate = index + 1
   end
-  self:_editRow(rowId, valueAt(rowId, index), false)
+  candidate = normalizeIndex(rowId, candidate)
+  self:_editRow(rowId, valueAt(rowId, candidate), false)
+  if rowId == "textFrame" and self:_animationSection() ~= nil then
+    self._pressVisual = {
+      kind = "arrow",
+      side = direction,
+      rowId = rowId,
+      ageTicks = 0,
+      held = false,
+      focused = self._focusId == rowId,
+    }
+  end
 end
 
 -- Keeps the focused row fully visible: scrolling never edits values or
@@ -601,6 +796,8 @@ function OptionsScreenState:_confirm()
   self._phase = "closed"
   self._result = { kind = "close" }
   self._capture = nil
+  self._pressVisual = nil
+  self._pendingFooterAction = nil
   if self._previewOpen and self._previewPrinter ~= nil then
     self._previewPrinter:close()
     self._previewOpen = false
@@ -617,6 +814,8 @@ function OptionsScreenState:_quit()
     return
   end
   self._capture = nil
+  self._pressVisual = nil
+  self._pendingFooterAction = nil
   self._audio.restore()
   self._applyChannelMode(self._baselineChannel)
   self._effect(CANCEL_SOUND)
@@ -628,16 +827,67 @@ function OptionsScreenState:_quit()
   end
 end
 
+-- Arms one deferred footer activation once the source pressed sequence
+-- completes: the visible press stays painted while pending, and pending
+-- clears before invoking so a feedback exception cannot duplicate the
+-- effect. Without presented art the activation stays instant.
+---@param id string "confirm"|"quit"
+function OptionsScreenState:_armFooter(id)
+  assert(id == "confirm" or id == "quit", "footer activations name confirm or quit")
+  local focused = self._focusId == id
+  local total = self:_pressTotal("footer", id, focused)
+  if total == nil then
+    if id == "confirm" then
+      self:_confirm()
+    else
+      self:_quit()
+    end
+    return
+  end
+  local age = 0
+  local visual = self._pressVisual
+  if type(visual) == "table" and visual.kind == "footer" and visual.actionId == id then
+    age = assert(visual.ageTicks, "footer presses carry their source age")
+  end
+  self._pressVisual = { kind = "footer", actionId = id, ageTicks = age, held = false, focused = focused }
+  local remaining = total - age
+  if remaining < 0 then
+    remaining = 0
+  end
+  if remaining < 1 then
+    remaining = 1
+  end
+  self._pendingFooterAction = { id = id, remainingTicks = remaining }
+end
+
 ---@param event table<string, unknown>
 function OptionsScreenState:_applyEvent(event)
   if self._phase ~= "open" then
     return
   end
   local kind = event.type
+  if kind == "pointer_cancel" then
+    self._capture = nil
+    self._pressVisual = nil
+    self._pendingFooterAction = nil
+    return
+  end
+  if kind == "resize" or kind == "blur" then
+    self._capture = nil
+    local visual = self._pressVisual
+    if type(visual) == "table" and visual.held == true then
+      self._pressVisual = nil
+    end
+    return
+  end
+  if self._pendingFooterAction ~= nil then
+    return
+  end
   if kind == "navigate" then
     local direction = assert(event.direction, "navigate events carry a direction")
     if direction == "up" or direction == "down" then
       self._capture = nil
+      self._pressVisual = nil
       self:_moveFocus(direction)
     elseif direction == "left" or direction == "right" then
       if OptionsInterface.isRow(self._focusId) then
@@ -650,9 +900,9 @@ function OptionsScreenState:_applyEvent(event)
   end
   if kind == "confirm" then
     if self._focusId == "confirm" then
-      self:_confirm()
+      self:_armFooter("confirm")
     elseif self._focusId == "quit" then
-      self:_quit()
+      self:_armFooter("quit")
     end
     return
   end
@@ -662,18 +912,15 @@ function OptionsScreenState:_applyEvent(event)
   end
   if kind == "activate" then
     local id = assert(event.id, "activate events carry an id")
-    if id == "confirm" then
-      self:_confirm()
-    elseif id == "quit" then
-      self:_quit()
+    if id == "confirm" or id == "quit" then
+      self:_armFooter(id)
     end
     return
   end
   if kind == "direct-select" then
     local row = assert(event.row, "direct selection carries its row")
     local index = assert(event.index, "direct selection carries its stop")
-    local count = OptionsInterface.valueCount(row)
-    index = math.max(1, math.min(count, index))
+    index = normalizeIndex(row, index)
     self:_editRow(row, valueAt(row, index), false)
     return
   end
@@ -699,10 +946,46 @@ function OptionsScreenState:_applyEvent(event)
     self:_pointerEvent(kind, event)
     return
   end
-  if kind == "pointer_cancel" or kind == "resize" or kind == "blur" then
-    self._capture = nil
+end
+
+-- Arms one visible arrow press for a true arrow hit, or clears any
+-- staged visual when the press cannot paint. Without presented art no
+-- visual arms and pointer behavior stays instant.
+---@param hit table<string, unknown> resolved control hit
+function OptionsScreenState:_beginArrowVisual(hit)
+  if hit.control ~= "left" and hit.control ~= "right" then
     return
   end
+  if self:_animationSection() == nil then
+    return
+  end
+  self._pressVisual = {
+    kind = "arrow",
+    side = hit.control,
+    rowId = hit.target,
+    ageTicks = 0,
+    held = true,
+    focused = self._focusId == hit.target,
+  }
+end
+
+-- Arms one visible footer press for a true footer hit. Without
+-- presented art no visual arms and activation stays instant.
+---@param hit table<string, unknown> resolved footer hit
+function OptionsScreenState:_beginFooterVisual(hit)
+  if hit.target ~= "confirm" and hit.target ~= "quit" then
+    return
+  end
+  if self:_animationSection() == nil then
+    return
+  end
+  self._pressVisual = {
+    kind = "footer",
+    actionId = hit.target,
+    ageTicks = 0,
+    held = true,
+    focused = self._focusId == hit.target,
+  }
 end
 
 -- One captured pointer: footer buttons arm on press and activate on a
@@ -742,6 +1025,10 @@ function OptionsScreenState:_pointerEvent(kind, event)
     }
     if hit.control == "thumb" then
       self:_applyEvent({ type = "slider-set", row = hit.target, index = hit.index })
+    elseif hit.control == "left" or hit.control == "right" then
+      self:_beginArrowVisual(hit)
+    elseif hit.target == "confirm" or hit.target == "quit" then
+      self:_beginFooterVisual(hit)
     end
     return
   end
@@ -767,11 +1054,27 @@ function OptionsScreenState:_pointerEvent(kind, event)
     if capture.owned then
       if hit ~= nil and hit.target == capture.hit.target and hit.index ~= nil then
         self:_applyEvent({ type = "slider-set", row = hit.target, index = hit.index })
+      elseif type(event.x) == "number" and self._session ~= nil then
+        local livePlan = self._session:plan()
+        if livePlan ~= nil and livePlan.content ~= nil then
+          for _, row in ipairs(assert(livePlan.content.rows, "content carries its rows")) do
+            if row.id == capture.hit.target and row.control ~= nil and row.control.kind == "slider" then
+              local resolved = assert(row.control.slider, "slider rows carry resolved geometry")
+              local clamped = Slider.indexAt(resolved, event.x)
+              self:_applyEvent({ type = "slider-set", row = row.id, index = clamped })
+              break
+            end
+          end
+        end
       end
       return
     end
     if hit == nil or hit.target ~= capture.hit.target or hit.control ~= capture.hit.control then
       capture.armed = false
+      local visual = self._pressVisual
+      if type(visual) == "table" and visual.held == true then
+        self._pressVisual = nil
+      end
     end
     return
   end
@@ -785,24 +1088,73 @@ function OptionsScreenState:_pointerEvent(kind, event)
     return
   end
   local armed = capture.armed
+  local pressed = capture.hit
   self._capture = nil
   if not armed then
+    if self._pressVisual ~= nil and self._pressVisual.held == true then
+      self._pressVisual = nil
+    end
     return
   end
   if event.dragged == true then
+    if self._pressVisual ~= nil and self._pressVisual.held == true then
+      self._pressVisual = nil
+    end
     return
   end
-  if hit == nil or hit.target ~= capture.hit.target or hit.control ~= capture.hit.control then
+  if hit == nil or hit.target ~= pressed.target or hit.control ~= pressed.control then
+    if self._pressVisual ~= nil and self._pressVisual.held == true then
+      self._pressVisual = nil
+    end
     return
   end
   if hit.target == "confirm" or hit.target == "quit" then
-    self:_applyEvent({ type = "activate", id = hit.target })
+    if self:_animationSection() ~= nil then
+      self:_armFooter(hit.target)
+    else
+      self._pressVisual = nil
+      self:_applyEvent({ type = "activate", id = hit.target })
+    end
   elseif hit.control == "left" then
     local index = draftIndex(hit.target, self._draft)
     self:_applyEvent({ type = "direct-select", row = hit.target, index = index - 1 })
+    if self:_animationSection() ~= nil then
+      local visual = self._pressVisual
+      if type(visual) == "table" and visual.kind == "arrow" then
+        visual.held = false
+      else
+        self._pressVisual = {
+          kind = "arrow",
+          side = "left",
+          rowId = hit.target,
+          ageTicks = 0,
+          held = false,
+          focused = self._focusId == hit.target,
+        }
+      end
+    else
+      self._pressVisual = nil
+    end
   elseif hit.control == "right" then
     local index = draftIndex(hit.target, self._draft)
     self:_applyEvent({ type = "direct-select", row = hit.target, index = index + 1 })
+    if self:_animationSection() ~= nil then
+      local visual = self._pressVisual
+      if type(visual) == "table" and visual.kind == "arrow" then
+        visual.held = false
+      else
+        self._pressVisual = {
+          kind = "arrow",
+          side = "right",
+          rowId = hit.target,
+          ageTicks = 0,
+          held = false,
+          focused = self._focusId == hit.target,
+        }
+      end
+    else
+      self._pressVisual = nil
+    end
   elseif hit.control == "value" and hit.index ~= nil then
     self:_applyEvent({ type = "direct-select", row = hit.target, index = hit.index })
   end
@@ -831,6 +1183,9 @@ function OptionsScreenState:updateFixed(uiInput)
       break
     end
     self:_applyEvent(event)
+  end
+  if self._phase == "open" then
+    self:_advanceVisual()
   end
   if self._previewPrinter ~= nil and self._previewOpen then
     self._previewPrinter:step({})
@@ -867,6 +1222,8 @@ function OptionsScreenState:cancelPointerCapture()
     self._session:cancelPointers()
   end
   self._capture = nil
+  self._pressVisual = nil
+  self._pendingFooterAction = nil
 end
 
 -- Releases the session and the per-open port exactly once. An
@@ -877,6 +1234,9 @@ function OptionsScreenState:dispose()
     return
   end
   self._disposed = true
+  self._capture = nil
+  self._pressVisual = nil
+  self._pendingFooterAction = nil
   if not self._committed and self._phase ~= "closed" then
     pcall(function()
       self._audio.restore()

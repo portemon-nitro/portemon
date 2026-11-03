@@ -414,6 +414,25 @@ function OptionsInterface.hitTest(content, x, y)
       local control = row.control
       if control.kind == "slider" then
         local resolved = assert(control.slider, "slider rows carry resolved geometry")
+        local viewportForSlider = assert(content.listViewport, "options content carries its list viewport")
+        local sliderOffset = assert(content.scrollOffset, "options content carries its scroll offset")
+        local contentY = y - viewportForSlider.y + sliderOffset
+        local rail = assert(resolved.rect, "resolved sliders carry their rail rect")
+        local insideRail = x >= rail.x
+          and x < rail.x + rail.width
+          and contentY >= rail.y
+          and contentY < rail.y + rail.height
+        if not insideRail then
+          local thumb = assert(resolved.thumbRect, "resolved sliders carry their thumb rect")
+          local insideThumb = x >= thumb.x
+            and x < thumb.x + thumb.width
+            and contentY >= thumb.y
+            and contentY < thumb.y + thumb.height
+          local insideControl = x >= control.rect.x and x < control.rect.x + control.rect.width
+          if not (insideThumb and insideControl) then
+            return nil
+          end
+        end
         return { target = row.id, control = "thumb", index = Slider.indexAt(resolved, x) }
       end
       if control.kind == "cycle" then
@@ -493,7 +512,13 @@ local function mapOptionsInput(event, view, plan)
     return nil
   end
   if event.type == "pointer_scroll" then
-    return { type = "scroll", delta = event.deltaY or event.delta or 0 }
+    local dy = event.dy
+    assert(type(dy) == "number" and dy == dy and dy ~= math.huge and dy ~= -math.huge, "field wheel has dy")
+    local mapped = { type = "scroll", delta = -dy * 24 }
+    if event.pointerId ~= nil then
+      mapped.pointerId = event.pointerId
+    end
+    return mapped
   end
   if event.type == "pointer_down" and event.outside == true then
     return { type = "dismiss" }

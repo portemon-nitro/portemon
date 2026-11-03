@@ -1613,4 +1613,282 @@ function T.tests.frame_preview_stays_passive_while_gestures_settle_whole()
   Assert.equal(state:status().scrollOffset, 0, "a drag toward the start settles back to the top")
 end
 
+-- The production wheel event carries signed dy: downward travel advances
+-- the list toward the frame, upward travel returns toward the top, a
+-- zero wheel holds, and horizontal travel alone edits nothing. A slider
+-- that owns its gesture keeps swallowing the wheel.
+function T.tests.real_wheel_events_drive_the_list_with_signed_dy()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu()
+  local state = opened.state
+  local volumeBefore = rowById(state:status(), "volume").value
+  Assert.equal(state:status().scrollOffset, 0, "the presented list opens unscrolled")
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
+  Assert.equal(state:status().scrollOffset, 24, "a downward wheel step advances toward the frame")
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
+  Assert.equal(state:status().scrollOffset, 64, "repeated downward steps settle fully revealed")
+  Assert.equal(rowById(state:status(), "volume").value, volumeBefore, "wheel travel edits no draft value")
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = 1 } })
+  Assert.equal(state:status().scrollOffset, 40, "an upward wheel step returns toward the top")
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = 0 } })
+  Assert.equal(state:status().scrollOffset, 40, "a zero wheel step holds the offset")
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 5, dy = 0 } })
+  Assert.equal(state:status().scrollOffset, 40, "horizontal travel alone never scrolls")
+  Assert.equal(rowById(state:status(), "volume").value, volumeBefore, "horizontal travel edits nothing")
+  local status = state:status()
+  local content = assert(status.presentation.content, "the presented plan carries its list")
+  local pane = presentationPane(status, "content")
+  local railX, railY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "volume" and hit.control == "thumb"
+  end)
+  local hx, hy = hostForLogical(pane, railX, railY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = hx, y = hy } })
+  local held = state:status().scrollOffset
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
+  Assert.equal(state:status().scrollOffset, held, "wheel during a slider capture never scrolls")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.isNil(state:takeResult(), "releasing the slider closes nothing")
+end
+
+-- Only a true rail or knob press may edit a slider: taps on the row
+-- label at x12 select nothing, while a press inside the resolved rail
+-- still clamps to a valid stop.
+function T.tests.label_taps_select_nothing_while_rail_presses_edit()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu({ volume = 80 })
+  local state = opened.state
+  local status = state:status()
+  local content = assert(status.presentation.content, "the presented plan carries its list")
+  local volumeLabel = Interface.hitTest(content, 12, 132)
+  Assert.isNil(volumeLabel, "a tap on the volume label arms no slider stop")
+  local speedLabel = Interface.hitTest(content, 12, 156)
+  Assert.isNil(speedLabel, "a tap on the battle-speed label arms no slider stop")
+  local pane = presentationPane(status, "content")
+  local previewsBefore = opened.port.previews
+  local labelHx, labelHy = hostForLogical(pane, 12, 132)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = labelHx, y = labelHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = labelHx, y = labelHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 80, "a label tap leaves the volume alone")
+  Assert.equal(opened.port.previews, previewsBefore, "a label tap previews no audio change")
+  Assert.isNil(state:takeResult(), "a label tap closes nothing")
+  local railHit = Interface.hitTest(content, 244, 132)
+  Assert.isTrue(
+    railHit ~= nil and railHit.target == "volume" and railHit.control == "thumb",
+    "a press at the rail end still arms the slider"
+  )
+  local railHx, railHy = hostForLogical(pane, 244, 132)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = railHx, y = railHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = railHx, y = railHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 100, "the rail-end press clamps to full volume")
+  Assert.isNil(state:takeResult(), "a rail press closes nothing")
+end
+
+-- The frame carousel wraps in both input modes while every other row
+-- keeps its established bounds: keyboard and pointer arrows cycle
+-- 1<->20, but volume and battle speed never wrap.
+function T.tests.frame_arrows_wrap_in_both_input_modes_while_sliders_clamp()
+  local opened = openMenu()
+  local state = opened.state
+  for _ = 1, 6 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
+  state:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(rowById(state:status(), "textFrame").value, 19, "keyboard left on the first frame wraps to the last")
+  Assert.equal(rowById(state:status(), "textFrame").valueLabel, "TYPE 20", "the wrapped frame reads one-based")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(rowById(state:status(), "textFrame").value, 0, "keyboard right on the last frame wraps to the first")
+  state:updateFixed({ { type = "direct-select", row = "textFrame", index = 20 } })
+  Assert.equal(rowById(state:status(), "textFrame").value, 19, "direct selection still reaches the last frame")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(rowById(state:status(), "textFrame").value, 0, "keyboard right wraps instead of clamping")
+  for _ = 1, 2 do
+    state:updateFixed({ { type = "navigate", direction = "up" } })
+  end
+  Assert.equal(state:status().focusId, "volume", "two ups return to the volume row")
+  state:updateFixed({ { type = "slider-set", row = "volume", index = 101 } })
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(rowById(state:status(), "volume").value, 100, "volume right still clamps at full")
+  state:updateFixed({ { type = "slider-set", row = "battleSpeed", index = 9 } })
+  for _ = 1, 1 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "battleSpeed", "one down reaches the battle speed row")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(rowById(state:status(), "battleSpeed").value, 4, "battle speed right still clamps at 4x")
+  local Interface = interfaceModule()
+  local presented = openPresentedMenu()
+  local screen = presented.state
+  for _ = 1, 6 do
+    screen:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(screen:status().scrollOffset, 64, "focusing the frame reveals it")
+  local content = assert(screen:status().presentation.content, "the revealed plan carries its list")
+  local pane = presentationPane(screen:status(), "content")
+  local left = Interface.hitTest(content, 130, 116)
+  Assert.isTrue(left ~= nil and left.control == "left", "the left frame arrow stays hit-testable")
+  local leftHx, leftHy = hostForLogical(pane, 130, 116)
+  screen:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = leftHx, y = leftHy } })
+  screen:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = leftHx, y = leftHy } })
+  Assert.equal(
+    rowById(screen:status(), "textFrame").value,
+    19,
+    "a pointer tap on the left arrow wraps to the last frame"
+  )
+  content = assert(screen:status().presentation.content, "the stepped plan carries its list")
+  pane = presentationPane(screen:status(), "content")
+  local right = Interface.hitTest(content, 220, 116)
+  Assert.isTrue(right ~= nil and right.control == "right", "the right frame arrow stays hit-testable")
+  local rightHx, rightHy = hostForLogical(pane, 220, 116)
+  screen:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = rightHx, y = rightHy } })
+  screen:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = rightHx, y = rightHy } })
+  Assert.equal(
+    rowById(screen:status(), "textFrame").value,
+    0,
+    "a pointer tap on the right arrow wraps to the first frame"
+  )
+  Assert.isNil(screen:takeResult(), "arrow taps close nothing")
+end
+
+-- A held arrow press publishes its visible pressed record with advancing
+-- source age and steps exactly once on release; a quick footer tap stays
+-- visible through its source sequence before one activation; a cancelled
+-- press never activates.
+function T.tests.held_and_quick_presses_show_a_visible_source_press_without_double_action()
+  local State = stateModule()
+  local prepare, applied = fakePrepare()
+  local port = fakeAudioPort(80)
+  local played, effect = fakeEffects()
+  local channels = {}
+  local function compiled(ticks)
+    local frames = {}
+    for _, duration in ipairs(ticks) do
+      frames[#frames + 1] = { ticks = duration }
+    end
+    return { frames = frames, loop = false }
+  end
+  local section = {
+    arrows = {
+      left = { idle = compiled({ 1 }), pressed = compiled({ 3, 5 }) },
+      right = { idle = compiled({ 1 }), pressed = compiled({ 3, 5 }) },
+    },
+    actions = {
+      normal = compiled({ 1 }),
+      focused = compiled({ 1 }),
+      pressed = compiled({ 2, 4 }),
+      pressedFocused = compiled({ 2, 4 }),
+    },
+    animationTickSeconds = 1 / 60,
+  }
+  local measurement = singleMeasurement("options-press-visual")
+  local presentationPort = fakePresentationPort()
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(mode)
+      channels[#channels + 1] = mode
+    end,
+    effect = effect,
+    semantic = { labels = semanticLabels(), section = section },
+    measureDisplay = function()
+      return measurement
+    end,
+    presentationPort = presentationPort,
+  })
+  state:updateFixed({})
+  for _ = 1, 6 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
+  local status = state:status()
+  local content = assert(status.presentation.content, "the revealed plan carries its list")
+  local pane = presentationPane(status, "content")
+  local leftHx, leftHy = hostForLogical(pane, 130, 116)
+  local selectsBefore = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_DP_SELECT" then
+      selectsBefore = selectsBefore + 1
+    end
+  end
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = leftHx, y = leftHy } })
+  local held = state:status().pressVisual
+  Assert.isTrue(held ~= nil, "a held arrow press publishes its visible record")
+  Assert.equal(held.kind, "arrow", "the arrow press records its control kind")
+  Assert.equal(held.side, "left", "the arrow press records its side")
+  local heldAge = assert(held.ageTicks, "the arrow press records its source age")
+  state:updateFixed({})
+  state:updateFixed({})
+  state:updateFixed({})
+  Assert.equal(state:status().pressVisual.ageTicks, heldAge + 3, "the held press advances in source ticks")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = leftHx, y = leftHy } })
+  Assert.equal(rowById(state:status(), "textFrame").value, 19, "the matching release steps the frame once")
+  local selectsAfter = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_DP_SELECT" then
+      selectsAfter = selectsAfter + 1
+    end
+  end
+  Assert.equal(selectsAfter, selectsBefore + 1, "the arrow step plays its effect exactly once")
+  Assert.isTrue(state:status().pressVisual ~= nil, "the released arrow keeps its one-shot pulse")
+  Assert.isNil(state:takeResult(), "an arrow release closes nothing")
+  local rightHx, rightHy = hostForLogical(presentationPane(state:status(), "content"), 220, 116)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = rightHx, y = rightHy } })
+  state:updateFixed({ { type = "pointer_cancel", pointerId = "touch:1" } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = rightHx, y = rightHy } })
+  Assert.equal(rowById(state:status(), "textFrame").value, 19, "a cancelled arrow press never steps")
+  Assert.isNil(state:status().pressVisual, "a cancelled arrow press clears its visual")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(state:status().focusId, "confirm", "one down from the frame reaches confirm")
+  content = assert(state:status().presentation.content, "the footer plan carries its list")
+  pane = presentationPane(state:status(), "content")
+  local confirmHx, confirmHy = hostForLogical(pane, 140, 180)
+  state:updateFixed({
+    { type = "pointer_down", pointerId = "touch:2", x = confirmHx, y = confirmHy },
+    { type = "pointer_up", pointerId = "touch:2", x = confirmHx, y = confirmHy },
+  })
+  Assert.isNil(state:takeResult(), "a quick footer tap never closes before its pressed sequence")
+  Assert.isTrue(state:status().pressVisual ~= nil, "the quick tap stays visibly pressed")
+  state:updateFixed({
+    { type = "pointer_down", pointerId = "touch:3", x = confirmHx, y = confirmHy },
+    { type = "pointer_up", pointerId = "touch:3", x = confirmHx, y = confirmHy },
+  })
+  for _ = 1, 10 do
+    state:updateFixed({})
+  end
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "the pressed sequence completes into one confirm")
+  Assert.isNil(state:takeResult(), "the footer activation emits exactly once")
+  Assert.equal(applied(), 1, "the pending footer applies its transaction exactly once")
+  Assert.equal(port.commits, 1, "the pending footer publishes volume exactly once")
+  local saves = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_DP_SAVE" then
+      saves = saves + 1
+    end
+  end
+  Assert.equal(saves, 1, "the pending footer plays its save effect exactly once")
+end
+
+-- A rejected confirmation keeps the full semantic error across scrolling
+-- and only clears it when the next confirmation begins.
+function T.tests.confirm_error_survives_scrolling_and_clears_on_retry()
+  local opened = openMenu()
+  local state = opened.state
+  opened.port.failNextCommit = "SAVE_WRITE_FAILED: disk is full"
+  state:updateFixed({ { type = "navigate", direction = "left" } })
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.isNil(state:takeResult(), "a failed confirm emits no close")
+  local failure = state:status().error
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the failure publishes its readable record")
+  Assert.isTrue(state:status().dirty, "the draft is preserved for retry")
+  state:updateFixed({ { type = "scroll", delta = 48 } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(state:status().error, failure, "scrolling and focus moves never clear the failure")
+  state:updateFixed({ { type = "activate", id = "confirm" } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "a retry with a working port closes")
+  Assert.isNil(state:status().error, "a fresh confirmation clears the failure")
+end
+
 return T
