@@ -1017,6 +1017,15 @@ function OptionsScreenState:_pointerEvent(kind, event)
       end
       return
     end
+    -- The touched control owns later keyboard edits from the press on:
+    -- focus follows the accepted hit before any press visual or value
+    -- preview, while blank-list drags and outside dismissals stay
+    -- focus-neutral. The list never reflows while the press is held.
+    assert(
+      OptionsInterface.isRow(hit.target) or hit.target == "confirm" or hit.target == "quit",
+      "pointer focus needs a known row or footer action"
+    )
+    self._focusId = hit.target
     self._capture = {
       pointerId = event.pointerId,
       hit = hit,
@@ -1158,6 +1167,10 @@ function OptionsScreenState:_pointerEvent(kind, event)
   elseif hit.control == "value" and hit.index ~= nil then
     self:_applyEvent({ type = "direct-select", row = hit.target, index = hit.index })
   end
+  -- The pressed control stayed stable under the pointer for the whole
+  -- gesture; only now that the capture is settled may the touched row
+  -- pull the list into full view. Footer focus never moves the list.
+  self:_ensureVisible()
 end
 
 -- One fixed tick: resolve, map one ordered batch, advance the draft

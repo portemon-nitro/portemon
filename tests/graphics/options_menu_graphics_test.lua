@@ -2424,4 +2424,184 @@ function T.tests.slider_value_and_rail_travel_together_without_bleed(scope)
   renderer:dispose()
 end
 
+-- The completed screen stays coherent in one composition: at every
+-- scroll position the moving plates cover the list, the focused row wears
+-- only the source strip, slider values never touch their rails, no extra
+-- slider outline paints, the frame sample co-scrolls, and the header and
+-- footer stay fixed on all four display arrangements.
+function T.tests.touched_rows_keep_one_strip_across_offsets_sliders_and_layouts(scope)
+  local Interface, Renderer = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text, window = preparedPlacedPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local borderR, borderG, borderB = FieldUiFixture.optionsSelectionOverlayBorderColor()
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
+  local frameR, frameG, frameB = FieldUiFixture.optionsRowFrameColor()
+  local fullMatrix = {
+    { offset = 0, focus = "textSpeed", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
+    { offset = 32, focus = "volume", volume = "0%", volumeIndex = 1, speed = "1x", speedValue = 1, speedIndex = 1 },
+    { offset = 32, focus = "battleSpeed", volume = "100%", volumeIndex = 101, speed = "4x", speedValue = 4, speedIndex = 3 },
+    { offset = 64, focus = "textFrame", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
+    { offset = 64, focus = "confirm", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
+  }
+  local compactMatrix = {
+    { offset = 0, focus = "textSpeed", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
+    { offset = 32, focus = "volume", volume = "0%", volumeIndex = 1, speed = "1x", speedValue = 1, speedIndex = 1 },
+    { offset = 64, focus = "confirm", volume = "100%", volumeIndex = 101, speed = "4x", speedValue = 4, speedIndex = 3 },
+  }
+  local function plateFor(rowId, position)
+    if rowId == "textFrame" then
+      return { frameR, frameG, frameB, 255 }
+    end
+    if position % 2 == 1 then
+      return { oddR, oddG, oddB, 255 }
+    end
+    return { evenR, evenG, evenB, 255 }
+  end
+  for _, case in ipairs({ "nativeLike", "wide", "tall", "dualDisplay" }) do
+    local matrix = case == "nativeLike" and fullMatrix or compactMatrix
+    for _, scenario in ipairs(matrix) do
+      local tag = case .. " offset " .. scenario.offset .. " focus " .. scenario.focus
+      local view = headlessSourceView({ battleSpeed = scenario.speedValue })
+      for _, row in ipairs(view.rows) do
+        if row.id == "volume" then
+          row.valueLabel = scenario.volume
+          row.valueIndex = scenario.volumeIndex
+        end
+        if row.id == "battleSpeed" then
+          row.valueLabel = scenario.speed
+          row.valueIndex = scenario.speedIndex
+        end
+      end
+      view.focusId = scenario.focus
+      view.scrollOffset = scenario.offset
+      if scenario.offset == 64 then
+        view.preview = { textSpeed = "mid", textFrame = 1 }
+      end
+      local plan = resolvers[case](contextFor(case, measurements), view)
+      local content = assert(plan.content, tag .. " carries its list")
+      Assert.equal(content.scrollOffset, scenario.offset, tag .. " keeps its scroll")
+      Assert.equal(content.footer.y, 168, tag .. " pins its footer")
+      local placement = nil
+      for _, pane in ipairs(assert(plan.panes, tag .. " carries its panes")) do
+        if pane.id == "controls" or pane.id == "content" then
+          placement = pane.placement
+        end
+      end
+      placement = assert(placement, tag .. " places its list pane")
+      local rowsById = {}
+      for _, row in ipairs(content.rows) do
+        rowsById[row.id] = row
+      end
+      text.draws = {}
+      window.draws = 0
+      local canvas = drawPlan(scope, renderer, view, plan, measurements[case].width, measurements[case].height)
+      local data = scope:own(canvas:newImageData())
+      local function at(lx, ly)
+        local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+        return quantizePixel(data, hx, hy)
+      end
+      Assert.deepEqual(at(6, 10), { 24, 120, 200, 255 }, tag .. " keeps its header base")
+      Assert.deepEqual(at(6, 180), { 24, 120, 200, 255 }, tag .. " keeps its footer base")
+      local volumeRow = assert(rowsById.volume, tag .. " keeps its volume row")
+      local speedRow = assert(rowsById.battleSpeed, tag .. " keeps its speed row")
+      local volumeDraw = findPlacedLine(text.draws, scenario.volume)
+      Assert.isTrue(volumeDraw ~= nil, tag .. " paints " .. scenario.volume)
+      Assert.equal(
+        volumeDraw.x,
+        112 + 44 - text:measurePlain(scenario.volume),
+        tag .. " right-aligns " .. scenario.volume
+      )
+      Assert.equal(volumeDraw.y, volumeRow.rect.y + 5, tag .. " keeps the volume band")
+      local speedDraw = findPlacedLine(text.draws, scenario.speed)
+      Assert.isTrue(speedDraw ~= nil, tag .. " paints " .. scenario.speed)
+      Assert.equal(
+        speedDraw.x,
+        112 + 44 - text:measurePlain(scenario.speed),
+        tag .. " right-aligns " .. scenario.speed
+      )
+      Assert.equal(speedDraw.y, speedRow.rect.y + 5, tag .. " keeps the speed band")
+      local volumeSlider = assert(volumeRow.control.slider, tag .. " carries its volume rail")
+      local volumeCx = math.floor(volumeSlider.thumbRect.x + volumeSlider.thumbRect.width / 2)
+      local volumeHx, volumeHy = LayoutGeometry.logicalToHost(
+        placement,
+        volumeCx,
+        volumeSlider.centerY + content.listViewport.y - scenario.offset
+      )
+      Assert.deepEqual(
+        quantizePixel(data, volumeHx, volumeHy),
+        { 242, 242, 242, 255 },
+        tag .. " keeps the volume thumb inside its rail"
+      )
+      for _, checked in ipairs({ { id = "volume", row = volumeRow }, { id = "battleSpeed", row = speedRow } }) do
+        local edgeY = content.listViewport.y + checked.row.rect.y + 4 - scenario.offset
+        local leaked = false
+        for x = 162, 246 do
+          local hx, hy = LayoutGeometry.logicalToHost(placement, x, edgeY)
+          local sampled = quantizePixel(data, hx, hy)
+          if sampled[1] == 255 and sampled[2] == 217 and sampled[3] == 51 and sampled[4] == 255 then
+            leaked = true
+            break
+          end
+        end
+        Assert.isFalse(leaked, tag .. " paints no extra outline around the " .. checked.id .. " rail")
+        local midHx, midHy = LayoutGeometry.logicalToHost(placement, 204, edgeY)
+        Assert.deepEqual(
+          quantizePixel(data, midHx, midHy),
+          plateFor(checked.id, checked.row.position),
+          tag .. " keeps the " .. checked.id .. " outline band on its row plate"
+        )
+      end
+      if scenario.focus == "confirm" or scenario.focus == "quit" then
+        Assert.deepEqual(at(2, 26), { oddR, oddG, oddB, 255 }, tag .. " hides the list strip")
+      else
+        local focusedRow = assert(rowsById[scenario.focus], tag .. " keeps its focused row")
+        local stripTop = content.listViewport.y + focusedRow.rect.y - scenario.offset
+        Assert.deepEqual(
+          at(2, stripTop + 2),
+          { borderR, borderG, borderB, 255 },
+          tag .. " backs the touched row with the strip"
+        )
+        local expectedPlate = plateFor(scenario.focus, focusedRow.position)
+        Assert.deepEqual(
+          at(6, stripTop + 12),
+          expectedPlate,
+          tag .. " leaves the strip center on the row plate"
+        )
+      end
+      if scenario.offset == 0 then
+        Assert.equal(window.draws, 0, tag .. " hides the sample at the top")
+      else
+        Assert.equal(window.draws, 1, tag .. " paints the co-scrolling sample exactly once")
+      end
+      if scenario.offset == 64 then
+        Assert.deepEqual(
+          { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
+          { x = 16, y = 172, width = 216, height = 32 },
+          tag .. " nests the revealed sample in its row"
+        )
+      end
+      if case == "dualDisplay" and scenario.offset == 0 then
+        local upperPlacement = nil
+        for _, pane in ipairs(assert(plan.panes, tag .. " carries its panes")) do
+          if pane.id == "preview" then
+            upperPlacement = pane.placement
+          end
+        end
+        if upperPlacement ~= nil then
+          local upperHx, upperHy = LayoutGeometry.logicalToHost(upperPlacement, 10, 10)
+          Assert.deepEqual(
+            quantizePixel(data, upperHx, upperHy),
+            { 210, 110, 30, 255 },
+            tag .. " keeps the upper pane decorative"
+          )
+        end
+      end
+    end
+  end
+  renderer:dispose()
+end
+
 return GraphicsSmoke.suite(T.tests)

@@ -568,7 +568,6 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
     self:_drawPlainLabel(assert(rowView.label, "rows carry their label"), { x = 12, y = labelY }, nil, nil, "normal")
   end
   local control = assert(row.control, "rows carry their control geometry")
-  local selected = view.focusId == row.id
   if control.kind == "slider" then
     local resolved = assert(control.slider, "slider rows carry resolved geometry")
     local valueWindow = assert(control.valueWindow, "slider rows carry their numeric window")
@@ -578,12 +577,13 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
       valueWidth <= valueWindow.width,
       "the " .. row.id .. " value " .. valueLabel .. " exceeds its numeric window"
     )
-    OptionsWidgets.drawSlider(graphics, resolved, selected, {
+    -- The row owns focus through the source selection strip; the
+    -- slider paints only its rail, fill, and thumb.
+    OptionsWidgets.drawSlider(graphics, resolved, {
       rail = { r = 0.25, g = 0.25, b = 0.25, a = 1 },
       fill = { r = 0.9, g = 0.9, b = 0.9, a = 1 },
       thumb = { r = 0.95, g = 0.95, b = 0.95, a = 1 },
       thumbEdge = { r = 0.1, g = 0.1, b = 0.1, a = 1 },
-      focus = { r = 1, g = 0.85, b = 0.2, a = 1 },
     })
     self:_drawPlainLabel(
       valueLabel,

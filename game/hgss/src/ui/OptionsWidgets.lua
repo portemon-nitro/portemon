@@ -1,7 +1,7 @@
 -- Concrete chrome painting for the generated option controls: choice
--- pills, frame arrow cycles, project-authored slider rails with thumbs
--- and focus treatment, and footer action chrome. Text arrangement lives
--- in the Options renderer; these routines paint art only. Every visual
+-- pills, frame arrow cycles, project-authored slider rails with thumbs,
+-- and footer action chrome. A focused slider row is marked by the list
+-- selection strip; these routines paint art only. Every visual
 -- state resolves through prepared caller-owned viewports: the renderer
 -- builds each frame Quad once outside draw and lends a lookup, so this
 -- module never allocates images or quads. Missing art fails explicitly
@@ -28,7 +28,7 @@ local OptionsWidgets = {}
 ---@alias OptionsWidgets.ArrowSet { left: OptionsWidgets.ArrowPair, right: OptionsWidgets.ArrowPair }
 ---@alias OptionsWidgets.ActionStates { normal: OptionsWidgets.CompiledSequence, focused: OptionsWidgets.CompiledSequence, pressed: OptionsWidgets.CompiledSequence, pressedFocused: OptionsWidgets.CompiledSequence }
 ---@alias OptionsWidgets.SliderGeometry { rect: OptionsWidgets.Rect, trackStartX: number, trackEndX: number, centerY: number, thumbRect: OptionsWidgets.Rect, count: integer, index: integer }
----@alias OptionsWidgets.SliderStyle { rail: OptionsWidgets.Color, fill: OptionsWidgets.Color, thumb: OptionsWidgets.Color, thumbEdge: OptionsWidgets.Color, focus: OptionsWidgets.Color }
+---@alias OptionsWidgets.SliderStyle { rail: OptionsWidgets.Color, fill: OptionsWidgets.Color, thumb: OptionsWidgets.Color, thumbEdge: OptionsWidgets.Color }
 
 local function point(value, name)
   assert(type(value) == "table", name .. " is required")
@@ -174,9 +174,8 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param resolved OptionsWidgets.SliderGeometry caller-owned Slider.resolve geometry
----@param focused boolean whether the focus outline surrounds the slider
----@param style OptionsWidgets.SliderStyle project-authored { rail, fill, thumb, thumbEdge, focus } 0..1 colors
-function OptionsWidgets.drawSlider(graphics, resolved, focused, style)
+---@param style OptionsWidgets.SliderStyle project-authored { rail, fill, thumb, thumbEdge } 0..1 colors
+function OptionsWidgets.drawSlider(graphics, resolved, style)
   assert(type(resolved) == "table", "slider painting needs its resolved geometry")
   assert(
     type(resolved.trackStartX) == "number"
@@ -203,18 +202,6 @@ function OptionsWidgets.drawSlider(graphics, resolved, focused, style)
     graphics.rectangle("fill", thumb.x, thumb.y, thumb.width, thumb.height)
     graphics.setColor(edgeR, edgeG, edgeB, edgeA)
     graphics.rectangle("line", thumb.x + 0.5, thumb.y + 0.5, thumb.width - 1, thumb.height - 1)
-    if focused then
-      local focusR, focusG, focusB, focusA =
-        color(assert(style.focus, "slider style needs its focus treatment"), "focus")
-      graphics.setColor(focusR, focusG, focusB, focusA)
-      graphics.rectangle(
-        "line",
-        resolved.rect.x - 2 + 0.5,
-        resolved.rect.y - 2 + 0.5,
-        resolved.rect.width + 4 - 1,
-        resolved.rect.height + 4 - 1
-      )
-    end
   end)
 end
 

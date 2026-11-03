@@ -2092,4 +2092,213 @@ function T.tests.confirm_error_survives_scrolling_and_clears_on_retry()
   Assert.isNil(state:status().error, "a fresh confirmation clears the failure")
 end
 
+-- Touching a control focuses its row on press: the touched choice,
+-- slider, or frame arrow owns later keyboard edits, while a synthetic
+-- semantic selection stays focus-neutral.
+function T.tests.touch_focuses_the_touched_row_for_keyboard_continuation()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu()
+  local state = opened.state
+  Assert.equal(state:status().focusId, "textSpeed", "the presented menu opens on the first row")
+  local status = state:status()
+  local content = assert(status.presentation.content, "the plan carries its content")
+  local pane = presentationPane(status, "content")
+  local lx, ly = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "soundMode" and hit.control == "value" and hit.index == 2
+  end)
+  local hx, hy = hostForLogical(pane, lx, ly)
+  local scrollBefore = state:status().scrollOffset
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.equal(state:status().focusId, "soundMode", "touching a choice focuses its row on press")
+  Assert.equal(state:status().scrollOffset, scrollBefore, "focusing on press never moves the list")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.equal(rowById(state:status(), "soundMode").value, "mono", "the matching release selects the touched choice")
+  Assert.equal(state:status().focusId, "soundMode", "the release keeps the touched row focused")
+  state:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(
+    rowById(state:status(), "soundMode").value,
+    "stereo",
+    "keyboard left edits the touched row next"
+  )
+  Assert.equal(
+    rowById(state:status(), "textSpeed").value,
+    "fastest",
+    "keyboard left leaves the previous row alone"
+  )
+  status = state:status()
+  content = assert(status.presentation.content, "the plan carries its content")
+  pane = presentationPane(status, "content")
+  local volumeX, volumeY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "volume" and hit.control == "thumb"
+  end)
+  local volumeHx, volumeHy = hostForLogical(pane, volumeX, volumeY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = volumeHx, y = volumeHy } })
+  Assert.equal(state:status().focusId, "volume", "touching the volume rail focuses the volume row")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = volumeHx, y = volumeHy } })
+  Assert.equal(state:status().focusId, "volume", "releasing the rail keeps the volume row focused")
+  status = state:status()
+  content = assert(status.presentation.content, "the plan carries its content")
+  pane = presentationPane(status, "content")
+  local speedX, speedY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "battleSpeed" and hit.control == "thumb"
+  end)
+  local speedHx, speedHy = hostForLogical(pane, speedX, speedY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = speedHx, y = speedHy } })
+  Assert.equal(state:status().focusId, "battleSpeed", "touching the speed rail focuses the speed row")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = speedHx, y = speedHy } })
+  Assert.equal(state:status().focusId, "battleSpeed", "releasing the speed rail keeps its row focused")
+  state:updateFixed({ { type = "scroll", delta = 64 } })
+  Assert.equal(state:status().scrollOffset, 64, "a wheel scroll reveals the closing frame")
+  Assert.equal(state:status().focusId, "battleSpeed", "scrolling keeps the row focus")
+  status = state:status()
+  content = assert(status.presentation.content, "the revealed plan carries its list")
+  pane = presentationPane(status, "content")
+  local frameX, frameY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "textFrame" and hit.control == "left"
+  end)
+  local frameHx, frameHy = hostForLogical(pane, frameX, frameY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:3", x = frameHx, y = frameHy } })
+  Assert.equal(state:status().focusId, "textFrame", "touching a frame arrow focuses the closing row")
+  Assert.equal(state:status().scrollOffset, 64, "focusing the frame on press never moves the list")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:3", x = frameHx, y = frameHy } })
+  Assert.equal(state:status().focusId, "textFrame", "releasing the arrow keeps the frame focused")
+  state:updateFixed({ { type = "direct-select", row = "soundMode", index = 1 } })
+  Assert.equal(
+    state:status().focusId,
+    "textFrame",
+    "a synthetic semantic selection never moves row focus"
+  )
+end
+
+-- A held press keeps the list still until release: the touched row or
+-- footer action focuses on press with no reflow, a second pointer never
+-- steals the gesture, cancellation edits nothing, and the release settles
+-- the focused row fully into view exactly once.
+function T.tests.held_pointer_keeps_list_still_until_release_then_reveals()
+  local State = stateModule()
+  local Interface = interfaceModule()
+  local prepare, applied = fakePrepare()
+  local port = fakeAudioPort(80)
+  local played, effect = fakeEffects()
+  local channels = {}
+  local function compiled(ticks)
+    local frames = {}
+    for _, duration in ipairs(ticks) do
+      frames[#frames + 1] = { ticks = duration }
+    end
+    return { frames = frames, loop = false }
+  end
+  local section = {
+    arrows = {
+      left = { idle = compiled({ 1 }), pressed = compiled({ 3, 5 }) },
+      right = { idle = compiled({ 1 }), pressed = compiled({ 3, 5 }) },
+    },
+    actions = {
+      normal = compiled({ 1 }),
+      focused = compiled({ 1 }),
+      pressed = compiled({ 2, 4 }),
+      pressedFocused = compiled({ 2, 4 }),
+    },
+    animationTickSeconds = 1 / 60,
+  }
+  local measurement = singleMeasurement("options-held-focus-reveal")
+  local presentationPort = fakePresentationPort()
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = prepare,
+    audioPreferences = port,
+    applyChannelMode = function(mode)
+      channels[#channels + 1] = mode
+    end,
+    effect = effect,
+    semantic = { labels = semanticLabels(), section = section },
+    measureDisplay = function()
+      return measurement
+    end,
+    presentationPort = presentationPort,
+  })
+  state:updateFixed({})
+  state:updateFixed({ { type = "scroll", delta = 32 } })
+  Assert.equal(state:status().scrollOffset, 32, "a wheel scroll rests between the ends")
+  Assert.equal(state:status().focusId, "textSpeed", "scrolling keeps the row focus")
+  local status = state:status()
+  local content = assert(status.presentation.content, "the plan carries its content")
+  local pane = presentationPane(status, "content")
+  local ax, ay = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "textFrame" and hit.control == "left"
+  end)
+  local hx, hy = hostForLogical(pane, ax, ay)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.equal(state:status().focusId, "textFrame", "pressing an arrow focuses its row before any visual")
+  Assert.equal(state:status().scrollOffset, 32, "the held press never reflows the list")
+  local held = assert(state:status().pressVisual, "the held arrow publishes its visual")
+  Assert.equal(held.focused, true, "the held visual agrees with the touched row")
+  Assert.equal(held.held, true, "the held visual stays held while captured")
+  status = state:status()
+  content = assert(status.presentation.content, "the held plan carries its list")
+  pane = presentationPane(status, "content")
+  local sx, sy = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "soundMode" and hit.control == "value" and hit.index == 2
+  end)
+  local shx, shy = hostForLogical(pane, sx, sy)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = shx, y = shy } })
+  Assert.equal(state:status().focusId, "textFrame", "a second pointer never steals the held focus")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = shx, y = shy } })
+  Assert.isNil(state:takeResult(), "the second pointer closes nothing")
+  Assert.equal(
+    rowById(state:status(), "soundMode").value,
+    "stereo",
+    "the second pointer edits no value"
+  )
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.equal(state:status().scrollOffset, 32, "holding the press never reflows the list")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = hx, y = hy } })
+  Assert.equal(state:status().focusId, "textFrame", "releasing the arrow keeps the frame focused")
+  Assert.equal(rowById(state:status(), "textFrame").value, 19, "the matching release steps the frame once")
+  Assert.equal(
+    state:status().scrollOffset,
+    64,
+    "the release reveals the whole frame item once settled"
+  )
+  Assert.isNil(state:takeResult(), "an arrow release closes nothing")
+  status = state:status()
+  content = assert(status.presentation.content, "the revealed plan carries its list")
+  pane = presentationPane(status, "content")
+  local railX, railY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "volume" and hit.control == "thumb"
+  end)
+  local railHx, railHy = hostForLogical(pane, railX, railY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = railHx, y = railHy } })
+  Assert.equal(state:status().focusId, "volume", "pressing the rail focuses the volume row")
+  Assert.equal(state:status().scrollOffset, 64, "the held slider never reflows the list")
+  state:updateFixed({ { type = "scroll", delta = -64 } })
+  Assert.equal(state:status().scrollOffset, 64, "a wheel during a slider capture never scrolls")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = railHx, y = railHy } })
+  Assert.equal(state:status().focusId, "volume", "releasing the rail keeps the volume focused")
+  Assert.equal(state:status().scrollOffset, 64, "the settled slider keeps the revealed list")
+  Assert.isNil(state:takeResult(), "releasing the slider closes nothing")
+  status = state:status()
+  content = assert(status.presentation.content, "the settled plan carries its list")
+  pane = presentationPane(status, "content")
+  local confirmX, confirmY = findLogicalForHit(Interface, content, function(hit)
+    return hit ~= nil and hit.target == "confirm"
+  end)
+  local confirmHx, confirmHy = hostForLogical(pane, confirmX, confirmY)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:3", x = confirmHx, y = confirmHy } })
+  Assert.equal(state:status().focusId, "confirm", "pressing confirm focuses the footer action")
+  Assert.isNil(state:takeResult(), "press alone never confirms")
+  local footerHeld = assert(state:status().pressVisual, "the held footer publishes its visual")
+  Assert.equal(footerHeld.focused, true, "the held footer agrees with the touched action")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:3", x = confirmHx, y = confirmHy } })
+  Assert.isNil(state:takeResult(), "a quick footer tap never closes before its pressed sequence")
+  Assert.isTrue(state:status().pressVisual ~= nil, "the quick tap stays visibly pressed")
+  for _ = 1, 10 do
+    state:updateFixed({})
+  end
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "the pressed sequence completes into one confirm")
+  Assert.isNil(state:takeResult(), "the footer activation emits exactly once")
+  Assert.equal(applied(), 1, "the pressed footer applies its transaction exactly once")
+end
+
 return T

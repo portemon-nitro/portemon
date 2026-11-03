@@ -2,7 +2,8 @@
 -- and unselected choice states sample their own source frames through the
 -- shared image-pool leases, pressed arrow and footer states resolve their
 -- compiled frames by animation age, and the project-authored slider draws
--- its rail, thumb, and focus treatment on the logical pixel grid. Missing
+-- only its rail, fill, and thumb on the logical pixel grid: a focused row is
+-- marked by the list selection strip, never by an extra slider outline. Missing
 -- art fails explicitly and every draw restores the borrowed graphics
 -- state; releasing the borrowed leases returns pool references to
 -- baseline.
@@ -215,11 +216,10 @@ function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
     fill = { r = 0, g = 1, b = 0, a = 1 },
     thumb = { r = 1, g = 0, b = 0, a = 1 },
     thumbEdge = { r = 1, g = 1, b = 1, a = 1 },
-    focus = { r = 1, g = 1, b = 0, a = 1 },
   }
   local before = graphicsState()
   local unfocused = renderInto(scope, 256, 64, function()
-    Widgets.drawSlider(love.graphics, resolved, false, style)
+    Widgets.drawSlider(love.graphics, resolved, style)
   end)
   assertSameState(before, graphicsState(), "slider painting")
   local thumb = resolved.thumbRect
@@ -242,9 +242,39 @@ function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
     "no focus outline leaks outside an unfocused slider"
   )
   local focused = renderInto(scope, 256, 64, function()
-    Widgets.drawSlider(love.graphics, resolved, true, style)
+    Widgets.drawSlider(love.graphics, resolved, style)
   end)
-  Assert.deepEqual(pixel(focused, 10, 18), { 255, 255, 0, 255 }, "a focused slider outlines its resolved extent")
+  local function hasFocusTone(image)
+    for y = 0, 63 do
+      for x = 0, 255 do
+        local sampled = pixel(image, x, y)
+        if sampled[1] == 255 and sampled[2] == 255 and sampled[3] == 0 and sampled[4] == 255 then
+          return true, x, y
+        end
+      end
+    end
+    return false
+  end
+  local leaked, leakX, leakY = hasFocusTone(focused)
+  Assert.isFalse(leaked, "a focused slider paints no extra outline beyond its rail and thumb")
+  local thumbCenter = math.floor(thumb.x + thumb.width / 2)
+  local railCenter = math.floor(resolved.centerY)
+  Assert.deepEqual(
+    pixel(focused, thumbCenter, railCenter),
+    { 255, 0, 0, 255 },
+    "the focused thumb keeps its resolved fill"
+  )
+  Assert.deepEqual(
+    pixel(focused, math.floor(resolved.trackStartX) + 2, railCenter),
+    { 0, 255, 0, 255 },
+    "the focused traveled rail keeps its fill treatment"
+  )
+  Assert.deepEqual(
+    pixel(focused, math.floor(resolved.trackEndX) - 2, railCenter),
+    { 0, 0, 255, 255 },
+    "the focused untraveled rail keeps its rail treatment"
+  )
+  assertSameState(before, graphicsState(), "focused slider painting")
 end
 
 function T.missing_art_fails_without_touching_graphics_state(scope)
