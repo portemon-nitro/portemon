@@ -216,4 +216,137 @@ function T.transition_draw_failure_reports_launch_and_releases_route_resources()
   Assert.equal(captureDisposed, 1, "repeat draw does not redispose the capture")
 end
 
+-- One verified core serves every preparation round and the selected
+-- transition without another disk parse: repeat preparation and the
+-- production transition loader borrow the identical table the envelope
+-- verified once, while a new field selection verifies its own core.
+function T.verified_core_serves_repeat_preparation_and_transition_without_rereading()
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local manifestPath = BattlePresentationCache.manifestPath()
+  local stored = ManifestFixture.coreManifest()
+  local leaves = {
+    [BattlePresentationCache.trainerPicturePath("front:YOUNGSTER")] = ManifestFixture.trainerPictureRecord(
+      "front:YOUNGSTER"
+    ),
+    [BattlePresentationCache.ballPath("ball:POKE_BALL")] = ManifestFixture.ballRecord("ball:POKE_BALL"),
+  }
+  local resourcePath = "data/generated/battle/resources/menu/layout/bug-contest/palette.lua"
+  local resourceDoc = {}
+  local globalReads = 0
+  local function deepCopyDoc(value)
+    if type(value) ~= "table" then
+      return value
+    end
+    local copy = {}
+    for key, item in pairs(value) do
+      copy[deepCopyDoc(key)] = deepCopyDoc(item)
+    end
+    return copy
+  end
+  local cache = { versionId = "verified-core-probe" }
+  function cache:loadLua(path)
+    if path == manifestPath then
+      globalReads = globalReads + 1
+      -- Every disk read parses afresh, exactly like the versioned cache
+      -- filesystem, so shared references prove borrowing rather than
+      -- coincidentally identical table returns.
+      return deepCopyDoc(stored)
+    end
+    if path == resourcePath then
+      return resourceDoc
+    end
+    return leaves[path]
+  end
+  function cache:exists()
+    return true
+  end
+  local host = {}
+  function host.requestBattlePresentation(_)
+    return true
+  end
+  function host.requestBattleScene(_, _)
+    return true
+  end
+  function host.requestBattleTrainerPicture(_, _)
+    return true
+  end
+  function host.requestBattleBall(_, _)
+    return true
+  end
+  local function openEnvelope()
+    return FieldBattlePresentation.new({
+      cacheFs = cache,
+      windows = { drawWindow = function() end },
+      text = {
+        measure = function(_)
+          return { width = 8, height = 16 }
+        end,
+        drawText = function() end,
+      },
+      measureDisplay = function()
+        return {}
+      end,
+      derivedAssets = host,
+      fieldRenderer = {},
+      captureFieldLayers = function()
+        return { dispose = function() end }
+      end,
+    })
+  end
+  local envelope = openEnvelope()
+  local ok, failure = xpcall(function()
+    Assert.equal(globalReads, 1, "construction verifies the core once")
+    local services = envelope:_preparationServices()
+    local demand = {
+      launchId = "verified-core-launch",
+      scenes = {},
+      pages = {},
+      trainerPictures = { "front:YOUNGSTER" },
+      battleBalls = { "ball:POKE_BALL" },
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+    local firstReady = services.prepare(demand)
+    local secondReady = services.prepare(demand)
+    Assert.equal(globalReads, 1, "repeat preparation shares the single verified parse")
+    Assert.isTrue(firstReady and secondReady, "both preparation rounds stage their selected leaves from the core")
+    envelope:_startTransition({
+      launchId = "verified-core-launch",
+      environment = { sceneKey = "general/grass/day" },
+      transitionContext = {
+        kind = "trainer",
+        trainerClass = "trainer/red",
+        doubleBattle = false,
+        specialBattle = false,
+        alternateTransition = false,
+      },
+    })
+    local transition = assert(envelope._transition, "the launch owns its selected transition")
+    Assert.equal(
+      transition:prepare(envelope._transitionContext),
+      "ready",
+      "the selected transition prepares from the verified core"
+    )
+    Assert.equal(transition:status().routeKey, "trainer/red", "the transition resolves its source route")
+    Assert.equal(globalReads, 1, "the transition loader borrows the core without another parse")
+    envelope:dispose()
+    local fresh = openEnvelope()
+    local freshOk, freshFailure = xpcall(function()
+      Assert.equal(globalReads, 2, "a new field selection verifies its own core once")
+    end, debug.traceback)
+    pcall(function()
+      fresh:dispose()
+    end)
+    if not freshOk then
+      error(freshFailure, 0)
+    end
+  end, debug.traceback)
+  pcall(function()
+    envelope:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 return { tests = T }

@@ -254,6 +254,43 @@ local function buildPort(envelope, descriptor)
   return envelope:factory()(descriptor)
 end
 
+-- The selected-game leaf demand host behind the staged launches: strict
+-- C01 selector validation answering ready with every demand recorded.
+-- The suite's prepared cache stages the named leaf receipts, so ready
+-- answers resolve through the real staged records; malformed selectors
+-- fail closed and nothing prefetches a family.
+---@return table leaf host carrying its derived assets and recordings
+local function readyLeafHost()
+  local host = { asks = {} }
+  local derived = {}
+  function derived.requestBattleTrainerPicture(selector, urgency)
+    assert(
+      type(selector) == "string"
+        and (
+          selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
+          or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
+        ),
+      "battle trainer picture demand carries its front:CLASS or back:CLASS selector"
+    )
+    host.asks[#host.asks + 1] = { kind = "battle-trainer-picture", selector = selector, urgency = urgency }
+    return true, nil
+  end
+  function derived.requestBattleBall(selector, urgency)
+    assert(
+      type(selector) == "string" and selector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil,
+      "battle ball demand carries its ball:ITEM selector"
+    )
+    host.asks[#host.asks + 1] = { kind = "battle-ball", selector = selector, urgency = urgency }
+    return true, nil
+  end
+  function derived.requestBattleEvolution(urgency)
+    host.asks[#host.asks + 1] = { kind = "battle-evolution", selector = "global", urgency = urgency }
+    return true, nil
+  end
+  host.derivedAssets = derived
+  return host
+end
+
 ---@return table stub launch host holding its phase with recorded notifications
 local function stubHost()
   local host = { notifies = {} }
@@ -389,6 +426,10 @@ local function openingPacket(launchId, portraits)
   return {
     launchId = launchId,
     packetId = 1,
+    -- The opening pictures no change yet: the shared view behind both
+    -- edges carries the selected leaves through the launch-leaf gate,
+    -- matching the migrated presented-battle packets.
+    before = after,
     after = after,
     events = {},
     request = {
@@ -529,6 +570,7 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
       text = text,
       audio = recordingAudio(),
       measureDisplay = compactMeasurement,
+      derivedAssets = readyLeafHost().derivedAssets,
       imagePool = images,
     })
     local launchId = "battle-production"
@@ -683,11 +725,22 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       return cacheFs:resolve(relativePath)
     end
     local worker = { ready = nil, failure = nil, asks = {} }
+    local leafHost = readyLeafHost()
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(key, urgency)
       worker.asks[#worker.asks + 1] = { key = key, urgency = urgency }
       return worker.ready, worker.failure
     end
+    -- The hidden global stays pending until the worker publishes: the
+    -- envelope upgrades its planning manifest through this host answer,
+    -- so an early ready would fail closed on the hidden bytes instead
+    -- of waiting for the reveal.
+    function derivedAssets.requestBattlePresentation(_)
+      return revealed, nil
+    end
+    derivedAssets.requestBattleTrainerPicture = leafHost.derivedAssets.requestBattleTrainerPicture
+    derivedAssets.requestBattleBall = leafHost.derivedAssets.requestBattleBall
+    derivedAssets.requestBattleEvolution = leafHost.derivedAssets.requestBattleEvolution
     local host = { phase = "leaving", notifies = {} }
     function host.status()
       return { phase = host.phase }
@@ -856,6 +909,7 @@ function T.native_steady_frames_reuse_resolved_images(scope, context)
       text = text,
       audio = recordingAudio(),
       measureDisplay = nativeMeasurement,
+      derivedAssets = readyLeafHost().derivedAssets,
       imagePool = images,
     })
     scope:own({
@@ -1139,6 +1193,8 @@ suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
   "battle-presentation:global",
   "battle-scene:general/grass/day",
+  "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+  "battle-ball:POKE_BALL",
   "field-font:global",
   "field-ui:global",
   "mon-portrait-page:34",

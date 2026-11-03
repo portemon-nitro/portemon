@@ -320,6 +320,64 @@ function T.disposal_releases_owned_handles_once()
   Assert.isTrue(graphics.shaders[1].released, "disposal releases the blend shader")
 end
 
+-- The late evolution leaf stages once per launch through the field
+-- services: pending polls redemand without failing, readiness retains
+-- exactly one record without rerunning the load, a terminal cause
+-- latches identically without retrying, a missing service fails closed,
+-- and disposal releases the retained record.
+function T.evolution_leaf_stages_once_and_releases_on_disposal()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local calls = 0
+  local gate = { ready = false, failure = nil }
+  local assets = stubAssets({})
+  function assets.prepareEvolution()
+    calls = calls + 1
+    if gate.failure ~= nil then
+      return nil, gate.failure
+    end
+    if not gate.ready then
+      return nil
+    end
+    return ManifestFixture.evolutionRecord()
+  end
+  local owned = holder(nil, assets)
+  Assert.isNil(owned:ensureEvolution(), "the unbuilt evolution leaf waits without a record")
+  Assert.isNil(owned:ensureEvolution(), "pending polls redemand the same leaf")
+  Assert.equal(calls, 2, "every pending poll reasks the selected worker")
+  gate.ready = true
+  local record = assert(owned:ensureEvolution(), "the staged leaf resolves its record")
+  Assert.equal(record.kind, "evolution", "the staged record names its bundle kind")
+  local again = assert(owned:ensureEvolution(), "readiness retains the staged record")
+  Assert.isTrue(again == record, "the retained record never reloads")
+  Assert.equal(calls, 3, "readiness asks the worker exactly once")
+  owned:dispose()
+  local _, releasedFailure = owned:ensureEvolution()
+  Assert.isTrue(
+    type(releasedFailure) == "string" and releasedFailure:find("released", 1, true) ~= nil,
+    "a disposed holder fails closed instead of staging late: " .. tostring(releasedFailure)
+  )
+  local doomed = holder(nil, stubAssets({}))
+  local _, missingFailure = doomed:ensureEvolution()
+  Assert.isTrue(
+    type(missingFailure) == "string" and missingFailure:find("no configured evolution service", 1, true) ~= nil,
+    "a missing evolution service fails closed: " .. tostring(missingFailure)
+  )
+  doomed:dispose()
+  local failedAssets = stubAssets({})
+  function failedAssets.prepareEvolution()
+    return nil, "worker exploded"
+  end
+  local failed = holder(nil, failedAssets)
+  local _, firstFailure = failed:ensureEvolution()
+  Assert.isTrue(
+    type(firstFailure) == "string" and firstFailure:find("worker exploded", 1, true) ~= nil,
+    "a terminal leaf cause names itself: " .. tostring(firstFailure)
+  )
+  local _, secondFailure = failed:ensureEvolution()
+  Assert.equal(secondFailure, firstFailure, "the terminal cause latches without retrying")
+  failed:dispose()
+end
+
 -- A regrown demand reopens pending until the enlarged exact demand
 -- settles on a later update: a bare not-yet answer waits without
 -- failing, while nil or a failure string fails closed with context.
@@ -437,7 +495,10 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   local launchId = "launch-portrait-rebind"
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = BattlePresentationManifestFixture.manifest(),
+    manifest = BattlePresentationManifestFixture.launchView(
+      { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+      { "ball:POKE_BALL" }
+    ),
     model = {},
     submit = function(_)
       return true
@@ -867,6 +928,24 @@ local function stagedPortraitBattleManifest()
   return manifest
 end
 
+-- The screen leg of the portrait demand binds one launch view, never the
+-- global inventory: the exact backpic, foe front, and ball behind the
+-- detached packets stage as launch entries while the portrait-only menu
+-- and font tweaks carry over from the shared core shape.
+---@return table per-launch battle view for the portrait screen legs
+local function stagedPortraitLaunchView()
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local view = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" })
+  view.menus.images[PORTRAIT_MENU_IMAGE] = { width = 8, height = 8 }
+  view.menus.images[BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)] = { width = 512, height = 256 }
+  view.messages.roles.narration.font = PORTRAIT_FONT_PATH
+  view.messages.roles.menu.font = PORTRAIT_FONT_PATH
+  view.messages.roles.hud.font = PORTRAIT_FONT_PATH
+  view.audioRoles.select = PORTRAIT_SELECT_SYMBOL
+  return view
+end
+
 -- An isolated layout-only versioned cache: the portrait selector manifest
 -- and the staged battle artwork exist, but the whole-family index and
 -- every portrait page start missing. Portrait pages arrive only through
@@ -884,14 +963,9 @@ local function layoutOnlyCache(portraitEntries)
   cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
   cache.files[PORTRAIT_FONT_PATH] = "staged-font"
   local stagedManifest = stagedPortraitBattleManifest()
-  for _, entry in pairs(stagedManifest.trainerPictures.entries) do
-    cache.files[entry.image] = solidPortraitPng(entry.width, entry.height)
-  end
-  for _, entry in pairs(stagedManifest.battleBalls.entries) do
-    for _, frame in ipairs(entry.frames) do
-      cache.files[frame.image] = solidPortraitPng(frame.width, frame.height)
-    end
-  end
+  -- Trainer and ball art stage exclusively through their selected leaf
+  -- records now: portrait-page demand never touches the old global
+  -- inventory, so no leaf pixels are staged in this cache.
   for _, menu in ipairs({ "command", "moves", "target" }) do
     local image = stagedManifest.menus[menu].image
     cache.files[image] = solidPortraitPng(8, 8)
@@ -1058,6 +1132,24 @@ local function portraitPageHost()
     host.sceneAsks[#host.sceneAsks + 1] = { key = key, urgency = urgency }
     return host.sceneReady, host.sceneFailure
   end
+  -- The verified core gates every launch demand, so the core probe
+  -- answers ready without staging anything: leaf selectors stay
+  -- undemanded here, and only the portrait pages build.
+  function derived.requestBattlePresentation(_)
+    return true, nil
+  end
+  function derived.requestBattleTrainerPicture(selector, _)
+    host.unexpected[#host.unexpected + 1] = "battle-trainer-picture:" .. tostring(selector)
+    return false, nil
+  end
+  function derived.requestBattleBall(selector, _)
+    host.unexpected[#host.unexpected + 1] = "battle-ball:" .. tostring(selector)
+    return false, nil
+  end
+  function derived.requestBattleEvolution(_)
+    host.unexpected[#host.unexpected + 1] = "battle-evolution"
+    return false, nil
+  end
   setmetatable(derived, {
     __index = function(_, key)
       host.unexpected[#host.unexpected + 1] = tostring(key)
@@ -1212,7 +1304,7 @@ local function demandScreen(launchId, services)
   end
   return BattleScreenState.new({
     launchId = launchId,
-    manifest = stagedPortraitBattleManifest(),
+    manifest = stagedPortraitLaunchView(),
     model = {},
     submit = function(_)
       return true

@@ -35,7 +35,13 @@ local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
 local function battleManifest()
-  local manifest = BattlePresentationManifestFixture.manifest()
+  -- One launch view over the shared core: the numeric trainer class in
+  -- these doubles rigs resolves to YOUNGSTER, staged beside the player
+  -- backpic and lead ball as launch entries.
+  local manifest = BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    { "ball:POKE_BALL" }
+  )
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
   return manifest
 end
@@ -220,23 +226,30 @@ local function openDoubleRig(opts)
     return record
   end
   local trainerId = launchId .. "-rival"
-  local scenario = ScenarioFactory.fromTrainer({
-    id = launchId .. "-scenario",
-    trainers = {
-      {
-        id = trainerId,
-        class = 2,
-        party = {
-          foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001),
-          foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002),
+  local scenario = ScenarioFactory.fromTrainer(
+    {
+      id = launchId .. "-scenario",
+      trainers = {
+        {
+          id = trainerId,
+          class = 2,
+          party = {
+            foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001),
+            foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002),
+          },
+          partyLevels = { 4, 4 },
+          prizeMoney = { trainerClass = 2, classRate = 4 },
+          aiPasses = {},
+          doubleBattle = true,
         },
-        partyLevels = { 4, 4 },
-        prizeMoney = { trainerClass = 2, classRate = 4 },
-        aiPasses = {},
-        doubleBattle = true,
       },
     },
-  }, { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } })
+    {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
+  )
   local manifest = battleManifest()
   manifest.hud.doubles = testDoublesHud()
   if opts.missingHud then

@@ -168,10 +168,21 @@ end
 
 -- Stages the battle manifest, one scene record with exactly-sized pixels,
 -- and the lead/foe portrait pages over the presentation fixture cache.
+-- Selected launch leaves stage beside the core: the player backpic and
+-- the lead ball behind every audio leg, so the selected-game host the
+-- runtime borrows answers ready against staged receipts.
 ---@param cache table versioned derived cache under staging
 local function stageBattlePresentation(cache)
   local staged = stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
   cache:writeLua(BattlePresentationCache.manifestPath(), staged)
+  cache:writeLua(
+    BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"),
+    BattlePresentationManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  )
+  cache:writeLua(
+    BattlePresentationCache.ballPath("ball:POKE_BALL"),
+    BattlePresentationManifestFixture.ballRecord("ball:POKE_BALL")
+  )
   cache:write(MENU_IMAGE, solidPng(8, 8))
   -- The field narration renderer behind battle text reads font 1:
   -- stage it beside the menu font the shared fixture already carries.
@@ -880,6 +891,27 @@ local function openMusicLaunch(fieldAudio, kind, launchTag)
   local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local cache = FieldStatePresentationFixture.cache()
   cache:writeLua(BattlePresentationCache.manifestPath(), BattlePresentationManifestFixture.manifest())
+  cache:writeLua(
+    BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"),
+    BattlePresentationManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  )
+  cache:writeLua(
+    BattlePresentationCache.ballPath("ball:POKE_BALL"),
+    BattlePresentationManifestFixture.ballRecord("ball:POKE_BALL")
+  )
+  -- The synthetic terminal packets carry the player backpic and lead
+  -- ball, so the envelope borrows a ready selected-game host over the
+  -- staged receipts instead of wedging behind an unstaged leaf.
+  local selectedLeaves = {}
+  function selectedLeaves.requestBattleTrainerPicture(_, _)
+    return true
+  end
+  function selectedLeaves.requestBattleBall(_, _)
+    return true
+  end
+  function selectedLeaves.requestBattleEvolution(_)
+    return true
+  end
   local envelope = FieldBattlePresentation.new({
     cacheFs = cache,
     windows = musicWindows(),
@@ -890,6 +922,7 @@ local function openMusicLaunch(fieldAudio, kind, launchTag)
       end,
     },
     monCatalog = CatalogFixture.makeCatalog(),
+    derivedAssets = selectedLeaves,
     measureDisplay = function()
       return musicDualMeasurement()
     end,

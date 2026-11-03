@@ -300,8 +300,12 @@ local function scriptMessageProgramContext()
   }
 end
 
----@return table valid staged global manifest
-local function manifest()
+--- The complete source-data record behind the independent staged artifacts:
+--- the shared core plus the trainer, ball, and evolution source sections
+--- the standalone leaf builders copy from. Never staged or validated
+--- as one record; only the strict core below crosses the runtime seam.
+---@return table full source-data record with core and leaf sections
+local function fullManifest()
   local fallbackRoutes = {}
   for _, terrain in ipairs({ "plain", "water", "cave" }) do
     for _, timeOfDay in ipairs({ "day", "late" }) do
@@ -1533,12 +1537,13 @@ makeIntroMusic = function()
   }
 end
 
--- The minimized shared core under test: the full fixture manifest with
--- the independently staged trainer, ball, and evolution sections plus
--- the compiled audio closures removed. Leaf sections stay available on
--- manifest() itself as source data for leaf-record tests.
-local function coreManifest()
-  local core = manifest()
+-- The strict shared core under test: the full source record with the
+-- independently staged trainer, ball, and evolution sections plus the
+-- compiled audio closures removed. Only this shape validates and stages
+-- as the global manifest.
+---@return table strict staged global core
+local function manifest()
+  local core = fullManifest()
   core.trainerPictures = nil
   core.battleBalls = nil
   core.evolutionParticles = nil
@@ -1547,12 +1552,12 @@ local function coreManifest()
   return core
 end
 
--- One standalone trainer picture leaf record for tests: the shared entry
--- with its staged images rewritten under the selector-owned leaf prefix
--- the standalone validator requires. Distinct source rasters keep
--- distinct staged names.
+local function coreManifest()
+  return manifest()
+end
+
 local function trainerPictureRecord(selector)
-  local source = manifest().trainerPictures.entries[selector]
+  local source = fullManifest().trainerPictures.entries[selector]
   assert(source ~= nil, "fixture covers trainer selector " .. tostring(selector))
   local prefix = "assets/generated/battle/trainer-pictures/" .. selector:gsub(":", "-")
   local seen = {}
@@ -1624,7 +1629,7 @@ end
 -- staged frames rewritten under the item-owned leaf prefix. Particle
 -- textures already use selector-scoped paths and are kept as staged.
 local function ballRecord(selector)
-  local source = manifest().battleBalls.entries[selector]
+  local source = fullManifest().battleBalls.entries[selector]
   assert(source ~= nil, "fixture covers ball selector " .. tostring(selector))
   local prefix = "assets/generated/battle/balls/" .. selector:sub(6)
   local frames = {}
@@ -1644,10 +1649,35 @@ local function ballRecord(selector)
   }
 end
 
+-- One per-launch battle view over the shared core: common sections are
+-- borrowed by reference while only the named trainer and ball leaf
+-- entries attach. Evolution sections stay absent until the committed
+-- evolution stages its leaf.
+---@param trainerSelectors string[] semantic trainer selectors behind this launch
+---@param ballSelectors string[] semantic ball selectors behind this launch
+---@return table per-launch battle view with exact staged leaf entries
+local function launchView(trainerSelectors, ballSelectors)
+  local view = manifest()
+  require("libs.assets.src.battle.BattlePresentationSchema").assertManifest(view)
+  view.trainerPictures = { entries = {} }
+  view.battleBalls = { entries = {} }
+  for _, selector in ipairs(trainerSelectors or {}) do
+    view.trainerPictures.entries[selector] = assert(
+      trainerPictureRecord(selector),
+      "the launch view stages a known trainer leaf: " .. tostring(selector)
+    ).entry
+  end
+  for _, selector in ipairs(ballSelectors or {}) do
+    view.battleBalls.entries[selector] =
+      assert(ballRecord(selector), "the launch view stages a known ball leaf: " .. tostring(selector)).entry
+  end
+  return view
+end
+
 -- One standalone evolution leaf record for tests: the shared particle set
 -- and screen rasters, already staged under their dedicated prefix.
 local function evolutionRecord()
-  local full = manifest()
+  local full = fullManifest()
   return {
     schema = "g4-battle-evolution-v1",
     kind = "evolution",
@@ -1660,6 +1690,7 @@ end
 return {
   manifest = manifest,
   coreManifest = coreManifest,
+  launchView = launchView,
   trainerPictureRecord = trainerPictureRecord,
   ballRecord = ballRecord,
   evolutionRecord = evolutionRecord,

@@ -610,7 +610,7 @@ function T.blend_coefficients_map_to_slot_scoped_battler_alpha()
   local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local screen = BattleScreenState.new({
     launchId = "blend-mapping-probe",
-    manifest = ManifestFixture.manifest(),
+    manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
     model = BattlePresentationModel,
     submit = function(_)
       return true

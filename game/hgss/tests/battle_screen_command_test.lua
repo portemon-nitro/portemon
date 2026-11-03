@@ -271,7 +271,13 @@ local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local function battleManifest()
-  return BattlePresentationManifestFixture.manifest()
+  -- Screens bind one launch view, never the global inventory: the exact
+  -- backpic, foe front, and ball behind these rigs stage as launch
+  -- entries while every other core section stays borrowed.
+  return BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    { "ball:POKE_BALL" }
+  )
 end
 -- Bar patches name component-relative source tiles: recorded bar tiles
 -- below subtract the staged component base beside the icon tiles.
@@ -1776,18 +1782,10 @@ function T.target_focus_returns_to_the_remembered_cell_for_the_same_range()
   local rangeKey = assert(screen._targetRangeKey, "the open target choice names its move range")
   screen._savedTargetCursor[combatant] = { id = "target:1", range = rangeKey }
   screen:_submitMove(entry)
-  Assert.equal(
-    screen:view().selection,
-    "target:1",
-    "the same range reopens on the remembered cell"
-  )
+  Assert.equal(screen:view().selection, "target:1", "the same range reopens on the remembered cell")
   screen._savedTargetCursor[combatant] = { id = "target:1", range = "range:changed" }
   screen:_submitMove(entry)
-  Assert.equal(
-    screen:view().selection,
-    "target:3",
-    "a changed range falls back to the native priority"
-  )
+  Assert.equal(screen:view().selection, "target:3", "a changed range falls back to the native priority")
   screen:dispose()
 end
 
@@ -1843,11 +1841,7 @@ function T.safari_presses_follow_the_relabelled_command_topology()
     control = { scope = "command", id = "fight" },
     pointerId = "touch:ball",
   })
-  Assert.equal(
-    rig.screen:view().selection,
-    "safari-ball",
-    "the Fight band press selects the relabelled ball slot"
-  )
+  Assert.equal(rig.screen:view().selection, "safari-ball", "the Fight band press selects the relabelled ball slot")
   Assert.notNil(rig.screen._armed, "the relabelled press arms its capture")
   rig.screen:dispose()
   rig.battle:dispose()
@@ -1886,11 +1880,7 @@ function T.move_cursor_returns_to_the_last_selected_slot()
   -- A previous turn's confirm left its cell behind: reopening reselects
   -- it while the slot stays enabled and falls back otherwise.
   screen._savedMoveCursor[combatant] = { x = 1, y = 0 }
-  Assert.equal(
-    screen:_restoreMoveSelection(),
-    "move:1",
-    "reopening reselects the remembered slot"
-  )
+  Assert.equal(screen:_restoreMoveSelection(), "move:1", "reopening reselects the remembered slot")
   screen._savedMoveCursor[combatant] = { x = 0, y = 1 }
   Assert.equal(
     screen:_restoreMoveSelection(),
@@ -1911,7 +1901,6 @@ function T.move_cursor_returns_to_the_last_selected_slot()
   )
   screen:dispose()
 end
-
 
 -- A Fight with no usable move refuses with the kernel reason instead
 -- of opening a dead move list: the decision stays open, nothing

@@ -14,7 +14,6 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -44,24 +43,16 @@ local function requireChildOwner(behavior)
   assert(owner ~= nil, "the battle child owner loads")
 end
 
----@param value unknown value under test preparation
----@return unknown a detached copy sharing no table with the source
-local function deepCopy(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local copy = {}
-  for key, item in pairs(value) do
-    copy[deepCopy(key)] = deepCopy(item)
-  end
-  return copy
-end
-
----@return table detached schema-valid staged manifest for the child harness scene
+---@return table per-launch battle view over the shared core for the child harness scene
 local function screenManifest()
-  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  -- The child binds one launch view, never the global inventory: the
+  -- exact backpic, trainer fronts, and ball behind these rigs stage as
+  -- launch entries (numeric trainer class 2 resolves to YOUNGSTER).
+  local manifest = BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    { "ball:POKE_BALL" }
+  )
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
-  BattlePresentationSchema.assertManifest(manifest)
   return manifest
 end
 
@@ -364,8 +355,12 @@ end
 -- Advances one currently visible narration wait through real screen input.
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration" or mode == "outcome"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  if
+    mode == "intro"
+    or mode == "narration"
+    or mode == "outcome"
+    or rig.screen._timeline:messageActive()
+    or rig.screen._timeline:levelUpStats() ~= nil
   then
     rig.screen:input({ { type = "confirm" } })
   end

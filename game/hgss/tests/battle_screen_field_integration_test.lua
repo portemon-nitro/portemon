@@ -82,6 +82,13 @@ local T = {
       "battle-effect:SCRATCH",
       "battle-effect:FORESIGHT",
       "battle-effect:DEFENSE_CURL",
+      -- Presented launches demand only their selected leaves: the player
+      -- backpic and the lead ball behind every leg. Foe fronts and the
+      -- evolution bundle extend this list exactly as journeys name them.
+      "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+      "battle-trainer-picture:front-RIVAL",
+      "battle-ball:POKE_BALL",
+      "battle-evolution:global",
     },
     tags = { "field", "battle" },
   },
@@ -428,8 +435,19 @@ local function bindEnvelope(game, versionId, measurement, overrides)
     -- voiced through its recording sink, so the bank seam answers ready
     -- like the substituted host boundaries above; bank readiness itself
     -- is owned by the battle staging tests with a controllable host.
+    -- Selected leaves answer ready because the suite stages exactly the
+    -- receipts its journeys declare; nothing prefetches a family.
     derivedAssets = {
       requestAudioBank = function()
+        return true
+      end,
+      requestBattleTrainerPicture = function()
+        return true
+      end,
+      requestBattleBall = function()
+        return true
+      end,
+      requestBattleEvolution = function()
         return true
       end,
     },
@@ -1403,10 +1421,8 @@ function T.tests.completion_port_rejects_stale_and_replayed_results()
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-  local Schema = require("libs.assets.src.battle.BattlePresentationSchema")
-  local manifest = ManifestFixture.manifest()
+  local manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" })
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
-  Schema.assertManifest(manifest)
   local assets = { images = {} }
   function assets.prepare(_)
     return true
@@ -1645,6 +1661,15 @@ function T.tests.pending_facade_forwards_completion_through_the_live_screen()
       requestBattleScene = function(_, _)
         return false, nil
       end,
+      requestBattleTrainerPicture = function(_, _)
+        return false, nil
+      end,
+      requestBattleBall = function(_, _)
+        return false, nil
+      end,
+      requestBattleEvolution = function(_)
+        return false, nil
+      end,
     },
   })
   local deferredId = "launch-completion-deferred"
@@ -1723,10 +1748,8 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-  local Schema = require("libs.assets.src.battle.BattlePresentationSchema")
-  local manifest = ManifestFixture.manifest()
+  local manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" })
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
-  Schema.assertManifest(manifest)
   local assets = { images = {} }
   function assets.prepare(_)
     return true
@@ -1738,6 +1761,12 @@ function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restor
     return assets.images[key]
   end
   function assets.release(_) end
+  -- The late evolution leaf arrives staged for this lane: the services
+  -- double answers the single selected bundle the way a ready worker
+  -- would, so the child opens against exact evolution art.
+  function assets.prepareEvolution()
+    return ManifestFixture.evolutionRecord()
+  end
   local text = {
     measure = function(content)
       return { width = 8 * #tostring(content), height = 16 }

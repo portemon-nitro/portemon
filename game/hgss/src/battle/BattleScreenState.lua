@@ -83,6 +83,7 @@ local Mon = require("libs.mons.src.Mon")
 ---@field _targetRangeKey string? move range identity behind the open target choice
 ---@field _pendingMoveId string? move control identity behind the pending target choice
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
+---@field _deferredPackets table<integer, table<string, unknown>> delivered packets waiting on staged leaf entries
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
 ---@field _outcomeMessages table<integer, table<string, unknown>>? source-selected terminal messages and waits
@@ -1133,6 +1134,7 @@ function BattleScreenState.new(opts)
     _targetRangeKey = nil,
     _pendingMoveId = nil,
     _pendingFinal = nil,
+    _deferredPackets = {},
     _pendingRequest = nil,
     _pendingResult = nil,
     _outcomeMessages = nil,
@@ -1269,9 +1271,18 @@ function BattleScreenState.new(opts)
       shadowHeight = height --[[@as integer]],
     }
   end
+  local trainerPictures = type(manifest.trainerPictures) == "table" and manifest.trainerPictures.entries or nil
+  assert(
+    type(trainerPictures) == "table",
+    "the battle screen binds its per-launch trainer entries for launch " .. opts.launchId
+  )
+  local battleBalls = type(manifest.battleBalls) == "table" and manifest.battleBalls.entries or nil
+  assert(
+    type(battleBalls) == "table",
+    "the battle screen binds its per-launch ball entries for launch " .. opts.launchId
+  )
   local function ballFadeColor(ballKey)
-    local balls = assert(self._manifest.battleBalls, "battle manifests inventory ball art")
-    local entry = assert(balls.entries["ball:" .. ballKey], "recall and send-out balls are in the ball inventory")
+    local entry = assert(battleBalls["ball:" .. ballKey], "recall and send-out balls are in the ball inventory")
     return entry.fadeColor
   end
   -- gBattleEncounterFadeColors is black for the three cave backgrounds.
@@ -1279,7 +1290,7 @@ function BattleScreenState.new(opts)
   self._timeline = BattleTimeline.new({
     encounterFadeColor = background:match("^cave_") and "black" or "white",
     ballFadeColor = ballFadeColor,
-    trainerPictures = self._manifest.trainerPictures.entries,
+    trainerPictures = trainerPictures,
     moveName = moveNameOf,
     speciesName = speciesNameOf,
     itemName = itemNameOf,
@@ -1845,22 +1856,11 @@ function BattleScreenState:_snapshot()
   local introLayer = type(sceneAssets) == "table" and sceneAssets.introLayer or nil
   local terrainSprites = type(sceneAssets) == "table" and sceneAssets.terrainSprites or nil
   if openingPresentation ~= nil then
-    local trainerEntries = self._manifest.trainerPictures.entries
-    for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
-      local selector =
-        assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
-      local entry = assert(trainerEntries[selector], "trainer slides resolve to staged picture metadata")
-      local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
-      local sourceSequence = assert(slide.sourceSequence, "trainer slides identify their source animation sequence")
-      local animationData = assert(entry.animation, "trainer picture metadata stages animation frames")
-      local animation = sourceSequence == 0 and animationData or animationData.sequences[sourceSequence + 1]
-      assert(animation ~= nil, "trainer slide sequence is staged")
-      local sourceFrame = assert(animation.frames[frame + 1], "trainer slide frame resolves to staged source metadata")
-      local offset = assert(sourceFrame.rasterOffset, "trainer frame metadata includes its raster origin")
-      slide.drawableKey = assert(sourceFrame.drawableKey, "trainer frame metadata includes its exact drawable key")
-      slide.x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry an origin x") + offset.x
-      slide.y = assert(type(slide.y) == "number" and slide.y, "trainer slides carry an origin y") + offset.y
-    end
+    -- Demand before dereference: every selector the opening names
+    -- reaches the asset holder before any entry lookup, and a still
+    -- pending leaf only skips enrichment on this pass. The per-launch
+    -- entry maps stay stable, so a later ready pass enriches the same
+    -- slide records without replacing the timeline tables.
     local trainerPictures = {} ---@type string[]
     local latestView = self._pendingFinal or self._latestView
     if openingPresentation.playerTrainerVisible == true and type(latestView) == "table" then
@@ -1894,6 +1894,26 @@ function BattleScreenState:_snapshot()
       end
     end
     self._assets:addBattleBalls(battleBalls)
+    local view = self._manifest --[[@as table<string, unknown>]]
+    local trainerEntries = view.trainerPictures.entries
+    for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
+      local selector =
+        assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
+      local entry = trainerEntries[selector]
+      if entry ~= nil then
+        local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
+        local sourceSequence = assert(slide.sourceSequence, "trainer slides identify their source animation sequence")
+        local animationData = assert(entry.animation, "trainer picture metadata stages animation frames")
+        local animation = sourceSequence == 0 and animationData or animationData.sequences[sourceSequence + 1]
+        assert(animation ~= nil, "trainer slide sequence is staged")
+        local sourceFrame =
+          assert(animation.frames[frame + 1], "trainer slide frame resolves to staged source metadata")
+        local offset = assert(sourceFrame.rasterOffset, "trainer frame metadata includes its raster origin")
+        slide.drawableKey = assert(sourceFrame.drawableKey, "trainer frame metadata includes its exact drawable key")
+        slide.x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry an origin x") + offset.x
+        slide.y = assert(type(slide.y) == "number" and slide.y, "trainer slides carry an origin y") + offset.y
+      end
+    end
   end
   for _, battler in ipairs(battlers) do
     battler.shakeDx = self._timeline:shake(battler.combatant --[[@as integer]])
@@ -2827,7 +2847,24 @@ end
 function BattleScreenState:_openCompletionEvolution()
   local completion = assert(self._completion, "evolution opens for the open completion")
   local terminal = self._terminalRequest or { requestId = 0, epoch = 0, controller = "player" }
-  local stagedParticles = assert(self._manifest.evolutionParticles, "battle evolution requires the verified SPL scene") --[[@as table<string, unknown>]]
+  -- The late evolution leaf gates the child: pending holds the committed
+  -- result without opening, terminal faults the screen with its cause,
+  -- and readiness attaches the record to the per-launch view exactly
+  -- once before any particle or graphics lookup.
+  local evolution, evolutionErr = self._assets:ensureEvolution()
+  if evolutionErr ~= nil then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(evolutionErr)
+    return
+  end
+  if evolution == nil then
+    return
+  end
+  if self._manifest.evolutionParticles == nil then
+    self._manifest.evolutionParticles = evolution.particles
+    self._manifest.evolutionGraphics = evolution.graphics
+  end
+  local stagedParticles = assert(self._manifest.evolutionParticles, "battle evolution stages its SPL scene") --[[@as table<string, unknown>]]
   local particleSet = {
     seed = stagedParticles.seed,
     emitters = copyValue(assert(stagedParticles.emitters, "the SPL scene carries normalized emitters")),
@@ -2850,7 +2887,7 @@ function BattleScreenState:_openCompletionEvolution()
     end
     textures[#textures + 1] = { id = textureId, drawable = drawable }
   end
-  assert(self._manifest.evolutionGraphics ~= nil, "battle evolution requires the verified screen graphics")
+  assert(self._manifest.evolutionGraphics ~= nil, "battle evolution stages its screen graphics")
   for _, layer in ipairs({ "main", "sub", "menu" }) do
     local key = "battle:evolution:" .. layer
     local drawable, drawableErr = self._assets:drawable(key)
@@ -3491,7 +3528,7 @@ function BattleScreenState:_completionChildView(current)
     local presentation = child:draw()
     presentation.assetsReady = self._assets:state() == "ready"
     local evolutionGraphics =
-      assert(self._manifest.evolutionGraphics, "battle evolution carries its verified screen graphics") --[[@as table<string, unknown>]]
+      assert(self._manifest.evolutionGraphics, "battle evolution carries its staged screen graphics") --[[@as table<string, unknown>]]
     local menuTextPalette =
       assert(evolutionGraphics.menuTextPalette, "battle evolution carries EvolutionScene's menu text palette") --[[@as table<string, unknown>]]
     presentation.menuTextPalette = copyValue(assert(menuTextPalette.colors))
@@ -3632,6 +3669,91 @@ function BattleScreenState:presentationPort()
   }
 end
 
+-- Names the exact trainer and ball leaf selectors behind one detached
+-- view before any metadata dereference: the player backpic, every foe
+-- front picture, and every active ball behind the current own and foe
+-- records. Callers enqueue through the asset holder first and only
+-- dereference staged entries on a later ready pass.
+---@param view table<string, unknown> detached battle view carrying trainer and ball facts
+---@return string[] sorted semantic trainer selectors behind the view
+---@return string[] sorted semantic ball selectors behind the view
+local function leafSelectorsOf(view)
+  local trainers, trainerSeen = {}, {} ---@type string[], table<string, boolean>
+  local balls, ballSeen = {}, {} ---@type string[], table<string, boolean>
+  if type(view) == "table" then
+    local playerTrainer = view.playerTrainer
+    if type(playerTrainer) == "table" and type(playerTrainer.classKey) == "string" then
+      local selector = "back:" .. playerTrainer.classKey
+      if not trainerSeen[selector] then
+        trainerSeen[selector] = true
+        trainers[#trainers + 1] = selector
+      end
+    end
+    local foeTrainers = view.foeTrainers
+    if type(foeTrainers) == "table" then
+      for _, trainer in ipairs(foeTrainers) do
+        if type(trainer) == "table" and type(trainer.classKey) == "string" then
+          local selector = "front:" .. trainer.classKey
+          if not trainerSeen[selector] then
+            trainerSeen[selector] = true
+            trainers[#trainers + 1] = selector
+          end
+        end
+      end
+    end
+    for _, groupName in ipairs({ "own", "foes" }) do
+      local group = view[groupName]
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.active ~= false and type(record.ballKey) == "string" then
+            local selector = "ball:" .. record.ballKey
+            if not ballSeen[selector] then
+              ballSeen[selector] = true
+              balls[#balls + 1] = selector
+            end
+          end
+        end
+      end
+    end
+  end
+  table.sort(trainers)
+  table.sort(balls)
+  return trainers, balls
+end
+
+-- Whether every trainer and ball leaf behind the candidate views is
+-- already staged in the per-launch entries. Pending entries hold the
+-- delivering packet instead of letting cue construction dereference
+-- them; staged entries let the packet through.
+---@param views table<integer, table<string, unknown>?> candidate battle views behind the check
+---@return boolean staged true once every named leaf entry is present
+function BattleScreenState:_launchLeavesStaged(views)
+  local manifest = self._manifest --[[@as table<string, unknown>]]
+  local trainerSection = type(manifest.trainerPictures) == "table" and manifest.trainerPictures or nil
+  local ballSection = type(manifest.battleBalls) == "table" and manifest.battleBalls or nil
+  local trainerEntries = type(trainerSection) == "table" and trainerSection.entries or nil
+  local ballEntries = type(ballSection) == "table" and ballSection.entries or nil
+  if type(trainerEntries) ~= "table" or type(ballEntries) ~= "table" then
+    return false
+  end
+  for _, candidate in ipairs(views) do
+    if type(candidate) == "table" then
+      local trainers, balls = leafSelectorsOf(candidate)
+      for _, selector in ipairs(trainers) do
+        if trainerEntries[selector] == nil then
+          return false
+        end
+      end
+      for _, selector in ipairs(balls) do
+        if ballEntries[selector] == nil then
+          return false
+        end
+      end
+    end
+  end
+  return true
+end
+
 ---@param plan table<string, unknown> runtime entry plan carrying the launch kind
 ---@return boolean acknowledged true once required resources resolve
 function BattleScreenState:_portEnter(plan)
@@ -3710,6 +3832,44 @@ function BattleScreenState:_portPresent(packet)
     self._mode = "failed"
     self._error = "malformed battle packet for launch " .. self._launchId
     return
+  end
+  -- Leaf demand before cue construction: every trainer and ball selector
+  -- behind the delivered views reaches the asset holder first. While any
+  -- entry is still pending the packet waits in the deferred queue
+  -- instead of advancing source cues without their art; the holder (and
+  -- the runtime back-pressure behind it) stays waiting while the next
+  -- update replays the queue in order once the leaves stage.
+  do
+    local trainers, balls = {}, {} ---@type string[], string[]
+    local seenTrainers, seenBalls = {}, {} ---@type table<string, boolean>, table<string, boolean>
+    for _, candidate in ipairs({ packet.before, packet.after }) do
+      local candidateTrainers, candidateBalls = leafSelectorsOf(candidate)
+      for _, selector in ipairs(candidateTrainers) do
+        if not seenTrainers[selector] then
+          seenTrainers[selector] = true
+          trainers[#trainers + 1] = selector
+        end
+      end
+      for _, selector in ipairs(candidateBalls) do
+        if not seenBalls[selector] then
+          seenBalls[selector] = true
+          balls[#balls + 1] = selector
+        end
+      end
+    end
+    if #trainers > 0 then
+      self._assets:addTrainerPictures(trainers)
+    end
+    if #balls > 0 then
+      self._assets:addBattleBalls(balls)
+    end
+    if not self:_launchLeavesStaged({ packet.before, packet.after }) then
+      if type(packet.after) == "table" then
+        self._pendingFinal = copyValue(packet.after)
+      end
+      self._deferredPackets[#self._deferredPackets + 1] = packet
+      return
+    end
   end
   if not self._introBuilt then
     -- The first delivery installs the opening facts and queues the
@@ -5909,6 +6069,20 @@ function BattleScreenState:updateFixed(dt)
   assert(type(dt) == "number" and dt == dt and dt >= 0, "battle updates take accepted seconds")
   local menuGateAtStart = self._menuGateTicks
   self._assets:update()
+  -- Replays leaf-deferred packets in order once their entries stage:
+  -- the head waits while its art is still pending, and a processed
+  -- head reveals the next packet without advancing source time here.
+  while #self._deferredPackets > 0 do
+    local head = self._deferredPackets[1]
+    if not self:_launchLeavesStaged({ head.before, head.after }) then
+      break
+    end
+    table.remove(self._deferredPackets, 1)
+    self:_portPresent(head)
+    if self._disposed or self._mode == "failed" then
+      break
+    end
+  end
   if not self._sceneHasBackground then
     local layer = self._assets:sceneLayer()
     if layer ~= nil then
@@ -6204,6 +6378,7 @@ function BattleScreenState:dispose()
     return
   end
   self._disposed = true
+  self._deferredPackets = {}
   self._encounterParticles:clear()
   self._ballParticles:clear()
   local wasFailed = self._mode == "failed"

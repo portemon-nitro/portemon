@@ -578,6 +578,22 @@ function FieldStatePresentationFixture.iconHost()
       note("battle-presentation", urgency)
       return true
     end,
+    -- Selected battle leaf demands mirror the production selected-game
+    -- host: one dot-call per exact semantic selector, ready because the
+    -- suite's prepared cache stages the named leaf receipt. Only the
+    -- selectors a suite declares reach here; nothing prefetches a family.
+    requestBattleTrainerPicture = function(selector, urgency)
+      note("battle-trainer-picture", { selector = selector, urgency = urgency })
+      return true
+    end,
+    requestBattleBall = function(selector, urgency)
+      note("battle-ball", { selector = selector, urgency = urgency })
+      return true
+    end,
+    requestBattleEvolution = function(urgency)
+      note("battle-evolution", urgency)
+      return true
+    end,
     requestAudioBank = function(bankId, _)
       assert(type(bankId) == "number", "audio bank demand carries its bank")
       note("audio-bank", bankId)

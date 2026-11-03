@@ -13,6 +13,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field prepare fun(demand: table<string, unknown>): boolean?, string?
 ---@field drawable fun(key: string): table<string, unknown>?, string?
 ---@field release fun(key: string)
+---@field prepareEvolution (fun(): table<string, unknown>?, string?)? late evolution leaf demand, nil while pending
 ---@field sceneLayer? fun(): table<string, unknown>?, string?
 ---@field background? fun(raster: table<string, unknown>): table<string, unknown>?, string?
 ---@field requestEffect? fun(key: string): boolean?, string?
@@ -28,6 +29,8 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 
 ---@class BattlePresentationAssets
 ---@field _assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
+---@field _evolutionRecord table<string, unknown>? staged evolution leaf record for this launch, nil until ready
+---@field _evolutionFailed string? terminal evolution failure, latched without retry
 ---@field _launchId string owning launch identity
 ---@field _sceneKey string semantic scene identity for the demand
 ---@field _background string battle background named by the scene identity
@@ -114,6 +117,8 @@ function BattlePresentationAssets.new(opts)
     _iconKeys = {},
     _trainerPictures = {},
     _battleBalls = {},
+    _evolutionRecord = nil,
+    _evolutionFailed = nil,
     _owned = {},
     _imageErrors = {},
     _effects = {},
@@ -236,7 +241,7 @@ function BattlePresentationAssets:addTrainerPictures(classKeys)
   for _, classKey in ipairs(classKeys) do
     assert(type(classKey) == "string", "trainer pictures name semantic selectors")
     local isFront = classKey:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
-    local isBack = classKey:match("^back:[%w_]+$") ~= nil
+    local isBack = classKey:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
     assert(isFront or isBack, "trainer pictures name front/back plus a semantic class key")
     if not known[classKey] then
       known[classKey] = true
@@ -572,6 +577,43 @@ function BattlePresentationAssets:loadEffect(key)
   return record
 end
 
+-- Polls the late evolution leaf for one committed evolution: the first
+-- call demands the bundle through the field services and every pending
+-- call repolls the same worker without rerunning a successful load.
+-- Success retains exactly one launch-local record; a terminal cause
+-- latches and replays identically. Never requests evolution without a
+-- committed evolution driving it, and never substitutes art.
+---@return table<string, unknown>? staged evolution leaf record, nil while pending
+---@return string? terminal evolution failure, nil while pending or ready
+function BattlePresentationAssets:ensureEvolution()
+  if self._evolutionRecord ~= nil then
+    return self._evolutionRecord
+  end
+  if self._evolutionFailed ~= nil then
+    return nil, self._evolutionFailed
+  end
+  if self._released then
+    return nil, "battle evolution is not staged for launch " .. self._launchId .. ": the battle assets are released"
+  end
+  local prepareEvolution = self._assets.prepareEvolution
+  if type(prepareEvolution) ~= "function" then
+    self._evolutionFailed = "battle evolution cannot stage for launch "
+      .. self._launchId
+      .. ": no configured evolution service"
+    return nil, self._evolutionFailed
+  end
+  local record, failure = prepareEvolution()
+  if failure ~= nil then
+    self._evolutionFailed = self:_withLaunch(failure)
+    return nil, self._evolutionFailed
+  end
+  if record == nil then
+    return nil
+  end
+  self._evolutionRecord = record
+  return record
+end
+
 -- Resolves one dependency of a loaded effect into a semantic lease:
 -- texture leases share one immutable uploaded image across duplicate
 -- resolves, other kinds arrive as immutable typed descriptors with no
@@ -753,6 +795,7 @@ function BattlePresentationAssets:dispose()
     return
   end
   self._released = true
+  self._evolutionRecord = nil
   for effectKey in pairs(self._effects) do
     rollbackEffectLeases(self, effectKey)
   end

@@ -872,11 +872,15 @@ local function openRig(opts)
   local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = BattlePresentationManifestFixture.manifest(),
+    manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" }),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1052,8 +1056,12 @@ local function waitForScreenDecision(rig, wanted)
         return status.request
       end
     end
-    if status.mode == "intro" or status.mode == "narration" or status.mode == "outcome"
-      or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+    if
+      status.mode == "intro"
+      or status.mode == "narration"
+      or status.mode == "outcome"
+      or rig.screen._timeline:messageActive()
+      or rig.screen._timeline:levelUpStats() ~= nil
     then
       rig.screen:input({ { type = "confirm" } })
     end
@@ -1182,11 +1190,15 @@ local function openLearnRig(layout)
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = owner, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = owner,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = BattlePresentationManifestFixture.manifest(),
+    manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" }),
     model = Model,
     monCatalog = catalog,
     submit = function(reply)

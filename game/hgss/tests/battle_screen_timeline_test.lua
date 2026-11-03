@@ -587,7 +587,10 @@ function T.first_packet_events_play_after_the_opening_once()
   local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
-  local manifest = require("tests.support.BattlePresentationManifestFixture").manifest()
+  local manifest = require("tests.support.BattlePresentationManifestFixture").launchView(
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    { "ball:POKE_BALL" }
+  )
   manifest.scenes = { { key = "general/plain/day" } }
   local measurement = {
     width = 256,
@@ -1236,7 +1239,9 @@ function T.trainer_animation_tracks_preserve_reverse_modes_and_loop_boundaries()
     local timeline = BattleTimelineCore.new({
       encounterFadeColor = "white",
       sound = function(_) end,
-      messageText = function() return "" end,
+      messageText = function()
+        return ""
+      end,
       trainerPictures = trainerPictures,
     })
     timeline:reset(view)
@@ -1255,13 +1260,21 @@ function T.trainer_animation_tracks_preserve_reverse_modes_and_loop_boundaries()
   advance(reverseLoop, TICK)
   Assert.equal(reverseLoopTrack.frame, 2, "reverse-loop source animation reaches its final source frame")
   advance(reverseLoop, TICK)
-  Assert.equal(reverseLoopTrack.frame, 2, "reverse-loop source animation turns at its end without skipping a source tick")
+  Assert.equal(
+    reverseLoopTrack.frame,
+    2,
+    "reverse-loop source animation turns at its end without skipping a source tick"
+  )
   advance(reverseLoop, TICK)
   Assert.equal(reverseLoopTrack.frame, 1, "reverse-loop source animation returns toward its source loop frame")
   advance(reverseLoop, TICK)
   Assert.equal(reverseLoopTrack.frame, 0, "reverse-loop source animation reaches its source loop frame")
   advance(reverseLoop, TICK)
-  Assert.equal(reverseLoopTrack.frame, 0, "reverse-loop source animation turns at its loop frame without skipping a tick")
+  Assert.equal(
+    reverseLoopTrack.frame,
+    0,
+    "reverse-loop source animation turns at its loop frame without skipping a tick"
+  )
   advance(reverseLoop, TICK)
   Assert.equal(reverseLoopTrack.frame, 1, "reverse-loop source animation repeats the source cycle")
 
@@ -2109,7 +2122,7 @@ function T.native_menu_reveal_frames_and_input_gate_follow_source_ticks()
     local launchId = "battle-menu-slide-" .. partition
     local screen = BattleScreenState.new({
       launchId = launchId,
-      manifest = ManifestFixture.manifest(),
+      manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
       model = Model,
       submit = function(reply)
         submits[#submits + 1] = reply

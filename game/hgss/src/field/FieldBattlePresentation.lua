@@ -48,6 +48,8 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _warmBg3 table<string, unknown>? staged speculative BG3 characters/map/palette source values by exact scene
 ---@field _warmFailure string? last attributable idle warmup diagnostic, never raised into field update
 ---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
+---@field _launchManifest table<string, unknown>? shallow per-launch battle view over the verified core
+---@field _launchLeafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries, released with the launch
 ---@field _stagedMembersOk boolean true once the staged menu, HUD, font, and audio membership validated
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -154,9 +156,10 @@ end
 -- The staged manifest members this envelope reads, each one required by
 -- BattlePresentationSchema.assertManifest.
 ---@class FieldBattlePresentation.StagedManifest
+---@field catalogIdentity string selected-generation catalog identity shared by core and leaf records
 ---@field scenes { key: string }[]
----@field evolutionParticles { seed: integer, emitters: table<string, unknown>[], textures: BattlePresentationCache.EncounterParticleTexture[] }
----@field evolutionGraphics BattlePresentationCache.EvolutionGraphics
+---@field evolutionParticles? { seed: integer, emitters: table<string, unknown>[], textures: BattlePresentationCache.EncounterParticleTexture[] }
+---@field evolutionGraphics? BattlePresentationCache.EvolutionGraphics
 ---@field pictures { shadow: FieldBattlePresentation.StagedImage }
 ---@field hud { player: FieldBattlePresentation.StagedImage, enemy: FieldBattlePresentation.StagedImage, doubles: table<"playerLeft"|"playerRight"|"enemyLeft"|"enemyRight", FieldBattlePresentation.StagedImage>, arrow: FieldBattlePresentation.StagedImage, cursor: FieldBattlePresentation.StagedImage, partyGauges: FieldBattlePresentation.StagedImage[] }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
@@ -198,7 +201,9 @@ local WARM_PINNED_KEYS = {
 -- never change under a live envelope, so repeat launches share the
 -- single parse instead of re-reading and re-compiling the same chunk
 -- on every preparation round. Missing documents stay uncached and keep
--- retrying instead of pinning an absence.
+-- retrying instead of pinning an absence. The global core path always
+-- answers the single verified core once the envelope verified it,
+-- without another disk read or validation.
 ---@param envelope FieldBattlePresentation
 ---@param path string cache-relative Lua document path
 ---@return table<string, unknown>? parsed document, nil when the document is missing
@@ -206,6 +211,13 @@ local function stagedDoc(envelope, path)
   local cached = envelope._manifestDocs[path]
   if cached ~= nil then
     return cached
+  end
+  if path == BattlePresentationCache.manifestPath() then
+    local verified = stagedManifest(envelope._manifest)
+    if verified ~= nil then
+      envelope._manifestDocs[path] = envelope._manifest
+      return envelope._manifest
+    end
   end
   local doc = envelope._cacheFs:loadLua(path)
   if type(doc) ~= "table" then
@@ -651,9 +663,13 @@ local function checkPortraitPages(envelope, selectors)
   return true
 end
 
--- Validates and queues the exact semantic trainer pictures behind an
--- opening demand. The selected-game host owns generation; staged manifest
--- entries alone never claim readiness while a host says they are pending.
+-- Stages the exact semantic trainer pictures behind an opening demand
+-- through independent selected-game leaf workers. Each ready selector
+-- loads its standalone record once per launch and publishes only the
+-- selected entry into the per-launch entries; the shared core is never
+-- read for art and never mutated. A pending worker answer holds the
+-- launch; a terminal worker, loader, or generation failure names the
+-- exact selector.
 ---@param envelope FieldBattlePresentation
 ---@param selectors string[] semantic `front:<class>` / `back:<class>` selectors
 ---@return boolean? ready true when every picture is staged, false while building
@@ -662,93 +678,75 @@ local function checkTrainerPictures(envelope, selectors)
   if #selectors == 0 then
     return true
   end
-  local manifest = stagedDoc(envelope, BattlePresentationCache.manifestPath())
-  local pictures = type(manifest) == "table" and manifest.trainerPictures or nil
-  local entries = type(pictures) == "table" and pictures.entries or nil
-  if type(entries) ~= "table" then
-    return nil, "battle demand needs its staged trainer picture manifest: " .. tostring(selectors[1])
-  end
-  local host = envelope._derivedAssets
-  local requestPicture = type(host) == "table" and host.requestBattleTrainerPicture or nil
-  local waiting = false
   for _, selector in ipairs(selectors) do
     if type(selector) ~= "string" then
       return nil, "trainer picture selectors must name a front/back class"
     end
-    local role, classKey = selector:match("^(front):([%w_]+)$")
+    local role, classKey = selector:match("^(front):([A-Z][A-Z0-9_]*)$")
     if role == nil then
-      role, classKey = selector:match("^(back):([%w_]+)$")
+      role, classKey = selector:match("^(back):([A-Z][A-Z0-9_]*)$")
     end
     if role == nil or classKey == nil then
       return nil, "trainer picture selectors must name a front/back class: " .. tostring(selector)
     end
-    local entry = entries[selector]
-    if
-      type(entry) ~= "table"
-      or entry.drawableKey ~= ("trainer:" .. role .. ":" .. classKey)
-      or entry.width ~= 80
-      or entry.height ~= 80
-      or type(entry.image) ~= "string"
-      or entry.image == ""
-    then
-      return nil, "battle demand names an unstaged trainer picture: " .. selector
-    end
-    local sequences = type(entry.animation) == "table" and entry.animation.sequences or nil
-    if entry.animation ~= nil and sequences == nil then
-      return nil, "battle demand names a trainer picture without source sequences: " .. selector
-    end
-    if sequences ~= nil then
-      if type(sequences) ~= "table" or #sequences == 0 then
-        return nil, "battle demand names a trainer picture without source sequences: " .. selector
+  end
+  local host = envelope._derivedAssets
+  local requestPicture = type(host) == "table" and host.requestBattleTrainerPicture or nil
+  if type(requestPicture) ~= "function" then
+    return nil, "battle demand needs its selected trainer picture host: " .. tostring(selectors[1])
+  end
+  local core = stagedManifest(envelope._manifest)
+  if core == nil then
+    return false
+  end
+  local leaves = envelope._launchLeafRecords.trainerPictures
+  local waiting = false
+  local cacheFs = envelope._cacheFs
+  for _, selector in ipairs(selectors) do
+    if leaves[selector] == nil then
+      local ok, ready, failure = pcall(requestPicture, selector, "required")
+      if not ok then
+        return nil, "trainer picture " .. selector .. ": " .. tostring(ready)
       end
-      for sequenceIndex, sequence in ipairs(sequences) do
-        if type(sequence) ~= "table" or sequence.sourceSequence ~= sequenceIndex - 1 then
-          return nil, "battle demand names an invalid trainer source sequence: " .. selector
-        end
-        local frames = sequence.frames
-        if type(frames) ~= "table" or #frames == 0 then
-          return nil, "battle demand names a trainer sequence without source frames: " .. selector
-        end
-        for frameIndex, frame in ipairs(frames) do
-          local expectedKey
-          if sequence.sourceSequence == 0 then
-            expectedKey = frameIndex == 1 and entry.drawableKey
-              or (entry.drawableKey .. ":frame:" .. tostring(frameIndex - 1))
-          else
-            expectedKey = entry.drawableKey
-              .. ":sequence:"
-              .. tostring(sequence.sourceSequence)
-              .. ":frame:"
-              .. tostring(frameIndex - 1)
-          end
-          if
-            type(frame) ~= "table"
-            or frame.sourceFrame ~= frameIndex - 1
-            or frame.drawableKey ~= expectedKey
-            or type(frame.image) ~= "string"
-            or frame.image == ""
-          then
-            return nil, "battle demand names an invalid trainer source frame: " .. selector
-          end
-        end
-      end
-    end
-    if type(requestPicture) == "function" then
-      local ready, failure = requestPicture(selector, "required")
       if failure ~= nil then
         return nil, "trainer picture " .. selector .. ": " .. tostring(failure)
       end
       if ready ~= true then
         waiting = true
-      elseif envelope._graphics ~= nil and not envelope._cacheFs:exists(entry.image, "file") then
-        return nil, "trainer picture image is not staged: " .. selector .. ": " .. entry.image
+      else
+        local record, loadErr = BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
+        if record == nil then
+          return nil, "trainer picture " .. selector .. ": " .. tostring(loadErr)
+        end
+        if record.catalogIdentity ~= core.catalogIdentity then
+          return nil,
+            "trainer picture " .. selector .. " names " .. tostring(record.catalogIdentity) .. ", not " .. tostring(
+              core.catalogIdentity
+            )
+        end
+        leaves[selector] = record.entry
       end
-    elseif envelope._graphics ~= nil and not envelope._cacheFs:exists(entry.image, "file") then
-      return nil, "trainer picture image is not staged: " .. selector .. ": " .. entry.image
     end
   end
   if waiting then
     return false
+  end
+  -- Staged leaf art decodes while portraits and audio still pend: the
+  -- drawable takes over each ticket instead of waiting behind the
+  -- remaining build.
+  for _, selector in ipairs(selectors) do
+    local entry = assert(leaves[selector], "staged trainer leaves publish their selected entry")
+    local animation = type(entry) == "table" and entry.animation or nil
+    local sequences = type(animation) == "table" and animation.sequences or nil
+    if type(sequences) == "table" then
+      for _, sequence in ipairs(sequences) do
+        for _, frame in ipairs(sequence.frames) do
+          enrollUpload(envelope, frame.image)
+        end
+      end
+    elseif type(entry) == "table" and type(entry.image) == "string" then
+      enrollUpload(envelope, entry.image)
+    end
   end
   return true
 end
@@ -777,6 +775,11 @@ local function ballImagePaths(entry)
   return paths
 end
 
+-- Stages the exact semantic balls behind an opening demand through
+-- independent selected-game leaf workers: one dot-call request per
+-- selector, one standalone load per launch, and only the selected entry
+-- published into the per-launch entries. The old array host call and
+-- the shared ball inventory are gone.
 ---@param envelope FieldBattlePresentation
 ---@param selectors string[] semantic `ball:<key>` selectors
 ---@return boolean? ready true when every ball frame is staged, false while building
@@ -785,64 +788,59 @@ local function checkBattleBalls(envelope, selectors)
   if #selectors == 0 then
     return true
   end
-  local manifest = stagedDoc(envelope, BattlePresentationCache.manifestPath())
-  local balls = type(manifest) == "table" and manifest.battleBalls or nil
-  local entries = type(balls) == "table" and balls.entries or nil
-  if type(entries) ~= "table" then
-    return nil, "battle demand needs its staged ball manifest: " .. tostring(selectors[1])
-  end
-  local host = envelope._derivedAssets
-  local requestBalls = type(host) == "table" and host.requestBattleBalls or nil
-  local waiting = false
   for _, selector in ipairs(selectors) do
-    if type(selector) ~= "string" or selector:match("^ball:[%w_]+$") == nil then
+    if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
       return nil, "battle ball selectors must name semantic balls: " .. tostring(selector)
     end
-    local ballKey = selector:match("^ball:([%w_]+)$")
-    local entry = entries[selector]
-    local frames = type(entry) == "table" and entry.frames or nil
-    if type(frames) ~= "table" or #frames == 0 then
-      return nil, "battle demand names an unstaged ball: " .. selector
-    end
-    for frameIndex, frame in ipairs(frames) do
-      local drawableKey = "battle-ball:" .. ballKey .. ":" .. tostring(frameIndex - 1)
-      if
-        type(frame) ~= "table"
-        or frame.drawableKey ~= drawableKey
-        or type(frame.image) ~= "string"
-        or frame.image == ""
-        or type(frame.width) ~= "number"
-        or frame.width <= 0
-        or type(frame.height) ~= "number"
-        or frame.height <= 0
-      then
-        return nil, "battle demand names an invalid ball frame: " .. selector .. ":" .. tostring(frameIndex - 1)
+  end
+  local host = envelope._derivedAssets
+  local requestBall = type(host) == "table" and host.requestBattleBall or nil
+  if type(requestBall) ~= "function" then
+    return nil, "battle demand needs its selected ball host: " .. tostring(selectors[1])
+  end
+  local core = stagedManifest(envelope._manifest)
+  if core == nil then
+    return false
+  end
+  local leaves = envelope._launchLeafRecords.battleBalls
+  local waiting = false
+  local cacheFs = envelope._cacheFs
+  for _, selector in ipairs(selectors) do
+    if leaves[selector] == nil then
+      local ok, ready, failure = pcall(requestBall, selector, "required")
+      if not ok then
+        return nil, "battle ball " .. selector .. ": " .. tostring(ready)
       end
-    end
-    if type(requestBalls) == "function" then
-      local ready, failure = requestBalls({ selector }, "required")
       if failure ~= nil then
         return nil, "battle ball " .. selector .. ": " .. tostring(failure)
       end
       if ready ~= true then
         waiting = true
-      elseif envelope._graphics ~= nil then
-        for _, path in ipairs(ballImagePaths(entry)) do
-          if not envelope._cacheFs:exists(path, "file") then
-            return nil, "battle ball image is not staged: " .. selector .. ": " .. path
-          end
+      else
+        local record, loadErr = BattlePresentationCache.loadBall(cacheFs, selector)
+        if record == nil then
+          return nil, "battle ball " .. selector .. ": " .. tostring(loadErr)
         end
-      end
-    elseif envelope._graphics ~= nil then
-      for _, path in ipairs(ballImagePaths(entry)) do
-        if not envelope._cacheFs:exists(path, "file") then
-          return nil, "battle ball image is not staged: " .. selector .. ": " .. path
+        if record.catalogIdentity ~= core.catalogIdentity then
+          return nil,
+            "battle ball " .. selector .. " names " .. tostring(record.catalogIdentity) .. ", not " .. tostring(
+              core.catalogIdentity
+            )
         end
+        leaves[selector] = record.entry
       end
     end
   end
   if waiting then
     return false
+  end
+  -- Staged ball frames decode while the rest of the build still pends,
+  -- like trainer art above.
+  for _, selector in ipairs(selectors) do
+    local entry = assert(leaves[selector], "staged ball leaves publish their selected entry")
+    for _, path in ipairs(ballImagePaths(entry)) do
+      enrollUpload(envelope, path)
+    end
   end
   return true
 end
@@ -922,6 +920,8 @@ function FieldBattlePresentation.new(opts)
     _warmPlan = nil,
     _warmPlanFailure = nil,
     _manifestDocs = {},
+    _launchManifest = nil,
+    _launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil },
     _stagedMembersOk = false,
     _pool = opts.imagePool,
     _leases = {},
@@ -1403,8 +1403,9 @@ local function stagedArtPath(manifest, key)
   end
   local evolutionTextureId = key:match("^battle:evolution%-particle:(%d+)$")
   if evolutionTextureId ~= nil then
-    local textures = manifest.evolutionParticles.textures
-    for _, texture in ipairs(textures) do
+    local particles = manifest.evolutionParticles
+    local textures = type(particles) == "table" and particles.textures or nil
+    for _, texture in ipairs(type(textures) == "table" and textures or {}) do
       if texture.id == tonumber(evolutionTextureId) then
         return texture.image
       end
@@ -1444,6 +1445,51 @@ local function stagedArtPath(manifest, key)
     local patches = feedback ~= nil and feedback[controlId] or nil
     local patch = patches ~= nil and patches[state] or nil
     return patch ~= nil and patch.image or nil
+  end
+  return nil
+end
+
+-- Resolves one evolution drawable key to its staged image through the
+-- per-launch evolution leaf only: the shared core carries no evolution
+-- art, so an unstaged leaf resolves to nothing and its cue holds
+-- instead of drawing a guessed variant.
+---@param envelope FieldBattlePresentation
+---@param key string drawable key under resolution
+---@return string? cache-relative staged image path, nil without a staged evolution leaf
+local function launchEvolutionArtPath(envelope, key)
+  local leaf = envelope._launchLeafRecords.evolution
+  if type(leaf) ~= "table" then
+    return nil
+  end
+  local graphics = leaf.graphics
+  local particles = leaf.particles
+  local evolutionCursorRole, evolutionCursorFrame = key:match("^battle:evolution%-cursor:([%a]+):(%d+)$")
+  if evolutionCursorRole == "idle" or evolutionCursorRole == "select" then
+    local cursor = type(graphics) == "table" and graphics.cursor or nil
+    local animations = type(cursor) == "table" and cursor.animations or nil
+    local animation = type(animations) == "table" and animations[evolutionCursorRole] or nil
+    local sourceFrame = tonumber(evolutionCursorFrame)
+    for _, frame in ipairs(type(animation) == "table" and animation.frames or {}) do
+      if frame.sourceFrame == sourceFrame then
+        return frame.image
+      end
+    end
+    return nil
+  end
+  local evolutionLayer = key:match("^battle:evolution:([%a]+)$")
+  if evolutionLayer == "main" or evolutionLayer == "sub" or evolutionLayer == "menu" then
+    local image = type(graphics) == "table" and graphics[evolutionLayer] or nil
+    return type(image) == "table" and image.image or nil
+  end
+  local evolutionTextureId = key:match("^battle:evolution%-particle:(%d+)$")
+  if evolutionTextureId ~= nil then
+    local textures = type(particles) == "table" and particles.textures or nil
+    for _, texture in ipairs(type(textures) == "table" and textures or {}) do
+      if texture.id == tonumber(evolutionTextureId) then
+        return texture.image
+      end
+    end
+    return nil
   end
   return nil
 end
@@ -1773,6 +1819,61 @@ local function checkStagedMembers(cacheFs, manifest)
   return nil
 end
 
+-- The single verified global core for this field envelope's selected
+-- version/epoch. The planning inventory at construction upgrades to the
+-- verified record exactly once, the first time the selected global
+-- worker reports ready; repeat callers share the identical stored table
+-- and a verified core never refreshes. A ready-but-unreadable record is
+-- an attributable terminal failure, never a fresh planning loop.
+---@return table<string, unknown>? verified core, nil while pending or on terminal failure
+---@return string? terminal failure, nil while pending or ready
+function FieldBattlePresentation:_verifiedManifest()
+  local verified = stagedManifest(self._manifest)
+  if verified ~= nil then
+    self._manifestDocs[BattlePresentationCache.manifestPath()] = self._manifest
+    return self._manifest
+  end
+  local host = self._derivedAssets
+  local requestPresentation = type(host) == "table" and host.requestBattlePresentation or nil
+  if type(requestPresentation) ~= "function" then
+    return nil
+  end
+  local ok, ready, failure = pcall(requestPresentation, "required")
+  if not ok then
+    return nil, "battle presentation core failed: " .. tostring(ready)
+  end
+  if failure ~= nil then
+    return nil, "battle presentation core failed: " .. tostring(failure)
+  end
+  if ready ~= true then
+    return nil
+  end
+  local loaded = BattlePresentationCache.load(self._cacheFs)
+  if stagedManifest(loaded) == nil then
+    return nil, "the staged battle presentation is unavailable"
+  end
+  self._manifest = loaded
+  self._manifestDocs[BattlePresentationCache.manifestPath()] = loaded
+  return loaded
+end
+
+-- One shallow per-launch battle view over the verified core: shared
+-- core sections borrow by reference without copying nested tables while
+-- the per-launch trainer, ball, and (once staged) evolution entries
+-- attach to the launch-owned maps. The core is never mutated; the
+-- entry maps stay stable by identity for the launch lifetime.
+---@return table<string, unknown> per-launch battle view for the admitted launch
+function FieldBattlePresentation:_newLaunchManifest()
+  local core = assert(stagedManifest(self._manifest), "a launched battle owns its verified core")
+  local view = {}
+  for key, value in pairs(core) do
+    view[key] = value --[[@as unknown]]
+  end
+  view.trainerPictures = { entries = self._launchLeafRecords.trainerPictures }
+  view.battleBalls = { entries = self._launchLeafRecords.battleBalls }
+  return view
+end
+
 -- The cache-backed preparation services behind one envelope: prepare
 -- validates the exact launch demand against the staged or planning
 -- manifest, the portrait manifest and page markers, and -- where pixels
@@ -1789,8 +1890,6 @@ function FieldBattlePresentation:_preparationServices()
   local graphics = self._graphics
   local images = self._images --[[@as table<string, unknown>]]
   local moveIconManifest = nil
-  local trainerPictureManifest = nil
-  local battleBallManifest = nil
   local stagedSceneKey = nil
   local stagedSceneParticleKeys = {} ---@type string[]
   local stagedSceneLayer = nil
@@ -1824,6 +1923,16 @@ function FieldBattlePresentation:_preparationServices()
       return nil, "battle demands arrive as records"
     end
     envelope._preparedDemands[#envelope._preparedDemands + 1] = demand
+    -- The verified core gates every launch demand: repeat preparation
+    -- shares the single verified parse while a pending global worker
+    -- holds the launch and a terminal core failure names its cause.
+    local core, coreErr = envelope:_verifiedManifest()
+    if coreErr ~= nil then
+      return nil, coreErr
+    end
+    if core == nil then
+      return false, nil
+    end
     for _, sceneKey in ipairs(demand.scenes or {}) do
       if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
         return nil, "unknown battle scene key: " .. tostring(sceneKey)
@@ -2074,61 +2183,19 @@ function FieldBattlePresentation:_preparationServices()
         end
       end
     end
+    -- Every leaf demand issues before any wait: a pending trainer leaf
+    -- never starves the ball demand behind it, and the launch holds
+    -- only after all selected workers are queued.
     local trainerOk, trainerErr = checkTrainerPictures(envelope, demand.trainerPictures or {})
     if trainerOk == nil then
       return nil, trainerErr
-    end
-    if trainerOk == false then
-      return false, nil
-    end
-    if #(demand.trainerPictures or {}) > 0 then
-      local battleDoc = assert(
-        stagedDoc(envelope, BattlePresentationCache.manifestPath()),
-        "trainer picture demand needs its staged battle manifest"
-      )
-      trainerPictureManifest =
-        assert(battleDoc.trainerPictures, "trainer picture demand needs its staged trainer pictures")
-      -- Staged trainer art decodes while portraits and audio still
-      -- pend: the drawable takes over each ticket instead of waiting
-      -- behind the remaining build.
-      for _, selector in ipairs(demand.trainerPictures or {}) do
-        local entry = trainerPictureManifest.entries[selector]
-        local animation = type(entry) == "table" and entry.animation or nil
-        local sequences = type(animation) == "table" and animation.sequences or nil
-        if type(sequences) == "table" then
-          for _, sequence in ipairs(sequences) do
-            for _, frame in ipairs(sequence.frames) do
-              enrollUpload(envelope, frame.image)
-            end
-          end
-        elseif type(entry) == "table" and type(entry.image) == "string" then
-          enrollUpload(envelope, entry.image)
-        end
-      end
     end
     local battleBallsOk, battleBallsErr = checkBattleBalls(envelope, demand.battleBalls or {})
     if battleBallsOk == nil then
       return nil, battleBallsErr
     end
-    if battleBallsOk == false then
+    if trainerOk == false or battleBallsOk == false then
       return false, nil
-    end
-    if #(demand.battleBalls or {}) > 0 then
-      local battleDoc = assert(
-        stagedDoc(envelope, BattlePresentationCache.manifestPath()),
-        "battle ball demand needs its staged battle manifest"
-      )
-      battleBallManifest = assert(battleDoc.battleBalls, "battle ball demand needs its staged battle balls")
-      -- Staged ball frames decode while the rest of the build still
-      -- pends, like trainer art above.
-      for _, selector in ipairs(demand.battleBalls or {}) do
-        local entry = battleBallManifest.entries[selector]
-        if type(entry) == "table" and type(entry.frames) == "table" then
-          for _, path in ipairs(ballImagePaths(entry)) do
-            enrollUpload(envelope, path)
-          end
-        end
-      end
     end
     local iconKeys = demand.iconKeys or {}
     if envelope._monIconProvider ~= nil or #iconKeys > 0 then
@@ -2397,6 +2464,9 @@ function FieldBattlePresentation:_preparationServices()
     end
     local staged = stagedManifest(envelope._manifest)
     local artPath = staged ~= nil and stagedArtPath(staged, key) or nil
+    if artPath == nil then
+      artPath = launchEvolutionArtPath(envelope, key)
+    end
     if artPath ~= nil then
       if envelope._pool ~= nil then
         local image, failure = acquirePooled(envelope, key, artPath)
@@ -2467,9 +2537,9 @@ function FieldBattlePresentation:_preparationServices()
     if trainerRole == nil then
       trainerRole, classKey = key:match("^trainer:(back):([%w_]+)$")
     end
-    if trainerRole ~= nil and classKey ~= nil and trainerPictureManifest ~= nil then
+    if trainerRole ~= nil and classKey ~= nil then
       local selectorKey = trainerRole .. ":" .. classKey
-      local entry = trainerPictureManifest.entries[selectorKey]
+      local entry = envelope._launchLeafRecords.trainerPictures[selectorKey]
       if type(entry) ~= "table" then
         return nil
       end
@@ -2520,9 +2590,9 @@ function FieldBattlePresentation:_preparationServices()
       return image
     end
     local ballKey, ballFrameText = key:match("^battle%-ball:([%w_]+):(%d+)$")
-    if ballKey ~= nil and battleBallManifest ~= nil then
+    if ballKey ~= nil then
       local selectorKey = "ball:" .. ballKey
-      local entry = battleBallManifest.entries[selectorKey]
+      local entry = envelope._launchLeafRecords.battleBalls[selectorKey]
       local frames = type(entry) == "table" and entry.frames or nil
       local frameIndex = assert(tonumber(ballFrameText), "battle ball drawable names a numeric frame") + 1
       local frame = type(frames) == "table" and frames[frameIndex] or nil
@@ -2550,8 +2620,8 @@ function FieldBattlePresentation:_preparationServices()
       return image
     end
     local particleBall, particleKind, particleTexture = key:match("^battle%-ball%-particle:([%w_]+):(%a+):(%d+)$")
-    if particleBall ~= nil and (particleKind == "seal" or particleKind == "burst") and battleBallManifest ~= nil then
-      local entry = battleBallManifest.entries["ball:" .. particleBall]
+    if particleBall ~= nil and (particleKind == "seal" or particleKind == "burst") then
+      local entry = envelope._launchLeafRecords.battleBalls["ball:" .. particleBall]
       local particles = type(entry) == "table" and entry.particles or nil
       local set = type(particles) == "table" and particles[particleKind] or nil
       local textureId = assert(tonumber(particleTexture), "ball particle drawable names a numeric texture")
@@ -2643,6 +2713,51 @@ function FieldBattlePresentation:_preparationServices()
       return false
     end
     return true
+  end
+  -- Demands the single evolution presentation bundle through the
+  -- selected-game host, but only once a committed evolution actually
+  -- requires it: pending holds the committed result while the worker
+  -- builds, and readiness loads the standalone record exactly once per
+  -- launch after checking its generation against the verified core.
+  -- The record is cached for the launch; a missing leaf or a
+  -- generation mismatch fails terminally naming the evolution bundle.
+  function services.prepareEvolution()
+    if envelope._disposed then
+      return nil, "battle evolution is not staged: the presented battle envelope is disposed"
+    end
+    local stored = envelope._launchLeafRecords.evolution
+    if stored ~= nil then
+      return stored
+    end
+    local host = envelope._derivedAssets
+    local requestEvolution = type(host) == "table" and host.requestBattleEvolution or nil
+    if type(requestEvolution) ~= "function" then
+      return nil, "battle evolution needs its selected evolution host"
+    end
+    local ok, ready, failure = pcall(requestEvolution, "required")
+    if not ok then
+      return nil, "battle evolution failed: " .. tostring(ready)
+    end
+    if failure ~= nil then
+      return nil, "battle evolution failed: " .. tostring(failure)
+    end
+    if ready ~= true then
+      return nil
+    end
+    local record, recordErr = BattlePresentationCache.loadEvolution(cacheFs)
+    if record == nil then
+      return nil, tostring(recordErr or "battle evolution is not staged")
+    end
+    local core = stagedManifest(envelope._manifest)
+    if core == nil then
+      return nil
+    end
+    if record.catalogIdentity ~= core.catalogIdentity then
+      return nil,
+        "battle evolution names " .. tostring(record.catalogIdentity) .. ", not " .. tostring(core.catalogIdentity)
+    end
+    envelope._launchLeafRecords.evolution = record
+    return record
   end
   -- Loads the exact staged effect record once ready: schema and key
   -- identity validate through the shared cache loader. A missing
@@ -2943,15 +3058,14 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       self._warmPlanFailure = cause
       return false, cause
     end
-    -- A verified envelope manifest is reused as-is; otherwise the
-    -- global validates once here the same way the pending build does.
-    local staged = stagedManifest(self._manifest)
-    if staged == nil then
-      local refreshed = loadManifest(self._cacheFs)
-      if stagedManifest(refreshed) ~= nil then
-        self._manifest = refreshed
-        staged = stagedManifest(self._manifest)
-      end
+    -- The single verified envelope core is reused as-is; a pending
+    -- global worker simply waits while a terminal core failure latches
+    -- the speculative fault, never a per-frame reload.
+    local staged, stagedErr = self:_verifiedManifest()
+    if stagedErr ~= nil then
+      local cause = "battle warmup " .. sceneKey .. " presentation failed: " .. tostring(stagedErr)
+      self._warmPlanFailure = cause
+      return false, cause
     end
     if staged == nil then
       local cause = "battle warmup " .. sceneKey .. " presentation is not staged"
@@ -3146,6 +3260,8 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._descriptor = descriptor
   self._pendingFailed = false
   self._enrolledUploads = {}
+  self._launchManifest = nil
+  self._launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil }
   assert(next(self._pendingUploads) == nil, "a launch never inherits pre-enrolled upload tickets")
   self._pendingBuild = false
   self._portDisposed = false
@@ -3404,8 +3520,12 @@ function FieldBattlePresentation:_pollPendingScreen()
       return
     end
   end
-  local manifest = loadManifest(self._cacheFs)
-  if stagedManifest(manifest) == nil then
+  local manifest, manifestErr = self:_verifiedManifest()
+  if manifestErr ~= nil then
+    self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": " .. tostring(manifestErr))
+    return
+  end
+  if manifest == nil then
     if type(requestScene) ~= "function" then
       self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": no scene demand host to schedule it")
     else
@@ -3419,7 +3539,6 @@ function FieldBattlePresentation:_pollPendingScreen()
     self:_failPendingLaunch("launch scene is outside the presentation inventory: " .. tostring(sceneKey))
     return
   end
-  self._manifest = manifest
   local okBuild, innerOrErr = pcall(function()
     return self:_buildPort(descriptor)
   end)
@@ -3552,11 +3671,13 @@ function FieldBattlePresentation:_buildPort(descriptor)
   local environment = descriptor.environment --[[@as table<string, unknown>]]
   local sceneKey = environment.sceneKey
   assert(type(sceneKey) == "string" and sceneKey ~= "", "launch environments resolve their scene identity")
-  local manifest = self._manifest
-  assert(
-    inventoriesScene(manifest, sceneKey),
-    "launch scene is outside the presentation inventory: " .. tostring(sceneKey)
-  )
+  local core, coreErr = self:_verifiedManifest()
+  assert(core ~= nil, coreErr or "a launched battle owns its verified core")
+  assert(inventoriesScene(core, sceneKey), "launch scene is outside the presentation inventory: " .. tostring(sceneKey))
+  -- One shallow per-launch view over the shared core: the screen binds
+  -- the stable entry maps while the verified core stays immutable.
+  local manifest = self:_newLaunchManifest()
+  self._launchManifest = manifest
   local host = descriptor.host
   local function submit(reply)
     if host == nil then
@@ -3805,11 +3926,14 @@ function FieldBattlePresentation:_preseedCombatant(mon)
 end
 
 -- Enrolls the whole launch closure at required urgency before any tick
--- runs: the shared global, the scene, the music banks, and the lead and
--- foe portrait pages with their cry banks. The worker then builds
--- throughout the transition instead of starting at first packet, while
--- the bench rides the field party near warmup refreshed at admission.
--- Never raises: every demand is best effort behind its host method.
+-- runs: the shared global, the scene, the exact known trainer pictures,
+-- the music banks, and the lead and foe portrait pages with their cry
+-- banks. Only selectors the descriptor already names are seeded; every
+-- later selector stages through the launch demand instead. The worker
+-- then builds throughout the transition instead of starting at first
+-- packet, while the bench rides the field party near warmup refreshed
+-- at admission. Never raises: every demand is best effort behind its
+-- host method.
 ---@param descriptor table<string, unknown> admitted launch descriptor under pre-seeding
 function FieldBattlePresentation:_preseedLaunchDemands(descriptor)
   local derived = self._derivedAssets
@@ -3824,6 +3948,7 @@ function FieldBattlePresentation:_preseedLaunchDemands(descriptor)
   if type(sceneKey) == "string" and sceneKey ~= "" and type(derived.requestBattleScene) == "function" then
     pcall(derived.requestBattleScene, sceneKey, "required")
   end
+  self:_preseedTrainerPicture(descriptor)
   self._musicBankIds = self:_audioBanks()
   if type(derived.requestAudioBank) == "function" then
     for _, bankId in ipairs(self._musicBankIds or {}) do
@@ -3832,6 +3957,31 @@ function FieldBattlePresentation:_preseedLaunchDemands(descriptor)
   end
   self:_preseedCombatant(descriptor.leadMon)
   self:_preseedCombatant(descriptor.foeMon)
+end
+
+-- Seeds the exact trainer picture behind a descriptor-carried class:
+-- the foe front picture for a trainer-kind launch whose class is a
+-- sourced picture class. Player backpics and later balls arrive through
+-- the launch demand once their views publish. Never raises.
+---@param descriptor table<string, unknown> admitted launch descriptor under pre-seeding
+function FieldBattlePresentation:_preseedTrainerPicture(descriptor)
+  local derived = self._derivedAssets
+  if type(derived) ~= "table" or type(derived.requestBattleTrainerPicture) ~= "function" then
+    return
+  end
+  if descriptor.kind ~= "trainer" then
+    return
+  end
+  local foeClass = descriptor.trainerClass
+  if type(foeClass) ~= "string" then
+    return
+  end
+  local selector = "front:" .. foeClass
+  local role, _ = selector:match("^(front):([%w_]+)$")
+  if role == nil then
+    return
+  end
+  pcall(derived.requestBattleTrainerPicture, selector, "required")
 end
 
 ---@return string? battle-music start note, nil until the staged track voices
@@ -3878,10 +4028,11 @@ function FieldBattlePresentation:_startTransition(descriptor)
     )
   end
   assert(type(descriptor.environment) == "table", "presented field launches carry their selected scene key")
+  local envelope = self
   local function loadStagedManifest()
-    local manifest = loadManifest(self._cacheFs)
-    assert(stagedManifest(manifest), "a ready battle scene publishes its verified presentation manifest")
-    return manifest
+    local core, coreErr = envelope:_verifiedManifest()
+    assert(core ~= nil, coreErr or "a ready battle scene publishes its verified presentation manifest")
+    return core
   end
   local transition = BattleEncounterTransition.new({
     loadManifest = loadStagedManifest,
@@ -4385,6 +4536,10 @@ function FieldBattlePresentation:_dropLaunch()
     self._pendingUploads = {}
   end
   self._enrolledUploads = {}
+  -- Per-launch views and leaf records release with the launch: the next
+  -- launch adopts fresh entry maps while the verified core persists.
+  self._launchManifest = nil
+  self._launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil }
   self._launchId = nil
   self._descriptor = nil
   self._pendingFailed = false

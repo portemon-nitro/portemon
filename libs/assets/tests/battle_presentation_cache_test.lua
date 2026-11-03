@@ -750,66 +750,32 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   local core = ManifestFixture.manifest()
   cache:writeLua(BattlePresentationCache.manifestPath(), core)
   cache:write(BattlePresentationCache.markerPath(), "core-marker")
+  -- Leaf records stage through their exact builders: the shared core no
+  -- longer carries a trainer inventory to copy entries from.
+  local trainerRecord = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  Assert.equal(
+    trainerRecord.catalogIdentity,
+    core.catalogIdentity,
+    "the staged trainer leaf belongs to the staged core generation"
+  )
+  local trainerEntry = trainerRecord.entry
+  cache:writeLua(BattlePresentationCache.trainerPicturePath("front:YOUNGSTER"), trainerRecord)
   local trainerImages = {}
   local function leafTrainerImage(image)
     if trainerImages[image] == nil then
-      local count = 0
-      for _ in pairs(trainerImages) do
-        count = count + 1
-      end
-      trainerImages[image] = "assets/generated/battle/trainer-pictures/front-YOUNGSTER-" .. count .. ".png"
+      trainerImages[image] = image
     end
     return trainerImages[image]
   end
-  local trainerEntry = core.trainerPictures.entries["front:YOUNGSTER"]
-  local stagedEntry = {
-    drawableKey = trainerEntry.drawableKey,
-    image = leafTrainerImage(trainerEntry.image),
-    width = trainerEntry.width,
-    height = trainerEntry.height,
-    rasterOffset = trainerEntry.rasterOffset,
-    animation = trainerEntry.animation,
-  }
-  local function rewriteFrames(frames)
-    local rewritten = {}
-    for _, frame in ipairs(frames) do
-      rewritten[#rewritten + 1] = {
-        drawableKey = frame.drawableKey,
-        image = leafTrainerImage(frame.image),
-        rasterOffset = frame.rasterOffset,
-        durationTicks = frame.durationTicks,
-        sourceFrame = frame.sourceFrame,
-        userAttr = frame.userAttr,
-      }
-    end
-    return rewritten
+  leafTrainerImage(trainerEntry.image)
+  for _, frame in ipairs(trainerEntry.animation.frames) do
+    leafTrainerImage(frame.image)
   end
-  local function rewriteAnimation(animation)
-    local sequences = {}
-    for _, sequence in ipairs(animation.sequences) do
-      sequences[#sequences + 1] = {
-        sourceSequence = sequence.sourceSequence,
-        playMode = sequence.playMode,
-        loopStartFrameIdx = sequence.loopStartFrameIdx,
-        frames = rewriteFrames(sequence.frames),
-      }
+  for _, sequence in ipairs(trainerEntry.animation.sequences) do
+    for _, frame in ipairs(sequence.frames) do
+      leafTrainerImage(frame.image)
     end
-    return {
-      sourceSequence = animation.sourceSequence,
-      playMode = animation.playMode,
-      loopStartFrameIdx = animation.loopStartFrameIdx,
-      frames = rewriteFrames(animation.frames),
-      sequences = sequences,
-    }
   end
-  stagedEntry.animation = rewriteAnimation(trainerEntry.animation)
-  local trainerRecord = {
-    schema = "g4-battle-trainer-picture-v1",
-    selector = "front:YOUNGSTER",
-    catalogIdentity = core.catalogIdentity,
-    entry = stagedEntry,
-  }
-  cache:writeLua(BattlePresentationCache.trainerPicturePath("front:YOUNGSTER"), trainerRecord)
   for _, image in pairs(trainerImages) do
     stagePng(cache, image, trainerEntry.width, trainerEntry.height)
   end
@@ -855,24 +821,14 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   for _, image in pairs(trainerImages) do
     stagePng(cache, image, trainerEntry.width, trainerEntry.height)
   end
-  local ballEntry = core.battleBalls.entries["ball:POKE_BALL"]
-  local ballImage = "assets/generated/battle/balls/POKE_BALL-0.png"
-  local ballRecord = {
-    schema = "g4-battle-ball-v1",
-    selector = "ball:POKE_BALL",
-    catalogIdentity = core.catalogIdentity,
-    entry = {
-      fadeColor = ballEntry.fadeColor,
-      frames = {
-        {
-          drawableKey = ballEntry.frames[1].drawableKey,
-          image = ballImage,
-          width = ballEntry.frames[1].width,
-          height = ballEntry.frames[1].height,
-        },
-      },
-    },
-  }
+  local ballRecord = ManifestFixture.ballRecord("ball:POKE_BALL")
+  Assert.equal(
+    ballRecord.catalogIdentity,
+    core.catalogIdentity,
+    "the staged ball leaf belongs to the staged core generation"
+  )
+  local ballEntry = ballRecord.entry
+  local ballImage = ballEntry.frames[1].image
   cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), ballRecord)
   stagePng(cache, ballImage, ballEntry.frames[1].width, ballEntry.frames[1].height)
   cache:write(BattlePresentationCache.ballMarkerPath("ball:POKE_BALL"), "leaf-marker")
@@ -917,13 +873,13 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
     BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
     "staging a ball never disturbs the trainer picture"
   )
-  local evolutionRecord = {
-    schema = "g4-battle-evolution-v1",
-    kind = "evolution",
-    catalogIdentity = core.catalogIdentity,
-    particles = core.evolutionParticles,
-    graphics = core.evolutionGraphics,
-  }
+  local stagedEvolution = ManifestFixture.evolutionRecord()
+  Assert.equal(
+    stagedEvolution.catalogIdentity,
+    core.catalogIdentity,
+    "the staged evolution leaf belongs to the staged core generation"
+  )
+  local evolutionRecord = stagedEvolution
   cache:writeLua(BattlePresentationCache.evolutionPath(), evolutionRecord)
   for _, texture in ipairs(evolutionRecord.particles.textures) do
     stagePng(cache, texture.image, texture.width, texture.height)
@@ -943,7 +899,7 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   Assert.equal(assert(evolution).kind, "evolution", "the loaded evolution record names its bundle kind")
   Assert.equal(
     evolution.particles.seed,
-    core.evolutionParticles.seed,
+    stagedEvolution.particles.seed,
     "the loaded evolution keeps its complete particle set"
   )
   Assert.isTrue(

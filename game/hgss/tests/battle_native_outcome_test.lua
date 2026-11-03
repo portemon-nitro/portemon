@@ -274,13 +274,41 @@ end
 local function openPresentedLaunch(kind, trainerClass, textSpeed)
   local cache = FieldStatePresentationFixture.cache()
   cache:writeLua(BattlePresentationCache.manifestPath(), BattlePresentationManifestFixture.manifest())
+  cache:writeLua(
+    BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"),
+    BattlePresentationManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  )
+  for _, selector in ipairs({ "front:YOUNGSTER", "front:LEADER_FALKNER" }) do
+    cache:writeLua(
+      BattlePresentationCache.trainerPicturePath(selector),
+      BattlePresentationManifestFixture.trainerPictureRecord(selector)
+    )
+  end
+  cache:writeLua(
+    BattlePresentationCache.ballPath("ball:POKE_BALL"),
+    BattlePresentationManifestFixture.ballRecord("ball:POKE_BALL")
+  )
   local fieldAudio = recordingFieldAudio()
+  -- Synthetic terminal packets carry the player backpic, the foe front,
+  -- and lead balls, so the launch view stages its leaves against a ready
+  -- selected-game host instead of wedging behind an unstaged leaf.
+  local selectedLeaves = {}
+  function selectedLeaves.requestBattleTrainerPicture(_, _)
+    return true
+  end
+  function selectedLeaves.requestBattleBall(_, _)
+    return true
+  end
+  function selectedLeaves.requestBattleEvolution(_)
+    return true
+  end
   local envelope = FieldBattlePresentation.new({
     cacheFs = cache,
     monCatalog = CatalogFixture.makeCatalog(),
     windows = recordingWindows(),
     text = recordingText(),
     audio = silentScreenAudio(),
+    derivedAssets = selectedLeaves,
     measureDisplay = function()
       return dualMeasurement()
     end,

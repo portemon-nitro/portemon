@@ -87,7 +87,7 @@ local function openScreen(launchId)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = ManifestFixture.manifest(),
+    manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
     model = {},
     submit = function(_)
       return true

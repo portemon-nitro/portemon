@@ -17,7 +17,6 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local COMPOSER_MODULE = "game.hgss.src.battle.BattleChildApplications"
@@ -97,24 +96,13 @@ function T.capture_naming_opens_as_a_real_naming_child()
   flows:dispose()
 end
 
----@param value unknown value under test preparation
----@return unknown a detached copy sharing no table with the source
-local function deepCopy(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local copy = {}
-  for key, item in pairs(value) do
-    copy[deepCopy(key)] = deepCopy(item)
-  end
-  return copy
-end
-
----@return table detached schema-valid staged manifest for the capture harness scene
+---@return table per-launch battle view over the shared core for the capture harness scene
 local function screenManifest()
-  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  -- The capture harness binds one launch view, never the global
+  -- inventory: the exact backpic and ball behind these rigs stage as
+  -- launch entries.
+  local manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
-  BattlePresentationSchema.assertManifest(manifest)
   return manifest
 end
 
@@ -382,8 +370,11 @@ end
 ---@param rig table live capture rig under test driving
 local function ackNarration(rig)
   local mode = rig.screen:status().mode
-  if mode == "intro" or mode == "narration"
-    or rig.screen._timeline:messageActive() or rig.screen._timeline:levelUpStats() ~= nil
+  if
+    mode == "intro"
+    or mode == "narration"
+    or rig.screen._timeline:messageActive()
+    or rig.screen._timeline:levelUpStats() ~= nil
   then
     rig.screen:input({ { type = "confirm" } })
   end
@@ -788,7 +779,16 @@ function T.declined_nickname_keeps_default_name_and_finished_battle()
   local launchId = "launch-declined-nickname"
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local record = { enters = 0, packets = {}, leaves = 0, disposed = 0, opened = {}, answered = {} }
   local battle = BattleRuntime.new({
@@ -863,7 +863,10 @@ function T.stale_revision_before_rename_keeps_committed_mon()
   local launchId = "launch-stale-rename"
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launchId .. "-attempt", mon = foe },
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local record = { enters = 0, packets = {}, leaves = 0, disposed = 0, opened = {}, answered = {} }
   local port = decliningPort(record)

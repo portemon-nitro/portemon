@@ -726,7 +726,10 @@ local function openInterfaceRig(opts)
   local launchId = opts.launchId or "launch-pointer-cancel"
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = BattlePresentationManifestFixture.manifest(),
+    manifest = BattlePresentationManifestFixture.launchView(
+      { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+      { "ball:POKE_BALL" }
+    ),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -1102,7 +1105,10 @@ local function openChildRig(opts)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = BattlePresentationManifestFixture.manifest(),
+    manifest = BattlePresentationManifestFixture.launchView(
+      { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+      { "ball:POKE_BALL" }
+    ),
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply

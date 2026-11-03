@@ -310,7 +310,9 @@ local function captureServices(scope, cacheFs, versionId)
     images["scene-terrain:" .. SCENE_KEY .. ":" .. side] =
       stagedImage(scope, cacheFs, terrain.image, versionId .. " " .. side .. " terrain sprite")
   end
-  local pokeBall = assert(manifest.battleBalls.entries["ball:POKE_BALL"], versionId .. " stages the fixture ball")
+  local pokeBallLeaf =
+    assert(BattlePresentationCache.loadBall(cacheFs, "ball:POKE_BALL"), versionId .. " stages the fixture ball leaf")
+  local pokeBall = assert(pokeBallLeaf.entry, versionId .. " stages the fixture ball")
   for _, frame in ipairs(pokeBall.frames) do
     images[frame.drawableKey] = stagedImage(scope, cacheFs, frame.image, versionId .. " fixture ball frame")
   end
@@ -664,7 +666,33 @@ end
 ---@return table preparation services logging the screen demands
 local function captureScreen(scope, cacheFs, versionId, measurement, options)
   options = options or {}
-  local manifest = BattlePresentationCache.load(cacheFs)
+  -- The screen binds one launch view over the real staged core: shared
+  -- sections borrow by reference while only the captures' selected
+  -- leaves stage as launch entries.
+  local core = BattlePresentationCache.load(cacheFs)
+  Assert.isTrue(core.verified == true, versionId .. " stages the verified battle manifest")
+  local captureView = {}
+  for key, value in pairs(core) do
+    captureView[key] = value
+  end
+  local backPic = assert(
+    BattlePresentationCache.loadTrainerPicture(cacheFs, "back:PKMN_TRAINER_ETHAN"),
+    versionId .. " stages the capture backpic leaf"
+  )
+  local frontPic = assert(
+    BattlePresentationCache.loadTrainerPicture(cacheFs, "front:YOUNGSTER"),
+    versionId .. " stages the capture foe leaf"
+  )
+  local ballLeaf =
+    assert(BattlePresentationCache.loadBall(cacheFs, "ball:POKE_BALL"), versionId .. " stages the capture ball leaf")
+  captureView.trainerPictures = {
+    entries = {
+      ["back:PKMN_TRAINER_ETHAN"] = backPic.entry,
+      ["front:YOUNGSTER"] = frontPic.entry,
+    },
+  }
+  captureView.battleBalls = { entries = { ["ball:POKE_BALL"] = ballLeaf.entry } }
+  local manifest = captureView
   local text, windows = captureDrawServices(scope, cacheFs, versionId)
   local services, images, portraitCells = captureServices(scope, cacheFs, versionId)
   local submitted = {}
@@ -3530,8 +3558,26 @@ function T.multi_trainer_timeline_slides_draw_at_distinct_native_origins(scope)
       { combatant = 1, participant = 1, side = 1, active = true, species = "EEVEE", form = 0, name = "LEAD" },
     },
     foes = {
-      { combatant = 3, participant = 3, side = 2, position = 3, active = true, species = "EEVEE", form = 0, name = "LEFT" },
-      { combatant = 4, participant = 4, side = 2, position = 4, active = true, species = "EEVEE", form = 0, name = "RIGHT" },
+      {
+        combatant = 3,
+        participant = 3,
+        side = 2,
+        position = 3,
+        active = true,
+        species = "EEVEE",
+        form = 0,
+        name = "LEFT",
+      },
+      {
+        combatant = 4,
+        participant = 4,
+        side = 2,
+        position = 4,
+        active = true,
+        species = "EEVEE",
+        form = 0,
+        name = "RIGHT",
+      },
     },
     environment = {},
   }
@@ -3607,7 +3653,7 @@ function T.multi_trainer_timeline_slides_draw_at_distinct_native_origins(scope)
 end
 
 -- The production battle screen draws the selected player trainer frame from
--- the staged C02 cache, places the ball at the source throw anchor, and
+-- the staged leaf records, places the ball at the source throw anchor, and
 -- releases every frame drawable it borrowed when disposed mid-throw.
 function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, context)
   local versionId = readyVersions()[1]
@@ -3615,27 +3661,18 @@ function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, conte
     context:skip("trainer intro capture needs a ready user-owned ROM with staged battle assets")
   end
   local cacheFs = CacheFs.forVersion(versionId)
-  local manifest = BattlePresentationCache.load(cacheFs)
-  local trainerEntries = assert(manifest.trainerPictures.entries, "the cache stages C02 trainer entries")
-  local selectors = {}
-  for selector in pairs(trainerEntries) do
-    selectors[#selectors + 1] = selector
-  end
-  table.sort(selectors)
-  local playerSelector, frontSelector
-  for _, selector in ipairs(selectors) do
-    local entry = trainerEntries[selector]
-    if playerSelector == nil and selector:match("^back:") ~= nil and type(entry.throwOffsets) == "table" then
-      playerSelector = selector
-    elseif frontSelector == nil and selector:match("^front:") ~= nil then
-      local sequence = type(entry.animation) == "table" and entry.animation.sequences[3] or nil
-      if sequence ~= nil and #sequence.frames > 0 then
-        frontSelector = selector
-      end
-    end
-  end
-  local playerEntry = assert(trainerEntries[assert(playerSelector, "the cache stages a player with throw anchors")])
-  local frontEntry = assert(trainerEntries[assert(frontSelector, "the cache stages a multi-frame foe picture")])
+  -- The capture names its exact selected leaves: the player backpic
+  -- carries the source throw anchors and the foe front carries the
+  -- multi-frame sequence the intro throw plays.
+  local playerSelector, frontSelector = "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER"
+  local playerEntry = assert(
+    BattlePresentationCache.loadTrainerPicture(cacheFs, playerSelector),
+    "the cache stages the capture backpic leaf"
+  ).entry
+  local frontEntry = assert(
+    BattlePresentationCache.loadTrainerPicture(cacheFs, frontSelector),
+    "the cache stages the capture foe leaf"
+  ).entry
   Assert.equal(#playerEntry.throwOffsets, 6, "all six source throw anchors are staged")
 
   local screen, images, _, services = captureScreen(scope, cacheFs, versionId, dualMeasurement())
@@ -3645,7 +3682,11 @@ function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, conte
     end,
   })
   local playerSequences = playerEntry.animation.sequences
-  for _, sequence in ipairs({ playerSequences[3] or playerEntry.animation, playerSequences[2], frontEntry.animation.sequences[3] }) do
+  for _, sequence in ipairs({
+    playerSequences[3] or playerEntry.animation,
+    playerSequences[2],
+    frontEntry.animation.sequences[3],
+  }) do
     for _, frame in ipairs(sequence.frames) do
       images[frame.drawableKey] = stagedImage(scope, cacheFs, frame.image, "trainer frame " .. frame.drawableKey)
     end
@@ -3659,7 +3700,10 @@ function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, conte
   for _ = 1, 5 do
     screen:updateFixed(TICK)
   end
-  Assert.isTrue(port.enter({ launchId = "battle-capture", kind = "trainer" }), "the real trainer battle screen is entered")
+  Assert.isTrue(
+    port.enter({ launchId = "battle-capture", kind = "trainer" }),
+    "the real trainer battle screen is entered"
+  )
   port.present(packet)
 
   local plan = livePlan(screen, versionId)
@@ -3824,6 +3868,9 @@ suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
   "battle-presentation:global",
   "battle-scene:general/grass/day",
+  "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+  "battle-trainer-picture:front-YOUNGSTER",
+  "battle-ball:POKE_BALL",
   "field-font:global",
   "field-ui:global",
   "mon-catalog:global",

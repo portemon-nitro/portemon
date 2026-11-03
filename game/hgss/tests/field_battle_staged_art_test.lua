@@ -197,57 +197,50 @@ function T.staged_keys_resolve_to_their_verified_manifest_paths()
 end
 
 function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
-  local manifest = stagedManifest()
   local selector = "back:PKMN_TRAINER_ETHAN"
-  local drawableKey = "trainer:" .. selector
-  local sequenceImage = ART .. "trainer-ethan-sequence-1-frame-0.png"
-  local firstFrame = {
-    drawableKey = drawableKey,
-    image = ART .. "trainer-ethan.png",
-    rasterOffset = { x = -40, y = -40 },
-    durationTicks = 1,
-    sourceFrame = 0,
-    userAttr = 0,
-  }
-  local sequenceFrame = {
-    drawableKey = drawableKey .. ":sequence:1:frame:0",
-    image = sequenceImage,
-    rasterOffset = { x = -40, y = -40 },
-    durationTicks = 3,
-    sourceFrame = 0,
-    userAttr = 1,
-  }
-  manifest.trainerPictures.entries[selector] = {
-    drawableKey = drawableKey,
-    image = firstFrame.image,
-    width = 80,
-    height = 80,
-    rasterOffset = firstFrame.rasterOffset,
-    animation = {
-      sourceSequence = 0,
-      playMode = "forward_loop",
-      loopStartFrameIdx = 0,
-      frames = { firstFrame },
-      sequences = {
-        { sourceSequence = 0, playMode = "forward_loop", loopStartFrameIdx = 0, frames = { firstFrame } },
-        { sourceSequence = 1, playMode = "forward", loopStartFrameIdx = 0, frames = { sequenceFrame } },
-      },
-    },
-    throwOffsets = {
-      { x = 0, y = 128 },
-      { x = -34, y = 4 },
-      { x = -28, y = -11 },
-      { x = 50, y = -12 },
-      { x = 32767, y = 32767 },
-      { x = 32767, y = 32767 },
-    },
-  }
-  manifest.menus.images[firstFrame.image] = { width = 80, height = 80 }
-  manifest.menus.images[sequenceImage] = { width = 80, height = 80 }
-  BattlePresentationSchema.assertManifest(manifest)
-
-  local envelope, pool = envelopeFor(manifest)
+  local record = ManifestFixture.trainerPictureRecord(selector)
+  local cacheFs = { versionId = "staged-art-leaf-probe" }
+  function cacheFs:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return stagedManifest()
+    end
+    if path == BattlePresentationCache.trainerPicturePath(selector) then
+      return record
+    end
+    if path == MoveIconCache.manifestPath() then
+      return { schema = MoveIconCache.SCHEMA, types = {}, categories = {} }
+    end
+    return nil
+  end
+  function cacheFs:read(_)
+    return "staged"
+  end
+  function cacheFs:exists(_, _)
+    return true
+  end
+  local pool = recordingPool()
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(_, _)
+    return true, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = {},
+    text = {},
+    measureDisplay = function()
+      return {}
+    end,
+    graphics = {},
+    imagePool = pool,
+    derivedAssets = host.derivedAssets,
+  })
+  -- A non-base source sequence proves sequence drawables resolve
+  -- through the staged leaf, not just the base frame.
+  local animation = assert(record.entry.animation, "the staged leaf carries trainer animation")
+  local sequence = assert(animation.sequences[2], "the staged leaf carries a second source sequence")
+  local sequenceFrame = assert(sequence.frames[1], "the second sequence carries its source frame")
   local ready, failure = envelope._services.prepare({
+    launchId = "staged-art-leaf",
     scenes = {},
     pages = {},
     trainerPictures = { selector },
@@ -256,10 +249,18 @@ function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
     audio = { roles = {}, banks = {}, cries = {} },
   })
   Assert.isTrue(ready, "all source-sequence images are enrolled before trainer drawing: " .. tostring(failure))
-  Assert.isTrue(
-    table.concat(pool.paths, "\n"):find(sequenceImage, 1, true) ~= nil,
-    "source sequence images are enrolled before a renderer asks for them"
-  )
+  local expectedImages = { [record.entry.image] = true }
+  for _, stagedSequence in ipairs(animation.sequences) do
+    for _, frame in ipairs(stagedSequence.frames) do
+      expectedImages[frame.image] = true
+    end
+  end
+  for image in pairs(expectedImages) do
+    Assert.isTrue(
+      table.concat(pool.paths, "\n"):find(image, 1, true) ~= nil,
+      "source sequence images are enrolled before a renderer asks for them: " .. image
+    )
+  end
   local handle, drawableFailure = envelope._services.drawable(sequenceFrame.drawableKey)
   Assert.isNil(drawableFailure, "a valid source-sequence drawable resolves without failure")
   Assert.notNil(handle, "a valid source-sequence drawable hands out its image")
@@ -268,7 +269,7 @@ function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
     handleFields[#handleFields + 1] = tostring(key) .. "=" .. tostring(value)
   end
   Assert.isTrue(
-    table.concat(pool.acquired, "\n"):find(sequenceImage, 1, true) ~= nil,
+    table.concat(pool.acquired, "\n"):find(sequenceFrame.image, 1, true) ~= nil,
     "sequence keys acquire their exact staged image: "
       .. table.concat(pool.acquired, ", ")
       .. " ("
@@ -276,6 +277,68 @@ function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
       .. ")"
   )
   envelope:dispose()
+end
+
+function T.evolution_particle_drawable_resolves_without_core_sections_and_through_the_staged_leaf()
+  local manifest = stagedManifest()
+  Assert.isNil(manifest.evolutionParticles, "the strict shared core carries no evolution particle section")
+  Assert.isNil(manifest.evolutionGraphics, "the strict shared core carries no evolution graphics section")
+  local envelope, pool = envelopeFor(manifest)
+  -- The core without evolution sections resolves the particle key to
+  -- nothing instead of raising on the absent section.
+  Assert.isNil(
+    resolvedPath(envelope, pool, "battle:evolution-particle:0"),
+    "an unstaged evolution particle resolves to nothing on a core without evolution sections"
+  )
+  envelope:dispose()
+
+  -- Once the committed evolution stages its leaf, the same key resolves
+  -- the staged leaf texture through the pool-backed drawables.
+  local record = ManifestFixture.evolutionRecord()
+  local cacheFs = { versionId = "staged-art-evolution-probe" }
+  function cacheFs:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return manifest
+    end
+    if path == BattlePresentationCache.evolutionPath() then
+      return record
+    end
+    if path == MoveIconCache.manifestPath() then
+      return { schema = MoveIconCache.SCHEMA, types = {}, categories = {} }
+    end
+    return nil
+  end
+  function cacheFs:read(_)
+    return "staged"
+  end
+  function cacheFs:exists(_, _)
+    return true
+  end
+  local leafPool = recordingPool()
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleEvolution(_)
+    return true, nil
+  end
+  local leafEnvelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = {},
+    text = {},
+    measureDisplay = function()
+      return {}
+    end,
+    graphics = {},
+    imagePool = leafPool,
+    derivedAssets = host.derivedAssets,
+  })
+  local stored, evolutionErr = leafEnvelope._services.prepareEvolution()
+  Assert.isNil(evolutionErr, "the staged evolution leaf prepares without failure")
+  Assert.equal(stored, record, "the prepared evolution leaf is the staged record")
+  Assert.equal(
+    resolvedPath(leafEnvelope, leafPool, "battle:evolution-particle:0"),
+    record.particles.textures[1].image,
+    "a staged evolution particle resolves its leaf texture"
+  )
+  leafEnvelope:dispose()
 end
 
 function T.planning_inventory_resolves_no_staged_art()

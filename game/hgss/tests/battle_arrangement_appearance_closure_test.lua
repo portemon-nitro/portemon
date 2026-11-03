@@ -339,7 +339,7 @@ function T.screen_grows_exact_demand_when_an_appearance_changes()
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = ManifestFixture.manifest(),
+    manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
     model = {},
     submit = function(_)
       return true
@@ -483,7 +483,7 @@ function T.shiny_variants_resolve_distinct_picture_resources()
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = ManifestFixture.manifest(),
+    manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
     model = {},
     submit = function(_)
       return true

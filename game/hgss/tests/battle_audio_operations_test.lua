@@ -227,6 +227,50 @@ local function bootRuntime(versionId)
   return runtime
 end
 
+-- The selected-game leaf demand host behind the journey envelope: strict
+-- C01 selector validation with ready/pending/terminal answers recorded
+-- per call. The suite's prepared cache stages the named leaf receipts,
+-- so ready answers resolve through the real staged records; nothing
+-- prefetches a family and malformed selectors fail closed. Pending and
+-- terminal answers stay programmable per kind and selector for
+-- failure-path coverage without touching production.
+---@return table leaf host carrying its derived assets and recordings
+local function selectedLeafHost()
+  local host = { asks = {}, answers = {} }
+  local derived = {}
+  local function answer(kind, selector, urgency)
+    host.asks[#host.asks + 1] = { kind = kind, selector = selector, urgency = urgency }
+    local programmed = host.answers[kind .. ":" .. tostring(selector)]
+    if programmed ~= nil then
+      return programmed.ready, programmed.failure
+    end
+    return true, nil
+  end
+  function derived.requestBattleTrainerPicture(selector, urgency)
+    assert(
+      type(selector) == "string"
+        and (
+          selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
+          or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
+        ),
+      "battle trainer picture demand carries its front:CLASS or back:CLASS selector"
+    )
+    return answer("battle-trainer-picture", selector, urgency)
+  end
+  function derived.requestBattleBall(selector, urgency)
+    assert(
+      type(selector) == "string" and selector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil,
+      "battle ball demand carries its ball:ITEM selector"
+    )
+    return answer("battle-ball", selector, urgency)
+  end
+  function derived.requestBattleEvolution(urgency)
+    return answer("battle-evolution", "global", urgency)
+  end
+  host.derivedAssets = derived
+  return host
+end
+
 ---@param runtime FieldRuntime
 ---@param versionId string
 ---@param measurement table
@@ -236,6 +280,7 @@ end
 ---@return table doubles
 local function bindEnvelope(runtime, versionId, measurement, audio)
   local doubles = { audio = audio, windows = recordingWindows(), text = recordingText() }
+  doubles.leaves = selectedLeafHost()
   local envelope = FieldBattlePresentation.new({
     cacheFs = CacheFs.forVersion(versionId),
     windows = doubles.windows,
@@ -243,6 +288,7 @@ local function bindEnvelope(runtime, versionId, measurement, audio)
     audio = doubles.audio,
     itemCatalog = runtime.itemCatalog,
     monCatalog = runtime.monCatalog,
+    derivedAssets = doubles.leaves.derivedAssets,
     measureDisplay = function()
       return measurement
     end,

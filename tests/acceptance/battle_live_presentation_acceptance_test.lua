@@ -21,6 +21,14 @@ local T = {
       "field-runtime",
       "audio-bank:702",
       "battle-presentation:global",
+      -- Both journeys bind one launch view: the player backpic and lead
+      -- ball behind every packet, the YOUNGSTER front behind the doubles
+      -- trainer battle, and the single evolution bundle behind the
+      -- committed post-battle evolution.
+      "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+      "battle-trainer-picture:front-YOUNGSTER",
+      "battle-ball:POKE_BALL",
+      "battle-evolution:global",
       "map-data:7",
       "map-data:61",
       "map-data:111",
@@ -98,19 +106,34 @@ local function drawable(key)
   }
 end
 
-local function presentationServices()
+---@param cacheFs table? versioned derived cache staging the evolution leaf, nil when the journey evolves nothing
+---@return table presentation service doubles behind the acceptance screen
+local function presentationServices(cacheFs)
   local images = {}
+  local assets = {
+    prepare = function()
+      return true
+    end,
+    drawable = function(key)
+      images[key] = images[key] or drawable(key)
+      return images[key]
+    end,
+    release = function() end,
+  }
+  -- The evolution journey stages its single selected bundle late through
+  -- the same leaf the field envelope would demand: pending never applies
+  -- here because the suite stages the receipt, so readiness reads it once.
+  if cacheFs ~= nil then
+    function assets.prepareEvolution()
+      local record, recordErr = BattlePresentationCache.loadEvolution(cacheFs)
+      if record == nil then
+        error("the prepared cache stages the acceptance evolution leaf: " .. tostring(recordErr), 0)
+      end
+      return record
+    end
+  end
   return {
-    assets = {
-      prepare = function()
-        return true
-      end,
-      drawable = function(key)
-        images[key] = images[key] or drawable(key)
-        return images[key]
-      end,
-      release = function() end,
-    },
+    assets = assets,
     text = {
       measure = function(text)
         return { width = #tostring(text) * 8, height = 16 }
@@ -268,6 +291,43 @@ local function pumpTo(screen, battle, predicate, label)
   )
 end
 
+---@param cacheFs table versioned derived cache staging the selected leaves
+---@param versionId string ready game version under the journey
+---@param trainerSelectors string[] exact semantic trainer selectors behind the journey
+---@param ballSelectors string[] exact semantic ball selectors behind the journey
+---@return table per-launch battle view over the real staged core
+local function launchViewFor(cacheFs, versionId, trainerSelectors, ballSelectors)
+  -- The screen binds one launch view, never the global inventory: shared
+  -- core sections borrow by reference while only the journey's selected
+  -- leaves attach as launch entries.
+  local core =
+    assert(BattlePresentationCache.load(cacheFs), "the ready version carries verified battle presentation resources")
+  Assert.isTrue(core.verified == true, "the journey reads verified staged presentation data")
+  local view = {}
+  for key, value in pairs(core) do
+    view[key] = value
+  end
+  local trainerEntries = {}
+  for _, selector in ipairs(trainerSelectors) do
+    local record = assert(
+      BattlePresentationCache.loadTrainerPicture(cacheFs, selector),
+      versionId .. " stages the selected trainer leaf " .. selector
+    )
+    trainerEntries[selector] = record.entry
+  end
+  view.trainerPictures = { entries = trainerEntries }
+  local ballEntries = {}
+  for _, selector in ipairs(ballSelectors) do
+    local record = assert(
+      BattlePresentationCache.loadBall(cacheFs, selector),
+      versionId .. " stages the selected ball leaf " .. selector
+    )
+    ballEntries[selector] = record.entry
+  end
+  view.battleBalls = { entries = ballEntries }
+  return view
+end
+
 local function assertTargetMenuJourney(game)
   local versionId = game.versionId
   local party = game.runtime.monService
@@ -275,12 +335,14 @@ local function assertTargetMenuJourney(game)
   party:setMove(1, 0, "TACKLE")
 
   local catalog = party:catalog()
+  local cacheFs = CacheFs.forVersion(versionId)
   local presentation = presentationServices()
-  local manifest = assert(
-    BattlePresentationCache.load(CacheFs.forVersion(versionId)),
-    "the ready version carries the real staged battle presentation manifest"
+  local manifest = launchViewFor(
+    cacheFs,
+    versionId,
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    { "ball:POKE_BALL" }
   )
-  Assert.isTrue(manifest.verified == true, "the target journey reads verified staged presentation data")
 
   local launchId = "acceptance-target-menu-" .. versionId
   local scenario = require("libs.hgss.src.battle.HgssBattleScenarioFactory").fromTrainer({
@@ -447,11 +509,9 @@ local function assertEvolutionSceneJourney(game)
       language = "english",
     },
   })
-  local manifest = assert(
-    BattlePresentationCache.load(CacheFs.forVersion(game.versionId)),
-    "the ready version carries verified battle presentation resources"
-  )
-  local presentation = presentationServices()
+  local cacheFs = CacheFs.forVersion(game.versionId)
+  local manifest = launchViewFor(cacheFs, game.versionId, { "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
+  local presentation = presentationServices(cacheFs)
   local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
   local SessionFixture = require("libs.battle.tests.session_fixture")
   local battle
@@ -500,7 +560,10 @@ local function assertEvolutionSceneJourney(game)
       screen:updateFixed(TICK)
 
       local child = screen:_snapshot().childView
-      if type(child) == "table" and child.kind == "evolution" then
+      -- The committed evolution may still be staging its selected leaf:
+      -- a pending child carries no renderer state yet, so only a
+      -- presented child advances the scene proof.
+      if type(child) == "table" and child.kind == "evolution" and type(child.presentation) == "table" then
         local childPresentation = child.presentation --[[@as table<string, any>]]
         sceneView = sceneView or childPresentation.scene
         local message = child.phase == "evolved_message" and childPresentation.presentation.message

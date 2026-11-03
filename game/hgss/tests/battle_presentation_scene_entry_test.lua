@@ -124,18 +124,42 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local versionId = ready[1]
   local cacheFs = CacheFs.forVersion(versionId)
-  local manifest = BattlePresentationCache.load(cacheFs)
-  Assert.equal(manifest.schema, BattlePresentationCache.MANIFEST_SCHEMA, versionId .. " stages the v3 battle manifest")
-  Assert.equal(#manifest.battlefield.slots, 6, versionId .. " stages all six source slot geometries")
-  Assert.isTrue(#manifest.hud.player.cells > 0, versionId .. " stages native player health-box cells")
-  Assert.equal(manifest.hud.player.componentCount, 78, versionId .. " stages native health-box patch tiles")
-  Assert.isTrue(next(manifest.pictures.selectors) ~= nil, versionId .. " stages source picture selectors")
+  local core = BattlePresentationCache.load(cacheFs)
+  Assert.equal(core.schema, BattlePresentationCache.MANIFEST_SCHEMA, versionId .. " stages the v3 battle manifest")
+  Assert.equal(#core.battlefield.slots, 6, versionId .. " stages all six source slot geometries")
+  Assert.isTrue(#core.hud.player.cells > 0, versionId .. " stages native player health-box cells")
+  Assert.equal(core.hud.player.componentCount, 78, versionId .. " stages native health-box patch tiles")
+  Assert.isTrue(next(core.pictures.selectors) ~= nil, versionId .. " stages source picture selectors")
   local scopeText = recordingText()
   local scopeWindows = recordingWindows()
   local launchId = "scene-entry-probe"
+  -- The screen binds one launch view over the real staged core: shared
+  -- sections borrow by reference while the exact trainer and ball leaves
+  -- behind the switch packets stage as launch entries.
+  local view = {}
+  for key, value in pairs(core) do
+    view[key] = value
+  end
+  local backPic = assert(
+    BattlePresentationCache.loadTrainerPicture(cacheFs, "back:PKMN_TRAINER_ETHAN"),
+    versionId .. " stages the player backpic leaf"
+  )
+  local frontPic = assert(
+    BattlePresentationCache.loadTrainerPicture(cacheFs, "front:YOUNGSTER"),
+    versionId .. " stages the foe front leaf"
+  )
+  local ballLeaf =
+    assert(BattlePresentationCache.loadBall(cacheFs, "ball:POKE_BALL"), versionId .. " stages the lead ball leaf")
+  view.trainerPictures = {
+    entries = {
+      ["back:PKMN_TRAINER_ETHAN"] = backPic.entry,
+      ["front:YOUNGSTER"] = frontPic.entry,
+    },
+  }
+  view.battleBalls = { entries = { ["ball:POKE_BALL"] = ballLeaf.entry } }
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = manifest,
+    manifest = view,
     model = BattlePresentationModel,
     submit = function(_)
       return true
@@ -228,8 +252,8 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   local openingGraphics = FakeGraphics.new({})
   screen:draw({ graphics = openingGraphics })
   local openingRattata = drawsOf(openingGraphics.draws, "mon:RATTATA/f0/male/plain")
-  local sourceSelector = manifest.pictures.selectors["pokemon/RATTATA/form-0/male/front"]
-  local sourceAttributes = manifest.pictures.attributes[sourceSelector.attributes]
+  local sourceSelector = core.pictures.selectors["pokemon/RATTATA/form-0/male/front"]
+  local sourceAttributes = core.pictures.attributes[sourceSelector.attributes]
   Assert.equal(#openingRattata, 1, "the opening foe uses its exact staged portrait")
   local portraitTop = math.huge
   for _, vertex in ipairs(assert(openingRattata[1].meshVertices, "the production mesh carries source vertices")) do
@@ -318,6 +342,9 @@ return {
     derivedAssets = {
       "battle-presentation:global",
       "battle-scene:general/grass/day",
+      "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+      "battle-trainer-picture:front-YOUNGSTER",
+      "battle-ball:POKE_BALL",
     },
   },
 }

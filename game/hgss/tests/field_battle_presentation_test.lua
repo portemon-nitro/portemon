@@ -287,8 +287,29 @@ local function syntheticEffectCacheFs(realFs)
   })
 end
 
+-- Selected leaf readiness for real-cache envelope legs: the prepared
+-- cache stages the named leaf receipts, so the selected-game host answers
+-- ready exactly like the global and scene probes beside it. Only the
+-- selectors a journey declares reach the host; nothing prefetches a family.
+---@param derived table selected-game host table under test driving
+---@return table the same host table with ready selected-leaf methods installed
+local function readySelectedLeaves(derived)
+  assert(type(derived) == "table", "selected leaf readiness installs on a host table")
+  function derived.requestBattleTrainerPicture(_, _)
+    return true
+  end
+  function derived.requestBattleBall(_, _)
+    return true
+  end
+  function derived.requestBattleEvolution(_)
+    return true
+  end
+  return derived
+end
+
 local function bindEnvelope(runtime, versionId, measurement, graphics, transition)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
+  local transitionAssets = transition ~= nil and transition.derivedAssets or nil
   local envelope = FieldBattlePresentation.new({
     cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
     windows = doubles.windows,
@@ -296,7 +317,7 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
     audio = doubles.audio,
     graphics = graphics,
     imagePool = scriptedPool(),
-    derivedAssets = transition ~= nil and transition.derivedAssets or nil,
+    derivedAssets = readySelectedLeaves(transitionAssets or {}),
     fieldRenderer = transition ~= nil and transition.fieldRenderer or nil,
     captureFieldLayers = transition ~= nil and transition.captureFieldLayers or nil,
     measureDisplay = function()
@@ -1316,22 +1337,19 @@ end
 -- generated sprite is still being built.
 function T.trainer_picture_demands_wait_for_the_selected_game_host()
   local SceneCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local FixtureManifest = require("tests.support.BattlePresentationManifestFixture")
+  local core = FixtureManifest.coreManifest()
+  local leaf = FixtureManifest.trainerPictureRecord("front:YOUNGSTER")
+  Assert.equal(
+    leaf.catalogIdentity,
+    core.catalogIdentity,
+    "the staged trainer leaf belongs to the staged core generation"
+  )
   local cache = {
     versionId = "trainer-picture-demand-probe",
     lua = {
-      [SceneCache.manifestPath()] = {
-        trainerPictures = {
-          entries = {
-            ["front:YOUNGSTER"] = {
-              drawableKey = "trainer:front:YOUNGSTER",
-              image = "assets/generated/battle/trainer-youngster.png",
-              width = 80,
-              height = 80,
-              rasterOffset = { x = -40, y = -40 },
-            },
-          },
-        },
-      },
+      [SceneCache.manifestPath()] = core,
+      [SceneCache.trainerPicturePath("front:YOUNGSTER")] = leaf,
     },
   }
   function cache:loadLua(path)
@@ -1386,31 +1404,15 @@ end
 
 function T.battle_ball_demands_wait_for_the_selected_game_host()
   local SceneCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local FixtureManifest = require("tests.support.BattlePresentationManifestFixture")
+  local core = FixtureManifest.coreManifest()
+  local leaf = FixtureManifest.ballRecord("ball:POKE_BALL")
+  Assert.equal(leaf.catalogIdentity, core.catalogIdentity, "the staged ball leaf belongs to the staged core generation")
   local cache = {
     versionId = "battle-ball-demand-probe",
     lua = {
-      [SceneCache.manifestPath()] = {
-        battleBalls = {
-          entries = {
-            ["ball:ULTRA_BALL"] = {
-              frames = {
-                {
-                  drawableKey = "battle-ball:ULTRA_BALL:0",
-                  image = "assets/generated/battle/balls/ultra-0.png",
-                  width = 16,
-                  height = 16,
-                },
-                {
-                  drawableKey = "battle-ball:ULTRA_BALL:1",
-                  image = "assets/generated/battle/balls/ultra-1.png",
-                  width = 16,
-                  height = 16,
-                },
-              },
-            },
-          },
-        },
-      },
+      [SceneCache.manifestPath()] = core,
+      [SceneCache.ballPath("ball:POKE_BALL")] = leaf,
     },
   }
   function cache:loadLua(path)
@@ -1419,9 +1421,8 @@ function T.battle_ball_demands_wait_for_the_selected_game_host()
   local requested = {}
   local staged = false
   local host = { derivedAssets = {} }
-  function host.derivedAssets.requestBattleBalls(selectors, urgency)
-    requested[#requested + 1] = selectors
-    Assert.equal(urgency, "required", "the active frame requests required battle art")
+  function host.derivedAssets.requestBattleBall(selector, urgency)
+    requested[#requested + 1] = { selector = selector, urgency = urgency }
     return staged, nil
   end
   local envelope = FieldBattlePresentation.new({
@@ -1438,17 +1439,21 @@ function T.battle_ball_demands_wait_for_the_selected_game_host()
     launchId = "battle-ball-demand",
     scenes = {},
     pages = {},
-    battleBalls = { "ball:ULTRA_BALL" },
+    battleBalls = { "ball:POKE_BALL" },
     audio = { roles = {}, banks = {}, cries = {} },
   }
   local ready, failure = services.prepare(demand)
   Assert.isFalse(ready, "the opening stays pending while battle ball art builds")
   Assert.isNil(failure, "a queued battle ball has no failure")
-  Assert.deepEqual(requested, { { "ball:ULTRA_BALL" } }, "the host receives the exact semantic selector")
+  Assert.deepEqual(
+    requested,
+    { { selector = "ball:POKE_BALL", urgency = "required" } },
+    "the host receives the exact semantic selector"
+  )
   staged = true
   Assert.isTrue(services.prepare(demand), "the exact staged ball completes preparation")
-  local drawable = assert(services.drawable("battle-ball:ULTRA_BALL:1"), "the staged zero-based frame resolves")
-  Assert.equal(drawable.key, "battle-ball:ULTRA_BALL:1", "headless resolution keeps the frame drawable key")
+  local drawable = assert(services.drawable("battle-ball:POKE_BALL:0"), "the staged zero-based frame resolves")
+  Assert.equal(drawable.key, "battle-ball:POKE_BALL:0", "headless resolution keeps the frame drawable key")
   envelope:dispose()
 end
 
@@ -1571,28 +1576,25 @@ end
 -- the single battle manifest parse instead of re-reading it per round.
 function T.battle_manifest_documents_load_once_per_envelope()
   local SceneCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local FixtureManifest = require("tests.support.BattlePresentationManifestFixture")
+  local core = FixtureManifest.coreManifest()
+  local leaf = FixtureManifest.trainerPictureRecord("front:YOUNGSTER")
   local manifestPath = SceneCache.manifestPath()
-  local loads = 0
+  local leafPath = SceneCache.trainerPicturePath("front:YOUNGSTER")
+  local loads, leafLoads = 0, 0
   local cache = {
     versionId = "battle-manifest-memo-probe",
     lua = {
-      [manifestPath] = {
-        trainerPictures = {
-          entries = {
-            ["front:YOUNGSTER"] = {
-              drawableKey = "trainer:front:YOUNGSTER",
-              image = "assets/generated/battle/trainer-youngster.png",
-              width = 80,
-              height = 80,
-            },
-          },
-        },
-      },
+      [manifestPath] = core,
+      [leafPath] = leaf,
     },
   }
   function cache:loadLua(path)
     if path == manifestPath then
       loads = loads + 1
+    end
+    if path == leafPath then
+      leafLoads = leafLoads + 1
     end
     return self.lua[path]
   end
@@ -1613,9 +1615,12 @@ function T.battle_manifest_documents_load_once_per_envelope()
     derivedAssets = host.derivedAssets,
   })
   local services = envelope:_preparationServices()
-  -- Construction loads the manifest for its own staged decision; only
-  -- preparation rounds must share the single parse afterwards.
+  -- Construction verifies the staged core once; every preparation
+  -- round afterwards shares the single parse without re-reading the
+  -- global path, while the selected leaf still loads exactly once.
+  local verifiedCore = assert(envelope._manifest, "construction verifies the staged core")
   loads = 0
+  leafLoads = 0
   local demand = {
     launchId = "manifest-memo",
     scenes = {},
@@ -1625,7 +1630,9 @@ function T.battle_manifest_documents_load_once_per_envelope()
   }
   Assert.isTrue(services.prepare(demand), "the staged trainer picture prepares")
   Assert.isTrue(services.prepare(demand), "the repeat launch prepares")
-  Assert.equal(loads, 1, "repeat preparation shares the single manifest parse")
+  Assert.equal(loads, 0, "repeat preparation never re-reads the verified core")
+  Assert.equal(leafLoads, 1, "the selected leaf loads once per envelope")
+  Assert.isTrue(envelope._manifest == verifiedCore, "repeat preparation keeps the verified core identity")
   envelope:dispose()
 end
 
@@ -1652,7 +1659,9 @@ function T.pooled_portrait_cells_share_one_page_upload_across_selectors()
     for _, name in ipairs(names) do
       local entry = portraits.entries[name]
       if
-        type(entry) == "table" and type(entry.pageId) == "number" and type(entry.frames) == "table"
+        type(entry) == "table"
+        and type(entry.pageId) == "number"
+        and type(entry.frames) == "table"
         and #entry.frames == 2
       then
         local seen = byPage[entry.pageId]
@@ -3057,6 +3066,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
   function derivedAssets.requestAudioBank(_, _)
     return worker.ready, worker.failure
   end
+  readySelectedLeaves(derivedAssets)
   local envelope = FieldBattlePresentation.new({
     cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
     windows = doubles.windows,
@@ -3364,15 +3374,14 @@ function T.scheduled_precommit_faults_raise_their_original_cause()
       if point == "upload" then
         pool = scriptedPool("probe upload failure")
       end
-      local envelope, binding, _ =
-        bindScheduledEnvelope(
-          runtime,
-          versionId,
-          dualMeasurement("deferred-precommit:" .. point),
-          graphics,
-          pool,
-          point == "upload" and "probe upload failure" or nil
-        )
+      local envelope, binding, _ = bindScheduledEnvelope(
+        runtime,
+        versionId,
+        dualMeasurement("deferred-precommit:" .. point),
+        graphics,
+        pool,
+        point == "upload" and "probe upload failure" or nil
+      )
       local ScreenState = require("game.hgss.src.battle.BattleScreenState")
       local realNew = ScreenState.new
       if point == "construction" then
@@ -3789,6 +3798,378 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
   end
 end
 
+-- Selected launch art stages through independent leaf records while the
+-- shared core stays untouched: only the demanded trainer and ball
+-- selectors reach the selected-game host, a pending leaf holds
+-- preparation without failing, and readiness enrolls exactly the leaf
+-- image closure. Unrelated staged selectors are never requested or read.
+function T.selected_trainer_and_ball_leaves_stage_without_the_global_inventory()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local core = ManifestFixture.coreManifest()
+  Assert.isNil(core.trainerPictures, "the shared core carries no trainer inventory")
+  Assert.isNil(core.battleBalls, "the shared core carries no ball inventory")
+  local trainerSelectors = { "front:YOUNGSTER", "back:PKMN_TRAINER_ETHAN" }
+  local leaves = {}
+  for _, selector in ipairs(trainerSelectors) do
+    leaves[BattlePresentationCache.trainerPicturePath(selector)] = ManifestFixture.trainerPictureRecord(selector)
+  end
+  leaves[BattlePresentationCache.ballPath("ball:POKE_BALL")] = ManifestFixture.ballRecord("ball:POKE_BALL")
+  -- An unrelated staged leaf proves demand stays selective: nothing in
+  -- this launch may request or read it.
+  local unrelatedTrainerPath = BattlePresentationCache.trainerPicturePath("front:LEADER_FALKNER")
+  leaves[unrelatedTrainerPath] = ManifestFixture.trainerPictureRecord("front:LEADER_FALKNER")
+  local unrelatedBallPath = BattlePresentationCache.ballPath("ball:GREAT_BALL")
+  local reads = {}
+  local cache = { versionId = "selected-leaf-probe" }
+  function cache:loadLua(path)
+    reads[path] = (reads[path] or 0) + 1
+    if path == BattlePresentationCache.manifestPath() then
+      return core
+    end
+    return leaves[path]
+  end
+  function cache:exists()
+    return true
+  end
+  local requested = {}
+  local leavesReady = false
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(selector, urgency)
+    requested[#requested + 1] = { kind = "trainer", selector = selector, urgency = urgency }
+    return leavesReady, nil
+  end
+  function host.derivedAssets.requestBattleBall(selector, urgency)
+    requested[#requested + 1] = { kind = "ball", selector = selector, urgency = urgency }
+    return leavesReady, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("selected-leaf:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+    imagePool = scriptedPool(),
+  })
+  local ok, failure = xpcall(function()
+    local coreIdentity = assert(envelope._manifest, "the envelope holds its verified core")
+    local services = envelope:_preparationServices()
+    local demand = {
+      launchId = "selected-leaf-launch",
+      scenes = {},
+      pages = {},
+      trainerPictures = { "front:YOUNGSTER", "back:PKMN_TRAINER_ETHAN" },
+      battleBalls = { "ball:POKE_BALL" },
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+    local ready, prepareFailure = services.prepare(demand)
+    Assert.equal(ready, false, "the launch holds while its selected leaves build")
+    Assert.isNil(prepareFailure, "a queued selected leaf reports no terminal failure")
+    local observed = {}
+    for _, entry in ipairs(requested) do
+      observed[#observed + 1] = entry.kind .. " " .. entry.selector .. " " .. entry.urgency
+    end
+    table.sort(observed)
+    Assert.deepEqual(observed, {
+      "ball ball:POKE_BALL required",
+      "trainer back:PKMN_TRAINER_ETHAN required",
+      "trainer front:YOUNGSTER required",
+    }, "only the demanded selectors reach the host at required urgency")
+    leavesReady = true
+    Assert.isTrue(services.prepare(demand), "the staged selected leaves complete preparation")
+    local expectedUploads = {}
+    for _, selector in ipairs(trainerSelectors) do
+      local record = assert(
+        leaves[BattlePresentationCache.trainerPicturePath(selector)],
+        "the probe stages its trainer leaf " .. selector
+      )
+      expectedUploads[record.entry.image] = true
+      for _, sequence in ipairs(record.entry.animation.sequences) do
+        for _, frame in ipairs(sequence.frames) do
+          expectedUploads[frame.image] = true
+        end
+      end
+    end
+    local ballRecord =
+      assert(leaves[BattlePresentationCache.ballPath("ball:POKE_BALL")], "the probe stages its ball leaf")
+    for _, frame in ipairs(ballRecord.entry.frames) do
+      expectedUploads[frame.image] = true
+    end
+    local enrolled = {}
+    for path in pairs(envelope._pendingUploads) do
+      enrolled[#enrolled + 1] = path
+    end
+    table.sort(enrolled)
+    local expected = {}
+    for path in pairs(expectedUploads) do
+      expected[#expected + 1] = path
+    end
+    table.sort(expected)
+    Assert.deepEqual(enrolled, expected, "readiness enrolls exactly the selected leaf image closure")
+    Assert.isNil(reads[unrelatedTrainerPath], "the unrelated staged trainer leaf is never read")
+    Assert.isNil(reads[unrelatedBallPath], "the undemanded ball leaf is never read")
+    Assert.isTrue(envelope._manifest == coreIdentity, "repeat preparation never replaces the verified core")
+    Assert.isNil(envelope._manifest.trainerPictures, "leaf staging never mutates the shared core")
+    local trainerDrawable = assert(services.drawable("trainer:front:YOUNGSTER"), "the staged front pic resolves")
+    Assert.equal(trainerDrawable.key, "trainer:front:YOUNGSTER", "headless resolution keeps the semantic drawable key")
+    local ballDrawable = assert(services.drawable("battle-ball:POKE_BALL:0"), "the staged ball frame resolves")
+    Assert.equal(ballDrawable.key, "battle-ball:POKE_BALL:0", "headless resolution keeps the frame drawable key")
+  end, debug.traceback)
+  pcall(function()
+    envelope:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- Selected battle banks gate the launch without dragging unrelated
+-- audio: the music role resolves to its source bank, preseed requests
+-- exactly the launch bank closure at required urgency, and staging a
+-- closure-free core never assumes a global bank inventory.
+function T.selected_audio_banks_gate_the_launch_without_unrelated_tracks()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  local MUSIC_BANK = 702
+  local SINK_BANK = 750
+  local UNRELATED_BANK = 999
+  local core = ManifestFixture.coreManifest()
+  Assert.isNil(
+    core.audioRoles.introMusic.sequenceClosures,
+    "the shared core carries selection metadata, not bank closures"
+  )
+  local leaves = {
+    [BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN")] = ManifestFixture.trainerPictureRecord(
+      "back:PKMN_TRAINER_ETHAN"
+    ),
+    [BattlePresentationCache.ballPath("ball:POKE_BALL")] = ManifestFixture.ballRecord("ball:POKE_BALL"),
+  }
+  local audioIndex = {
+    sequences = { [MUSIC_BANK] = { bankId = MUSIC_BANK }, [SINK_BANK] = { bankId = SINK_BANK } },
+    sequenceBySymbol = { SEQ_GS_VS_TRAINER = MUSIC_BANK, SEQ_SE_DP_SLIDEIN = SINK_BANK },
+  }
+  local cache = { versionId = "selected-bank-probe" }
+  function cache:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return core
+    end
+    if path == AudioCache.indexPath() then
+      return audioIndex
+    end
+    return leaves[path]
+  end
+  function cache:exists()
+    return true
+  end
+  local bankRequests = {}
+  local leavesReady = true
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(_, _)
+    return leavesReady, nil
+  end
+  function host.derivedAssets.requestBattleBall(_, _)
+    return leavesReady, nil
+  end
+  function host.derivedAssets.requestAudioBank(bankId, urgency)
+    bankRequests[#bankRequests + 1] = { bank = bankId, urgency = urgency }
+    return true, nil
+  end
+  function host.derivedAssets.requestBattlePresentation(_)
+    return true, nil
+  end
+  function host.derivedAssets.requestBattleScene(_, _)
+    return true, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("selected-bank:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+    imagePool = scriptedPool(),
+  })
+  local ok, failure = xpcall(function()
+    envelope._musicRole = "SEQ_GS_VS_TRAINER"
+    Assert.deepEqual(envelope:_audioBanks(), { MUSIC_BANK, SINK_BANK }, "the music role resolves to its source banks")
+    envelope:_preseedLaunchDemands({ environment = { sceneKey = "general/grass/day" } })
+    Assert.deepEqual(bankRequests, {
+      { bank = MUSIC_BANK, urgency = "required" },
+      { bank = SINK_BANK, urgency = "required" },
+    }, "preseed requests exactly the launch bank closure at required urgency")
+    local services = envelope:_preparationServices()
+    Assert.isTrue(
+      services.prepare({
+        launchId = "selected-bank-launch",
+        scenes = {},
+        pages = {},
+        trainerPictures = { "back:PKMN_TRAINER_ETHAN" },
+        battleBalls = { "ball:POKE_BALL" },
+        audio = { roles = {}, banks = {}, cries = {} },
+      }),
+      "the closure-free core stages its selected leaves without a bank inventory"
+    )
+    for _, entry in ipairs(bankRequests) do
+      Assert.isTrue(entry.bank ~= UNRELATED_BANK, "the unrelated bank is never requested")
+      Assert.equal(entry.urgency, "required", "every bank request carries required urgency")
+    end
+  end, debug.traceback)
+  pcall(function()
+    envelope:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- A leaf from a retired generation never stages: the generation
+-- mismatch fails the owning launch naming the selector and both
+-- identities, the shared core stays untouched, and a later
+-- current-generation leaf still stages cleanly on the same core.
+function T.stale_leaf_generation_fails_its_launch_without_poisoning_the_core()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local core = ManifestFixture.coreManifest()
+  local stale = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  stale.catalogIdentity = "retired-catalog"
+  local current = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  local leafPath = BattlePresentationCache.trainerPicturePath("front:YOUNGSTER")
+  local leaves = { [leafPath] = stale }
+  local cache = { versionId = "stale-leaf-probe" }
+  function cache:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return core
+    end
+    return leaves[path]
+  end
+  function cache:exists()
+    return true
+  end
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(_, _)
+    return true, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("stale-leaf:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+    imagePool = scriptedPool(),
+  })
+  local ok, failure = xpcall(function()
+    local verified = assert(envelope._manifest, "the envelope holds its verified core")
+    local services = envelope:_preparationServices()
+    local demand = {
+      launchId = "stale-leaf-launch",
+      scenes = {},
+      pages = {},
+      trainerPictures = { "front:YOUNGSTER" },
+      battleBalls = {},
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+    local ready, prepareFailure = services.prepare(demand)
+    Assert.isNil(ready, "the mismatched leaf fails its launch")
+    Assert.isTrue(
+      type(prepareFailure) == "string"
+        and prepareFailure:find("front:YOUNGSTER", 1, true) ~= nil
+        and prepareFailure:find("retired-catalog", 1, true) ~= nil,
+      "the failure names the selector and its retired generation: " .. tostring(prepareFailure)
+    )
+    Assert.isNil(envelope._manifest.trainerPictures, "the failure never mutates the shared core")
+    Assert.isTrue(envelope._manifest == verified, "the verified core survives the failed leaf")
+    leaves[leafPath] = current
+    Assert.isTrue(services.prepare(demand), "the current-generation leaf still stages afterwards")
+  end, debug.traceback)
+  pcall(function()
+    envelope:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- Dropping a launch releases its per-launch leaf maps while the verified
+-- core persists: the next launch starts from empty maps and stages only
+-- its own selectors without inheriting the previous launch's entries.
+function T.dropped_launches_release_leaf_maps_while_the_core_persists()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local core = ManifestFixture.coreManifest()
+  local leaves = {
+    [BattlePresentationCache.trainerPicturePath("front:YOUNGSTER")] = ManifestFixture.trainerPictureRecord(
+      "front:YOUNGSTER"
+    ),
+    [BattlePresentationCache.trainerPicturePath("front:LEADER_FALKNER")] = ManifestFixture.trainerPictureRecord(
+      "front:LEADER_FALKNER"
+    ),
+  }
+  local cache = { versionId = "launch-lifetime-probe" }
+  function cache:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return core
+    end
+    return leaves[path]
+  end
+  function cache:exists()
+    return true
+  end
+  local host = { derivedAssets = {} }
+  function host.derivedAssets.requestBattleTrainerPicture(_, _)
+    return true, nil
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("launch-lifetime:dual")
+    end,
+    derivedAssets = host.derivedAssets,
+    imagePool = scriptedPool(),
+  })
+  local ok, failure = xpcall(function()
+    local verified = assert(envelope._manifest, "the envelope holds its verified core")
+    local services = envelope:_preparationServices()
+    local function demandFor(selector)
+      return {
+        launchId = "launch-lifetime",
+        scenes = {},
+        pages = {},
+        trainerPictures = { selector },
+        battleBalls = {},
+        audio = { roles = {}, banks = {}, cries = {} },
+      }
+    end
+    Assert.isTrue(services.prepare(demandFor("front:YOUNGSTER")), "the first launch stages its leaf")
+    Assert.notNil(
+      envelope._launchLeafRecords.trainerPictures["front:YOUNGSTER"],
+      "the first launch owns its staged entry"
+    )
+    envelope:_dropLaunch()
+    Assert.isNil(envelope._launchManifest, "the drop releases the per-launch view")
+    Assert.isNil(next(envelope._launchLeafRecords.trainerPictures), "the drop releases the per-launch leaf map")
+    Assert.isTrue(envelope._manifest == verified, "the verified core persists across launches")
+    Assert.isTrue(services.prepare(demandFor("front:LEADER_FALKNER")), "the next launch stages its own leaf")
+    Assert.notNil(
+      envelope._launchLeafRecords.trainerPictures["front:LEADER_FALKNER"],
+      "the next launch owns its staged entry"
+    )
+    Assert.isNil(
+      envelope._launchLeafRecords.trainerPictures["front:YOUNGSTER"],
+      "the next launch never inherits the previous launch entries"
+    )
+  end, debug.traceback)
+  pcall(function()
+    envelope:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 return {
   tests = T,
   metadata = {
@@ -3805,6 +4186,12 @@ return {
       "battle-scene:building_1/building/day",
       "battle-scene:general/grass/day",
       "battle-scene:general/plain/day",
+      -- Presented launches demand only their selected leaves: the player
+      -- backpic and the lead ball behind every leg. Foe fronts and
+      -- capture balls extend this list exactly as journeys name them.
+      "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+      "battle-trainer-picture:front-BUG_CATCHER",
+      "battle-ball:POKE_BALL",
     },
   },
 }

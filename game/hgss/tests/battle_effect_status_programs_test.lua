@@ -748,9 +748,8 @@ function T.named_status_and_stage_events_start_one_native_screen_task()
     stageProgram("TACKLE", { 29, 50, 4 })
     stageProgram(key, { 5, 1, 34, 1, 2, 3, 50, 4 })
 
-    local manifest = ManifestFixture.manifest()
-    manifest.messages.entries["battle/move-use/HYPNOSIS/own"] =
-      manifest.messages.entries["battle/move-use/TACKLE/own"]
+    local manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" })
+    manifest.messages.entries["battle/move-use/HYPNOSIS/own"] = manifest.messages.entries["battle/move-use/TACKLE/own"]
     manifest.messages.entries["battle/narration/status/sleep/own"] =
       manifest.messages.entries["battle/narration/status/paralysis/own"]
     local measurement = {

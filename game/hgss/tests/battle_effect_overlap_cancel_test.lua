@@ -384,7 +384,7 @@ local function openOverlapScreen(launchId, staging)
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
-  local manifest = ManifestFixture.manifest()
+  local manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" })
   manifest.scenes = { { key = "general/plain/day" } }
   local measurement = {
     width = 256,

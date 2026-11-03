@@ -365,16 +365,23 @@ local function deepCopy(value)
 end
 
 ---@param sceneKey string semantic scene identity under test preparation
----@return table detached schema-valid staged manifest carrying the requested scene
+---@return table detached per-launch battle view over the shared core, carrying the requested scene
 local function screenManifest(sceneKey)
   local background, terrain, time = sceneKey:match("^([^/]+)/([^/]+)/([^/]+)$")
   assert(
     background ~= nil and terrain ~= nil and time ~= nil,
     "the screen fixture needs a background/terrain/time scene key"
   )
-  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  -- The screen binds one launch view, never the global inventory: the
+  -- exact trainer and ball selectors behind these rigs stage as the
+  -- launch entries while every other core section stays borrowed.
+  local manifest = BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
+    { "ball:POKE_BALL" }
+  )
   manifest.scenes = { { key = sceneKey, background = background, terrain = terrain, time = time } }
-  BattlePresentationSchema.assertManifest(manifest)
+  -- launchView validated the shared core before attaching the
+  -- launch-local entries; the scene override keeps that shape.
   return manifest
 end
 
@@ -1621,8 +1628,22 @@ function T.detached_manifest_copies_keep_their_own_scene_key()
   second.scenes[1].terrain = Cache.TERRAINS[1]
   second.scenes[1].time = Cache.TIMES[1]
   Assert.equal(first.scenes[1].key, testSceneKey(), "retargeting a sibling copy never touches this copy")
-  BattlePresentationSchema.assertManifest(first)
-  BattlePresentationSchema.assertManifest(second)
+  -- Each launch owns fresh entry maps over the same selected entries:
+  -- maps stay distinct by identity while the staged selections agree,
+  -- and the shared core never gains a launch inventory.
+  Assert.isTrue(
+    first.trainerPictures.entries ~= second.trainerPictures.entries,
+    "per-launch trainer maps stay distinct between copies"
+  )
+  Assert.deepEqual(
+    first.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"],
+    second.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"],
+    "copies stage the same selected trainer entry without sharing the map"
+  )
+  Assert.isTrue(
+    first.battleBalls.entries ~= second.battleBalls.entries,
+    "per-launch ball maps stay distinct between copies"
+  )
   Assert.equal(
     BattlePresentationManifestFixture.manifest().scenes[1].key,
     "general/grass/day",
@@ -1848,6 +1869,58 @@ function T.native_animation_cry_reaches_the_attacker_voice()
   Assert.equal(audio.cry.pan, -45, "the native cry pan is converted for the attacker")
   Assert.equal(audio.cry.volume, 127, "the native cry volume is preserved")
   screen:dispose()
+end
+
+-- A ball type first seen mid-battle holds its cue instead of advancing
+-- without art: the new selector reaches the asset holder before any
+-- metadata dereference, the delivering packet waits in the deferred
+-- queue while its entry is unstaged, and staging the selected entry
+-- replays the packet in order without restarting source time.
+function T.later_ball_selectors_hold_their_cue_until_staged()
+  local modules = battleScreenModules("later ball demand", STATE_MODULE)
+  local rig = openWildRig(
+    modules,
+    "launch-screen-late-ball",
+    { species = "EEVEE", level = 20, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+    foeRecord("EEVEE", 20, 0x5EED0002)
+  )
+  driveToMode(rig, "command", 600)
+  local screen = rig.screen
+  local after = nativeView(20)
+  local switchedLead = {}
+  for key, value in pairs(after.own[1]) do
+    switchedLead[key] = value
+  end
+  switchedLead.ballKey = "GREAT_BALL"
+  after.own[1] = switchedLead
+  screen:presentationPort().present({
+    launchId = "launch-screen-late-ball",
+    packetId = 4242,
+    events = {},
+    before = nativeView(20),
+    after = after,
+  })
+  for _ = 1, 30 do
+    screen:updateFixed(TICK)
+  end
+  Assert.equal(#screen._deferredPackets, 1, "the unstaged ball holds its delivering packet")
+  Assert.equal(screen:status().mode, "command", "the held cue keeps the live command")
+  local demandedBall = false
+  for _, demand in ipairs(rig.assets.prepared) do
+    for _, selector in ipairs(demand.battleBalls or {}) do
+      demandedBall = demandedBall or selector == "ball:GREAT_BALL"
+    end
+  end
+  Assert.isTrue(demandedBall, "the new ball selector reaches the holder before any dereference")
+  screen._manifest.battleBalls.entries["ball:GREAT_BALL"] = { fadeColor = 0, frames = {} }
+  for _ = 1, 30 do
+    screen:updateFixed(TICK)
+  end
+  Assert.equal(#screen._deferredPackets, 0, "the staged ball replays its queued packet")
+  Assert.equal(screen:status().mode, "command", "the replayed cue keeps the live command")
+  screen:dispose()
+  rig.battle:dispose()
 end
 
 ---@return table detached active own lead record carrying real event-time slot facts
@@ -2243,10 +2316,7 @@ function T.pooled_portrait_cells_submit_their_frame_window()
   for _, field in ipairs({ "frameX", "frameY", "frameW", "frameH" }) do
     Assert.equal(picture[field], frame[frameFields[field]], "the submitted picture carries the cell " .. field)
   end
-  Assert.isTrue(
-    picture.palette == pagePalette,
-    "the submitted picture carries the page palette for indexed sampling"
-  )
+  Assert.isTrue(picture.palette == pagePalette, "the submitted picture carries the page palette for indexed sampling")
 end
 
 return { tests = T }

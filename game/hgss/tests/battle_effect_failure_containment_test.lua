@@ -324,7 +324,7 @@ local function openFailingScreen(launchId, staging)
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
-  local manifest = ManifestFixture.manifest()
+  local manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" })
   manifest.scenes = { { key = "general/plain/day" } }
   local measurement = {
     width = 256,
@@ -429,10 +429,7 @@ local function updateFailingScreen(screen, ticks)
     local hp = failingDisplayedFoeHp(screen:view())
     if hp ~= 57 then
       error(
-        "the failing screen changed checkpoint HP at tick "
-          .. tick
-          .. " while "
-          .. tostring(screen:status().mode),
+        "the failing screen changed checkpoint HP at tick " .. tick .. " while " .. tostring(screen:status().mode),
         0
       )
     end

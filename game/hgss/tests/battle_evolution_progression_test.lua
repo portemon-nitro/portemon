@@ -18,7 +18,6 @@ local Experience = require("libs.mons.src.gen4.Experience")
 local MonStats = require("libs.mons.src.gen4.MonStats")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SessionFixture = require("libs.battle.tests.session_fixture")
 
@@ -45,9 +44,8 @@ end
 
 ---@return table detached schema-valid staged manifest for the evolution harness scene
 local function screenManifest()
-  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  local manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
-  BattlePresentationSchema.assertManifest(manifest)
   return manifest
 end
 
@@ -434,6 +432,20 @@ local function openEvolutionRig(opts)
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
+  -- Evolution art stages through the selected leaf like production: rigs
+  -- without an explicit gate read the staged bundle at once, matching
+  -- the previously always-present global sections.
+  if opts.evolutionGate ~= nil then
+    rig.assets.prepareEvolution = opts.evolutionGate
+  else
+    local cachedEvolution = nil
+    rig.assets.prepareEvolution = function()
+      if cachedEvolution == nil then
+        cachedEvolution = BattlePresentationManifestFixture.evolutionRecord()
+      end
+      return cachedEvolution
+    end
+  end
   local catalog = assert(opts.catalog, "the evolution rig needs its mon catalog")
   local party = makePartyOwnerWith(catalog, opts.partySpecs, opts.game)
   local bag = opts.bag
@@ -458,7 +470,7 @@ local function openEvolutionRig(opts)
   }
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = screenManifest(),
+    manifest = opts.manifest or screenManifest(),
     model = BattlePresentationModel,
     submit = function(reply)
       return holder.battle:submit(reply)
@@ -641,7 +653,10 @@ local function runEvolutionHandsFree(rig, budget)
       end
     end
   end
-  error("the offered evolution never settled back to the field (screen=" .. tostring(rig.screen:status().mode) .. ")", 0)
+  error(
+    "the offered evolution never settled back to the field (screen=" .. tostring(rig.screen:status().mode) .. ")",
+    0
+  )
 end
 
 local function singleTackle()
@@ -1370,6 +1385,239 @@ function T.versioned_catalogs_evolve_real_level_triggers(context)
     )
     rig.battle:dispose()
     rig.screen:dispose()
+  end
+end
+
+-- Answers post-commit decisions exactly like the commit driver so a plain
+-- win can drain back to the field with no evolution child involved.
+---@param rig table live evolution rig under test driving
+---@param budget integer maximum update ticks before the driver gives up
+local function drainPlainWinToField(rig, budget)
+  for _ = 1, budget do
+    rig.pump(1)
+    ackNarration(rig)
+    local current = rig.battle:status()
+    if current.phase == "failed" then
+      error("the plain win failed: " .. tostring(current.error), 0)
+    end
+    if current.phase == "complete" then
+      return current
+    end
+    local screenStatus = rig.screen:status()
+    if screenStatus.mode == "failed" then
+      error("the plain win screen failed: " .. tostring(screenStatus.error), 0)
+    end
+    if current.phase == "running" and current.request ~= nil then
+      local request = current.request --[[@as table<string, unknown>]]
+      if request.kind == "learn_move" then
+        local actor = assert(request.actors[1], "learning answers its combatant")
+        local accepted, replyErr = rig.battle:submit(
+          SessionFixture.replyFor(request, { { actor = actor, kind = "confirm", payload = { decision = "decline" } } })
+        )
+        Assert.isTrue(accepted, "post-commit learning declines: " .. tostring(replyErr))
+      else
+        local fragment = attackFragment(rig, request)
+        local accepted, replyErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment }))
+        Assert.isTrue(accepted, "the draining attack is accepted: " .. tostring(replyErr))
+      end
+    end
+  end
+  error("the plain win never returned to the field", 0)
+end
+
+-- A per-launch battle view over the shared core: common sections are
+-- borrowed by reference while trainer, ball, and evolution art attach
+-- only as selected leaves stage. The evolution sections stay absent
+-- until the committed evolution demands them.
+---@return table per-launch battle view for the evolution rigs
+local function selectedLeafView()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  return ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
+end
+
+-- Committed evolution waits for its selected leaf while ordinary wins
+-- request nothing: a win with no evolution never touches the evolution
+-- worker, an evolving completion holds its committed result through
+-- pending polls and opens exactly one child once the leaf stages, and
+-- a failed leaf faults the screen without consuming the committed
+-- result or opening twice.
+function T.committed_evolution_waits_for_its_selected_leaf_while_plain_wins_request_nothing()
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  -- An ordinary win first: no evolution worker may be touched.
+  do
+    local catalog = evolutionCatalogs(nil, false)
+    local evolutionCalls = 0
+    local rig = openEvolutionRig({
+      launchId = "launch-plain-win-requests-no-evolution",
+      catalog = catalog,
+      itemCatalog = ItemFixture.makeCatalog(),
+      partySpecs = { { species = "TOTODILE", level = 9, moves = singleTackle() } },
+      evolutionContext = { timeOfDay = "day", mapId = 7 },
+      manifest = selectedLeafView(),
+      evolutionGate = function()
+        evolutionCalls = evolutionCalls + 1
+        return nil
+      end,
+    })
+    local committed = driveToCommitted(rig, 1500)
+    local receipt = assert(committed.outcomeReceipt, "the plain win commits its receipt")
+    Assert.isTrue(receipt.committed, "the plain win commits before field return")
+    local settled = drainPlainWinToField(rig, 900)
+    Assert.equal(settled.phase, "complete", "the plain win returns to the field")
+    Assert.deepEqual(settled.outcomeReceipt, receipt, "the return never rewrites the battle receipt")
+    Assert.equal(evolutionCalls, 0, "the win without evolution never touches the evolution worker")
+    Assert.equal(rig.party:partyMon(0).species, "TOTODILE", "the plain win evolves nothing")
+    rig.battle:dispose()
+    rig.screen:dispose()
+  end
+  -- An evolving win next: pending holds the committed result, the
+  -- staged leaf opens exactly one child, and the species settles.
+  do
+    local catalog = evolutionCatalogs(graftLevelSlot, false)
+    local evolutionCalls = 0
+    local evolutionLoads = 0
+    local evolutionStaged = false
+    local cachedRecord = nil
+    local rig = openEvolutionRig({
+      launchId = "launch-evolution-waits-for-its-leaf",
+      catalog = catalog,
+      itemCatalog = ItemFixture.makeCatalog(),
+      partySpecs = { { species = "EEVEE", level = 9, below = true, moves = singleTackle() } },
+      evolutionContext = { timeOfDay = "day", mapId = 7 },
+      manifest = selectedLeafView(),
+      evolutionGate = function()
+        evolutionCalls = evolutionCalls + 1
+        if not evolutionStaged then
+          return nil
+        end
+        if cachedRecord == nil then
+          cachedRecord = ManifestFixture.evolutionRecord()
+          evolutionLoads = evolutionLoads + 1
+        end
+        return cachedRecord
+      end,
+    })
+    local committed = driveToCommitted(rig, 1500)
+    local receipt = assert(committed.outcomeReceipt, "completion carries its commit receipt")
+    Assert.isTrue(receipt.committed, "the battle receipt commits before any evolution")
+    local stallOk, stallErr = pcall(function()
+      local offered = false
+      for _ = 1, 1200 do
+        rig.pump(1)
+        ackNarration(rig)
+        Assert.isNil(rig.screen._completionChild, "the committed evolution opens no child while its leaf builds")
+        local completion = rig.screen:status().completion
+        if type(completion) == "table" and completion.kind == "evolution" then
+          offered = true
+          break
+        end
+        if rig.battle:status().phase == "complete" then
+          error("the battle returned to the field without offering its evolution", 0)
+        end
+      end
+      Assert.isTrue(offered, "the committed win offers its evolution decision")
+      for _ = 1, 30 do
+        rig.pump(1)
+        ackNarration(rig)
+        Assert.isNil(rig.screen._completionChild, "repeated pending polls still open no child")
+      end
+      Assert.notNil(rig.screen:status().completion, "the committed result survives the pending leaf")
+      Assert.isTrue(evolutionCalls >= 1, "pending polls reach the evolution worker")
+    end)
+    if not stallOk then
+      rig.battle:dispose()
+      rig.screen:dispose()
+      error("the committed evolution waits for its selected leaf: " .. tostring(stallErr), 0)
+    end
+    evolutionStaged = true
+    local offered = driveToEvolution(rig, 1200)
+    Assert.equal(offered.kind, "evolution", "the offered completion names the evolution decision")
+    local child = assert(rig.screen._completionChild, "the staged leaf opens its evolution child")
+    for _ = 1, 5 do
+      rig.pump(1)
+    end
+    Assert.isTrue(rig.screen._completionChild == child, "repeated ready polls open no second child")
+    runEvolutionHandsFree(rig, 1500)
+    Assert.equal(evolutionLoads, 1, "the ready leaf loads once across repeated polls")
+    Assert.equal(rig.battle:status().phase, "complete", "the evolved member still returns to the field")
+    Assert.isNil(rig.screen:status().completion, "the finished evolution consumes its completion")
+    Assert.equal(rig.party:partyMon(0).species, "TOTODILE", "the leveled member evolves once")
+    Assert.equal(rig.party:partyCount(), 1, "the evolution publishes no extra party member")
+    local survivor = rig.battle:status()
+    Assert.deepEqual(survivor.outcomeReceipt, receipt, "the evolution pass never rewrites the battle receipt")
+    rig.battle:dispose()
+    rig.screen:dispose()
+  end
+  -- A failing leaf last: the screen faults with its cause while the
+  -- committed result survives unopened.
+  do
+    local catalog = evolutionCatalogs(graftLevelSlot, false)
+    local rigOwner = {}
+    local rig = openEvolutionRig({
+      launchId = "launch-failed-leaf-faults-openly",
+      catalog = catalog,
+      itemCatalog = ItemFixture.makeCatalog(),
+      partySpecs = { { species = "EEVEE", level = 9, below = true, moves = singleTackle() } },
+      evolutionContext = { timeOfDay = "day", mapId = 7 },
+      manifest = selectedLeafView(),
+      evolutionGate = function()
+        rigOwner.calls = (rigOwner.calls or 0) + 1
+        if not rigOwner.failed then
+          return nil
+        end
+        return nil, "synthetic evolution leaf failed"
+      end,
+    })
+    local committed = driveToCommitted(rig, 1500)
+    local receipt = assert(committed.outcomeReceipt, "the failing completion carries its commit receipt")
+    local stallOk, stallErr = pcall(function()
+      local offered = false
+      for _ = 1, 1200 do
+        rig.pump(1)
+        ackNarration(rig)
+        Assert.isNil(rig.screen._completionChild, "the failing leaf opens no child while pending")
+        local completion = rig.screen:status().completion
+        if type(completion) == "table" and completion.kind == "evolution" then
+          offered = true
+          break
+        end
+        if rig.battle:status().phase == "complete" then
+          error("the battle returned to the field without offering its evolution", 0)
+        end
+      end
+      Assert.isTrue(offered, "the doomed win still offers its evolution decision")
+    end)
+    if not stallOk then
+      rig.battle:dispose()
+      rig.screen:dispose()
+      error("the failing evolution still waits first: " .. tostring(stallErr), 0)
+    end
+    rigOwner.failed = true
+    local faulted = false
+    for _ = 1, 600 do
+      rig.pump(1)
+      ackNarration(rig)
+      if rig.screen:status().mode == "failed" then
+        faulted = true
+        break
+      end
+    end
+    local statusOk, statusErr = pcall(function()
+      Assert.isTrue(faulted, "the failed leaf faults the screen")
+      local status = rig.screen:status()
+      Assert.isTrue(
+        tostring(status.error):find("synthetic evolution leaf failed", 1, true) ~= nil,
+        "the failure names its leaf cause"
+      )
+      Assert.isNil(rig.screen._completionChild, "the failed leaf opens no child")
+      Assert.isTrue(rig.battle:status().outcomeReceipt.committed, "the committed result survives the failed leaf")
+    end)
+    rig.battle:dispose()
+    rig.screen:dispose()
+    if not statusOk then
+      error(statusErr, 0)
+    end
+    Assert.isTrue(receipt.committed, "the doomed receipt stays committed")
   end
 end
 
