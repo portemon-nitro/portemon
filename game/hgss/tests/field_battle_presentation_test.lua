@@ -317,7 +317,7 @@ local function readySelectedLeaves(derived)
   return derived
 end
 
-local function bindEnvelope(runtime, versionId, measurement, graphics, transition)
+local function bindEnvelope(runtime, versionId, measurement, graphics, transition, observeHost)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local transitionAssets = transition ~= nil and transition.derivedAssets or nil
   local envelope = FieldBattlePresentation.new({
@@ -339,6 +339,14 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
   local factory = envelope:factory()
   local function admit(descriptor)
     doubles.descriptors[#doubles.descriptors + 1] = descriptor
+    if type(observeHost) == "function" and type(descriptor.host) == "table" then
+      local host = descriptor.host
+      local notify = assert(host.notify, "the field presentation host accepts failure notifications")
+      host.notify = function(event, reason)
+        observeHost(event, reason)
+        return notify(event, reason)
+      end
+    end
     local port = factory(descriptor)
     ports[#ports + 1] = port
     return port
@@ -2031,8 +2039,7 @@ function T.faded_intro_uploads_once_and_releases_exactly_once()
     function image:release()
       self.released = true
     end
-    function image:setFilter(_,_)
-    end
+    function image:setFilter(_, _) end
     uploads[#uploads + 1] = image
     return image
   end
@@ -2154,7 +2161,8 @@ function T.palette_images_reuse_replace_and_release_exactly_once()
   Assert.isTrue(services.paletteImage("battle-palette:probe:1", raster) == first, "matching bytes reuse the image")
   Assert.equal(#uploads, 1, "matching bytes do not upload twice")
   local changed = { width = 2, height = 2, pixels = string.rep("\2", 2 * 2 * 4) }
-  local second = assert(services.paletteImage("battle-palette:probe:1", changed), "changed palette bytes replace the image")
+  local second =
+    assert(services.paletteImage("battle-palette:probe:1", changed), "changed palette bytes replace the image")
   Assert.equal(#uploads, 2, "changed bytes upload once")
   Assert.isTrue(first.released, "replacement releases the old image")
   Assert.isFalse(second.released, "the replacement stays live")
@@ -3985,7 +3993,7 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       port.dispose()
       Assert.equal(disposals, 1, "a second disposal releases nothing further")
       Assert.equal(#host.notifies, 0, "a clean disposal reports no failure")
-      for _ = 1, 30 do
+      for _ = 1, 900 do
         envelope:updateFixed(TICK)
       end
       Assert.isNil(envelope:liveScreen(), "later polls build no screen for the disposed launch")
@@ -4738,6 +4746,100 @@ function T.trainer_cut_in_receives_the_native_battle_introduction()
     envelope:dispose()
   end
 end
+
+-- A configured image upload fault during the live native introduction
+-- reaches the real field host once with its launch, scene and cause.
+function T.native_palette_upload_failure_notifies_the_field_host_once()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local graphics = uploadCapableGraphics()
+    local failUpload = false
+    local upload = graphics.newImage
+    function graphics.newImage(imageData)
+      if failUpload then
+        error("GPU upload rejected", 0)
+      end
+      return upload(imageData)
+    end
+    local reports = {}
+    local envelope, binding = bindEnvelope(
+      runtime,
+      versionId,
+      dualMeasurement("native-palette-upload-failure:dual"),
+      graphics,
+      nil,
+      function(event, reason)
+        if event == "screen-failed" then
+          reports[#reports + 1] = reason
+        end
+      end
+    )
+    local ok, failure = xpcall(function()
+      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      local screen = assert(envelope:liveScreen(), "the wild launch owns its live presentation")
+      local sceneKey = screen._sceneKey
+      local visiblePaletteReady = false
+      for _ = 1, 900 do
+        pump(runtime, envelope, 1)
+        local live = envelope:liveScreen()
+        if live == nil then
+          break
+        end
+        screen = live
+        local opening = live:view().openingPresentation
+        if type(opening) == "table" and opening.encounterFrame == 10 then
+          visiblePaletteReady = true
+          break
+        end
+      end
+      Assert.isTrue(visiblePaletteReady, "unchanged native palette frames publish before the changed frame")
+
+      failUpload = true
+      local failureObserved = false
+      for _ = 1, 30 do
+        local updated, updateFailure = pcall(function()
+          pump(runtime, envelope, 1)
+        end)
+        if #reports > 0 then
+          failureObserved = true
+          break
+        end
+        Assert.isTrue(updated, "the image fault is reported through the field host: " .. tostring(updateFailure))
+      end
+      Assert.isTrue(failureObserved, "a configured native palette upload failure reaches the host")
+      Assert.equal(screen:status().mode, "failed", "the live screen enters terminal failure")
+      Assert.equal(#reports, 1, "the host receives one screen-failed notification")
+      local reason = tostring(reports[1])
+      for _, identity in ipairs({ launchId, sceneKey, "GPU upload rejected" }) do
+        Assert.isTrue(reason:find(identity, 1, true) ~= nil, "the host reason names " .. identity .. ": " .. reason)
+      end
+      Assert.isTrue(
+        reason:find("palette", 1, true) ~= nil or reason:find("faded intro", 1, true) ~= nil,
+        "the host reason names the failed native image: " .. reason
+      )
+      for _ = 1, 5 do
+        pcall(function()
+          envelope:updateFixed(TICK)
+        end)
+      end
+      Assert.equal(#reports, 1, "later host ticks do not report the same failure again")
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    pcall(function()
+      envelope:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+  end
+end
+
 return {
   tests = T,
   metadata = {

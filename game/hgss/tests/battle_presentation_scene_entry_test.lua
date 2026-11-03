@@ -18,6 +18,7 @@ local EncounterParticlesFixture = require("tests.support.BattleEncounterParticle
 local StubLease = require("tests.support.StubLease")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local Rgb555 = require("libs.codec.src.Rgb555")
 local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
 
 local T = {}
@@ -418,15 +419,17 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
   end
   local mainBgSource = sourcePalette(256)
   mainBgSource[121] = 0x001F
-  local objBank = sourcePalette(16)
+  local objectBank = sourcePalette(16)
   local layer = {
     sceneKey = ENCOUNTER_SCENE_KEY,
     mainObjBallSources = {},
+    mainObjBallPaletteSources = {},
+    mainObjTrainerPaletteSources = {},
     mainObjPostFill = {},
     paletteSource = {
       mainBg = mainBgSource,
       mainObjSources = {
-        hud = { firstSlot = 0, words = objBank },
+        hud = { firstSlot = 0, words = objectBank },
         hudAuxiliary = { firstSlot = 16, words = sourcePalette(16) },
         terrain = { firstSlot = 32, words = sourcePalette(16) },
       },
@@ -437,6 +440,7 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
         subObj = sourcePalette(256),
       },
     },
+    nativePaletteLayout = { trainers = {}, balls = {} },
     characters = string.rep("\0", 64),
     baseCharacters = string.char(0x78) .. string.rep("\0", 63),
     colorMode = "8bpp",
@@ -504,7 +508,7 @@ local function openEncounterRig(opts)
   local released = {}
   local fadedRasters = {}
   local paletteRasters = {}
-  local assets = {}
+  local assets = { headless = opts.headless == true }
   function assets.prepare(_)
     return true
   end
@@ -513,6 +517,9 @@ local function openEncounterRig(opts)
   end
   function assets.fadedIntro(raster)
     fadedRasters[#fadedRasters + 1] = raster
+    if opts.fadedIntroFailure ~= nil then
+      return nil, opts.fadedIntroFailure
+    end
     return { handle = "faded-intro-image" }
   end
   function assets.paletteImage(key, raster)
@@ -590,6 +597,12 @@ local function openEncounterRig(opts)
     paletteRasters = paletteRasters,
     released = released,
   }
+  local enter = port.enter
+  function port.enter(plan)
+    plan = plan or {}
+    plan.encounterPaletteRestoreType = plan.encounterPaletteRestoreType or "wild"
+    return enter(plan)
+  end
   function rig.pump(count, allowFailure)
     for _ = 1, count do
       screen:updateFixed(ENCOUNTER_TICK)
@@ -799,7 +812,10 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
   local ok, err = pcall(function()
     rig.stage(stagedEncounterLayer(60, 43))
     rig.pump(5)
-    Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
+    Assert.isTrue(
+      rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+      "entry admits the staged scene"
+    )
     presentOpening(rig)
     rig.pump(1)
 
@@ -820,24 +836,20 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
     local ballTexture = StubLease.new("ball-live-particle")
     ballTexture.width = 8
     ballTexture.height = 8
-    rig.screen._ballParticles:step(
-      { { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } },
-      {},
-      {
-        particles = function()
-          return {
-            seal = {
-              seed = ballParticles.seed,
-              emitters = ballParticles.emitters,
-              textures = ballParticles.textures,
-            },
-          }
-        end,
-        texture = function()
-          return ballTexture
-        end,
-      }
-    )
+    rig.screen._ballParticles:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, {
+      particles = function()
+        return {
+          seal = {
+            seed = ballParticles.seed,
+            emitters = ballParticles.emitters,
+            textures = ballParticles.textures,
+          },
+        }
+      end,
+      texture = function()
+        return ballTexture
+      end,
+    })
 
     -- The first encounter particle starts fully transparent; advance once
     -- so the production draw boundary receives visible particles.
@@ -868,8 +880,16 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
       Assert.isTrue(#drawsOf(compact.draws, handle) >= 1, "compact draws " .. handle)
     end
     local after = rig.screen:view()
-    Assert.equal(after.openingPresentation.encounterFrame, before.openingPresentation.encounterFrame, "draws do not advance the encounter timeline")
-    Assert.equal(#after.encounterParticleSystems, #before.encounterParticleSystems, "draws do not step encounter emitters")
+    Assert.equal(
+      after.openingPresentation.encounterFrame,
+      before.openingPresentation.encounterFrame,
+      "draws do not advance the encounter timeline"
+    )
+    Assert.equal(
+      #after.encounterParticleSystems,
+      #before.encounterParticleSystems,
+      "draws do not step encounter emitters"
+    )
     Assert.equal(#after.moveParticleSystems, #before.moveParticleSystems, "draws do not step move emitters")
     Assert.equal(#after.ballParticleSystems, #before.ballParticleSystems, "draws do not step ball emitters")
     rig.screen._scene:releaseParticleSystem(moveSystemId)
@@ -974,7 +994,11 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     })
     local nativeParticleDraw = drawsOf(nativeParticleGraphics.draws, sourceParticleImage.handle)[1]
     Assert.isTrue(nativeParticleDraw ~= nil, "the source simulation draws its own native particle tint")
-    Assert.deepEqual(particleDraw.color, nativeParticleDraw.color, "native 2D sampling leaves the source particle tint unchanged")
+    Assert.deepEqual(
+      particleDraw.color,
+      nativeParticleDraw.color,
+      "native 2D sampling leaves the source particle tint unchanged"
+    )
 
     rig.compact()
     local compact = FakeGraphics.new({})
@@ -997,10 +1021,7 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     while rig.screen:view().openingPresentation.encounterFrame ~= nil do
       rig.pump(1)
       local frame = rig.screen:view().openingPresentation.encounterFrame
-      Assert.isTrue(
-        frame == nil or frame < 120,
-        "the encounter task retires within its bounded source lifecycle"
-      )
+      Assert.isTrue(frame == nil or frame < 120, "the encounter task retires within its bounded source lifecycle")
     end
     Assert.equal(rig.released[image.handle], 1, "encounter retirement releases the terrain replacement exactly once")
     local settled = FakeGraphics.new({})
@@ -1009,7 +1030,11 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
       #drawsOf(settled.draws, sourceTerrainImage.handle) >= 1,
       "post-encounter drawing restores the original terrain lease"
     )
-    Assert.equal(#drawsOf(settled.draws, image.handle), 0, "post-encounter drawing no longer samples the released image")
+    Assert.equal(
+      #drawsOf(settled.draws, image.handle),
+      0,
+      "post-encounter drawing no longer samples the released image"
+    )
     rig.screen:dispose()
     Assert.equal(rig.released[image.handle], 1, "screen disposal does not release the retired replacement twice")
   end)
@@ -1140,7 +1165,10 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   )
   rig.stage(stagedEncounterLayer(60, 43, nil))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
   presentOpening(rig)
   rig.pump(1)
   local first = rig.screen:view()
@@ -1241,11 +1269,15 @@ function T.encounter_palette_staging_uses_independent_native_plane_sources()
   layer.mainObjTrainerPaletteSources = {}
   rig.stage(layer)
   rig.pump(1)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "the sourced scene admits")
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "the sourced scene admits"
+  )
   presentOpening(rig)
   rig.pump(1)
 
-  local palette = assert(rig.screen:view().openingPresentation.encounterPalette, "the first tick publishes native palette state")
+  local palette =
+    assert(rig.screen:view().openingPresentation.encounterPalette, "the first tick publishes native palette state")
   Assert.equal(#palette.mainBg, 256, "main BG keeps its native palette size")
   Assert.equal(palette.mainObj[224], 0x03E0, "the late static MAIN_OBJ word remains source-defined")
   Assert.equal(#palette.subBg, 256, "sub BG keeps its native palette size")
@@ -1257,6 +1289,29 @@ function T.encounter_palette_staging_uses_independent_native_plane_sources()
   )
 end
 
+-- A data-only host keeps the original art when native palette image output is absent.
+function T.headless_encounter_keeps_static_art_and_publishes_readiness()
+  local rig = openEncounterRig({ headless = true })
+  rig.stage(stagedEncounterLayer(40, 36))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "headless entry admits the staged scene"
+  )
+  presentOpening(rig)
+  rig.pump(8)
+  Assert.isTrue(rig.screen:firstNativeBattleFrameReady(), "headless composition can release its static first frame")
+  Assert.equal(#rig.fadedRasters, 0, "headless composition never attempts BG3 image uploads")
+  Assert.equal(next(rig.paletteRasters), nil, "headless composition never attempts native plane image uploads")
+  local draw = FakeGraphics.new({})
+  rig.screen:draw({ graphics = draw })
+  Assert.isTrue(
+    #drawsOf(draw.draws, "scene-intro:" .. ENCOUNTER_SCENE_KEY) > 0,
+    "headless rendering keeps the original intro drawable"
+  )
+  rig.screen:dispose()
+end
+
 -- The wild encounter fade draws the faded intro upload while the task
 -- runs and falls back to the static lease once it ends: uploads carry
 -- the published frame's faded palette, the lease stays undrawn under
@@ -1265,15 +1320,15 @@ function T.wild_encounter_fade_draws_the_faded_intro_while_active()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(40, 36))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
   presentOpening(rig)
   rig.pump(13)
   local mid = FakeGraphics.new({})
   rig.screen:draw({ graphics = mid })
-  Assert.isTrue(
-    #drawsOf(mid.draws, "faded-intro-image") >= 1,
-    "the running fade draws its faded intro upload"
-  )
+  Assert.isTrue(#drawsOf(mid.draws, "faded-intro-image") >= 1, "the running fade draws its faded intro upload")
   Assert.equal(
     #drawsOf(mid.draws, "scene-intro:" .. ENCOUNTER_SCENE_KEY),
     0,
@@ -1316,16 +1371,119 @@ function T.wild_encounter_fade_draws_the_faded_intro_while_active()
     #drawsOf(settled.draws, "scene-intro:" .. ENCOUNTER_SCENE_KEY) >= 1,
     "the ended task draws the static intro lease again"
   )
+  Assert.equal(#drawsOf(settled.draws, "faded-intro-image"), 0, "the ended task draws no faded intro upload")
+  Assert.equal(rig.released["battle-faded-intro"], 1, "the ended task returns its faded intro upload exactly once")
+end
+
+-- The published source frame and its uploaded intro pixels describe one
+-- native tick. The old pre-tick upload leaves frame 11's image at frame 10.
+function T.encounter_intro_pixels_match_the_published_source_frame()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+
+  for _ = 1, 11 do
+    rig.pump(1)
+  end
+  local view = rig.screen:view()
+  Assert.equal(view.openingPresentation.encounterFrame, 11, "the source tick publishes frame 11")
+  local word = assert(view.openingPresentation.encounterPalette.mainBg[121], "the visible source color is staged")
+  local expected = Rgb555.decode(word)
+  local raster = assert(rig.fadedRasters[#rig.fadedRasters], "frame 11 publishes its intro raster")
+  Assert.deepEqual(
+    { raster:pixel(0, 0) },
+    { expected.r, expected.g, expected.b, 255 },
+    "the uploaded pixel uses frame 11's displayed source palette word"
+  )
+  local graphics = FakeGraphics.new({})
+  rig.screen:draw({ graphics = graphics })
+  Assert.isTrue(#drawsOf(graphics.draws, "faded-intro-image") >= 1, "the matching raster is the visible intro")
+  rig.screen:dispose()
+end
+
+-- Unchanged visible colors reuse the current texture through source phases,
+-- and repeated draws never trigger another upload.
+function T.encounter_intro_uploads_follow_visible_palette_changes()
+  local rig = openEncounterRig()
+  local function paletteUploadCount()
+    local count = 0
+    for _, rasters in pairs(rig.paletteRasters) do
+      count = count + #rasters
+    end
+    return count
+  end
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+
+  for frame = 1, 10 do
+    rig.pump(1)
+    Assert.equal(rig.screen:view().openingPresentation.encounterFrame, frame, "the published frame advances")
+    if frame == 1 then
+      rig.initialUploadCount = #rig.fadedRasters
+      rig.initialPaletteUploadCount = paletteUploadCount()
+    end
+  end
+  Assert.equal(#rig.fadedRasters, rig.initialUploadCount, "frames 1 through 10 reuse the same visible colors")
+  local beforeDraw = #rig.fadedRasters
+  local paletteUploadsBeforeDraw = paletteUploadCount()
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  Assert.equal(#rig.fadedRasters, beforeDraw, "drawing performs no palette image upload")
+  Assert.equal(paletteUploadCount(), paletteUploadsBeforeDraw, "drawing performs no indexed plane upload")
+
+  rig.pump(1)
+  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 11, "frame 11 publishes the changed palette")
+  Assert.isTrue(#rig.fadedRasters > beforeDraw, "a visible palette change uploads a replacement")
+  Assert.isTrue(paletteUploadCount() > paletteUploadsBeforeDraw, "frame 11 uploads changed indexed plane pixels")
+  rig.pump(25)
+  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 36, "the main fade settles on frame 36")
+  local settledUploadCount = #rig.fadedRasters
+  local settledPaletteUploadCount = paletteUploadCount()
+  rig.pump(22)
+  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 58, "the late task reaches frame 58")
   Assert.equal(
-    #drawsOf(settled.draws, "faded-intro-image"),
-    0,
-    "the ended task draws no faded intro upload"
+    #rig.fadedRasters,
+    settledUploadCount,
+    "late palette changes outside the visible source indices do not replace the raster"
   )
   Assert.equal(
-    rig.released["battle-faded-intro"],
-    1,
-    "the ended task returns its faded intro upload exactly once"
+    paletteUploadCount(),
+    settledPaletteUploadCount,
+    "late palette changes outside visible source indices do not replace indexed plane images"
   )
+  local rastersBySource = {}
+  for key, rasters in pairs(rig.paletteRasters) do
+    local sourceKey = key:gsub(":generation:%d+$", "")
+    local published = rastersBySource[sourceKey] or {}
+    local generation = tonumber(key:match(":generation:(%d+)$"))
+    for _, raster in ipairs(rasters) do
+      published[#published + 1] = { generation = generation, raster = raster }
+    end
+    rastersBySource[sourceKey] = published
+  end
+  for sourceKey, uploads in pairs(rastersBySource) do
+    table.sort(uploads, function(left, right)
+      return left.generation < right.generation
+    end)
+    for index = 2, #uploads do
+      local previous = uploads[index - 1].raster
+      local current = uploads[index].raster
+      Assert.isFalse(
+        current.width == previous.width and current.height == previous.height and current.pixels == previous.pixels,
+        "a source drawable never uploads a duplicate current raster: " .. sourceKey
+      )
+    end
+  end
+  Assert.equal(
+    paletteUploadCount(),
+    settledPaletteUploadCount,
+    "late palette changes outside visible source indices do not replace indexed plane images"
+  )
+  rig.screen:dispose()
 end
 
 -- Indexed source maps are sampled only when their source map or displayed
@@ -1336,6 +1494,7 @@ function T.indexed_palette_maps_are_not_resampled_for_unchanged_frames()
   local layer = stagedEncounterLayer(60, 43)
   local targetPixels = layer.terrainSprites.player.sourceIndices.pixels
   local sampleCount = 0
+  local introRasterCount = 0
   BattleEncounterIndexedRaster.render = function(pixels, ...)
     if pixels == targetPixels then
       sampleCount = sampleCount + 1
@@ -1343,6 +1502,11 @@ function T.indexed_palette_maps_are_not_resampled_for_unchanged_frames()
     return originalRender(pixels, ...)
   end
   local rig = openEncounterRig()
+  local originalIntroRaster = rig.screen._scene.introRaster
+  rig.screen._scene.introRaster = function(scene, ...)
+    introRasterCount = introRasterCount + 1
+    return originalIntroRaster(scene, ...)
+  end
   rig.stage(layer)
   rig.pump(5)
   Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
@@ -1350,12 +1514,16 @@ function T.indexed_palette_maps_are_not_resampled_for_unchanged_frames()
 
   rig.pump(1)
   local firstFrameSamples = sampleCount
+  local firstFrameIntroRasters = introRasterCount
   rig.pump(9)
   local unchangedFrameSamples = sampleCount
+  local unchangedFrameIntroRasters = introRasterCount
   rig.pump(1)
   local changedFrameSamples = sampleCount
+  local changedFrameIntroRasters = introRasterCount
   rig.screen:dispose()
   BattleEncounterIndexedRaster.render = originalRender
+  rig.screen._scene.introRaster = originalIntroRaster
 
   Assert.isTrue(firstFrameSamples > 0, "the first source frame samples its indexed drawables")
   Assert.equal(
@@ -1364,8 +1532,36 @@ function T.indexed_palette_maps_are_not_resampled_for_unchanged_frames()
     "frames with the same displayed palette reuse sampled rasters"
   )
   Assert.isTrue(changedFrameSamples > unchangedFrameSamples, "a changed palette resamples its indexed drawables")
+  Assert.isTrue(firstFrameIntroRasters > 0, "the first source frame builds its intro raster")
+  Assert.equal(
+    unchangedFrameIntroRasters,
+    firstFrameIntroRasters,
+    "frames with the same main BG colors reuse the intro raster"
+  )
+  Assert.isTrue(changedFrameIntroRasters > unchangedFrameIntroRasters, "changed main BG colors rebuild the intro raster")
 end
 
+
+-- A configured image service failure is terminal and retains its cause.
+-- It must not silently fall back to the original static intro.
+function T.configured_intro_upload_failure_fails_the_battle_screen()
+  local rig = openEncounterRig({ fadedIntroFailure = "GPU upload rejected" })
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+
+  local status = rig.pump(1, true)
+  Assert.equal(status.mode, "failed", "a configured upload failure terminates the screen")
+  for _, identity in ipairs({ rig.launchId, ENCOUNTER_SCENE_KEY, "faded intro", "GPU upload rejected" }) do
+    Assert.isTrue(
+      type(status.error) == "string" and status.error:find(identity, 1, true) ~= nil,
+      "the terminal error names " .. identity .. ": " .. tostring(status.error)
+    )
+  end
+  Assert.isNil(rig.screen._fadedIntroImage, "the failed frame publishes no prior intro image")
+  rig.screen:dispose()
+end
 
 -- A second member whose textures never stage fails the launch at its
 -- exact start tick instead of starting late or running silent.
@@ -1373,7 +1569,10 @@ function T.missing_second_member_fails_the_launch_at_its_start_tick()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, 2))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
   presentOpening(rig)
   local status = rig.pump(20, true)
   Assert.equal(status.mode, "failed", "a missing second member fails the launch at frame 20")
@@ -1393,7 +1592,10 @@ function T.missing_first_member_fails_before_the_first_source_tick()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, 1))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
   presentOpening(rig)
   local status = rig.pump(2, true)
   Assert.equal(status.mode, "failed", "a missing first member fails before the first source tick")
@@ -1415,7 +1617,10 @@ function T.grass_day_handoff_matches_the_native_task_schedule()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, nil))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
   presentOpening(rig)
   local trace = Trace.new(ENCOUNTER_SCENE_KEY)
   local observed = {}

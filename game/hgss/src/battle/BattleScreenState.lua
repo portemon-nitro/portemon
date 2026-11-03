@@ -131,8 +131,13 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
 ---@field _fadedIntroImage table<string, unknown>? live faded intro upload while the encounter fade runs
 ---@field _fadedIntroFrame integer? encounter frame behind the live faded upload
----@field _paletteRasterCache table<string, { sourceMap: table<string, unknown>, paletteWords: table<integer, integer>, raster: table<string, unknown> }> current sampled indexed rasters
+---@field _fadedIntroWidth integer? width of the published faded intro raster
+---@field _fadedIntroHeight integer? height of the published faded intro raster
+---@field _fadedIntroPixels string? pixels of the published faded intro raster
+---@field _fadedIntroPaletteWords integer[]? main BG words sampled by the published intro raster
 ---@field _fadedIntroUnavailable boolean true once faded uploads prove unavailable this launch
+---@field _paletteDrawableFrame integer? encounter frame behind the published indexed palette images
+---@field _paletteRasterCache table<string, { sourceMap: table<string, unknown>, paletteWords: table<integer, integer>, raster: table<string, unknown> }> current sampled indexed rasters
 ---@field _outcomeDone boolean terminal narration and timed holds have settled
 ---@field _lastPlayerName string? source player trainer name retained from detached views
 ---@field _error string? failure context
@@ -1086,8 +1091,13 @@ function BattleScreenState.new(opts)
     _nativePaletteLayoutReady = false,
     _fadedIntroImage = nil,
     _fadedIntroFrame = nil,
-    _paletteRasterCache = {},
+    _fadedIntroWidth = nil,
+    _fadedIntroHeight = nil,
+    _fadedIntroPixels = nil,
+    _fadedIntroPaletteWords = nil,
     _fadedIntroUnavailable = false,
+    _paletteDrawableFrame = nil,
+    _paletteRasterCache = {},
     _launchId = opts.launchId,
     _manifest = manifest,
     _model = opts.model,
@@ -6240,29 +6250,24 @@ local function encounterSourceOf(layer, fadeBlack, restoreType)
   }
 end
 
--- The last encounter frame whose faded intro still changes: the main
--- restore settles at 36 and the late bank operation (armed at 50) settles
--- eight ticks later at two blend units per tick, so later frames reuse
--- their upload. Frames 37-49 hold still between the two operations.
-local FADED_INTRO_FIRST_STATIC_FRAME = 37
-local FADED_INTRO_LATE_ARM_FRAME = 50
-local FADED_INTRO_LAST_FRAME = 58
-
 -- Returns the held faded intro upload without a later disposal
 -- double-release: draws fall back to the static intro lease afterwards.
 function BattleScreenState:_releaseFadedIntro()
   if self._fadedIntroImage ~= nil then
     self._assets:releaseFadedIntro()
     self._fadedIntroImage = nil
-    self._fadedIntroFrame = nil
   end
+  self._fadedIntroFrame = nil
+  self._fadedIntroWidth = nil
+  self._fadedIntroHeight = nil
+  self._fadedIntroPixels = nil
+  self._fadedIntroPaletteWords = nil
 end
 
 -- Renders one encounter frame of the unbaked intro plane through the
--- published main-background palette and uploads it, holding the image
--- for draws. Any failure (or a host without the adapter) retires the
--- faded path for the launch: draws keep the static intro lease instead
--- of retrying a doomed upload every tick.
+-- published main-background palette and uploads changed pixels, holding
+-- the image for draws. A missing adapter is explicit headless mode; a
+-- configured upload failure fails the battle screen.
 ---@param snapshot table<string, unknown> staged per-plane palette state under drawing
 ---@param frame integer encounter frame under drawing
 function BattleScreenState:_renderFadedIntro(snapshot, frame)
@@ -6272,14 +6277,35 @@ function BattleScreenState:_renderFadedIntro(snapshot, frame)
     colors[index] = Rgb555.decode(mainBg[index])
   end
   local raster = self._scene:introRaster(colors)
-  local image = self._assets:fadedIntro(raster)
+  if
+    self._fadedIntroImage ~= nil
+    and self._fadedIntroWidth == raster.width
+    and self._fadedIntroHeight == raster.height
+    and self._fadedIntroPixels == raster.pixels
+  then
+    self._fadedIntroFrame = frame
+    return
+  end
+  local image, failure = self._assets:fadedIntro(raster)
   if image == nil then
+    if failure ~= nil then
+      self._mode = "failed"
+      self._error = "battle scene " .. self._sceneKey .. " failed: " .. failure
+      return
+    end
     self._fadedIntroUnavailable = true
     self:_releaseFadedIntro()
     return
   end
   self._fadedIntroImage = image
   self._fadedIntroFrame = frame
+  self._fadedIntroWidth = raster.width
+  self._fadedIntroHeight = raster.height
+  self._fadedIntroPixels = raster.pixels
+  self._fadedIntroPaletteWords = {}
+  for index = 1, 256 do
+    self._fadedIntroPaletteWords[index] = mainBg[index]
+  end
 end
 
 -- Tracks the published encounter fade with exactly one intro upload per
@@ -6289,6 +6315,11 @@ end
 -- of the cue player, so the resolved plan and its intro image name the
 -- same published frame. Never from draws.
 function BattleScreenState:_updateFadedIntro()
+  if self._assets:isHeadless() then
+    self._fadedIntroUnavailable = true
+    self:_releaseFadedIntro()
+    return
+  end
   if self._timeline == nil then
     self:_releaseFadedIntro()
     return
@@ -6303,16 +6334,17 @@ function BattleScreenState:_updateFadedIntro()
   if self._fadedIntroUnavailable or self._mode == "failed" then
     return
   end
-  if self._fadedIntroImage ~= nil then
-    if frame == self._fadedIntroFrame then
-      return
+  if self._fadedIntroImage ~= nil and self._fadedIntroPaletteWords ~= nil then
+    local mainBg = assert(snapshot.mainBg, "encounter snapshots carry the main background plane")
+    local unchanged = true
+    for index = 1, 256 do
+      if self._fadedIntroPaletteWords[index] ~= mainBg[index] then
+        unchanged = false
+        break
+      end
     end
-    -- Past the late fade, and across the still frames between the main
-    -- restore and the late arming, the settled upload stays current.
-    if frame > FADED_INTRO_LAST_FRAME then
-      return
-    end
-    if frame >= FADED_INTRO_FIRST_STATIC_FRAME and frame < FADED_INTRO_LATE_ARM_FRAME then
+    if unchanged then
+      self._fadedIntroFrame = frame
       return
     end
   end
@@ -6393,6 +6425,18 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
   local opening = self._timeline ~= nil and self._timeline:openingPresentation() or nil
   local palette = type(opening) == "table" and opening.encounterPalette or nil
   local layer = self._assets:sceneLayer()
+  if self._assets:isHeadless() then
+    local cleared, failure = self._assets:updatePaletteDrawables({})
+    if not cleared then
+      self._mode = "failed"
+      self._error = failure
+      self._paletteDrawableFrame = nil
+    else
+      self._paletteDrawableFrame = type(palette) == "table" and type(opening) == "table" and opening.encounterFrame
+        or nil
+    end
+    return
+  end
   if type(palette) ~= "table" or type(layer) ~= "table" or self._mode == "failed" then
     if type(opening) == "table" then
       for _, slide in ipairs(opening.trainerSlides or {}) do
@@ -6407,6 +6451,7 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
       self._mode = "failed"
       self._error = failure
     end
+    self._paletteDrawableFrame = nil
     return
   end
   local requests = {} ---@type table<string, { uploadKey: string, raster: table<string, unknown> }>
@@ -6568,6 +6613,7 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
   if not published then
     self._mode = "failed"
     self._error = failure
+    self._paletteDrawableFrame = nil
     return
   end
   for sourceKey in pairs(self._paletteRasterCache) do
@@ -6575,6 +6621,10 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
       self._paletteRasterCache[sourceKey] = nil
     end
   end
+  assert(type(opening) == "table", "palette images publish within an active encounter opening")
+  local frame = opening.encounterFrame
+  assert(type(frame) == "number", "palette images publish against their encounter frame")
+  self._paletteDrawableFrame = frame
 end
 
 -- Captures the launch's accepted MAIN_OBJ resource order once at scene handoff.
@@ -6816,6 +6866,12 @@ function BattleScreenState:firstNativeBattleFrameReady()
   end
   local opening = self._timeline:openingPresentation()
   if type(opening) ~= "table" or opening.encounterFrame == nil then
+    return false
+  end
+  if self._paletteDrawableFrame ~= opening.encounterFrame then
+    return false
+  end
+  if self._fadedIntroFrame ~= opening.encounterFrame and not self._fadedIntroUnavailable then
     return false
   end
   return true

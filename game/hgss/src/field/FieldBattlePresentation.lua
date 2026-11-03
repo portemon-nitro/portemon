@@ -2163,7 +2163,7 @@ function FieldBattlePresentation:_preparationServices()
   local fadedIntroImage = nil
   local palettePixels = {} ---@type table<string, { width: integer, height: integer, pixels: string }>
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
-  local services = {}
+  local services = { headless = graphics == nil }
   -- Whether every encounter particle texture of the staged scene still
   -- answers through its live warm pin, matching the staged drawables.
   ---@param layer table<string, unknown>?

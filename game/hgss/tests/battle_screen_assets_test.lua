@@ -85,11 +85,7 @@ function T.faded_intro_uploads_through_services_and_releases_exactly_once()
   battle:releaseFadedIntro()
   Assert.equal(assets.released["battle-faded-intro"], 1, "releasing twice never double-returns")
   battle:dispose()
-  Assert.equal(
-    assets.released["battle-faded-intro"],
-    1,
-    "disposal never re-releases a returned upload"
-  )
+  Assert.equal(assets.released["battle-faded-intro"], 1, "disposal never re-releases a returned upload")
 end
 
 -- Palette generations publish together: a failed replacement leaves the
@@ -98,8 +94,15 @@ function T.palette_drawable_generations_publish_transactionally()
   local assets = stubAssets({})
   local uploads = {}
   local failKey = nil
+  local function uploadCount()
+    local count = 0
+    for _ in pairs(uploads) do
+      count = count + 1
+    end
+    return count
+  end
   local function paletteImage(key, raster)
-    if key == failKey then
+    if failKey ~= nil and key:find(failKey, 1, true) ~= nil then
       return nil, "probe upload failure"
     end
     local image = { handle = key, raster = raster }
@@ -118,42 +121,59 @@ function T.palette_drawable_generations_publish_transactionally()
     height = 1,
     pixels = "second",
   }
+  local firstKey = nil
   Assert.isTrue(
     battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:1", raster = first } }),
     "the initial palette generation publishes"
   )
-  Assert.equal(battle:drawable("terrain"), uploads["battle-palette:scene:1"], "the source key resolves its sampled image")
+  for key in pairs(uploads) do
+    firstKey = key
+  end
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "the source key resolves its sampled image")
+  local initialUploadCount = uploadCount()
+  local duplicate = { width = first.width, height = first.height, pixels = first.pixels }
+  Assert.isTrue(
+    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:2", raster = duplicate } }),
+    "equal source pixels reuse their published upload"
+  )
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "equal pixels retain the existing image")
+  Assert.equal(uploadCount(), initialUploadCount, "equal pixels acquire no replacement")
   failKey = "battle-palette:scene:2"
   local published, failure = battle:updatePaletteDrawables({
     terrain = { uploadKey = "battle-palette:scene:2", raster = second },
     hud = { uploadKey = "battle-palette:hud:2", raster = second },
   })
   Assert.isFalse(published, "one failed upload rejects the replacement generation")
-  Assert.isTrue(type(failure) == "string" and failure:find("probe upload failure", 1, true) ~= nil, "the failure keeps its upload cause")
-  Assert.equal(battle:drawable("terrain"), uploads["battle-palette:scene:1"], "failed replacement keeps the prior drawable")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe upload failure", 1, true) ~= nil,
+    "the failure keeps its upload cause"
+  )
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "failed replacement keeps the prior drawable")
   for key in pairs(uploads) do
-    if key ~= "battle-palette:scene:1" then
+    if key ~= firstKey then
       Assert.equal(assets.released[key], 1, "staged replacement image rolls back: " .. key)
     end
   end
-  Assert.isNil(assets.released["battle-palette:scene:1"], "failed staging never releases the current image")
-
+  Assert.isNil(assets.released[firstKey], "failed staging never releases the current image")
+  Assert.equal(battle:state(), "failed", "a configured palette upload failure latches the holder")
   assets.paletteImage = nil
-  Assert.isTrue(battle:updatePaletteDrawables({}), "an empty generation clears without an upload service")
-  Assert.equal(assets.released["battle-palette:scene:1"], 1, "empty clearing returns the active image")
-  Assert.isFalse(battle:drawable("terrain") == uploads["battle-palette:scene:1"], "clearing withdraws the old image")
-
-  assets.paletteImage = paletteImage
-  Assert.isTrue(
-    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:3", raster = second } }),
-    "the next complete palette generation publishes"
-  )
-  Assert.equal(assets.released["battle-palette:scene:1"], 1, "published replacement releases its predecessor")
-  Assert.equal(battle:drawable("terrain"), uploads["battle-palette:scene:3"], "the new source key resolves the replacement")
+  Assert.isTrue(battle:updatePaletteDrawables({}), "an empty batch clears without an upload service")
+  Assert.equal(assets.released[firstKey], 1, "empty clearing releases the retained image after failure")
+  Assert.isFalse(battle:drawable("terrain") == uploads[firstKey], "empty clearing withdraws the retained image")
   battle:dispose()
-  Assert.equal(assets.released["battle-palette:scene:3"], 1, "disposal releases the current palette image")
-  Assert.equal(assets.released["battle-palette:scene:1"], 1, "disposal does not re-release its predecessor")
-  Assert.isFalse(battle:drawable("terrain") == uploads["battle-palette:scene:3"], "disposal withdraws its released image")
+  Assert.equal(assets.released[firstKey], 1, "disposal does not re-release the cleared palette image")
+
+  failKey = nil
+  assets.paletteImage = paletteImage
+  local replacement = holder(nil, assets)
+  Assert.isTrue(
+    replacement:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:3", raster = second } }),
+    "a complete palette replacement publishes"
+  )
+  local replacementKey = "battle-palette:scene:3:generation:1"
+  Assert.equal(replacement:drawable("terrain"), uploads[replacementKey], "the new source key resolves the replacement")
+  replacement:dispose()
+  Assert.equal(assets.released[replacementKey], 1, "disposal releases the replacement image")
 end
 
 -- Without a services adapter the faded intro answers nil with no
@@ -166,10 +186,8 @@ function T.faded_intro_without_a_services_adapter_draws_nothing_and_fails_nothin
   battle:dispose()
 end
 
--- A failed faded intro upload keeps its cause without latching the
--- holder: the enhancement falls back to the static intro lease and the
--- launch continues.
-function T.faded_intro_upload_failure_falls_back_to_the_static_lease()
+-- A configured faded intro upload failure is terminal for the launch.
+function T.faded_intro_upload_failure_latches_the_holder()
   local assets = stubAssets({})
   function assets.fadedIntro(_, _)
     return nil, "probe-failure"
@@ -186,7 +204,7 @@ function T.faded_intro_upload_failure_falls_back_to_the_static_lease()
     type(failure) == "string" and failure:find("assets-probe", 1, true) ~= nil,
     "a failed faded intro upload names its launch: " .. tostring(failure)
   )
-  Assert.equal(battle:state(), "pending", "a failed faded intro upload never latches the holder")
+  Assert.equal(battle:state(), "failed", "a failed faded intro upload latches the holder")
   battle:dispose()
 end
 
