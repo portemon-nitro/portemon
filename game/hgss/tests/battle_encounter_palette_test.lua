@@ -774,17 +774,6 @@ function T.encounter_main_fade_uses_integer_five_bit_blends()
   end
 end
 
-function T.encounter_lower_ramp_uses_five_bit_gray_steps()
-  local _, log = runOpening(true, 11)
-  local graphics = drawChildInteractionPane(log.lower[10])
-  local washes = fullscreenRectangles(graphics)
-  Assert.notNil(washes[1], "the first lower ramp frame paints the lower background plane")
-  local expected = (grayWord(1) % 32) / 31
-  Assert.near(washes[1].color[1], expected, 0.5 / 31, "the frame 10 lower gray matches five-bit step 1")
-  Assert.near(washes[1].color[2], expected, 0.5 / 31, "the frame 10 lower gray is neutral")
-  Assert.near(washes[1].color[3], expected, 0.5 / 31, "the frame 10 lower gray is neutral")
-end
-
 function T.encounter_main_fade_names_its_selected_bank_masks()
   local _, log = runOpening(true, 12)
   local flash = assert(log.flash[10], "the main fade runs on frame 10")

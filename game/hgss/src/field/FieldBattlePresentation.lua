@@ -2161,6 +2161,7 @@ function FieldBattlePresentation:_preparationServices()
   local backgroundImage = nil
   local fadedIntroPixels = nil
   local fadedIntroImage = nil
+  local palettePixels = {} ---@type table<string, { width: integer, height: integer, pixels: string }>
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
   local services = {}
   -- Whether every encounter particle texture of the staged scene still
@@ -2697,6 +2698,58 @@ function FieldBattlePresentation:_preparationServices()
     images["battle-faded-intro"] = fadedIntroImage
     return fadedIntroImage
   end
+  -- Uploads one battle-private sampled palette image. The source image pool
+  -- never sees these keys; replacement adopts only a fully created image.
+  function services.paletteImage(key, raster)
+    assert(graphics ~= nil, "battle palette upload requires host graphics")
+    assert(type(key) == "string" and key:match("^battle%-palette:") ~= nil, "palette images use battle-scoped keys")
+    assert(type(raster) == "table" and type(raster.pixels) == "string", "palette upload takes packed RGBA8 pixels")
+    assert(
+      type(raster.width) == "number"
+        and raster.width % 1 == 0
+        and raster.width > 0
+        and type(raster.height) == "number"
+        and raster.height % 1 == 0
+        and raster.height > 0
+        and #raster.pixels == raster.width * raster.height * 4,
+      "palette image pixels match their raster dimensions"
+    )
+    local existingPixels = palettePixels[key]
+    local existingImage = images[key]
+    if
+      existingPixels ~= nil
+      and existingPixels.width == raster.width
+      and existingPixels.height == raster.height
+      and existingPixels.pixels == raster.pixels
+      and existingImage ~= nil
+    then
+      return existingImage
+    end
+    local uploaded = nil
+    local ok, uploadedOrError = pcall(function()
+      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
+      uploaded = graphics.newImage(imageData)
+      assert(uploaded ~= nil, "the graphics driver handed out no palette image")
+      uploaded:setFilter("nearest", "nearest")
+      return uploaded
+    end)
+    if not ok or uploadedOrError == nil then
+      if uploaded ~= nil and type(uploaded.release) == "function" then
+        pcall(function()
+          uploaded:release()
+        end)
+      end
+      local cause = ok and "empty palette image handle" or tostring(uploadedOrError)
+      return nil,
+        "battle palette image upload failed for " .. key .. " in " .. tostring(stagedSceneKey) .. ": " .. cause
+    end
+    if existingImage ~= nil and type(existingImage.release) == "function" then
+      existingImage:release()
+    end
+    palettePixels[key] = { width = raster.width, height = raster.height, pixels = raster.pixels }
+    images[key] = uploadedOrError
+    return uploadedOrError
+  end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
     local leases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
@@ -3087,6 +3140,14 @@ function FieldBattlePresentation:_preparationServices()
       fadedIntroImage:release()
       fadedIntroImage = nil
       fadedIntroPixels = nil
+    end
+    local palette = palettePixels[key]
+    if palette ~= nil then
+      local image = images[key]
+      if image ~= nil and type(image.release) == "function" then
+        image:release()
+      end
+      palettePixels[key] = nil
     end
     images[key] = nil
   end

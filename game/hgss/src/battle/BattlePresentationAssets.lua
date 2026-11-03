@@ -17,6 +17,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field sceneLayer? fun(): table<string, unknown>?, string?
 ---@field background? fun(raster: table<string, unknown>): table<string, unknown>?, string?
 ---@field fadedIntro? fun(raster: table<string, unknown>): table<string, unknown>?, string?
+---@field paletteImage? fun(key: string, raster: table<string, unknown>): table<string, unknown>|userdata|nil, string?
 ---@field requestEffect? fun(key: string): boolean?, string?
 ---@field loadEffect? fun(key: string): table<string, unknown>?, string?
 ---@field resolveEffectResource? fun(effect: table<string, unknown>, resourceKey: string): table<string, unknown>?, string?
@@ -50,6 +51,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field _trainerPictures string[] semantic trainer picture class keys named so far
 ---@field _battleBalls string[] semantic ball selectors needed by this launch
 ---@field _owned table<string, boolean> image keys acquired through this holder
+---@field _paletteDrawables table<string, { image: table<string, unknown>|userdata, uploadKey: string }> active palette-sampled drawable substitutions
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
 ---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
 ---@field _effectDrawables table<string, boolean> staged semantic texture keys admitted through effect leases
@@ -121,6 +123,7 @@ function BattlePresentationAssets.new(opts)
     _evolutionRecord = nil,
     _evolutionFailed = nil,
     _owned = {},
+    _paletteDrawables = {},
     _imageErrors = {},
     _effects = {},
     _effectDrawables = {},
@@ -433,7 +436,7 @@ end
 -- A terminal upload error latches the holder failed with the exact
 -- image key and replays identically without re-entering the services.
 ---@param key string image key under resolution
----@return table<string, unknown>? image handle, nil while unavailable or after failure
+---@return table<string, unknown>|userdata|nil image handle, nil while unavailable or after failure
 ---@return string? terminal failure naming the exact image key, nil while pending or ready
 function BattlePresentationAssets:drawable(key)
   assert(type(key) == "string" and key ~= "", "image resolution names its key")
@@ -445,6 +448,10 @@ function BattlePresentationAssets:drawable(key)
   end
   if menuScreen ~= nil then
     key = menuScreen .. "@" .. self._background .. (touch or "")
+  end
+  local paletteDrawable = self._paletteDrawables[key]
+  if paletteDrawable ~= nil then
+    return paletteDrawable.image
   end
   if self._imageErrors[key] ~= nil then
     return nil, self._imageErrors[key]
@@ -473,6 +480,67 @@ function BattlePresentationAssets:drawable(key)
     self._owned[key] = true
   end
   return handle
+end
+
+-- Publishes a complete keyed palette image set after its uploads succeed.
+-- Upload keys are generation-specific so the previous drawable set remains
+-- valid until the replacement batch is ready.
+---@param requests table<string, { uploadKey: string, raster: table<string, unknown> }> source drawable key to sampled raster request
+---@return boolean published
+---@return string? failure
+function BattlePresentationAssets:updatePaletteDrawables(requests)
+  assert(not self._released, "released battle assets publish no palette drawables")
+  assert(type(requests) == "table", "palette drawable requests arrive as a keyed record")
+  if next(requests) == nil then
+    for _, current in pairs(self._paletteDrawables) do
+      if self._owned[current.uploadKey] ~= nil then
+        self._owned[current.uploadKey] = nil
+        self._assets.release(current.uploadKey)
+      end
+    end
+    self._paletteDrawables = {}
+    return true
+  end
+  local upload = self._assets.paletteImage
+  if type(upload) ~= "function" then
+    return false, "battle palette image upload service is unavailable for launch " .. self._launchId
+  end
+  local nextDrawables = {}
+  local nextKeys = {}
+  local newlyUploaded = {}
+  for sourceKey, request in pairs(requests) do
+    assert(type(sourceKey) == "string" and sourceKey ~= "", "palette substitutions name their source drawable")
+    assert(type(request) == "table", "palette substitution carries its upload request")
+    assert(
+      type(request.uploadKey) == "string" and request.uploadKey:match("^battle%-palette:") ~= nil,
+      "palette upload keys are battle-scoped"
+    )
+    local image, failure = upload(request.uploadKey, request.raster)
+    if failure ~= nil then
+      for uploadKey in pairs(newlyUploaded) do
+        self._assets.release(uploadKey)
+      end
+      return false,
+        "battle palette image failed for " .. sourceKey .. " in launch " .. self._launchId .. ": " .. failure
+    end
+    assert(image ~= nil, "palette image service returns a usable image")
+    nextDrawables[sourceKey] = { image = image, uploadKey = request.uploadKey }
+    nextKeys[request.uploadKey] = true
+    if self._owned[request.uploadKey] == nil then
+      newlyUploaded[request.uploadKey] = true
+    end
+  end
+  for _, current in pairs(self._paletteDrawables) do
+    if not nextKeys[current.uploadKey] and self._owned[current.uploadKey] ~= nil then
+      self._owned[current.uploadKey] = nil
+      self._assets.release(current.uploadKey)
+    end
+  end
+  for uploadKey in pairs(nextKeys) do
+    self._owned[uploadKey] = true
+  end
+  self._paletteDrawables = nextDrawables
+  return true
 end
 
 -- Carries the launch identity into an effect failure once: service
@@ -848,6 +916,7 @@ function BattlePresentationAssets:dispose()
     self._assets.release(key)
   end
   self._owned = {}
+  self._paletteDrawables = {}
 end
 
 return BattlePresentationAssets

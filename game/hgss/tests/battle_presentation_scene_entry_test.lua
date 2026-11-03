@@ -18,6 +18,7 @@ local EncounterParticlesFixture = require("tests.support.BattleEncounterParticle
 local StubLease = require("tests.support.StubLease")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
 
 local T = {}
 local function stagedImageWidth(image)
@@ -191,6 +192,9 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
       drawable = function(key)
         return stagedDrawable(key)
       end,
+      paletteImage = function(key, raster)
+        return { handle = key, raster = raster, width = raster.width, height = raster.height }
+      end,
       release = function(_, _) end,
     },
     text = scopeText,
@@ -253,7 +257,7 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   end
   Assert.isTrue(
     port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "ordinary-doubles" }),
-    versionId .. " enters its staged doubled scene"
+    versionId .. " enters its staged doubled scene: " .. tostring(screen._error)
   )
   port.present({ launchId = launchId, packetId = 1, before = opening, after = opening, events = {} })
   for _ = 1, 1200 do
@@ -389,6 +393,8 @@ end
 ---@param secondLife integer emitter lifespan for the second set
 ---@param withholdSet integer? set index staged without texture handles, nil for a complete layer
 ---@return table<string, unknown> staged scene layer
+local stagedMenuSourceIndices
+
 local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
   local sets = EncounterParticlesFixture.sizedSets(ENCOUNTER_SCENE_KEY, 1, 1, firstLife, secondLife)
   local mapEntries = {}
@@ -447,12 +453,24 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
         width = 64,
         height = 64,
         origin = { x = 0, y = 0 },
+        sourceIndices = {
+          plane = "mainObj",
+          width = 64,
+          height = 64,
+          pixels = string.rep(string.char(32, 0, 0, 255), 64 * 64),
+        },
       },
       foe = {
         drawable = StubLease.new("scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":foe"),
         width = 64,
         height = 64,
         origin = { x = 0, y = 0 },
+        sourceIndices = {
+          plane = "mainObj",
+          width = 64,
+          height = 64,
+          pixels = string.rep(string.char(32, 0, 0, 255), 64 * 64),
+        },
       },
     },
     encounterParticles = {},
@@ -480,10 +498,12 @@ local function openEncounterRig(opts)
   opts = opts or {}
   local audio = recordingEncounterAudio()
   local staged = nil
+  local manifest = opts.manifest or BattlePresentationManifestFixture.manifest()
   local withheld = { ["scene:" .. ENCOUNTER_SCENE_KEY] = opts.withheldScene == true }
   local images = {}
   local released = {}
   local fadedRasters = {}
+  local paletteRasters = {}
   local assets = {}
   function assets.prepare(_)
     return true
@@ -494,6 +514,12 @@ local function openEncounterRig(opts)
   function assets.fadedIntro(raster)
     fadedRasters[#fadedRasters + 1] = raster
     return { handle = "faded-intro-image" }
+  end
+  function assets.paletteImage(key, raster)
+    local image = { handle = key, raster = raster, width = raster.width, height = raster.height }
+    paletteRasters[key] = paletteRasters[key] or {}
+    paletteRasters[key][#paletteRasters[key] + 1] = raster
+    return image
   end
   function assets.drawable(key)
     if withheld[key] then
@@ -539,7 +565,7 @@ local function openEncounterRig(opts)
   local launchId = "encounter-readiness-probe"
   local screen = BattleScreenFixture.new({
     launchId = launchId,
-    manifest = BattlePresentationManifestFixture.manifest(),
+    manifest = manifest,
     model = {},
     submit = function(_)
       return true
@@ -554,8 +580,16 @@ local function openEncounterRig(opts)
     overrides = { sceneKey = ENCOUNTER_SCENE_KEY },
   })
   local port = screen:presentationPort()
-  local rig =
-    { screen = screen, port = port, audio = audio, launchId = launchId, fadedRasters = fadedRasters, released = released }
+  local rig = {
+    screen = screen,
+    port = port,
+    audio = audio,
+    launchId = launchId,
+    manifest = manifest,
+    fadedRasters = fadedRasters,
+    paletteRasters = paletteRasters,
+    released = released,
+  }
   function rig.pump(count, allowFailure)
     for _ = 1, count do
       screen:updateFixed(ENCOUNTER_TICK)
@@ -567,6 +601,7 @@ local function openEncounterRig(opts)
     return screen:status()
   end
   function rig.stage(layer)
+    layer.menuSourceIndices = layer.menuSourceIndices or stagedMenuSourceIndices(manifest)
     staged = layer
     withheld["scene:" .. ENCOUNTER_SCENE_KEY] = false
     rig.port.enter({
@@ -658,6 +693,8 @@ function T.native_palette_layout_rebuilds_for_a_replaced_scene_layer()
   rig.stage(stagedEncounterLayer(60, 43))
   rig.pump(5)
   presentOpening(rig)
+  rig.screen._encounterPaletteRestoreType = nil
+  rig.pump(1)
   Assert.isTrue(rig.screen._nativePaletteLayoutReady, "the first scene publishes its native layout")
 
   local replacement = stagedEncounterLayer(60, 43)
@@ -665,6 +702,93 @@ function T.native_palette_layout_rebuilds_for_a_replaced_scene_layer()
   Assert.isTrue(rig.screen:_stageNativePaletteLayout(), "a replaced staged layer rebuilds its layout")
   Assert.isTrue(type(replacement.nativePaletteLayout) == "table", "the current layer owns its native layout")
   rig.screen:dispose()
+end
+
+local function nativePaletteSource()
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local function planeWords(length, first, second)
+    local words = {}
+    for index = 0, length - 1 do
+      words[index + 1] = index % 2 == 0 and first or second
+    end
+    return words
+  end
+  local hud = planeWords(16, Rgb555.encode(31, 0, 0), Rgb555.encode(0, 0, 31))
+  local hudAuxiliary = planeWords(16, Rgb555.encode(31, 0, 0), Rgb555.encode(0, 0, 31))
+  local terrain = planeWords(16, Rgb555.encode(31, 0, 0), Rgb555.encode(0, 0, 31))
+  local subBg = planeWords(256, Rgb555.encode(0, 31, 0), Rgb555.encode(0, 0, 31))
+  local subObj = planeWords(256, Rgb555.encode(31, 31, 0), Rgb555.encode(0, 31, 31))
+  return {
+    mainBg = planeWords(256, Rgb555.encode(31, 0, 0), Rgb555.encode(0, 0, 31)),
+    mainObjSources = {
+      hud = { firstSlot = 0, words = hud },
+      hudAuxiliary = { firstSlot = 16, words = hudAuxiliary },
+      terrain = { firstSlot = 32, words = terrain },
+    },
+    subBgOpaque = subBg,
+    subObjOpaque = subObj,
+    initialDisplayed = { subBg = subBg, subObj = subObj },
+    fill = Rgb555.encode(31, 31, 31),
+  }
+end
+
+local function sourceIndexPixels(width, height, firstSlot, secondSlot, opaquePixels)
+  if secondSlot == nil and opaquePixels == nil then
+    return string.rep(string.char(firstSlot, 0, 0, 255), width * height)
+  end
+  local pixels = {}
+  for index = 0, width * height - 1 do
+    local slot = secondSlot ~= nil and index % 2 == 1 and secondSlot or firstSlot
+    local alpha = 255
+    if opaquePixels ~= nil and index >= opaquePixels then
+      alpha = 0
+    end
+    pixels[#pixels + 1] = string.char(slot, 0, 0, alpha)
+  end
+  return table.concat(pixels)
+end
+
+stagedMenuSourceIndices = function(manifest)
+  local maps = {}
+  local function visit(value, parentPalette)
+    if type(value) ~= "table" then
+      return
+    end
+    local palette = type(value.paletteSource) == "table" and value.paletteSource or parentPalette
+    local descriptor = value.sourceIndices
+    if type(descriptor) == "table" then
+      local baseSlot = type(palette) == "table" and palette.firstSlot or nil
+      local slot = type(baseSlot) == "number" and baseSlot or 0
+      local function stage(path, firstSlot)
+        local sourceSlot = type(firstSlot) == "number" and firstSlot or slot
+        maps[path] = {
+          plane = descriptor.plane,
+          width = descriptor.width,
+          height = descriptor.height,
+          pixels = sourceIndexPixels(descriptor.width, descriptor.height, sourceSlot),
+          paletteSource = type(palette) == "table" and { firstSlot = sourceSlot, words = palette.words } or nil,
+        }
+      end
+      if type(descriptor.path) == "string" then
+        stage(descriptor.path)
+      end
+      if type(descriptor.variants) == "table" then
+        for _, variant in pairs(descriptor.variants) do
+          stage(variant.path, variant.firstSlot)
+        end
+      end
+    end
+    for key, child in pairs(value) do
+      if key ~= "sourceIndices" then
+        visit(child, palette)
+      end
+    end
+  end
+  visit(manifest.menus)
+  visit(manifest.hud)
+  visit(manifest.trainerPictures)
+  visit(manifest.battleBalls)
+  return maps
 end
 
 -- The private render snapshot carries each live particle owner through the
@@ -749,6 +873,249 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
     Assert.equal(#after.moveParticleSystems, #before.moveParticleSystems, "draws do not step move emitters")
     Assert.equal(#after.ballParticleSystems, #before.ballParticleSystems, "draws do not step ball emitters")
     rig.screen._scene:releaseParticleSystem(moveSystemId)
+  end)
+  rig.screen:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Native source-indexed terrain is uploaded from the displayed OBJ words
+-- and used by the production screen draw, while the separately leased
+-- encounter particle keeps its original white draw color above the 2D art.
+function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particles()
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local rig = openEncounterRig()
+  local ok, err = pcall(function()
+    local width, height = 64, 64
+    local layer = stagedEncounterLayer(60, 43)
+    local sourceParticleImage = layer.encounterParticles[1].textures[1].drawable.image
+    local sourceTerrainImage = layer.terrainSprites.player.drawable.image
+    layer.paletteSource = nativePaletteSource()
+    layer.menuSourceIndices = stagedMenuSourceIndices(rig.manifest)
+    for _, side in ipairs({ "player", "foe" }) do
+      layer.terrainSprites[side].sourceIndices = {
+        plane = "mainObj",
+        width = width,
+        height = height,
+        pixels = sourceIndexPixels(width, height, 0, 1, 2),
+      }
+    end
+    rig.stage(layer)
+    rig.pump(5)
+    Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits indexed scene art")
+    presentOpening(rig)
+    rig.pump(10)
+
+    local view = rig.screen:view()
+    Assert.equal(view.openingPresentation.encounterFrame, 10, "the composed image follows native source frame 10")
+    local palette = view.openingPresentation.encounterPalette
+    Assert.notNil(palette, "the frame carries displayed native planes")
+    local key = "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player"
+    local image = rig.screen._assets:drawable(key)
+    Assert.notNil(image, "native terrain publishes a keyed palette drawable")
+    local raster = image.raster
+    Assert.notNil(raster, "the keyed drawable retains its uploaded raster for verification")
+    Assert.equal(raster.width, width, "the sampled terrain keeps source width")
+    Assert.equal(raster.height, height, "the sampled terrain keeps source height")
+    for pixelIndex, slot in ipairs({ 1, 2 }) do
+      local rgb = Rgb555.decode(palette.mainObj[slot])
+      local offset = (pixelIndex - 1) * 4
+      Assert.equal(raster.pixels:byte(offset + 1), rgb.r, "source slot " .. slot .. " samples its displayed red")
+      Assert.equal(raster.pixels:byte(offset + 2), rgb.g, "source slot " .. slot .. " samples its displayed green")
+      Assert.equal(raster.pixels:byte(offset + 3), rgb.b, "source slot " .. slot .. " samples its displayed blue")
+      Assert.equal(raster.pixels:byte(offset + 4), 255, "opaque source coverage remains opaque")
+    end
+    Assert.equal(raster.pixels:byte(12), 0, "transparent source coverage stays transparent")
+
+    local uploadCount = #rig.paletteRasters[image.handle]
+    local detail = FakeGraphics.new({})
+    rig.screen:draw({ graphics = detail })
+    rig.screen:draw({ graphics = FakeGraphics.new({}) })
+    Assert.equal(
+      #rig.paletteRasters[image.handle],
+      uploadCount,
+      "repeated draws do not rematerialize an unchanged palette image"
+    )
+    local terrainDraw = drawsOf(detail.draws, image.handle)[1]
+    local particleDraw = drawsOf(detail.draws, "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0")[1]
+    Assert.isTrue(terrainDraw ~= nil, "the real detail screen draws the sampled terrain image")
+    Assert.isTrue(particleDraw ~= nil, "the real detail screen draws the separate encounter particle")
+    Assert.equal(particleDraw.image, sourceParticleImage, "the encounter particle keeps its original texture lease")
+    local terrainOrder, particleOrder
+    for index, draw in ipairs(detail.draws) do
+      if draw == terrainDraw then
+        terrainOrder = index
+      elseif draw == particleDraw then
+        particleOrder = index
+      end
+    end
+    Assert.isTrue(
+      type(terrainOrder) == "number" and type(particleOrder) == "number" and terrainOrder < particleOrder,
+      "the encounter particle remains above the sampled 2D terrain"
+    )
+    local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
+    local sourceParticle = nil
+    for _, system in ipairs(view.encounterParticleSystems) do
+      if system.textures[0] ~= nil and system.textures[0].image.handle == sourceParticleImage.handle then
+        sourceParticle = system
+        break
+      end
+    end
+    Assert.isTrue(sourceParticle ~= nil, "the encounter particle retains its native live simulation")
+    local nativeParticleGraphics = FakeGraphics.new({})
+    SplParticleDraw.draw(nativeParticleGraphics, sourceParticle.simulation, {
+      centerX = 128,
+      centerY = 96,
+      resolveTexture = function(_, particle, child)
+        local textureId = child ~= nil and child.texNo or particle.texNo
+        return assert(sourceParticle.textures[textureId])
+      end,
+    })
+    local nativeParticleDraw = drawsOf(nativeParticleGraphics.draws, sourceParticleImage.handle)[1]
+    Assert.isTrue(nativeParticleDraw ~= nil, "the source simulation draws its own native particle tint")
+    Assert.deepEqual(particleDraw.color, nativeParticleDraw.color, "native 2D sampling leaves the source particle tint unchanged")
+
+    rig.compact()
+    local compact = FakeGraphics.new({})
+    rig.screen:draw({ graphics = compact })
+    local compactTerrain = drawsOf(compact.draws, image.handle)[1]
+    Assert.isTrue(compactTerrain ~= nil, "compact layout draws the same source-sampled terrain")
+    Assert.equal(compactTerrain.x, terrainDraw.x, "compact layout preserves the native terrain origin")
+    Assert.equal(compactTerrain.y, terrainDraw.y, "compact layout preserves the native terrain origin")
+
+    while rig.screen:view().openingPresentation.encounterFrame < 36 do
+      rig.pump(1)
+    end
+    local stableUploadCount = #rig.paletteRasters[image.handle]
+    rig.pump(4)
+    Assert.equal(
+      #rig.paletteRasters[image.handle],
+      stableUploadCount,
+      "unchanged native words across source ticks do not rematerialize the terrain image"
+    )
+    while rig.screen:view().openingPresentation.encounterFrame ~= nil do
+      rig.pump(1)
+      local frame = rig.screen:view().openingPresentation.encounterFrame
+      Assert.isTrue(
+        frame == nil or frame < 120,
+        "the encounter task retires within its bounded source lifecycle"
+      )
+    end
+    Assert.equal(rig.released[image.handle], 1, "encounter retirement releases the terrain replacement exactly once")
+    local settled = FakeGraphics.new({})
+    rig.screen:draw({ graphics = settled })
+    Assert.isTrue(
+      #drawsOf(settled.draws, sourceTerrainImage.handle) >= 1,
+      "post-encounter drawing restores the original terrain lease"
+    )
+    Assert.equal(#drawsOf(settled.draws, image.handle), 0, "post-encounter drawing no longer samples the released image")
+    rig.screen:dispose()
+    Assert.equal(rig.released[image.handle], 1, "screen disposal does not release the retired replacement twice")
+  end)
+  rig.screen:dispose()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A synthetic second lower drawable carries the SUB_OBJ map beside the
+-- existing menu screen's SUB_BG map. Both pass through the production
+-- BattleMenuPresenter and remain separate through the frame-28 reveal.
+function T.interaction_menu_samples_source_bg_and_obj_planes_without_the_lower_wash()
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local manifest = BattlePresentationManifestFixture.manifest()
+  local backgroundPath = "synthetic/menu-command-sub-bg.rgba8"
+  local objectPath = "synthetic/menu-command-sub-obj.rgba8"
+  local objectImagePath = "assets/generated/battle/menu-command-sub-obj.png"
+  local backgroundScreen = manifest.menus.command.screens[1]
+  backgroundScreen.sourceIndices = {
+    path = backgroundPath,
+    format = "source-index-rgba8",
+    plane = "subBg",
+    width = 256,
+    height = 256,
+  }
+  manifest.menus.images[objectImagePath] = { width = 256, height = 256 }
+  manifest.menus.command.screens[2] = {
+    image = objectImagePath,
+    width = 256,
+    height = 256,
+    tilemapKey = "menu/tilemap/synthetic-object",
+    plane = 2,
+    template = 1,
+    priority = 3,
+    sourceIndices = {
+      path = objectPath,
+      format = "source-index-rgba8",
+      plane = "subObj",
+      width = 256,
+      height = 256,
+    },
+  }
+  local rig = openEncounterRig({ manifest = manifest })
+  local ok, err = pcall(function()
+    local layer = stagedEncounterLayer(60, 43)
+    layer.paletteSource = nativePaletteSource()
+    layer.menuSourceIndices = stagedMenuSourceIndices(manifest)
+    rig.stage(layer)
+    rig.pump(5)
+    Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits indexed lower art")
+    presentOpening(rig)
+    rig.pump(28)
+
+    local view = rig.screen:view()
+    Assert.equal(view.openingPresentation.encounterFrame, 28, "the lower composition observes native reveal frame 28")
+    local palette = view.openingPresentation.encounterPalette
+    Assert.notNil(palette, "the lower reveal carries separate native palette planes")
+    local bgImage = rig.screen._assets:drawable("menu:command:screen:1")
+    local objImage = rig.screen._assets:drawable("menu:command:screen:2")
+    local function sampledScreen(sourceKey)
+      for uploadKey in pairs(rig.paletteRasters) do
+        if uploadKey:find(":" .. sourceKey .. ":", 1, true) ~= nil then
+          return true
+        end
+      end
+      return false
+    end
+    Assert.notNil(bgImage, "the menu BG keeps its semantic drawable lookup")
+    Assert.notNil(objImage, "the synthetic menu OBJ keeps its semantic drawable lookup")
+    Assert.isTrue(sampledScreen("menu:command:screen:1@general"), "the active command screen is sampled")
+    Assert.isFalse(sampledScreen("menu:moves:screen:1@general"), "inactive move screens are not sampled")
+    Assert.isFalse(sampledScreen("menu:target:screen:1@general"), "inactive target screens are not sampled")
+    Assert.isFalse(sampledScreen("menu:two-option:screen:1@general"), "inactive child screens are not sampled")
+    local bgRgb = Rgb555.decode(palette.subBg[1])
+    local objRgb = Rgb555.decode(palette.subObj[2])
+    Assert.deepEqual({
+      bgImage.raster.pixels:byte(1),
+      bgImage.raster.pixels:byte(2),
+      bgImage.raster.pixels:byte(3),
+      bgImage.raster.pixels:byte(4),
+    }, { bgRgb.r, bgRgb.g, bgRgb.b, 255 }, "menu source pixels sample SUB_BG words")
+    Assert.deepEqual({
+      objImage.raster.pixels:byte(1),
+      objImage.raster.pixels:byte(2),
+      objImage.raster.pixels:byte(3),
+      objImage.raster.pixels:byte(4),
+    }, { objRgb.r, objRgb.g, objRgb.b, 255 }, "menu source pixels sample SUB_OBJ words")
+    local graphics = FakeGraphics.new({})
+    rig.screen:draw({ graphics = graphics })
+    Assert.isTrue(#drawsOf(graphics.draws, bgImage.handle) >= 1, "the real lower menu draws the sampled SUB_BG image")
+    Assert.isTrue(#drawsOf(graphics.draws, objImage.handle) >= 1, "the real lower menu draws the sampled SUB_OBJ image")
+    local fullScreenWash = false
+    for _, rectangle in ipairs(graphics.rectangles) do
+      if
+        rectangle.mode == "fill"
+        and rectangle.x == 0
+        and rectangle.y == 0
+        and rectangle.w == 256
+        and rectangle.h == 192
+      then
+        fullScreenWash = true
+      end
+    end
+    Assert.isFalse(fullScreenWash, "the lower encounter plane does not wash over SUB_OBJ art")
+    Assert.isTrue(#graphics.canvases >= 2, "the original BG1 blend still composes the lower menu layers")
   end)
   rig.screen:dispose()
   if not ok then
@@ -960,6 +1327,45 @@ function T.wild_encounter_fade_draws_the_faded_intro_while_active()
     "the ended task returns its faded intro upload exactly once"
   )
 end
+
+-- Indexed source maps are sampled only when their source map or displayed
+-- palette changes; the holder's upload deduplication alone would still
+-- leave an expensive full raster rebuild on every fixed tick.
+function T.indexed_palette_maps_are_not_resampled_for_unchanged_frames()
+  local originalRender = BattleEncounterIndexedRaster.render
+  local layer = stagedEncounterLayer(60, 43)
+  local targetPixels = layer.terrainSprites.player.sourceIndices.pixels
+  local sampleCount = 0
+  BattleEncounterIndexedRaster.render = function(pixels, ...)
+    if pixels == targetPixels then
+      sampleCount = sampleCount + 1
+    end
+    return originalRender(pixels, ...)
+  end
+  local rig = openEncounterRig()
+  rig.stage(layer)
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+
+  rig.pump(1)
+  local firstFrameSamples = sampleCount
+  rig.pump(9)
+  local unchangedFrameSamples = sampleCount
+  rig.pump(1)
+  local changedFrameSamples = sampleCount
+  rig.screen:dispose()
+  BattleEncounterIndexedRaster.render = originalRender
+
+  Assert.isTrue(firstFrameSamples > 0, "the first source frame samples its indexed drawables")
+  Assert.equal(
+    unchangedFrameSamples,
+    firstFrameSamples,
+    "frames with the same displayed palette reuse sampled rasters"
+  )
+  Assert.isTrue(changedFrameSamples > unchangedFrameSamples, "a changed palette resamples its indexed drawables")
+end
+
 
 -- A second member whose textures never stage fails the launch at its
 -- exact start tick instead of starting late or running silent.

@@ -2109,6 +2109,71 @@ function T.faded_intro_upload_failure_fails_closed()
   envelope:dispose()
 end
 
+-- Palette sampled art is retained by the field envelope by its battle key:
+-- identical bytes reuse the upload and replacement releases the old image.
+function T.palette_images_reuse_replace_and_release_exactly_once()
+  local uploads = {}
+  local graphics = {}
+  local failFilter = false
+  function graphics.newImage(_)
+    local image = { released = false, releases = 0 }
+    function image:release()
+      self.released = true
+      self.releases = self.releases + 1
+    end
+    function image:setFilter(_, _)
+      assert(not failFilter, "probe filter setup failure")
+    end
+    uploads[#uploads + 1] = image
+    return image
+  end
+  local cacheFs = { versionId = "palette-image-probe" }
+  function cacheFs.loadLua(_)
+    return nil
+  end
+  function cacheFs.read(_)
+    return nil
+  end
+  function cacheFs.exists(_, _)
+    return false
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("palette-image:dual")
+    end,
+    graphics = graphics,
+    imagePool = scriptedPool(),
+  })
+  local services = envelope:_preparationServices()
+  local raster = { width = 2, height = 2, pixels = string.rep("\1", 2 * 2 * 4) }
+  local first = assert(services.paletteImage("battle-palette:probe:1", raster), "the first palette image uploads")
+  Assert.equal(#uploads, 1, "the first palette raster uploads once")
+  Assert.isTrue(services.paletteImage("battle-palette:probe:1", raster) == first, "matching bytes reuse the image")
+  Assert.equal(#uploads, 1, "matching bytes do not upload twice")
+  local changed = { width = 2, height = 2, pixels = string.rep("\2", 2 * 2 * 4) }
+  local second = assert(services.paletteImage("battle-palette:probe:1", changed), "changed palette bytes replace the image")
+  Assert.equal(#uploads, 2, "changed bytes upload once")
+  Assert.isTrue(first.released, "replacement releases the old image")
+  Assert.isFalse(second.released, "the replacement stays live")
+  services.release("battle-palette:probe:1")
+  Assert.isTrue(second.released, "release returns the live image")
+  services.release("battle-palette:probe:1")
+  Assert.equal(second.releases, 1, "a repeated release returns the image only once")
+  Assert.equal(#uploads, 2, "a repeated release uploads nothing")
+  failFilter = true
+  local failed, failure = services.paletteImage("battle-palette:probe:2", raster)
+  Assert.isNil(failed, "a filter setup failure publishes no partial image")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe filter setup failure", 1, true) ~= nil,
+    "filter failure keeps its cause"
+  )
+  Assert.equal(uploads[3].releases, 1, "a partially acquired image releases exactly once")
+  envelope:dispose()
+end
+
 -- A genuine scene build failure is terminal with its scene named: the
 -- preparation answers failed carrying both the scene key and the worker
 -- cause, deterministically on every poll, instead of waiting forever or

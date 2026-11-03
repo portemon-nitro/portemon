@@ -1647,7 +1647,8 @@ local function drawTrainerPictures(graphics, assets, view)
       )
       if slide.visible then
         local key = assert(
-          type(slide.drawableKey) == "string" and slide.drawableKey,
+          (type(slide.paletteDrawableKey) == "string" and slide.paletteDrawableKey)
+            or (type(slide.drawableKey) == "string" and slide.drawableKey),
           "trainer slides resolve their selected source frame"
         )
         local image = assets:drawable(key)
@@ -1709,7 +1710,9 @@ local function drawThrownBall(graphics, assets, view)
   assert(type(rotation) == "number" and rotation >= 0 and rotation < 0x10000, "ball rotation is a 16-bit angle")
   assert(type(ball.visible) == "boolean", "ball throw cues state their visibility")
   if ball.visible then
-    local image = assets:drawable("battle-ball:" .. ballKey .. ":" .. tostring(frame))
+    local key = type(ball.paletteDrawableKey) == "string" and ball.paletteDrawableKey
+      or "battle-ball:" .. ballKey .. ":" .. tostring(frame)
+    local image = assets:drawable(key)
     if image ~= nil then
       drawArtwork(graphics, image, nil, x, y, rotation / 0x10000 * 2 * math.pi, 1, 1, 8, 8)
     end
@@ -2448,9 +2451,12 @@ end
 ---@param graphics table<string, unknown> injected host graphics
 ---@param view table<string, unknown> internal semantic snapshot
 local function drawSourceMainParticles(graphics, view)
+  graphics.push("all")
+  graphics.setColor(1, 1, 1, 1)
   drawParticleSystems(graphics, view.moveParticleSystems)
   drawParticleSystems(graphics, view.encounterParticleSystems)
   drawParticleSystems(graphics, view.ballParticleSystems)
+  graphics.pop()
 end
 
 -- Draws one compact scene inside the single-pane viewport: the same
@@ -2493,48 +2499,6 @@ local function drawCompactScene(resources, view, content)
     drawSourceMainParticles(graphics, view)
   end)
   graphics.pop()
-end
-
--- Task_PlayEncounterAnimation palette work: the main screen fades through
--- its own per-plane RGB555 palette state (encounterPalette), sampled by
--- the scene and sprite draws, so no wash may cover the composed scene or
--- the particle planes. The lower screen paints its opaque background gray
--- plane during the ramp; the white reveal rides the sub-plane palette
--- state instead of a uniform wash.
----@param graphics table<string, unknown> injected host graphics
----@param lower table<string, unknown>? recorded lower fade state
-local function drawEncounterLowerPlane(graphics, lower)
-  if type(lower) ~= "table" then
-    return
-  end
-  local level = lower.level
-  if type(level) ~= "number" then
-    return
-  end
-  if level < 0 then
-    level = 0
-  elseif level > 16 then
-    level = 16
-  end
-  local fiveBit = math.floor((31 * level) / 16)
-  local gray = fiveBit / 31
-  local r, g, b, a = saveColor(graphics)
-  graphics.setColor(gray, gray, gray, 1)
-  graphics.rectangle("fill", 0, 0, 256, 192)
-  restoreColor(graphics, r, g, b, a)
-end
-
----@param graphics table<string, unknown> injected host graphics
----@param view table<string, unknown> internal semantic snapshot
----@param lower boolean true for the lower screen's overlay
-local function drawEncounterOverlay(graphics, view, lower)
-  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
-  if opening == nil then
-    return
-  end
-  if lower then
-    drawEncounterLowerPlane(graphics, opening.encounterLower --[[@as table<string, unknown>?]])
-  end
 end
 
 ---@param assets table<string, unknown> battle image owner
@@ -2834,7 +2798,6 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
     drawSourceMainParticles(assert(resources.graphics, "the battle render borrows its host graphics"), view)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)
-    drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, true)
   end
 end
 
