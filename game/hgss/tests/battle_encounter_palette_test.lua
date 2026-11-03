@@ -509,6 +509,118 @@ function T.encounter_lower_ramp_keeps_object_pixels_on_their_own_buffer()
   end
 end
 
+-- The late lower reveal runs on the same palette engine as the main
+-- restore: two blend units per tick toward the staged fade color, so a
+-- cave (black-fade) battle reveals from black, never from white.
+function T.encounter_lower_reveal_matches_engine_rate_and_fade_color()
+  local source = stagedSource()
+  local palette = BattleEncounterPalette.new({
+    battleType = "wild",
+    source = {
+      mainBg = source.mainBg,
+      mainObj = source.mainObj,
+      subBg = source.subBg,
+      subObj = source.subObj,
+      fill = 0,
+    },
+  })
+  palette:tick(30)
+  local blended = palette:snapshot()
+  for _, index in ipairs({ 0, 40, 88, 200 }) do
+    Assert.equal(
+      blended.subBg[index + 1],
+      blendWord(source.subBg[index + 1], 0, 12),
+      "frame 30 lower background color " .. index .. " blends toward black at coefficient 12"
+    )
+    Assert.equal(
+      blended.subObj[index + 1],
+      blendWord(source.subObj[index + 1], 0, 12),
+      "frame 30 lower object color " .. index .. " blends toward black at coefficient 12"
+    )
+  end
+  palette:tick(36)
+  local settled = palette:snapshot()
+  for _, index in ipairs({ 0, 40, 88, 200 }) do
+    Assert.equal(
+      settled.subBg[index + 1],
+      source.subBg[index + 1],
+      "frame 36 lower background color " .. index .. " matches its staged buffer"
+    )
+    Assert.equal(
+      settled.subObj[index + 1],
+      source.subObj[index + 1],
+      "frame 36 lower object color " .. index .. " matches its staged buffer"
+    )
+  end
+end
+
+-- The frame-50 late operation darkens only main background banks 10 and
+-- 11 toward black on the same two-units-per-tick engine, leaving every
+-- other bank and plane on its restored base.
+function T.encounter_late_fade_darkens_only_background_banks_ten_and_eleven()
+  local source = stagedSource()
+  local palette = BattleEncounterPalette.new({
+    battleType = "wild",
+    source = {
+      mainBg = source.mainBg,
+      mainObj = source.mainObj,
+      subBg = source.subBg,
+      subObj = source.subObj,
+      fill = source.fill,
+    },
+  })
+  palette:tick(50)
+  palette:beginLateFade()
+  local armed = palette:snapshot()
+  for _, index in ipairs({ 160, 175, 191 }) do
+    Assert.equal(
+      armed.mainBg[index + 1],
+      0,
+      "frame 50 late background color " .. index .. " starts fully black"
+    )
+  end
+  Assert.equal(
+    armed.mainBg[121],
+    source.mainBg[121],
+    "frame 50 bank 7 stays on its restored base under the late fade"
+  )
+  Assert.equal(
+    armed.mainBg[193],
+    source.fill,
+    "frame 50 bank 12 keeps its fill under the late fade"
+  )
+  Assert.equal(
+    armed.mainObj[41],
+    source.mainObj[41],
+    "frame 50 object colors stay on their restored base under the late fade"
+  )
+  palette:tick(54)
+  local blended = palette:snapshot()
+  for _, index in ipairs({ 160, 175, 191 }) do
+    Assert.equal(
+      blended.mainBg[index + 1],
+      blendWord(source.mainBg[index + 1], 0, 8),
+      "frame 54 late background color " .. index .. " blends toward black at coefficient 8"
+    )
+  end
+  palette:tick(58)
+  local settled = palette:snapshot()
+  for _, index in ipairs({ 160, 175, 191 }) do
+    Assert.equal(
+      settled.mainBg[index + 1],
+      source.mainBg[index + 1],
+      "frame 58 late background color " .. index .. " returns to its staged buffer"
+    )
+  end
+  palette:reset()
+  palette:tick(60)
+  Assert.equal(
+    palette:snapshot().mainBg[161],
+    source.mainBg[161],
+    "reset clears the armed late fade"
+  )
+end
+
 function T.encounter_lower_reveal_fades_planes_without_a_uniform_wash()
   local _, log = runOpening(true, 30)
   local graphics = drawChildInteractionPane(log.lower[28])

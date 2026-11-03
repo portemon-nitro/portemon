@@ -166,6 +166,17 @@ local function assertPixel(pixels, x, y, r, g, b, what)
   Assert.equal(pa, 255, what .. " alpha")
 end
 
+-- The unbaked 8bpp intro characters stage alongside the baked payload so
+-- the runtime can rasterize palette-accurate encounter fades.
+function T.unbaked_intro_characters_stage_alongside_the_baked_payload()
+  local scene = assert(compile(sceneRomFs(656, {}, {})))
+  Assert.equal(
+    scene.layerPayloads[1].baseCharacters,
+    string.rep("\1", 65536),
+    "the scene stages its unbaked 8bpp intro characters"
+  )
+end
+
 -- Any nonzero nibble selects a terrain color (installed at 0x70 plus the
 -- nibble); nibble 0 leaves the base byte (palette index 1) alone. The
 -- palettes above are uniform, so every written pixel reads terrain green

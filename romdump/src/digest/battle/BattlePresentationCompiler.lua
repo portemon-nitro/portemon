@@ -268,7 +268,8 @@ local function pictureShadow(animationBytes, speciesId)
 end
 
 ---@class BattlePresentationCompiler.ScenePayloads
----@field characters string normalized packed 4bpp color indices in tile order
+---@field characters string normalized 8bpp color indices in tile order
+---@field baseCharacters string unbaked 8bpp intro color indices in tile order
 ---@field map { width: integer, height: integer, entries: table[] }
 ---@field palette { colors: { r: integer, g: integer, b: integer }[] }
 
@@ -2528,7 +2529,7 @@ local function hudDigitBytes(romFs)
   local digitSource = Sources.HUD_DIGITS
   local digitChars =
     decodeChars(openArchive(romFs, digitSource.narc, "health-box digits"), digitSource.member, "health-box digits")
-  assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 4bpp tiles")
+  assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 8bpp tiles")
   local slotOf = { [0] = digitSource.background, digitSource.foreground, digitSource.shadow }
   local digitByteParts = {}
   for index = 1, 10 * 32 do
@@ -3337,7 +3338,7 @@ function BattlePresentationCompiler.compileEvolutionGraphics(romFs)
   local cursorSource = roles.cursor
   local cursorArchive = openArchive(romFs, cursorSource.archiveSymbol, "evolution cursor")
   local cursorCharacters = decodeChars(cursorArchive, cursorSource.characters, "evolution cursor characters")
-  assert(cursorCharacters.depth == 3, "EvolutionScene cursor characters use 4bpp tiles")
+  assert(cursorCharacters.depth == 3, "EvolutionScene cursor characters use 8bpp tiles")
   local cursorPalette = decodePalette(cursorArchive, cursorSource.palette, "evolution cursor palette")
   local cursorCellBytes = decodeMember(cursorArchive, cursorSource.cell, "evolution cursor cells")
   local cursorCells, cursorCellErr = G2dDecoder.decodeCell(cursorCellBytes, { label = "evolution cursor cells" })
@@ -4649,6 +4650,11 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
         path = BattlePresentationCache.sceneCharactersPath(sceneKey),
         format = "indexed8",
       },
+      baseCharacters = {
+        key = "battle-scene/" .. sceneStem .. "/intro/characters",
+        path = BattlePresentationCache.sceneIntroCharactersPath(sceneKey),
+        format = "indexed8",
+      },
       map = {
         key = "battle-scene/" .. sceneStem .. "/background/map",
         path = BattlePresentationCache.sceneMapPath(sceneKey),
@@ -4680,6 +4686,7 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       layerPayloads = {
         {
           characters = concatChars(dest),
+          baseCharacters = baseChars.tiles,
           map = { width = screen.width, height = screen.height, entries = screen.entries },
           palette = { colors = combined },
         },
@@ -4853,6 +4860,7 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
     artifact:addOwnedRoot(path)
   end
   artifact:addOwnedRoot(scene.layers[1].characters.path)
+  artifact:addOwnedRoot(scene.layers[1].baseCharacters.path)
   artifact:addOwnedRoot(scene.layers[1].map.path)
   artifact:addOwnedRoot(scene.layers[1].palette.path)
   artifact:addOwnedRoot(BattlePresentationCache.sceneProvenancePath(scene.key))
@@ -4874,6 +4882,10 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
   })
   local payload = assert(scene.layerPayloads[1], "the scene carries its BG3 payload")
   stage:write(scene.layers[1].characters.path, payload.characters)
+  stage:write(
+    scene.layers[1].baseCharacters.path,
+    assert(payload.baseCharacters, "the scene carries its unbaked intro characters")
+  )
   stage:writeLua(scene.layers[1].map.path, payload.map)
   stage:writeLua(scene.layers[1].palette.path, payload.palette)
   stage:writeLua(BattlePresentationCache.sceneProvenancePath(scene.key), scene.buildMetadata)
@@ -4928,6 +4940,7 @@ function BattlePresentationCompiler.sceneMarker(romSha1, scene)
       layerPayloads = {
         {
           characters = Hashing.sha1hex(scene.layerPayloads[1].characters),
+          baseCharacters = Hashing.sha1hex(scene.layerPayloads[1].baseCharacters),
           map = scene.layerPayloads[1].map,
           palette = scene.layerPayloads[1].palette,
         },
@@ -5536,17 +5549,24 @@ local function stageSelectedSources(state, role, operands, sourceSelections)
     local resourceSlot = slot:gsub("(%u)", "-%1"):lower()
     local resourceKey = table.concat({ "battle/animation", role, resourceSlot, contentIdentity }, "/")
     local payloadPath = BattlePresentationCache.globalResourcePath(resourceKey)
+    -- Battle effect backdrops install as raw BG3 tile planes
+    -- (BattleScene:installBackgroundLayer), never as uploaded RGBA
+    -- textures: the staged character keeps its decoded tile bytes beside
+    -- the palette and screen records, and skips the sprite raster queue.
+    local kind = source.kind
+    if role == "battle-background" and slot == "character" then
+      kind = "tiles"
+    end
     local previous = state.resolvedResources[resourceKey]
     if previous ~= nil then
       assert(
         previous.contentIdentity == contentIdentity
-          and previous.kind == source.kind
+          and previous.kind == kind
           and Hashing.hashLua(state.resourcePayloads[previous.payload]) == Hashing.hashLua(decoded),
         "content-addressed battle resource keys identify one decoded format"
       )
     else
-      state.resolvedResources[resourceKey] =
-        { kind = source.kind, contentIdentity = contentIdentity, payload = payloadPath }
+      state.resolvedResources[resourceKey] = { kind = kind, contentIdentity = contentIdentity, payload = payloadPath }
       state.resourcePayloads[payloadPath] = decoded
     end
     resourceKeys[slot] = resourceKey

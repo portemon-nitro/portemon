@@ -917,6 +917,8 @@ local function spawnRaw(exec, instruction, index, group)
     taskStartRule = instruction.taskStartRule,
     updateKind = instruction.updateKind,
     mode = instruction.mode,
+    resourceKeys = instruction.resourceKeys,
+    runtimeSelection = instruction.runtimeSelection,
   })
   if record == nil then
     return "done"

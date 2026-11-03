@@ -51,6 +51,11 @@ function T.canonical_paths_keep_global_and_scene_roots_apart()
     "terrain OBJ images have side-specific scene paths"
   )
   Assert.equal(
+    BattlePresentationCache.sceneIntroCharactersPath("general/grass/day"),
+    "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+    "unbaked intro characters have a dedicated scene path"
+  )
+  Assert.equal(
     BattlePresentationCache.sceneMarkerPath("general/grass/day"),
     "data/generated/battle/scenes/general-grass-day.complete",
     "scene markers live beside the scene record"
@@ -310,6 +315,11 @@ local function stageBattle(cache, manifest, sceneKey)
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
           format = "indexed8",
         },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+          format = "indexed8",
+        },
         map = {
           key = "battle-scene/general-grass-day/background/map",
           path = "data/generated/battle/scenes/general-grass-day.bg3.map.lua",
@@ -347,6 +357,7 @@ local function stageBattle(cache, manifest, sceneKey)
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), record)
   cache:write(BattlePresentationCache.sceneMarkerPath(sceneKey), "marker")
   cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), string.rep("\0", 65536))
   local entries = {}
   for index = 1, 2048 do
     entries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -366,6 +377,30 @@ local function stageBattle(cache, manifest, sceneKey)
       stagePng(cache, texture.image, texture.width, texture.height)
     end
   end
+end
+
+function T.unbaked_intro_characters_are_part_of_the_scene_readiness_closure()
+  local sceneKey = "general/grass/day"
+  local cache = staging()
+  stageBattle(cache, validManifest(), sceneKey)
+  Assert.isTrue(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "a complete scene reads ready")
+  local staged = assert(
+    cache:read(BattlePresentationCache.sceneIntroCharactersPath(sceneKey)),
+    "the unbaked intro characters are staged"
+  )
+  Assert.equal(#staged, 65536, "the unbaked intro characters carry complete 8bpp tiles")
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), "truncated")
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "truncated intro characters never read as ready"
+  )
+  cache:remove(BattlePresentationCache.sceneIntroCharactersPath(sceneKey))
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "missing intro characters never read as ready"
+  )
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), staged)
+  Assert.isTrue(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "restored intro characters read ready")
 end
 
 function T.encounter_particle_textures_are_part_of_the_scene_readiness_closure()

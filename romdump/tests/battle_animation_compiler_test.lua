@@ -3494,6 +3494,60 @@ function T.visual_task_selectors_resolve_to_closed_semantic_task_kinds()
   Assert.equal(err.context.cursorOffset, 12, "invalid selector is rejected after its full source frame")
 end
 
+function T.visual_task_background_load_resolves_its_staged_slots()
+  local receivedRole
+  local receivedOperands
+  local program = assert(compiler().compile({
+    key = "visual-task-background-load",
+    stream = table.concat({ u32(16), u32(9), u32(0x12340004) }),
+    resolveSourceInput = function(role, operands)
+      receivedRole = role
+      receivedOperands = operands
+      return {
+        resourceKeys = {
+          character = "battle/background/test/character",
+          palette = "battle/background/test/palette",
+          screenDefault = "battle/background/test/screen-default",
+          screenAlternate = "battle/background/test/screen-alternate",
+        },
+        runtimeSelection = "battle-background-screen-selection",
+      }
+    end,
+  }))
+  Assert.equal(receivedRole, "battle-background", "the visual background load resolves its source role")
+  Assert.deepEqual(receivedOperands, { 9 }, "the producer receives the source-ordered background selector")
+  local task = program.instructions[1]
+  Assert.equal(task.op, "start-visual-task", "opcode 16 schedules its selected task")
+  Assert.equal(task.taskKind, "battle-background-resource-load", "selector 4 keeps its pinned task kind")
+  Assert.deepEqual(task.values, { 9, 0x1234 }, "task arguments preserve the full first word and packed high half")
+  Assert.deepEqual(task.resourceKeys, {
+    character = "battle/background/test/character",
+    palette = "battle/background/test/palette",
+    screenDefault = "battle/background/test/screen-default",
+    screenAlternate = "battle/background/test/screen-alternate",
+  }, "only semantic resource keys enter the instruction")
+  Assert.equal(
+    task.runtimeSelection,
+    "battle-background-screen-selection",
+    "dynamic screen choice is represented by a typed enum"
+  )
+end
+
+function T.visual_task_background_load_without_a_source_selection_fails_closed()
+  local ok, err = pcall(compiler().compile, {
+    key = "visual-task-background-load-unresolved",
+    stream = table.concat({ u32(16), u32(9), u32(0x12340004) }),
+    resolveSourceInput = function(_role, _operands)
+      return nil
+    end,
+  })
+  Assert.isFalse(ok, "an unresolvable background selector never lowers to a runnable task")
+  Assert.isTrue(
+    string.find(tostring(err), "battle background", 1, true) ~= nil,
+    "the failure names the unresolved battle background resource"
+  )
+end
+
 function T.context_selected_visual_task_preserves_all_source_alternatives()
   local program = assert(compiler().compile({
     key = "context-selected-task",

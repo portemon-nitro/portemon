@@ -1044,6 +1044,11 @@ local function scene()
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
           format = "indexed8",
         },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+          format = "indexed8",
+        },
         map = {
           key = "battle-scene/general-grass-day/background/map",
           path = "data/generated/battle/scenes/general-grass-day.bg3.map",
@@ -1146,6 +1151,28 @@ function T.encounter_particle_sets_require_resolvable_textures_and_the_retail_st
   local badImageSize = scene()
   badImageSize.encounterParticles[1].textures[1].width = 0
   Assert.isFalse(Schema.isValidScene(badImageSize), "texture images keep positive dimensions")
+end
+
+function T.scene_layers_stage_indexed8_intro_characters_for_palette_fades()
+  local staged = scene()
+  staged.layers[1].baseCharacters = {
+    key = "battle-scene/general-grass-day/intro/characters",
+    path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+    format = "indexed8",
+  }
+  Assert.isTrue(Schema.isValidScene(staged), "unbaked intro characters validate as a scene resource")
+
+  local missing = scene()
+  missing.layers[1].baseCharacters = nil
+  Assert.isFalse(Schema.isValidScene(missing), "a scene stages its unbaked intro characters")
+
+  local badFormat = scene()
+  badFormat.layers[1].baseCharacters = {
+    key = "battle-scene/general-grass-day/intro/characters",
+    path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+    format = "tilemap",
+  }
+  Assert.isFalse(Schema.isValidScene(badFormat), "intro characters keep their 8bpp indexed8 format")
 end
 
 function T.scene_records_validate_their_key_and_viewport()

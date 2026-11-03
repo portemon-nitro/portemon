@@ -429,13 +429,16 @@ local function checkSceneResource(resource, context, field)
 end
 
 local function checkSceneLayer(layer, context, field)
-  SchemaCheck.checkRecord(
-    layer,
-    { key = true, backing = true, viewport = true, scroll = true, characters = true, map = true, palette = true },
-    context,
-    CODE_SCENE,
-    field
-  )
+  SchemaCheck.checkRecord(layer, {
+    key = true,
+    backing = true,
+    viewport = true,
+    scroll = true,
+    characters = true,
+    baseCharacters = true,
+    map = true,
+    palette = true,
+  }, context, CODE_SCENE, field)
   if layer.key ~= "background" then
     fail(CODE_SCENE, field .. " must identify the semantic battle background layer", context)
   end
@@ -481,10 +484,17 @@ local function checkSceneLayer(layer, context, field)
     fail(CODE_SCENE, field .. ".scroll must preserve the source initial BG3 position", context)
   end
   checkSceneResource(layer.characters, context, field .. ".characters")
+  if layer.baseCharacters == nil then
+    fail(CODE_SCENE, field .. " stages its unbaked intro characters for palette fades", context)
+  end
+  checkSceneResource(layer.baseCharacters, context, field .. ".baseCharacters")
   checkSceneResource(layer.map, context, field .. ".map")
   checkSceneResource(layer.palette, context, field .. ".palette")
   if layer.characters.format ~= "indexed8" or layer.map.format ~= "tilemap" or layer.palette.format ~= "rgb888" then
     fail(CODE_SCENE, field .. " resources must use normalized indexed8, tilemap, and rgb888 formats", context)
+  end
+  if layer.baseCharacters.format ~= "indexed8" then
+    fail(CODE_SCENE, field .. ".baseCharacters must use the 8bpp indexed8 format", context)
   end
 end
 

@@ -317,42 +317,20 @@ local function stagedPixelsOf(art)
   return nil
 end
 
--- Reads the staged per-plane encounter palette snapshot behind one view:
--- the Task_PlayEncounterAnimation fade state the main scene sampler
--- consumes, nil while no source fade runs. Draws never advance it.
----@param view table<string, unknown> internal semantic snapshot under drawing
----@return table<string, unknown>? staged plane snapshot, nil without a source fade
-local function snapshotOf(view)
-  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
-  if type(opening) ~= "table" then
-    return nil
-  end
-  local snapshot = opening.encounterPalette --[[@as table<string, unknown>?]]
-  if type(snapshot) ~= "table" then
-    return nil
-  end
-  return snapshot
-end
-
 -- Draws one resolved scene layer: palette-sampling handles draw through
 -- the shared sampler (an indexed borrow drawn raw would show its palette
 -- indices as red), while owned, test, and descriptor handles keep the
--- direct host draw. A staged encounter palette snapshot rides the sampler
--- draw so the main background plane samples its faded source colors;
--- raw handles keep the direct draw with no wash above the composed scene.
+-- direct host draw. Sampler draws carry plain placement only: no caller
+-- may forward per-plane palette state as a draw argument, since pool
+-- leases forward extras to the host draw where a table raises.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param scene table<string, unknown> resolved scene drawable under drawing
 ---@param scrollX number background horizontal scroll in native pixels
----@param scrollY number vertical scroll in native pixels
----@param snapshot table<string, unknown>? staged per-plane palette state
-local function drawSceneLayer(graphics, scene, scrollX, scrollY, snapshot)
+---@param scrollY number background vertical scroll in native pixels
+local function drawSceneLayer(graphics, scene, scrollX, scrollY)
   local sampler = samplerOf(scene)
   if sampler ~= nil then
-    if snapshot ~= nil then
-      sampler:draw(graphics, 0 - scrollX, 0 - scrollY, snapshot)
-    else
-      sampler:draw(graphics, 0 - scrollX, 0 - scrollY)
-    end
+    sampler:draw(graphics, 0 - scrollX, 0 - scrollY)
     return
   end
   local staged = stagedPixelsOf(scene)
@@ -1739,9 +1717,8 @@ local function drawThrownBall(graphics, assets, view)
 end
 
 -- Draws the shared source main-screen 2D intro pass in native 256x192
--- coordinates: the selected background (with the staged per-plane palette
--- snapshot on its sampler), the terrain base slides and the trainer
--- pictures. Detail and compact both evaluate this same source state;
+-- coordinates: the selected background, the terrain base slides and the
+-- trainer pictures. Detail and compact both evaluate this same source state;
 -- callers clip it to their own viewport without moving emitter origins.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
@@ -1756,7 +1733,7 @@ local function drawSourceMainScene(resources, view)
     if scene ~= view.introScene then
       scrollX, scrollY = bgScrollOf(view)
     end
-    drawSceneLayer(graphics, scene, scrollX, scrollY, snapshotOf(view))
+    drawSceneLayer(graphics, scene, scrollX, scrollY)
   end
   drawTerrainSlides(graphics, view)
   drawTrainerPictures(graphics, assets, view)
@@ -2852,9 +2829,8 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
     drawCompactScene(resources, view, content or {})
   elseif paneId == "detail" then
     drawDetail(resources, view)
-    -- The retired uniform main-screen encounter wash stays retired: the
-    -- staged per-plane palette snapshot rides the scene sampler and the
-    -- 3D systems draw above the faded planes untinted.
+    -- No fullscreen wash covers the composed main scene: the 3D systems
+    -- draw above the scene planes untinted.
     drawSourceMainParticles(assert(resources.graphics, "the battle render borrows its host graphics"), view)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)

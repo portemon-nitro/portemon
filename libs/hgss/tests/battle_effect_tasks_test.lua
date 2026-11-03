@@ -1461,4 +1461,263 @@ function T.overlapping_background_sweeps_restore_only_owned_viewport()
   Assert.equal(#secondJournal.released, #secondJournal.acquired, "the surviving sweep stages no leases")
 end
 
+local BACKGROUND_RESOURCE_KEYS = {
+  character = "battle/background/test/character",
+  palette = "battle/background/test/palette",
+  screenDefault = "battle/background/test/screen-default",
+  screenAlternate = "battle/background/test/screen-alternate",
+}
+
+local function sceneWithEffectBackground()
+  local scene = sceneWithPair()
+  local colors = {}
+  for _ = 1, 16 do
+    colors[#colors + 1] = { r = 0, g = 0, b = 0 }
+  end
+  colors[2] = { r = 200, g = 0, b = 0 }
+  scene:installBackground({
+    characters = string.char(0x11) .. string.rep("\0", 31),
+    colorMode = "4bpp",
+    map = { width = 8, height = 8, entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } } },
+    palette = { colors = colors },
+  })
+  return scene
+end
+
+local function backgroundServices(scene, journal, overrides)
+  local payloads = {
+    [BACKGROUND_RESOURCE_KEYS.character] = { depth = 3, tiles = string.char(0x10) .. string.rep("\0", 31) },
+    [BACKGROUND_RESOURCE_KEYS.palette] = { colors = (function()
+      local colors = {}
+      for _ = 1, 16 do
+        colors[#colors + 1] = { r = 0, g = 0, b = 0 }
+      end
+      colors[2] = { r = 0, g = 180, b = 0 }
+      return colors
+    end)() },
+    [BACKGROUND_RESOURCE_KEYS.screenDefault] = {
+      width = 8,
+      height = 8,
+      entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } },
+    },
+    [BACKGROUND_RESOURCE_KEYS.screenAlternate] = {
+      width = 8,
+      height = 8,
+      entries = { { tile = 0, flipH = true, flipV = false, palette = 0 } },
+    },
+  }
+  if type(overrides) == "table" then
+    for key, payload in pairs(overrides) do
+      payloads[key] = payload
+    end
+  end
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    local data = payloads[key]
+    if data == nil then
+      error("unknown battle background resource " .. tostring(key), 0)
+    end
+    return { key = key, data = data }
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  return { scene = scene, audio = {}, resources = resources }
+end
+
+local function backgroundLoadArgs(values)
+  return {
+    values = values or { 9, 0x1234 },
+    resourceKeys = BACKGROUND_RESOURCE_KEYS,
+    runtimeSelection = "battle-background-screen-selection",
+  }
+end
+
+function T.background_resource_load_installs_the_staged_layer_and_holds_it_past_disposal()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  Assert.deepEqual({ scene:backgroundRaster():pixel(0, 0) }, { 200, 0, 0, 255 }, "the base plane shows first")
+  local task = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  Assert.equal(task:status(), "pending", "the load opens pending")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "construction stages the layer without installing it"
+  )
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the load retires on its first tick")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 0, 180, 0, 255 },
+    "the staged effect pixels replace the ordinary BG3 plane"
+  )
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(0, 0) },
+    { 0, 0, 0, 0 },
+    "transparent palette index does not reveal the replaced BG3"
+  )
+  task:dispose()
+  task:cancel("late")
+  Assert.equal(task:status(), "complete", "completion survives late cancellation")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 0, 180, 0, 255 },
+    "the installed layer survives the owning task's disposal until cleanup"
+  )
+  Assert.equal(#journal.released, #journal.acquired, "every staged lease releases exactly once")
+  Assert.equal(#journal.acquired, 4, "the load stages its four declared slots")
+end
+
+function T.background_resource_cleanup_removes_the_layer_exactly_once()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  local load = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  load:stepSourceTick({ tick = 1 })
+  load:dispose()
+  local cleanupServices, cleanupJournal = journalServices(scene)
+  local cleanup = assert(
+    BattleEffectTasks.create("battle-presentation-resource-cleanup", { values = { 9, 0x1234 } }, occurrenceContext(), cleanupServices)
+  )
+  Assert.equal(cleanup:status(), "pending", "cleanup opens pending")
+  cleanup:stepSourceTick({ tick = 1 })
+  Assert.equal(cleanup:status(), "complete", "cleanup retires on its first tick")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "removal restores the persistent BG3 plane"
+  )
+  cleanup:dispose()
+  cleanup:cancel("late")
+  Assert.equal(cleanup:status(), "complete", "cleanup completion survives late cancellation")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "repeated teardown never reinstalls or disturbs the restored plane"
+  )
+  Assert.equal(#cleanupJournal.released, #cleanupJournal.acquired, "cleanup stages no leases")
+end
+
+function T.background_resource_load_rejects_double_install_and_cleanup_rejects_unknown_layers()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  local first = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  first:stepSourceTick({ tick = 1 })
+  local second = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  local ok, failure = pcall(second.stepSourceTick, second, { tick = 1 })
+  Assert.isTrue(not ok, "a duplicate effect layer never installs twice")
+  Assert.isTrue(
+    string.find(tostring(failure), "effect layer keys are unique", 1, true) ~= nil,
+    "the duplicate rejection names the ownership rule"
+  )
+  second:dispose()
+  first:dispose()
+  local bare = sceneWithEffectBackground()
+  local bareServices, _ = journalServices(bare)
+  local cleanup = assert(
+    BattleEffectTasks.create("battle-presentation-resource-cleanup", { values = { 9, 0x1234 } }, occurrenceContext(), bareServices)
+  )
+  local removed, removeFailure = pcall(cleanup.stepSourceTick, cleanup, { tick = 1 })
+  Assert.isTrue(not removed, "removing an absent layer never succeeds silently")
+  Assert.isTrue(
+    string.find(tostring(removeFailure), "battle-background-layer-3", 1, true) ~= nil,
+    "the unknown-layer rejection names the layer"
+  )
+  cleanup:dispose()
+end
+
+function T.background_resource_load_fails_closed_on_malformed_arguments()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  local malformed = {
+    { values = { 9 }, resourceKeys = BACKGROUND_RESOURCE_KEYS },
+    { values = "nine", resourceKeys = BACKGROUND_RESOURCE_KEYS },
+    { values = { 9, 0x1234 } },
+    { values = { 9, 0x1234 }, resourceKeys = { character = BACKGROUND_RESOURCE_KEYS.character } },
+    {
+      values = { 9, 0x1234 },
+      resourceKeys = BACKGROUND_RESOURCE_KEYS,
+      runtimeSelection = "battle-background-three-way-screen-selection",
+    },
+  }
+  for index, args in ipairs(malformed) do
+    local ok, failure = pcall(
+      BattleEffectTasks.create,
+      "battle-background-resource-load",
+      args,
+      occurrenceContext(),
+      services
+    )
+    if ok then
+      local stepOk, stepFailure = pcall(failure.stepSourceTick, failure, { tick = 1 })
+      failure:dispose()
+      Assert.isTrue(not stepOk, "malformed load " .. index .. " never installs")
+      Assert.isTrue(
+        string.find(tostring(stepFailure), "battle-background-resource-load", 1, true) ~= nil,
+        "malformed load " .. index .. " fails naming its kind"
+      )
+    else
+      Assert.isTrue(
+        string.find(tostring(failure), "battle-background-resource-load", 1, true) ~= nil,
+        "malformed load " .. index .. " fails naming its kind"
+      )
+    end
+  end
+  Assert.equal(#journal.released, #journal.acquired, "failed loads release every staged lease")
+end
+
+function T.background_resource_load_without_staged_slots_fails_closed()
+  local scene = sceneWithEffectBackground()
+  local services, _ = journalServices(scene)
+  local ok, failure = pcall(
+    BattleEffectTasks.create,
+    "battle-background-resource-load",
+    { values = { 9, 0x1234 } },
+    occurrenceContext(),
+    services
+  )
+  if ok then
+    local stepOk = pcall(failure.stepSourceTick, failure, { tick = 1 })
+    failure:dispose()
+    Assert.isTrue(not stepOk, "a slotless load never installs")
+  else
+    Assert.isTrue(
+      string.find(tostring(failure), "battle-background-resource-load", 1, true) ~= nil,
+      "a slotless load fails naming its kind"
+    )
+  end
+end
+
+function T.background_resource_cancel_before_start_never_installs()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  local task = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  task:cancel("withdrawn")
+  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "cancelled", "cancelled loads never install late")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "the persistent plane is untouched"
+  )
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "cancelled loads release every staged lease")
+end
+
 return { tests = T }

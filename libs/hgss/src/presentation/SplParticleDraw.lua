@@ -26,7 +26,11 @@ local quadsByImage = setmetatable({}, { __mode = "k" })
 ---@return number width source width in pixels
 ---@return number height source height in pixels
 local function textureDimensions(drawable)
-  assert(type(drawable) == "table", "particle textures resolve to a pool lease or a raw image")
+  local drawableType = type(drawable)
+  assert(
+    drawableType == "table" or drawableType == "userdata",
+    "particle textures resolve to a pool lease or a raw image"
+  )
   if type(drawable.drawQuad) == "function" then
     local width, height = drawable.width, drawable.height
     assert(type(width) == "number" and type(height) == "number", "pooled particle leases carry their source dimensions")

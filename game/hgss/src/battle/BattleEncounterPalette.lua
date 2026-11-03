@@ -39,6 +39,7 @@
 ---@field _objectBase integer[] staged base word per sixteen-color object bank
 ---@field _frame integer last accepted absolute source-task frame, 0 before the first tick
 ---@field _late boolean true once the late background bank operation is armed
+---@field _lateFrame integer? arming frame behind the late bank fade, nil while unarmed
 ---@field _version integer snapshot identity behind dirty uploads
 local M = {}
 M.__index = M
@@ -47,7 +48,6 @@ M.MAIN_BG_MASK = 0xF3FF
 M.MAIN_OBJ_MASK = 0x3FFF
 M.LATE_BG_MASK = 0x0C00
 
-local WHITE = 31 + 31 * 32 + 31 * 1024
 local BLACK = 0
 local GRAY_UNIT = 1 + 1 * 32 + 1 * 1024
 local FADE_START = 10
@@ -204,6 +204,7 @@ function M.new(opts)
     _objectBase = objectBase,
     _frame = 0,
     _late = false,
+    _lateFrame = nil,
     _version = 0,
   }, M)
 end
@@ -218,18 +219,32 @@ local function mainCoefficient(frame)
 end
 
 ---@param frame integer absolute source-task frame under display
----@return integer lower reveal coefficient in blend units from 16 down to 0
-local function revealCoefficient(frame)
-  if frame < RESTORE_FRAME then
-    return 0
-  end
-  return math.max(0, FADE_RANGE - (frame - RESTORE_FRAME))
-end
-
----@param frame integer absolute source-task frame under display
 ---@return integer main restore coefficient in blend units from 16 down to 0
 local function restoreCoefficient(frame)
   return math.max(0, FADE_RANGE - 2 * (frame - RESTORE_FRAME))
+end
+
+-- Darkens the late banks toward black once the frame-50 bank operation
+-- arms: the same two-units-per-tick engine over banks 10 and 11 only,
+-- leaving every other bank on its restored base.
+---@param self BattleEncounterPalette
+---@param out integer[] displayed main background words under darkening
+---@param frame integer absolute source-task frame under display
+---@return integer[] displayed main background words with the late fade applied
+local function applyLateFade(self, out, frame)
+  if not self._late or self._lateFrame == nil or frame < self._lateFrame then
+    return out
+  end
+  local coefficient = math.max(0, FADE_RANGE - 2 * (frame - self._lateFrame))
+  if coefficient == 0 then
+    return out
+  end
+  for index = 0, ENTRY_COUNT - 1 do
+    if maskSelects(M.LATE_BG_MASK, bankOf(index)) then
+      out[index + 1] = blendWord(out[index + 1], BLACK, coefficient)
+    end
+  end
+  return out
 end
 
 ---@param self BattleEncounterPalette
@@ -244,18 +259,20 @@ local function displayedMainBg(self, frame)
     -- the fill back to that base with the same coefficient the flash
     -- metadata publishes, so buffers and metadata never diverge.
     local restore = restoreCoefficient(frame)
+    local out
     if restore == 0 then
-      return copyWords(self._restoredMainBg)
-    end
-    local out = {}
-    for index = 0, ENTRY_COUNT - 1 do
-      if maskSelects(M.MAIN_BG_MASK, bankOf(index)) then
-        out[index + 1] = blendWord(self._restoredMainBg[index + 1], self._fill, restore)
-      else
-        out[index + 1] = self._restoredMainBg[index + 1]
+      out = copyWords(self._restoredMainBg)
+    else
+      out = {}
+      for index = 0, ENTRY_COUNT - 1 do
+        if maskSelects(M.MAIN_BG_MASK, bankOf(index)) then
+          out[index + 1] = blendWord(self._restoredMainBg[index + 1], self._fill, restore)
+        else
+          out[index + 1] = self._restoredMainBg[index + 1]
+        end
       end
     end
-    return out
+    return applyLateFade(self, out, frame)
   end
   local coefficient = mainCoefficient(frame)
   local out = {}
@@ -326,10 +343,13 @@ local function displayedSubBg(self, frame)
     end
     return out
   end
-  local coefficient = revealCoefficient(frame)
+  -- The lower reveal runs on the same palette engine as the main restore:
+  -- two blend units per tick from the staged fade color back to the
+  -- battle-setup buffers, so cave battles reveal from black like retail.
+  local coefficient = restoreCoefficient(frame)
   local out = {}
   for index = 1, ENTRY_COUNT do
-    out[index] = blendWord(self._backupSubBg[index], WHITE, coefficient)
+    out[index] = blendWord(self._backupSubBg[index], self._fill, coefficient)
   end
   return out
 end
@@ -341,10 +361,10 @@ local function displayedSubObj(self, frame)
   if frame < RESTORE_FRAME then
     return copyWords(self._backupSubObj)
   end
-  local coefficient = revealCoefficient(frame)
+  local coefficient = restoreCoefficient(frame)
   local out = {}
   for index = 1, ENTRY_COUNT do
-    out[index] = blendWord(self._backupSubObj[index], WHITE, coefficient)
+    out[index] = blendWord(self._backupSubObj[index], self._fill, coefficient)
   end
   return out
 end
@@ -363,6 +383,7 @@ end
 function M:beginLateFade()
   if not self._late then
     self._late = true
+    self._lateFrame = self._frame
     self._version = self._version + 1
   end
 end
@@ -371,6 +392,7 @@ end
 function M:reset()
   self._frame = 0
   self._late = false
+  self._lateFrame = nil
   self._version = self._version + 1
 end
 

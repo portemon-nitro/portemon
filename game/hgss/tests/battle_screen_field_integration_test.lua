@@ -970,12 +970,12 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
       Assert.equal(starts, 1, "one launch constructs one battle lifetime")
       local cover = envelope:cover()
-      -- Construction follows the full-cover leave by one accepted tick, and that
-      -- tick performs the reveal's single cover step first, so the battle starts
-      -- one step into the reveal beside its intro instead of under full cover.
+      -- Construction holds full cover: the entry blanket releases
+      -- atomically on the accepted tick that publishes the first native
+      -- battle visual, never as an alpha blend over live source frames.
       Assert.isTrue(
-        type(cover) == "table" and cover.coefficient == 14,
-        "the battle starts one reveal step after full cover"
+        type(cover) == "table" and cover.coefficient == 16,
+        "the battle starts under full entry cover"
       )
       -- The wild role starts once and survives presentation pumping and
       -- a layout change without restarting.

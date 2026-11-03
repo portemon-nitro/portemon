@@ -2022,6 +2022,8 @@ function FieldBattlePresentation:_preparationServices()
   local stagedSceneLayer = nil
   local backgroundPixels = nil
   local backgroundImage = nil
+  local fadedIntroPixels = nil
+  local fadedIntroImage = nil
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
   local services = {}
   -- Whether every encounter particle texture of the staged scene still
@@ -2157,6 +2159,14 @@ function FieldBattlePresentation:_preparationServices()
             return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
           end
           assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
+          local baseCharacters = cacheFs:read(layer.baseCharacters.path)
+          if type(baseCharacters) ~= "string" then
+            return nil, "battle scene intro characters are not staged: " .. tostring(sceneKey)
+          end
+          assert(
+            layer.baseCharacters.format == "indexed8",
+            "unbaked intro characters use the staged 8bpp character format"
+          )
           local intro = record.introLayer
           local sprites = record.terrainSprites
           local imagePaths = { intro.image, sprites.player.image, sprites.foe.image }
@@ -2251,6 +2261,7 @@ function FieldBattlePresentation:_preparationServices()
           end
           stagedSceneLayer = {
             characters = characters,
+            baseCharacters = baseCharacters,
             map = map,
             palette = palette,
             colorMode = "8bpp",
@@ -2419,6 +2430,36 @@ function FieldBattlePresentation:_preparationServices()
     backgroundImage = uploadedOrError
     images["battle-background"] = backgroundImage
     return backgroundImage
+  end
+  -- Uploads one composed faded intro raster through the bulk pixel path:
+  -- the raster already carries packed RGBA8 pixels, so no per-pixel Lua
+  -- runs on the frame loop. Ownership mirrors the background upload: an
+  -- unchanged raster reuses its image, a changed raster releases its
+  -- predecessor exactly once, and failures adopt nothing.
+  function services.fadedIntro(raster)
+    assert(graphics ~= nil, "faded intro upload requires host graphics")
+    assert(type(raster) == "table" and type(raster.pixels) == "string", "faded intro upload takes a composed raster")
+    if raster == fadedIntroPixels then
+      return fadedIntroImage
+    end
+    local ok, uploadedOrError = pcall(function()
+      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
+      local uploaded = graphics.newImage(imageData)
+      assert(uploaded ~= nil, "the graphics driver handed out no faded intro image")
+      uploaded:setFilter("nearest", "nearest")
+      return uploaded
+    end)
+    if not ok or uploadedOrError == nil then
+      local cause = ok and "empty faded intro image handle" or tostring(uploadedOrError)
+      return nil, "battle scene faded intro upload failed for " .. tostring(stagedSceneKey) .. ": " .. cause
+    end
+    if fadedIntroImage ~= nil and type(fadedIntroImage.release) == "function" then
+      fadedIntroImage:release()
+    end
+    fadedIntroPixels = raster
+    fadedIntroImage = uploadedOrError
+    images["battle-faded-intro"] = fadedIntroImage
+    return fadedIntroImage
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
@@ -2805,6 +2846,11 @@ function FieldBattlePresentation:_preparationServices()
       backgroundImage:release()
       backgroundImage = nil
       backgroundPixels = nil
+    end
+    if key == "battle-faded-intro" and fadedIntroImage ~= nil and type(fadedIntroImage.release) == "function" then
+      fadedIntroImage:release()
+      fadedIntroImage = nil
+      fadedIntroPixels = nil
     end
     images[key] = nil
   end

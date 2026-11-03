@@ -727,6 +727,34 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
         taskKind = taskKind,
         values = { action, math.floor(packed / 65536) },
       }
+      if taskKind == "battle-background-resource-load" and resolveSourceInput ~= nil then
+        local resolved = resolveSourceInput("battle-background", { action })
+        if resolved == nil then
+          error(
+            decodeError(
+              key,
+              start,
+              "handler " .. label .. " requires unresolved battle background resource",
+              offset + 8
+            ),
+            0
+          )
+        end
+        assert(resolved ~= nil, "background resolver returns a selection")
+        if resolved.runtimeSelection ~= "battle-background-screen-selection" then
+          error(
+            decodeError(key, start, "source resolver returned an unknown battle background selection", offset + 8),
+            0
+          )
+        end
+        instruction.resourceKeys = checkSourceInputResult(key, offset + 8, resolved, {
+          "character",
+          "palette",
+          "screenDefault",
+          "screenAlternate",
+        })
+        instruction.runtimeSelection = resolved.runtimeSelection
+      end
       offset = offset + 8
     elseif opcode == 2 then
       local count = readWord(stream, key, offset) % 256

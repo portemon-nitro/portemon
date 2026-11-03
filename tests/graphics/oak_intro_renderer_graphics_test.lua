@@ -1207,6 +1207,11 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
           path = BattlePresentationCache.sceneCharactersPath(sceneKey),
           format = "indexed8",
         },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = BattlePresentationCache.sceneIntroCharactersPath(sceneKey),
+          format = "indexed8",
+        },
         map = {
           key = "battle-scene/general-grass-day/background/map",
           path = BattlePresentationCache.sceneMapPath(sceneKey),
@@ -1242,6 +1247,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     encounterParticles = ParticlesFixture.sets(sceneKey),
   })
   cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), string.rep("\0", 65536))
   local sceneEntries = {}
   for index = 1, 2048 do
     sceneEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }

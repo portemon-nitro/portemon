@@ -59,6 +59,7 @@ local function sceneRecord(sceneKey)
   local playerPath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player")
   local foePath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe")
   local charsPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
+  local introCharsPath = BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
   local axes = assert(BattlePresentationCache.parseSceneKey(sceneKey), "the synthetic scene key stays valid")
@@ -80,6 +81,11 @@ local function sceneRecord(sceneKey)
         characters = {
           key = "battle-scene/general-plain-day/background/characters",
           path = charsPath,
+          format = "indexed8",
+        },
+        baseCharacters = {
+          key = "battle-scene/general-plain-day/intro/characters",
+          path = introCharsPath,
           format = "indexed8",
         },
         map = {
@@ -166,6 +172,9 @@ local function stagedCacheFs(record)
   function cacheFs:read(path)
     if path == record.layers[1].characters.path then
       return string.rep("c", 65536)
+    end
+    if path == record.layers[1].baseCharacters.path then
+      return string.rep("b", 65536)
     end
     return "staged"
   end
@@ -301,6 +310,22 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
     leasePaths(pool.acquired),
     "disposal returns each retained lease exactly once"
   )
+end
+
+function T.preparation_stages_unbaked_intro_characters_for_palette_fades()
+  local record = sceneRecord(SCENE_KEY)
+  local pool = ledgerPool(0, {})
+  local envelope = newEnvelope(stagedCacheFs(record), pool)
+  local services = envelope:_preparationServices()
+  local ready, failure = prepareScene(services)
+  Assert.isTrue(ready, "the staged scene prepares: " .. tostring(failure))
+  local layer = assert(services.sceneLayer(), "the prepared scene layer is retained")
+  Assert.equal(
+    layer.baseCharacters,
+    string.rep("b", 65536),
+    "the scene layer carries its unbaked intro characters"
+  )
+  envelope:dispose()
 end
 
 function T.failed_terrain_upload_returns_the_leases_it_already_holds()

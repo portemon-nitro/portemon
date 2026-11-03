@@ -571,10 +571,12 @@ function T.compact_pane_presents_live_grass_burst_over_its_clipped_scene()
   )
 end
 
--- The detail main screen renders the staged plane snapshot through its
--- own per-plane palette state: the main scene sampler receives the
--- published snapshot while the 3D particle draws stay exact with or
--- without it, and no fullscreen wash covers the composed scene.
+-- The detail main screen draws its scene sampler with plain placement
+-- even while a staged encounter palette snapshot is present: pool leases
+-- forward extras to the host draw, where a snapshot table raises bad
+-- argument #4, so the snapshot never rides the sampler draw. The 3D
+-- particle draws stay exact with or without it, and no fullscreen wash
+-- covers the composed scene.
 function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_exact()
   local BattleEncounterPalette = require("game.hgss.src.battle.BattleEncounterPalette")
   local words = {}
@@ -600,13 +602,31 @@ function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_e
     words[10 * 16 + 1],
     "the staged snapshot spares the unselected main background bank"
   )
+  -- Lease-shaped sampler: forwards placement straight to the host draw
+  -- and rejects non-numeric extras exactly like love.graphics.draw, so
+  -- a leaked snapshot table fails here instead of only in production.
+  local sceneImage = {}
   local sampled = {}
   local sceneSampler = {
-    draw = function(_, graphics, x, y, seen)
-      sampled[#sampled + 1] = { graphics = graphics, x = x, y = y, snapshot = seen }
+    draw = function(_, graphics, x, y, seen, ...)
+      Assert.isTrue(type(x) == "number", "the scene sampler draws at a numeric x")
+      Assert.isTrue(type(y) == "number", "the scene sampler draws at a numeric y")
+      Assert.isTrue(
+        seen == nil and select("#", ...) == 0,
+        "no palette state rides the scene sampler draw"
+      )
+      sampled[#sampled + 1] = { graphics = graphics, x = x, y = y }
+      graphics.draw(sceneImage, x, y)
     end,
-    drawQuad = function(_, graphics, quad, x, y, seen)
-      sampled[#sampled + 1] = { graphics = graphics, x = x, y = y, snapshot = seen }
+    drawQuad = function(_, graphics, quad, x, y, seen, ...)
+      Assert.isTrue(type(x) == "number", "the scene sampler draws its quad at a numeric x")
+      Assert.isTrue(type(y) == "number", "the scene sampler draws its quad at a numeric y")
+      Assert.isTrue(
+        seen == nil and select("#", ...) == 0,
+        "no palette state rides the scene sampler quad draw"
+      )
+      sampled[#sampled + 1] = { graphics = graphics, x = x, y = y }
+      graphics.draw(sceneImage, quad, x, y)
     end,
   }
   local systems, images = runningSystems()
@@ -622,13 +642,7 @@ function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_e
   }
   local graphics = FakeGraphics.new()
   drawDetail(graphics, view, sceneSampler)
-  local carried = false
-  for _, call in ipairs(sampled) do
-    if call.snapshot == snapshot then
-      carried = true
-    end
-  end
-  Assert.isTrue(carried, "the main scene sampler receives the staged plane snapshot")
+  Assert.isTrue(#sampled >= 1, "the main scene sampler draws with the palette snapshot present")
   local function particleDraws()
     local found = {}
     for _, draw in ipairs(graphics.draws) do

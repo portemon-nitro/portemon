@@ -395,9 +395,14 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
   for _ = 1, 256 do
     paletteColors[#paletteColors + 1] = { r = 0, g = 0, b = 0 }
   end
+  -- Preserved-range index 120 reads red so faded intro rasters prove
+  -- their bytes: the unbaked base tile addresses 0x78 (untouched by the
+  -- battle-setup fill) while the baked tile reads 0x00 (fill white).
+  paletteColors[0x78 + 1] = { r = 255, g = 0, b = 0 }
   local layer = {
     sceneKey = ENCOUNTER_SCENE_KEY,
     characters = string.rep("\0", 64),
+    baseCharacters = string.char(0x78) .. string.rep("\0", 63),
     colorMode = "8bpp",
     map = {
       width = 256,
@@ -445,12 +450,18 @@ local function openEncounterRig(opts)
   local staged = nil
   local withheld = { ["scene:" .. ENCOUNTER_SCENE_KEY] = opts.withheldScene == true }
   local images = {}
+  local released = {}
+  local fadedRasters = {}
   local assets = {}
   function assets.prepare(_)
     return true
   end
   function assets.sceneLayer()
     return staged
+  end
+  function assets.fadedIntro(raster)
+    fadedRasters[#fadedRasters + 1] = raster
+    return { handle = "faded-intro-image" }
   end
   function assets.drawable(key)
     if withheld[key] then
@@ -470,7 +481,9 @@ local function openEncounterRig(opts)
     end
     return stored
   end
-  function assets.release(_) end
+  function assets.release(key)
+    released[key] = (released[key] or 0) + 1
+  end
   local measurement = {
     width = 256,
     height = 384,
@@ -509,7 +522,8 @@ local function openEncounterRig(opts)
     overrides = { sceneKey = ENCOUNTER_SCENE_KEY },
   })
   local port = screen:presentationPort()
-  local rig = { screen = screen, port = port, audio = audio, launchId = launchId }
+  local rig =
+    { screen = screen, port = port, audio = audio, launchId = launchId, fadedRasters = fadedRasters, released = released }
   function rig.pump(count, allowFailure)
     for _ = 1, count do
       screen:updateFixed(ENCOUNTER_TICK)
@@ -677,6 +691,77 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   Assert.equal(#settled.encounterParticleSystems, 0, "retired systems leave the draw list")
   Assert.equal(voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterStart), 1, "the opening sound voices exactly once")
   Assert.equal(voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle), 1, "the settle sound voices exactly once")
+end
+
+-- The wild encounter fade draws the faded intro upload while the task
+-- runs and falls back to the static lease once it ends: uploads carry
+-- the published frame's faded palette, the lease stays undrawn under
+-- the fade, and the upload returns exactly once at the end.
+function T.wild_encounter_fade_draws_the_faded_intro_while_active()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(40, 36))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+  rig.pump(13)
+  local mid = FakeGraphics.new({})
+  rig.screen:draw({ graphics = mid })
+  Assert.isTrue(
+    #drawsOf(mid.draws, "faded-intro-image") >= 1,
+    "the running fade draws its faded intro upload"
+  )
+  Assert.equal(
+    #drawsOf(mid.draws, "scene-intro:" .. ENCOUNTER_SCENE_KEY),
+    0,
+    "the running fade draws no static intro lease"
+  )
+  Assert.isTrue(#rig.fadedRasters >= 2, "several encounter frames upload their own raster")
+  Assert.deepEqual(
+    { rig.fadedRasters[1]:pixel(0, 0) },
+    { 255, 0, 0, 255 },
+    "the first faded raster samples the unfaded red base"
+  )
+  local midFade = false
+  local distinct = {}
+  for _, raster in ipairs(rig.fadedRasters) do
+    local r, g, b, a = raster:pixel(0, 0)
+    distinct[r * 65536 + g * 256 + b] = true
+    if r == 255 and g == 25 and b == 25 and a == 255 then
+      midFade = true
+    end
+  end
+  Assert.isTrue(midFade, "a mid-fade raster blends red toward white at coefficient 2")
+  local distinctCount = 0
+  for _ in pairs(distinct) do
+    distinctCount = distinctCount + 1
+  end
+  Assert.isTrue(distinctCount >= 3, "successive frames advance the fade")
+  local endedAt = nil
+  for tick = 13, 160 do
+    rig.pump(1)
+    if rig.screen:view().openingPresentation.encounterFrame == nil then
+      endedAt = tick
+      break
+    end
+  end
+  Assert.isTrue(endedAt ~= nil, "the encounter task ends after its systems retire")
+  rig.pump(2)
+  local settled = FakeGraphics.new({})
+  rig.screen:draw({ graphics = settled })
+  Assert.isTrue(
+    #drawsOf(settled.draws, "scene-intro:" .. ENCOUNTER_SCENE_KEY) >= 1,
+    "the ended task draws the static intro lease again"
+  )
+  Assert.equal(
+    #drawsOf(settled.draws, "faded-intro-image"),
+    0,
+    "the ended task draws no faded intro upload"
+  )
+  Assert.equal(
+    rig.released["battle-faded-intro"],
+    1,
+    "the ended task returns its faded intro upload exactly once"
+  )
 end
 
 -- A second member whose textures never stage fails the launch at its

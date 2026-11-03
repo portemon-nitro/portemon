@@ -1802,6 +1802,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     end
   end
   local charactersPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
+  local introCharactersPath = BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
   local mapEntries = {}
@@ -1832,6 +1833,11 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
           characters = {
             key = "battle-scene/general-plain-day/background/characters",
             path = charactersPath,
+            format = "indexed8",
+          },
+          baseCharacters = {
+            key = "battle-scene/general-plain-day/intro/characters",
+            path = introCharactersPath,
             format = "indexed8",
           },
           map = {
@@ -1890,6 +1896,9 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       end
       if path == charactersPath then
         return revealed and string.rep("c", 65536) or nil
+      end
+      if path == introCharactersPath then
+        return revealed and string.rep("b", 65536) or nil
       end
       return cacheFs:read(path)
     end
@@ -1961,6 +1970,95 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     hostless:dispose()
     envelope:dispose()
   end
+end
+
+-- Faded intro uploads carry exactly-once ownership: an unchanged raster
+-- reuses its upload, a changed raster releases its predecessor once, and
+-- releasing the key returns the live upload without resurrecting it.
+function T.faded_intro_uploads_once_and_releases_exactly_once()
+  local uploads = {}
+  local graphics = {}
+  function graphics.newImage(_)
+    local image = { released = false }
+    function image:release()
+      self.released = true
+    end
+    function image:setFilter(_,_)
+    end
+    uploads[#uploads + 1] = image
+    return image
+  end
+  local cacheFs = { versionId = "faded-intro-probe" }
+  function cacheFs.loadLua(_)
+    return nil
+  end
+  function cacheFs.read(_)
+    return nil
+  end
+  function cacheFs.exists(_, _)
+    return false
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("faded-intro:dual")
+    end,
+    graphics = graphics,
+    imagePool = scriptedPool(),
+  })
+  local services = envelope:_preparationServices()
+  local function raster(byte)
+    return { width = 8, height = 8, pixels = string.rep(byte, 8 * 8 * 4) }
+  end
+  local first = raster("\1")
+  local firstImage = assert(services.fadedIntro(first), "the faded intro uploads")
+  Assert.equal(#uploads, 1, "the first faded raster uploads once")
+  Assert.isTrue(services.fadedIntro(first) == firstImage, "an unchanged raster reuses its upload")
+  Assert.equal(#uploads, 1, "an unchanged raster uploads nothing new")
+  local secondImage = assert(services.fadedIntro(raster("\2")), "a changed raster re-uploads")
+  Assert.equal(#uploads, 2, "a changed raster uploads once more")
+  Assert.isTrue(firstImage.released, "replacing the upload releases its predecessor exactly once")
+  Assert.isFalse(secondImage.released, "the live upload stays borrowed")
+  services.release("battle-faded-intro")
+  Assert.isTrue(secondImage.released, "releasing the faded intro returns its upload")
+  local thirdImage = assert(services.fadedIntro(raster("\2")), "a released raster uploads again")
+  Assert.isTrue(thirdImage ~= secondImage, "a released upload never resurrects")
+  envelope:dispose()
+end
+
+-- A faded intro the driver cannot upload fails closed naming the scene:
+-- no half-adopted image survives, and a later raster may still upload.
+function T.faded_intro_upload_failure_fails_closed()
+  local cacheFs = { versionId = "faded-intro-failure-probe" }
+  function cacheFs.loadLua(_)
+    return nil
+  end
+  function cacheFs.read(_)
+    return nil
+  end
+  function cacheFs.exists(_, _)
+    return false
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("faded-intro-failure:dual")
+    end,
+    graphics = {},
+    imagePool = scriptedPool(),
+  })
+  local services = envelope:_preparationServices()
+  local image, failure = services.fadedIntro({ width = 8, height = 8, pixels = string.rep("\1", 8 * 8 * 4) })
+  Assert.isNil(image, "a failed faded intro upload answers no image")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("faded intro upload failed", 1, true) ~= nil,
+    "a failed faded intro upload names its cause: " .. tostring(failure)
+  )
+  envelope:dispose()
 end
 
 -- A genuine scene build failure is terminal with its scene named: the

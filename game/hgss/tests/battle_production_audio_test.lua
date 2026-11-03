@@ -214,6 +214,7 @@ local function stageBattlePresentation(cache)
     cache:write(font, "staged-font")
   end
   local charactersPath = BattlePresentationCache.sceneCharactersPath(SCENE_KEY)
+  local introCharactersPath = BattlePresentationCache.sceneIntroCharactersPath(SCENE_KEY)
   local mapPath = BattlePresentationCache.sceneMapPath(SCENE_KEY)
   local palettePath = BattlePresentationCache.scenePalettePath(SCENE_KEY)
   local mapEntries = {}
@@ -242,6 +243,11 @@ local function stageBattlePresentation(cache)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = charactersPath,
+          format = "indexed8",
+        },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = introCharactersPath,
           format = "indexed8",
         },
         map = {
@@ -288,6 +294,7 @@ local function stageBattlePresentation(cache)
     end
   end
   cache:write(charactersPath, string.rep("\0", 65536))
+  cache:write(introCharactersPath, string.rep("\0", 65536))
   cache:writeLua(mapPath, { width = 512, height = 256, entries = mapEntries })
   cache:writeLua(palettePath, { colors = paletteColors })
   local entries = {}

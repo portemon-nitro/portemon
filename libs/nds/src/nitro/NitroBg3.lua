@@ -114,9 +114,11 @@ function NitroBg3:render()
       local sourceX = entry.flipH and 7 - localX or localX
       local sourceY = entry.flipV and 7 - localY or localY
       local colorIndex
+      -- Hardware 4bpp tiles pack eight rows of four bytes, so every
+      -- source row addresses its own bytes: even rows never repeat.
       if self._colorMode == "4bpp" then
         local tile = assert(
-          self._characters:byte(entry.tile * 32 + math.floor(sourceY / 2) * 4 + math.floor(sourceX / 2) + 1),
+          self._characters:byte(entry.tile * 32 + sourceY * 4 + math.floor(sourceX / 2) + 1),
           "map tile references staged characters"
         )
         colorIndex = entry.palette * 16 + (sourceX % 2 == 0 and tile % 16 or math.floor(tile / 16))

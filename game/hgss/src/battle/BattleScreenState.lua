@@ -28,6 +28,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Mon = require("libs.mons.src.Mon")
+local Rgb555 = require("libs.codec.src.Rgb555")
 
 ---@class BattleScreenState.GraphicsScope
 ---@field host table<string, unknown> borrowed host graphics namespace
@@ -125,6 +126,9 @@ local Mon = require("libs.mons.src.Mon")
 ---@field _ballParticles BattleBallParticles ball send-out and capture particle systems driven by the cue timeline
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
+---@field _fadedIntroImage table<string, unknown>? live faded intro upload while the encounter fade runs
+---@field _fadedIntroFrame integer? encounter frame behind the live faded upload
+---@field _fadedIntroUnavailable boolean true once faded uploads prove unavailable this launch
 ---@field _outcomeDone boolean terminal narration and timed holds have settled
 ---@field _lastPlayerName string? source player trainer name retained from detached views
 ---@field _error string? failure context
@@ -1074,6 +1078,9 @@ function BattleScreenState.new(opts)
   local self = setmetatable({
     _sceneKey = sceneKey,
     _encounterSourceKey = nil,
+    _fadedIntroImage = nil,
+    _fadedIntroFrame = nil,
+    _fadedIntroUnavailable = false,
     _launchId = opts.launchId,
     _manifest = manifest,
     _model = opts.model,
@@ -2239,7 +2246,10 @@ function BattleScreenState:_snapshot()
       enemy = copyValue(self._manifest.hud.partyGauges[1]),
     },
     openingPresentation = openingPresentation,
-    introScene = type(introLayer) == "table" and introLayer.drawable or nil,
+    -- While the encounter fade runs, draws sample the faded intro upload
+    -- instead of the static lease; the upload names the same published
+    -- frame as this snapshot, and release falls back to the lease.
+    introScene = self._fadedIntroImage or (type(introLayer) == "table" and introLayer.drawable or nil),
     terrainSprites = terrainSprites,
     playerTrainer = type(latest) == "table" and latest.playerTrainer or nil,
     foeTrainers = type(latest) == "table" and latest.foeTrainers or nil,
@@ -6108,6 +6118,85 @@ local function encounterSourceOf(layer, fadeBlack)
   }
 end
 
+-- The last encounter frame whose faded intro still changes: the main
+-- restore settles at 36 and the late bank operation (armed at 50) settles
+-- eight ticks later at two blend units per tick, so later frames reuse
+-- their upload. Frames 37-49 hold still between the two operations.
+local FADED_INTRO_FIRST_STATIC_FRAME = 37
+local FADED_INTRO_LATE_ARM_FRAME = 50
+local FADED_INTRO_LAST_FRAME = 58
+
+-- Returns the held faded intro upload without a later disposal
+-- double-release: draws fall back to the static intro lease afterwards.
+function BattleScreenState:_releaseFadedIntro()
+  if self._fadedIntroImage ~= nil then
+    self._assets:releaseFadedIntro()
+    self._fadedIntroImage = nil
+    self._fadedIntroFrame = nil
+  end
+end
+
+-- Renders one encounter frame of the unbaked intro plane through the
+-- published main-background palette and uploads it, holding the image
+-- for draws. Any failure (or a host without the adapter) retires the
+-- faded path for the launch: draws keep the static intro lease instead
+-- of retrying a doomed upload every tick.
+---@param snapshot table<string, unknown> staged per-plane palette state under drawing
+---@param frame integer encounter frame under drawing
+function BattleScreenState:_renderFadedIntro(snapshot, frame)
+  local mainBg = assert(snapshot.mainBg, "encounter snapshots carry the main background plane")
+  local colors = {}
+  for index = 1, 256 do
+    colors[index] = Rgb555.decode(mainBg[index])
+  end
+  local raster = self._scene:introRaster(colors)
+  local image = self._assets:fadedIntro(raster)
+  if image == nil then
+    self._fadedIntroUnavailable = true
+    self:_releaseFadedIntro()
+    return
+  end
+  self._fadedIntroImage = image
+  self._fadedIntroFrame = frame
+end
+
+-- Tracks the published encounter fade with exactly one intro upload per
+-- changing frame: renders while the fade runs, reuses the settled upload
+-- across the still frames and past the late fade, and releases back to
+-- the static lease once the task ends. Runs on fixed updates only, ahead
+-- of the cue player, so the resolved plan and its intro image name the
+-- same published frame. Never from draws.
+function BattleScreenState:_updateFadedIntro()
+  if self._timeline == nil then
+    self:_releaseFadedIntro()
+    return
+  end
+  local opening = self._timeline:openingPresentation()
+  local frame = type(opening) == "table" and opening.encounterFrame or nil
+  local snapshot = type(opening) == "table" and opening.encounterPalette or nil
+  if type(frame) ~= "number" or type(snapshot) ~= "table" or not self._scene:hasIntro() then
+    self:_releaseFadedIntro()
+    return
+  end
+  if self._fadedIntroUnavailable or self._mode == "failed" then
+    return
+  end
+  if self._fadedIntroImage ~= nil then
+    if frame == self._fadedIntroFrame then
+      return
+    end
+    -- Past the late fade, and across the still frames between the main
+    -- restore and the late arming, the settled upload stays current.
+    if frame > FADED_INTRO_LAST_FRAME then
+      return
+    end
+    if frame >= FADED_INTRO_FIRST_STATIC_FRAME and frame < FADED_INTRO_LATE_ARM_FRAME then
+      return
+    end
+  end
+  self:_renderFadedIntro(snapshot, frame)
+end
+
 -- Stages the encounter palette source once the battle scene layer lands:
 -- the timeline builds its evaluator from these buffers with the opening.
 -- A layer without BG3 provenance leaves the opening palette-less, exactly
@@ -6318,6 +6407,9 @@ function BattleScreenState:updateFixed(dt)
   if self._session ~= nil and self._mode ~= "failed" then
     self._session:resolve(measurement, self:_snapshot())
   end
+  -- The faded intro tracks the resolved plan's published frame, never a
+  -- ticked-ahead one: draws and polls advance nothing.
+  self:_updateFadedIntro()
   -- One accepted HGSS source tick advances the cue player, the
   -- native animation player, and the visual scene exactly once,
   -- with the menu reveal gate and the selection arrow riding the same

@@ -16,6 +16,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field prepareEvolution (fun(): table<string, unknown>?, string?)? late evolution leaf demand, nil while pending
 ---@field sceneLayer? fun(): table<string, unknown>?, string?
 ---@field background? fun(raster: table<string, unknown>): table<string, unknown>?, string?
+---@field fadedIntro? fun(raster: table<string, unknown>): table<string, unknown>?, string?
 ---@field requestEffect? fun(key: string): boolean?, string?
 ---@field loadEffect? fun(key: string): table<string, unknown>?, string?
 ---@field resolveEffectResource? fun(effect: table<string, unknown>, resourceKey: string): table<string, unknown>?, string?
@@ -733,6 +734,42 @@ function BattlePresentationAssets:background(raster)
     self._owned["battle-background"] = true
   end
   return image
+end
+
+-- Uploads one composed faded intro raster through the services adapter:
+-- nil without an adapter, nil plus the services cause on an upload
+-- error. Failures never latch the holder: the faded intro is an
+-- enhancement, so the screen falls back to its static intro lease and
+-- the launch continues. Successful uploads mark the key owned so
+-- disposal returns them exactly once.
+---@param raster table<string, unknown> composed RGBA8 intro raster from the battle scene
+---@return table<string, unknown>? image handle, nil without an adapter or after failure
+---@return string? services upload failure, nil without an adapter
+function BattlePresentationAssets:fadedIntro(raster)
+  if type(self._assets.fadedIntro) ~= "function" then
+    return nil
+  end
+  local image, failure = self._assets.fadedIntro(raster)
+  if failure ~= nil then
+    return nil, "battle faded intro image failed for launch " .. self._launchId .. ": " .. tostring(failure)
+  end
+  if image ~= nil then
+    self._owned["battle-faded-intro"] = true
+  end
+  return image
+end
+
+-- Returns a held faded intro upload mid-launch without a later disposal
+-- double-release: the screen calls this when the encounter fade ends so
+-- draws fall back to the static intro lease.
+function BattlePresentationAssets:releaseFadedIntro()
+  if self._owned["battle-faded-intro"] == nil then
+    return
+  end
+  self._owned["battle-faded-intro"] = nil
+  if type(self._assets.release) == "function" then
+    self._assets.release("battle-faded-intro")
+  end
 end
 
 -- Renders one source Pokepic plane into this screen's isolated depth target.

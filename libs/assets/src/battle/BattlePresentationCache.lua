@@ -83,6 +83,7 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field viewport { x: integer, y: integer, width: integer, height: integer }
 ---@field scroll { x: integer, y: integer }
 ---@field characters BattlePresentationCache.SceneResource
+---@field baseCharacters BattlePresentationCache.SceneResource unbaked 8bpp intro characters for palette fades
 ---@field map BattlePresentationCache.SceneResource
 ---@field palette BattlePresentationCache.SceneResource
 
@@ -326,6 +327,12 @@ end
 ---@return string cache-relative normalized BG3 palette path
 function BattlePresentationCache.scenePalettePath(sceneKey)
   return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".bg3.palette.lua"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative unbaked intro BG3 character payload path
+function BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
+  return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-intro.bg3.chars"
 end
 
 ---@param sceneKey string semantic scene key
@@ -587,6 +594,10 @@ local function hasSceneLayerClosure(cacheFs, record)
   local layer = record.layers[1]
   local characters = cacheFs:read(layer.characters.path)
   if type(characters) ~= "string" or #characters ~= 65536 then
+    return false
+  end
+  local baseCharacters = cacheFs:read(layer.baseCharacters.path)
+  if type(baseCharacters) ~= "string" or #baseCharacters ~= 65536 then
     return false
   end
   local map = cacheFs:loadLua(layer.map.path)

@@ -757,6 +757,37 @@ local function paletteBank(words)
   return "RLCN" .. string.char(0xff, 0xfe) .. u16le(0x0100) .. u32le(size) .. u16le(0x10) .. u16le(1) .. ttlp
 end
 
+-- A minimal NRCS container with caller-chosen dimensions and map entries,
+-- mirroring the retail screen layout the producer decoder reads: width and
+-- height words, a zero word, the entry byte count, then one u16 entry per
+-- 8x8 tile in row-major order.
+---@param width integer pixel width, a multiple of 8
+---@param height integer pixel height, a multiple of 8
+---@param entries integer[] source map entries in row-major order
+---@return string synthetic screen member bytes
+local function screenBank(width, height, entries)
+  local entryBytes = {}
+  for _, entry in ipairs(entries) do
+    entryBytes[#entryBytes + 1] = u16le(entry)
+  end
+  local payload = table.concat(entryBytes)
+  local scrn = "NRCS"
+    .. u32le(8 + 12 + #payload)
+    .. u16le(width)
+    .. u16le(height)
+    .. u32le(0)
+    .. u32le(#payload)
+    .. payload
+  local size = 0x10 + #scrn
+  return "RCSN"
+    .. string.char(0xff, 0xfe)
+    .. u16le(0x0100)
+    .. u32le(size)
+    .. u16le(0x10)
+    .. u16le(1)
+    .. scrn
+end
+
 -- Compiles one effect whose command lowering is stubbed but whose source
 -- resolution stays real: the route stream and the listed NARC members
 -- come from the synthetic bundle, so only managed-sprite staging is
@@ -879,6 +910,57 @@ function T.managed_sprite_resource_set_stages_its_character_as_an_exact_drawable
   Assert.deepEqual(pixel(0, 0), { 0, 0, 0, 0 }, "a zero source pixel stays transparent")
   Assert.deepEqual(pixel(8, 0), { 255, 0, 0, 255 }, "a nonzero nibble reads its paired palette entry")
   Assert.deepEqual(pixel(9, 0), { 0, 255, 0, 255 }, "the high nibble reads its own paired palette entry")
+end
+
+function T.visual_background_load_stages_raw_tile_planes_beside_decoded_screens()
+  local tileBytes = string.char(0x10) .. string.rep("\0", 31)
+  local words = { Rgb555.encode(0, 0, 0) }
+  for _ = 2, 16 do
+    words[#words + 1] = Rgb555.encode(0, 0, 0)
+  end
+  words[2] = Rgb555.encode(0, 31, 0)
+  local members = {
+    ["NARC_a_0_0_7"] = {
+      [59] = charBank(tileBytes),
+      [295] = paletteBank(words),
+      [56] = screenBank(8, 8, { 0 }),
+      [57] = screenBank(8, 8, { 1024 }),
+    },
+  }
+  local effect = assertProducerEffect(
+    compileManagedSpriteEffect("TACKLE", members, function(resolveSourceInput)
+      local resolved = resolveSourceInput("battle-background", { 0 })
+      return {
+        {
+          op = "start-visual-task",
+          taskKind = "battle-background-resource-load",
+          values = { 0, 0x1234 },
+          resourceKeys = resolved.resourceKeys,
+          runtimeSelection = resolved.runtimeSelection,
+        },
+      }
+    end),
+    "the visual background load"
+  )
+  local characterKey, paletteKey = nil, nil
+  for key in pairs(effect.resources) do
+    if key:find("battle%-background/character/", 1) ~= nil then
+      characterKey = key
+    end
+    if key:find("battle%-background/palette/", 1) ~= nil then
+      paletteKey = key
+    end
+  end
+  Assert.notNil(characterKey, "the load stages its character key")
+  Assert.notNil(paletteKey, "the load stages its palette key")
+  local characterDescriptor = effect.resources[characterKey]
+  Assert.equal(characterDescriptor.kind, "tiles", "the backdrop character keeps its tile resource kind")
+  local character = effect.resourcePayloads[characterDescriptor.payload]
+  Assert.equal(character.depth, 3, "the staged characters stay 4bpp tile planes")
+  Assert.equal(character.tiles, tileBytes, "the staged characters keep their raw packed tile bytes")
+  local palette = effect.resourcePayloads[effect.resources[paletteKey].payload]
+  Assert.equal(#palette.colors, 16, "the staged palette decodes its sixteen colors")
+  Assert.deepEqual(palette.colors[2], { r = 0, g = 255, b = 0 }, "the staged palette keeps its decoded colors")
 end
 
 function T.lone_sprite_character_stages_exact_rgba_through_its_template_palette()

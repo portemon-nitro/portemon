@@ -60,6 +60,66 @@ local function holder(overrides, assets)
   })
 end
 
+-- Faded intro uploads ride the services adapter with exactly-once
+-- ownership: uploads mark the key owned, mid-launch release returns it
+-- once without a later disposal double-release.
+function T.faded_intro_uploads_through_services_and_releases_exactly_once()
+  local assets = stubAssets({})
+  local uploads = 0
+  function assets.fadedIntro(_, _)
+    uploads = uploads + 1
+    return "faded-image"
+  end
+  local battle = holder(nil, assets)
+  local raster = { width = 8, height = 8, pixels = "pixels" }
+  Assert.equal(battle:fadedIntro(raster), "faded-image", "the faded intro uploads through services")
+  Assert.equal(uploads, 1, "the faded intro uploads once")
+  battle:releaseFadedIntro()
+  Assert.equal(assets.released["battle-faded-intro"], 1, "releasing returns the services upload once")
+  battle:releaseFadedIntro()
+  Assert.equal(assets.released["battle-faded-intro"], 1, "releasing twice never double-returns")
+  battle:dispose()
+  Assert.equal(
+    assets.released["battle-faded-intro"],
+    1,
+    "disposal never re-releases a returned upload"
+  )
+end
+
+-- Without a services adapter the faded intro answers nil with no
+-- failure, so adapter-less hosts keep drawing the static intro lease.
+function T.faded_intro_without_a_services_adapter_draws_nothing_and_fails_nothing()
+  local battle = holder()
+  local raster = { width = 8, height = 8, pixels = "pixels" }
+  Assert.isNil(battle:fadedIntro(raster), "no adapter stages no faded intro")
+  Assert.equal(battle:state(), "pending", "a missing adapter never latches a failure")
+  battle:dispose()
+end
+
+-- A failed faded intro upload keeps its cause without latching the
+-- holder: the enhancement falls back to the static intro lease and the
+-- launch continues.
+function T.faded_intro_upload_failure_falls_back_to_the_static_lease()
+  local assets = stubAssets({})
+  function assets.fadedIntro(_, _)
+    return nil, "probe-failure"
+  end
+  local battle = holder(nil, assets)
+  local raster = { width = 8, height = 8, pixels = "pixels" }
+  local image, failure = battle:fadedIntro(raster)
+  Assert.isNil(image, "a failed faded intro upload answers no image")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe-failure", 1, true) ~= nil,
+    "a failed faded intro upload keeps its cause: " .. tostring(failure)
+  )
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("assets-probe", 1, true) ~= nil,
+    "a failed faded intro upload names its launch: " .. tostring(failure)
+  )
+  Assert.equal(battle:state(), "pending", "a failed faded intro upload never latches the holder")
+  battle:dispose()
+end
+
 function T.shadow_size_selects_the_published_source_uv_rectangle()
   local assets = holder()
   Assert.deepEqual(assets:shadowRegion(0), SHADOW_REGIONS[1], "small shadow uses the first staged source rectangle")
@@ -1006,6 +1066,7 @@ local function layoutOnlyCache(portraitEntries)
     end
   end
   cache.files[charactersPath] = string.rep("\0", 65536)
+  cache.files[BattlePresentationCache.sceneIntroCharactersPath(PORTRAIT_SCENE_KEY)] = string.rep("\0", 65536)
   local mapEntries = {}
   for index = 1, 2048 do
     mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -1035,6 +1096,11 @@ local function layoutOnlyCache(portraitEntries)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = charactersPath,
+          format = "indexed8",
+        },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = BattlePresentationCache.sceneIntroCharactersPath(PORTRAIT_SCENE_KEY),
           format = "indexed8",
         },
         map = {
