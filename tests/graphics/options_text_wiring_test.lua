@@ -774,7 +774,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
-  Assert.equal(manifest.options.version, 3, "the staged section carries its selection-layer contract")
+  Assert.equal(manifest.options.version, 4, "the staged section carries its row-plate contract")
   Assert.equal(
     manifest.options.selectionOverlay,
     FieldUiFixture.optionsSelectionOverlayKey(),
@@ -785,6 +785,9 @@ function T.tests.stages_a_private_complete_image_set(scope)
     FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+    FieldUiFixture.OPTIONS_ROW_ODD_PATH,
+    FieldUiFixture.OPTIONS_ROW_EVEN_PATH,
+    FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
   }) do
     Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
   end

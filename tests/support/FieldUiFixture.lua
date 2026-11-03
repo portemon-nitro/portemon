@@ -1410,7 +1410,7 @@ function FieldUiFixture.addOptionsContract(manifest)
     return { frames = frames, loop = loop, bounds = bounds }
   end
   manifest.options = {
-    version = 3,
+    version = 4,
     backdrops = {
       controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
       preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
@@ -1470,6 +1470,7 @@ function FieldUiFixture.addOptionsContract(manifest)
       ),
     },
   }
+  FieldUiFixture.addRowBackings(manifest)
   return manifest
 end
 
@@ -1479,6 +1480,89 @@ function FieldUiFixture.writeOptionsPngs(cache)
   cache:write(FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH, FieldUiFixture.optionsControlsBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH, FieldUiFixture.optionsPreviewBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, FieldUiFixture.optionsSelectionOverlayBytes())
+  FieldUiFixture.writeRowPlatePngs(cache)
+end
+
+-- Synthetic source-derived row plates for the scrolling list: one fully
+-- opaque 256-wide surface per parity plus the 64px compound frame item.
+-- Flat distinct colors keep a wrong-role or missing-plate sample a pixel
+-- mismatch against the teal controls base and the purple strip border.
+FieldUiFixture.OPTIONS_ROW_ODD_PATH = "assets/generated/field/ui/options-row-odd.png"
+FieldUiFixture.OPTIONS_ROW_EVEN_PATH = "assets/generated/field/ui/options-row-even.png"
+FieldUiFixture.OPTIONS_ROW_FRAME_PATH = "assets/generated/field/ui/options-row-frame.png"
+FieldUiFixture.OPTIONS_ROW_ODD_KEY = "hgss.options.row_odd"
+FieldUiFixture.OPTIONS_ROW_EVEN_KEY = "hgss.options.row_even"
+FieldUiFixture.OPTIONS_ROW_FRAME_KEY = "hgss.options.row_frame"
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsRowOddColor()
+  return 250, 230, 180
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsRowEvenColor()
+  return 180, 210, 250
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsRowFrameColor()
+  return 190, 250, 190
+end
+
+---@return string png
+function FieldUiFixture.optionsRowOddBytes()
+  local r, g, b = FieldUiFixture.optionsRowOddColor()
+  return PngWriter.encode(256, 24, string.rep(string.char(r, g, b, 255), 256 * 24))
+end
+
+---@return string png
+function FieldUiFixture.optionsRowEvenBytes()
+  local r, g, b = FieldUiFixture.optionsRowEvenColor()
+  return PngWriter.encode(256, 24, string.rep(string.char(r, g, b, 255), 256 * 24))
+end
+
+---@return string png
+function FieldUiFixture.optionsRowFrameBytes()
+  local r, g, b = FieldUiFixture.optionsRowFrameColor()
+  return PngWriter.encode(256, 64, string.rep(string.char(r, g, b, 255), 256 * 64))
+end
+
+-- Grafts the mandatory scrolled row-plate contract onto a synthetic
+-- options manifest in place: bumps the section version, indexes the
+-- three 256-wide plate assets, and records their semantic roles.
+---@param manifest table
+---@return table manifest
+function FieldUiFixture.addRowBackings(manifest)
+  manifest.assets[FieldUiFixture.OPTIONS_ROW_ODD_KEY] = {
+    image = FieldUiFixture.OPTIONS_ROW_ODD_PATH,
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiFixture.OPTIONS_ROW_EVEN_KEY] = {
+    image = FieldUiFixture.OPTIONS_ROW_EVEN_PATH,
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiFixture.OPTIONS_ROW_FRAME_KEY] = {
+    image = FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
+    width = 256,
+    height = 64,
+  }
+  local options = assert(manifest.options, "the fixture manifest carries the options section")
+  options.version = 4
+  options.rowBackings = {
+    odd = FieldUiFixture.OPTIONS_ROW_ODD_KEY,
+    even = FieldUiFixture.OPTIONS_ROW_EVEN_KEY,
+    frame = FieldUiFixture.OPTIONS_ROW_FRAME_KEY,
+  }
+  return manifest
+end
+
+---@param cache CacheFs
+function FieldUiFixture.writeRowPlatePngs(cache)
+  cache:write(FieldUiFixture.OPTIONS_ROW_ODD_PATH, FieldUiFixture.optionsRowOddBytes())
+  cache:write(FieldUiFixture.OPTIONS_ROW_EVEN_PATH, FieldUiFixture.optionsRowEvenBytes())
+  cache:write(FieldUiFixture.OPTIONS_ROW_FRAME_PATH, FieldUiFixture.optionsRowFrameBytes())
 end
 
 -- Synthetic source-shaped options labels for typography tests: every record

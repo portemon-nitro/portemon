@@ -459,6 +459,8 @@ end
 -- the full 256x256 source map with palette-zero normalized to the same
 -- palette's opaque backdrop color, cropped to the top visible viewport.
 -- Private to this module; the compiled bundle carries the staged bytes.
+-- The decoded screen also returns for the row-plate builder so the MAIN
+-- base decodes once and both outputs share the same source pixels.
 ---@param archive Narc
 ---@param dependencies table[]
 ---@param chars table<integer, OptionsAssetCompiler.CharData>
@@ -468,6 +470,7 @@ end
 ---@param role string
 ---@return string png
 ---@return { image: string, width: integer, height: integer }
+---@return OptionsAssetCompiler.ScreenData decoded source screen
 local function renderBackdrop(archive, dependencies, chars, palettes, base, image, role)
   local screenBytes = decodeMember(archive, base.screenMember, "options-backdrop:" .. base.screenMember)
   dependencies[#dependencies + 1] = {
@@ -503,7 +506,119 @@ local function renderBackdrop(archive, dependencies, chars, palettes, base, imag
   for y = 0, 191 do
     rows[#rows + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
   end
-  return PngWriter.encode(256, 192, table.concat(rows)), { image = image, width = 256, height = 192 }
+  return PngWriter.encode(256, 192, table.concat(rows)), { image = image, width = 256, height = 192 }, screen
+end
+
+-- Copies one 8px source tile row into a full-width plate row, replacing the
+-- audited face span with the backing entry observed at the interior filler
+-- column of the same tile row. The retained label and edge spans keep their
+-- exact source entries; flips travel with the filler so the scrubbed span
+-- tiles seamlessly. Private to this module; the compiled bundle carries the
+-- staged bytes.
+---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
+---@param tileRow integer zero-based source tile row copied for one plate row
+---@param expectedFiller integer audited backing tile for this tile row
+---@param role string plate role for failure detail
+---@return table[] plate row entries across the full 256px width
+local function scrubbedPlateRow(screen, tileRow, expectedFiller, role)
+  local columns = screen.width / 8
+  if columns ~= 32 or tileRow < 0 or tileRow * columns + columns > #screen.entries then
+    sourceError("the options row band leaves its audited source screen", {
+      role = role,
+      tileRow = tileRow,
+      width = screen.width,
+      entries = #screen.entries,
+    })
+  end
+  assert(columns == 32, "a bounded options tile row fails above")
+  local plates = OptionsSources.rowPlates
+  local filler = screen.entries[tileRow * columns + plates.fillerColumn + 1]
+  if filler.tile ~= expectedFiller or filler.palette ~= 0 then
+    sourceError("the options row band filler disagrees with the audited backing tile", {
+      role = role,
+      tileRow = tileRow,
+      tile = filler.tile,
+      palette = filler.palette,
+      expected = expectedFiller,
+    })
+  end
+  for col = 1, 11 do
+    local entry = screen.entries[tileRow * columns + col + 1]
+    if
+      entry.tile ~= filler.tile
+      or entry.palette ~= filler.palette
+      or entry.flipH ~= filler.flipH
+      or entry.flipV ~= filler.flipV
+    then
+      sourceError("the options row band interior is not uniform backing material", {
+        role = role,
+        tileRow = tileRow,
+        column = col,
+      })
+    end
+  end
+  local row = {}
+  local changed = false
+  for col = 0, columns - 1 do
+    local kept = screen.entries[tileRow * columns + col + 1]
+    if col >= plates.faceFirstColumn and col <= plates.faceLastColumn then
+      if
+        kept.tile ~= filler.tile
+        or kept.palette ~= filler.palette
+        or kept.flipH ~= filler.flipH
+        or kept.flipV ~= filler.flipV
+      then
+        changed = true
+      end
+      row[#row + 1] = { tile = filler.tile, palette = filler.palette, flipH = filler.flipH, flipV = filler.flipV }
+    else
+      row[#row + 1] = { tile = kept.tile, palette = kept.palette, flipH = kept.flipH, flipV = kept.flipV }
+    end
+  end
+  if not changed then
+    sourceError("the options row scrub span carries no face material to remove", { role = role, tileRow = tileRow })
+  end
+  return row
+end
+
+-- Renders one fully opaque source-derived row plate: the listed source tile
+-- rows scrubbed per row, rasterized through the shared screen path with
+-- palette-zero normalized to the opaque backdrop color. Private to this
+-- module; the compiled bundle carries the staged bytes.
+---@param charData OptionsAssetCompiler.CharData decoded MAIN base tiles
+---@param palette OptionsAssetCompiler.PaletteData decoded MAIN base palette
+---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
+---@param tileRows integer[] zero-based source tile rows in plate order
+---@param expectedFillers integer[] audited backing tile per plate row
+---@param image string staged output path
+---@param role string plate role for failure detail
+---@return string png
+---@return { image: string, width: integer, height: integer }
+local function renderRowPlate(charData, palette, screen, tileRows, expectedFillers, image, role)
+  if #tileRows == 0 or #tileRows ~= #expectedFillers then
+    sourceError("the options row plate carries no audited tile rows", { role = role })
+  end
+  local entries = {}
+  for index, tileRow in ipairs(tileRows) do
+    local row = scrubbedPlateRow(screen, tileRow, expectedFillers[index], role)
+    for _, entry in ipairs(row) do
+      entries[#entries + 1] = entry
+    end
+  end
+  local height = #tileRows * 8
+  local render = G2dRasterizer.renderScreen(
+    charData,
+    { colors = palette.colors },
+    { width = 256, height = height, entries = entries },
+    { asset = "options " .. role, member = OptionsSources.members.faceScreen },
+    { backdrop = true }
+  )
+  for offset = 4, #render.pixels, 4 do
+    if string.byte(render.pixels, offset) ~= 255 then
+      sourceError("the options row plate is not fully opaque", { role = role, pixel = math.floor(offset / 4) })
+    end
+  end
+  return PngWriter.encode(256, height, render.pixels), { image = image, width = 256, height = height }
 end
 
 -- Renders the transparent selected-row strip from the separate MAIN
@@ -807,7 +922,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     -- and indexed asset beside the packed chrome atlas.
     local controlsImage = FieldUiAssetCache.assetDir() .. "/options-controls-background.png"
     local previewImage = FieldUiAssetCache.assetDir() .. "/options-preview-background.png"
-    local controlsPng, controlsAsset = renderBackdrop(
+    local controlsPng, controlsAsset, controlsScreen = renderBackdrop(
       archive,
       dependencies,
       chars,
@@ -828,17 +943,75 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     local overlayImage = FieldUiAssetCache.assetDir() .. "/options-selection-overlay.png"
     local overlayPng, overlayAsset =
       renderSelectionOverlay(archive, dependencies, chars, palettes, overlayImage, "options:selection-overlay")
+    -- The scrolling list row plates share the decoded MAIN base: the two
+    -- native 24px bands as the alternating plates, and the 64px compound
+    -- frame item as the odd selector band over mid-band interior with the
+    -- odd lower edge closing the item.
+    local rowPlates = OptionsSources.rowPlates
+    local oddTileRows = { rowPlates.oddBand.topTileRow, rowPlates.oddBand.midTileRow, rowPlates.oddBand.bottomTileRow }
+    local evenTileRows =
+      { rowPlates.evenBand.topTileRow, rowPlates.evenBand.midTileRow, rowPlates.evenBand.bottomTileRow }
+    local frameTileRows = {
+      rowPlates.oddBand.topTileRow,
+      rowPlates.oddBand.midTileRow,
+      rowPlates.oddBand.bottomTileRow,
+      rowPlates.oddBand.midTileRow,
+      rowPlates.oddBand.midTileRow,
+      rowPlates.oddBand.midTileRow,
+      rowPlates.oddBand.midTileRow,
+      rowPlates.oddBand.bottomTileRow,
+    }
+    local frameFillers = {
+      rowPlates.oddFillers[1],
+      rowPlates.oddFillers[2],
+      rowPlates.oddFillers[3],
+      rowPlates.oddFillers[2],
+      rowPlates.oddFillers[2],
+      rowPlates.oddFillers[2],
+      rowPlates.oddFillers[2],
+      rowPlates.oddFillers[3],
+    }
+    local plateChar = chars[OptionsSources.bases.controls.charMember]
+    local platePalette = palettes[OptionsSources.bases.controls.paletteMember]
+    if plateChar == nil or platePalette == nil then
+      sourceError("the options row plate banks are not decoded", { role = "options:row-plates" })
+    end
+    assert(plateChar ~= nil and platePalette ~= nil, "a missing options plate bank fails above")
+    local oddImage = FieldUiAssetCache.assetDir() .. "/options-row-odd.png"
+    local evenImage = FieldUiAssetCache.assetDir() .. "/options-row-even.png"
+    local frameImage = FieldUiAssetCache.assetDir() .. "/options-row-frame.png"
+    local oddPng, oddAsset =
+      renderRowPlate(plateChar, platePalette, controlsScreen, oddTileRows, rowPlates.oddFillers, oddImage, "row-odd")
+    local evenPng, evenAsset = renderRowPlate(
+      plateChar,
+      platePalette,
+      controlsScreen,
+      evenTileRows,
+      rowPlates.evenFillers,
+      evenImage,
+      "row-even"
+    )
+    local framePng, frameAsset =
+      renderRowPlate(plateChar, platePalette, controlsScreen, frameTileRows, frameFillers, frameImage, "row-frame")
     local files = {
       [image] = PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)),
       [controlsImage] = controlsPng,
       [previewImage] = previewPng,
       [overlayImage] = overlayPng,
+      [oddImage] = oddPng,
+      [evenImage] = evenPng,
+      [frameImage] = framePng,
     }
     local section = {
-      version = 3,
+      version = 4,
       backdrops = {
         controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
         preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+      },
+      rowBackings = {
+        odd = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD,
+        even = FieldUiAssetCache.ASSET.OPTIONS_ROW_EVEN,
+        frame = FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME,
       },
       selectionOverlay = FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
       labels = labels,
@@ -868,6 +1041,9 @@ function OptionsAssetCompiler.compile(romFs, versionId)
         { key = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND, asset = controlsAsset },
         { key = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND, asset = previewAsset },
         { key = FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY, asset = overlayAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD, asset = oddAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_EVEN, asset = evenAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME, asset = frameAsset },
       },
     }
   end, function(err)

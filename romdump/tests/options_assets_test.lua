@@ -142,11 +142,20 @@ end
 function T.compiled_section_carries_the_locked_semantic_shapes(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 3)
+  Assert.equal(section.version, 4)
   local DisplayTiming = require("libs.nds.src.gx.DisplayTiming")
   Assert.equal(section.animationTickSeconds, 1 / DisplayTiming.REFRESH_HZ)
   local labels = assert(section.labels, "the section carries its labels")
-  for _, key in ipairs({ "title", "textSpeed", "battleScene", "battleStyle", "soundMode", "textFrame", "confirm", "quit" }) do
+  for _, key in ipairs({
+    "title",
+    "textSpeed",
+    "battleScene",
+    "battleStyle",
+    "soundMode",
+    "textFrame",
+    "confirm",
+    "quit",
+  }) do
     assertLabel(labels[key], "labels." .. key)
   end
   Assert.equal(labels.title.text, "OPTIONS")
@@ -243,8 +252,10 @@ function T.compiled_pixels_match_the_decoded_source_art(romFs, versionId)
     local pixels = {}
     for y = 0, frame.atlas.height - 1 do
       for x = 0, frame.atlas.width - 1 do
-        pixels[#pixels + 1] =
-          rgba:sub((y + frame.atlas.y) * width * 4 + (x + frame.atlas.x) * 4 + 1, (y + frame.atlas.y) * width * 4 + (x + frame.atlas.x) * 4 + 4)
+        pixels[#pixels + 1] = rgba:sub(
+          (y + frame.atlas.y) * width * 4 + (x + frame.atlas.x) * 4 + 1,
+          (y + frame.atlas.y) * width * 4 + (x + frame.atlas.x) * 4 + 4
+        )
       end
     end
     return pixels
@@ -280,7 +291,12 @@ function T.compiled_pixels_match_the_decoded_source_art(romFs, versionId)
     local char = decoded("decodeChar", 7)
     local palette = decoded("decodePalette", 2)
     local screen = decoded("decodeScreen", 17)
-    local reference = G2dRasterizer.renderScreen(char, { colors = palette.colors }, screen, { asset = "options", member = 17 })
+    local reference = G2dRasterizer.renderScreen(
+      char,
+      { colors = palette.colors },
+      screen,
+      { asset = "options", member = 17 }
+    )
     local crop = {}
     for y = 24, 24 + 32 - 1 do
       for x = 112, 112 + 48 - 1 do
@@ -317,7 +333,7 @@ end
 function T.selection_strip_matches_the_native_selected_row_layer(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 3, "the options section carries its selection-layer contract")
+  Assert.equal(section.version, 4, "the options section carries its selection-layer contract")
   local overlayKey = "hgss.options.selection_overlay"
   Assert.equal(section.selectionOverlay, overlayKey, "the section indexes its selected-row strip")
   Assert.equal(
@@ -327,10 +343,7 @@ function T.selection_strip_matches_the_native_selected_row_layer(romFs, versionI
   )
   local Sources = optionsSources()
   local overlayImage = FieldUiAssetCache.assetDir() .. "/options-selection-overlay.png"
-  local overlayBytes = assert(
-    bundle.files[overlayImage],
-    "the selected-row strip is staged as its indexed PNG"
-  )
+  local overlayBytes = assert(bundle.files[overlayImage], "the selected-row strip is staged as its indexed PNG")
   local width, height, rgba = PngReader.rgba(overlayBytes)
   Assert.equal(width, 256, "the selected-row strip width")
   Assert.equal(height, 24, "the selected-row strip height")
@@ -383,7 +396,7 @@ end
 function T.backdrops_derive_from_the_audited_base_screens(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 3, "the options section carries its backdrop contract")
+  Assert.equal(section.version, 4, "the options section carries its backdrop contract")
   Assert.equal(
     section.backdrops.controls,
     FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
@@ -469,7 +482,7 @@ function T.field_ui_compilation_publishes_ready_options(romFs, versionId)
   local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
   local bundle = assert(FieldUiCompiler.compile(romFs))
   local options = assert(bundle.manifest.options, "the field-UI class carries its options section")
-  Assert.equal(options.version, 3)
+  Assert.equal(options.version, 4)
   Assert.isTrue(bundle.manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] ~= nil, "the chrome atlas is indexed")
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest), "the extended class still validates")
   local cache = CacheFs.forVersion(versionId, FakeCache.new())
@@ -550,6 +563,234 @@ function T.missing_option_source_fails_with_producer_context(romFs, versionId)
     local bundle, err = Compiler.compile(fake, versionId)
     Assert.isNil(bundle, "a resdat list that disagrees with the curated selectors must not compile")
     Assert.equal(assert(err).code, Compiler.ERROR.SOURCE_INVALID)
+  end
+end
+
+-- Every source-derived options class carries its mandatory scrolling row
+-- plates: the section versions the row contract, indexes the three
+-- 256-wide opaque plates, and stale or incomplete classes fail strict
+-- readiness while the two full-screen source bases stay intact.
+function T.compiled_row_plates_publish_indexed_opaque_backings(romFs, versionId)
+  local bundle = compileOptions(romFs, versionId)
+  local section = assert(bundle.section, "the compiler returns its semantic section")
+  Assert.equal(section.version, 4, "the options section carries the row-plate contract")
+  local backings = assert(section.rowBackings, "the section indexes its row plates")
+  Assert.equal(backings.odd, "hgss.options.row_odd", "the odd row plate carries its semantic role")
+  Assert.equal(backings.even, "hgss.options.row_even", "the even row plate carries its semantic role")
+  Assert.equal(backings.frame, "hgss.options.row_frame", "the frame plate carries its semantic role")
+  Assert.equal(
+    FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD,
+    "hgss.options.row_odd",
+    "the runtime asset index names the odd row plate"
+  )
+  Assert.equal(
+    FieldUiAssetCache.ASSET.OPTIONS_ROW_EVEN,
+    "hgss.options.row_even",
+    "the runtime asset index names the even row plate"
+  )
+  Assert.equal(
+    FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME,
+    "hgss.options.row_frame",
+    "the runtime asset index names the frame plate"
+  )
+  local oddImage = FieldUiAssetCache.assetDir() .. "/options-row-odd.png"
+  local evenImage = FieldUiAssetCache.assetDir() .. "/options-row-even.png"
+  local frameImage = FieldUiAssetCache.assetDir() .. "/options-row-frame.png"
+  local oddBytes = assert(bundle.files[oddImage], "the odd row plate is staged")
+  local evenBytes = assert(bundle.files[evenImage], "the even row plate is staged")
+  local frameBytes = assert(bundle.files[frameImage], "the frame plate is staged")
+  local function stagedRgba(bytes, what, wantWidth, wantHeight)
+    local width, height, rgba = PngReader.rgba(bytes)
+    Assert.equal(width, wantWidth, what .. " width")
+    Assert.equal(height, wantHeight, what .. " height")
+    return rgba
+  end
+  local oddRgba = stagedRgba(oddBytes, "the odd row plate", 256, 24)
+  local evenRgba = stagedRgba(evenBytes, "the even row plate", 256, 24)
+  local frameRgba = stagedRgba(frameBytes, "the frame plate", 256, 64)
+  local function assertOpaque(rgba, what)
+    for index = 4, #rgba, 4 do
+      if string.byte(rgba, index) ~= 255 then
+        Assert.fail(what .. " pixel " .. math.floor(index / 4) .. " is not opaque")
+      end
+    end
+  end
+  assertOpaque(oddRgba, "the odd row plate")
+  assertOpaque(evenRgba, "the even row plate")
+  assertOpaque(frameRgba, "the frame plate")
+  Assert.isTrue(oddRgba ~= evenRgba, "odd and even plates keep their alternating bands")
+  Assert.isTrue(frameRgba ~= oddRgba, "the frame plate is its own compound item")
+  local indexed = {}
+  for _, background in ipairs(assert(bundle.backgrounds, "the compiler publishes its backdrop index")) do
+    indexed[background.key] = background.asset
+  end
+  Assert.isTrue(indexed["hgss.options.row_odd"] ~= nil, "the odd plate is indexed")
+  Assert.isTrue(indexed["hgss.options.row_even"] ~= nil, "the even plate is indexed")
+  Assert.isTrue(indexed["hgss.options.row_frame"] ~= nil, "the frame plate is indexed")
+  local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
+  local full = assert(FieldUiCompiler.compile(romFs))
+  Assert.equal(full.manifest.options.version, 4, "the field-UI class carries the row-plate section")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(full.manifest), "the extended class still validates")
+  local stale = assert(FieldUiCompiler.compile(romFs))
+  stale.manifest.options.version = 3
+  local staleOk, staleErr = FieldUiAssetCache.validateManifest(stale.manifest)
+  Assert.isFalse(staleOk, "a stale class without the row contract is not ready")
+  Assert.equal(assert(staleErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missing = assert(FieldUiCompiler.compile(romFs))
+  missing.manifest.options.rowBackings = nil
+  local missingOk, missingErr = FieldUiAssetCache.validateManifest(missing.manifest)
+  Assert.isFalse(missingOk, "a class without row plates is not ready")
+  Assert.equal(assert(missingErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missized = assert(FieldUiCompiler.compile(romFs))
+  missized.manifest.assets["hgss.options.row_even"].height = 32
+  local sizedOk, sizedErr = FieldUiAssetCache.validateManifest(missized.manifest)
+  Assert.isFalse(sizedOk, "a missized row plate is rejected")
+  Assert.equal(assert(sizedErr).code, "FIELD_UI_MANIFEST_INVALID")
+end
+
+-- The scrub filler is audited band backing, not an invented color: every
+-- recorded filler tile is opaque, carries only its band's background
+-- palette entries, and the mid-band filler is one flat color. The check
+-- decodes the source tiles directly, never through the plate builder.
+function T.row_plate_filler_is_plain_audited_band_backing(romFs, versionId)
+  local Sources = optionsSources()
+  local plates = assert(Sources.rowPlates, "the producer records its audited plate material")
+  local archive = assert(romFs:openNarc(Sources.archive.symbol))
+  local function decoded(kind, memberId)
+    local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
+    assert(decodedValue, tostring(err and err.message or err))
+    return decodedValue
+  end
+  local char = decoded("decodeChar", Sources.members.faceChar)
+  local tileBytes = char.depth == 3 and 32 or 64
+  local function indices(tile)
+    local raw = char.tiles:sub(tile * tileBytes + 1, (tile + 1) * tileBytes)
+    local seen = {}
+    if char.depth == 3 then
+      for i = 1, #raw do
+        local byte = string.byte(raw, i)
+        seen[byte % 16] = true
+        seen[math.floor(byte / 16)] = true
+      end
+    else
+      for i = 1, #raw do
+        seen[string.byte(raw, i)] = true
+      end
+    end
+    local list = {}
+    for index in pairs(seen) do
+      list[#list + 1] = index
+    end
+    table.sort(list)
+    return list
+  end
+  local bands = {
+    odd = { fillers = plates.oddFillers, allowed = { [1] = true, [4] = true } },
+    even = { fillers = plates.evenFillers, allowed = { [1] = true, [6] = true } },
+  }
+  for _, band in ipairs({ "odd", "even" }) do
+    local spec = bands[band]
+    Assert.equal(#spec.fillers, 3, "the " .. band .. " band records one filler per tile row")
+    for position, tile in ipairs(spec.fillers) do
+      local found = indices(tile)
+      Assert.isTrue(#found >= 1, "filler tile " .. tile .. " carries pixels")
+      for _, index in ipairs(found) do
+        Assert.isTrue(spec.allowed[index] == true, "filler tile " .. tile .. " stays in its band backing")
+      end
+      if position == 2 then
+        Assert.equal(#found, 1, "the " .. band .. " mid-band filler is one flat color")
+      end
+    end
+  end
+end
+
+-- Every scrubbed span hides the native control faces without inventing
+-- pixels: the retained label and edge spans match the staged source
+-- backdrop bytes exactly, each scrubbed span uses only colors already
+-- present in its own row interior, and the compound frame item reuses the
+-- odd band rows. The reference is the published backdrop artifact, never
+-- the plate builder under test.
+function T.row_plates_hide_faces_with_band_backing_only(romFs, versionId)
+  local bundle = compileOptions(romFs, versionId)
+  local controlsBytes = assert(
+    bundle.files[FieldUiAssetCache.assetDir() .. "/options-controls-background.png"],
+    "the controls backdrop is staged"
+  )
+  local _, _, controlsRgba = PngReader.rgba(controlsBytes)
+  local function plateRgba(name)
+    local bytes = assert(bundle.files[FieldUiAssetCache.assetDir() .. name], name .. " is staged")
+    local width, height, rgba = PngReader.rgba(bytes)
+    Assert.equal(width, 256, name .. " width")
+    return height, rgba
+  end
+  local oddHeight, oddRgba = plateRgba("/options-row-odd.png")
+  local evenHeight, evenRgba = plateRgba("/options-row-even.png")
+  local frameHeight, frameRgba = plateRgba("/options-row-frame.png")
+  Assert.equal(oddHeight, 24, "the odd plate height")
+  Assert.equal(evenHeight, 24, "the even plate height")
+  Assert.equal(frameHeight, 64, "the frame plate height")
+  local function rowSpan(rgba, width, y, x0, x1)
+    return rgba:sub((y * width + x0) * 4 + 1, (y * width + x1 + 1) * 4)
+  end
+  local function colorSet(rgba, width, y0, y1, x0, x1)
+    local set = {}
+    for y = y0, y1 do
+      for x = x0, x1 do
+        set[rgba:sub((y * width + x) * 4 + 1, (y * width + x) * 4 + 4)] = true
+      end
+    end
+    return set
+  end
+  local bands = {
+    { rgba = oddRgba, height = 24, baseY = 24, name = "odd" },
+    { rgba = evenRgba, height = 24, baseY = 48, name = "even" },
+  }
+  for _, band in ipairs(bands) do
+    for y = 0, band.height - 1 do
+      Assert.equal(
+        rowSpan(band.rgba, 256, y, 0, 111),
+        rowSpan(controlsRgba, 256, band.baseY + y, 0, 111),
+        "the " .. band.name .. " plate keeps its source label span at row " .. y
+      )
+      Assert.equal(
+        rowSpan(band.rgba, 256, y, 248, 255),
+        rowSpan(controlsRgba, 256, band.baseY + y, 248, 255),
+        "the " .. band.name .. " plate keeps its source edge cap at row " .. y
+      )
+    end
+    for _, tileRow in ipairs({ 0, 1, 2 }) do
+      local interior = colorSet(band.rgba, 256, tileRow * 8, tileRow * 8 + 7, 8, 95)
+      for y = tileRow * 8, tileRow * 8 + 7 do
+        for x = 112, 247 do
+          local pixel = band.rgba:sub((y * 256 + x) * 4 + 1, (y * 256 + x) * 4 + 4)
+          Assert.isTrue(
+            interior[pixel] == true,
+            "the " .. band.name .. " scrub span borrows only its row interior at " .. x .. "," .. y
+          )
+        end
+      end
+    end
+  end
+  for y = 0, 23 do
+    Assert.equal(
+      rowSpan(frameRgba, 256, y, 0, 255),
+      rowSpan(oddRgba, 256, y, 0, 255),
+      "the frame selector band matches the odd band at row " .. y
+    )
+  end
+  for y = 24, 55 do
+    Assert.equal(
+      rowSpan(frameRgba, 256, y, 0, 255),
+      rowSpan(oddRgba, 256, 8 + (y - 24) % 8, 0, 255),
+      "the frame extension repeats the odd mid-band interior at row " .. y
+    )
+  end
+  for y = 56, 63 do
+    Assert.equal(
+      rowSpan(frameRgba, 256, y, 0, 255),
+      rowSpan(oddRgba, 256, 16 + (y - 56), 0, 255),
+      "the frame lower edge matches the odd lower edge at row " .. y
+    )
   end
 end
 

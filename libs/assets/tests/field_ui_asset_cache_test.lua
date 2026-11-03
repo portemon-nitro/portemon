@@ -1043,33 +1043,30 @@ end
 
 -- The option-control section carries exactly the two indexed backdrop
 -- roles (controls and preview) at the 256x192 field size plus the required
--- transparent 256x24 selected-row strip under manifest version 3. A missing
--- strip role, an extra role, a swapped or unindexed asset id, a missized
--- indexed asset, or a previous version shape is stale.
+-- transparent 256x24 selected-row strip and the three mandatory scrolling
+-- row plates under manifest version 4. A missing role, an extra role, a
+-- swapped or unindexed asset id, a missized indexed asset, or a previous
+-- version shape is stale.
 function T.options_backdrops_require_the_two_indexed_roles()
   local overlayKey = "hgss.options.selection_overlay"
-  -- The complete synthetic section the producer must emit: the curated v2
-  -- shape upgraded with the required transparent strip. Built locally so
-  -- the shared legacy fixtures keep proving the current runtime contract
-  -- until the producer/validator land the new section.
+  -- The complete synthetic section the producer must emit: backdrops, the
+  -- transparent strip, and the scrolling row plates. Built locally so the
+  -- shared fixtures keep proving the current runtime contract.
   local function completeManifest()
     local manifest = validManifest()
-    manifest.options.version = 3
+    manifest.options.version = 4
     manifest.options.selectionOverlay = overlayKey
     manifest.assets[overlayKey] = {
       image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
       width = 256,
       height = 24,
     }
+    FieldUiFixture.addRowBackings(manifest)
     return manifest
   end
   local manifest = completeManifest()
-  Assert.equal(manifest.options.version, 3, "the fixture carries the current options section")
-  Assert.equal(
-    manifest.options.selectionOverlay,
-    overlayKey,
-    "the fixture indexes its selected-row strip"
-  )
+  Assert.equal(manifest.options.version, 4, "the fixture carries the current options section")
+  Assert.equal(manifest.options.selectionOverlay, overlayKey, "the fixture indexes its selected-row strip")
   Assert.equal(
     FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
     overlayKey,
@@ -1081,8 +1078,8 @@ function T.options_backdrops_require_the_two_indexed_roles()
   Assert.equal(overlayEntry.width, 256, "the selected-row strip width")
   Assert.equal(overlayEntry.height, 24, "the selected-row strip height")
   Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the indexed backdrops and strip validate")
-  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v25")
-  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v25")
+  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v26")
+  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v26")
   local cases = {
     ["missing preview role"] = function(o)
       o.backdrops.preview = nil
@@ -1106,10 +1103,25 @@ function T.options_backdrops_require_the_two_indexed_roles()
       o.backdrops = nil
     end,
     ["previous version"] = function(o)
+      o.version = 3
+    end,
+    ["older version"] = function(o)
       o.version = 2
     end,
     ["first version"] = function(o)
       o.version = 1
+    end,
+    ["missing row plates"] = function(o)
+      o.rowBackings = nil
+    end,
+    ["extra plate role"] = function(o)
+      o.rowBackings.extra = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD
+    end,
+    ["swapped plate roles"] = function(o)
+      o.rowBackings.odd, o.rowBackings.even = o.rowBackings.even, o.rowBackings.odd
+    end,
+    ["unindexed plate id"] = function(o)
+      o.rowBackings.odd = "hgss.options.missing"
     end,
   }
   for name, mutate in pairs(cases) do
@@ -1134,6 +1146,16 @@ function T.options_backdrops_require_the_two_indexed_roles()
   local imageOk, imageErr = FieldUiAssetCache.validateManifest(missingImage)
   Assert.isFalse(imageOk, "a missing indexed strip image is rejected")
   Assert.equal(assert(imageErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedPlate = completeManifest()
+  missizedPlate.assets[FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME].height = 32
+  local plateOk, plateErr = FieldUiAssetCache.validateManifest(missizedPlate)
+  Assert.isFalse(plateOk, "a missized row plate asset is rejected")
+  Assert.equal(assert(plateErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missingPlate = completeManifest()
+  missingPlate.assets[FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD] = nil
+  local plateImageOk, plateImageErr = FieldUiAssetCache.validateManifest(missingPlate)
+  Assert.isFalse(plateImageOk, "a missing indexed row plate image is rejected")
+  Assert.equal(assert(plateImageErr).code, "FIELD_UI_MANIFEST_INVALID")
 end
 
 -- The selected-row strip carries no source identities: a manifest that
@@ -1143,7 +1165,7 @@ function T.options_selection_overlay_rejects_source_identities_and_foreign_keys(
   local overlayKey = "hgss.options.selection_overlay"
   local function completeManifest()
     local manifest = validManifest()
-    manifest.options.version = 3
+    manifest.options.version = 4
     manifest.options.selectionOverlay = overlayKey
     manifest.assets[overlayKey] = {
       image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
@@ -1153,10 +1175,7 @@ function T.options_selection_overlay_rejects_source_identities_and_foreign_keys(
     return manifest
   end
   local complete = completeManifest()
-  Assert.isTrue(
-    FieldUiAssetCache.validateManifest(complete),
-    "a manifest carrying the indexed strip validates"
-  )
+  Assert.isTrue(FieldUiAssetCache.validateManifest(complete), "a manifest carrying the indexed strip validates")
   local leaked = completeManifest()
   leaked.options.selectionOverlayMember = 18
   local leakedOk, leakedErr = FieldUiAssetCache.validateManifest(leaked)

@@ -82,6 +82,7 @@ local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest"
 ---@field actions table<string, unknown>
 ---@field backdrops table<string, string> semantic role to its indexed backdrop asset key
 ---@field selectionOverlay string required indexed selected-row strip asset key
+---@field rowBackings table<string, string> semantic role to its indexed row backing asset key
 ---@field framePreviewText table<integer, table<string, unknown>>?
 ---@field animationTickSeconds number?
 ---@alias OptionsRenderer.Rect { x: number, y: number, width: number, height: number }
@@ -135,7 +136,7 @@ function OptionsRenderer:_section()
   local manifest = self._manifest
   local section = manifest.options
   assert(type(section) == "table", "the field-UI manifest carries the options section")
-  assert(section.version == 3, "the options section carries its locked version")
+  assert(section.version == 4, "the options section carries its locked version")
   return section
 end
 
@@ -200,6 +201,13 @@ function OptionsRenderer:_requestChrome()
   local overlayKey = assert(section.selectionOverlay, "the options section carries its selection overlay role")
   local overlay = assert(assets[overlayKey], "the selection overlay indexes its asset")
   add(assert(overlay.image, "the selection overlay asset carries its image path"), "selectionOverlay")
+  local backings = assert(section.rowBackings, "the options section carries its row plates")
+  for _, role in ipairs({ "odd", "even", "frame" }) do
+    local assetKey = assert(backings[role], "the options section carries its " .. role .. " row plate role")
+    local entry = assert(assets[assetKey], "the " .. role .. " row plate indexes its asset")
+    local leaseRole = "row" .. role:sub(1, 1):upper() .. role:sub(2)
+    add(assert(entry.image, "the " .. role .. " row plate asset carries its image path"), leaseRole)
+  end
 end
 
 -- Prebuilds one stable viewport per unique immutable compiled frame
@@ -328,6 +336,9 @@ function OptionsRenderer:prepare()
     assert(self._leaseByRole.controls ~= nil, "prepared controls carry their backdrop lease")
     assert(self._leaseByRole.preview ~= nil, "prepared preview carries its backdrop lease")
     assert(self._leaseByRole.selectionOverlay ~= nil, "prepared selection overlay carries its lease")
+    assert(self._leaseByRole.rowOdd ~= nil, "prepared odd row plate carries its lease")
+    assert(self._leaseByRole.rowEven ~= nil, "prepared even row plate carries its lease")
+    assert(self._leaseByRole.rowFrame ~= nil, "prepared frame plate carries its lease")
     self:_buildQuads()
     self:_checkLabels()
   end)
@@ -339,13 +350,30 @@ function OptionsRenderer:prepare()
   return true
 end
 
+-- Selects the scrolled plate for one laid-out row: the compound frame
+-- backing for the closing item, otherwise the alternating band by content
+-- position. Private to this module; leases stay borrowed, never owned here.
+---@param row OptionsInterface.RowLayout laid-out row
+---@return ImageAssetPoolLease borrowed plate lease
+function OptionsRenderer:_plateFor(row)
+  if row.id == "textFrame" then
+    return assert(self._leaseByRole.rowFrame, "prepared frame plate carries its lease")
+  end
+  if row.position % 2 == 1 then
+    return assert(self._leaseByRole.rowOdd, "prepared odd row plate carries its lease")
+  end
+  return assert(self._leaseByRole.rowEven, "prepared even row plate carries its lease")
+end
+
 -- Paints one resolved plan: each pane first paints its own semantic
 -- source backdrop, then the controls/content pane paints the header, the
 -- clipped scrolling rows translated by the list offset (the closing frame
 -- row paints its child sample window inside the same clip), and the
 -- fixed footer, while the upper preview pane paints only its decorative
--- backdrop. Rows outside the published viewport never draw; draw
--- acquires nothing and leaves shared owners alone.
+-- backdrop. Every visible row plate paints before the single focused
+-- strip and the row contents under one translation; rows outside the
+-- published viewport never draw; draw acquires nothing and leaves shared
+-- owners alone.
 ---@param view table<string, unknown> the screen semantic snapshot
 ---@param plan table<string, unknown> the resolved plan
 function OptionsRenderer:draw(view, plan)
@@ -386,9 +414,17 @@ function OptionsRenderer:draw(view, plan)
         self:_drawBackdrop(graphics, "controls")
         local viewport = assert(content.listViewport, "content carries its list viewport")
         LogicalSurface.clip(graphics, viewport, function()
-          self:_drawStrip(graphics, content, view)
           graphics.push("all")
+          -- One content-space translation serves every scrolled layer: all
+          -- row plates first, then the single focused strip, then every
+          -- visible row's contents. Nothing paints a second offset.
           graphics.translate(0, viewport.y - content.scrollOffset)
+          for _, row in ipairs(assert(content.rows, "content carries its rows")) do
+            if not row.clipped then
+              self:_plateFor(row):draw(graphics, row.rect.x, row.rect.y)
+            end
+          end
+          self:_drawStrip(graphics, content, view)
           drawRows()
           graphics.pop()
         end)
@@ -410,7 +446,8 @@ function OptionsRenderer:_drawBackdrop(graphics, role)
 end
 
 -- Paints the selected-row strip behind the focused scrollable row only,
--- viewport-adjusted and clipped to the list. Footer focus hides the layer.
+-- at its content-space selector band under the single list translation.
+-- Footer focus hides the layer.
 ---@param graphics love.graphics
 ---@param content OptionsInterface.ContentGeometry
 ---@param view table<string, unknown>
@@ -429,9 +466,8 @@ function OptionsRenderer:_drawStrip(graphics, content, view)
   if focused == nil or focused.clipped then
     return
   end
-  local viewport = assert(content.listViewport, "content carries its list viewport")
   local lease = assert(self._leaseByRole.selectionOverlay, "prepared selection overlay carries its lease")
-  lease:draw(graphics, 0, viewport.y + focused.rect.y - content.scrollOffset)
+  lease:draw(graphics, focused.rect.x, focused.rect.y)
 end
 
 -- Draws one source label record inside its bounded window: validates the

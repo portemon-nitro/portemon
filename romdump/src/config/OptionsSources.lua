@@ -113,4 +113,30 @@ OptionsSources.faceOrigins = {
   wide = { x = 112, y = 72 },
 }
 
+-- Audited material for the scrolling list row plates, verified against the
+-- retail MAIN base (screen 17 with char 7 and palette 2). The first two
+-- native 24px bands are the alternating row references: tile rows 3..5 carry
+-- the odd band, tile rows 6..8 the even band. Columns 14..30 (x112..247)
+-- hold the preprinted control faces and are scrubbed per tile row with the
+-- filler entry observed at interior column 4 of the same tile row; the
+-- recorded tile ids are the cross-check expectation, so a source revision
+-- carrying different backing material fails instead of shipping new art.
+-- Column 31 (x248..255) keeps its source edge cap: those tiles carry only
+-- band backing and window edge colors, never control-face colors, and they
+-- continue the row's right window border that the retained column 0 starts.
+-- Observed tile palette entries: odd mid tile 12 is one flat color, even
+-- mid tile 38 is one flat color, edge tiles 24/32 pair one backing color
+-- with one edge line color, and face tiles 64..74 carry the distinct
+-- control-face colors absent from every filler.
+OptionsSources.rowPlates = {
+  oddBand = { topTileRow = 3, midTileRow = 4, bottomTileRow = 5 },
+  evenBand = { topTileRow = 6, midTileRow = 7, bottomTileRow = 8 },
+  faceFirstColumn = 14,
+  faceLastColumn = 30,
+  fillerColumn = 4,
+  -- Expected filler tile per band tile row (top, mid, bottom), palette 0.
+  oddFillers = { 24, 12, 24 },
+  evenFillers = { 32, 38, 32 },
+}
+
 return OptionsSources

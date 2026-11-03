@@ -135,6 +135,9 @@ FieldUiAssetCache.ASSET = {
   OPTIONS_CONTROLS_BACKGROUND = "hgss.options.controls_background",
   OPTIONS_PREVIEW_BACKGROUND = "hgss.options.preview_background",
   OPTIONS_SELECTION_OVERLAY = "hgss.options.selection_overlay",
+  OPTIONS_ROW_ODD = "hgss.options.row_odd",
+  OPTIONS_ROW_EVEN = "hgss.options.row_even",
+  OPTIONS_ROW_FRAME = "hgss.options.row_frame",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -540,13 +543,13 @@ local function checkOptionsSequence(sequence, what, atlases, assets)
 end
 
 local function checkOptions(s, atlases, assets)
-  if type(s.version) ~= "number" or s.version ~= 3 then
-    reject("options.version must be 3", { version = s.version })
+  if type(s.version) ~= "number" or s.version ~= 4 then
+    reject("options.version must be 4", { version = s.version })
   end
   demandCount(
     s,
-    9,
-    "options must carry exactly its version, backdrops, selection overlay, labels, choices, arrows, actions, frame previews, and tick rate",
+    10,
+    "options must carry exactly its version, backdrops, row plates, selection overlay, labels, choices, arrows, actions, frame previews, and tick rate",
     {}
   )
   local backdrops = s.backdrops
@@ -580,6 +583,40 @@ local function checkOptions(s, atlases, assets)
   for role in pairs(backdrops) do
     if expectedRoles[role] == nil then
       reject("options.backdrops carries an unknown role", { role = role })
+    end
+  end
+  local rowBackings = s.rowBackings
+  if type(rowBackings) ~= "table" then
+    reject("options.rowBackings must be a table", {})
+  end
+  demandCount(rowBackings, 3, "options.rowBackings must carry exactly the odd, even, and frame plates", {})
+  local expectedPlates = {
+    odd = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD, height = 24 },
+    even = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_EVEN, height = 24 },
+    frame = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME, height = 64 },
+  }
+  for role, plate in pairs(expectedPlates) do
+    if rowBackings[role] ~= plate.key then
+      reject("options.rowBackings." .. role .. " must reference its indexed row plate asset", {
+        role = role,
+        value = rowBackings[role],
+      })
+    end
+    local dims = atlases[plate.key]
+    if type(dims) ~= "table" then
+      reject("options.rowBackings." .. role .. " must reference an indexed asset", { role = role })
+    end
+    if dims.width ~= 256 or dims.height ~= plate.height then
+      reject("options.rowBackings." .. role .. " must be the 256-wide scrolling plate", {
+        role = role,
+        width = dims.width,
+        height = dims.height,
+      })
+    end
+  end
+  for role in pairs(rowBackings) do
+    if expectedPlates[role] == nil then
+      reject("options.rowBackings carries an unknown role", { role = role })
     end
   end
   if s.selectionOverlay ~= FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY then

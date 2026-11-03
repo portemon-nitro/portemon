@@ -362,9 +362,14 @@ DerivedAssetContract.fieldEmotes = {
 -- transparent 256x24 selected-row strip (the separate MAIN selection
 -- layer) as an indexed asset under its semantic section key, so a stale
 -- cache without it must fail readiness.
+-- fieldUi schema 26: the option-control section carries the required
+-- scrolling row plates (opaque 256x24 odd/even bands plus the 256x64
+-- compound frame item scrubbed of preprinted control faces) as indexed
+-- assets under the mandatory rowBackings roles, so a stale cache without
+-- them must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v25",
+  schema = "g4-field-ui-v26",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

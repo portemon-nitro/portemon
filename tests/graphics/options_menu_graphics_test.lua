@@ -55,6 +55,8 @@ end
 local function optionsCache()
   local cache = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
   local manifest = FieldUiFixture.manifest()
+  FieldUiFixture.addNamingSemantics(manifest)
+  FieldUiFixture.addStartMenuIconContract(manifest)
   FieldUiFixture.addOptionsContract(manifest)
   cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
   FieldUiFixture.writeOptionsPngs(CacheFs.forVersion(ISOLATED_VERSION))
@@ -669,8 +671,8 @@ function T.tests.options_title_and_footer_keep_their_source_windows(scope)
   local quitPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), quitView)
   Assert.deepEqual(
     sampleLogical(2, 26, quitView, quitPlan),
-    { 24, 120, 200, 255 },
-    "the selected-row strip paints while the footer holds focus"
+    { 250, 230, 180, 255 },
+    "no selected-row strip paints while the footer holds focus; the odd row plate shows"
   )
   text.plain = {}
   text.tokens = {}
@@ -891,13 +893,13 @@ function T.tests.options_paints_single_pass_labels_without_chrome_overflow(scope
   )
   Assert.deepEqual(
     sampleChrome(113, 130),
-    { 24, 120, 200, 255 },
-    "the left frame arrow still sits at the old control edge"
+    { 250, 230, 180, 255 },
+    "the odd row plate backs the slider row without chrome overflow"
   )
   Assert.deepEqual(
     sampleChrome(247, 130),
-    { 24, 120, 200, 255 },
-    "the right frame arrow still sits at the old control edge"
+    { 250, 230, 180, 255 },
+    "the odd row plate reaches the control edge without chrome overflow"
   )
   renderer:dispose()
 end
@@ -1658,7 +1660,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
-  Assert.equal(manifest.options.version, 3, "the staged section carries its selection-layer contract")
+  Assert.equal(manifest.options.version, 4, "the staged section carries its row-plate contract")
   Assert.equal(
     manifest.options.selectionOverlay,
     FieldUiFixture.optionsSelectionOverlayKey(),
@@ -1669,6 +1671,9 @@ function T.tests.stages_a_private_complete_image_set(scope)
     FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+    FieldUiFixture.OPTIONS_ROW_ODD_PATH,
+    FieldUiFixture.OPTIONS_ROW_EVEN_PATH,
+    FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
   }) do
     Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
   end
@@ -1846,6 +1851,296 @@ function T.tests.corrected_options_screen_reads_clean_on_every_layout(scope)
     Assert.isTrue(failed.x >= 116 and failed.x + #failed.line * 8 <= 248, case .. " bounds its failure note")
   end
   renderer:dispose()
+end
+
+-- The scrolling list paints moving source row plates over the stale base:
+-- odd, even, and frame plates track their content rows at every offset,
+-- so no stationary face art leaks through the sliders or scrolled rows.
+function T.tests.scrolling_list_paints_moving_row_plates_over_stale_faces(scope)
+  local Interface, Renderer = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local cache, manifest = optionsCache()
+  FieldUiFixture.addRowBackings(manifest)
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  FieldUiFixture.writeRowPlatePngs(CacheFs.forVersion(ISOLATED_VERSION))
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the row-plate manifest validates before paint")
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = recordingPlacedText(),
+    window = recordingWindow(),
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "row plates resolve through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the row-plate painter prepares: " .. tostring(failure))
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
+  local frameR, frameG, frameB = FieldUiFixture.optionsRowFrameColor()
+  local function sampleLogical(view, scrollOffset, lx, ly)
+    local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+    local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+    local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+    local data = scope:own(canvas:newImageData())
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    return quantizePixel(data, hx, hy)
+  end
+  local top = sampleView("textSpeed", 0)
+  Assert.deepEqual(
+    sampleLogical(top, 0, 6, 36),
+    { oddR, oddG, oddB, 255 },
+    "the first row paints its odd plate at the top"
+  )
+  Assert.deepEqual(
+    sampleLogical(top, 0, 6, 60),
+    { evenR, evenG, evenB, 255 },
+    "the second row paints its even plate at the top"
+  )
+  local middle = sampleView("battleStyle", 32)
+  Assert.deepEqual(
+    sampleLogical(middle, 32, 6, 36),
+    { evenR, evenG, evenB, 255 },
+    "the scrolled second row keeps its even plate in the middle"
+  )
+  Assert.deepEqual(
+    sampleLogical(middle, 32, 6, 52),
+    { oddR, oddG, oddB, 255 },
+    "the scrolled third row keeps its odd plate in the middle"
+  )
+  local bottom = sampleView("textFrame", 64)
+  bottom.preview = { textSpeed = "mid", textFrame = 1 }
+  Assert.deepEqual(
+    sampleLogical(bottom, 64, 6, 140),
+    { frameR, frameG, frameB, 255 },
+    "the revealed frame item paints its compound plate at maximum scroll"
+  )
+  renderer:dispose()
+end
+
+-- The row replacement never moves the fixed chrome: the header, footer,
+-- and upper preview keep their source pixels while only the clipped list
+-- scrolls beneath them.
+function T.tests.list_replacement_keeps_header_footer_and_preview_fixed(scope)
+  local Interface, Renderer = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local cache, manifest = optionsCache()
+  FieldUiFixture.addRowBackings(manifest)
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  FieldUiFixture.writeRowPlatePngs(CacheFs.forVersion(ISOLATED_VERSION))
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the row-plate manifest validates before paint")
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = recordingPlacedText(),
+    window = recordingWindow(),
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "row plates resolve through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the row-plate painter prepares: " .. tostring(failure))
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local function sampleNative(view)
+    local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+    local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+    local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+    local data = scope:own(canvas:newImageData())
+    local function at(lx, ly)
+      local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+      return quantizePixel(data, hx, hy)
+    end
+    return at
+  end
+  for _, offset in ipairs({ 0, 64 }) do
+    local focus = offset == 0 and "textSpeed" or "textFrame"
+    local view = sampleView(focus, offset)
+    view.preview = { textSpeed = "mid", textFrame = 1 }
+    local at = sampleNative(view)
+    Assert.deepEqual(at(6, 10), { 24, 120, 200, 255 }, "the header keeps its source base at offset " .. offset)
+    Assert.deepEqual(at(6, 180), { 24, 120, 200, 255 }, "the footer keeps its source base at offset " .. offset)
+    if offset == 0 then
+      Assert.deepEqual(at(6, 36), { oddR, oddG, oddB, 255 }, "the list paints plates below the fixed header")
+    else
+      local frameR, frameG, frameB = FieldUiFixture.optionsRowFrameColor()
+      Assert.deepEqual(at(6, 140), { frameR, frameG, frameB, 255 }, "the list paints plates above the fixed footer")
+    end
+  end
+  local dualMeasurements = topologies()
+  local dualView = sampleView("textSpeed", 0)
+  dualView.preview = { textSpeed = "mid", textFrame = 1 }
+  local dualPlan = resolvers.dualDisplay(contextFor("dualDisplay", dualMeasurements), dualView)
+  local dualPlacement = assert(dualPlan.panes[1].placement, "the dual plan places its pane")
+  local dualCanvas = drawPlan(scope, renderer, dualView, dualPlan, 512, 192)
+  local dualData = scope:own(dualCanvas:newImageData())
+  local upperHx, upperHy = LayoutGeometry.logicalToHost(dualPlacement, 10, 10)
+  Assert.deepEqual(
+    quantizePixel(dualData, upperHx, upperHy),
+    { 210, 110, 30, 255 },
+    "the upper pane keeps its decorative preview base"
+  )
+  renderer:dispose()
+end
+
+-- The focused strip paints between its own moving background and the row
+-- foreground: the border follows the focused selector band at any offset
+-- and footer focus hides the list strip entirely.
+function T.tests.focused_strip_paints_between_plate_and_row_content(scope)
+  local Interface, Renderer = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local cache, manifest = optionsCache()
+  FieldUiFixture.addRowBackings(manifest)
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  FieldUiFixture.writeRowPlatePngs(CacheFs.forVersion(ISOLATED_VERSION))
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the row-plate manifest validates before paint")
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = recordingPlacedText(),
+    window = recordingWindow(),
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "row plates resolve through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the row-plate painter prepares: " .. tostring(failure))
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local borderR, borderG, borderB = FieldUiFixture.optionsSelectionOverlayBorderColor()
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local function sampleNative(view)
+    local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+    local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+    local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+    local data = scope:own(canvas:newImageData())
+    return function(lx, ly)
+      local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+      return quantizePixel(data, hx, hy)
+    end,
+      plan
+  end
+  local topAt = sampleNative(sampleView("textSpeed", 0))
+  Assert.deepEqual(topAt(2, 26), { borderR, borderG, borderB, 255 }, "the strip backs the focused first row")
+  Assert.deepEqual(topAt(6, 36), { oddR, oddG, oddB, 255 }, "the strip center leaves the odd plate visible")
+  local scrolledView = sampleView("battleStyle", 32)
+  local scrolledAt, scrolledPlan = sampleNative(scrolledView)
+  local scrolledContent = assert(scrolledPlan.content, "the scrolled plan carries its list")
+  local focusedRect = nil
+  for _, row in ipairs(scrolledContent.rows) do
+    if row.id == "battleStyle" then
+      focusedRect = row.rect
+    end
+  end
+  Assert.notNil(focusedRect, "the focused scrolled row keeps its content rect")
+  local stripTop = scrolledContent.listViewport.y + focusedRect.y - scrolledContent.scrollOffset
+  Assert.deepEqual(
+    scrolledAt(2, stripTop + 2),
+    { borderR, borderG, borderB, 255 },
+    "the strip follows its row away from the static source band"
+  )
+  local footerView = sampleView("confirm", 64)
+  footerView.preview = { textSpeed = "mid", textFrame = 1 }
+  local footerAt = sampleNative(footerView)
+  Assert.deepEqual(footerAt(2, 26), { oddR, oddG, oddB, 255 }, "footer focus hides the list strip")
+  renderer:dispose()
+end
+
+-- The added plates join the pooled lifecycle without regressing it:
+-- preparation acquires them once, repeated draws reuse them, disposal
+-- returns every lease, and an incomplete plate class fails visibly.
+function T.tests.row_plate_leases_prepare_draw_and_release_cleanly(scope)
+  local Interface, Renderer = modules()
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local cache, manifest = optionsCache()
+  FieldUiFixture.addRowBackings(manifest)
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  FieldUiFixture.writeRowPlatePngs(CacheFs.forVersion(ISOLATED_VERSION))
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the row-plate manifest validates before paint")
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local baseline = pool:stats()
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = recordingText(),
+    window = recordingWindow(),
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "row plates resolve through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the row-plate painter prepares: " .. tostring(failure))
+  local requestsAfterPrepare = pool:stats().requests
+  local topView = sampleView("textSpeed", 0)
+  drawPlan(scope, renderer, topView, resolvers.nativeLike(contextFor("nativeLike", measurements), topView), 512, 384)
+  local movedView = sampleView("textFrame", 64)
+  movedView.preview = { textSpeed = "mid", textFrame = 1 }
+  drawPlan(
+    scope,
+    renderer,
+    movedView,
+    resolvers.nativeLike(contextFor("nativeLike", measurements), movedView),
+    512,
+    384
+  )
+  Assert.equal(pool:stats().requests, requestsAfterPrepare, "draws acquire no new image leases")
+  renderer:dispose()
+  renderer:dispose()
+  local settled = pool:stats()
+  Assert.equal(settled.staged, 0, "disposal leaves no staged interest")
+  Assert.equal(settled.ready, 0, "disposal leaves no ready tickets")
+  Assert.equal(settled.failed, 0, "disposal leaves no failed tickets")
+  Assert.equal(settled.pinnedBytes, baseline.pinnedBytes, "disposing returns every plate lease")
+  local brokenCache = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
+  local brokenManifest = FieldUiFixture.manifest()
+  FieldUiFixture.addOptionsContract(brokenManifest)
+  FieldUiFixture.addRowBackings(brokenManifest)
+  brokenManifest.assets[FieldUiFixture.OPTIONS_ROW_FRAME_KEY] = nil
+  brokenManifest.options.rowBackings.frame = nil
+  brokenCache:writeLua(FieldUiAssetCache.manifestPath(), brokenManifest)
+  FieldUiFixture.writeOptionsPngs(brokenCache)
+  FieldUiFixture.writeRowPlatePngs(CacheFs.forVersion(ISOLATED_VERSION))
+  local brokenValid = FieldUiAssetCache.validateManifest(brokenManifest)
+  Assert.isFalse(brokenValid, "an incomplete plate class fails strict validation")
 end
 
 return GraphicsSmoke.suite(T.tests)

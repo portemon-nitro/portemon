@@ -541,7 +541,10 @@ local function fixture(opts)
   options[5] = charData(40)
   options[6] = charData(40)
   options[7] = charData(40)
-  options[8] = charData(8)
+  -- The MAIN base char carries the audited row-plate backing tiles (the
+  -- mid-band flats and the edge tiles) plus the scrubbed face tile, so
+  -- the plate builder meets observed source material, never padding.
+  options[8] = charData(40)
   options[9] = charData(8, 5)
   options[10] = cellBank({
     { { x = 0, y = 0, tile = 0, pal = 0, shape = 1, size = 2 } },
@@ -560,9 +563,24 @@ local function fixture(opts)
     { { cell = 0, duration = 8 }, { cell = 0, duration = 4 } },
   })
   do
+    -- Member 17 is the 256x256 MAIN base: tile rows 3..8 carry the two
+    -- native 24px row bands the plate builder scrubs. Interior columns
+    -- 1..11 repeat the audited backing tile of their tile row, columns
+    -- 14..30 carry control-face tiles that differ from it, and the edge
+    -- columns keep their caps, so the filler, uniformity, and scrub gates
+    -- all meet observed source material in the synthetic archive too.
     local entries = {}
     for i = 1, 1024 do
       entries[i] = 1
+    end
+    local fillers = { [3] = 24, [4] = 12, [5] = 24, [6] = 32, [7] = 38, [8] = 32 }
+    for tileRow = 3, 8 do
+      for column = 1, 11 do
+        entries[tileRow * 32 + column + 1] = fillers[tileRow]
+      end
+      for column = 14, 30 do
+        entries[tileRow * 32 + column + 1] = 39
+      end
     end
     options[18] = screenDataWH(256, 256, entries)
   end
