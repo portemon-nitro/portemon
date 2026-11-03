@@ -2594,9 +2594,7 @@ end
 -- persists past the owning task's disposal until the matching cleanup
 -- removes it, mirroring the native SwitchBackground/RestoreBackground
 -- pairing (battle_anim_system.c). Double-install and unknown-remove keep
--- the scene ownership errors. Only the default screen selects today: the
--- native side-dependent flip reads occurrence args the task inputs do not
--- carry, so the alternate screen stays staged but unshown.
+-- the scene ownership errors.
 local EFFECT_BACKGROUND_LAYER_KEY = "battle-background-layer-3"
 
 local BACKGROUND_EFFECT_SLOTS = { "character", "palette", "screenDefault", "screenAlternate" }
@@ -2606,6 +2604,7 @@ local BACKGROUND_EFFECT_SLOTS = { "character", "palette", "screenDefault", "scre
 ---@field _kind string task kind behind the run
 ---@field _staged table<integer, BattleEffectLeaseRecord> staged occurrence leases
 ---@field _resourceKeys table<string, string> staged resource keys by slot
+---@field _screenKey string selected staged screen slot
 ---@field _installed boolean the staged layer is live in the scene
 ---@field _ticks integer source ticks advanced
 ---@field _state string pending, running, complete, or cancelled
@@ -2658,13 +2657,37 @@ local function backgroundResourceKeys(args, kind)
   return resourceKeys --[[@as table<string, string>]]
 end
 
+---@param value unknown candidate source side type under validation
+---@param kind string task kind under diagnosis
+---@param role string topology role under diagnosis
+---@return boolean isPlayer
+local function backgroundSideIsPlayer(value, kind, role)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 5 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires a valid " .. role .. " background side", 0)
+  end
+  return value % 2 == 0
+end
+
+---@param arg integer source background screen selector
+---@param attackerIsPlayer boolean whether the source attacker is on the player side
+---@param defenderIsPlayer boolean whether the first source target is on the player side
+---@return boolean flip whether the alternate staged screen is selected
+local function shouldFlipBackground(arg, attackerIsPlayer, defenderIsPlayer)
+  if arg == 2 then
+    if attackerIsPlayer == defenderIsPlayer then
+      return not defenderIsPlayer
+    end
+    return defenderIsPlayer
+  end
+  return arg ~= 0 and defenderIsPlayer
+end
+
 ---@param kind string task kind under construction
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@param context table<string, unknown> occurrence-bound playback context
 ---@param services table<string, unknown> scene, audio, and resource collaborators
 ---@return table<string, unknown> runnable background load task
 local function newBackgroundResourceLoadTask(kind, args, context, services)
-  local _ = context
   checkVisualArgs(args, kind)
   local scene = checkScene(services, kind)
   if type(scene.installBackgroundLayer) ~= "function" or type(scene.removeBackgroundLayer) ~= "function" then
@@ -2680,6 +2703,21 @@ local function newBackgroundResourceLoadTask(kind, args, context, services)
   if args.runtimeSelection ~= "battle-background-screen-selection" then
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects its screen through the source selection", 0)
   end
+  local screenFlipArg = args.screenFlipArg
+  if type(screenFlipArg) ~= "number" or screenFlipArg % 1 ~= 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires source background parameter 7", 0)
+  end
+  local topology = type(context) == "table" and context.topology or nil
+  local attacker = type(topology) == "table" and topology.attacker or nil
+  local targets = type(topology) == "table" and topology.targets or nil
+  local defender = type(targets) == "table" and targets[1] or nil
+  if type(attacker) ~= "table" or type(defender) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires attacker and first target background context", 0)
+  end
+  local attackerIsPlayer = backgroundSideIsPlayer(attacker.sideType, kind, "attacker")
+  local defenderIsPlayer = backgroundSideIsPlayer(defender.sideType, kind, "defender")
+  local screenKey = shouldFlipBackground(screenFlipArg, attackerIsPlayer, defenderIsPlayer) and "screenAlternate"
+    or "screenDefault"
   local resourceKeys = backgroundResourceKeys(args, kind)
   local staged = {}
   for _, slot in ipairs(BACKGROUND_EFFECT_SLOTS) do
@@ -2695,16 +2733,20 @@ local function newBackgroundResourceLoadTask(kind, args, context, services)
     releaseStaged(staged)
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged background palette", 0)
   end
-  local screen = backgroundPayload(backgroundLease(staged, resourceKeys.screenDefault, kind), "screenDefault", kind)
+  local screen = backgroundPayload(backgroundLease(staged, resourceKeys[screenKey], kind), screenKey, kind)
   if type(screen.width) ~= "number" or type(screen.height) ~= "number" or type(screen.entries) ~= "table" then
     releaseStaged(staged)
-    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged background screen", 0)
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged " .. screenKey .. " background screen",
+      0
+    )
   end
   return setmetatable({
     _scene = scene,
     _kind = kind,
     _staged = staged,
     _resourceKeys = resourceKeys,
+    _screenKey = screenKey,
     _installed = false,
     _ticks = 0,
     _state = "pending",
@@ -2713,8 +2755,7 @@ local function newBackgroundResourceLoadTask(kind, args, context, services)
   }, BattleEffectBackgroundLoad)
 end
 
--- Composes the staged payload through the installed layer: the character
--- tiles, the default screen, and the palette the producer staged.
+-- Composes the selected staged screen with shared characters and palette.
 ---@param self BattleEffectBackgroundLoad load task under advancement
 local function installEffectBackground(self)
   local character =
@@ -2722,8 +2763,8 @@ local function installEffectBackground(self)
   local palette =
     backgroundPayload(backgroundLease(self._staged, self._resourceKeys.palette, self._kind), "palette", self._kind)
   local screen = backgroundPayload(
-    backgroundLease(self._staged, self._resourceKeys.screenDefault, self._kind),
-    "screenDefault",
+    backgroundLease(self._staged, self._resourceKeys[self._screenKey], self._kind),
+    self._screenKey,
     self._kind
   )
   self._scene.installBackgroundLayer(self._scene, EFFECT_BACKGROUND_LAYER_KEY, {

@@ -12,6 +12,7 @@ local T = {}
 local function collaborators()
   local log = {
     created = {},
+    spawnArgs = {},
     steps = {},
     cancelled = {},
     disposed = {},
@@ -31,8 +32,9 @@ local function collaborators()
     return audio.done[name] == true
   end
   local tasks = {}
-  function tasks.create(kind, _args, _context, _services)
+  function tasks.create(kind, args, _context, _services)
     log.created[#log.created + 1] = kind
+    log.spawnArgs[#log.spawnArgs + 1] = { kind = kind, args = args }
     local task = { _state = "running" }
     function task.stepSourceTick(_tick)
       log.steps[#log.steps + 1] = kind
@@ -353,6 +355,23 @@ function T.stuck_background_work_escapes_bounded_instead_of_hanging()
   end
   Assert.equal(player:status(handle), "complete", "the background escape bounds stuck switch waits")
   Assert.equal(#helpers.log.created, 1, "the stuck switch task still constructs once")
+end
+
+function T.non_background_visual_spawns_keep_their_existing_arguments()
+  local player, _, helpers = startNew(programOf({
+    { op = "set-parameter", values = { 7, 2 } },
+    {
+      op = "start-visual-task",
+      taskKind = "battle-background-blend-transition",
+      values = { 1 },
+    },
+  }))
+  player:stepSourceTick({ tick = 1 })
+  Assert.deepEqual(
+    helpers.log.spawnArgs,
+    { { kind = "battle-background-blend-transition", args = { values = { 1 } } } },
+    "a non-background task keeps its original args without a scratch-7 field"
+  )
 end
 
 function T.missing_context_reads_fail_before_side_effects()

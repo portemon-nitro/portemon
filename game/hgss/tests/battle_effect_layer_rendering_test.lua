@@ -249,9 +249,17 @@ function T.effect_background_tasks_install_and_remove_the_staged_layer_through_t
     journal.released[#journal.released + 1] = lease
   end
   local services = { scene = scene, audio = {}, resources = resources }
-  local context = { launchId = "layer-rendering-probe", packetId = 1 }
+  local context = {
+    launchId = "layer-rendering-probe",
+    packetId = 1,
+    topology = {
+      attacker = { sideType = 0 },
+      targets = { { sideType = 1 } },
+    },
+  }
   local load = assert(Factory.create("battle-background-resource-load", {
     values = { 9, 0x1234 },
+    screenFlipArg = 0,
     resourceKeys = {
       character = characterKey,
       palette = paletteKey,
