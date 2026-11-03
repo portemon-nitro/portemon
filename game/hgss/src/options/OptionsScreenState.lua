@@ -220,20 +220,40 @@ end
 
 ---@return table<string, unknown> the controller snapshot for resolvers and renderers
 function OptionsScreenState:_view()
+  local labels = self:_labels()
   local rows = {}
   for _, rowId in ipairs(OptionsInterface.ROW_IDS) do
+    -- Slider row names stay authored: Volume and Battle Speed values are
+    -- numeric, so they have no source records by design.
+    local sourceLabel = nil
+    if OptionsInterface.rowKind(rowId) ~= "slider" and labels ~= nil then
+      sourceLabel = labels[rowId]
+    end
+    if sourceLabel ~= nil then
+      assert(type(sourceLabel.text) == "string", "options row labels carry their diagnostic text")
+    end
+    local valueSource = nil
+    if rowId == "textFrame" and labels ~= nil and labels.frameValues ~= nil then
+      local frame = assert(self._draft.textFrame, "frame drafts carry their frame")
+      valueSource = labels.frameValues[frame]
+    end
     rows[#rows + 1] = {
       id = rowId,
       kind = OptionsInterface.rowKind(rowId),
       label = self:_rowLabel(rowId),
+      sourceLabel = sourceLabel,
       value = draftValue(rowId, self._draft),
       valueLabel = self:_valueLabel(rowId, self._draft),
+      valueSource = valueSource,
       valueIndex = draftIndex(rowId, self._draft),
       valueCount = OptionsInterface.valueCount(rowId),
       choiceLabels = OptionsRows.choiceLabels(rowId, self:_labels()),
+      choiceDisplay = OptionsRows.choicePresentation(rowId, self:_labels()),
     }
   end
-  local labels = self:_labels()
+  local titleSource = labels ~= nil and labels.title or nil
+  local confirmSource = labels ~= nil and labels.confirm or nil
+  local quitSource = labels ~= nil and labels.quit or nil
   return {
     open = self._phase == "open",
     preparing = self._preparing,
@@ -243,13 +263,16 @@ function OptionsScreenState:_view()
     dirty = self:_draftDirty(),
     legacyNote = self._legacyNote or nil,
     preview = self:_previewView(),
+    titleSource = titleSource,
     footer = {
       confirm = {
         enabled = not self._preparing and self._phase == "open",
         label = (labels ~= nil and labels.confirm ~= nil and labels.confirm.text) or "CONFIRM",
+        sourceLabel = confirmSource,
       },
       quit = {
         label = (labels ~= nil and labels.quit ~= nil and labels.quit.text) or "QUIT",
+        sourceLabel = quitSource,
       },
     },
     error = self._error,

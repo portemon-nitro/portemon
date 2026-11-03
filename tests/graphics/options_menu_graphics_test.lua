@@ -61,11 +61,52 @@ local function optionsCache()
   return cache, manifest
 end
 
+-- Source token text collaborators behind direct renderer construction: they
+-- record positioned glyph-stream and plain draws with the same fake glyph
+-- advances the draw path measures with, so origins stay observable and
+-- consistent without GPU text.
+local function joinGlyphs(tokens)
+  local out = {}
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      out[#out + 1] = token.text
+    end
+  end
+  return table.concat(out)
+end
+
+local function fakeMeasure(tokens)
+  local count = 0
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      count = count + 1
+    end
+  end
+  return count * 8
+end
+
 local function recordingText()
   local text = { draws = 0, lines = {}, background = { 0.1, 0.2, 0.3, 1 } }
   function text.drawTextWithPalette(_, line, _, _, _)
     text.draws = text.draws + 1
     text.lines[#text.lines + 1] = line
+  end
+  function text.drawTokens(_, tokens, _, _, _)
+    text.draws = text.draws + 1
+    text.lines[#text.lines + 1] = joinGlyphs(tokens)
+  end
+  function text.drawPlain(_, line, _, _, _)
+    text.draws = text.draws + 1
+    text.lines[#text.lines + 1] = line
+  end
+  function text.measureTokens(_, tokens)
+    return fakeMeasure(tokens)
+  end
+  function text.measurePlain(_, str)
+    return #str * 8
+  end
+  function text.drawPreviewTokens(_, _, _, _)
+    text.draws = text.draws + 1
   end
   function text.textWidth(_, str)
     return #str * 8
@@ -81,6 +122,19 @@ local function recordingPlacedText()
   function text.drawTextWithPalette(_, line, x, y, _)
     text.draws[#text.draws + 1] = { line = line, x = x, y = y }
   end
+  function text.drawTokens(_, tokens, x, y, _)
+    text.draws[#text.draws + 1] = { line = joinGlyphs(tokens), x = x, y = y }
+  end
+  function text.drawPlain(_, line, x, y, _)
+    text.draws[#text.draws + 1] = { line = line, x = x, y = y }
+  end
+  function text.measureTokens(_, tokens)
+    return fakeMeasure(tokens)
+  end
+  function text.measurePlain(_, str)
+    return #str * 8
+  end
+  function text.drawPreviewTokens(_, _, _, _) end
   function text.textWidth(_, str)
     return #str * 8
   end
@@ -281,10 +335,7 @@ function T.tests.clipped_rows_never_activate_while_the_footer_stays_live(scope)
   local viewport = assert(content.listViewport, "the plan publishes its list viewport")
   local last = content.rows[#content.rows]
   local outsideY = viewport.y + viewport.height + last.rect.height + 4
-  Assert.isNil(
-    Interface.hitTest(content, last.rect.x + 4, outsideY),
-    "a clipped row region never hit-tests"
-  )
+  Assert.isNil(Interface.hitTest(content, last.rect.x + 4, outsideY), "a clipped row region never hit-tests")
   local footer = assert(content.footer, "the plan publishes its footer")
   local hit = Interface.hitTest(content, footer.confirmRect.x + 2, footer.confirmRect.y + 2)
   Assert.isTrue(hit ~= nil and hit.target == "confirm", "the fixed footer stays interactive")
@@ -417,6 +468,431 @@ local function quantizePixel(data, x, y)
   return { quantize(r), quantize(g), quantize(b), quantize(a) }
 end
 
+-- Collaborator recording both plain-string draws and glyph-stream draws
+-- with their logical origins, so source-label placement is observable
+-- without GPU text.
+local function tokenRecordingText()
+  local text = { plain = {}, tokens = {}, tokenLines = {}, background = { 0.1, 0.2, 0.3, 1 } }
+  function text.drawTextWithPalette(_, line, x, y, _)
+    text.plain[#text.plain + 1] = { line = line, x = x, y = y }
+  end
+  function text.drawLineWithPalette(_, tokens, x, y, palette)
+    text.tokens[#text.tokens + 1] = { tokens = tokens, x = x, y = y, palette = palette }
+  end
+  function text.drawTokens(_, tokens, x, y, role)
+    text.tokens[#text.tokens + 1] = { tokens = tokens, x = x, y = y, role = role }
+  end
+  function text.drawPlain(_, line, x, y, role)
+    text.plain[#text.plain + 1] = { line = line, x = x, y = y, role = role }
+  end
+  function text.measureTokens(_, tokens)
+    return fakeMeasure(tokens)
+  end
+  function text.measurePlain(_, str)
+    return #str * 8
+  end
+  function text.drawPreviewTokens(_, tokens, x, y)
+    text.tokenLines[#text.tokenLines + 1] = { tokens = tokens, x = x, y = y }
+  end
+  function text.textWidth(_, str)
+    return #str * 8
+  end
+  function text.windowBackgroundColor()
+    return text.background
+  end
+  return text
+end
+
+local function preparedSourcePainter(scope)
+  local _, Renderer = modules()
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local text = tokenRecordingText()
+  local window = recordingWindow()
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = text,
+    window = window,
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the painter prepares: " .. tostring(failure))
+  return renderer, text
+end
+
+-- Production screen snapshot over the synthetic source-shaped labels: the
+-- same semantic view the presented path resolves and paints.
+local function headlessSourceView(overrides, navigateToQuit)
+  local _, _, ScreenState = modules()
+  local playerOptions = {
+    textSpeed = "mid",
+    battleScene = true,
+    battleStyle = "shift",
+    soundMode = "stereo",
+    textFrame = 0,
+    battleSpeed = 1,
+  }
+  if overrides ~= nil then
+    for key, value in pairs(overrides) do
+      playerOptions[key] = value
+    end
+  end
+  local port = {
+    read = function()
+      return 80
+    end,
+    preview = function(_) end,
+    commit = function(_) end,
+    restore = function() end,
+  }
+  local state = ScreenState.new({
+    playerOptions = playerOptions,
+    volume = 80,
+    preparePlayerOptions = function()
+      return {
+        apply = function() end,
+        rollback = function() end,
+      }
+    end,
+    audioPreferences = port,
+    applyChannelMode = function(_) end,
+    effect = function(_) end,
+    semantic = FieldUiFixture.optionsSourceSemantic(),
+  })
+  if navigateToQuit then
+    for _ = 1, 7 do
+      state:updateFixed({ { type = "navigate", direction = "down" } })
+    end
+    state:updateFixed({ { type = "navigate", direction = "right" } })
+    Assert.equal(state:status().focusId, "quit", "the footer Quit action focuses")
+  end
+  return state:status()
+end
+
+local function joinRecordedGlyphs(tokens)
+  local out = {}
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      out[#out + 1] = token.text
+    end
+  end
+  return table.concat(out)
+end
+
+local function findRecordedToken(draws, word)
+  for _, draw in ipairs(draws) do
+    if joinRecordedGlyphs(draw.tokens) == word then
+      return draw
+    end
+  end
+  return nil
+end
+
+local function findPlacedLine(draws, line)
+  for _, draw in ipairs(draws) do
+    if draw.line == line then
+      return draw
+    end
+  end
+  return nil
+end
+
+-- The source header and footer keep their own windows: the title paints at
+-- its header origin, each footer action hit-tests and paints inside its
+-- own label window without covering the other, the selected-row strip
+-- backs only scrolled rows (never the footer), and the staged migration
+-- note sits right of the title instead of over it.
+function T.tests.options_title_and_footer_keep_their_source_windows(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text = preparedSourcePainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local content = assert(plan.content, "the native plan carries its options content")
+  local function hitAt(x, y)
+    return Interface.hitTest(content, x, y)
+  end
+  local confirmHit = hitAt(140, 180)
+  Assert.isTrue(
+    confirmHit ~= nil and confirmHit.target == "confirm",
+    "the native Confirm action does not hit-test inside its drawn window"
+  )
+  Assert.isNil(hitAt(26, 174), "a press far left of the Confirm art still arms Confirm")
+  local quitHit = hitAt(200, 180)
+  Assert.isTrue(quitHit ~= nil and quitHit.target == "quit", "the native Quit action misses its drawn window")
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local function sampleLogical(logicalX, logicalY, drawnView, drawnPlan)
+    local canvas = drawPlan(scope, renderer, drawnView, drawnPlan, 512, 384)
+    local data = scope:own(canvas:newImageData())
+    local hx, hy = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+    return quantizePixel(data, hx, hy)
+  end
+  Assert.deepEqual(
+    sampleLogical(2, 26, view, plan),
+    { 140, 40, 180, 255 },
+    "the selected-row strip never composites behind the focused row"
+  )
+  local title = findRecordedToken(text.tokens, "OPTIONS")
+  Assert.notNil(title, "the OPTIONS title never reaches the glyph renderer")
+  Assert.equal(title.x, 10, "the title misses its header origin")
+  Assert.equal(title.y, 5, "the title misses its header row")
+  local confirm = findRecordedToken(text.tokens, "CONFIRM")
+  Assert.notNil(confirm, "footer Confirm never reaches the glyph renderer")
+  Assert.isTrue(confirm.x >= 120 and confirm.x < 120 + 56, "footer Confirm escapes its label window")
+  local quit = findRecordedToken(text.tokens, "QUIT")
+  Assert.notNil(quit, "footer Quit never reaches the glyph renderer")
+  Assert.isTrue(quit.x >= 192 and quit.x < 192 + 56, "footer Quit escapes its label window")
+  Assert.isTrue(confirm.x < 183 and quit.x >= 183, "the two footer actions share one window instead of their own")
+  local quitView = headlessSourceView(nil, true)
+  local quitPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), quitView)
+  Assert.deepEqual(
+    sampleLogical(2, 26, quitView, quitPlan),
+    { 24, 120, 200, 255 },
+    "the selected-row strip paints while the footer holds focus"
+  )
+  text.plain = {}
+  text.tokens = {}
+  local notedView = headlessSourceView({ textSpeed = "slow" })
+  local notedPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), notedView)
+  drawPlan(scope, renderer, notedView, notedPlan, 512, 384)
+  local note = findPlacedLine(text.plain, "SLOW BECOMES MID")
+  Assert.notNil(note, "the staged migration note never paints")
+  Assert.isTrue(note.x >= 104, "the migration note paints over the title window")
+  renderer:dispose()
+end
+
+-- Choice chrome follows the row, not the stop count: the three-stop and
+-- first two-stop rows wear the narrow pill while the remaining two-stop
+-- rows wear the wide pill, sprite anchors and touch regions match per row,
+-- arrows sit at their own anchors, and the frame value centers about its
+-- position instead of starting there.
+function T.tests.choice_rows_use_their_source_pill_family_and_geometry(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text = preparedSourcePainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local content = assert(plan.content, "the native plan carries its options content")
+  Assert.isNil(Interface.hitTest(content, 155, 36), "a press between text-speed pills selects a stop")
+  Assert.isNil(Interface.hitTest(content, 180, 84), "a press between battle-style pills selects a stop")
+  local first = Interface.hitTest(content, 220, 36)
+  Assert.isTrue(first ~= nil and first.target == "textSpeed" and first.index == 3, "the last text-speed pill misses")
+  local second = Interface.hitTest(content, 200, 84)
+  Assert.isTrue(
+    second ~= nil and second.target == "battleStyle" and second.index == 2,
+    "the second battle-style pill misses"
+  )
+  local frameView = headlessSourceView()
+  frameView.scrollOffset = 80
+  local framePlan = resolvers.nativeLike(contextFor("nativeLike", measurements), frameView)
+  local frameContent = assert(framePlan.content, "the scrolled plan carries its options content")
+  local left = Interface.hitTest(frameContent, 140, 52)
+  Assert.isTrue(left ~= nil and left.control == "left", "a press on the left frame arrow edits the value")
+  local right = Interface.hitTest(frameContent, 230, 52)
+  Assert.isTrue(right ~= nil and right.control == "right", "a press on the right frame arrow edits the value")
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function samplePill(logicalX, logicalY)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+    return quantizePixel(data, hx, hy)
+  end
+  Assert.deepEqual(samplePill(118, 36), { 40, 200, 40, 255 }, "the three-stop text-speed row wears the wide pill")
+  Assert.deepEqual(samplePill(118, 84), { 200, 200, 40, 255 }, "the two-stop battle-style row wears the narrow pill")
+  drawPlan(scope, renderer, frameView, framePlan, 512, 384)
+  local valueDraw = findPlacedLine(text.plain, "TYPE 1") or findRecordedToken(text.tokens, "TYPE 1")
+  Assert.notNil(valueDraw, "the frame value never paints")
+  Assert.isTrue(valueDraw.x < 172, "the frame value paints its center as a left origin instead of centering about it")
+  renderer:dispose()
+end
+
+-- The two-stop Battle Scene row is the narrow exception: it wears the small
+-- pill like the three-stop row while the other two-stop rows wear the
+-- wide pill. Anchors, touch regions, and chrome colors agree per row.
+function T.tests.battle_scene_two_stop_row_wears_the_narrow_pill_while_sound_uses_the_wide(scope)
+  local OptionsRows = require("game.hgss.src.options.OptionsRows")
+  Assert.equal(OptionsRows.chromeKind("textSpeed"), "small", "text speed wears the narrow pill")
+  Assert.equal(OptionsRows.chromeKind("battleScene"), "small", "the two-stop battle scene wears the narrow pill")
+  Assert.equal(OptionsRows.chromeKind("battleStyle"), "wide", "battle style wears the wide pill")
+  Assert.equal(OptionsRows.chromeKind("soundMode"), "wide", "sound wears the wide pill")
+  Assert.isNil(OptionsRows.chromeKind("textFrame"), "the frame row wears no choice pill")
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, _ = preparedSourcePainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local content = assert(plan.content, "the native plan carries its options content")
+  Assert.isNil(Interface.hitTest(content, 155, 60), "a press between battle-scene pills selects a stop")
+  local sceneSecond = Interface.hitTest(content, 200, 60)
+  Assert.isTrue(
+    sceneSecond ~= nil and sceneSecond.target == "battleScene" and sceneSecond.index == 2,
+    "the second battle-scene pill misses"
+  )
+  local soundSecond = Interface.hitTest(content, 200, 108)
+  Assert.isTrue(
+    soundSecond ~= nil and soundSecond.target == "soundMode" and soundSecond.index == 2,
+    "the second sound pill misses"
+  )
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function samplePill(logicalX, logicalY)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+    return quantizePixel(data, hx, hy)
+  end
+  Assert.deepEqual(
+    samplePill(118, 60),
+    { 40, 200, 40, 255 },
+    "the two-stop battle-scene row paints the selected narrow pill"
+  )
+  Assert.deepEqual(samplePill(118, 108), { 200, 200, 40, 255 }, "the two-stop sound row paints the selected wide pill")
+  renderer:dispose()
+end
+
+-- The menu-local sample paginates from the preview font definition: opening
+-- presented options loads the preview font for its printer metrics instead
+-- of reusing the menu font.
+function T.tests.options_preview_printer_paginates_with_the_preview_font_definition(scope)
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  local realCache = CacheFs.forVersion("test-options-preview-font", FakeCache.new())
+  scope:own({
+    release = function()
+      CacheFs.forVersion("test-options-preview-font"):removeTree("")
+    end,
+  })
+  local manifest = FieldUiFixture.manifest()
+  FieldUiFixture.addOptionsContract(manifest)
+  manifest.options = FieldUiFixture.optionsSourceSemantic()
+  manifest.dialogueFrames = {
+    continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
+  }
+  FieldUiFixture.writeFont(realCache, 0)
+  FieldUiFixture.writeFont(realCache, 1)
+  local loadedPaths = {}
+  local proxy = { versionId = realCache.versionId }
+  function proxy.loadLua(_, path)
+    loadedPaths[#loadedPaths + 1] = path
+    return realCache:loadLua(path)
+  end
+  setmetatable(proxy, { __index = realCache })
+  local frameIndexes = {}
+  for slot = 0, 19 do
+    frameIndexes[slot] = true
+  end
+  local audioPreferences = {
+    read = function()
+      return 80
+    end,
+    preview = function(_) end,
+    commit = function(_) end,
+    restore = function() end,
+  }
+  local runtime = {
+    playerData = {
+      profile = {},
+      options = {
+        textSpeed = "mid",
+        textFrame = 0,
+        battleStyle = "shift",
+        battleScene = true,
+        soundMode = "stereo",
+        battleSpeed = 1,
+      },
+    },
+    playerDataContext = { frameIndexes = frameIndexes },
+    audioPreferences = audioPreferences,
+    uiManifest = manifest,
+    fontDef = { glyphs = { [0] = { advance = 8 } } },
+    presentationDisplay = topologies().nativeLike,
+    cacheFs = proxy,
+  }
+  local coordinator = Coordinator.new(runtime)
+  local factory = nil
+  for _, descriptor in ipairs(coordinator:applicationDescriptors()) do
+    if descriptor.id == FieldApplicationIds.OPTIONS then
+      factory = descriptor.factory
+    end
+  end
+  Assert.notNil(factory, "the field catalogue registers the options destination")
+  local screen = factory()
+  Assert.isTrue(screen:status().open, "presented options opens with the staged preview font")
+  screen:dispose()
+  local wanted = FieldFontCache.defPath(1)
+  local seen = false
+  for _, path in ipairs(loadedPaths) do
+    if path == wanted then
+      seen = true
+    end
+  end
+  Assert.isTrue(seen, "the preview printer never loads the preview-font definition")
+end
+
+-- Labels paint once from their own chrome: no duplicated shadow pass, no
+-- footer or arrow chrome lingering at the old broad rectangles once the
+-- native anchors move in.
+function T.tests.options_paints_single_pass_labels_without_chrome_overflow(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text = preparedSourcePainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function sampleChrome(logicalX, logicalY)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+    return quantizePixel(data, hx, hy)
+  end
+  local counts = {}
+  for _, draw in ipairs(text.plain) do
+    counts[draw.line] = (counts[draw.line] or 0) + 1
+  end
+  for _, draw in ipairs(text.tokens) do
+    local word = joinRecordedGlyphs(draw.tokens)
+    counts[word] = (counts[word] or 0) + 1
+  end
+  for _, line in ipairs({ "TEXT SPEED", "CONFIRM", "QUIT", "MID" }) do
+    Assert.equal(counts[line], 1, "label paints its shadow and face as two text passes: " .. line)
+  end
+  Assert.deepEqual(
+    sampleChrome(26, 176),
+    { 24, 120, 200, 255 },
+    "footer action chrome still spans the broad pre-source rectangle"
+  )
+  Assert.deepEqual(
+    sampleChrome(113, 130),
+    { 24, 120, 200, 255 },
+    "the left frame arrow still sits at the old control edge"
+  )
+  Assert.deepEqual(
+    sampleChrome(247, 130),
+    { 24, 120, 200, 255 },
+    "the right frame arrow still sits at the old control edge"
+  )
+  renderer:dispose()
+end
+
 function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   local Interface, _, ScreenState = modules()
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -454,26 +930,26 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   local top = planFor(topView)
   local canvas0 = drawPlan(scope, renderer, topView, top, 512, 384)
   local data0 = scope:own(canvas0:newImageData())
-  Assert.isTrue(hasDraw("TEXTSPEED", 12, 4), "the first row draws its label at zero scroll")
-  Assert.isTrue(hasDraw("CONFIRM", 24, 172), "the footer stays pinned at zero scroll")
+  Assert.isTrue(hasDraw("TEXTSPEED", 12, 5), "the first row draws its label at zero scroll")
+  Assert.isTrue(hasDraw("CONFIRM", 120, 174), "the footer stays pinned at zero scroll")
   local hx, hy, lx = pillHost(top, "textSpeed", 1, 36, 12)
   Assert.deepEqual(
     quantizePixel(data0, hx, hy),
-    { 200, 200, 40, 255 },
-    "the first row paints its selected pill at the top of the list at zero scroll"
+    { 40, 200, 40, 255 },
+    "the first row paints its selected narrow pill at the top of the list at zero scroll"
   )
   text.draws = {}
   local scrolledView = sampleView("textSpeed", 48)
   local moving = planFor(scrolledView)
   local canvas48 = drawPlan(scope, renderer, scrolledView, moving, 512, 384)
   local data48 = scope:own(canvas48:newImageData())
-  Assert.isTrue(not hasDraw("TEXTSPEED", 12, 4), "a row scrolled out of the list draws nothing")
-  Assert.isTrue(hasDraw("BATTLESTYLE", 12, 52), "the third row still draws after scrolling 48")
-  Assert.isTrue(hasDraw("CONFIRM", 24, 172), "the footer stays fixed while the list scrolls")
+  Assert.isTrue(not hasDraw("TEXTSPEED", 12, 5), "a row scrolled out of the list draws nothing")
+  Assert.isTrue(hasDraw("BATTLESTYLE", 12, 53), "the third row still draws after scrolling 48")
+  Assert.isTrue(hasDraw("CONFIRM", 120, 174), "the footer stays fixed while the list scrolls")
   Assert.deepEqual(
     quantizePixel(data48, hx, hy),
-    { 40, 200, 40, 255 },
-    "the same pixels now paint the third row after scrolling 48"
+    { 200, 200, 40, 255 },
+    "the same pixels now paint the third row selected wide pill after scrolling 48"
   )
   local hit = Interface.hitTest(moving.content, lx + 12, 36)
   Assert.isTrue(hit ~= nil, "the painted pill position hit-tests")
@@ -560,16 +1036,8 @@ function T.tests.dual_panes_keep_the_preview_window_on_the_upper_pane(scope)
   )
   local canvas = drawPlan(scope, renderer, view, plan, 512, 192)
   local data = scope:own(canvas:newImageData())
-  Assert.deepEqual(
-    quantizePixel(data, 10, 10),
-    { 210, 110, 30, 255 },
-    "the upper pane paints the preview backdrop"
-  )
-  Assert.deepEqual(
-    quantizePixel(data, 266, 10),
-    { 24, 120, 200, 255 },
-    "the lower pane paints the controls backdrop"
-  )
+  Assert.deepEqual(quantizePixel(data, 10, 10), { 210, 110, 30, 255 }, "the upper pane paints the preview backdrop")
+  Assert.deepEqual(quantizePixel(data, 266, 10), { 24, 120, 200, 255 }, "the lower pane paints the controls backdrop")
   Assert.deepEqual(
     { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
     { x = 16, y = 152, width = 216, height = 32 },
@@ -748,10 +1216,7 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   love.graphics.newQuad = failingNewQuad
   Assert.isTrue(brokenOk, "the failure check runs: " .. tostring(brokenErr))
   Assert.isTrue(failed ~= nil, "a later quad failure surfaces instead of half-ready rendering")
-  Assert.isTrue(
-    tostring(failed):find("injected quad failure", 1, true) ~= nil,
-    "the original quad cause propagates"
-  )
+  Assert.isTrue(tostring(failed):find("injected quad failure", 1, true) ~= nil, "the original quad cause propagates")
   local cleaned = pool2:stats()
   Assert.equal(cleaned.staged, 0, "a failed preparation leaves no staged interest")
   Assert.equal(cleaned.ready, 0, "a failed preparation leaves no ready tickets")
@@ -776,14 +1241,7 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   end
   Assert.isTrue(freshReady == true, "a fresh renderer prepares after the failure")
   local freshView = sampleView("textSpeed", 0)
-  drawPlan(
-    scope,
-    fresh,
-    freshView,
-    resolvers.nativeLike(contextFor("nativeLike", measurements), freshView),
-    512,
-    384
-  )
+  drawPlan(scope, fresh, freshView, resolvers.nativeLike(contextFor("nativeLike", measurements), freshView), 512, 384)
   fresh:dispose()
   local resettled = pool2:stats()
   Assert.equal(resettled.pinnedBytes, baseline2.pinnedBytes, "the fresh renderer releases its leases")
@@ -794,10 +1252,22 @@ local function recordingTokenText()
   function text.drawTextWithPalette(_, line, x, y, _)
     text.draws[#text.draws + 1] = { line = line, x = x, y = y }
   end
+  function text.drawTokens(_, tokens, x, y, _)
+    text.draws[#text.draws + 1] = { line = joinGlyphs(tokens), x = x, y = y }
+  end
+  function text.drawPlain(_, line, x, y, _)
+    text.draws[#text.draws + 1] = { line = line, x = x, y = y }
+  end
+  function text.measureTokens(_, tokens)
+    return fakeMeasure(tokens)
+  end
+  function text.measurePlain(_, str)
+    return #str * 8
+  end
   function text.textWidth(_, str)
     return #str * 8
   end
-  function text.drawTokenLine(_, tokens, x, y)
+  function text.drawPreviewTokens(_, tokens, x, y)
     text.tokenDraws[#text.tokenDraws + 1] = { tokens = tokens, x = x, y = y }
   end
   function text.windowBackgroundColor()
@@ -869,11 +1339,7 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
   Assert.equal(text.tokenDraws[1].tokens[1].text, "Z", "frame zero paints its own source glyphs")
   Assert.equal(text.tokenDraws[1].x, preview.x + 4, "token lines keep the preview inset")
   Assert.equal(text.tokenDraws[1].y, preview.y + 4, "the first line starts at the preview top")
-  Assert.equal(
-    text.tokenDraws[2].y,
-    preview.y + 4 + 16 + 2,
-    "later lines advance by the printer line geometry"
-  )
+  Assert.equal(text.tokenDraws[2].y, preview.y + 4 + 16 + 2, "later lines advance by the printer line geometry")
   assertNoStaticSample(text)
   text.tokenDraws = {}
   text.draws = {}
@@ -926,7 +1392,19 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
   ownPool(scope, pool)
-  local stubText = {}
+  local stubText = {
+    fontDef = {
+      glyphs = { [0] = { advance = 8 } },
+      letterSpacing = 0,
+      charmap = {},
+      palette = {
+        [1] = { r = 0, g = 0, b = 0 },
+        [2] = { r = 1, g = 0, b = 0 },
+        [3] = { r = 0, g = 1, b = 0 },
+        [16] = { r = 0, g = 0, b = 1 },
+      },
+    },
+  }
   function stubText.drawTextWithPalette(_, _, _, _, _) end
   function stubText.drawLine(_, _, _, _)
     return "drawn"
@@ -934,7 +1412,6 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   function stubText.textWidth(_, _)
     return 8
   end
-  function stubText.drawTokenLine(_, _, _, _) end
   function stubText.windowBackgroundColor()
     return { 0.1, 0.2, 0.3, 1 }
   end
@@ -957,11 +1434,13 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
     end,
   })
   local baseline = pool:stats().pinnedBytes
+  FieldUiFixture.writeFont(cache, 1)
   local frameIndexes = {}
   for slot = 0, 19 do
     frameIndexes[slot] = true
   end
   local runtime = {
+    cacheFs = cache,
     playerData = {
       profile = {},
       options = {
@@ -1006,6 +1485,7 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   Assert.isNil(resources._optionsRenderer, "the failed open retains no per-open renderer")
   Assert.equal(pool:stats().pinnedBytes, baseline, "the failed open returns every lease")
   runtime.uiManifest.options = {
+    labels = manifest.options.labels,
     framePreviewText = {
       [0] = {
         text = "HI",
@@ -1056,10 +1536,8 @@ function T.tests.stages_a_private_complete_image_set(scope)
   }) do
     Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
   end
-  local overlay = assert(
-    manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()],
-    "the selected-row strip asset is indexed"
-  )
+  local overlay =
+    assert(manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()], "the selected-row strip asset is indexed")
   Assert.equal(overlay.width, 256, "the selected-row strip width")
   Assert.equal(overlay.height, 24, "the selected-row strip height")
 end

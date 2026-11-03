@@ -1421,11 +1421,7 @@ function FieldUiFixture.addOptionsContract(manifest)
     framePreviewText = framePreviewText,
     choices = {
       small = {
-        unselected = sequence(
-          { frame("smallUnselected") },
-          true,
-          { x = 0, y = 0, width = 24, height = 16 }
-        ),
+        unselected = sequence({ frame("smallUnselected") }, true, { x = 0, y = 0, width = 24, height = 16 }),
         selected = sequence(
           { frame("smallSelected", { x = -4, y = 0 }) },
           true,
@@ -1433,11 +1429,7 @@ function FieldUiFixture.addOptionsContract(manifest)
         ),
       },
       wide = {
-        unselected = sequence(
-          { frame("wideUnselected") },
-          true,
-          { x = 0, y = 0, width = 32, height = 16 }
-        ),
+        unselected = sequence({ frame("wideUnselected") }, true, { x = 0, y = 0, width = 32, height = 16 }),
         selected = sequence(
           { frame("wideSelected", { x = -4, y = 0 }) },
           true,
@@ -1487,6 +1479,67 @@ function FieldUiFixture.writeOptionsPngs(cache)
   cache:write(FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH, FieldUiFixture.optionsControlsBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH, FieldUiFixture.optionsPreviewBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, FieldUiFixture.optionsSelectionOverlayBytes())
+end
+
+-- Synthetic source-shaped options labels for typography tests: every record
+-- carries both the reversible diagnostic text serialization (produced by the
+-- real marker renderer, so control prefixes appear exactly as the generated
+-- contract serializes them) and the glyph token stream a presenter must
+-- draw. The footer records carry explicit layout prefixes (a centering
+-- control on Confirm, a cursor-positioning control on Quit); choice and row
+-- records are plain glyphs. The fastest text-speed stop is deliberately
+-- absent so the authored fallback path stays exercised. No retail message
+-- bytes are copied: all words are synthetic fixtures in the same shape.
+---@return { labels: table, framePreviewText: table<integer, table> }
+function FieldUiFixture.optionsSourceSemantic()
+  local MessageText = require("libs.assets.src.field.FieldMessageText")
+  local function glyphs(word)
+    local tokens = {}
+    for index = 1, #word do
+      tokens[#tokens + 1] = { kind = "glyph", code = 0x200 + index, text = word:sub(index, index) }
+    end
+    return tokens
+  end
+  local function control(code, args)
+    return { kind = MessageText.controlKind(code), control = code, args = args or {} }
+  end
+  local function record(prefix, word)
+    local tokens = {}
+    if prefix ~= nil then
+      tokens[#tokens + 1] = prefix
+    end
+    for _, token in ipairs(glyphs(word)) do
+      tokens[#tokens + 1] = token
+    end
+    tokens[#tokens + 1] = { kind = "eos" }
+    return { text = MessageText.tokensToText(tokens), tokens = tokens }
+  end
+  local function plain(word)
+    return record(nil, word)
+  end
+  local labels = {
+    title = plain("OPTIONS"),
+    textSpeed = plain("TEXT SPEED"),
+    battleScene = plain("BATTLE SCENE"),
+    battleStyle = plain("BATTLE STYLE"),
+    soundMode = plain("SOUND"),
+    textFrame = plain("FRAME"),
+    confirm = record(control(MessageText.ALN_CENTER), "CONFIRM"),
+    quit = record(control(MessageText.CURSOR_X, { 8 }), "QUIT"),
+    textSpeedValues = { mid = plain("MID"), fast = plain("FAST") },
+    battleSceneValues = { on = plain("ON"), off = plain("OFF") },
+    battleStyleValues = { shift = plain("SHIFT"), set = plain("SET") },
+    soundModeValues = { stereo = plain("STEREO"), mono = plain("MONO") },
+    frameValues = {},
+  }
+  for slot = 0, 19 do
+    labels.frameValues[slot] = plain("TYPE " .. (slot + 1))
+  end
+  local framePreviewText = {}
+  for slot = 0, 19 do
+    framePreviewText[slot] = plain("WINDOW TYPE " .. (slot + 1))
+  end
+  return { labels = labels, framePreviewText = framePreviewText }
 end
 
 return FieldUiFixture

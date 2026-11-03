@@ -12,6 +12,7 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationRegistry = require("libs.hgss.src.field.FieldApplicationRegistry")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
 local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
@@ -220,10 +221,11 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
       end
       -- The menu-local sample borrows the same paginated layout, cadence
       -- shapes, and continue cursor the field dialogue uses, paced by the
-      -- draft policy and never accelerated by gameplay input.
+      -- draft policy and never accelerated by gameplay input. The preview
+      -- printer paginates from the Font1 definition, never the menu font.
       local dialogueFrames = uiManifest.dialogueFrames
       if dialogueFrames ~= nil and dialogueFrames.continueCursor ~= nil and runtime.fontDef ~= nil then
-        local fontMetrics = FieldDialogueTheme.fontMetrics(runtime.fontDef)
+        local fontMetrics = FieldDialogueTheme.fontMetrics(FieldFontLoader.load(runtime.cacheFs, 1))
         local function formatLayout(formatted)
           return DialogueLayout.layout(
             formatted.tokens,

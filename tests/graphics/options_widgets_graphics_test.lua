@@ -31,17 +31,6 @@ end
 
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
-local function recordingText()
-  local text = { draws = {} }
-  function text.drawTextWithPalette(_, str, x, y, palette)
-    text.draws[#text.draws + 1] = { text = str, x = x, y = y, palette = palette }
-  end
-  function text.textWidth(_, str)
-    return #str * 8
-  end
-  return text
-end
-
 local function preparedQuadFor(manifest, chrome)
   local image = assert(chrome.image, "the chrome lease carries its resolved image")
   local width, height = image:getWidth(), image:getHeight()
@@ -99,7 +88,10 @@ local function acquireChrome(scope, pool, manifest)
         lease = lease,
       }).lease
     end
-    Assert.isTrue(ok and status == "pending", "chrome resolves through the pool worker: " .. tostring(status) .. " / " .. tostring(failure))
+    Assert.isTrue(
+      ok and status == "pending",
+      "chrome resolves through the pool worker: " .. tostring(status) .. " / " .. tostring(failure)
+    )
     stalled = stalled + 1
     Assert.isTrue(stalled < 10000, "chrome acquisition stalls")
     if love.timer ~= nil then
@@ -137,13 +129,6 @@ local function pixel(image, x, y)
   return { quantize(r), quantize(g), quantize(b), quantize(a) }
 end
 
-local function ink()
-  return {
-    foreground = { r = 1, g = 1, b = 1, a = 1 },
-    shadow = { r = 0, g = 0, b = 0, a = 1 },
-  }
-end
-
 local function graphicsState()
   local r, g, b, a = love.graphics.getColor()
   local blend, blendAlpha = love.graphics.getBlendMode()
@@ -168,13 +153,11 @@ function T.choice_states_sample_their_own_compiled_frames(scope)
   local Widgets = widgetsModule()
   local manifest, chrome = setup(scope)
   local quadFor = preparedQuadFor(manifest, chrome)
-  local text = recordingText()
   local choice = assert(manifest.options.choices.small)
   local anchor = { x = 40, y = 30 }
-  local labelAnchor = { x = 40, y = 10 }
   local function draw(selected)
     return renderInto(scope, 128, 64, function()
-      Widgets.drawChoice(love.graphics, chrome, quadFor, text, choice, anchor, "MID", labelAnchor, ink(), selected, 0)
+      Widgets.drawChoice(love.graphics, chrome, quadFor, choice, anchor, selected, 0)
     end)
   end
   local unselected = draw(false)
@@ -187,32 +170,16 @@ function T.choice_states_sample_their_own_compiled_frames(scope)
     "selected honors the signed source offset left of its anchor"
   )
   Assert.deepEqual(pixel(selected, 35, 30), { 0, 0, 0, 0 }, "pixels outside the frame rect stay untouched")
-  Assert.equal(text.draws[#text.draws].text, "MID", "the caller label is drawn")
-  Assert.deepEqual({ text.draws[#text.draws].x, text.draws[#text.draws].y }, { 40, 10 })
 end
 
 function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
   local Widgets = widgetsModule()
   local manifest, chrome = setup(scope)
   local quadFor = preparedQuadFor(manifest, chrome)
-  local text = recordingText()
   local arrows = assert(manifest.options.arrows)
   local function draw(side, age)
     return renderInto(scope, 128, 64, function()
-      Widgets.drawCycle(
-        love.graphics,
-        chrome,
-        quadFor,
-        text,
-        arrows,
-        { x = 8, y = 24 },
-        { x = 104, y = 24 },
-        "2x",
-        { x = 56, y = 24 },
-        ink(),
-        side,
-        age
-      )
+      Widgets.drawCycle(love.graphics, chrome, quadFor, arrows, { x = 8, y = 24 }, { x = 104, y = 24 }, side, age)
     end)
   end
   local idle = draw(nil, 0)
@@ -232,7 +199,7 @@ function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
   Assert.deepEqual(pixel(right, 106, 26), { 20, 150, 80, 255 }, "the pressed side samples its own arrow frames")
   local actions = assert(manifest.options.actions)
   local pressed = renderInto(scope, 128, 64, function()
-    Widgets.drawAction(love.graphics, chrome, quadFor, text, actions, { x = 32, y = 40 }, "CONFIRM", { x = 32, y = 24 }, ink(), "pressed", 3)
+    Widgets.drawAction(love.graphics, chrome, quadFor, actions, { x = 32, y = 40 }, "pressed", 3)
   end)
   Assert.deepEqual(pixel(pressed, 34, 42), { 200, 200, 90, 255 }, "an aged footer press samples its second frame")
 end
@@ -241,7 +208,8 @@ function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
   local Widgets = widgetsModule()
   local Slider = sliderModule()
   setup(scope)
-  local resolved = Slider.resolve({ rect = { x = 10, y = 20, width = 210, height = 30 }, count = 5, index = 4, knobExtent = 10 })
+  local resolved =
+    Slider.resolve({ rect = { x = 10, y = 20, width = 210, height = 30 }, count = 5, index = 4, knobExtent = 10 })
   local style = {
     rail = { r = 0, g = 0, b = 1, a = 1 },
     fill = { r = 0, g = 1, b = 0, a = 1 },
@@ -276,18 +244,13 @@ function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
   local focused = renderInto(scope, 256, 64, function()
     Widgets.drawSlider(love.graphics, resolved, true, style)
   end)
-  Assert.deepEqual(
-    pixel(focused, 10, 18),
-    { 255, 255, 0, 255 },
-    "a focused slider outlines its resolved extent"
-  )
+  Assert.deepEqual(pixel(focused, 10, 18), { 255, 255, 0, 255 }, "a focused slider outlines its resolved extent")
 end
 
 function T.missing_art_fails_without_touching_graphics_state(scope)
   local Widgets = widgetsModule()
   local manifest, chrome = setup(scope)
   local quadFor = preparedQuadFor(manifest, chrome)
-  local text = recordingText()
   local broken = {
     unselected = manifest.options.choices.small.unselected,
     selected = {
@@ -304,51 +267,13 @@ function T.missing_art_fails_without_touching_graphics_state(scope)
     },
   }
   local before = graphicsState()
-  local ok, err = pcall(Widgets.drawChoice, love.graphics, chrome, quadFor, text, broken, { x = 8, y = 8 }, "X", { x = 8, y = 0 }, ink(), true, 0)
+  local ok, err = pcall(Widgets.drawChoice, love.graphics, chrome, quadFor, broken, { x = 8, y = 8 }, true, 0)
   Assert.isFalse(ok, "a frame outside its atlas must fail")
   Assert.isTrue(tostring(err):find("atlas", 1, true) ~= nil, "the failure names the atlas rect")
   assertSameState(before, graphicsState(), "failed choice painting")
-  local failingText = {
-    drawTextWithPalette = function()
-      error("injected text failure")
-    end,
-    textWidth = function(_, str)
-      return #str * 8
-    end,
-  }
-  local okText, errText = pcall(
-    Widgets.drawChoice,
-    love.graphics,
-    chrome,
-    quadFor,
-    failingText,
-    manifest.options.choices.small,
-    { x = 8, y = 8 },
-    "X",
-    { x = 8, y = 0 },
-    ink(),
-    false,
-    0
-  )
-  Assert.isFalse(okText, "a text failure must propagate")
-  Assert.isTrue(tostring(errText):find("injected text failure", 1, true) ~= nil)
-  assertSameState(before, graphicsState(), "failed label painting")
-  local okQuad, errQuad = pcall(
-    Widgets.drawChoice,
-    love.graphics,
-    chrome,
-    function()
-      return nil
-    end,
-    text,
-    manifest.options.choices.small,
-    { x = 8, y = 8 },
-    "X",
-    { x = 8, y = 0 },
-    ink(),
-    false,
-    0
-  )
+  local okQuad, errQuad = pcall(Widgets.drawChoice, love.graphics, chrome, function()
+    return nil
+  end, manifest.options.choices.small, { x = 8, y = 8 }, false, 0)
   Assert.isFalse(okQuad, "a missing prepared quad must fail loudly")
   Assert.isTrue(tostring(errQuad):find("never prepared", 1, true) ~= nil, "the failure names the unmet preparation")
   assertSameState(before, graphicsState(), "failed quad lookup painting")

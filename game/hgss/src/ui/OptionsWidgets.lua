@@ -1,23 +1,26 @@
--- Concrete painting for the generated option controls: choice pills and
--- baseline faces, frame arrow cycles, project-authored slider rails with
--- thumbs and focus treatment, and footer action chrome with caller labels.
--- Every visual state resolves through prepared caller-owned viewports: the
--- renderer builds each frame Quad once outside draw and lends a lookup,
--- so this module never allocates images or quads. Missing art fails explicitly and the
--- borrowed graphics color is restored even on failure. The module borrows its
--- lease, lookup, text collaborator, and graphics namespace per call and
--- retains no state.
+-- Concrete chrome painting for the generated option controls: choice
+-- pills, frame arrow cycles, project-authored slider rails with thumbs
+-- and focus treatment, and footer action chrome. Text arrangement lives
+-- in the Options renderer; these routines paint art only. Every visual
+-- state resolves through prepared caller-owned viewports: the renderer
+-- builds each frame Quad once outside draw and lends a lookup, so this
+-- module never allocates images or quads. Missing art fails explicitly
+-- and the borrowed graphics color is restored even on failure. The module
+-- borrows its lease, lookup, and graphics namespace per call and retains
+-- no state.
 
 local OptionsWidgets = {}
 
 ---@alias OptionsWidgets.Rect { x: number, y: number, width: number, height: number }
 ---@alias OptionsWidgets.Point { x: number, y: number }
 ---@alias OptionsWidgets.Color { r: number, g: number, b: number, a: number? }
----@alias OptionsWidgets.Ink { foreground: OptionsWidgets.Color, shadow: OptionsWidgets.Color }
----@class OptionsWidgets.TextCollaborator caller text service behind label painting
----@field drawTextWithPalette fun(self: OptionsWidgets.TextCollaborator, line: string, x: number, y: number, ink: OptionsWidgets.Color)
+---@class OptionsWidgets.TextCollaborator caller text service behind window fills
+---@field drawTokens fun(self: OptionsWidgets.TextCollaborator, tokens: table<integer, unknown>, x: number, y: number, role: string, sourceRole: string?)
+---@field drawPlain fun(self: OptionsWidgets.TextCollaborator, line: string, x: number, y: number, role: string)
+---@field measureTokens fun(self: OptionsWidgets.TextCollaborator, tokens: table<integer, unknown>, sourceRole: string?): number
+---@field measurePlain fun(self: OptionsWidgets.TextCollaborator, line: string): number
+---@field drawPreviewTokens fun(self: OptionsWidgets.TextCollaborator, tokens: table<integer, unknown>, x: number, y: number)
 ---@field windowBackgroundColor fun(self: OptionsWidgets.TextCollaborator): number[]
----@field drawTokenLine fun(self: OptionsWidgets.TextCollaborator, tokens: MessageToken[], x: number, y: number) caller token-line drawing behind the live preview
 ---@alias OptionsWidgets.SequenceFrame { image: string, atlas: OptionsWidgets.Rect, offset: OptionsWidgets.Point, ticks: integer }
 ---@alias OptionsWidgets.CompiledSequence { frames: OptionsWidgets.SequenceFrame[], loop: boolean, bounds: OptionsWidgets.Rect }
 ---@alias OptionsWidgets.ChoiceStates { unselected: OptionsWidgets.CompiledSequence, selected: OptionsWidgets.CompiledSequence }
@@ -112,74 +115,35 @@ local function drawFrame(graphics, chrome, quadFor, frame, anchorX, anchorY, wha
   chrome:drawQuad(graphics, quad, anchorX + offset.x, anchorY + offset.y)
 end
 
-local function drawLabel(text, label, labelAnchor, ink)
-  assert(type(label) == "string", "option labels are caller-provided strings")
-  local anchor = point(labelAnchor, "label anchor")
-  assert(type(ink) == "table" and type(ink.foreground) == "table", "option labels need their ink roles")
-  assert(type(ink.shadow) == "table", "option labels need their shadow role")
-  text:drawTextWithPalette(label, anchor.x + 1, anchor.y + 1, ink.shadow)
-  text:drawTextWithPalette(label, anchor.x, anchor.y, ink.foreground)
-end
-
+-- Paints one choice pill: chrome art only, no label. The renderer draws
+-- the value glyphs after every pill so text shares one layout owner.
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
 ---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad caller-owned prepared viewport lookup
----@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param choice OptionsWidgets.ChoiceStates { unselected, selected } compiled choice sequences
 ---@param anchor OptionsWidgets.Point control anchor in logical pixels
----@param label string caller-provided value label
----@param labelAnchor OptionsWidgets.Point label position in logical pixels
----@param ink OptionsWidgets.Ink { foreground, shadow } label ink roles
 ---@param selected boolean whether the selected pill replaces the face patch
 ---@param ageTicks integer source ticks since the state was entered
-function OptionsWidgets.drawChoice(
-  graphics,
-  chrome,
-  quadFor,
-  text,
-  choice,
-  anchor,
-  label,
-  labelAnchor,
-  ink,
-  selected,
-  ageTicks
-)
+function OptionsWidgets.drawChoice(graphics, chrome, quadFor, choice, anchor, selected, ageTicks)
   assert(type(choice) == "table" and choice.unselected ~= nil and choice.selected ~= nil, "choice needs both states")
   local anchorPoint = point(anchor, "choice anchor")
   withColor(graphics, function()
     local sequence = selected and choice.selected or choice.unselected
     drawFrame(graphics, chrome, quadFor, frameAt(sequence, ageTicks, "choice"), anchorPoint.x, anchorPoint.y, "choice")
-    drawLabel(text, label, labelAnchor, ink)
   end)
 end
 
+-- Paints one frame arrow pair: chrome art only, no value label. The
+-- renderer centers the value glyphs between the arrows.
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
 ---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad caller-owned prepared viewport lookup
----@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param arrows OptionsWidgets.ArrowSet { left = { idle, pressed }, right = { idle, pressed } }
 ---@param leftAnchor OptionsWidgets.Point left arrow anchor in logical pixels
 ---@param rightAnchor OptionsWidgets.Point right arrow anchor in logical pixels
----@param value string caller-provided current value label
----@param valueAnchor OptionsWidgets.Point value label position in logical pixels
----@param ink OptionsWidgets.Ink { foreground, shadow } label ink roles
 ---@param pressed string? "left", "right", or nil for the idle pair
 ---@param ageTicks integer source ticks since the press began
-function OptionsWidgets.drawCycle(
-  graphics,
-  chrome,
-  quadFor,
-  text,
-  arrows,
-  leftAnchor,
-  rightAnchor,
-  value,
-  valueAnchor,
-  ink,
-  pressed,
-  ageTicks
-)
+function OptionsWidgets.drawCycle(graphics, chrome, quadFor, arrows, leftAnchor, rightAnchor, pressed, ageTicks)
   assert(type(arrows) == "table" and arrows.left ~= nil and arrows.right ~= nil, "cycle needs both arrows")
   assert(pressed == nil or pressed == "left" or pressed == "right", "cycle press names a side or stays idle")
   local leftPoint = point(leftAnchor, "left arrow anchor")
@@ -205,7 +169,6 @@ function OptionsWidgets.drawCycle(
       rightPoint.y,
       "arrow"
     )
-    drawLabel(text, value, valueAnchor, ink)
   end)
 end
 
@@ -255,30 +218,16 @@ function OptionsWidgets.drawSlider(graphics, resolved, focused, style)
   end)
 end
 
+-- Paints one footer action: chrome art only, no label. The renderer draws
+-- the Confirm/Quit glyphs inside their own label windows.
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param chrome ImageAssetPoolLease borrowed chrome lease, never retained
 ---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad caller-owned prepared viewport lookup
----@param text OptionsWidgets.TextCollaborator caller text collaborator
 ---@param action OptionsWidgets.ActionStates { normal, focused, pressed, pressedFocused } compiled footer sequences
 ---@param anchor OptionsWidgets.Point action anchor in logical pixels
----@param label string caller-provided footer label
----@param labelAnchor OptionsWidgets.Point label position in logical pixels
----@param ink OptionsWidgets.Ink { foreground, shadow } label ink roles
 ---@param state string one of normal, focused, pressed, pressedFocused
 ---@param ageTicks integer source ticks since the state was entered
-function OptionsWidgets.drawAction(
-  graphics,
-  chrome,
-  quadFor,
-  text,
-  action,
-  anchor,
-  label,
-  labelAnchor,
-  ink,
-  state,
-  ageTicks
-)
+function OptionsWidgets.drawAction(graphics, chrome, quadFor, action, anchor, state, ageTicks)
   assert(
     state == "normal" or state == "focused" or state == "pressed" or state == "pressedFocused",
     "footer actions draw a compiled state"
@@ -295,7 +244,6 @@ function OptionsWidgets.drawAction(
       anchorPoint.y,
       "action"
     )
-    drawLabel(text, label, labelAnchor, ink)
   end)
 end
 

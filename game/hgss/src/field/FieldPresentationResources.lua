@@ -30,6 +30,7 @@ local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerr
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
@@ -459,11 +460,12 @@ local function buildPresenters(owner)
     local plan = assert(status.presentation, "the options application presents its plan")
     local hostGraphics = love and love.graphics
     assert(type(hostGraphics) == "table", "options drawing requires its host graphics namespace")
+    -- The Options backing is already self-framed source art: no generic
+    -- application frame paints over it. Sibling applications keep theirs.
     ApplicationPresentation.draw(hostGraphics, {
       graphics = hostGraphics,
       optionsRenderer = assert(owner._optionsRenderer, "options renderer is unavailable"),
     }, status, plan)
-    drawApplicationFrames(hostGraphics, owner, plan)
   end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,
@@ -1511,46 +1513,120 @@ function FieldPresentationResources:pokedex()
   return created
 end
 
--- Adapts the shared palette-triple text renderer to the option-widget
--- collaborator: widgets paint each label twice (a 1px shadow offset, then
--- the face) with one flat 0..1 color per pass, while FieldTextRenderer
--- recolors the glyph mask from one byte-valued
--- foreground/shadow/background triple per draw. Each pass therefore paints
--- the whole glyph shape solid in its color (foreground and shadow slots
--- agree) over transparent glyph background, and the offset between passes
--- remains the only shadow. The shared owner is borrowed, never retained.
----@param fieldText FieldTextRenderer the shared presented text owner
----@return OptionsWidgets.TextCollaborator the borrowed widget text collaborator
-local function adaptOptionsText(fieldText)
+-- Adapts the shared field text owners to the Options source token
+-- service: Font0 paints menu glyphs and authored strings in the native
+-- source palette roles, Font1 paints the preview token lines in the
+-- source preview triple. One palette-shader pass per label; the shader
+-- keeps the shared glyph shadow, so no manual double draw exists. The
+-- shared owners are borrowed, never retained.
+---@param fieldText FieldTextRenderer the shared presented Font0 text owner
+---@param previewText FieldTextRenderer? the shared presented Font1 text owner
+---@return OptionsWidgets.TextCollaborator the borrowed Options token text service
+local function adaptOptionsText(fieldText, previewText)
+  local MessageText = require("libs.assets.src.field.FieldMessageText")
+  local menuDef = assert(fieldText.fontDef, "options presentation borrows the field Font0 font definition")
+  -- Source layout controls the Options painter interprets. Anything else
+  -- in a menu label record (substitutions, style, printer, or unknown
+  -- controls) fails explicitly at the label's semantic role instead of
+  -- painting a diagnostic marker.
+  local allowedLayout = {
+    [MessageText.ALN_CENTER] = true,
+    [MessageText.ALN_RIGHT] = true,
+    [MessageText.CURSOR_X] = true,
+    [MessageText.CURSOR_Y] = true,
+  }
+  local function checkTokens(tokens, role)
+    assert(type(tokens) == "table" and #tokens >= 1, "options " .. role .. " carries its glyph tokens")
+    local placed = false
+    for _, token in ipairs(tokens) do
+      assert(type(token) == "table", "options " .. role .. " carries token records")
+      if token.kind == "eos" then
+        break
+      elseif token.kind == "glyph" then
+        placed = true
+      elseif type(token.control) == "number" and allowedLayout[token.control] then
+        if placed then
+          error("options " .. role .. " places a position control after glyph content", 0)
+        end
+        local args = token.args or {}
+        if token.control == MessageText.CURSOR_X or token.control == MessageText.CURSOR_Y then
+          assert(#args == 1 and type(args[1]) == "number", "options " .. role .. " carries one validated cursor step")
+        else
+          assert(#args == 0, "options " .. role .. " carries no alignment step")
+        end
+      else
+        local name = nil
+        if type(token.control) == "number" then
+          name = MessageText.controlName(token.control)
+        end
+        error("options " .. role .. " carries an unsupported " .. (name or (token.kind or "control")), 0)
+      end
+    end
+  end
+  local function slotBytes(fontDef, slot)
+    local palette = assert(fontDef.palette, "options text needs the field font palette")
+    local entry = assert(palette[slot + 1], "field font palette has no slot " .. slot)
+    local function byte(value)
+      local number = assert(tonumber(value), "field font palette slots carry RGB components")
+      if number > 1 then
+        number = number / 255
+      end
+      return number * 255
+    end
+    return { r = byte(entry.r or entry[1]), g = byte(entry.g or entry[2]), b = byte(entry.b or entry[3]) }
+  end
+  local function rolePalette(fontDef, role)
+    assert(role == "normal" or role == "selected" or role == "preview", "options text uses its source roles")
+    local foreground = slotBytes(fontDef, role == "normal" and 15 or 1)
+    local shadow = slotBytes(fontDef, 2)
+    if role == "preview" then
+      local background = slotBytes(fontDef, 15)
+      return { foreground = foreground, shadow = shadow, background = background }
+    end
+    local background = slotBytes(fontDef, 0)
+    background.a = 0
+    return { foreground = foreground, shadow = shadow, background = background }
+  end
   local text = {}
-  function text:drawTextWithPalette(line, x, y, ink)
-    assert(type(line) == "string", "option labels are caller-provided strings")
-    assert(type(ink) == "table", "option labels need their ink color")
-    local function byte(channel)
-      local value = ink[channel]
-      assert(
-        type(value) == "number" and value >= 0 and value <= 1,
-        "option ink channel " .. channel .. " must be a 0..1 component"
-      )
-      return value * 255
+  function text:drawTokens(tokens, x, y, role, sourceRole)
+    checkTokens(tokens, sourceRole or "options label")
+    return fieldText:drawLineWithPalette(tokens, x, y, rolePalette(menuDef, role))
+  end
+  function text:drawPlain(line, x, y, role)
+    assert(type(line) == "string", "authored options labels stay strings")
+    fieldText:drawTextWithPalette(line, x, y, rolePalette(menuDef, role))
+  end
+  function text:measureTokens(tokens, sourceRole)
+    checkTokens(tokens, sourceRole or "options label")
+    local width = 0
+    for _, token in ipairs(tokens) do
+      if token.kind == "glyph" then
+        local glyph = menuDef.glyphs[token.code] or menuDef.glyphs[0]
+        width = width + glyph.advance + (menuDef.letterSpacing or 0)
+      end
     end
-    local alpha = ink.a
-    if alpha == nil then
-      alpha = 1
+    return width
+  end
+  function text:measurePlain(line)
+    assert(type(line) == "string", "authored options labels measure their string")
+    local width = 0
+    for char in Utf8Glyphs.iter(line) do
+      local code = menuDef.charmap[char]
+      if not code then
+        code = 0
+      end
+      local glyph = menuDef.glyphs[code] or menuDef.glyphs[0]
+      width = width + glyph.advance + (menuDef.letterSpacing or 0)
     end
-    assert(type(alpha) == "number" and alpha >= 0 and alpha <= 1, "option ink alpha must be a 0..1 component")
-    local solid = { r = byte("r"), g = byte("g"), b = byte("b"), a = alpha }
-    fieldText:drawTextWithPalette(line, x, y, {
-      foreground = solid,
-      shadow = solid,
-      background = { r = 0, g = 0, b = 0, a = 0 },
-    })
+    return width
+  end
+  function text:drawPreviewTokens(tokens, x, y)
+    local preview = assert(previewText, "options preview printing borrows the field Font1 renderer")
+    local previewDef = assert(preview.fontDef, "options preview printing borrows the Font1 font definition")
+    preview:drawLineWithPalette(tokens, x, y, rolePalette(previewDef, "preview"))
   end
   function text:windowBackgroundColor()
     return fieldText:windowBackgroundColor()
-  end
-  function text:drawTokenLine(tokens, x, y)
-    return fieldText:drawLine(tokens, x, y)
   end
   return text
 end
@@ -1568,11 +1644,15 @@ end
 ---@return FieldPresentationResources.OptionsPresentationPort
 function FieldPresentationResources:openOptionsPresentation()
   assert(self._optionsRenderer == nil, "one options presentation owns the presented lifetime")
+  local narration = self.battleTextRenderers ~= nil and self.battleTextRenderers.narration or nil
   local renderer = OptionsRenderer.new({
     cacheFs = self.cacheFs,
     manifest = assert(self.uiManifest, "options presentation requires the field-UI manifest"),
     imagePool = assert(self._imagePool, "options presentation borrows the shared image owner"),
-    text = adaptOptionsText(assert(self.textRenderer, "options presentation borrows the field text renderer")),
+    text = adaptOptionsText(
+      assert(self.textRenderer, "options presentation borrows the field text renderer"),
+      narration
+    ),
     window = assert(self.windowRenderer, "options presentation borrows the field window renderer"),
   })
   self._optionsRenderer = renderer

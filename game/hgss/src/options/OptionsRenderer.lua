@@ -5,8 +5,54 @@
 -- Draw performs no acquisition, no IO, and never releases shared owners; disposal
 -- cancels pending interests and releases owned leases exactly once.
 
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local OptionsWidgets = require("game.hgss.src.ui.OptionsWidgets")
+
+-- Resolves the glyph origin inside the label's own bounded window:
+-- centered about centerX (or the window center) unless a leading source
+-- prefix asks otherwise. CURSOR_X/CURSOR_Y pin the window-relative step;
+-- ALN_CENTER/ALN_RIGHT align in the window; otherwise defaultAlign holds.
+---@param tokens table[] validated generated token stream
+---@param window table<string, number> bounded label window
+---@param centerX number? glyph center override
+---@param defaultAlign string "left"|"center"|"right"
+---@param measure fun(tokens: table[]): number glyph advance sum
+---@return number x
+---@return number y
+local function layoutSource(tokens, window, centerX, defaultAlign, measure)
+  local align = defaultAlign
+  local pinnedX = nil
+  local pinnedY = nil
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" or token.kind == "eos" then
+      break
+    end
+    if token.control == FieldMessageText.ALN_CENTER then
+      align = "center"
+    elseif token.control == FieldMessageText.ALN_RIGHT then
+      align = "right"
+    elseif token.control == FieldMessageText.CURSOR_X then
+      pinnedX = token.args[1]
+    elseif token.control == FieldMessageText.CURSOR_Y then
+      pinnedY = token.args[1]
+    end
+  end
+  local width = measure(tokens)
+  local x = window.x
+  if pinnedX ~= nil then
+    x = window.x + pinnedX
+  elseif align == "center" then
+    x = (centerX or (window.x + window.width / 2)) - math.floor(width / 2)
+  elseif align == "right" then
+    x = window.x + window.width - width
+  end
+  local y = window.y
+  if pinnedY ~= nil then
+    y = window.y + pinnedY
+  end
+  return x, y
+end
 
 ---@class OptionsRenderer
 ---@field _cacheFs CacheFs borrowed generated asset filesystem
@@ -56,8 +102,13 @@ function OptionsRenderer.new(opts)
   assert(type(opts.imagePool) == "table", "the options renderer borrows the shared image owner")
   local text = assert(opts.text, "the options renderer borrows its text service")
   assert(
-    type(text.drawTextWithPalette) == "function" and type(text.windowBackgroundColor) == "function",
-    "the options renderer borrows its text service"
+    type(text.drawTokens) == "function"
+      and type(text.drawPlain) == "function"
+      and type(text.measureTokens) == "function"
+      and type(text.measurePlain) == "function"
+      and type(text.drawPreviewTokens) == "function"
+      and type(text.windowBackgroundColor) == "function",
+    "the options renderer borrows its source token text service"
   )
   ---@cast text OptionsWidgets.TextCollaborator
   assert(type(opts.window) == "table", "the options renderer borrows its window service")
@@ -185,6 +236,42 @@ function OptionsRenderer:_buildQuads()
   end
 end
 
+-- Validates the generated source label contract once at preparation: every
+-- required menu role carries its glyph token stream and no unsupported
+-- control survives into paint. Authored Volume/Battle Speed rows stay out;
+-- they have no source records by design.
+function OptionsRenderer:_checkLabels()
+  local section = self:_section()
+  local text = assert(self._text, "options labels borrow the text service")
+  local labels = assert(section.labels, "the options section carries its source labels")
+  local function record(role, group, key)
+    local entry = group ~= nil and group[key] or nil
+    assert(type(entry) == "table", "the options section carries its " .. role)
+    text:measureTokens(assert(entry.tokens, "options " .. role .. " carries its glyph tokens"), role)
+  end
+  for _, rowId in ipairs({ "title", "textSpeed", "battleScene", "battleStyle", "soundMode", "textFrame" }) do
+    record("row " .. rowId .. " label", labels, rowId)
+  end
+  record("footer confirm", labels, "confirm")
+  record("footer quit", labels, "quit")
+  local groups = {
+    textSpeedValues = { "mid", "fast" },
+    battleSceneValues = { "on", "off" },
+    battleStyleValues = { "shift", "set" },
+    soundModeValues = { "stereo", "mono" },
+  }
+  for groupName, stops in pairs(groups) do
+    local group = assert(labels[groupName], "the options section carries its " .. groupName)
+    for _, stop in ipairs(stops) do
+      record("choice " .. groupName .. " " .. stop, group, stop)
+    end
+  end
+  local frames = assert(labels.frameValues, "the options section carries its frame values")
+  for slot = 0, 19 do
+    record("frame value " .. (slot + 1), frames, slot)
+  end
+end
+
 -- Advances preparation without blocking: pending interests poll through
 -- the shared queue, a terminal failure unwinds owned state before it
 -- surfaces, and readiness acquires each lease once and prebuilds every
@@ -242,6 +329,7 @@ function OptionsRenderer:prepare()
     assert(self._leaseByRole.preview ~= nil, "prepared preview carries its backdrop lease")
     assert(self._leaseByRole.selectionOverlay ~= nil, "prepared selection overlay carries its lease")
     self:_buildQuads()
+    self:_checkLabels()
   end)
   if not ok then
     self:_releaseOwned()
@@ -268,7 +356,6 @@ function OptionsRenderer:draw(view, plan)
   local content = assert(plan.content, "the plan carries its options content")
   local chrome = assert(self._leaseByRole.chrome, "prepared chrome carries its lease")
   local section = self:_section()
-  local ink = { foreground = { r = 1, g = 1, b = 1, a = 1 }, shadow = { r = 0, g = 0, b = 0, a = 1 } }
   local function quadFor(frame)
     return assert(self._quadByFrame[frame], "prepared chrome carries every drawn frame")
   end
@@ -283,7 +370,7 @@ function OptionsRenderer:draw(view, plan)
           end
         end
         assert(rowView ~= nil, "every laid-out row has a published value")
-        self:_drawRow(graphics, chrome, quadFor, section, ink, row, rowView, view)
+        self:_drawRow(graphics, chrome, quadFor, section, row, rowView, view)
       end
     end
   end
@@ -299,16 +386,18 @@ function OptionsRenderer:draw(view, plan)
         self:_drawBackdrop(graphics, "controls")
         local viewport = assert(content.listViewport, "content carries its list viewport")
         LogicalSurface.clip(graphics, viewport, function()
+          self:_drawStrip(graphics, content, view)
           graphics.push("all")
           graphics.translate(0, viewport.y - content.scrollOffset)
           drawRows()
           graphics.pop()
         end)
-        self:_drawLegacyNote(ink, view)
+        self:_drawTitle(graphics, view)
+        self:_drawLegacyNote(view)
         if paneId == "content" then
           self:_drawPreview(graphics, content, view)
         end
-        self:_drawFooter(graphics, chrome, quadFor, section, ink, content, view)
+        self:_drawFooter(graphics, chrome, quadFor, section, content, view)
       end)
     else
       error("unknown options pane " .. tostring(paneId), 0)
@@ -323,28 +412,128 @@ function OptionsRenderer:_drawBackdrop(graphics, role)
   lease:draw(graphics, 0, 0)
 end
 
+-- Paints the selected-row strip behind the focused scrollable row only,
+-- viewport-adjusted and clipped to the list. Footer focus hides the layer.
+---@param graphics love.graphics
+---@param content OptionsInterface.ContentGeometry
+---@param view table<string, unknown>
+function OptionsRenderer:_drawStrip(graphics, content, view)
+  local focusId = view.focusId
+  if type(focusId) ~= "string" then
+    return
+  end
+  local focused = nil
+  for _, row in ipairs(assert(content.rows, "content carries its rows")) do
+    if row.id == focusId then
+      focused = row
+      break
+    end
+  end
+  if focused == nil or focused.clipped then
+    return
+  end
+  local viewport = assert(content.listViewport, "content carries its list viewport")
+  local lease = assert(self._leaseByRole.selectionOverlay, "prepared selection overlay carries its lease")
+  lease:draw(graphics, 0, viewport.y + focused.rect.y - content.scrollOffset)
+end
+
+-- Draws one source label record inside its bounded window: validates the
+-- token stream at its semantic role, resolves the glyph origin from the
+-- source prefix, and paints a single palette pass. Returns the origin.
+---@param record table<string, unknown> generated label record
+---@param box table<string, number> layout box
+---@param clipRect table<string, number>? clip window
+---@param centerX number? glyph center override
+---@param defaultAlign string "left"|"center"|"right"
+---@param role string semantic role for failure detail
+---@param paletteRole string "normal"|"selected"
+---@return number x
+---@return number y
+function OptionsRenderer:_drawSourceLabel(record, box, clipRect, centerX, defaultAlign, role, paletteRole)
+  local text = assert(self._text, "options labels borrow the text service")
+  local tokens = assert(record.tokens, "options " .. role .. " carries its glyph tokens")
+  local x, y = layoutSource(tokens, box, centerX, defaultAlign, function(stream)
+    return text:measureTokens(stream, role)
+  end)
+  if clipRect ~= nil then
+    local graphics = assert(love and love.graphics, "options labels require their host graphics namespace")
+    LogicalSurface.clip(graphics, clipRect, function()
+      text:drawTokens(tokens, x, y, paletteRole, role)
+    end)
+  else
+    text:drawTokens(tokens, x, y, paletteRole, role)
+  end
+  return x, y
+end
+
+-- Draws one authored plain string, centered about centerX when given.
+---@param line string authored visible string
+---@param box table<string, number> layout box
+---@param clipRect table<string, number>? clip window
+---@param centerX number? glyph center override
+---@param paletteRole string "normal"|"selected"
+---@return number x
+---@return number y
+function OptionsRenderer:_drawPlainLabel(line, box, clipRect, centerX, paletteRole)
+  local text = assert(self._text, "options labels borrow the text service")
+  assert(type(line) == "string", "authored options labels stay strings")
+  local x = box.x
+  if centerX ~= nil then
+    x = centerX - math.floor(text:measurePlain(line) / 2)
+  end
+  if clipRect ~= nil then
+    local graphics = assert(love and love.graphics, "options labels require their host graphics namespace")
+    LogicalSurface.clip(graphics, clipRect, function()
+      text:drawPlain(line, x, box.y, paletteRole)
+    end)
+  else
+    text:drawPlain(line, x, box.y, paletteRole)
+  end
+  return x, box.y
+end
+
+-- Paints the OPTIONS title at its header origin. The staged migration
+-- note keeps a separate bounded slot to the right, never over the title.
+---@param graphics love.graphics
+---@param view table<string, unknown>
+function OptionsRenderer:_drawTitle(graphics, view)
+  local title = view.titleSource
+  if title == nil then
+    return
+  end
+  LogicalSurface.clip(graphics, { x = 8, y = 0, width = 96, height = 24 }, function()
+    self:_drawSourceLabel(title, { x = 10, y = 5, width = 94, height = 19 }, nil, nil, "left", "title", "normal")
+  end)
+end
+
+-- Paints one published row: the row name once from source tokens (or the
+-- authored string where no source record exists), then the control chrome
+-- with value glyphs centered from measured advances. One palette pass
+-- per label; selected values use the dark source ink.
 ---@param graphics love.graphics
 ---@param chrome ImageAssetPoolLease
 ---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad prepared viewport per immutable compiled frame
 ---@param section OptionsRenderer.Section
----@param ink OptionsWidgets.Ink
 ---@param row OptionsInterface.RowLayout
 ---@param rowView table<string, unknown>
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, ink, row, rowView, view)
-  local text = assert(self._text, "options rows borrow the text service")
-  text:drawTextWithPalette(
-    assert(rowView.label, "rows carry their label"),
-    row.labelAnchor.x,
-    row.labelAnchor.y,
-    ink.shadow
-  )
-  text:drawTextWithPalette(
-    assert(rowView.label, "rows carry their label"),
-    row.labelAnchor.x,
-    row.labelAnchor.y,
-    ink.foreground
-  )
+function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowView, view)
+  local labelY = row.rect.y + 5
+  if rowView.sourceLabel ~= nil then
+    LogicalSurface.clip(graphics, { x = 12, y = row.rect.y, width = 100, height = 24 }, function()
+      self:_drawSourceLabel(
+        rowView.sourceLabel,
+        { x = 12, y = labelY, width = 100, height = 19 },
+        nil,
+        nil,
+        "left",
+        "row " .. row.id .. " label",
+        "normal"
+      )
+    end)
+  else
+    self:_drawPlainLabel(assert(rowView.label, "rows carry their label"), { x = 12, y = labelY }, nil, nil, "normal")
+  end
   local control = assert(row.control, "rows carry their control geometry")
   local selected = view.focusId == row.id
   if control.kind == "slider" then
@@ -356,52 +545,74 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, ink, row, 
       thumbEdge = { r = 0.1, g = 0.1, b = 0.1, a = 1 },
       focus = { r = 1, g = 0.85, b = 0.2, a = 1 },
     })
-    text:drawTextWithPalette(
+    self:_drawPlainLabel(
       assert(rowView.valueLabel, "rows carry their value label"),
-      control.rect.x,
-      row.rect.y + 4,
-      ink.foreground
+      { x = control.rect.x, y = labelY },
+      nil,
+      nil,
+      "normal"
     )
     return
-  end
-  local group = section.choices.wide
-  if rowView.valueCount <= 2 then
-    group = section.choices.small
   end
   if control.kind == "cycle" then
     OptionsWidgets.drawCycle(
       graphics,
       chrome,
       quadFor,
-      text,
       assert(section.arrows, "the section carries arrows"),
-      control.leftArrow,
-      control.rightArrow,
-      assert(rowView.valueLabel, "rows carry their value label"),
-      { x = control.value.x + control.value.width / 2, y = row.rect.y + 4 },
-      ink,
+      control.leftArrow.chromeAnchor,
+      control.rightArrow.chromeAnchor,
       nil,
       0
     )
+    local value = assert(control.value, "cycle rows carry their value geometry")
+    local box = { x = value.labelWindow.x, y = labelY, width = value.labelWindow.width, height = 19 }
+    if rowView.valueSource ~= nil then
+      self:_drawSourceLabel(
+        rowView.valueSource,
+        box,
+        value.labelWindow,
+        value.textCenterX,
+        "center",
+        "frame value",
+        "normal"
+      )
+    else
+      self:_drawPlainLabel(
+        assert(rowView.valueLabel, "rows carry their value label"),
+        box,
+        value.labelWindow,
+        value.textCenterX,
+        "normal"
+      )
+    end
     return
   end
-  local choiceRects = assert(control.choices, "choice rows carry choice rects")
+  local groupName = assert(control.chromeKind, "choice rows carry their source chrome kind")
+  local group = assert(section.choices[groupName], "the options section carries its " .. groupName .. " choices")
   local index = assert(rowView.valueIndex, "rows carry their value stop")
-  for choiceIndex, rect in ipairs(choiceRects) do
-    local label = assert(rowView.choiceLabels[choiceIndex], "every option stop is labeled")
-    OptionsWidgets.drawChoice(
-      graphics,
-      chrome,
-      quadFor,
-      text,
-      group,
-      { x = rect.x, y = rect.y },
-      label,
-      { x = rect.x, y = rect.y },
-      ink,
-      choiceIndex == index,
-      0
-    )
+  local display = rowView.choiceDisplay
+  for choiceIndex, stop in ipairs(assert(control.choices, "choice rows carry choice stops")) do
+    OptionsWidgets.drawChoice(graphics, chrome, quadFor, group, stop.chromeAnchor, choiceIndex == index, 0)
+    local paletteRole = choiceIndex == index and "selected" or "normal"
+    local box = { x = stop.labelWindow.x, y = labelY, width = stop.labelWindow.width, height = 19 }
+    local entry = display ~= nil and display[choiceIndex] or nil
+    local source = entry ~= nil and entry.source or nil
+    if source ~= nil then
+      self:_drawSourceLabel(
+        source,
+        box,
+        stop.labelWindow,
+        stop.textCenterX,
+        "center",
+        "choice " .. row.id .. " stop " .. choiceIndex,
+        paletteRole
+      )
+    else
+      local fallback = entry ~= nil and entry.text
+        or assert(rowView.choiceLabels[choiceIndex], "every option stop is labeled")
+      self:_drawPlainLabel(fallback, box, stop.labelWindow, stop.textCenterX, paletteRole)
+    end
   end
 end
 
@@ -433,7 +644,6 @@ function OptionsRenderer:_drawPreview(graphics, content, view)
   if lines == nil then
     return
   end
-  assert(type(text.drawTokenLine) == "function", "the preview borrows its token-line drawing")
   local lineHeight = previewView.lineHeight or 16
   local lineSpacing = previewView.lineSpacing or 0
   local scrollOffset = 0
@@ -449,74 +659,68 @@ function OptionsRenderer:_drawPreview(graphics, content, view)
     height = preview.height - 8,
   }, function()
     for _, line in ipairs(lines) do
-      text:drawTokenLine(line.tokens or line, originX, lineY)
+      text:drawPreviewTokens(line.tokens or line, originX, lineY)
       lineY = lineY + lineHeight + lineSpacing
     end
   end)
 end
 
--- Paints the staged legacy-Slow migration note in the header band above
--- the scrolling list when the draft carries it. The fixed header copy
--- stays in borrowed text services beside the rows; no atlas is added.
----@param ink OptionsWidgets.Ink
+-- Paints the staged legacy-Slow migration note in its own bounded header
+-- slot to the right of the title when the draft carries it. One palette
+-- pass per line; the title window is never covered.
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawLegacyNote(ink, view)
+function OptionsRenderer:_drawLegacyNote(view)
   if view.legacyNote == nil then
     return
   end
-  local text = assert(self._text, "the header note borrows the text service")
-  text:drawTextWithPalette("SLOW BECOMES MID", 12, 4, ink.shadow)
-  text:drawTextWithPalette("SLOW BECOMES MID", 12, 4, ink.foreground)
-  text:drawTextWithPalette("CONFIRM: MID QUIT: SLOW", 12, 12, ink.shadow)
-  text:drawTextWithPalette("CONFIRM: MID QUIT: SLOW", 12, 12, ink.foreground)
+<<<<<<< HEAD
+  self:_drawPlainLabel("SLOW BECOMES MID", { x = 112, y = 4 }, nil, nil, "normal")
+  self:_drawPlainLabel("CONFIRM: MID QUIT: SLOW", { x = 112, y = 12 }, nil, nil, "normal")
+=======
+  self:_drawPlainLabel("SLOW BECOMES MID", { x = 116, y = 4 }, nil, nil, "normal")
+  self:_drawPlainLabel("CONFIRM: MID QUIT: SLOW", { x = 116, y = 16 }, nil, nil, "normal")
+>>>>>>> 428651e3 (fixup! options: restore source typography and control placement)
 end
 
+-- Paints the fixed footer: one source action frame per button with the
+-- Confirm/Quit glyphs centered in their own label windows. One palette
+-- pass per label; the two windows never share an x anchor.
 ---@param graphics love.graphics
 ---@param chrome ImageAssetPoolLease
 ---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad prepared viewport per immutable compiled frame
 ---@param section OptionsRenderer.Section
----@param ink OptionsWidgets.Ink
 ---@param content OptionsInterface.ContentGeometry
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawFooter(graphics, chrome, quadFor, section, ink, content, view)
+function OptionsRenderer:_drawFooter(graphics, chrome, quadFor, section, content, view)
   local footer = assert(content.footer, "content carries its footer")
-  local text = assert(self._text, "the footer borrows the text service")
   local actions = assert(section.actions, "the section carries footer actions")
   local focusId = view.focusId
-  local confirmState = "normal"
-  if focusId == "confirm" then
-    confirmState = "focused"
+  local footerView = view.footer or {}
+  local buttons = {
+    { id = "confirm", geometry = footer.confirm, shown = footerView.confirm },
+    { id = "quit", geometry = footer.quit, shown = footerView.quit },
+  }
+  for _, button in ipairs(buttons) do
+    local geometry = assert(button.geometry, "footer actions carry their geometry")
+    local state = "normal"
+    if focusId == button.id then
+      state = "focused"
+    end
+    OptionsWidgets.drawAction(graphics, chrome, quadFor, actions, geometry.chromeAnchor, state, 0)
+    local window = assert(geometry.labelWindow, "footer actions carry their label window")
+    local centerX = window.x + window.width / 2
+    local box = { x = window.x, y = window.y + 6, width = window.width, height = 18 }
+    local shown = button.shown or {}
+    if shown.sourceLabel ~= nil then
+      self:_drawSourceLabel(shown.sourceLabel, box, window, centerX, "center", "footer " .. button.id, "normal")
+    else
+      local fallback = shown.label
+      if fallback == nil then
+        fallback = button.id == "confirm" and "CONFIRM" or "QUIT"
+      end
+      self:_drawPlainLabel(fallback, box, window, centerX, "normal")
+    end
   end
-  local quitState = "normal"
-  if focusId == "quit" then
-    quitState = "focused"
-  end
-  OptionsWidgets.drawAction(
-    graphics,
-    chrome,
-    quadFor,
-    text,
-    actions,
-    footer.confirmRect,
-    (view.footer ~= nil and view.footer.confirm ~= nil and view.footer.confirm.label) or "CONFIRM",
-    { x = footer.confirmRect.x, y = footer.confirmRect.y },
-    ink,
-    confirmState,
-    0
-  )
-  OptionsWidgets.drawAction(
-    graphics,
-    chrome,
-    quadFor,
-    text,
-    actions,
-    footer.quitRect,
-    (view.footer ~= nil and view.footer.quit ~= nil and view.footer.quit.label) or "QUIT",
-    { x = footer.quitRect.x, y = footer.quitRect.y },
-    ink,
-    quitState,
-    0
-  )
 end
 
 function OptionsRenderer:_releaseOwned()

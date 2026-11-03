@@ -6,7 +6,6 @@
 -- of its context and view.
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
-local ChoiceGroup = require("libs.ui.src.ChoiceGroup")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local OptionsRows = require("game.hgss.src.options.OptionsRows")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
@@ -35,16 +34,29 @@ local KNOB_EXTENT = 8
 ---@field kind "slider"
 ---@field rect OptionsInterface.Rect
 ---@field slider Slider.Resolved
+---@class OptionsInterface.ChoiceStop
+---@field hitRect OptionsInterface.Rect touch region for this stop
+---@field chromeAnchor OptionsInterface.Point sprite origin for this stop
+---@field textCenterX number glyph center for this stop
+---@field labelWindow OptionsInterface.Rect clip window for this stop
 ---@class OptionsInterface.ChoiceControl
 ---@field kind "choice"
 ---@field rect OptionsInterface.Rect
----@field choices OptionsInterface.Rect[]
+---@field chromeKind string "small"|"wide"
+---@field choices OptionsInterface.ChoiceStop[]
+---@class OptionsInterface.ArrowControl
+---@field hitRect OptionsInterface.Rect touch region
+---@field chromeAnchor OptionsInterface.Point sprite origin
+---@class OptionsInterface.CycleValue
+---@field hitRect OptionsInterface.Rect touch region
+---@field textCenterX number glyph center
+---@field labelWindow OptionsInterface.Rect clip window
 ---@class OptionsInterface.CycleControl
 ---@field kind "cycle"
 ---@field rect OptionsInterface.Rect
----@field leftArrow OptionsInterface.Rect
----@field rightArrow OptionsInterface.Rect
----@field value OptionsInterface.Rect
+---@field leftArrow OptionsInterface.ArrowControl
+---@field rightArrow OptionsInterface.ArrowControl
+---@field value OptionsInterface.CycleValue
 ---@alias OptionsInterface.ControlGeometry OptionsInterface.SliderControl|OptionsInterface.ChoiceControl|OptionsInterface.CycleControl
 ---@class OptionsInterface.RowLayout
 ---@field id string
@@ -53,13 +65,19 @@ local KNOB_EXTENT = 8
 ---@field labelAnchor OptionsInterface.Point
 ---@field control OptionsInterface.ControlGeometry
 ---@field clipped boolean
+---@class OptionsInterface.FooterAction
+---@field hitRect OptionsInterface.Rect touch region
+---@field chromeAnchor OptionsInterface.Point sprite origin
+---@field labelWindow OptionsInterface.Rect label clip window
 ---@class OptionsInterface.FooterLayout
 ---@field x number
 ---@field y number
 ---@field width number
 ---@field height number
----@field confirmRect OptionsInterface.Rect
----@field quitRect OptionsInterface.Rect
+---@field confirmRect OptionsInterface.Rect touch region alias of confirm.hitRect
+---@field quitRect OptionsInterface.Rect touch region alias of quit.hitRect
+---@field confirm OptionsInterface.FooterAction
+---@field quit OptionsInterface.FooterAction
 ---@class OptionsInterface.ContentGeometry
 ---@field rows OptionsInterface.RowLayout[]
 ---@field listViewport OptionsInterface.Rect
@@ -143,10 +161,38 @@ function OptionsInterface.valueCount(rowId)
   return OptionsRows.valueCount(rowId)
 end
 
+-- Native per-row control geometry: explicit source sprite anchors, glyph
+-- centers, and touch regions per row. Choice chrome is row-specific, never
+-- inferred from the stop count: Text Speed and Battle Scene wear the
+-- narrow pill, Battle Style and Sound wear the wide pill.
+local CHOICE_GEOMETRY = {
+  textSpeed = {
+    anchors = { 112, 160, 208 },
+    centers = { 124, 172, 220 },
+    hits = { { 112, 152 }, { 160, 201 }, { 208, 249 } },
+  },
+  battleScene = {
+    anchors = { 112, 160 },
+    centers = { 124, 172 },
+    hits = { { 112, 152 }, { 160, 201 } },
+  },
+  battleStyle = {
+    anchors = { 112, 192 },
+    centers = { 132, 212 },
+    hits = { { 112, 168 }, { 192, 248 } },
+  },
+  soundMode = {
+    anchors = { 112, 192 },
+    centers = { 132, 212 },
+    hits = { { 112, 168 }, { 192, 248 } },
+  },
+}
+
 -- Lays one row's concrete control geometry inside the 256-wide logical
--- row: discrete choices distribute with ChoiceGroup, the frame row keeps
--- its arrow pair, and sliders resolve their track and thumb with Slider.
--- All origins snap to whole logical pixels.
+-- row: discrete choices use their row-specific source anchors, the frame
+-- row keeps its arrow pair with a centered value, and sliders resolve
+-- their track and thumb with Slider. All origins snap to whole logical
+-- pixels.
 ---@param rowId string
 ---@param rowRect OptionsInterface.Rect logical row rectangle
 ---@param index integer the current 1-based value stop
@@ -168,36 +214,42 @@ local function layoutControl(rowId, rowRect, index)
     })
     return { kind = kind, rect = controlRect, slider = resolved }
   end
-  local count = OptionsInterface.valueCount(rowId)
-  local height = 16
-  local widths = {}
   if kind == "cycle" then
-    -- The frame row keeps a left arrow, a centered value label, and a
-    -- right arrow at natural source extents.
+    -- The frame row keeps 32px source arrows at x115/x213 with the value
+    -- centered about x172. Touch bands are row-local.
+    local arrowY = rowRect.y + 2
     return {
       kind = kind,
       rect = controlRect,
-      leftArrow = { x = controlRect.x, y = rowRect.y + 4, width = 16, height = 16 },
+      leftArrow = {
+        hitRect = { x = 110, y = arrowY, width = 40, height = 20 },
+        chromeAnchor = { x = 115, y = rowRect.y },
+      },
       rightArrow = {
-        x = controlRect.x + controlRect.width - 16,
-        y = rowRect.y + 4,
-        width = 16,
-        height = 16,
+        hitRect = { x = 208, y = arrowY, width = 45, height = 20 },
+        chromeAnchor = { x = 213, y = rowRect.y },
       },
       value = {
-        x = controlRect.x + 16,
-        y = rowRect.y,
-        width = controlRect.width - 32,
-        height = rowRect.height,
+        hitRect = { x = 150, y = arrowY, width = 58, height = 20 },
+        textCenterX = 172,
+        labelWindow = { x = 150, y = arrowY, width = 58, height = 20 },
       },
     }
   end
-  local per = math.floor(controlRect.width / count)
-  for _ = 1, count do
-    widths[#widths + 1] = per
+  local geometry = assert(CHOICE_GEOMETRY[rowId], "choice rows carry their source geometry")
+  local chromeKind = assert(OptionsRows.chromeKind(rowId), "choice rows carry their source chrome kind")
+  local choices = {}
+  for stop, anchorX in ipairs(geometry.anchors) do
+    local hit = geometry.hits[stop]
+    local hitRect = { x = hit[1], y = rowRect.y + 2, width = hit[2] - hit[1], height = 20 }
+    choices[stop] = {
+      hitRect = hitRect,
+      chromeAnchor = { x = anchorX, y = rowRect.y },
+      textCenterX = geometry.centers[stop],
+      labelWindow = hitRect,
+    }
   end
-  local resolved = ChoiceGroup.resolve({ rect = controlRect, widths = widths, height = height })
-  return { kind = kind, rect = controlRect, choices = resolved.rects }
+  return { kind = kind, rect = controlRect, chromeKind = chromeKind, choices = choices }
 end
 
 -- Builds the row rectangles and footer placement for one 256x192 logical
@@ -228,7 +280,7 @@ local function buildContent(listY, listHeight, footerY, preview, view)
       id = rowId,
       position = position,
       rect = rect,
-      labelAnchor = { x = OptionsInterface.LABEL_X, y = y + 4 },
+      labelAnchor = { x = OptionsInterface.LABEL_X, y = y + 5 },
       control = layoutControl(rowId, rect, index),
       clipped = false,
     }
@@ -244,6 +296,8 @@ local function buildContent(listY, listHeight, footerY, preview, view)
   for position, row in ipairs(rows) do
     row.clipped = position < startY or position > endY
   end
+  local confirmHit = { x = 128, y = footerY + 4, width = 53, height = 20 }
+  local quitHit = { x = 183, y = footerY + 4, width = 73, height = 20 }
   return {
     rows = rows,
     listViewport = { x = 0, y = listY, width = 256, height = listHeight },
@@ -254,8 +308,18 @@ local function buildContent(listY, listHeight, footerY, preview, view)
       y = footerY,
       width = 256,
       height = OptionsInterface.FOOTER_HEIGHT,
-      confirmRect = { x = 24, y = footerY + 4, width = 96, height = 16 },
-      quitRect = { x = 136, y = footerY + 4, width = 96, height = 16 },
+      confirmRect = confirmHit,
+      quitRect = quitHit,
+      confirm = {
+        hitRect = confirmHit,
+        chromeAnchor = { x = 116, y = footerY + 2 },
+        labelWindow = { x = 120, y = footerY, width = 56, height = 24 },
+      },
+      quit = {
+        hitRect = quitHit,
+        chromeAnchor = { x = 188, y = footerY + 2 },
+        labelWindow = { x = 192, y = footerY, width = 56, height = 24 },
+      },
     },
     preview = preview,
   }
@@ -299,16 +363,21 @@ function OptionsInterface.hitTest(content, x, y)
         return { target = row.id, control = "thumb", index = Slider.indexAt(resolved, x) }
       end
       if control.kind == "cycle" then
-        if x >= control.leftArrow.x and x < control.leftArrow.x + control.leftArrow.width then
+        local left = assert(control.leftArrow, "cycle rows carry their left arrow")
+        local leftHit = assert(left.hitRect, "cycle arrows carry their touch region")
+        if x >= leftHit.x and x < leftHit.x + leftHit.width then
           return { target = row.id, control = "left" }
         end
-        if x >= control.rightArrow.x and x < control.rightArrow.x + control.rightArrow.width then
+        local right = assert(control.rightArrow, "cycle rows carry their right arrow")
+        local rightHit = assert(right.hitRect, "cycle arrows carry their touch region")
+        if x >= rightHit.x and x < rightHit.x + rightHit.width then
           return { target = row.id, control = "right" }
         end
         return { target = row.id, control = "value" }
       end
-      for choiceIndex, choiceRect in ipairs(assert(control.choices, "choice rows carry choice rects")) do
-        if x >= choiceRect.x and x < choiceRect.x + choiceRect.width then
+      for choiceIndex, choice in ipairs(assert(control.choices, "choice rows carry choice rects")) do
+        local hitRect = assert(choice.hitRect, "choice stops carry their touch region")
+        if x >= hitRect.x and x < hitRect.x + hitRect.width then
           return { target = row.id, control = "value", index = choiceIndex }
         end
       end

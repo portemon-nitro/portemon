@@ -100,13 +100,16 @@ local function fakePrepare()
     end
     return transaction
   end
-  return prepare, function()
-    return applied
-  end, function()
-    return lastCandidate
-  end, function()
-    return rolledBack
-  end
+  return prepare,
+    function()
+      return applied
+    end,
+    function()
+      return lastCandidate
+    end,
+    function()
+      return rolledBack
+    end
 end
 
 local function fakeEffects()
@@ -1288,7 +1291,10 @@ function T.tests.failed_restoration_is_terminal_and_names_both_causes()
   end)
   Assert.isFalse(ok, "an unrestorable failure raises terminally")
   local message = tostring(err)
-  Assert.isTrue(message:find("injected live setter failure", 1, true) ~= nil, "the terminal error names the original cause")
+  Assert.isTrue(
+    message:find("injected live setter failure", 1, true) ~= nil,
+    "the terminal error names the original cause"
+  )
   Assert.isTrue(message:find("injected restore failure", 1, true) ~= nil, "the terminal error names the restore cause")
   Assert.isNil(state:takeResult(), "a terminal failure emits no close")
 end
@@ -1390,6 +1396,67 @@ function T.tests.failed_preview_construction_keeps_port_with_owner_and_allows_a_
   fresh:dispose()
   Assert.equal(freshPresentation.disposes, 1, "the fresh screen still owns its port exactly once")
   Assert.equal(presentationPort.disposes, 0, "the failed port is never double-released")
+end
+
+-- The published view carries token-bearing source records beside the
+-- authored strings: the title, every row name, each discrete choice stop
+-- (with the authored Turbo fallback carrying no record), the current
+-- frame value, and both footer actions.
+function T.tests.view_projects_token_bearing_source_records()
+  local opened = openMenu()
+  local status = opened.state:status()
+  Assert.equal(status.titleSource.text, "OPTIONS", "the title carries its source record")
+  local speedRow = rowById(status, "textSpeed")
+  Assert.equal(speedRow.sourceLabel.text, "TEXT SPEED", "rows carry their source name record")
+  Assert.equal(speedRow.label, "TEXT SPEED", "the authored row string is preserved")
+  Assert.equal(#speedRow.choiceDisplay, 3, "every text-speed stop carries a display entry")
+  Assert.equal(speedRow.choiceDisplay[1].text, "MID", "the first stop keeps its generated text")
+  Assert.equal(speedRow.choiceDisplay[1].source.text, "MID", "the first stop carries its source record")
+  Assert.equal(speedRow.choiceDisplay[3].text, "TURBO", "the fastest stop keeps its authored text")
+  Assert.equal(speedRow.choiceDisplay[3].source.text, "TURBO", "the fastest stop carries its curated record here")
+  local OptionsRows = require("game.hgss.src.options.OptionsRows")
+  local bare = OptionsRows.choicePresentation("textSpeed", {})
+  Assert.equal(bare[3].text, "TURBO", "the fastest stop falls back to authored text")
+  Assert.isNil(bare[3].source, "the authored Turbo fallback carries no source record")
+  local sceneRow = rowById(status, "battleScene")
+  Assert.equal(#sceneRow.choiceDisplay, 2, "battle scene carries both stops")
+  Assert.equal(sceneRow.choiceDisplay[2].source.text, "OFF", "the off stop carries its source record")
+  local frameRow = rowById(status, "textFrame")
+  Assert.equal(frameRow.valueSource.text, "TYPE 1", "the frame value carries its source record")
+  Assert.equal(status.footer.confirm.sourceLabel.text, "CONFIRM", "confirm carries its source record")
+  Assert.equal(status.footer.quit.sourceLabel.text, "QUIT", "quit carries its source record")
+  Assert.equal(status.footer.confirm.label, "CONFIRM", "the authored footer string is preserved")
+  local volumeRow = rowById(status, "volume")
+  Assert.isNil(volumeRow.sourceLabel, "authored rows carry no source record")
+  Assert.isNil(volumeRow.choiceDisplay, "slider rows carry no choice display")
+end
+
+-- Without generated labels the view keeps its authored strings and
+-- publishes no source records: headless fakes stay fully semantic.
+function T.tests.view_falls_back_without_generated_labels()
+  local State = stateModule()
+  local port = fakeAudioPort(80)
+  local played, effect = fakeEffects()
+  local state = State.new({
+    playerOptions = canonicalOptions(),
+    volume = port:read(),
+    preparePlayerOptions = fakePrepare(),
+    audioPreferences = port,
+    applyChannelMode = function(_) end,
+    effect = effect,
+  })
+  local status = state:status()
+  Assert.isNil(status.titleSource, "no title record without generated labels")
+  local speedRow = rowById(status, "textSpeed")
+  Assert.equal(speedRow.label, "TEXT SPEED", "row strings fall back to authored text")
+  Assert.isNil(speedRow.sourceLabel, "no row record without generated labels")
+  Assert.equal(#speedRow.choiceDisplay, 3, "every stop still carries a display entry")
+  Assert.equal(speedRow.choiceDisplay[1].text, "MID", "stop text falls back to authored strings")
+  Assert.isNil(speedRow.choiceDisplay[1].source, "no stop record without generated labels")
+  Assert.isNil(rowById(status, "textFrame").valueSource, "no frame record without generated labels")
+  Assert.equal(status.footer.confirm.label, "CONFIRM", "footer strings fall back to authored text")
+  Assert.isNil(status.footer.confirm.sourceLabel, "no footer record without generated labels")
+  state:dispose()
 end
 
 return T

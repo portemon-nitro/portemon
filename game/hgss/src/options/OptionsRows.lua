@@ -40,6 +40,16 @@ local SPEED_STOPS = { 1, 2, 4 }
 local FRAME_COUNT = 20
 local VOLUME_COUNT = 101
 
+-- Native control art per discrete row. Text Speed and Battle Scene wear the
+-- narrow pill, Battle Style and Sound wear the wide pill; the two-stop
+-- Battle Scene is the narrow exception, never inferred from the stop count.
+local CHROME = {
+  textSpeed = "small",
+  battleScene = "small",
+  battleStyle = "wide",
+  soundMode = "wide",
+}
+
 ---@param rowId string
 local function checkRow(rowId)
   if KINDS[rowId] == nil then
@@ -121,18 +131,36 @@ function OptionsRows.valueAt(rowId, index)
   return value
 end
 
+---@param rowId string
+---@return string? "small"|"wide" for discrete rows, nil for cycle/slider rows
+function OptionsRows.chromeKind(rowId)
+  checkRow(rowId)
+  return CHROME[rowId]
+end
+
 ---@param group table<string, unknown>? one generated value-label group
 ---@param keys string[] ordered lookup keys, first hit wins
----@return string? the generated text, if a key resolves
-local function generatedText(group, keys)
+---@return table<string, unknown>? the generated label record, if a key resolves
+local function generatedRecord(group, keys)
   if type(group) ~= "table" then
     return nil
   end
   for _, key in ipairs(keys) do
     local entry = group[key]
     if type(entry) == "table" and type(entry.text) == "string" then
-      return entry.text
+      return entry
     end
+  end
+  return nil
+end
+
+---@param group table<string, unknown>? one generated value-label group
+---@param keys string[] ordered lookup keys, first hit wins
+---@return string? the generated text, if a key resolves
+local function generatedText(group, keys)
+  local record = generatedRecord(group, keys)
+  if record ~= nil then
+    return record.text
   end
   return nil
 end
@@ -169,6 +197,51 @@ function OptionsRows.choiceLabels(rowId, labels)
   local ordered = {}
   for stop, candidates in ipairs(keys) do
     ordered[stop] = generatedText(group, candidates) or fallbacks[stop]
+  end
+  return ordered
+end
+
+-- Dense per-stop display entries for discrete rows: genuine generated
+-- values carry their label record, authored fallbacks (Turbo) carry a
+-- plain string with no record. Nil for cycle/slider rows. The projected
+-- `.text` sequence matches choiceLabels exactly.
+---@param rowId string
+---@param labels table<string, unknown>? generated semantic labels
+---@return { text: string, source: table<string, unknown>? }[]? ordered display entries per stop
+function OptionsRows.choicePresentation(rowId, labels)
+  checkRow(rowId)
+  if KINDS[rowId] ~= "choice" then
+    return nil
+  end
+  local group = nil
+  local keys = nil
+  local fallbacks = nil
+  if rowId == "textSpeed" then
+    group = labels ~= nil and labels.textSpeedValues or nil
+    keys = { { "mid" }, { "fast" }, { "fastest", "turbo" } }
+    fallbacks = { "MID", "FAST", "TURBO" }
+  elseif rowId == "battleScene" then
+    group = labels ~= nil and labels.battleSceneValues or nil
+    keys = { { "on" }, { "off" } }
+    fallbacks = { "ON", "OFF" }
+  elseif rowId == "battleStyle" then
+    group = labels ~= nil and labels.battleStyleValues or nil
+    keys = { { "shift" }, { "set" } }
+    fallbacks = { "SHIFT", "SET" }
+  else
+    assert(rowId == "soundMode", "unknown discrete options row " .. tostring(rowId))
+    group = labels ~= nil and labels.soundModeValues or nil
+    keys = { { "stereo" }, { "mono" } }
+    fallbacks = { "STEREO", "MONO" }
+  end
+  local ordered = {}
+  for stop, candidates in ipairs(keys) do
+    local record = generatedRecord(group, candidates)
+    if record ~= nil then
+      ordered[stop] = { text = record.text, source = record }
+    else
+      ordered[stop] = { text = fallbacks[stop], source = nil }
+    end
   end
   return ordered
 end
