@@ -206,7 +206,7 @@ end
 local function sampleView(focusId, scrollOffset)
   local Interface = (modules())
   local rows = {}
-  local ids = { "textSpeed", "battleScene", "battleStyle", "soundMode", "textFrame", "volume", "battleSpeed" }
+  local ids = { "textSpeed", "battleScene", "battleStyle", "soundMode", "volume", "battleSpeed", "textFrame" }
   for _, id in ipairs(ids) do
     local choiceLabels = nil
     if Interface.rowKind(id) == "choice" then
@@ -384,10 +384,19 @@ end
 
 function T.tests.preview_forwards_the_draft_frame_and_window_background(scope)
   local renderer, text, window = preparedPainter(scope)
-  local view = sampleView("textFrame")
+  local view = sampleView("textFrame", 64)
   view.preview = { textSpeed = "fastest", textFrame = 7 }
   local plan = drawNative(scope, renderer, view)
-  local preview = assert(plan.content.preview, "the native plan carries its preview")
+  Assert.isNil(plan.content.preview, "the native plan keeps no fixed preview")
+  local frameRow = nil
+  for _, row in ipairs(plan.content.rows) do
+    if row.id == "textFrame" then
+      frameRow = row
+    else
+      Assert.isNil(row.previewRect, "only the closing row carries a sample")
+    end
+  end
+  local preview = assert(frameRow ~= nil and frameRow.previewRect, "the closing row carries its sample")
   Assert.equal(window.lastFrame, 7, "the preview border uses the draft frame, never a hardcoded frame")
   Assert.deepEqual(window.lastBackground, text.background, "the preview fill uses the text background")
   Assert.deepEqual(
@@ -698,12 +707,12 @@ function T.tests.choice_rows_use_their_source_pill_family_and_geometry(scope)
     "the second battle-style pill misses"
   )
   local frameView = headlessSourceView()
-  frameView.scrollOffset = 80
+  frameView.scrollOffset = 64
   local framePlan = resolvers.nativeLike(contextFor("nativeLike", measurements), frameView)
   local frameContent = assert(framePlan.content, "the scrolled plan carries its options content")
-  local left = Interface.hitTest(frameContent, 140, 52)
+  local left = Interface.hitTest(frameContent, 140, 116)
   Assert.isTrue(left ~= nil and left.control == "left", "a press on the left frame arrow edits the value")
-  local right = Interface.hitTest(frameContent, 230, 52)
+  local right = Interface.hitTest(frameContent, 230, 116)
   Assert.isTrue(right ~= nil and right.control == "right", "a press on the right frame arrow edits the value")
   local placement = assert(plan.panes[1].placement, "the plan places its pane")
   local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
@@ -1001,11 +1010,17 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   end
   Assert.equal(edited, "set", "a tap on the painted row edits that same row")
   text.draws = {}
-  local maxView = sampleView("volume", 80)
+  local maxView = sampleView("textFrame", 64)
   local maxPlan = planFor(maxView)
   local canvasMax = drawPlan(scope, renderer, maxView, maxPlan, 512, 384)
   local dataMax = scope:own(canvasMax:newImageData())
-  local thumb = assert(maxPlan.content.rows[7].control.slider, "the last row carries its slider geometry")
+  local speedRow = nil
+  for _, row in ipairs(maxPlan.content.rows) do
+    if row.id == "battleSpeed" then
+      speedRow = row
+    end
+  end
+  local thumb = assert(speedRow ~= nil and speedRow.control.slider, "the battle-speed row carries its slider geometry")
   local centerX = math.floor(thumb.thumbRect.x + thumb.thumbRect.width / 2)
   local painted = assert(maxPlan.content.listViewport, "the plan carries its list viewport")
   local thumbHx, thumbHy = LayoutGeometry.logicalToHost(
@@ -1016,32 +1031,59 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   Assert.deepEqual(
     quantizePixel(dataMax, thumbHx, thumbHy),
     { 242, 242, 242, 255 },
-    "the last row stays reachable at maximum scroll"
+    "the battle-speed row stays reachable at maximum scroll"
   )
   renderer:dispose()
 end
 
-function T.tests.dual_panes_keep_the_preview_window_on_the_upper_pane(scope)
+function T.tests.dual_upper_pane_stays_decorative_while_the_sample_scrolls_in_the_lower_list(scope)
   local Interface = modules()
   local renderer, _, window = preparedPlacedPainter(scope)
   local measurements = topologies()
   local resolvers = Interface.defaults()
-  local view = sampleView("textSpeed", 0)
-  view.preview = { textSpeed = "mid", textFrame = 3 }
-  local plan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), view)
+  local hidden = sampleView("textSpeed", 0)
+  hidden.preview = { textSpeed = "mid", textFrame = 3 }
+  local hiddenPlan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), hidden)
+  Assert.isNil(hiddenPlan.content.preview, "the dual plan keeps no fixed preview")
+  local hiddenFrame = nil
+  for _, row in ipairs(hiddenPlan.content.rows) do
+    if row.id == "textFrame" then
+      hiddenFrame = row
+    end
+  end
   Assert.deepEqual(
-    plan.content.preview,
-    { x = 16, y = 152, width = 216, height = 32 },
-    "the dual preview window stays inside the upper pane"
+    assert(hiddenFrame ~= nil and hiddenFrame.previewRect, "the closing row carries its sample"),
+    { x = 16, y = 172, width = 216, height = 32 },
+    "the sample lives inside the closing row"
   )
-  local canvas = drawPlan(scope, renderer, view, plan, 512, 192)
+  window.draws = 0
+  local hiddenCanvas = drawPlan(scope, renderer, hidden, hiddenPlan, 512, 192)
+  local hiddenData = scope:own(hiddenCanvas:newImageData())
+  Assert.equal(window.draws, 0, "the upper pane stays decorative while the sample is scrolled away")
+  Assert.deepEqual(
+    quantizePixel(hiddenData, 10, 10),
+    { 210, 110, 30, 255 },
+    "the upper pane paints the preview backdrop"
+  )
+  Assert.deepEqual(
+    quantizePixel(hiddenData, 266, 10),
+    { 24, 120, 200, 255 },
+    "the lower pane paints the controls backdrop"
+  )
+  local shown = sampleView("textFrame", 64)
+  shown.preview = { textSpeed = "mid", textFrame = 3 }
+  local plan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), shown)
+  Assert.isNil(plan.content.preview, "the revealed plan keeps no fixed preview")
+  window.draws = 0
+  local canvas = drawPlan(scope, renderer, shown, plan, 512, 192)
   local data = scope:own(canvas:newImageData())
   Assert.deepEqual(quantizePixel(data, 10, 10), { 210, 110, 30, 255 }, "the upper pane paints the preview backdrop")
   Assert.deepEqual(quantizePixel(data, 266, 10), { 24, 120, 200, 255 }, "the lower pane paints the controls backdrop")
+  Assert.equal(window.draws, 1, "the revealed sample paints once in the lower list")
   Assert.deepEqual(
     { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
-    { x = 16, y = 152, width = 216, height = 32 },
-    "the sample window paints only in the preview pane"
+    { x = 16, y = 172, width = 216, height = 32 },
+    "the sample window paints with its row in the lower pane"
   )
   Assert.deepEqual(
     quantizePixel(data, 506, 180),
@@ -1323,7 +1365,7 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
   local renderer, text, window = tokenPainter(scope)
   local measurements = topologies()
   local resolvers = Interface.defaults()
-  local view = sampleView("textFrame")
+  local view = sampleView("textFrame", 64)
   view.preview = {
     textSpeed = "mid",
     textFrame = 0,
@@ -1332,7 +1374,15 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
     lineSpacing = 2,
   }
   local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
-  local preview = assert(plan.content.preview, "the native plan carries its preview")
+  Assert.isNil(plan.content.preview, "the native plan keeps no fixed preview")
+  local frameRow = nil
+  for _, row in ipairs(plan.content.rows) do
+    if row.id == "textFrame" then
+      frameRow = row
+    end
+  end
+  local preview = assert(frameRow ~= nil and frameRow.previewRect, "the closing row carries its sample")
+  Assert.deepEqual(preview, { x = 16, y = 172, width = 216, height = 32 }, "the sample lives inside the closing row")
   drawPlan(scope, renderer, view, plan, 512, 384)
   Assert.equal(window.lastFrame, 0, "the preview border uses the draft frame")
   Assert.equal(#text.tokenDraws, 2, "every visible token line draws once")
@@ -1359,18 +1409,25 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
   text.tokenDraws = {}
   text.draws = {}
   local dualPlan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), view)
+  Assert.isNil(dualPlan.content.preview, "the dual plan keeps no fixed preview")
+  local dualFrame = nil
+  for _, row in ipairs(dualPlan.content.rows) do
+    if row.id == "textFrame" then
+      dualFrame = row
+    end
+  end
   Assert.deepEqual(
-    dualPlan.content.preview,
-    { x = 16, y = 152, width = 216, height = 32 },
-    "the dual preview window stays inside the upper pane"
+    assert(dualFrame ~= nil and dualFrame.previewRect, "the dual closing row carries its sample"),
+    { x = 16, y = 172, width = 216, height = 32 },
+    "the dual sample lives inside the closing row"
   )
   drawPlan(scope, renderer, view, dualPlan, 512, 192)
   Assert.equal(window.lastFrame, 7, "the dual preview keeps the draft border")
-  Assert.equal(#text.tokenDraws, 1, "the dual preview pane paints the sample once")
-  Assert.equal(text.tokenDraws[1].tokens[1].text, "S", "the dual preview paints the same source glyphs")
+  Assert.equal(#text.tokenDraws, 1, "the lower list paints the sample once")
+  Assert.equal(text.tokenDraws[1].tokens[1].text, "S", "the lower list paints the same source glyphs")
   Assert.isTrue(
     text.tokenDraws[1].x >= 16 and text.tokenDraws[1].x < 16 + 216,
-    "dual token lines stay inside the upper preview pane"
+    "lower token lines stay inside the row sample"
   )
   assertNoStaticSample(text)
   text.tokenDraws = {}
@@ -1503,6 +1560,85 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   screen:dispose()
   Assert.isNil(resources._optionsRenderer, "disposal releases the fresh renderer")
   Assert.equal(pool:stats().pinnedBytes, baseline, "the fresh disposal returns every lease")
+end
+
+-- The closing sample scrolls with its own row on every display case:
+-- one tall viewport, one pinned footer, no fixed copy, and a decorative
+-- upper pane. Hidden at the top, fully shown at the far end.
+function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
+  local Interface = modules()
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local starts = { 0, 24, 48, 72, 96, 120, 144 }
+  local heights = { 24, 24, 24, 24, 24, 24, 64 }
+  for _, case in ipairs({ "dualDisplay", "nativeLike", "wide", "tall" }) do
+    local context = contextFor(case, measurements)
+    local view = sampleView("textSpeed", 0)
+    view.preview = { textSpeed = "mid", textFrame = 3 }
+    local plan = resolvers[case](context, view)
+    local content = assert(plan.content, case .. " publishes its list")
+    Assert.deepEqual(
+      content.listViewport,
+      { x = 0, y = 24, width = 256, height = 144 },
+      case .. " shares one tall viewport"
+    )
+    Assert.equal(content.footer.y, 168, case .. " pins its footer")
+    Assert.equal(content.scrollMax, 64, case .. " shares the scroll limit")
+    Assert.isNil(content.preview, case .. " keeps no fixed preview")
+    Assert.equal(#content.rows, 7, case .. " lays out seven rows")
+    Assert.equal(content.rows[7].id, "textFrame", case .. " closes with the frame")
+    for position, row in ipairs(content.rows) do
+      Assert.equal(row.rect.y, starts[position], case .. " keeps the row offset")
+      Assert.equal(row.rect.height, heights[position], case .. " keeps the row height")
+    end
+    local frame = content.rows[7]
+    Assert.deepEqual(
+      frame.rect,
+      { x = 0, y = 144, width = 256, height = 64 },
+      case .. " gives the closing row its tall item"
+    )
+    Assert.deepEqual(
+      frame.previewRect,
+      { x = 16, y = 172, width = 216, height = 32 },
+      case .. " nests the sample inside the closing row"
+    )
+  end
+  local renderer, _, window = preparedPlacedPainter(scope)
+  local hiddenView = sampleView("textSpeed", 0)
+  hiddenView.preview = { textSpeed = "mid", textFrame = 3 }
+  local hiddenPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), hiddenView)
+  window.draws = 0
+  drawPlan(scope, renderer, hiddenView, hiddenPlan, 512, 384)
+  Assert.equal(window.draws, 0, "the sample stays hidden at the top")
+  local shownView = sampleView("textFrame", 64)
+  shownView.preview = { textSpeed = "mid", textFrame = 3 }
+  local shownPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), shownView)
+  window.draws = 0
+  drawPlan(scope, renderer, shownView, shownPlan, 512, 384)
+  Assert.equal(window.draws, 1, "the revealed sample paints once")
+  Assert.deepEqual(
+    { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
+    { x = 16, y = 172, width = 216, height = 32 },
+    "the revealed sample covers its row rect"
+  )
+  local dualHidden = sampleView("textSpeed", 0)
+  dualHidden.preview = { textSpeed = "mid", textFrame = 3 }
+  local dualHiddenPlan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), dualHidden)
+  window.draws = 0
+  drawPlan(scope, renderer, dualHidden, dualHiddenPlan, 512, 192)
+  Assert.equal(window.draws, 0, "no upper copy appears while scrolled away")
+  local dualShown = sampleView("textFrame", 64)
+  dualShown.preview = { textSpeed = "mid", textFrame = 3 }
+  local dualShownPlan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), dualShown)
+  window.draws = 0
+  drawPlan(scope, renderer, dualShown, dualShownPlan, 512, 192)
+  Assert.equal(window.draws, 1, "the lower list paints the one sample")
+  Assert.deepEqual(
+    { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
+    { x = 16, y = 172, width = 216, height = 32 },
+    "the dual sample paints with its row below"
+  )
+  renderer:dispose()
 end
 
 -- Every suite stages its own complete synthetic image set under its own

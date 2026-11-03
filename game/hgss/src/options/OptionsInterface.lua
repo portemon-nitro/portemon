@@ -64,6 +64,7 @@ local KNOB_EXTENT = 8
 ---@field rect OptionsInterface.Rect
 ---@field labelAnchor OptionsInterface.Point
 ---@field control OptionsInterface.ControlGeometry
+---@field previewRect OptionsInterface.Rect? live sample window in content coordinates, frame row only
 ---@field clipped boolean
 ---@class OptionsInterface.FooterAction
 ---@field hitRect OptionsInterface.Rect touch region
@@ -81,10 +82,10 @@ local KNOB_EXTENT = 8
 ---@class OptionsInterface.ContentGeometry
 ---@field rows OptionsInterface.RowLayout[]
 ---@field listViewport OptionsInterface.Rect
+---@field totalHeight number summed content height in logical pixels
 ---@field scrollOffset number
 ---@field scrollMax number
 ---@field footer OptionsInterface.FooterLayout
----@field preview OptionsInterface.Rect?
 ---@class OptionsInterface.Hit
 ---@field target string rowId, "confirm", or "quit"
 ---@field control "value"|"left"|"right"|"thumb"|"footer"
@@ -97,10 +98,10 @@ local FOCUS_DOWN = {
   textSpeed = "battleScene",
   battleScene = "battleStyle",
   battleStyle = "soundMode",
-  soundMode = "textFrame",
-  textFrame = "volume",
+  soundMode = "volume",
   volume = "battleSpeed",
-  battleSpeed = "confirm",
+  battleSpeed = "textFrame",
+  textFrame = "confirm",
   confirm = "textSpeed",
   quit = "textSpeed",
 }
@@ -109,11 +110,11 @@ local FOCUS_UP = {
   battleScene = "textSpeed",
   battleStyle = "battleScene",
   soundMode = "battleStyle",
-  textFrame = "soundMode",
-  volume = "textFrame",
+  volume = "soundMode",
   battleSpeed = "volume",
-  confirm = "battleSpeed",
-  quit = "battleSpeed",
+  textFrame = "battleSpeed",
+  confirm = "textFrame",
+  quit = "textFrame",
 }
 
 ---@param currentId string
@@ -136,6 +137,47 @@ function OptionsInterface.focusNext(currentId, direction)
     return currentId
   end
   error("unknown options focus direction " .. tostring(direction), 0)
+end
+
+-- The one variable-height content list: six 24px setting rows plus the
+-- closing 64px frame item (24px selector band, 32px sample window inset
+-- 28px below the item top, 4px bottom margin). Cumulative content offsets
+-- are the single source of row geometry; nothing recomputes y from an
+-- index.
+OptionsInterface.FRAME_ITEM_HEIGHT = 64
+
+---@param rowId string
+---@return integer row height in logical pixels
+local function rowHeight(rowId)
+  if rowId == "textFrame" then
+    return OptionsInterface.FRAME_ITEM_HEIGHT
+  end
+  return OptionsInterface.ROW_HEIGHT
+end
+
+---@return integer summed content height in logical pixels
+function OptionsInterface.totalHeight()
+  local total = 0
+  for _, rowId in ipairs(OptionsInterface.ROW_IDS) do
+    total = total + rowHeight(rowId)
+  end
+  return total
+end
+
+---@param offset number current scroll offset
+---@param rowId string focused row
+---@param extent integer visible list height
+---@return number scroll offset revealing the whole row interval
+function OptionsInterface.revealRow(offset, rowId, extent)
+  local y = 0
+  for _, id in ipairs(OptionsInterface.ROW_IDS) do
+    local height = rowHeight(id)
+    if id == rowId then
+      return ScrollViewport.reveal(offset, extent, y, height)
+    end
+    y = y + height
+  end
+  error("unknown options row " .. tostring(rowId), 0)
 end
 
 ---@param rowId string
@@ -254,18 +296,20 @@ end
 
 -- Builds the row rectangles and footer placement for one 256x192 logical
 -- body: a fixed header, the scrolling list region, and a footer pinned
--- below the list. The caller supplies the preview placement per case.
+-- below the list. Rows stack cumulatively from content y=0; only the
+-- closing frame row carries a child sample rect inset 28px below its own
+-- top.
 ---@param listY integer list top within the body
 ---@param listHeight integer visible list height within the body
 ---@param footerY integer footer top within the body
----@param preview OptionsInterface.Rect? case preview placement in body coordinates
 ---@param view table<string, unknown> the screen semantic snapshot
 ---@return OptionsInterface.ContentGeometry content geometry for paint and hit testing
-local function buildContent(listY, listHeight, footerY, preview, view)
+local function buildContent(listY, listHeight, footerY, view)
   local rows = {}
   local y = 0
   for position, rowId in ipairs(OptionsInterface.ROW_IDS) do
-    local rect = { x = 0, y = y, width = 256, height = OptionsInterface.ROW_HEIGHT }
+    local height = rowHeight(rowId)
+    local rect = { x = 0, y = y, width = 256, height = height }
     local rowView = nil
     if type(view.rows) == "table" then
       for _, entry in ipairs(view.rows) do
@@ -282,25 +326,27 @@ local function buildContent(listY, listHeight, footerY, preview, view)
       rect = rect,
       labelAnchor = { x = OptionsInterface.LABEL_X, y = y + 5 },
       control = layoutControl(rowId, rect, index),
+      previewRect = rowId == "textFrame" and { x = 16, y = y + 28, width = 216, height = 32 } or nil,
       clipped = false,
     }
-    y = y + OptionsInterface.ROW_HEIGHT
+    y = y + height
   end
   local scrollOffset = 0
   if type(view.scrollOffset) == "number" then
     scrollOffset = view.scrollOffset
   end
-  local totalHeight = #rows * OptionsInterface.ROW_HEIGHT
+  local totalHeight = y
   scrollOffset = ScrollViewport.clamp(scrollOffset, totalHeight, listHeight)
-  local startY, endY = ScrollViewport.visibleRange(scrollOffset, listHeight, OptionsInterface.ROW_HEIGHT, 0, #rows)
-  for position, row in ipairs(rows) do
-    row.clipped = position < startY or position > endY
+  local viewportEnd = scrollOffset + listHeight
+  for _, row in ipairs(rows) do
+    row.clipped = not (row.rect.y < viewportEnd and row.rect.y + row.rect.height > scrollOffset)
   end
   local confirmHit = { x = 128, y = footerY + 4, width = 53, height = 20 }
   local quitHit = { x = 183, y = footerY + 4, width = 73, height = 20 }
   return {
     rows = rows,
     listViewport = { x = 0, y = listY, width = 256, height = listHeight },
+    totalHeight = totalHeight,
     scrollOffset = scrollOffset,
     scrollMax = math.max(0, totalHeight - listHeight),
     footer = {
@@ -321,7 +367,6 @@ local function buildContent(listY, listHeight, footerY, preview, view)
         labelWindow = { x = 192, y = footerY, width = 56, height = 24 },
       },
     },
-    preview = preview,
   }
 end
 
@@ -356,6 +401,15 @@ function OptionsInterface.hitTest(content, x, y)
     if y >= top and y < top + rect.height and x >= 0 and x < 256 then
       if row.clipped then
         return nil
+      end
+      -- The frame row answers only inside its 24px selector band: the
+      -- child sample and its margins stay passive so a press there may
+      -- start a list drag instead of cycling the frame.
+      if row.previewRect ~= nil then
+        local contentY = y - viewport.y + offset
+        if contentY >= rect.y + OptionsInterface.ROW_HEIGHT then
+          return nil
+        end
       end
       local control = row.control
       if control.kind == "slider" then
@@ -462,9 +516,9 @@ local function renderOptions(resources, view, plan)
   renderer:draw(view, plan)
 end
 
--- Single-pane 256x192 body over the owned target region: header, list,
--- preview sample, and pinned footer. The preview occupies the lower body
--- below the list in the compact arrangement.
+-- Single-pane 256x192 body over the owned target region: header, the one
+-- tall scrolling list, and a pinned footer. The frame sample scrolls with
+-- its own closing row inside the list, never as a fixed copy below it.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan plan
@@ -474,7 +528,7 @@ local function compactPlan(context, view)
   if placement == nil then
     return inactivePlan()
   end
-  local content = buildContent(24, 88, 168, { x = 20, y = 128, width = 216, height = 32 }, view)
+  local content = buildContent(24, 144, 168, view)
   return {
     panes = { { id = CONTENT_NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
@@ -504,7 +558,7 @@ function OptionsInterface.framed(context, view)
   if placement == nil then
     return inactivePlan()
   end
-  local content = buildContent(24, 88, 168, { x = 20, y = 128, width = 216, height = 32 }, view)
+  local content = buildContent(24, 144, 168, view)
   return {
     panes = { { id = CONTENT_NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
@@ -516,8 +570,9 @@ function OptionsInterface.framed(context, view)
 end
 
 -- Dual-display arrangement: the controls own the auxiliary 256x192 body
--- while the preview sample rides the world surface. The list region grows
--- to fill the taller control allocation.
+-- while the upper world surface keeps only its decorative source
+-- backdrop. The list region fills the whole controls allocation below
+-- the header.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan plan
@@ -537,7 +592,7 @@ function OptionsInterface.dual(context, view)
     panes[#panes + 1] = { id = upper.id, placement = geometry.placements[upper.id], interactive = false }
   end
   panes[#panes + 1] = { id = lower.id, placement = placement, interactive = true }
-  local content = buildContent(24, 144, 168, { x = 16, y = 152, width = 216, height = 32 }, view)
+  local content = buildContent(24, 144, 168, view)
   return {
     panes = panes,
     frames = geometry.frames or {},

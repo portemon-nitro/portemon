@@ -64,7 +64,7 @@ end
 local function sampleView()
   local Interface = require("game.hgss.src.options.OptionsInterface")
   local rows = {}
-  for _, id in ipairs({ "textSpeed", "battleScene", "battleStyle", "soundMode", "textFrame", "volume", "battleSpeed" }) do
+  for _, id in ipairs({ "textSpeed", "battleScene", "battleStyle", "soundMode", "volume", "battleSpeed", "textFrame" }) do
     local choiceLabels = nil
     if Interface.rowKind(id) == "choice" then
       choiceLabels = {}
@@ -212,28 +212,30 @@ function T.tests.labels_paint_a_single_source_palette_pass(scope)
   for _, line in ipairs(drawnLines) do
     counts[line] = (counts[line] or 0) + 1
   end
-  -- The top of the list reveals the four choice rows; the footer is
+  -- The top of the list reveals the six ordinary rows; the footer is
   -- always pinned. Each visible label paints exactly one palette pass.
   for _, label in ipairs({
     "TEXTSPEED",
     "BATTLESCENE",
     "BATTLESTYLE",
     "SOUNDMODE",
+    "VOLUME",
+    "BATTLESPEED",
     "CONFIRM",
     "QUIT",
   }) do
     Assert.equal(counts[label], 1, "label paints exactly one palette pass: " .. label)
   end
-  -- Scrolling to the bottom reveals the remaining rows; they paint once
+  -- Scrolling to the bottom reveals the closing frame row; it paints once
   -- there and never at the top.
   local bottomed = sampleView()
-  bottomed.scrollOffset = 80
+  bottomed.scrollOffset = 64
   drawNative(scope, renderer, bottomed)
   local bottomCounts = {}
   for _, line in ipairs(drawnLines) do
     bottomCounts[line] = (bottomCounts[line] or 0) + 1
   end
-  for _, label in ipairs({ "TEXTFRAME", "VOLUME", "BATTLESPEED" }) do
+  for _, label in ipairs({ "TEXTFRAME" }) do
     Assert.equal(bottomCounts[label], 1, "scrolled label paints exactly one palette pass: " .. label)
     Assert.isTrue(counts[label] == nil, "scrolled label paints nothing at the top: " .. label)
   end

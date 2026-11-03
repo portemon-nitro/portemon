@@ -513,21 +513,13 @@ function OptionsScreenState:_stepRow(rowId, direction)
 end
 
 -- Keeps the focused row fully visible: scrolling never edits values or
--- moves focus, it only reveals the focused row.
+-- moves focus, it only reveals the focused interval. Focusing the closing
+-- frame reveals its whole 64px item, sample window included.
 function OptionsScreenState:_ensureVisible()
-  local position = nil
-  for index, rowId in ipairs(OptionsInterface.ROW_IDS) do
-    if rowId == self._focusId then
-      position = index
-      break
-    end
-  end
-  if position == nil then
+  if not OptionsInterface.isRow(self._focusId) then
     return
   end
-  local extent = self:_listExtent()
-  local itemStart = (position - 1) * OptionsInterface.ROW_HEIGHT
-  self._scrollOffset = ScrollViewport.reveal(self._scrollOffset, extent, itemStart, OptionsInterface.ROW_HEIGHT)
+  self._scrollOffset = OptionsInterface.revealRow(self._scrollOffset, self._focusId, self:_listExtent())
 end
 
 ---@return integer visible list height
@@ -538,7 +530,34 @@ function OptionsScreenState:_listExtent()
       return plan.content.listViewport.height
     end
   end
-  return 88
+  return 144
+end
+
+-- Settles a released list drag without touching values or focus: a
+-- focused frame always rests fully revealed; otherwise a drag ending
+-- with the frame only partially visible rests fully revealed when the
+-- gesture moved toward the end, or back at the top when it moved toward
+-- the start. With this leaf's 64px overflow, a strictly interior offset
+-- is exactly the partially visible frame. Active drags never settle.
+---@param startY number? logical press y
+---@param releaseY number? logical release y
+function OptionsScreenState:_settleListScroll(startY, releaseY)
+  if self._focusId == "textFrame" then
+    self._scrollOffset = OptionsInterface.revealRow(self._scrollOffset, "textFrame", self:_listExtent())
+    return
+  end
+  if type(startY) ~= "number" or type(releaseY) ~= "number" or releaseY == startY then
+    return
+  end
+  local max = math.max(0, OptionsInterface.totalHeight() - self:_listExtent())
+  if self._scrollOffset <= 0 or self._scrollOffset >= max then
+    return
+  end
+  if releaseY < startY then
+    self._scrollOffset = max
+  else
+    self._scrollOffset = 0
+  end
 end
 
 ---@param direction string
@@ -672,8 +691,8 @@ function OptionsScreenState:_applyEvent(event)
     end
     self._capture = nil
     local delta = event.delta or 0
-    local total = #OptionsInterface.ROW_IDS * OptionsInterface.ROW_HEIGHT
-    self._scrollOffset = ScrollViewport.clamp(self._scrollOffset + delta, total, self:_listExtent())
+    self._scrollOffset =
+      ScrollViewport.clamp(self._scrollOffset + delta, OptionsInterface.totalHeight(), self:_listExtent())
     return
   end
   if kind == "pointer_down" or kind == "pointer_move" or kind == "pointer_up" then
@@ -710,7 +729,7 @@ function OptionsScreenState:_pointerEvent(kind, event)
     if hit == nil then
       if plan ~= nil and plan.content ~= nil and event.x ~= nil and event.y ~= nil then
         if OptionsInterface.inList(plan.content, event.x, event.y) then
-          self._capture = { pointerId = event.pointerId, list = true, lastY = event.y }
+          self._capture = { pointerId = event.pointerId, list = true, lastY = event.y, startY = event.y }
         end
       end
       return
@@ -736,9 +755,11 @@ function OptionsScreenState:_pointerEvent(kind, event)
   if kind == "pointer_move" then
     if capture.list then
       if event.y ~= nil then
-        local total = #OptionsInterface.ROW_IDS * OptionsInterface.ROW_HEIGHT
-        self._scrollOffset =
-          ScrollViewport.clamp(self._scrollOffset + (capture.lastY - event.y), total, self:_listExtent())
+        self._scrollOffset = ScrollViewport.clamp(
+          self._scrollOffset + (capture.lastY - event.y),
+          OptionsInterface.totalHeight(),
+          self:_listExtent()
+        )
         capture.lastY = event.y
       end
       return
@@ -754,8 +775,15 @@ function OptionsScreenState:_pointerEvent(kind, event)
     end
     return
   end
-  -- pointer_up: a matching release commits the armed press; a dragged or
-  -- re-targeted release only drops the capture.
+  -- pointer_up: a released list drag settles whole without editing
+  -- anything; a matching control release commits the armed press, while
+  -- a dragged or re-targeted release only drops the capture.
+  if capture.list then
+    local startY = capture.startY
+    self._capture = nil
+    self:_settleListScroll(startY, event.y)
+    return
+  end
   local armed = capture.armed
   self._capture = nil
   if not armed then

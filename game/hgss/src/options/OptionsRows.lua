@@ -14,9 +14,9 @@ OptionsRows.ROW_IDS = {
   "battleScene",
   "battleStyle",
   "soundMode",
-  "textFrame",
   "volume",
   "battleSpeed",
+  "textFrame",
 }
 
 local KINDS = {

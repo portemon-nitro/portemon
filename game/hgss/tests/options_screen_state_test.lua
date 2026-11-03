@@ -324,9 +324,9 @@ function T.tests.seven_rows_publish_in_order_with_footer_actions()
     "battleScene",
     "battleStyle",
     "soundMode",
-    "textFrame",
     "volume",
     "battleSpeed",
+    "textFrame",
   }, "rows keep their stable order")
   Assert.isTrue(status.footer ~= nil and status.footer.confirm ~= nil, "the footer carries confirm")
   Assert.isTrue(status.footer.quit ~= nil, "the footer carries quit")
@@ -369,12 +369,14 @@ function T.tests.focus_graph_reaches_footer_and_returns()
   Assert.equal(state:status().focusId, "quit", "up from the first row reaches quit")
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(state:status().focusId, "textSpeed", "down from the footer returns to the first row")
-  for _ = 1, 6 do
+  for _ = 1, 5 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
   Assert.equal(state:status().focusId, "battleSpeed", "down walks the fixed row order")
   state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().focusId, "confirm", "down from battle speed reaches confirm")
+  Assert.equal(state:status().focusId, "textFrame", "down from battle speed reaches the closing frame")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(state:status().focusId, "confirm", "down from the frame reaches confirm")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(state:status().focusId, "quit", "footer right selects quit")
   state:updateFixed({ { type = "navigate", direction = "right" } })
@@ -382,7 +384,7 @@ function T.tests.focus_graph_reaches_footer_and_returns()
   state:updateFixed({ { type = "navigate", direction = "left" } })
   Assert.equal(state:status().focusId, "confirm", "footer left selects confirm")
   state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().focusId, "battleSpeed", "up from either footer reaches battle speed")
+  Assert.equal(state:status().focusId, "textFrame", "up from either footer reaches the frame")
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(state:status().focusId, "textSpeed", "down from the footer wraps to the first row")
@@ -426,10 +428,10 @@ function T.tests.volume_spans_zero_to_one_hundred_with_one_percent_stops()
   Assert.equal(row.valueCount, 101, "volume offers one-percent stops")
   Assert.equal(row.value, 80, "the draft opens at the committed volume")
   Assert.equal(opened.state:status().focusId, "textSpeed", "edits start on the first row")
-  for _ = 1, 5 do
+  for _ = 1, 4 do
     opened.state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(opened.state:status().focusId, "volume", "five downs reach the volume row")
+  Assert.equal(opened.state:status().focusId, "volume", "four downs reach the volume row")
   for _ = 1, 200 do
     opened.state:updateFixed({ { type = "navigate", direction = "right" } })
   end
@@ -449,10 +451,10 @@ function T.tests.battle_speed_snaps_to_one_two_four()
   local opened = openMenu()
   local row = rowById(opened.state:status(), "battleSpeed")
   Assert.equal(row.valueCount, 3, "battle speed offers three stops")
-  for _ = 1, 6 do
+  for _ = 1, 5 do
     opened.state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(opened.state:status().focusId, "battleSpeed", "six downs reach the battle speed row")
+  Assert.equal(opened.state:status().focusId, "battleSpeed", "five downs reach the battle speed row")
   opened.state:updateFixed({ { type = "slider-set", row = "battleSpeed", index = 2 } })
   row = rowById(opened.state:status(), "battleSpeed")
   Assert.equal(row.value, 2, "the middle stop is 2x")
@@ -520,10 +522,10 @@ end
 function T.tests.confirm_publishes_an_edited_volume_once()
   local opened = openMenu({ volume = 80 })
   local state = opened.state
-  for _ = 1, 5 do
+  for _ = 1, 4 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(state:status().focusId, "volume", "five downs reach the volume row")
+  Assert.equal(state:status().focusId, "volume", "four downs reach the volume row")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   state:updateFixed({ { type = "activate", id = "confirm" } })
   Assert.deepEqual(state:takeResult(), { kind = "close" }, "confirm closes once")
@@ -535,10 +537,10 @@ function T.tests.failed_volume_commit_keeps_menu_open_with_draft_and_baseline()
   local opened = openMenu({ failCommit = "SAVE_WRITE_FAILED: disk is full" })
   local state = opened.state
   state:updateFixed({ { type = "navigate", direction = "left" } })
-  for _ = 1, 5 do
+  for _ = 1, 4 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(state:status().focusId, "volume", "five downs reach the volume row")
+  Assert.equal(state:status().focusId, "volume", "four downs reach the volume row")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(state:status().dirty, true, "the draft carries the staged edits")
   state:updateFixed({ { type = "activate", id = "confirm" } })
@@ -618,9 +620,9 @@ function T.tests.scroll_moves_list_without_editing_values_or_focus()
     "battleScene",
     "battleStyle",
     "soundMode",
-    "textFrame",
     "volume",
     "battleSpeed",
+    "textFrame",
   }, "the interface row order is the seven-setting order")
   local before = rowById(state:status(), "textSpeed").value
   state:updateFixed({ { type = "scroll", delta = 48 } })
@@ -695,12 +697,19 @@ end
 function T.tests.slider_capture_survives_wheel_while_row_presses_disarm()
   local opened = openMenu()
   local state = opened.state
-  for _ = 1, 5 do
+  for _ = 1, 6 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  state:updateFixed({ { type = "slider-set", row = "volume", index = 42 } })
+  Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
   local settled = state:status().scrollOffset
-  Assert.isTrue(settled > 0, "focusing the volume row scrolls it into view")
+  Assert.isTrue(settled > 0, "focusing the frame row scrolls it into view")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(state:status().focusId, "volume", "two ups return to the volume row")
+  Assert.equal(state:status().scrollOffset, settled, "revealing an earlier row keeps the scrolled list")
+  state:updateFixed({
+    { type = "slider-set", row = "volume", index = 42 },
+  })
   state:updateFixed({
     { type = "pointer_down", pointerId = "touch:0", hit = { target = "volume", control = "thumb", index = 42 } },
   })
@@ -782,12 +791,16 @@ function T.tests.presented_slider_list_and_capture_identity()
   local Interface = interfaceModule()
   local opened = openPresentedMenu()
   local state = opened.state
-  for _ = 1, 5 do
+  for _ = 1, 6 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(state:status().focusId, "volume", "five downs reach the volume row")
+  Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
   local settled = state:status().scrollOffset
-  Assert.isTrue(settled > 0, "focusing the volume row scrolls it into view")
+  Assert.isTrue(settled > 0, "focusing the frame row scrolls it into view")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(state:status().focusId, "volume", "two ups return to the volume row")
+  Assert.equal(state:status().scrollOffset, settled, "revealing an earlier row keeps the scrolled list")
   local status = state:status()
   local content = assert(status.presentation.content, "the plan carries its content")
   local pane = presentationPane(status, "content")
@@ -813,6 +826,8 @@ function T.tests.presented_slider_list_and_capture_identity()
   Assert.equal(rowById(state:status(), "volume").value, 79, "dragging the rail between stops edits the percent")
   Assert.equal(state:status().scrollOffset, settled, "a slider drag never scrolls")
   Assert.isNil(state:takeResult(), "releasing the slider closes nothing")
+  state:updateFixed({ { type = "scroll", delta = -64 } })
+  Assert.equal(state:status().scrollOffset, 0, "a wheel scroll returns the list to the top")
   status = state:status()
   content = assert(status.presentation.content, "the plan carries its content")
   pane = presentationPane(status, "content")
@@ -1457,6 +1472,145 @@ function T.tests.view_falls_back_without_generated_labels()
   Assert.equal(status.footer.confirm.label, "CONFIRM", "footer strings fall back to authored text")
   Assert.isNil(status.footer.confirm.sourceLabel, "no footer record without generated labels")
   state:dispose()
+end
+
+-- The closing frame row carries its own tall item and sample window.
+-- All layouts share one tall list region with a pinned footer; focusing
+-- the last row reveals both its selector and its window together.
+function T.tests.frame_is_last_with_co_scrolling_preview_and_full_reveal()
+  local Interface = interfaceModule()
+  Assert.deepEqual(Interface.ROW_IDS, {
+    "textSpeed",
+    "battleScene",
+    "battleStyle",
+    "soundMode",
+    "volume",
+    "battleSpeed",
+    "textFrame",
+  }, "the frame row closes the list")
+  local opened = openPresentedMenu({ playerOptions = { textFrame = 9 } })
+  local state = opened.state
+  local status = state:status()
+  local content = assert(status.presentation.content, "the presented plan carries its list")
+  Assert.deepEqual(
+    content.listViewport,
+    { x = 0, y = 24, width = 256, height = 144 },
+    "the list keeps one tall viewport"
+  )
+  Assert.equal(content.footer.y, 168, "the footer stays pinned below the list")
+  Assert.isNil(content.preview, "no fixed preview rides outside the rows")
+  Assert.equal(content.scrollMax, 64, "the tall frame sets the scroll limit")
+  Assert.equal(content.totalHeight, 208, "the row heights sum to the list height")
+  Assert.equal(#content.rows, 7, "seven rows publish")
+  local starts = { 0, 24, 48, 72, 96, 120, 144 }
+  local heights = { 24, 24, 24, 24, 24, 24, 64 }
+  for position, row in ipairs(content.rows) do
+    Assert.equal(row.rect.y, starts[position], "row keeps its list offset")
+    Assert.equal(row.rect.height, heights[position], "row keeps its own height")
+    if row.id == "textFrame" then
+      Assert.deepEqual(
+        row.previewRect,
+        { x = 16, y = 172, width = 216, height = 32 },
+        "the sample lives inside the frame row"
+      )
+    else
+      Assert.isNil(row.previewRect, "only the frame row carries a sample")
+    end
+  end
+  Assert.equal(status.focusId, "textSpeed", "the menu opens at the top")
+  Assert.equal(status.scrollOffset, 0, "the list opens unscrolled")
+  for _ = 1, 6 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
+  Assert.equal(state:status().scrollOffset, 64, "focusing the frame reveals its window")
+  local frameRow = rowById(state:status(), "textFrame")
+  Assert.equal(frameRow.valueLabel, "TYPE 10", "the draft frame reads one-based")
+  Assert.equal(state:status().preview.textFrame, 9, "the sample follows the draft frame")
+  for _ = 1, 6 do
+    state:updateFixed({ { type = "navigate", direction = "up" } })
+  end
+  Assert.equal(state:status().focusId, "textSpeed", "ups return to the first row")
+  Assert.equal(state:status().scrollOffset, 0, "returning to the top restores the offset")
+end
+
+-- The sample never selects a value but still belongs to the scrolling
+-- list: taps there change nothing while arrows stay reachable, and a
+-- released drag never rests with the selector showing and the window cut.
+function T.tests.frame_preview_stays_passive_while_gestures_settle_whole()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu({ playerOptions = { textFrame = 9 } })
+  local state = opened.state
+  for _ = 1, 6 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
+  Assert.equal(state:status().scrollOffset, 64, "the frame rests fully revealed")
+  local content = assert(state:status().presentation.content, "the revealed plan carries its list")
+  Assert.isNil(Interface.hitTest(content, 124, 148), "tapping the sample selects nothing")
+  Assert.isTrue(Interface.inList(content, 124, 148), "the sample still starts a list drag")
+  local left = Interface.hitTest(content, 130, 116)
+  Assert.isTrue(
+    left ~= nil and left.target == "textFrame" and left.control == "left",
+    "the left arrow stays hit-testable"
+  )
+  local right = Interface.hitTest(content, 220, 116)
+  Assert.isTrue(
+    right ~= nil and right.target == "textFrame" and right.control == "right",
+    "the right arrow stays hit-testable"
+  )
+  local status = state:status()
+  local pane = presentationPane(status, status.presentation.panes[1].id)
+  if pane.id ~= "content" then
+    for _, candidate in ipairs(status.presentation.panes) do
+      if candidate.id == "content" then
+        pane = candidate
+      end
+    end
+  end
+  local before = rowById(state:status(), "textFrame").value
+  local previewHx, previewHy = hostForLogical(pane, 124, 148)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = previewHx, y = previewHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = previewHx, y = previewHy } })
+  Assert.equal(rowById(state:status(), "textFrame").value, before, "tapping the sample edits no value")
+  Assert.isNil(state:takeResult(), "tapping the sample closes nothing")
+  Assert.isTrue(state:status().open, "the menu stays open after a sample tap")
+  for _ = 1, 6 do
+    state:updateFixed({ { type = "navigate", direction = "up" } })
+  end
+  Assert.equal(state:status().scrollOffset, 0, "the list returns to the top")
+  status = state:status()
+  content = assert(status.presentation.content, "the top plan carries its list")
+  pane = nil
+  for _, candidate in ipairs(status.presentation.panes) do
+    if candidate.id == "content" then
+      pane = candidate
+    end
+  end
+  pane = pane or status.presentation.panes[1]
+  local gapX, gapY = findLogicalForListGap(Interface, content)
+  local downHx, downHy = hostForLogical(pane, gapX, gapY)
+  local movedHx, movedHy = hostForLogical(pane, gapX, gapY - 24)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = downHx, y = downHy } })
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = movedHx, y = movedHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = movedHx, y = movedHy } })
+  Assert.equal(state:status().scrollOffset, 64, "a drag toward the end settles fully revealed")
+  status = state:status()
+  content = assert(status.presentation.content, "the settled plan carries its list")
+  pane = nil
+  for _, candidate in ipairs(status.presentation.panes) do
+    if candidate.id == "content" then
+      pane = candidate
+    end
+  end
+  pane = pane or status.presentation.panes[1]
+  local topX, topY = findLogicalForListGap(Interface, content)
+  local startHx, startHy = hostForLogical(pane, topX, topY)
+  local backHx, backHy = hostForLogical(pane, topX, topY + 40)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = startHx, y = startHy } })
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:2", x = backHx, y = backHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = backHx, y = backHy } })
+  Assert.equal(state:status().scrollOffset, 0, "a drag toward the start settles back to the top")
 end
 
 return T

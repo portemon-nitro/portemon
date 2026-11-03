@@ -341,9 +341,10 @@ end
 
 -- Paints one resolved plan: each pane first paints its own semantic
 -- source backdrop, then the controls/content pane paints the header, the
--- clipped scrolling rows translated by the list offset, the local preview
--- sample, and the fixed footer, while the preview pane paints only the
--- sample window. Rows outside the published viewport never draw; draw
+-- clipped scrolling rows translated by the list offset (the closing frame
+-- row paints its child sample window inside the same clip), and the
+-- fixed footer, while the upper preview pane paints only its decorative
+-- backdrop. Rows outside the published viewport never draw; draw
 -- acquires nothing and leaves shared owners alone.
 ---@param view table<string, unknown> the screen semantic snapshot
 ---@param plan table<string, unknown> the resolved plan
@@ -379,7 +380,6 @@ function OptionsRenderer:draw(view, plan)
     if paneId == "preview" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
         self:_drawBackdrop(graphics, "preview")
-        self:_drawPreview(graphics, content, view)
       end)
     elseif paneId == "controls" or paneId == "content" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
@@ -394,9 +394,6 @@ function OptionsRenderer:draw(view, plan)
         end)
         self:_drawTitle(graphics, view)
         self:_drawLegacyNote(view)
-        if paneId == "content" then
-          self:_drawPreview(graphics, content, view)
-        end
         self:_drawFooter(graphics, chrome, quadFor, section, content, view)
       end)
     else
@@ -586,6 +583,11 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
         "normal"
       )
     end
+    -- The closing frame row owns the live sample: paint it under the same
+    -- list clip/translate, right after its selector chrome.
+    if row.previewRect ~= nil then
+      self:_drawPreview(graphics, row.previewRect, view)
+    end
     return
   end
   local groupName = assert(control.chromeKind, "choice rows carry their source chrome kind")
@@ -616,24 +618,23 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
   end
 end
 
--- Paints the menu-local sample: the draft-frame border, then the already
--- revealed printer token lines clipped to the preview inset. An
--- unrevealed sample draws a blank framed window; nothing static ever
--- substitutes for the printer status.
+-- Paints the menu-local sample inside its owning frame row: the
+-- draft-frame border, then the already revealed printer token lines
+-- clipped to the sample inset. The rect already sits in content
+-- coordinates under the list clip/translate; an unrevealed sample draws
+-- a blank framed window, and nothing static ever substitutes for the
+-- printer status. Called exactly once per visible frame row, never as a
+-- fixed copy outside the list.
 ---@param graphics love.graphics
----@param content OptionsInterface.ContentGeometry
+---@param previewRect OptionsInterface.Rect content-space sample window owned by the frame row
 ---@param view table<string, unknown>
-function OptionsRenderer:_drawPreview(graphics, content, view)
-  local preview = content.preview
-  if preview == nil then
-    return
-  end
+function OptionsRenderer:_drawPreview(graphics, previewRect, view)
   local window = assert(self._window, "the preview borrows the window service")
   local text = assert(self._text, "the preview borrows the text service")
   local previewView = view.preview
   local frame = (previewView ~= nil and previewView.textFrame) or 0
   window:drawWindow(
-    { x = preview.x, y = preview.y, width = preview.width, height = preview.height },
+    { x = previewRect.x, y = previewRect.y, width = previewRect.width, height = previewRect.height },
     frame,
     text:windowBackgroundColor()
   )
@@ -650,13 +651,13 @@ function OptionsRenderer:_drawPreview(graphics, content, view)
   if previewView.scrollLines ~= nil then
     scrollOffset = previewView.scrollOffsetY or 0
   end
-  local originX = preview.x + 4
-  local lineY = preview.y + 4 - scrollOffset
+  local originX = previewRect.x + 4
+  local lineY = previewRect.y + 4 - scrollOffset
   LogicalSurface.clip(graphics, {
-    x = preview.x + 4,
-    y = preview.y + 4,
-    width = preview.width - 8,
-    height = preview.height - 8,
+    x = previewRect.x + 4,
+    y = previewRect.y + 4,
+    width = previewRect.width - 8,
+    height = previewRect.height - 8,
   }, function()
     for _, line in ipairs(lines) do
       text:drawPreviewTokens(line.tokens or line, originX, lineY)
