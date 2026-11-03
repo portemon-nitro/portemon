@@ -33,6 +33,7 @@ local KNOB_EXTENT = 8
 ---@class OptionsInterface.SliderControl
 ---@field kind "slider"
 ---@field rect OptionsInterface.Rect
+---@field valueWindow OptionsInterface.Rect reserved numeric-label window left of the rail
 ---@field slider Slider.Resolved
 ---@class OptionsInterface.ChoiceStop
 ---@field hitRect OptionsInterface.Rect touch region for this stop
@@ -248,13 +249,17 @@ local function layoutControl(rowId, rowRect, index)
   }
   local kind = OptionsInterface.rowKind(rowId)
   if kind == "slider" then
+    -- The numeric value owns x112..155; the rail owns x164..243 with an
+    -- 8px gap between the regions. Both rects share the row's content
+    -- coordinates; input resolves through the same Slider geometry.
     local resolved = Slider.resolve({
-      rect = { x = controlRect.x, y = controlRect.y + 6, width = controlRect.width, height = 12 },
+      rect = { x = 164, y = controlRect.y + 6, width = 80, height = 12 },
       count = OptionsInterface.valueCount(rowId),
       index = index,
       knobExtent = KNOB_EXTENT,
     })
-    return { kind = kind, rect = controlRect, slider = resolved }
+    local valueWindow = { x = 112, y = rowRect.y + 5, width = 44, height = 18 }
+    return { kind = kind, rect = controlRect, valueWindow = valueWindow, slider = resolved }
   end
   if kind == "cycle" then
     -- The frame row keeps 32px source arrows at x115/x213 with the value
@@ -413,10 +418,10 @@ function OptionsInterface.hitTest(content, x, y)
       end
       local control = row.control
       if control.kind == "slider" then
+        -- Only the resolved rail/thumb answers: the numeric window and
+        -- the gap between the regions never arm a stop.
         local resolved = assert(control.slider, "slider rows carry resolved geometry")
-        local viewportForSlider = assert(content.listViewport, "options content carries its list viewport")
-        local sliderOffset = assert(content.scrollOffset, "options content carries its scroll offset")
-        local contentY = y - viewportForSlider.y + sliderOffset
+        local contentY = y - viewport.y + offset
         local rail = assert(resolved.rect, "resolved sliders carry their rail rect")
         local insideRail = x >= rail.x
           and x < rail.x + rail.width
@@ -428,8 +433,7 @@ function OptionsInterface.hitTest(content, x, y)
             and x < thumb.x + thumb.width
             and contentY >= thumb.y
             and contentY < thumb.y + thumb.height
-          local insideControl = x >= control.rect.x and x < control.rect.x + control.rect.width
-          if not (insideThumb and insideControl) then
+          if not insideThumb then
             return nil
           end
         end

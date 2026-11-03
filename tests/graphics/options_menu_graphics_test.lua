@@ -2143,4 +2143,285 @@ function T.tests.row_plate_leases_prepare_draw_and_release_cleanly(scope)
   Assert.isFalse(brokenValid, "an incomplete plate class fails strict validation")
 end
 
+-- Slider values keep a measured window clear of their rail: every
+-- supported volume and speed label paints right-aligned inside its own
+-- slot from the text collaborator's advances, while rails and thumbs stay
+-- inside their own track with a gap between the regions, in either focus.
+function T.tests.slider_values_keep_a_measured_window_clear_of_their_rail(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text, _ = preparedPlacedPainter(scope)
+  local baseMeasure = text.measurePlain
+  local measured = {}
+  text.measurePlain = function(selfArg, line)
+    measured[#measured + 1] = line
+    return baseMeasure(selfArg, line)
+  end
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
+  local cases = {
+    { volume = "0%", volumeIndex = 1, speedValue = 1, speed = "1x", speedIndex = 1 },
+    { volume = "80%", volumeIndex = 81, speedValue = 2, speed = "2x", speedIndex = 2 },
+    { volume = "100%", volumeIndex = 101, speedValue = 4, speed = "4x", speedIndex = 3 },
+  }
+  for _, case in ipairs(cases) do
+    for _, focusId in ipairs({ "volume", "battleSpeed" }) do
+      local view = headlessSourceView({ battleSpeed = case.speedValue })
+      for _, row in ipairs(view.rows) do
+        if row.id == "volume" then
+          row.valueLabel = case.volume
+          row.valueIndex = case.volumeIndex
+        end
+      end
+      view.focusId = focusId
+      local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+      local content = assert(plan.content, "the native plan carries its list")
+      local rowsById = {}
+      for _, row in ipairs(content.rows) do
+        rowsById[row.id] = row
+      end
+      for _, id in ipairs({ "volume", "battleSpeed" }) do
+        local row = assert(rowsById[id], id .. " keeps its row")
+        local control = assert(row.control, id .. " carries its control")
+        Assert.isTrue(control.valueWindow ~= nil, id .. " carries its numeric window")
+        Assert.deepEqual(
+          control.valueWindow,
+          { x = 112, y = row.rect.y + 5, width = 44, height = 18 },
+          id .. " keeps its value inside the reserved slot"
+        )
+        local slider = assert(control.slider, id .. " carries its resolved rail")
+        Assert.deepEqual(
+          slider.rect,
+          { x = 164, y = row.rect.y + 6, width = 80, height = 12 },
+          id .. " keeps its rail clear of the numeric slot"
+        )
+        Assert.equal(
+          control.valueWindow.x + control.valueWindow.width + 8,
+          slider.rect.x,
+          id .. " leaves a gap between the value and the rail"
+        )
+        Assert.isTrue(
+          slider.thumbRect.x >= slider.rect.x
+            and slider.thumbRect.x + slider.thumbRect.width <= slider.rect.x + slider.rect.width,
+          id .. " keeps its thumb inside its rail"
+        )
+      end
+      text.draws = {}
+      measured = {}
+      local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+      local volumeDraw = findPlacedLine(text.draws, case.volume)
+      Assert.isTrue(volumeDraw ~= nil, "the volume value paints: " .. case.volume)
+      local volumeWidth = baseMeasure(text, case.volume)
+      Assert.isTrue(volumeWidth <= 44, "the measured value fits its window: " .. case.volume)
+      Assert.equal(
+        volumeDraw.x,
+        112 + 44 - volumeWidth,
+        "the volume value right-aligns from measured advances: " .. case.volume
+      )
+      Assert.equal(volumeDraw.y, rowsById.volume.rect.y + 5, "the volume value keeps its row band")
+      Assert.isTrue(volumeDraw.x + volumeWidth <= 156, "the volume value never reaches the rail")
+      local speedDraw = findPlacedLine(text.draws, case.speed)
+      Assert.isTrue(speedDraw ~= nil, "the speed value paints: " .. case.speed)
+      local speedWidth = baseMeasure(text, case.speed)
+      Assert.isTrue(speedWidth <= 44, "the measured speed fits its window: " .. case.speed)
+      Assert.equal(
+        speedDraw.x,
+        112 + 44 - speedWidth,
+        "the speed value right-aligns from measured advances: " .. case.speed
+      )
+      Assert.equal(speedDraw.y, rowsById.battleSpeed.rect.y + 5, "the speed value keeps its row band")
+      local seenVolume, seenSpeed = false, false
+      for _, line in ipairs(measured) do
+        if line == case.volume then
+          seenVolume = true
+        end
+        if line == case.speed then
+          seenSpeed = true
+        end
+      end
+      Assert.isTrue(seenVolume, "the volume origin comes from a measured advance: " .. case.volume)
+      Assert.isTrue(seenSpeed, "the speed origin comes from a measured advance: " .. case.speed)
+      local titleDraw = findPlacedLine(text.draws, "VOLUME")
+      Assert.isTrue(titleDraw ~= nil, "the volume row paints its title")
+      Assert.isTrue(
+        titleDraw.x + #"VOLUME" * 8 < 112,
+        "the row title never reaches the numeric slot"
+      )
+      local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+      local data = scope:own(canvas:newImageData())
+      local function at(lx, ly)
+        local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+        return quantizePixel(data, hx, hy)
+      end
+      Assert.deepEqual(
+        at(160, 132),
+        { oddR, oddG, oddB, 255 },
+        "the volume gap keeps its row plate at " .. case.volume
+      )
+      Assert.deepEqual(
+        at(130, 132),
+        { oddR, oddG, oddB, 255 },
+        "the volume slot holds no rail paint at " .. case.volume
+      )
+      Assert.deepEqual(
+        at(160, 156),
+        { evenR, evenG, evenB, 255 },
+        "the speed gap keeps its row plate at " .. case.speed
+      )
+      local volumeSlider = assert(rowsById.volume.control.slider, "the volume row carries its rail")
+      local volumeCx = math.floor(volumeSlider.thumbRect.x + volumeSlider.thumbRect.width / 2)
+      local volumeHx, volumeHy = LayoutGeometry.logicalToHost(
+        placement,
+        volumeCx,
+        volumeSlider.centerY + content.listViewport.y - content.scrollOffset
+      )
+      Assert.deepEqual(
+        quantizePixel(data, volumeHx, volumeHy),
+        { 242, 242, 242, 255 },
+        "the volume thumb paints inside its own rail at " .. case.volume
+      )
+      local speedSlider = assert(rowsById.battleSpeed.control.slider, "the speed row carries its rail")
+      local speedCx = math.floor(speedSlider.thumbRect.x + speedSlider.thumbRect.width / 2)
+      local speedHx, speedHy = LayoutGeometry.logicalToHost(
+        placement,
+        speedCx,
+        speedSlider.centerY + content.listViewport.y - content.scrollOffset
+      )
+      Assert.deepEqual(
+        quantizePixel(data, speedHx, speedHy),
+        { 242, 242, 242, 255 },
+        "the speed thumb paints inside its own rail at " .. case.speed
+      )
+    end
+  end
+  renderer:dispose()
+end
+
+-- Slider values and rails travel together without bleed: at every list
+-- offset the measured slot and the resolved track keep their gap, move
+-- with their row, stay out of neighboring rows and the fixed footer, and
+-- the focused row keeps its strip.
+function T.tests.slider_value_and_rail_travel_together_without_bleed(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer, text, _ = preparedPlacedPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
+  for _, offset in ipairs({ 0, 32, 64 }) do
+    for _, focusId in ipairs({ "volume", "battleSpeed" }) do
+      local view = headlessSourceView({ battleSpeed = 2 })
+      view.focusId = focusId
+      view.scrollOffset = offset
+      local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+      local content = assert(plan.content, "the native plan carries its list at offset " .. offset)
+      Assert.equal(content.scrollOffset, offset, "the plan carries offset " .. offset)
+      Assert.equal(content.footer.y, 168, "the footer stays pinned at offset " .. offset)
+      local rowsById = {}
+      for _, row in ipairs(content.rows) do
+        rowsById[row.id] = row
+      end
+      for _, id in ipairs({ "volume", "battleSpeed" }) do
+        local row = assert(rowsById[id], id .. " keeps its row at offset " .. offset)
+        local control = assert(row.control, id .. " carries its control at offset " .. offset)
+        Assert.deepEqual(
+          assert(control.valueWindow, id .. " carries its numeric window at offset " .. offset),
+          { x = 112, y = row.rect.y + 5, width = 44, height = 18 },
+          id .. " keeps content-space geometry at offset " .. offset
+        )
+        Assert.deepEqual(
+          assert(control.slider, id .. " carries its resolved rail at offset " .. offset).rect,
+          { x = 164, y = row.rect.y + 6, width = 80, height = 12 },
+          id .. " keeps its content-space rail at offset " .. offset
+        )
+      end
+      text.draws = {}
+      local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+      local volumeDraw = findPlacedLine(text.draws, "80%")
+      Assert.isTrue(volumeDraw ~= nil, "the volume value paints at offset " .. offset)
+      Assert.equal(
+        volumeDraw.x,
+        112 + 44 - text:measurePlain("80%"),
+        "the volume value right-aligns at offset " .. offset
+      )
+      Assert.equal(
+        volumeDraw.y,
+        rowsById.volume.rect.y + 5,
+        "the volume value shares the row transform at offset " .. offset
+      )
+      local speedDraw = findPlacedLine(text.draws, "2x")
+      Assert.isTrue(speedDraw ~= nil, "the speed value paints at offset " .. offset)
+      Assert.equal(
+        speedDraw.x,
+        112 + 44 - text:measurePlain("2x"),
+        "the speed value right-aligns at offset " .. offset
+      )
+      Assert.equal(
+        speedDraw.y,
+        rowsById.battleSpeed.rect.y + 5,
+        "the speed value shares the row transform at offset " .. offset
+      )
+      local footerDraw = findPlacedLine(text.draws, "CONFIRM")
+      Assert.isTrue(footerDraw ~= nil, "the footer paints at offset " .. offset)
+      Assert.isTrue(footerDraw.y >= 168, "the footer stays below the list at offset " .. offset)
+      local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+      local data = scope:own(canvas:newImageData())
+      local volumeCenter = content.listViewport.y + (rowsById.volume.rect.y + 12 - offset)
+      local speedCenter = content.listViewport.y + (rowsById.battleSpeed.rect.y + 12 - offset)
+      local function at(lx, ly)
+        local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+        return quantizePixel(data, hx, hy)
+      end
+      Assert.deepEqual(
+        at(160, volumeCenter),
+        { oddR, oddG, oddB, 255 },
+        "the volume gap keeps its plate at offset " .. offset
+      )
+      Assert.deepEqual(
+        at(130, volumeCenter),
+        { oddR, oddG, oddB, 255 },
+        "the volume slot holds no rail paint at offset " .. offset
+      )
+      Assert.deepEqual(
+        at(160, speedCenter),
+        { evenR, evenG, evenB, 255 },
+        "the speed gap keeps its plate at offset " .. offset
+      )
+      Assert.deepEqual(
+        at(130, speedCenter),
+        { evenR, evenG, evenB, 255 },
+        "the speed slot holds no rail paint at offset " .. offset
+      )
+      local volumeSlider = assert(rowsById.volume.control.slider, "the volume row carries its rail")
+      local volumeCx = math.floor(volumeSlider.thumbRect.x + volumeSlider.thumbRect.width / 2)
+      local volumeHx, volumeHy = LayoutGeometry.logicalToHost(
+        placement,
+        volumeCx,
+        volumeSlider.centerY + content.listViewport.y - offset
+      )
+      Assert.deepEqual(
+        quantizePixel(data, volumeHx, volumeHy),
+        { 242, 242, 242, 255 },
+        "the volume thumb travels with its row at offset " .. offset
+      )
+      local speedSlider = assert(rowsById.battleSpeed.control.slider, "the speed row carries its rail")
+      local speedCx = math.floor(speedSlider.thumbRect.x + speedSlider.thumbRect.width / 2)
+      local speedHx, speedHy = LayoutGeometry.logicalToHost(
+        placement,
+        speedCx,
+        speedSlider.centerY + content.listViewport.y - offset
+      )
+      Assert.deepEqual(
+        quantizePixel(data, speedHx, speedHy),
+        { 242, 242, 242, 255 },
+        "the speed thumb travels with its row at offset " .. offset
+      )
+    end
+  end
+  renderer:dispose()
+end
+
 return GraphicsSmoke.suite(T.tests)

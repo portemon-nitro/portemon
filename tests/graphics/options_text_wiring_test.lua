@@ -797,4 +797,114 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(overlay.height, 24, "the selected-row strip height")
 end
 
+-- Slider values measure in their own font advances and never silently
+-- overlap the rail: every supported label fits the reserved window from
+-- real glyph advances (none match a byte-count estimate), while an
+-- over-wide label fails the draw naming its row and value instead of
+-- painting clipped text.
+function T.tests.slider_values_measure_in_font_advances_and_overflow_fails_loudly(scope)
+  local Resources = require("game.hgss.src.field.FieldPresentationResources")
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local advanceByChar = { ["0"] = 5, ["%"] = 9, ["1"] = 4, ["x"] = 7, ["2"] = 6, ["4"] = 6, ["8"] = 6 }
+  local glyphs = { [0] = { advance = 8 } }
+  local charmap = {}
+  local code = 1
+  for char, advance in pairs(advanceByChar) do
+    glyphs[code] = { advance = advance }
+    charmap[char] = code
+    code = code + 1
+  end
+  local menuText = {
+    fontDef = {
+      glyphs = glyphs,
+      letterSpacing = 1,
+      charmap = charmap,
+      palette = {
+        [1] = { r = 0, g = 0, b = 0 },
+        [2] = { r = 1, g = 0, b = 0 },
+        [3] = { r = 0, g = 1, b = 0 },
+        [16] = { r = 0, g = 0, b = 1 },
+      },
+    },
+  }
+  function menuText:drawLineWithPalette(_, _, _, _) end
+  function menuText:drawTextWithPalette(_, _, _, _) end
+  function menuText:windowBackgroundColor()
+    return { 0.1, 0.2, 0.3, 1 }
+  end
+  local stubWindow = {}
+  function stubWindow:drawWindow(_, _, _) end
+  local resources = setmetatable({
+    cacheFs = cache,
+    uiManifest = manifest,
+    _imagePool = pool,
+    textRenderer = menuText,
+    windowRenderer = stubWindow,
+  }, Resources)
+  scope:own({
+    release = function()
+      if resources._optionsRenderer ~= nil then
+        resources._optionsRenderer:dispose()
+        resources._optionsRenderer = nil
+      end
+    end,
+  })
+  local port = resources:openOptionsPresentation()
+  local ready = port.prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready = port.prepare()
+  end
+  Assert.isTrue(ready == true, "the painter prepares")
+  local adapter = assert(resources._optionsRenderer._text, "open presentation retains its text adapter")
+  local expectedWidths = {
+    ["0%"] = 16,
+    ["80%"] = 23,
+    ["100%"] = 27,
+    ["1x"] = 13,
+    ["2x"] = 15,
+    ["4x"] = 15,
+  }
+  for _, line in ipairs({ "0%", "80%", "100%", "1x", "2x", "4x" }) do
+    local width = adapter:measurePlain(line)
+    Assert.equal(width, expectedWidths[line], line .. " measures in font advances")
+    Assert.isTrue(width <= 44, line .. " fits the numeric window")
+  end
+  local renderer = assert(resources._optionsRenderer, "open presentation retains its renderer")
+  local view = headlessSourceView()
+  for _, row in ipairs(view.rows) do
+    if row.id == "volume" then
+      row.valueLabel = "88888888%"
+    end
+  end
+  -- A failed draw leaves its scopes pushed by shared contract: unwind to
+  -- the pre-draw depth plus the canvas so this intentional failure
+  -- cannot clip later suites in the same process.
+  local stackDepth = love.graphics.getStackDepth()
+  local scissorX, scissorY, scissorWidth, scissorHeight = love.graphics.getScissor()
+  local drawn, drawErr = pcall(drawSourceView, scope, renderer, view)
+  while love.graphics.getStackDepth() > stackDepth do
+    love.graphics.pop()
+  end
+  if scissorX ~= nil then
+    love.graphics.setScissor(scissorX, scissorY, scissorWidth, scissorHeight)
+  else
+    love.graphics.setScissor()
+  end
+  love.graphics.setCanvas()
+  Assert.isFalse(drawn, "an over-wide slider value must fail the draw")
+  Assert.isTrue(tostring(drawErr):find("volume", 1, true) ~= nil, "the layout failure names its row")
+  Assert.isTrue(
+    tostring(drawErr):find("88888888%", 1, true) ~= nil,
+    "the layout failure names its value"
+  )
+end
+
 return GraphicsSmoke.suite(T.tests)

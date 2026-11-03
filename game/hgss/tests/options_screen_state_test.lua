@@ -1672,16 +1672,217 @@ function T.tests.label_taps_select_nothing_while_rail_presses_edit()
   Assert.equal(rowById(state:status(), "volume").value, 80, "a label tap leaves the volume alone")
   Assert.equal(opened.port.previews, previewsBefore, "a label tap previews no audio change")
   Assert.isNil(state:takeResult(), "a label tap closes nothing")
-  local railHit = Interface.hitTest(content, 244, 132)
+  local railHit = Interface.hitTest(content, 243, 132)
   Assert.isTrue(
     railHit ~= nil and railHit.target == "volume" and railHit.control == "thumb",
     "a press at the rail end still arms the slider"
   )
-  local railHx, railHy = hostForLogical(pane, 244, 132)
+  local railHx, railHy = hostForLogical(pane, 243, 132)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = railHx, y = railHy } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = railHx, y = railHy } })
   Assert.equal(rowById(state:status(), "volume").value, 100, "the rail-end press clamps to full volume")
   Assert.isNil(state:takeResult(), "a rail press closes nothing")
+end
+
+-- A slider's numeric value owns a window the rail never enters: taps
+-- inside the value slot or the gap arm nothing, rail ends clamp to the
+-- extreme stops, a captured drag keeps clamping past the visible rail
+-- ends without scrolling, and an empty-list drag still scrolls.
+function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu({ volume = 80 })
+  local state = opened.state
+  local function contentRow(content, id)
+    for _, row in ipairs(assert(content.rows, "the plan carries its rows")) do
+      if row.id == id then
+        return row
+      end
+    end
+    error("row " .. tostring(id) .. " is not published", 0)
+  end
+  local status = state:status()
+  local content = assert(status.presentation.content, "the presented plan carries its list")
+  for _, id in ipairs({ "volume", "battleSpeed" }) do
+    local row = contentRow(content, id)
+    local control = assert(row.control, id .. " carries its control geometry")
+    Assert.isTrue(control.valueWindow ~= nil, id .. " carries its numeric window")
+    Assert.deepEqual(
+      control.valueWindow,
+      { x = 112, y = row.rect.y + 5, width = 44, height = 18 },
+      id .. " keeps its value inside the reserved slot"
+    )
+    local slider = assert(control.slider, id .. " carries its resolved rail")
+    Assert.deepEqual(
+      slider.rect,
+      { x = 164, y = row.rect.y + 6, width = 80, height = 12 },
+      id .. " keeps its rail clear of the numeric slot"
+    )
+    Assert.equal(
+      control.valueWindow.x + control.valueWindow.width + 8,
+      slider.rect.x,
+      id .. " leaves a gap between the value and the rail"
+    )
+    Assert.isTrue(
+      slider.thumbRect.x >= slider.rect.x
+        and slider.thumbRect.x + slider.thumbRect.width <= slider.rect.x + slider.rect.width,
+      id .. " keeps its thumb inside its rail"
+    )
+  end
+  local choiceHit = Interface.hitTest(content, 220, 36)
+  Assert.isTrue(
+    choiceHit ~= nil and choiceHit.target == "textSpeed" and choiceHit.index == 3,
+    "choice pills keep their anchors beside the sliders"
+  )
+  local footerHit = Interface.hitTest(content, 130, 180)
+  Assert.isTrue(
+    footerHit ~= nil and footerHit.target == "confirm",
+    "the fixed footer keeps its action beside the sliders"
+  )
+  for _, x in ipairs({ 112, 120, 140, 155, 156, 160, 163 }) do
+    Assert.isNil(Interface.hitTest(content, x, 132), "the volume slot and gap arm no stop at x" .. x)
+  end
+  for _, x in ipairs({ 112, 130, 155, 160, 163 }) do
+    Assert.isNil(Interface.hitTest(content, x, 156), "the speed slot and gap arm no stop at x" .. x)
+  end
+  local volumeMin = Interface.hitTest(content, 164, 132)
+  Assert.isTrue(
+    volumeMin ~= nil and volumeMin.target == "volume" and volumeMin.index == 1,
+    "the volume rail starts at silence"
+  )
+  local volumeMax = Interface.hitTest(content, 243, 132)
+  Assert.isTrue(
+    volumeMax ~= nil and volumeMax.target == "volume" and volumeMax.index == 101,
+    "the volume rail ends at full volume"
+  )
+  local speedMin = Interface.hitTest(content, 164, 156)
+  Assert.isTrue(
+    speedMin ~= nil and speedMin.target == "battleSpeed" and speedMin.index == 1,
+    "the speed rail starts at 1x"
+  )
+  local speedMax = Interface.hitTest(content, 243, 156)
+  Assert.isTrue(
+    speedMax ~= nil and speedMax.target == "battleSpeed" and speedMax.index == 3,
+    "the speed rail ends at 4x"
+  )
+  local middleX = nil
+  for x = 164, 243 do
+    local hit = Interface.hitTest(content, x, 132)
+    if hit ~= nil and hit.target == "volume" and hit.index == 80 then
+      middleX = x
+      break
+    end
+  end
+  Assert.isTrue(
+    middleX ~= nil and middleX >= 164 and middleX <= 243,
+    "a middle stop resolves on the visible rail"
+  )
+  local pane = presentationPane(status, "content")
+  local previewsBefore = opened.port.previews
+  local slotHx, slotHy = hostForLogical(pane, 120, 132)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = slotHx, y = slotHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = slotHx, y = slotHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 80, "a value-slot tap leaves the volume alone")
+  Assert.equal(opened.port.previews, previewsBefore, "a value-slot tap previews no audio change")
+  Assert.isNil(state:takeResult(), "a value-slot tap closes nothing")
+  local gapHx, gapHy = hostForLogical(pane, 160, 132)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = gapHx, y = gapHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = gapHx, y = gapHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 80, "a gap tap leaves the volume alone")
+  Assert.equal(opened.port.previews, previewsBefore, "a gap tap previews no audio change")
+  Assert.isNil(state:takeResult(), "a gap tap closes nothing")
+  local scrollBefore = state:status().scrollOffset
+  local startHx, startHy = hostForLogical(pane, middleX, 132)
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = startHx, y = startHy } })
+  local beyondLeftHx, beyondLeftHy = hostForLogical(pane, 100, 132)
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:2", x = beyondLeftHx, y = beyondLeftHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 0, "dragging past the rail start clamps to silence")
+  Assert.equal(state:status().scrollOffset, scrollBefore, "a captured slider drag never scrolls")
+  state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
+  Assert.equal(state:status().scrollOffset, scrollBefore, "a wheel during a slider capture never scrolls")
+  Assert.equal(rowById(state:status(), "volume").value, 0, "a wheel during a capture edits no value")
+  local beyondRightHx, beyondRightHy = hostForLogical(pane, 250, 132)
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:2", x = beyondRightHx, y = beyondRightHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 100, "dragging past the rail end clamps to full volume")
+  Assert.equal(state:status().scrollOffset, scrollBefore, "a slider drag never scrolls its list")
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = beyondRightHx, y = beyondRightHy } })
+  Assert.equal(rowById(state:status(), "volume").value, 100, "the released thumb keeps its visible stop")
+  Assert.isNil(state:takeResult(), "a rail drag closes nothing")
+  status = state:status()
+  content = assert(status.presentation.content, "the settled plan carries its list")
+  pane = presentationPane(status, "content")
+  local gapX, gapY = findLogicalForListGap(Interface, content)
+  local gapDragHx, gapDragHy = hostForLogical(pane, gapX, gapY)
+  local dragHx, dragHy = hostForLogical(pane, gapX, math.max(0, gapY - 30))
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:3", x = gapDragHx, y = gapDragHy } })
+  state:updateFixed({ { type = "pointer_move", pointerId = "touch:3", x = dragHx, y = dragHy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:3", x = dragHx, y = dragHy } })
+  Assert.isTrue(state:status().scrollOffset > scrollBefore, "an empty-list drag still scrolls")
+  Assert.equal(rowById(state:status(), "volume").value, 100, "a list drag edits no value")
+  Assert.isNil(state:takeResult(), "a list drag closes nothing")
+  status = state:status()
+  content = assert(status.presentation.content, "the scrolled plan carries its list")
+  local scrolledOffset = assert(content.scrollOffset, "the scrolled plan carries its offset")
+  Assert.isTrue(scrolledOffset > 0, "the list rests scrolled")
+  local volumeTop = 24 + (96 - scrolledOffset)
+  Assert.isNil(
+    Interface.hitTest(content, 120, volumeTop + 12),
+    "the scrolled value slot arms no stop"
+  )
+  Assert.isNil(Interface.hitTest(content, 160, volumeTop + 12), "the scrolled gap arms no stop")
+  local scrolledMin = Interface.hitTest(content, 164, volumeTop + 12)
+  Assert.isTrue(
+    scrolledMin ~= nil and scrolledMin.target == "volume" and scrolledMin.index == 1,
+    "the scrolled rail start still clamps to silence"
+  )
+  local scrolledMax = Interface.hitTest(content, 243, volumeTop + 12)
+  Assert.isTrue(
+    scrolledMax ~= nil and scrolledMax.target == "volume" and scrolledMax.index == 101,
+    "the scrolled rail end still clamps to full volume"
+  )
+end
+
+-- The published slider geometry is exactly what the shared slider math
+-- produces for the documented rail: re-resolving from the published
+-- rect agrees, and the rail ends map to the extreme stops, so paint
+-- and input cannot drift apart.
+function T.tests.published_slider_geometry_matches_the_shared_track_math()
+  local Slider = require("libs.ui.src.Slider")
+  local Interface = interfaceModule()
+  local opened = openPresentedMenu({ volume = 80 })
+  local content = assert(opened.state:status().presentation.content, "the presented plan carries its list")
+  local rowsById = {}
+  for _, row in ipairs(assert(content.rows, "the plan carries its rows")) do
+    rowsById[row.id] = row
+  end
+  for _, id in ipairs({ "volume", "battleSpeed" }) do
+    local row = assert(rowsById[id], id .. " keeps its row")
+    local control = assert(row.control, id .. " carries its control")
+    local published = assert(control.slider, id .. " carries its resolved rail")
+    local window = assert(control.valueWindow, id .. " carries its numeric window")
+    Assert.equal(
+      window.x + window.width + 8,
+      published.rect.x,
+      id .. " leaves a gap between the value and the rail"
+    )
+    local statusRow = rowById(opened.state:status(), id)
+    local fresh = Slider.resolve({
+      rect = published.rect,
+      count = Interface.valueCount(id),
+      index = statusRow.valueIndex,
+      knobExtent = published.thumbRect.width,
+    })
+    Assert.deepEqual(published, fresh, id .. " publishes the shared track resolution")
+    Assert.equal(
+      Slider.indexAt(published, published.rect.x),
+      1,
+      id .. " starts its track at the first stop"
+    )
+    Assert.equal(
+      Slider.indexAt(published, published.rect.x + published.rect.width - 1),
+      Interface.valueCount(id),
+      id .. " ends its track at the last stop"
+    )
+  end
 end
 
 -- The frame carousel wraps in both input modes while every other row

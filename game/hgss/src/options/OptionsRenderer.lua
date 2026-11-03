@@ -571,6 +571,13 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
   local selected = view.focusId == row.id
   if control.kind == "slider" then
     local resolved = assert(control.slider, "slider rows carry resolved geometry")
+    local valueWindow = assert(control.valueWindow, "slider rows carry their numeric window")
+    local valueLabel = assert(rowView.valueLabel, "rows carry their value label")
+    local valueWidth = self._text:measurePlain(valueLabel)
+    assert(
+      valueWidth <= valueWindow.width,
+      "the " .. row.id .. " value " .. valueLabel .. " exceeds its numeric window"
+    )
     OptionsWidgets.drawSlider(graphics, resolved, selected, {
       rail = { r = 0.25, g = 0.25, b = 0.25, a = 1 },
       fill = { r = 0.9, g = 0.9, b = 0.9, a = 1 },
@@ -579,9 +586,9 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
       focus = { r = 1, g = 0.85, b = 0.2, a = 1 },
     })
     self:_drawPlainLabel(
-      assert(rowView.valueLabel, "rows carry their value label"),
-      { x = control.rect.x, y = labelY },
-      nil,
+      valueLabel,
+      { x = valueWindow.x + valueWindow.width - valueWidth, y = valueWindow.y },
+      valueWindow,
       nil,
       "normal"
     )
