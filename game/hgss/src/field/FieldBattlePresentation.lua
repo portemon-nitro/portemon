@@ -139,13 +139,17 @@ end
 
 ---@class FieldBattlePresentation.StagedImage
 ---@field image string cache-relative staged image path
+---@field sourceIndices BattlePresentationCache.SourceIndices? source-index map metadata for palette-composed art
+---@field paletteSource { firstSlot: integer, words: integer[] }? source palette words and physical base for palette-composed art
 
 ---@class FieldBattlePresentation.MoveButton
 ---@field empty string blank-slot image path
 ---@field types table<string, table<string, string>> image paths by move type, then by normal/pressed state
+---@field sourceIndices { empty: BattlePresentationCache.MenuPatchSourceIndices, types: table<string, { normal: BattlePresentationCache.MenuPatchSourceIndices, pressed: BattlePresentationCache.MenuPatchSourceIndices }> } source maps paired with each cropped image
 
 ---@class FieldBattlePresentation.MenuScreen
 ---@field image string base screen image path
+---@field sourceIndices BattlePresentationCache.SourceIndices raw source palette slots for encounter fade pixels
 ---@field backgrounds table<string, string>? image paths by scene background that changes the screen pixels
 ---@field touchBackgrounds table<string, string>? touch-feedback image paths by scene background
 ---@field feedback table<string, table<string, FieldBattlePresentation.StagedImage>>? patches by control id, then state
@@ -164,6 +168,8 @@ end
 ---@field evolutionGraphics? BattlePresentationCache.EvolutionGraphics
 ---@field pictures { shadow: FieldBattlePresentation.StagedImage }
 ---@field hud { player: FieldBattlePresentation.StagedImage, enemy: FieldBattlePresentation.StagedImage, doubles: table<"playerLeft"|"playerRight"|"enemyLeft"|"enemyRight", FieldBattlePresentation.StagedImage>, arrow: FieldBattlePresentation.StagedImage, cursor: FieldBattlePresentation.StagedImage, partyGauges: FieldBattlePresentation.StagedImage[] }
+---@field trainerPictures { entries: table<string, table<string, unknown>> }
+---@field battleBalls { entries: table<string, table<string, unknown>> }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
 ---@field messages { roles: table<string, { font: string }> }
 ---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
@@ -1032,6 +1038,7 @@ function FieldBattlePresentation.new(opts)
     _launchManifest = nil,
     _launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil },
     _stagedMembersOk = false,
+    _stagedSourceSelectors = { trainerPictures = {}, battleBalls = {} },
     _pool = opts.imagePool,
     _leases = {},
     _warmParticles = {},
@@ -1868,8 +1875,10 @@ end
 -- staged definitions the roles reference.
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param manifest FieldBattlePresentation.StagedManifest
+---@param demand table<string, unknown> selected launch context
 ---@return string? reason, nil when the staged members validate
-local function checkStagedMembers(cacheFs, manifest)
+---@return table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>? maps
+local function checkStagedMembers(cacheFs, manifest, demand)
   local moveIcons = cacheFs:loadLua(MoveIconCache.manifestPath())
   if type(moveIcons) ~= "table" or moveIcons.schema ~= MoveIconCache.SCHEMA then
     return "battle move type icons are not staged"
@@ -1885,8 +1894,60 @@ local function checkStagedMembers(cacheFs, manifest)
     end
   end
   local required = {} ---@type { key: string, path: string? }[]
+  local menuSourceIndices = {} ---@type table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>
   local function need(key, path)
     required[#required + 1] = { key = key, path = path }
+  end
+  local function stageSourceIndices(source, label, paletteSource, requireVariants)
+    if requireVariants and (type(source.variants) ~= "table" or next(source.variants) == nil) then
+      return nil, label .. " lacks its physical MAIN_OBJ source-index layouts"
+    end
+    local function stagePath(path, selectedPaletteSource)
+      local bytes = cacheFs:read(path)
+      if type(bytes) ~= "string" or #bytes ~= source.width * source.height * 4 then
+        return nil, label .. " source-index map is not staged: " .. path
+      end
+      for offset = 1, #bytes, 4 do
+        local index = string.byte(bytes, offset)
+        local green = string.byte(bytes, offset + 1)
+        local blue = string.byte(bytes, offset + 2)
+        local alpha = string.byte(bytes, offset + 3)
+        if index == nil or green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) then
+          return nil, label .. " source-index map has invalid pixel data: " .. path
+        end
+        if alpha == 255 and source.plane == "mainObj" then
+          local firstSlot = type(selectedPaletteSource) == "table" and selectedPaletteSource.firstSlot or nil
+          local words = type(selectedPaletteSource) == "table" and selectedPaletteSource.words or nil
+          if
+            type(firstSlot) ~= "number"
+            or type(words) ~= "table"
+            or index < firstSlot
+            or index >= firstSlot + #words
+          then
+            return nil, label .. " source-index map references an undefined MAIN_OBJ palette slot: " .. tostring(index)
+          end
+        end
+      end
+      menuSourceIndices[path] = {
+        plane = source.plane,
+        width = source.width,
+        height = source.height,
+        pixels = bytes,
+        paletteSource = selectedPaletteSource,
+      }
+      return true
+    end
+    if requireVariants then
+      for _, variant in pairs(source.variants) do
+        local selectedPaletteSource = { firstSlot = variant.firstSlot, words = paletteSource.words }
+        local staged, failure = stagePath(variant.path, selectedPaletteSource)
+        if staged == nil then
+          return nil, failure
+        end
+      end
+      return true
+    end
+    return stagePath(source.path, paletteSource)
   end
   for _, key in ipairs(REQUIRED_FIXED_ART) do
     need(key, fixedArt(manifest, FIXED_ART[key]))
@@ -1897,13 +1958,29 @@ local function checkStagedMembers(cacheFs, manifest)
     for index, screen in ipairs(section.screens) do
       local screenKey = prefix .. ":screen:" .. tostring(index)
       need(screenKey, screen.image)
+      local _, sourceFailure = stageSourceIndices(screen.sourceIndices, "battle menu " .. screenKey)
+      if sourceFailure ~= nil then
+        return sourceFailure
+      end
       if screen.moveButtons ~= nil then
         for slotIndex, button in ipairs(screen.moveButtons) do
           local buttonKey = "menu:moves:move-button:" .. tostring(slotIndex - 1) .. ":"
           need(buttonKey .. "empty", button.empty)
+          local _, emptyMapFailure =
+            stageSourceIndices(button.sourceIndices.empty, "battle menu " .. buttonKey .. "empty")
+          if emptyMapFailure ~= nil then
+            return emptyMapFailure
+          end
           for typeKey, states in pairs(button.types) do
             for state, image in pairs(states) do
               need(buttonKey .. typeKey .. ":" .. state, image)
+              local _, buttonMapFailure = stageSourceIndices(
+                button.sourceIndices.types[typeKey][state],
+                "battle menu " .. buttonKey .. typeKey .. ":" .. state
+              )
+              if buttonMapFailure ~= nil then
+                return buttonMapFailure
+              end
             end
           end
         end
@@ -1922,11 +1999,70 @@ local function checkStagedMembers(cacheFs, manifest)
       -- renderers draw with.
       if screen.feedback ~= nil then
         for controlId, states in pairs(screen.feedback) do
-          for state in pairs(states) do
+          for state, patch in pairs(states) do
             local feedbackKey = prefix .. ":feedback:" .. controlId .. ":" .. state
             need(feedbackKey, stagedArtPath(manifest, feedbackKey))
+            local _, feedbackMapFailure = stageSourceIndices(patch.sourceIndices, "battle menu " .. feedbackKey)
+            if feedbackMapFailure ~= nil then
+              return feedbackMapFailure
+            end
           end
         end
+      end
+    end
+  end
+  for _, sprite in ipairs({
+    manifest.hud.player,
+    manifest.hud.enemy,
+    manifest.hud.doubles.playerLeft,
+    manifest.hud.doubles.playerRight,
+    manifest.hud.doubles.enemyLeft,
+    manifest.hud.doubles.enemyRight,
+  }) do
+    local paletteSource = assert(sprite.paletteSource, "visible MAIN_OBJ health boxes carry source palette words")
+    local _, sourceFailure = stageSourceIndices(
+      assert(sprite.sourceIndices, "visible battle health boxes carry source indices"),
+      "battle HUD sprite " .. sprite.image,
+      paletteSource
+    )
+    if sourceFailure ~= nil then
+      return sourceFailure
+    end
+  end
+  for _, sprite in ipairs({ manifest.hud.cursor, manifest.hud.partyGauges[1], manifest.hud.partyGauges[2] }) do
+    local _, sourceFailure = stageSourceIndices(
+      assert(sprite.sourceIndices, "visible battle HUD sprites carry source indices"),
+      "battle HUD sprite " .. sprite.image
+    )
+    if sourceFailure ~= nil then
+      return sourceFailure
+    end
+  end
+  for _, selector in ipairs(demand ~= nil and demand.trainerPictures or {}) do
+    local entry = manifest.trainerPictures ~= nil and manifest.trainerPictures.entries[selector] or nil
+    if type(entry) ~= "table" then
+      return "battle trainer source map is not staged: " .. selector
+    end
+    for _, sequence in ipairs(entry.animation.sequences) do
+      for _, frame in ipairs(sequence.frames) do
+        local _, sourceFailure =
+          stageSourceIndices(frame.sourceIndices, "battle trainer frame " .. selector, entry.paletteSource, true)
+        if sourceFailure ~= nil then
+          return sourceFailure
+        end
+      end
+    end
+  end
+  for _, selector in ipairs(demand ~= nil and demand.battleBalls or {}) do
+    local entry = manifest.battleBalls ~= nil and manifest.battleBalls.entries[selector] or nil
+    if type(entry) ~= "table" then
+      return "battle ball source map is not staged: " .. selector
+    end
+    for _, frame in ipairs(entry.frames) do
+      local _, sourceFailure =
+        stageSourceIndices(frame.sourceIndices, "battle ball frame " .. selector, entry.paletteSource, true)
+      if sourceFailure ~= nil then
+        return sourceFailure
       end
     end
   end
@@ -1943,7 +2079,7 @@ local function checkStagedMembers(cacheFs, manifest)
       return "battle font is not staged: " .. role
     end
   end
-  return nil
+  return nil, menuSourceIndices
 end
 
 -- The single verified global core for this field envelope's selected
@@ -2020,6 +2156,7 @@ function FieldBattlePresentation:_preparationServices()
   local stagedSceneKey = nil
   local stagedSceneParticleKeys = {} ---@type string[]
   local stagedSceneLayer = nil
+  local stagedMenuSourceIndices = nil
   local backgroundPixels = nil
   local backgroundImage = nil
   local fadedIntroPixels = nil
@@ -2235,6 +2372,95 @@ function FieldBattlePresentation:_preparationServices()
             return failAttempt(assert(foeFailure, "foe terrain lease failures carry a reason"))
           end
           acquiredKeys[#acquiredKeys + 1] = foeKey
+          local paletteSource = cacheFs:loadLua(record.paletteSource.path)
+          if type(paletteSource) ~= "table" then
+            return failAttempt(
+              "battle scene " .. tostring(sceneKey) .. " palette source is not staged: " .. record.paletteSource.path
+            )
+          end
+          local subObjOpaque = paletteSource.subObjOpaque
+          local initialDisplayedSubObj = type(paletteSource.initialDisplayed) == "table"
+              and paletteSource.initialDisplayed.subObj
+            or nil
+          if type(subObjOpaque) ~= "table" or type(initialDisplayedSubObj) ~= "table" then
+            return failAttempt(
+              "battle scene "
+                .. tostring(sceneKey)
+                .. " native palette source lacks sparse SUB_OBJ slots: "
+                .. record.paletteSource.path
+            )
+          end
+          for path, source in pairs(assert(stagedMenuSourceIndices, "menu indices are staged before scene entry")) do
+            if source.plane == "mainObj" then
+              local sourcePalette = source.paletteSource
+              if type(sourcePalette) ~= "table" or type(sourcePalette.words) ~= "table" then
+                return failAttempt("battle MAIN_OBJ source-index map has no source palette: " .. path)
+              end
+              for offset = 1, #source.pixels, 4 do
+                if string.byte(source.pixels, offset + 3) == 255 then
+                  local slot = string.byte(source.pixels, offset)
+                  if slot < sourcePalette.firstSlot or slot >= sourcePalette.firstSlot + #sourcePalette.words then
+                    return failAttempt(
+                      "battle scene "
+                        .. tostring(sceneKey)
+                        .. " MAIN_OBJ source slot "
+                        .. tostring(slot)
+                        .. " is undefined in "
+                        .. path
+                    )
+                  end
+                end
+              end
+            end
+            if source.plane == "subObj" then
+              for offset = 1, #source.pixels, 4 do
+                if string.byte(source.pixels, offset + 3) == 255 then
+                  local slot = string.byte(source.pixels, offset)
+                  if subObjOpaque[slot + 1] == nil or initialDisplayedSubObj[slot + 1] == nil then
+                    return failAttempt(
+                      "battle scene "
+                        .. tostring(sceneKey)
+                        .. " SUB_OBJ source slot "
+                        .. tostring(slot)
+                        .. " is undefined in "
+                        .. path
+                    )
+                  end
+                end
+              end
+            end
+          end
+          local sourceIndices = {}
+          for _, side in ipairs({ "player", "foe" }) do
+            local descriptor = sprites[side].sourceIndices
+            local bytes = cacheFs:read(descriptor.path)
+            local expectedSize = descriptor.width * descriptor.height * 4
+            if type(bytes) ~= "string" or #bytes ~= expectedSize then
+              return failAttempt(
+                "battle scene " .. tostring(sceneKey) .. " source-index payload has invalid size: " .. descriptor.path
+              )
+            end
+            for offset = 1, #bytes, 4 do
+              local green = string.byte(bytes, offset + 1)
+              local blue = string.byte(bytes, offset + 2)
+              local alpha = string.byte(bytes, offset + 3)
+              local index = string.byte(bytes, offset)
+              if green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) or (alpha == 255 and index >= 224) then
+                return failAttempt(
+                  "battle scene "
+                    .. tostring(sceneKey)
+                    .. " source-index payload has invalid pixel data: "
+                    .. descriptor.path
+                )
+              end
+            end
+            sourceIndices[side] = {
+              plane = descriptor.plane,
+              width = descriptor.width,
+              height = descriptor.height,
+              pixels = bytes,
+            }
+          end
           local particleSets = {}
           for setIndex, set in ipairs(record.encounterParticles) do
             particleSets[setIndex] =
@@ -2264,6 +2490,10 @@ function FieldBattlePresentation:_preparationServices()
             baseCharacters = baseCharacters,
             map = map,
             palette = palette,
+            paletteSource = paletteSource,
+            mainObjBallPaletteSources = {},
+            mainObjTrainerPaletteSources = {},
+            menuSourceIndices = stagedMenuSourceIndices,
             colorMode = "8bpp",
             introLayer = {
               drawable = introDrawable,
@@ -2276,12 +2506,14 @@ function FieldBattlePresentation:_preparationServices()
                 width = sprites.player.width,
                 height = sprites.player.height,
                 origin = { x = sprites.player.origin.x, y = sprites.player.origin.y },
+                sourceIndices = sourceIndices.player,
               },
               foe = {
                 drawable = foeDrawable,
                 width = sprites.foe.width,
                 height = sprites.foe.height,
                 origin = { x = sprites.foe.origin.x, y = sprites.foe.origin.y },
+                sourceIndices = sourceIndices.foe,
               },
             },
             encounterParticles = particleSets,
@@ -2362,9 +2594,13 @@ function FieldBattlePresentation:_preparationServices()
       -- full manifest and art reads the first launch already proved.
       -- A failure always re-checks instead of pinning a stale answer.
       if not envelope._stagedMembersOk then
-        local stagedErr = checkStagedMembers(cacheFs, staged)
+        local stagedErr, sourceIndices = checkStagedMembers(cacheFs, staged, demand)
         if stagedErr ~= nil then
           return nil, stagedErr
+        end
+        stagedMenuSourceIndices = assert(sourceIndices, "validated menu maps have a staged record")
+        if stagedSceneLayer ~= nil then
+          stagedSceneLayer.menuSourceIndices = stagedMenuSourceIndices
         end
         envelope._stagedMembersOk = true
       end

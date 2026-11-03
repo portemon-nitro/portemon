@@ -138,7 +138,10 @@ end
 
 local function trainerMappingPalette()
   local colors = u16(0) .. u16(31) .. u16(31 * 32)
-  local payload = string.char(3, 0) .. u16(3) .. u32(0) .. u32(12) .. colors
+  for _ = 4, 16 do
+    colors = colors .. u16(0)
+  end
+  local payload = string.char(3, 0) .. u16(16) .. u32(0) .. u32(12) .. colors
   return g2dContainer("NCLR", { g2dBlock("PLTT", payload) })
 end
 
@@ -155,6 +158,10 @@ function T.trainer_picture_rasterizer_uses_the_cell_bank_mapping()
     ["NARC_a_0_0_6:1"] = trainerMappingPalette(),
     ["NARC_a_0_0_6:2"] = trainerMappingCell(),
     ["NARC_a_0_0_6:3"] = trainerMappingAnimation(),
+    ["NARC_a_0_5_8:0"] = trainerMappingCharacters(),
+    ["NARC_a_0_5_8:1"] = trainerMappingPalette(),
+    ["NARC_a_0_5_8:2"] = trainerMappingCell(),
+    ["NARC_a_0_5_8:3"] = trainerMappingAnimation(),
   }
   local romFs = {
     openNarc = function(_, archiveName)
@@ -435,24 +442,38 @@ function T.native_menu_feedback_patch_uses_source_tile_offset_inside_source_boun
     end
   end
   local colors = {}
-  for index = 0, 15 do
-    colors[index + 1] = { r = index * 10, g = 0, b = 0 }
+  local indexColors = {}
+  for index = 0, 255 do
+    colors[index + 1] = { r = index, g = 0, b = 0 }
+    indexColors[index + 1] = { r = index, g = 0, b = 0 }
   end
   local screen = { width = 256, height = 256, entries = {} }
   for index = 1, 32 * 32 do
-    screen.entries[index] = { tile = 1, palette = 0, flipH = false, flipV = false }
+    screen.entries[index] = { tile = 1, palette = 1, flipH = false, flipV = false }
   end
   local patch = compiler.compileMenuFeedbackPatch(
     { depth = 3, tiles = table.concat(charBytes) },
     { colors = colors },
     screen,
-    { left = 2, top = 4, right = 3, bottom = 4, offset = 192 }
+    { left = 2, top = 4, right = 3, bottom = 4, offset = 192 },
+    { colors = indexColors }
   )
 
   Assert.equal(patch.width, 16, "feedback patch width follows the inclusive source tile rectangle")
   Assert.equal(patch.height, 8, "feedback patch height follows the inclusive source tile rectangle")
-  Assert.equal(string.byte(patch.pixels, 1), 10, "the source tile offset selects the expected tile art")
+  Assert.equal(string.byte(patch.pixels, 1), 17, "the source tile offset selects the expected banked tile art")
   Assert.equal(string.byte(patch.pixels, 4), 255, "nonzero source tile pixels remain opaque")
+  Assert.notNil(patch.sourceIndices, "the patch carries the source indices from its patched tilemap")
+  Assert.equal(patch.sourceIndices.width, patch.width, "source-index crop uses the same patch width")
+  Assert.equal(patch.sourceIndices.height, patch.height, "source-index crop uses the same patch height")
+  Assert.equal(
+    string.byte(patch.sourceIndices.pixels, 1),
+    17,
+    "source slot preserves the patched physical palette bank"
+  )
+  Assert.equal(string.byte(patch.sourceIndices.pixels, 2), 0, "source-index map stores no green component")
+  Assert.equal(string.byte(patch.sourceIndices.pixels, 3), 0, "source-index map stores no blue component")
+  Assert.equal(string.byte(patch.sourceIndices.pixels, 4), 255, "source map preserves opaque coverage")
 end
 
 function T.previously_waived_move_closes_through_its_selected_source_member()
@@ -779,13 +800,7 @@ local function screenBank(width, height, entries)
     .. u32le(#payload)
     .. payload
   local size = 0x10 + #scrn
-  return "RCSN"
-    .. string.char(0xff, 0xfe)
-    .. u16le(0x0100)
-    .. u32le(size)
-    .. u16le(0x10)
-    .. u16le(1)
-    .. scrn
+  return "RCSN" .. string.char(0xff, 0xfe) .. u16le(0x0100) .. u32le(size) .. u16le(0x10) .. u16le(1) .. scrn
 end
 
 -- Compiles one effect whose command lowering is stubbed but whose source

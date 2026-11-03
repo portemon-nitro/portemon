@@ -1157,6 +1157,31 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   battleManifest.messages.roles.narration.font = fontPaths.narration
   battleManifest.messages.roles.menu.font = fontPaths.menu
   battleManifest.messages.roles.hud.font = fontPaths.hud
+  for _, menu in pairs({
+    battleManifest.menus.command,
+    battleManifest.menus.moves,
+    battleManifest.menus.target,
+    battleManifest.menus.twoOption,
+  }) do
+    for _, screen in ipairs(menu.screens) do
+      screen.width = 8
+      screen.height = 8
+      screen.sourceIndices.width = 8
+      screen.sourceIndices.height = 8
+    end
+  end
+  for _, sprite in pairs({
+    battleManifest.hud.player,
+    battleManifest.hud.enemy,
+    battleManifest.hud.doubles.playerLeft,
+    battleManifest.hud.doubles.playerRight,
+    battleManifest.hud.doubles.enemyLeft,
+    battleManifest.hud.doubles.enemyRight,
+    battleManifest.hud.cursor,
+  }) do
+    sprite.sourceIndices.width = 8
+    sprite.sourceIndices.height = 8
+  end
   -- Every redirected path joins the staged image inventory the schema
   -- checks references against; the probe stages 8x8 classified art at
   -- each of these paths below.
@@ -1187,8 +1212,9 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
       cache:write(path, artPng(99))
     end
   end
+  local scenePaletteSourcePath = BattlePresentationCache.scenePaletteSourcePath(sceneKey)
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), {
-    schema = "g4-battle-scene-v4",
+    schema = BattlePresentationCache.SCENE_SCHEMA,
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -1233,18 +1259,75 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     terrainSprites = {
       player = {
         image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"),
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "player"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
       },
       foe = {
         image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "foe"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
       },
     },
+    paletteSource = {
+      key = "battle-scene/general-grass-day/native-palettes",
+      path = scenePaletteSourcePath,
+      format = "native-encounter-palettes-v1",
+    },
     encounterParticles = ParticlesFixture.sets(sceneKey),
+  })
+  local function stageSourceIndices(value)
+    if type(value) ~= "table" then
+      return
+    end
+    if value.format == "source-index-rgba8" then
+      cache:write(value.path, string.rep("\0", value.width * value.height * 4))
+      if value.variants ~= nil then
+        for _, variant in pairs(value.variants) do
+          cache:write(variant.path, string.rep("\0", value.width * value.height * 4))
+        end
+      end
+      return
+    end
+    for _, child in pairs(value) do
+      stageSourceIndices(child)
+    end
+  end
+  stageSourceIndices(battleManifest.menus)
+  stageSourceIndices(battleManifest.hud)
+  for _, side in ipairs({ "player", "foe" }) do
+    cache:write(
+      BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side),
+      string.rep("\0", 80 * 80 * 4)
+    )
+  end
+  local paletteWords = {}
+  for index = 1, 16 do
+    paletteWords[index] = 0
+  end
+  cache:writeLua(scenePaletteSourcePath, {
+    mainObjSources = {
+      hud = { firstSlot = 0, words = paletteWords },
+      hudAuxiliary = { firstSlot = 16, words = paletteWords },
+      terrain = { firstSlot = 32, words = paletteWords },
+    },
+    subObjOpaque = { [1] = 0 },
+    initialDisplayed = { subObj = { [1] = 0 } },
   })
   cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
   cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), string.rep("\0", 65536))

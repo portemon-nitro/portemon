@@ -122,21 +122,27 @@ local terrainSpriteAnimation = G2dBankFixture.animBank({ 0 })
 ---@param screenTile integer baked tile every screen entry addresses
 ---@param type0overrides table<integer, integer>
 ---@param type1overrides table<integer, integer>
-local function sceneRomFs(screenTile, type0overrides, type1overrides)
+local function sceneRomFs(screenTile, type0overrides, type1overrides, spriteCharacters, spriteCells)
+  local cells = spriteCells or terrainSpriteCells
   return romFsWith({
     ["NARC_a_0_0_7:2"] = screenBlock(screenTile, 512, 256),
     ["NARC_a_0_0_7:3"] = baseChars(),
     ["NARC_a_0_0_7:176"] = paletteWith(31, 256),
     ["NARC_a_0_0_7:177"] = paletteWith(31 * 32, 256),
     ["NARC_a_0_0_7:178"] = paletteWith(31 * 1024, 256),
+    ["NARC_a_0_0_7:246"] = paletteWith(0, 256),
+    ["NARC_a_0_0_7:247"] = paletteWith(0, 16),
     ["NARC_a_0_0_8:1"] = paletteWith(31 * 32, 16),
     ["NARC_a_0_0_8:2"] = paletteWith(31 * 32, 16),
     ["NARC_a_0_0_8:3"] = paletteWith(31 * 32, 16),
-    ["NARC_a_0_0_8:127"] = terrainCells(type0overrides or {}),
+    ["NARC_a_0_0_8:71"] = paletteWith(0, 16),
+    ["NARC_a_0_0_8:72"] = paletteWith(0, 112),
+    ["NARC_a_0_0_8:80"] = paletteWith(0, 16),
+    ["NARC_a_0_0_8:127"] = spriteCharacters or terrainCells(type0overrides or {}),
     ["NARC_a_0_0_8:130"] = terrainCells(type1overrides or {}),
-    ["NARC_a_0_0_8:128"] = terrainSpriteCells,
+    ["NARC_a_0_0_8:128"] = cells,
     ["NARC_a_0_0_8:129"] = terrainSpriteAnimation,
-    ["NARC_a_0_0_8:131"] = terrainSpriteCells,
+    ["NARC_a_0_0_8:131"] = cells,
     ["NARC_a_0_0_8:132"] = terrainSpriteAnimation,
     ["NARC_a_0_2_9:5"] = SplMemberFixture.member(5, 1),
     ["NARC_a_0_2_9:6"] = SplMemberFixture.member(11, 2),
@@ -146,6 +152,61 @@ end
 local function compile(romFs, key)
   local Compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   return Compiler.compileScene(romFs, { versionId = "soulsilver" }, key or "general/grass/day")
+end
+
+function T.terrain_source_indices_preserve_duplicate_colors_alpha_and_oam_flip()
+  local scene = assert(
+    compile(
+      sceneRomFs(
+        656,
+        {},
+        {},
+        terrainCells({ [0] = 0x21 }),
+        G2dBankFixture.cellBank({ { { x = 4, y = 3, tile = 0, pal = 0, flipH = true } } })
+      )
+    )
+  )
+  local sprite = scene.terrainSprites.player
+  local indices = assert(scene.terrainSpriteSourceIndexPixels.player, "the compiler retains the source-index raster")
+  local descriptor = assert(sprite.sourceIndices, "the scene record publishes the source-index companion")
+  local art = scene.terrainSpritePixels.player
+  Assert.equal(#indices, #art, "the index raster matches the RGBA art extent")
+  Assert.equal(descriptor.format, "source-index-rgba8", "the source-index companion keeps its raw RGBA format")
+  Assert.equal(descriptor.plane, "mainObj", "the terrain companion names its native OBJ plane")
+  Assert.isTrue(type(descriptor.path) == "string", "the source-index companion has a staged path")
+  Assert.equal(sprite.width, descriptor.width, "the source-index descriptor keeps the artwork width")
+  Assert.equal(sprite.height, descriptor.height, "the source-index descriptor keeps the artwork height")
+  Assert.deepEqual(sprite.origin, { x = 4, y = 3 }, "the companion keeps the source artwork origin")
+  local seen = {}
+  local rows = {}
+  for offset = 1, #art, 4 do
+    local alpha = string.byte(art, offset + 3)
+    Assert.equal(string.byte(indices, offset + 3), alpha, "the source index retains the G2D alpha mask")
+    Assert.equal(string.byte(indices, offset + 1), 0, "the source-index green channel is zero")
+    Assert.equal(string.byte(indices, offset + 2), 0, "the source-index blue channel is zero")
+    if alpha == 255 then
+      local slot = string.byte(indices, offset)
+      seen[slot] = true
+      local pixel = math.floor((offset - 1) / 4)
+      local y = math.floor(pixel / sprite.width)
+      local x = pixel % sprite.width
+      rows[y] = rows[y] or {}
+      rows[y][#rows[y] + 1] = { x = x, slot = slot }
+    end
+  end
+  Assert.isTrue(seen[33], "the terrain bank maps to its physical MAIN_OBJ slot")
+  Assert.isTrue(seen[34], "the duplicate-color source slot keeps its physical MAIN_OBJ index")
+  local firstRow
+  for y = 0, sprite.height - 1 do
+    if rows[y] ~= nil and #rows[y] == 2 then
+      firstRow = rows[y]
+      break
+    end
+  end
+  Assert.notNil(firstRow, "the flipped source tile keeps its two visible pixels")
+  Assert.equal(firstRow[1].slot, 34, "horizontal OAM flip moves source slot 34 left")
+  Assert.equal(firstRow[2].slot, 33, "horizontal OAM flip moves source slot 33 right")
+  Assert.isTrue(firstRow[1].x < firstRow[2].x, "the flipped slot order follows the composed raster")
 end
 
 ---@param pixels string RGBA buffer, 512 wide

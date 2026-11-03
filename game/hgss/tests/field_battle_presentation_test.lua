@@ -27,6 +27,16 @@ local T = {}
 
 local TICK = 1 / 30
 
+---@param port table admitted presentation port
+---@param launchId string accepted launch identity
+---@param kind string accepted battle kind
+---@return boolean entered true when the presentation accepts its source plan
+local function enterPresentation(port, launchId, kind)
+  local restoreType = kind == "trainer" and "trainer" or kind == "wild" and "wild" or nil
+  assert(restoreType ~= nil, "the fixture maps supported battle kinds to native palette restore classes")
+  return port.enter({ launchId = launchId, kind = kind, encounterPaletteRestoreType = restoreType })
+end
+
 local function dualMeasurement(signature)
   return {
     width = 256,
@@ -1805,6 +1815,15 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
   local introCharactersPath = BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
+  local nativePalettePath = BattlePresentationCache.scenePaletteSourcePath(sceneKey)
+  local sourceIndexPaths = {
+    player = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "player"),
+    foe = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "foe"),
+  }
+  local sourceIndexBytes = {
+    [sourceIndexPaths.player] = string.rep("\0", 96 * 48 * 4),
+    [sourceIndexPaths.foe] = string.rep("\0", 96 * 48 * 4),
+  }
   local mapEntries = {}
   for index = 1, 2048 do
     mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -1854,18 +1873,37 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       },
       imagePath = imagePath,
       introLayer = { image = introImagePath, width = 512, height = 256 },
+      paletteSource = {
+        key = "battle-scene/general-plain-day/native-palettes",
+        path = nativePalettePath,
+        format = "native-encounter-palettes-v1",
+      },
       terrainSprites = {
         player = {
           image = playerTerrainPath,
           width = 96,
           height = 48,
           origin = { x = 48, y = 24 },
+          sourceIndices = {
+            path = sourceIndexPaths.player,
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 96,
+            height = 48,
+          },
         },
         foe = {
           image = foeTerrainPath,
           width = 96,
           height = 48,
           origin = { x = 48, y = 24 },
+          sourceIndices = {
+            path = sourceIndexPaths.foe,
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 96,
+            height = 48,
+          },
         },
       },
       encounterParticles = particleSets,
@@ -1883,6 +1921,9 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       if path == palettePath then
         return revealed and { colors = paletteColors } or nil
       end
+      if path == nativePalettePath then
+        return revealed and cacheFs:loadLua(path) or nil
+      end
       return cacheFs:loadLua(path)
     end
     function view.read(_, path)
@@ -1899,6 +1940,9 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       end
       if path == introCharactersPath then
         return revealed and string.rep("b", 65536) or nil
+      end
+      if sourceIndexBytes[path] ~= nil then
+        return revealed and sourceIndexBytes[path] or nil
       end
       return cacheFs:read(path)
     end
@@ -1944,7 +1988,11 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     answer.ready = true
     revealed = true
     imageStaged = true
-    Assert.isTrue(services.prepare(demand()), versionId .. " enters once the staged scene validates")
+    local entered, enterFailure = services.prepare(demand())
+    Assert.isTrue(
+      entered,
+      versionId .. " enters once the staged scene validates: " .. tostring(enterFailure)
+    )
     imageStaged = false
     local missing, missingErr = services.prepare(demand())
     Assert.isNil(missing, versionId .. " never reads ready with its staged pixels absent")
@@ -2218,7 +2266,7 @@ function T.scene_worker_failure_aborts_the_pending_launch_without_a_result()
     for _ = 1, 30 do
       envelope:updateFixed(TICK)
     end
-    Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the pending launch stays unacknowledged")
+    Assert.isFalse(enterPresentation(port, launchId, "wild"), "the pending launch stays unacknowledged")
     Assert.isFalse(port.ready(), "the pending launch never reads interactive")
     Assert.isNil(envelope:liveScreen(), "polling never builds a screen before the scene stages")
     Assert.isTrue(#worker.asks >= 1, "the pending launch demands its scene through the borrowed host")
@@ -2352,7 +2400,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
       Assert.equal(#constructions, 0, "a late answer builds no screen for the disposed launch")
       Assert.isNil(envelope:liveScreen(), "the disposed launch stays screenless")
       Assert.equal(#host1.notifies, 0, "the disposed launch reports nothing late")
-      Assert.isFalse(port1.enter({ launchId = firstId, kind = "wild" }), "the disposed port stays unacknowledged")
+      Assert.isFalse(enterPresentation(port1, firstId, "wild"), "the disposed port stays unacknowledged")
       Assert.isFalse(port1.ready(), "the disposed port never reads interactive")
       host1.phase = "complete"
       for _ = 1, 5 do
@@ -2376,7 +2424,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
       local entered = false
       for _ = 1, 120 do
         envelope:updateFixed(TICK)
-        if port2.enter({ launchId = secondId, kind = "wild" }) then
+        if enterPresentation(port2, secondId, "wild") then
           entered = true
           break
         end
@@ -2385,7 +2433,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
       Assert.equal(#constructions, 1, "the next launch constructs exactly one screen")
       Assert.equal(constructions[1], secondId, "the one screen belongs to the second launch")
       local live = assert(envelope:liveScreen(), "the second launch owns its live screen")
-      Assert.isFalse(port1.enter({ launchId = firstId, kind = "wild" }), "the stale port never reacknowledges")
+      Assert.isFalse(enterPresentation(port1, firstId, "wild"), "the stale port never reacknowledges")
       Assert.isFalse(port1.ready(), "the stale port never reads interactive")
       local presentOk = pcall(port1.present, { launchId = firstId, packetId = 1 })
       Assert.isTrue(presentOk, "a stale delivery never raises")
@@ -2458,7 +2506,7 @@ function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
         envelope:updateFixed(TICK)
         battle:update()
       end
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "entry waits while the scene builds")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "entry waits while the scene builds")
       Assert.isFalse(port.ready(), "readiness waits while the scene builds")
       Assert.equal(battle:status().phase, "preparing", "the runtime holds preparing behind the pending port")
       Assert.isNil(envelope:liveScreen(), "no screen exists before the worker publishes")
@@ -2473,7 +2521,7 @@ function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
         end
       end
       Assert.isTrue(left, "the staged scene lets the runtime leave preparing")
-      Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "entry acknowledges after the build")
+      Assert.isTrue(enterPresentation(port, launchId, "wild"), "entry acknowledges after the build")
       Assert.notNil(envelope:liveScreen(), "the staged scene owns its live screen")
       Assert.equal(#host.notifies, 0, "the staged build reports no failure")
     end, debug.traceback)
@@ -2547,7 +2595,7 @@ function T.scene_failure_reports_once_without_driving_the_host()
       Assert.equal(host.advances, 5, "fixed updates advance the host once each at " .. point)
       Assert.equal(#host.notifies, 0, "pending reports no failure at " .. point)
       local driven = host.advances
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "entry waits at " .. point)
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "entry waits at " .. point)
       Assert.isFalse(port.ready(), "readiness waits at " .. point)
       Assert.isFalse(port.leave({ launchId = launchId }), "leave waits at " .. point)
       local presentOk = pcall(port.present, { launchId = launchId, packetId = 1 })
@@ -3201,7 +3249,7 @@ end
 ---@param kind string admitted launch kind under test driving
 local function requirePendingAdmission(envelope, port, launchId, kind)
   Assert.isFalse(
-    port.enter({ launchId = launchId, kind = kind }),
+    enterPresentation(port, launchId, kind),
     "the admitted launch stays unacknowledged while its scene builds"
   )
   Assert.isFalse(port.ready(), "the admitted launch never reads interactive while its scene builds")
@@ -3319,7 +3367,7 @@ function T.scheduled_win_returns_through_cover_and_receipt()
       requirePendingAdmission(envelope, port, launchId, "wild")
       waitConstructed(runtime, envelope)
       Assert.notNil(envelope:liveScreen(), "the staged launch builds its live screen")
-      Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "the staged launch acknowledges its entry")
+      Assert.isTrue(enterPresentation(port, launchId, "wild"), "the staged launch acknowledges its entry")
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
       local turns = settle(runtime, envelope, function(request)
         return sparringChoose(runtime, request)
@@ -3375,7 +3423,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       local firstId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       local firstPort = assert(doubles.ports[#doubles.ports], "the first launch owns its port")
       pump(runtime, envelope, 5)
-      Assert.isFalse(firstPort.enter({ launchId = firstId, kind = "wild" }), "the cold demand stays unacknowledged")
+      Assert.isFalse(enterPresentation(firstPort, firstId, "wild"), "the cold demand stays unacknowledged")
       Assert.isNil(envelope:liveScreen(), "the cold demand builds no screen before its scene stages")
       doubles.worker.ready = true
       waitConstructed(runtime, envelope)
@@ -3394,7 +3442,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       pump(runtime, envelope, 60)
       Assert.equal(runtime:lastBattleResult().result, "win", "the first leg reports its own win")
       Assert.isFalse(firstPort.ready(), "the settled port never reads interactive again")
-      Assert.isFalse(firstPort.enter({ launchId = firstId, kind = "wild" }), "the settled port never reacknowledges")
+      Assert.isFalse(enterPresentation(firstPort, firstId, "wild"), "the settled port never reacknowledges")
       local secondId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       Assert.isTrue(secondId ~= firstId, "the next launch receives a new identity")
       local secondPort = assert(doubles.ports[#doubles.ports], "the second launch owns its port")
@@ -3738,14 +3786,14 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       host = host,
     })
     local ok, failure = xpcall(function()
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the pending operation stays unacknowledged")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "the pending operation stays unacknowledged")
       Assert.isFalse(port.ready(), "the pending operation never reads interactive")
       Assert.isFalse(port.leave({ launchId = launchId }), "the pending return stays unacknowledged")
       worker.ready = true
       local entered = false
       for _ = 1, 120 do
         envelope:updateFixed(TICK)
-        if port.enter({ launchId = launchId, kind = "wild" }) then
+        if enterPresentation(port, launchId, "wild") then
           entered = true
           break
         end
@@ -3756,7 +3804,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       inner.enter = function(_)
         error("probe enter failure at active", 0)
       end
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "a failing entry never acknowledges")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "a failing entry never acknowledges")
       Assert.equal(#host.notifies, 1, "the failing entry reports exactly once")
       Assert.equal(host.notifies[1].event, "screen-failed", "the entry report carries its handoff")
       Assert.isTrue(
@@ -3786,7 +3834,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       port.dispose()
       port.dispose()
       Assert.isNil(envelope:liveScreen(), "the disposed operation owns no screen")
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the disposed entry never reacknowledges")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "the disposed entry never reacknowledges")
       Assert.isFalse(port.ready(), "the disposed operation never reads interactive")
       local staleOk = pcall(port.present, { launchId = launchId, packetId = 2 })
       Assert.isTrue(staleOk, "a stale delivery never raises")
@@ -3848,7 +3896,7 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       local entered = false
       for _ = 1, 120 do
         envelope:updateFixed(TICK)
-        if port.enter({ launchId = launchId, kind = "wild" }) then
+        if enterPresentation(port, launchId, "wild") then
           entered = true
           break
         end
@@ -3866,7 +3914,7 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       Assert.isNil(envelope:liveScreen(), "the disposal releases the live screen")
       Assert.notNil(envelope._descriptor, "the disposal keeps the envelope descriptor")
       Assert.equal(envelope._launchId, launchId, "the disposal keeps the launch identity")
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the disposed entry never reacknowledges")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "the disposed entry never reacknowledges")
       Assert.isFalse(port.ready(), "the disposed operation never reads interactive")
       Assert.isFalse(port.leave({ launchId = launchId }), "the disposed return never reacknowledges")
       port.dispose()

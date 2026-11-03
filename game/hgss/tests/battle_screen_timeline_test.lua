@@ -1102,6 +1102,7 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
   local trainer = BattleTimeline.new({ sound = function(_) end })
   local trainerView = openingView()
   trainerView.foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } }
+  trainerView.participants = { { participant = 3, side = 2, controller = "trainer:3" } }
   trainer:reset(trainerView)
   trainer:intro(trainerView, false)
   Assert.deepEqual(trainer:openingPresentation(), {
@@ -1123,6 +1124,7 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
       {
         role = "foe",
         selector = "front:YOUNGSTER",
+        participant = 3,
         sourceSequence = 2,
         x = -80,
         y = 50,
@@ -1143,6 +1145,7 @@ function T.opening_trainer_slides_start_together_and_follow_the_source_ticks()
   local view = openingView()
   view.playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" }
   view.foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } }
+  view.participants = { { participant = 3, side = 2, controller = "trainer:3" } }
   timeline:reset(view)
   timeline:intro(view, false)
 
@@ -1161,6 +1164,7 @@ function T.opening_trainer_slides_start_together_and_follow_the_source_ticks()
   Assert.deepEqual(slides[2], {
     role = "foe",
     selector = "front:YOUNGSTER",
+    participant = 3,
     sourceSequence = 2,
     x = -80,
     y = 50,
@@ -1410,6 +1414,31 @@ function T.trainer_opening_tracks_every_multi_battle_trainer_once()
     { "front:YOUNGSTER", "front:LASS" },
     "a multi battle stages each source trainer exactly once in roster order"
   )
+end
+
+function T.opening_trainer_slides_preserve_participant_identity_for_repeated_classes()
+  local view = openingView()
+  view.foeTrainers = {
+    { classKey = "YOUNGSTER", name = "WHITNEY" },
+    { classKey = "YOUNGSTER", name = "VIOLET" },
+  }
+  view.participants = {
+    { participant = 3, side = 2, controller = "trainer:3" },
+    { participant = 4, side = 2, controller = "trainer:4" },
+  }
+  local timeline = BattleTimeline.new({ sound = function(_) end })
+  timeline:reset(view)
+  timeline:intro(view, false)
+  local foeSlides = {}
+  for _, slide in ipairs(assert(timeline:openingPresentation().trainerSlides)) do
+    if slide.role == "foe" then
+      foeSlides[#foeSlides + 1] = { selector = slide.selector, participant = slide.participant }
+    end
+  end
+  Assert.deepEqual(foeSlides, {
+    { selector = "front:YOUNGSTER", participant = 3 },
+    { selector = "front:YOUNGSTER", participant = 4 },
+  }, "each repeated trainer selector keeps its own accepted source participant")
 end
 
 function T.multi_trainer_sendout_exits_only_its_source_participant()

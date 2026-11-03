@@ -4,7 +4,7 @@ local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local BattleScreenFixture = {}
 setmetatable(BattleScreenFixture, { __index = BattleScreenState })
 
-local function completeView(view)
+local function completeView(view, battleKind)
   if type(view) ~= "table" then
     return
   end
@@ -15,7 +15,7 @@ local function completeView(view)
   view.playerTrainer.name = view.playerTrainer.name or "ETHAN"
   view.playerName = view.playerName or "ETHAN"
   if view.foeTrainers == nil then
-    view.foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } }
+    view.foeTrainers = battleKind == "wild" and {} or { { classKey = "YOUNGSTER", name = "WHITNEY" } }
   end
   view.participants = view.participants or {}
   for _, trainer in ipairs(view.foeTrainers) do
@@ -34,18 +34,24 @@ local function completeView(view)
       end
     end
   end
-  if type(view.participants) == "table" and #view.participants == 0 and #view.foeTrainers > 0 then
-    local seen = {}
-    for _, foe in ipairs(view.foes or {}) do
-      local participant = foe.participant or foe.combatant
-      if type(participant) == "number" and not seen[participant] then
-        seen[participant] = true
-        foe.participant = participant
+  if battleKind ~= "wild" and type(view.participants) == "table" and #view.participants == 0 and #view.foeTrainers > 0 then
+    local foes = view.foes or {}
+    for index, trainer in ipairs(view.foeTrainers) do
+      local foe = foes[math.min(index, #foes)]
+      local participant = trainer.participant or (type(foe) == "table" and foe.combatant)
+      if type(participant) == "number" then
+        trainer.participant = participant
         view.participants[#view.participants + 1] = {
           participant = participant,
           side = 2,
           controller = "trainer:" .. tostring(participant),
         }
+      end
+    end
+    for index, foe in ipairs(foes) do
+      local trainer = view.foeTrainers[math.min(index, #view.foeTrainers)]
+      if type(foe) == "table" and type(trainer) == "table" then
+        foe.participant = trainer.participant
       end
     end
   end
@@ -55,8 +61,8 @@ function BattleScreenFixture.new(options)
   local screen = BattleScreenState.new(options)
   local present = screen._portPresent
   function screen:_portPresent(packet)
-    completeView(packet.before)
-    completeView(packet.after)
+    completeView(packet.before, self._kind)
+    completeView(packet.after, self._kind)
     return present(self, packet)
   end
   return screen

@@ -247,10 +247,14 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
     },
   }
   local port = screen:presentationPort()
+  port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "ordinary-doubles" })
   for _ = 1, 5 do
     screen:updateFixed(1 / 60)
   end
-  Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), versionId .. " enters its staged doubled scene")
+  Assert.isTrue(
+    port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "ordinary-doubles" }),
+    versionId .. " enters its staged doubled scene"
+  )
   port.present({ launchId = launchId, packetId = 1, before = opening, after = opening, events = {} })
   for _ = 1, 1200 do
     screen:updateFixed(1 / 60)
@@ -399,8 +403,34 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
   -- their bytes: the unbaked base tile addresses 0x78 (untouched by the
   -- battle-setup fill) while the baked tile reads 0x00 (fill white).
   paletteColors[0x78 + 1] = { r = 255, g = 0, b = 0 }
+  local function sourcePalette(size)
+    local words = {}
+    for index = 1, size do
+      words[index] = 0
+    end
+    return words
+  end
+  local mainBgSource = sourcePalette(256)
+  mainBgSource[121] = 0x001F
+  local objBank = sourcePalette(16)
   local layer = {
     sceneKey = ENCOUNTER_SCENE_KEY,
+    mainObjBallSources = {},
+    mainObjPostFill = {},
+    paletteSource = {
+      mainBg = mainBgSource,
+      mainObjSources = {
+        hud = { firstSlot = 0, words = objBank },
+        hudAuxiliary = { firstSlot = 16, words = sourcePalette(16) },
+        terrain = { firstSlot = 32, words = sourcePalette(16) },
+      },
+      subBgOpaque = sourcePalette(256),
+      subObjOpaque = sourcePalette(256),
+      initialDisplayed = {
+        subBg = sourcePalette(256),
+        subObj = sourcePalette(256),
+      },
+    },
     characters = string.rep("\0", 64),
     baseCharacters = string.char(0x78) .. string.rep("\0", 63),
     colorMode = "8bpp",
@@ -539,6 +569,11 @@ local function openEncounterRig(opts)
   function rig.stage(layer)
     staged = layer
     withheld["scene:" .. ENCOUNTER_SCENE_KEY] = false
+    rig.port.enter({
+      launchId = rig.launchId,
+      kind = "wild",
+      encounterPaletteRestoreType = "wild",
+    })
   end
   function rig.resize(signature)
     measurement.signature = signature
@@ -618,6 +653,20 @@ local function presentOpening(rig)
   })
 end
 
+function T.native_palette_layout_rebuilds_for_a_replaced_scene_layer()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  presentOpening(rig)
+  Assert.isTrue(rig.screen._nativePaletteLayoutReady, "the first scene publishes its native layout")
+
+  local replacement = stagedEncounterLayer(60, 43)
+  rig.screen._assets._sceneLayer = replacement
+  Assert.isTrue(rig.screen:_stageNativePaletteLayout(), "a replaced staged layer rebuilds its layout")
+  Assert.isTrue(type(replacement.nativePaletteLayout) == "table", "the current layer owns its native layout")
+  rig.screen:dispose()
+end
+
 -- The private render snapshot carries each live particle owner through the
 -- production screen draw in detail and compact layouts. Repeated draws keep
 -- all three simulations and the encounter source frame unchanged.
@@ -626,7 +675,7 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
   local ok, err = pcall(function()
     rig.stage(stagedEncounterLayer(60, 43))
     rig.pump(5)
-    Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+    Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
     presentOpening(rig)
     rig.pump(1)
 
@@ -714,17 +763,17 @@ end
 function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   local rig = openEncounterRig({ withheldScene = true })
   Assert.isFalse(
-    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
     "entry holds while the scene art is not staged"
   )
   rig.pump(3)
   Assert.isFalse(
-    rig.port.enter({ launchId = rig.launchId, kind = "wild" }),
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
     "entry still holds without the staged scene"
   )
   rig.stage(stagedEncounterLayer(60, 43, nil))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   rig.pump(1)
   local first = rig.screen:view()
@@ -795,6 +844,52 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   Assert.equal(voiceCount(rig, BattleAudio.SINK_SOUNDS.encounterSettle), 1, "the settle sound voices exactly once")
 end
 
+function T.encounter_palette_staging_uses_independent_native_plane_sources()
+  local rig = openEncounterRig()
+  local layer = stagedEncounterLayer(40, 36)
+  local function words(count, sentinelIndex, sentinel)
+    local result = {}
+    for index = 1, count do
+      result[index] = index == sentinelIndex and sentinel or 0
+    end
+    return result
+  end
+  layer.paletteSource = {
+    mainBg = words(256, 121, 0x001F),
+    mainObjSources = {
+      hud = { firstSlot = 0, words = words(16, 16, 0) },
+      hudAuxiliary = { firstSlot = 16, words = words(16, 16, 0) },
+      terrain = { firstSlot = 32, words = words(16, 16, 0x03E0) },
+      lateStatic = { firstSlot = 208, words = words(16, 16, 0x03E0) },
+    },
+    subBgOpaque = words(256, 1, 0x7C00),
+    subObjOpaque = words(256, 1, 0x4210),
+    initialDisplayed = {
+      subBg = words(256, 1, 0x7C00),
+      subObj = words(256, 1, 0x4210),
+    },
+  }
+  layer.nativePaletteLayout = { trainers = {}, balls = {} }
+  layer.mainObjBallPaletteSources = {}
+  layer.mainObjTrainerPaletteSources = {}
+  rig.stage(layer)
+  rig.pump(1)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "the sourced scene admits")
+  presentOpening(rig)
+  rig.pump(1)
+
+  local palette = assert(rig.screen:view().openingPresentation.encounterPalette, "the first tick publishes native palette state")
+  Assert.equal(#palette.mainBg, 256, "main BG keeps its native palette size")
+  Assert.equal(palette.mainObj[224], 0x03E0, "the late static MAIN_OBJ word remains source-defined")
+  Assert.equal(#palette.subBg, 256, "sub BG keeps its native palette size")
+  Assert.equal(#palette.subObj, 256, "sub OBJ keeps its native palette size")
+  Assert.deepEqual(
+    { palette.mainBg[121], palette.mainObj[224], palette.subBg[1], palette.subObj[1] },
+    { 0x001F, 0x03E0, 0x7C00, 0x4210 },
+    "each native plane retains its own source word"
+  )
+end
+
 -- The wild encounter fade draws the faded intro upload while the task
 -- runs and falls back to the static lease once it ends: uploads carry
 -- the published frame's faded palette, the lease stays undrawn under
@@ -803,7 +898,7 @@ function T.wild_encounter_fade_draws_the_faded_intro_while_active()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(40, 36))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   rig.pump(13)
   local mid = FakeGraphics.new({})
@@ -872,7 +967,7 @@ function T.missing_second_member_fails_the_launch_at_its_start_tick()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, 2))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   local status = rig.pump(20, true)
   Assert.equal(status.mode, "failed", "a missing second member fails the launch at frame 20")
@@ -892,7 +987,7 @@ function T.missing_first_member_fails_before_the_first_source_tick()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, 1))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   local status = rig.pump(2, true)
   Assert.equal(status.mode, "failed", "a missing first member fails before the first source tick")
@@ -914,7 +1009,7 @@ function T.grass_day_handoff_matches_the_native_task_schedule()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43, nil))
   rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }), "entry admits the staged scene")
   presentOpening(rig)
   local trace = Trace.new(ENCOUNTER_SCENE_KEY)
   local observed = {}

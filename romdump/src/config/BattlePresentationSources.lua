@@ -597,6 +597,18 @@ BattlePresentationSources.ROLES = {
   terrainAnim1 = 132,
 }
 
+-- Pinned HGSS loads member71 into tags 20006/20007, then terrain, then each
+-- active battler's ball palette before the MAIN_OBJ backup and fill. The
+-- pinned OBJ allocator reserves banks 14-15 and loads each resource into
+-- the first contiguous free bank run.
+BattlePresentationSources.MAIN_OBJ_PALETTE_BASE = {
+  hud = 0,
+  hudAuxiliary = 16,
+  terrain = 32,
+  contextualBall = 48,
+  trainerSourceIndex = 0,
+}
+
 -- Source battle font behind narration. It resolves to an existing generated
 -- font at compile time.
 BattlePresentationSources.BATTLE_FONT_ID = 1
@@ -1794,6 +1806,8 @@ BattlePresentationSources.TRAINER_PICTURES = {
   frontArchive = "NARC_a_0_5_8",
   backArchive = "NARC_a_0_0_6",
   frontClasses = BattleSources.trainerClassKeys,
+  -- CreateTrainerPicSprite loads a second bank for the Castle Valet portrait.
+  frontPaletteBanks = { CASTLE_VALET = 2 },
   backClasses = { PKMN_TRAINER_ETHAN = 0, PKMN_TRAINER_LYRA = 1 },
   throwOffsets = {
     source = { file = "asm/battle_controller_opponent_data.s", symbol = "gBallThrowOffsets" },

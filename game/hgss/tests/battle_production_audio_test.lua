@@ -160,10 +160,36 @@ end
 ---@return table schema-valid staged battle manifest
 local function stagedManifest(sceneImage)
   local manifest = BattlePresentationManifestFixture.manifest()
-  manifest.menus.images[MENU_IMAGE] = { width = 8, height = 8 }
+  manifest.menus.images[MENU_IMAGE] = { width = 256, height = 256 }
   manifest.menus.images[sceneImage] = { width = 512, height = 256 }
   manifest.audioRoles.select = SELECT_SYMBOL
   return manifest
+end
+
+---@param value unknown manifest subtree to inspect
+---@param cache table derived cache writer for staged source-index bytes
+local function stageSourceIndexMaps(value, cache)
+  if type(value) ~= "table" then
+    return
+  end
+  if value.format == "source-index-rgba8" then
+    local width = value.width --[[@as integer]]
+    local height = value.height --[[@as integer]]
+    local pixels = string.rep("\0", width * height * 4)
+    if type(value.path) == "string" then
+      cache:write(value.path, pixels)
+    end
+    if type(value.variants) == "table" then
+      for _, variant in pairs(value.variants) do
+        if type(variant) == "table" and type(variant.path) == "string" then
+          cache:write(variant.path, pixels)
+        end
+      end
+    end
+  end
+  for _, child in pairs(value) do
+    stageSourceIndexMaps(child, cache)
+  end
 end
 
 -- Stages the battle manifest, one scene record with exactly-sized pixels,
@@ -217,6 +243,25 @@ local function stageBattlePresentation(cache)
   local introCharactersPath = BattlePresentationCache.sceneIntroCharactersPath(SCENE_KEY)
   local mapPath = BattlePresentationCache.sceneMapPath(SCENE_KEY)
   local palettePath = BattlePresentationCache.scenePalettePath(SCENE_KEY)
+  local nativePalettePath = BattlePresentationCache.scenePaletteSourcePath(SCENE_KEY)
+  local nativePalette = { mainBg = {}, mainObjSources = {}, subBgOpaque = {}, subObjOpaque = { [1] = 0 } }
+  for index = 1, 256 do
+    nativePalette.mainBg[index] = 0
+    nativePalette.subBgOpaque[index] = 0
+  end
+  local function mainObjBank(firstSlot)
+    local words = {}
+    for index = 1, 16 do
+      words[index] = 0
+    end
+    return { firstSlot = firstSlot, words = words }
+  end
+  nativePalette.mainObjSources = {
+    hud = mainObjBank(0),
+    hudAuxiliary = mainObjBank(16),
+    terrain = mainObjBank(32),
+  }
+  nativePalette.initialDisplayed = { subBg = nativePalette.subBgOpaque, subObj = nativePalette.subObjOpaque }
   local mapEntries = {}
   for index = 1, 2048 do
     mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -226,7 +271,7 @@ local function stageBattlePresentation(cache)
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
   cache:writeLua(BattlePresentationCache.scenePath(SCENE_KEY), {
-    schema = "g4-battle-scene-v4",
+    schema = BattlePresentationCache.SCENE_SCHEMA,
     key = SCENE_KEY,
     background = "general",
     terrain = "grass",
@@ -274,20 +319,41 @@ local function stageBattlePresentation(cache)
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+          sourceIndices = {
+            path = BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "player"),
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 80,
+            height = 80,
+          },
       },
       foe = {
         image = BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "foe"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+          sourceIndices = {
+            path = BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "foe"),
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 80,
+            height = 80,
+          },
       },
     },
+      paletteSource = {
+        key = "battle-scene/general-grass-day/native-palettes",
+        path = nativePalettePath,
+        format = "native-encounter-palettes-v1",
+      },
     encounterParticles = ParticlesFixture.sets(SCENE_KEY),
   })
   cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(512, 256))
   cache:write(BattlePresentationCache.sceneIntroImagePath(SCENE_KEY), solidPng(512, 256))
   cache:write(BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "player"), solidPng(80, 80))
   cache:write(BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "foe"), solidPng(80, 80))
+  cache:write(BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "player"), string.rep("\0", 80 * 80 * 4))
+  cache:write(BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "foe"), string.rep("\0", 80 * 80 * 4))
   for _, set in ipairs(ParticlesFixture.sets(SCENE_KEY)) do
     for _, texture in ipairs(set.textures) do
       cache:write(texture.image, solidPng(texture.width, texture.height))
@@ -297,6 +363,7 @@ local function stageBattlePresentation(cache)
   cache:write(introCharactersPath, string.rep("\0", 65536))
   cache:writeLua(mapPath, { width = 512, height = 256, entries = mapEntries })
   cache:writeLua(palettePath, { colors = paletteColors })
+  cache:writeLua(nativePalettePath, nativePalette)
   local entries = {}
   for _, selector in ipairs({
     LEAD_SPECIES .. "/f0/male/plain/back",

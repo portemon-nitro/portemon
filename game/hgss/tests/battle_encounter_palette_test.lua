@@ -461,6 +461,12 @@ function T.main_object_post_fill_palette_survives_opening_and_trainer_restore()
     trainerColor,
     "post-fill trainer palette overrides the setup fill at frame 10"
   )
+  palette:tick(11)
+  Assert.equal(
+    palette:snapshot().mainObj[81],
+    blendWord(trainerColor, source.fill, 2),
+    "post-fill trainer palette participates in the opening fade"
+  )
   palette:tick(36)
   Assert.equal(
     palette:snapshot().mainObj[81],

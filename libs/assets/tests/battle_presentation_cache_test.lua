@@ -295,8 +295,58 @@ local function stageBattle(cache, manifest, sceneKey)
   for path, geometry in pairs(manifest.menus.images) do
     stagePng(cache, path, geometry.width, geometry.height)
   end
+  local function stageSourceIndices(source)
+    if type(source) ~= "table" then
+      return
+    end
+    local function writePath(path)
+      cache:write(path, string.rep(string.char(0, 0, 0, 0), source.width * source.height))
+    end
+    if type(source.path) == "string" then
+      writePath(source.path)
+    end
+    if type(source.variants) == "table" then
+      for _, variant in pairs(source.variants) do
+        writePath(variant.path)
+      end
+    end
+  end
+  for _, sectionName in ipairs({ "command", "moves", "target", "twoOption" }) do
+    for _, screen in ipairs(manifest.menus[sectionName].screens) do
+      stageSourceIndices(screen.sourceIndices)
+      if screen.feedback ~= nil then
+        for _, states in pairs(screen.feedback) do
+          for _, patch in pairs(states) do
+            stageSourceIndices(patch.sourceIndices)
+          end
+        end
+      end
+      if screen.moveButtons ~= nil then
+        for _, button in ipairs(screen.moveButtons) do
+          stageSourceIndices(button.sourceIndices.empty)
+          for _, typeStates in pairs(button.sourceIndices.types) do
+            for _, source in pairs(typeStates) do
+              stageSourceIndices(source)
+            end
+          end
+        end
+      end
+    end
+  end
+  for _, entry in pairs(manifest.trainerPictures.entries) do
+    for _, sequence in ipairs(entry.animation.sequences) do
+      for _, frame in ipairs(sequence.frames) do
+        stageSourceIndices(frame.sourceIndices)
+      end
+    end
+  end
+  for _, entry in pairs(manifest.battleBalls.entries) do
+    for _, frame in ipairs(entry.frames) do
+      stageSourceIndices(frame.sourceIndices)
+    end
+  end
   local record = {
-    schema = "g4-battle-scene-v4",
+    schema = "g4-battle-scene-v5",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -338,18 +388,37 @@ local function stageBattle(cache, manifest, sceneKey)
       width = 512,
       height = 256,
     },
+    paletteSource = {
+      key = "battle-scene/" .. sceneKey:gsub("/", "-") .. "/native-palettes",
+      path = BattlePresentationCache.scenePaletteSourcePath(sceneKey),
+      format = "native-encounter-palettes-v1",
+    },
     terrainSprites = {
       player = {
         image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "player"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
       foe = {
         image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "foe"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
     },
     encounterParticles = ParticlesFixture.sets(sceneKey),
@@ -368,15 +437,100 @@ local function stageBattle(cache, manifest, sceneKey)
     colors[index] = { r = 0, g = 0, b = 0 }
   end
   cache:writeLua(BattlePresentationCache.scenePalettePath(sceneKey), { colors = colors })
+  local function paletteWords()
+    local words = {}
+    for index = 1, 16 do
+      words[index] = 0
+    end
+    return words
+  end
+  cache:writeLua(BattlePresentationCache.scenePaletteSourcePath(sceneKey), {
+    mainObjSources = {
+      hud = { firstSlot = 0, words = paletteWords() },
+      hudAuxiliary = { firstSlot = 16, words = paletteWords() },
+      terrain = { firstSlot = 32, words = paletteWords() },
+    },
+  })
   stagePng(cache, BattlePresentationCache.sceneImagePath(sceneKey), 512, 256)
   stagePng(cache, BattlePresentationCache.sceneIntroImagePath(sceneKey), 512, 256)
   stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"), 80, 80)
   stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"), 80, 80)
+  for _, side in ipairs({ "player", "foe" }) do
+    cache:write(
+      BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side),
+      string.rep(string.char(32, 0, 0, 255), 80 * 80)
+    )
+  end
   for _, set in ipairs(record.encounterParticles) do
     for _, texture in ipairs(set.textures) do
       stagePng(cache, texture.image, texture.width, texture.height)
     end
   end
+end
+
+function T.separate_menu_patch_source_maps_are_part_of_global_readiness()
+  local manifest = ManifestFixture.manifest()
+  local function sourceIndices(name)
+    return {
+      path = "assets/generated/battle/" .. name .. ".source-index.rgba8",
+      format = "source-index-rgba8",
+      plane = "subBg",
+      width = 8,
+      height = 8,
+    }
+  end
+  local command = manifest.menus.command.screens[1]
+  command.feedback = {
+    fight = {
+      pressed = {
+        image = command.image,
+        x = 0,
+        y = 0,
+        width = 8,
+        height = 8,
+        sourceIndices = sourceIndices("feedback-pressed"),
+      },
+    },
+  }
+  local moves = manifest.menus.moves.screens[1]
+  moves.moveButtons = {}
+  for slot = 1, 4 do
+    moves.moveButtons[slot] = {
+      x = 0,
+      y = 0,
+      width = 8,
+      height = 8,
+      empty = moves.image,
+      types = { NORMAL = { normal = moves.image, pressed = moves.image } },
+      sourceIndices = {
+        empty = sourceIndices("move-" .. slot .. "-empty"),
+        types = {
+          NORMAL = {
+            normal = sourceIndices("move-" .. slot .. "-normal"),
+            pressed = sourceIndices("move-" .. slot .. "-pressed"),
+          },
+        },
+      },
+    }
+  end
+  local cache = staging()
+  stageBattle(cache, manifest, "general/grass/day")
+  Assert.isTrue(BattlePresentationCache.isGlobalReady(cache, "marker"), "all patch maps complete the global closure")
+
+  local missingFeedback = command.feedback.fight.pressed.sourceIndices.path
+  cache:remove(missingFeedback)
+  Assert.isFalse(
+    BattlePresentationCache.isGlobalReady(cache, "marker"),
+    "missing feedback map rejects global readiness"
+  )
+  cache:write(missingFeedback, string.rep(string.char(0, 0, 0, 0), 64))
+
+  local missingMoveButton = moves.moveButtons[1].sourceIndices.types.NORMAL.pressed.path
+  cache:remove(missingMoveButton)
+  Assert.isFalse(
+    BattlePresentationCache.isGlobalReady(cache, "marker"),
+    "missing move-button map rejects global readiness"
+  )
 end
 
 function T.unbaked_intro_characters_are_part_of_the_scene_readiness_closure()
@@ -473,6 +627,18 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
     {
       drawableKey = "trainer:" .. selector,
       image = image0,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = 8,
+        height = 8,
+        variants = {
+          ["slot:80"] = {
+            path = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-source-frame-0-slot-80.rgba8",
+            firstSlot = 80,
+          },
+        },
+      },
       rasterOffset = { x = -40, y = -40 },
       durationTicks = 2,
       sourceFrame = 0,
@@ -481,6 +647,18 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
     {
       drawableKey = "trainer:" .. selector .. ":frame:1",
       image = image1,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = 8,
+        height = 8,
+        variants = {
+          ["slot:80"] = {
+            path = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-source-frame-1-slot-80.rgba8",
+            firstSlot = 80,
+          },
+        },
+      },
       rasterOffset = { x = -24, y = -40 },
       durationTicks = 5,
       sourceFrame = 1,

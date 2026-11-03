@@ -583,6 +583,7 @@ local function openingTrainerSlides(self, view, wild)
     slides[#slides + 1] = {
       role = role,
       selector = selector,
+      participant = participant,
       sourceSequence = sourceSequence,
       x = x,
       y = y,

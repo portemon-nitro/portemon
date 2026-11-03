@@ -436,7 +436,7 @@ DerivedAssetContract.battlePresentation = {
   trainerPictureSchema = "g4-battle-trainer-picture-v1",
   ballSchema = "g4-battle-ball-v1",
   evolutionSchema = "g4-battle-evolution-v1",
-  sceneSchema = "g4-battle-scene-v4",
+  sceneSchema = "g4-battle-scene-v5",
   effectSchema = "g4-battle-effect-v4",
 }
 
