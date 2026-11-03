@@ -3,6 +3,7 @@
 local Errors = require("libs.errors.src.Errors")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
+local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -36,6 +37,7 @@ local PRESET_UNAVAILABLE = "SAVE_EDITOR_PRESET_UNAVAILABLE"
 
 ---@class SaveEditorDirtySections
 ---@field money boolean
+---@field badges boolean
 ---@field flags boolean
 ---@field pokegear boolean
 ---@field party boolean
@@ -92,6 +94,7 @@ local PRESET_UNAVAILABLE = "SAVE_EDITOR_PRESET_UNAVAILABLE"
 ---@field private _baseline table<string, unknown>
 ---@field private _entryCheckpoint table<string, unknown>
 ---@field private _money integer
+---@field private _badges table<string, boolean>
 ---@field private _frameIndex integer
 ---@field private _frameIndexes table<integer, boolean>
 ---@field private _location SaveEditorLocation
@@ -412,6 +415,7 @@ function SaveEditorSession.new(options)
     _entryCheckpoint = copy(baseline),
     _pokegear = copy(baseline.pokegear),
     _money = profile.money,
+    _badges = copy((baseline.playerData --[[@as table<string, unknown>]]).profile.badges),
     _frameIndex = frameIndex,
     _frameIndexes = frameIndexes,
     _location = locationSnapshot(baseline),
@@ -445,6 +449,7 @@ function SaveEditorSession:snapshot()
   local stagedLocation = copy(self._location)
   local locationChanged = not sameLocation(stagedLocation, baselineLocation)
   local dirtyMoney, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)
+  local baselineBadges = (self._baseline.playerData --[[@as table<string, unknown>]]).profile.badges
   local pokegearDirty = not equal(self._pokegear, self._baseline.pokegear)
   local partyDirty = not equal(self._monService:capture(), self._baseline.mons)
   local bagDirty = not equal(self._bagService:capture(), self._baseline.bag)
@@ -462,6 +467,7 @@ function SaveEditorSession:snapshot()
     dirtySections = {
       money = dirtyMoney,
       frame = self._frameIndex ~= (self._baseline.playerData --[[@as table<string, unknown>]]).options.textFrame,
+      badges = not equal(self._badges, baselineBadges),
       flags = dirtyFlags,
       pokegear = pokegearDirty,
       party = partyDirty,
@@ -709,7 +715,14 @@ end
 ---@return boolean
 function SaveEditorSession:isDirty()
   local dirty = self:snapshot().dirtySections
-  return dirty.money or dirty.frame or dirty.flags or dirty.pokegear or dirty.party or dirty.bag or dirty.location
+  return dirty.money
+    or dirty.frame
+    or dirty.badges
+    or dirty.flags
+    or dirty.pokegear
+    or dirty.party
+    or dirty.bag
+    or dirty.location
 end
 
 ---@param value unknown
@@ -783,6 +796,7 @@ end
 
 ---@class SaveEditorPresetStagingSession
 ---@field _events FieldEventState
+---@field _badges table<string, boolean>
 ---@field _symbols table<string, unknown>
 ---@field _bagService HgssBagService
 ---@field _monService HgssMonService
@@ -896,6 +910,40 @@ end
 
 ---@param self SaveEditorPresetStagingSession
 ---@param preset SaveEditorPresetData
+---@return table<string, boolean>
+local function stagePresetBadges(self, preset)
+  -- Legacy payloads may still carry the numeric retail mask; a badge
+  -- preset then declares the full desired set from an empty base rather
+  -- than merging into a shape the open-set domain cannot read.
+  local base = PlayerProgression.isBadgeSet(self._badges) and self._badges or {}
+  local badges = copy(base)
+  local names = {}
+  for name in pairs(preset.badges or {}) do
+    names[#names + 1] = name
+  end
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local value = preset.badges[name]
+    if type(name) ~= "string" or name == "" or #name > 128 then
+      error(Errors.new(PRESET_INVALID, "The preset badge is not a valid badge key.", { name = name }))
+    end
+    if type(value) ~= "boolean" then
+      error(Errors.new(PRESET_INVALID, "The preset badge value must be boolean.", { name = name }))
+    end
+    if value then
+      badges[name] = true
+    else
+      badges[name] = nil
+    end
+  end
+  if not PlayerProgression.isBadgeSet(badges) then
+    error(Errors.new(PRESET_INVALID, "The staged badges are invalid.", {}))
+  end
+  return badges
+end
+
+---@param self SaveEditorPresetStagingSession
+---@param preset SaveEditorPresetData
 ---@param options { metLocation: integer, date: table<string, unknown> }
 ---@return HgssMonService
 local function stagePresetParty(self, preset, options)
@@ -956,6 +1004,24 @@ local function stagePresetParty(self, preset, options)
       error(Errors.new(PRESET_INVALID, "The requested held item is invalid.", { path = path .. ".heldItem" }))
     end
     local updated = draft:record()
+    if spec.moves ~= nil then
+      local moves = {}
+      for index, key in ipairs(spec.moves) do
+        local ok, definition = pcall(self._monValidationContext.catalog.move, self._monValidationContext.catalog, key)
+        if not ok then
+          if Errors.is(definition) then
+            error(Errors.new(PRESET_INVALID, "The move is not available in the mon catalog.", {
+              path = path .. ".moves[" .. index .. "]",
+              move = key,
+              reason = Errors.format(definition),
+            }))
+          end
+          error(definition, 0)
+        end
+        moves[index] = { move = key, pp = definition.basePp, ppUps = 0 }
+      end
+      updated.moves = moves
+    end
     if spec.fatefulEncounter ~= nil then
       updated.fatefulEncounter = spec.fatefulEncounter
     end
@@ -1061,6 +1127,7 @@ function SaveEditorSession:applyPreset(preset, options)
   local ok, result = pcall(function()
     local eventCandidate = stagePresetEvents(self, preset)
     local bagCandidate = stagePresetBag(self, preset)
+    local badgeCandidate = stagePresetBadges(self, preset)
     local monCandidate = stagePresetParty(self, preset, options)
 
     local nextLocation = self._location
@@ -1074,6 +1141,7 @@ function SaveEditorSession:applyPreset(preset, options)
 
     local eventsChanged = not equal(eventCandidate:serialize(), self._events:serialize())
     local bagChanged = not equal(bagCandidate:capture(), self._bagService:capture())
+    local badgesChanged = not equal(badgeCandidate, self._badges)
     local partyChanged = not equal(monCandidate:capture(), self._monService:capture())
     local locationChanged = not sameLocation(nextLocation, self._location)
     local facingChanged = nextFacing ~= self._facing
@@ -1086,7 +1154,7 @@ function SaveEditorSession:applyPreset(preset, options)
         actualRevision = self._revision,
       }))
     end
-    local changed = eventsChanged or bagChanged or partyChanged or locationChanged or facingChanged
+    local changed = eventsChanged or bagChanged or badgesChanged or partyChanged or locationChanged or facingChanged
     if not changed then
       return success(false)
     end
@@ -1094,6 +1162,7 @@ function SaveEditorSession:applyPreset(preset, options)
       changed = true,
       events = eventCandidate,
       bag = bagCandidate,
+      badges = badgeCandidate,
       party = monCandidate,
       location = nextLocation,
       facing = nextFacing,
@@ -1115,6 +1184,7 @@ function SaveEditorSession:applyPreset(preset, options)
 
   self._events = result.events
   self._bagService = result.bag
+  self._badges = result.badges
   self._monService = result.party
   self._location = result.location
   self._facing = result.facing
@@ -1245,6 +1315,7 @@ function SaveEditorSession:captureCandidate()
   local profile = playerData.profile --[[@as table<string, unknown>]]
   local playerOptions = playerData.options --[[@as table<string, unknown>]]
   profile.money = self._money
+  profile.badges = copy(self._badges)
   playerOptions.textFrame = self._frameIndex
   local world = candidate.world --[[@as table<string, unknown>]]
   world.flags = flagsFrom(self._events)
@@ -1343,6 +1414,10 @@ local function resetSection(self, section)
     local changed = self._money ~= profile.money or self._frameIndex ~= playerOptions.textFrame
     self._money = profile.money --[[@as integer]]
     self._frameIndex = playerOptions.textFrame --[[@as integer]]
+    if not equal(self._badges, profile.badges) then
+      self._badges = copy(profile.badges) --[[@as table<string, boolean>]]
+      changed = true
+    end
     return changed
   elseif section == "Progress" then
     local _, dirtyFlags = dirtyAgainst(self._baseline, self._money, self._events)

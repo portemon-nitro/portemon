@@ -15,12 +15,14 @@ local MAX_SAFE_INTEGER = 9007199254740991
 ---@field heldItem string?
 ---@field fatefulEncounter boolean?
 ---@field eggLocation integer?
+---@field moves string[]?
 
 ---@class SaveEditorPresetData
 ---@field schema string
 ---@field name string
 ---@field description string
 ---@field flags table<string, boolean>?
+---@field badges table<string, boolean>?
 ---@field variables table<string, integer>?
 ---@field items table<string, integer>?
 ---@field party { lead: SaveEditorPresetMonSpec?, contains: SaveEditorPresetMonSpec[]? }?
@@ -344,6 +346,7 @@ local function validateMon(value, path)
     heldItem = true,
     fatefulEncounter = true,
     eggLocation = true,
+    moves = true,
   }, path)
   nonemptyString(value.species, path .. ".species", 128)
   if value.level ~= nil and not isInteger(value.level, 1, 100) then
@@ -361,6 +364,27 @@ local function validateMon(value, path)
   if value.eggLocation ~= nil and not isInteger(value.eggLocation, 0, 65535) then
     invalid(path .. ".eggLocation must be an integer in 0..65535")
   end
+  if value.moves ~= nil then
+    local list = value.moves
+    if type(list) ~= "table" or #list == 0 or #list > 4 then
+      invalid(path .. ".moves must be an array of 1..4 move keys")
+    end
+    for key in pairs(list) do
+      if not isInteger(key, 1, #list) then
+        invalid(path .. ".moves must be a dense array")
+      end
+    end
+    local seen = {}
+    for index, move in ipairs(list) do
+      if type(move) ~= "string" or move == "" or #move > 128 then
+        invalid(path .. ".moves[" .. index .. "] must be a nonempty string of at most 128 bytes")
+      end
+      if seen[move] == true then
+        invalid(path .. ".moves must not repeat " .. move)
+      end
+      seen[move] = true
+    end
+  end
 end
 
 local function validate(sourceValue)
@@ -369,6 +393,7 @@ local function validate(sourceValue)
     name = true,
     description = true,
     flags = true,
+    badges = true,
     variables = true,
     items = true,
     party = true,
@@ -383,6 +408,14 @@ local function validate(sourceValue)
   if sourceValue.flags ~= nil then
     hasSection = true
     validateMap(sourceValue.flags, "preset.flags", function(value, path)
+      if type(value) ~= "boolean" then
+        invalid(path .. " must be a boolean")
+      end
+    end)
+  end
+  if sourceValue.badges ~= nil then
+    hasSection = true
+    validateMap(sourceValue.badges, "preset.badges", function(value, path)
       if type(value) ~= "boolean" then
         invalid(path .. " must be a boolean")
       end

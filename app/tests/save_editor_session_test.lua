@@ -350,6 +350,9 @@ function T.tests.supported_legacy_party_normalizes_before_session_entry()
   local GameSave = require("libs.hgss.src.save.GameSave")
   local MonsSave = require("libs.mons.src.MonsSave")
   legacy.schema = GameSave.LEGACY_V5_SCHEMA
+  -- Era-accurate v5 profiles carry the numeric retail badge mask; the v10
+  -- migration step converts it to the open badge set.
+  legacy.playerData.profile.badges = 5
   legacy.fashionCase = nil
   legacy.mailbox = nil
   legacy.photoAlbum = nil

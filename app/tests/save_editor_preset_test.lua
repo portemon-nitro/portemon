@@ -308,6 +308,174 @@ function T.tests.late_domain_failure_preserves_all_staged_state_and_revisions()
   Assert.deepEqual(fixture.store:load(fixture.saveId), originalSave, "rejection does not touch the save")
 end
 
+function T.tests.badges_and_mon_moves_parse_as_bounded_preset_data()
+  local preset, err = parse([[
+return {
+  schema = "portemon-save-preset-v1",
+  name = "Badges and moves",
+  description = "Award a badge and teach a moveset.",
+  badges = { zephyr = true, hive = false },
+  party = {
+    contains = { { species = "CHIKORITA", level = 5, moves = { "RAZOR_LEAF", "GROWL" } } },
+  },
+}
+]])
+
+  Assert.isNil(err, "badges and mon moves parse without an error")
+  Assert.notNil(preset, "the badge and move preset returns data")
+  Assert.isTrue(preset.badges.zephyr, "an awarded badge parses as true")
+  Assert.isFalse(preset.badges.hive, "a removed badge parses as false")
+  Assert.deepEqual(preset.party.contains[1].moves, { "RAZOR_LEAF", "GROWL" }, "the requested moveset preserves order")
+
+  for _, source in ipairs({
+    [[return {
+      schema = "portemon-save-preset-v1",
+      name = "Bad",
+      description = "Badge values stay boolean.",
+      badges = { zephyr = 1 },
+    }]],
+    [[return {
+      schema = "portemon-save-preset-v1",
+      name = "Bad",
+      description = "Badge keys stay nonempty.",
+      badges = { [""] = true },
+    }]],
+    [[return {
+      schema = "portemon-save-preset-v1",
+      name = "Bad",
+      description = "Moves stay nonempty.",
+      party = { contains = { { species = "CHIKORITA", moves = {} } } },
+    }]],
+    [[return {
+      schema = "portemon-save-preset-v1",
+      name = "Bad",
+      description = "Moves fit the four-slot limit.",
+      party = { contains = { {
+        species = "CHIKORITA",
+        moves = { "TACKLE", "GROWL", "RAZOR_LEAF", "SYNTHESIS", "CUT" },
+      } } },
+    }]],
+    [[return {
+      schema = "portemon-save-preset-v1",
+      name = "Bad",
+      description = "Moves stay unique.",
+      party = { contains = { { species = "CHIKORITA", moves = { "TACKLE", "TACKLE" } } } },
+    }]],
+    [[return {
+      schema = "portemon-save-preset-v1",
+      name = "Bad",
+      description = "Moves stay move keys.",
+      party = { contains = { { species = "CHIKORITA", moves = { 42 } } } },
+    }]],
+  }) do
+    local invalid, invalidError = parse(source)
+    Assert.isNil(invalid, "malformed badge or move data is rejected")
+    Assert.notNil(invalidError, "badge and move rejection includes a diagnostic")
+  end
+end
+
+function T.tests.preset_badges_award_and_remove_idempotently_and_persist()
+  local fixture, session = openSession()
+  local before = session:snapshot().revision
+  local beforeBadges = session:captureCandidate().playerData.profile.badges
+  Assert.isTrue(beforeBadges.zephyr, "the normalized fixture owns the zephyr badge")
+  Assert.isTrue(beforeBadges.plain, "the normalized fixture owns the plain badge")
+  local preset = assert(parse([[
+    return {
+      schema = "portemon-save-preset-v1",
+      name = "Badges",
+      description = "Trade zephyr for hive.",
+      badges = { zephyr = false, hive = true },
+    }
+  ]]))
+
+  local result = apply(session, preset, before)
+
+  Assert.isTrue(result.ok, "badge changes stage successfully")
+  Assert.isTrue(result.changed, "the badge trade changes state")
+  Assert.isTrue(session:snapshot().dirtySections.badges, "badges mark their own dirty section")
+  Assert.deepEqual(
+    session:captureCandidate().playerData.profile.badges,
+    { plain = true, hive = true },
+    "false removes the badge while true awards it"
+  )
+
+  local revision = session:snapshot().revision
+  local repeated = apply(session, preset, revision)
+
+  Assert.isTrue(repeated.ok, "a satisfied badge preset applies again")
+  Assert.isFalse(repeated.changed, "repeat badge application is a no-op")
+  Assert.equal(session:snapshot().revision, revision, "badge no-op does not bump revision")
+
+  Assert.isTrue(session:save().ok, "the staged badges persist through Save")
+  Assert.deepEqual(
+    fixture.store:load(fixture.saveId).playerData.profile.badges,
+    { plain = true, hive = true },
+    "the badge trade survives the save round trip"
+  )
+end
+
+function T.tests.preset_mon_moves_replace_the_full_moveset_with_base_pp()
+  local fixture, session = openSession()
+  local before = session:snapshot().revision
+  local preset = assert(parse([[
+    return {
+      schema = "portemon-save-preset-v1",
+      name = "Moves",
+      description = "Teach an exact moveset.",
+      party = {
+        contains = { { species = "CHIKORITA", level = 5, moves = { "RAZOR_LEAF", "GROWL" } } },
+      },
+    }
+  ]]))
+
+  local result = apply(session, preset, before)
+
+  Assert.isTrue(result.ok, "move changes stage successfully")
+  Assert.isTrue(result.changed, "the moveset replacement changes state")
+  local members = session:partySnapshot().members
+  Assert.equal(#members, 1, "the preset appends one member")
+  local moves = members[1].mon.moves
+  Assert.equal(#moves, 2, "the mon knows exactly the requested moves")
+  for index, key in ipairs({ "RAZOR_LEAF", "GROWL" }) do
+    local definition = fixture.context.monCatalog:move(key)
+    Assert.equal(moves[index].move, key, "move slot " .. index .. " carries the requested move")
+    Assert.equal(moves[index].pp, definition.basePp, "preset moves stage at base PP")
+    Assert.equal(moves[index].ppUps, 0, "preset moves stage without PP-ups")
+  end
+
+  local revision = session:snapshot().revision
+  local repeated = apply(session, preset, revision)
+
+  Assert.isTrue(repeated.ok, "a satisfied move preset applies again")
+  Assert.isFalse(repeated.changed, "repeat move application is a no-op")
+  Assert.equal(session:snapshot().revision, revision, "move no-op does not bump revision")
+end
+
+function T.tests.unknown_preset_move_rejects_without_touching_staged_state()
+  local fixture, session = openSession()
+  Assert.isTrue(session:setMoney(3100).ok, "an unrelated edit is staged first")
+  local beforeCandidate = session:captureCandidate()
+  local beforeSnapshot = session:snapshot()
+  local originalSave = fixture.store:load(fixture.saveId)
+  local preset = {
+    schema = "portemon-save-preset-v1",
+    name = "Rejected moves",
+    description = "An unknown move follows a valid badge update.",
+    badges = { hive = true },
+    party = { contains = { { species = "CHIKORITA", moves = { "NOT_A_REAL_MOVE" } } } },
+  }
+
+  local result = apply(session, preset, beforeSnapshot.revision)
+
+  Assert.isFalse(result.ok, "unknown preset moves reject the whole preset")
+  Assert.notNil(result.error, "move rejection is structured")
+  Assert.deepEqual(session:captureCandidate(), beforeCandidate, "move rejection preserves staged saves")
+  Assert.deepEqual(session:snapshot().dirtySections, beforeSnapshot.dirtySections, "move rejection keeps dirty state")
+  Assert.equal(session:snapshot().revision, beforeSnapshot.revision, "move rejection does not bump revision")
+  Assert.deepEqual(fixture.store:load(fixture.saveId), originalSave, "move rejection does not touch the save")
+end
+
 function T.tests.programming_failure_during_catalog_lookup_is_not_reclassified()
   local _, session = openSession()
   local before = session:captureCandidate()

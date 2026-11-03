@@ -979,6 +979,7 @@ function State:_hasUnsavedChanges(session)
   local dirtySections = session.dirtySections
   local sessionDirty = dirtySections.money
     or dirtySections.frame
+    or dirtySections.badges
     or dirtySections.flags
     or dirtySections.pokegear
     or dirtySections.party
@@ -1226,7 +1227,7 @@ function State:_sectionDirty(session)
   local dirty = session.dirtySections
   local section = self.controller.section
   if section == "Player" then
-    return dirty.money == true or dirty.frame == true
+    return dirty.money == true or dirty.frame == true or dirty.badges == true
   elseif section == "Progress" then
     return dirty.flags == true
   elseif section == "Location" then

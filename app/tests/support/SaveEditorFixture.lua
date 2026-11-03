@@ -55,7 +55,7 @@ local function record(saveId)
         gender = 0,
         trainerId = 1234,
         money = 3000,
-        badges = 5,
+        badges = { zephyr = true, plain = true },
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
