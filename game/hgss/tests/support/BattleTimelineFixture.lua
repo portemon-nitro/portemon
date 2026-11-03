@@ -34,6 +34,7 @@ local function completeView(view)
   if type(view) ~= "table" then
     return
   end
+  view.format = view.format or "single"
   view.playerTrainer = view.playerTrainer or { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" }
   view.playerTrainer.classKey = view.playerTrainer.classKey or "PKMN_TRAINER_ETHAN"
   view.playerTrainer.name = view.playerTrainer.name or "ETHAN"
@@ -140,17 +141,32 @@ local function syntheticEncounterSource()
   end
   local source = {
     mainBg = stagedBuffer(11),
-    mainObj = stagedBuffer(409),
+    mainObj = {},
+    mainObjPostFill = {},
     subBg = stagedBuffer(97),
     subObj = stagedBuffer(501),
     fill = 24 + 12 * 32 + 3 * 1024,
   }
+  for index = 1, 224 do
+    source.mainObj[index] = (409 + math.floor((index - 1) / 16) * 173 + (index - 1) * 7) % 32768
+  end
   local shared = 7 + 13 * 32 + 29 * 1024
   source.mainObj[41] = shared
   source.mainObj[89] = shared
   source.mainBg[1] = 0
   source.subBg[1] = 0
   source.subObj[1] = 31 + 31 * 32 + 31 * 1024
+  source.subBgOpaque = source.subBg
+  source.subObjOpaque = source.subObj
+  local initialSubBg = {}
+  local initialSubObj = {}
+  for index = 1, 255 do
+    initialSubBg[index] = 0
+    initialSubObj[index] = 31 + 31 * 32 + 31 * 1024
+  end
+  initialSubBg[256] = source.subBg[256]
+  initialSubObj[256] = source.subObj[256]
+  source.initialDisplayed = { subBg = initialSubBg, subObj = initialSubObj }
   return source
 end
 
@@ -181,6 +197,15 @@ function BattleTimelineFixture.new(opts)
   function timeline:intro(view, wild)
     completeView(view)
     installTrainerPictures(self, view)
+    local restoreType = view.encounterRestoreType
+    if restoreType == nil then
+      if view.format == "double" or view.format == "wild-double" then
+        restoreType = "ordinary-doubles"
+      else
+        restoreType = wild and "wild" or "trainer"
+      end
+    end
+    self._encounterSource.restoreType = restoreType
     return intro(self, view, wild)
   end
   local present = timeline.present

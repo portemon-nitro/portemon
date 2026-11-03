@@ -89,11 +89,26 @@ end
 local function stagedSource()
   local source = {
     mainBg = stagedBuffer(11),
-    mainObj = stagedBuffer(409),
+    mainObj = {},
+    mainObjPostFill = {},
     subBg = stagedBuffer(97),
     subObj = stagedBuffer(501),
     fill = FILL,
   }
+  for index = 1, 224 do
+    source.mainObj[index] = (409 + math.floor((index - 1) / 16) * 173 + (index - 1) * 7) % 32768
+  end
+  source.subBgOpaque = source.subBg
+  source.subObjOpaque = source.subObj
+  local initialSubBg = {}
+  local initialSubObj = {}
+  for index = 1, 255 do
+    initialSubBg[index] = SUB_BG_CLEARED
+    initialSubObj[index] = SUB_OBJ_CLEARED
+  end
+  initialSubBg[256] = source.subBg[256]
+  initialSubObj[256] = source.subObj[256]
+  source.initialDisplayed = { subBg = initialSubBg, subObj = initialSubObj }
   local shared = 7 + 13 * 32 + 29 * 1024
   source.mainObj[41] = shared
   source.mainObj[89] = shared
@@ -181,8 +196,8 @@ local function encounterPalette(opening)
   assert(type(encounter) == "table", "the encounter palette arrives as a record")
   for _, plane in ipairs({ "mainBg", "mainObj", "subBg", "subObj" }) do
     assert(
-      type(encounter[plane]) == "table" and #encounter[plane] == 256,
-      "the encounter palette carries 256 source colors for " .. plane
+      type(encounter[plane]) == "table" and #encounter[plane] == (plane == "mainObj" and 224 or 256),
+      "the encounter palette carries its native source colors for " .. plane
     )
   end
   return encounter
@@ -273,15 +288,338 @@ function T.encounter_start_fills_main_buffers_from_the_background_fill_color()
   end
 end
 
+function T.encounter_fade_keeps_the_filled_source_at_frame_ten()
+  local source = stagedSource()
+  source.mainBg[1] = 0
+  source.mainObj[1] = 31 + 31 * 32 + 31 * 1024
+  local palette = BattleEncounterPalette.new({
+    battleType = "wild",
+    source = source,
+  })
+  palette:tick(9)
+  local frame9 = palette:snapshot()
+  palette:tick(10)
+  local frame10 = palette:snapshot()
+  palette:tick(11)
+  local frame11 = palette:snapshot()
+  palette:tick(18)
+  local frame18 = palette:snapshot()
+
+  for _, plane in ipairs({ "mainBg", "mainObj" }) do
+    Assert.equal(frame10[plane][1], frame9[plane][1], plane .. " keeps the setup fill at fade coefficient zero")
+    Assert.equal(frame18[plane][1], source.fill, plane .. " reaches the native fade target at frame 18")
+  end
+  Assert.equal(
+    frame11.mainBg[113],
+    blendWord(source.mainBg[113], source.fill, 2),
+    "frame 11 blends the post-fill opaque background from coefficient zero"
+  )
+  Assert.equal(
+    frame11.mainObj[17],
+    source.fill,
+    "frame 11 keeps the post-fill opaque object at the scheduled fade origin"
+  )
+  Assert.equal(frame10.mainBg[161], frame9.mainBg[161], "unselected background bank 10 stays unchanged")
+end
+
+function T.encounter_object_palette_uses_native_buffer_size_and_each_color()
+  local source = stagedSource()
+  local objectColors = {}
+  for index = 1, 224 do
+    objectColors[index] = (index * 911) % 32768
+  end
+  source.mainObj = objectColors
+  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
+  palette:tick(11)
+  local faded = palette:snapshot().mainObj
+  Assert.equal(#faded, 224, "the native object buffer has fourteen banks")
+  Assert.equal(faded[34], source.fill, "object entry 33 starts from its native setup fill")
+  Assert.equal(faded[38], source.fill, "object entry 37 starts from its native setup fill")
+  Assert.equal(
+    faded[224],
+    blendWord(objectColors[224], source.fill, 2),
+    "the unfilled final object entry blends its own color"
+  )
+  palette:tick(30)
+  local restored = palette:snapshot().mainObj
+  Assert.equal(
+    restored[34],
+    blendWord(objectColors[34], source.fill, 12),
+    "restored object entry 33 blends its own color"
+  )
+  Assert.equal(
+    restored[38],
+    blendWord(objectColors[38], source.fill, 12),
+    "restored object entry 37 blends its own color"
+  )
+  Assert.isFalse(
+    pcall(function()
+      palette:colorAt("mainObj", 224)
+    end),
+    "object index 224 is outside the native buffer"
+  )
+  local outOfRangeObjectColors = {}
+  for index = 1, 224 do
+    outOfRangeObjectColors[index] = objectColors[index]
+  end
+  outOfRangeObjectColors[225] = objectColors[224]
+  local outOfRangeSource = {
+    mainBg = source.mainBg,
+    mainObj = outOfRangeObjectColors,
+    mainObjPostFill = {},
+    subBgOpaque = source.subBgOpaque,
+    subObjOpaque = source.subObjOpaque,
+    initialDisplayed = source.initialDisplayed,
+    fill = source.fill,
+  }
+  Assert.isFalse(
+    pcall(function()
+      BattleEncounterPalette.new({ battleType = "wild", source = outOfRangeSource })
+    end),
+    "an object source slot beyond the native 224-slot range is rejected"
+  )
+
+  for battleType, restoreCount in pairs({
+    wild = 64,
+    trainer = 80,
+    ["ordinary-doubles"] = 112,
+    ["special-doubles"] = 80,
+  }) do
+    local restored = BattleEncounterPalette.new({ battleType = battleType, source = source })
+    restored:tick(30)
+    Assert.equal(
+      restored:snapshot().mainObj[restoreCount],
+      blendWord(objectColors[restoreCount], source.fill, 12),
+      battleType .. " restores its native object span"
+    )
+  end
+end
+
+function T.main_object_palette_preserves_undefined_source_slots()
+  local source = stagedSource()
+  local sparseObject = {
+    [1] = source.mainObj[1],
+    [33] = source.mainObj[33],
+    [224] = source.mainObj[224],
+  }
+  source.mainObj = sparseObject
+  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
+
+  local initial = palette:snapshot().mainObj
+  Assert.equal(initial[1], source.fill, "defined MAIN_OBJ slot 0 starts under the setup fill")
+  Assert.equal(initial[33], source.fill, "defined MAIN_OBJ slot 32 starts under the setup fill")
+  Assert.equal(initial[224], sparseObject[224], "defined MAIN_OBJ slot 223 is outside the setup fill")
+  for _, index in ipairs({ 16, 63, 128 }) do
+    Assert.isTrue(initial[index + 1] == nil, "undefined MAIN_OBJ slot " .. index .. " remains absent")
+  end
+
+  palette:tick(11)
+  local opening = palette:snapshot().mainObj
+  Assert.equal(opening[224], blendWord(sparseObject[224], source.fill, 2), "slot 223 fades from its own source")
+  palette:tick(30)
+  local restoring = palette:snapshot().mainObj
+  Assert.equal(
+    restoring[33],
+    blendWord(sparseObject[33], source.fill, 12),
+    "wild restore blends defined slot 32 from its saved source"
+  )
+  Assert.equal(
+    restoring[224],
+    blendWord(sparseObject[224], source.fill, 12),
+    "slot 223 outside the wild restore span keeps its own source"
+  )
+  for _, index in ipairs({ 16, 63, 128 }) do
+    Assert.isTrue(restoring[index + 1] == nil, "undefined MAIN_OBJ slot " .. index .. " remains absent after restore")
+  end
+
+  local ok, err = pcall(function()
+    palette:colorAt("mainObj", 16)
+  end)
+  Assert.isFalse(ok, "sampling an undefined MAIN_OBJ slot fails")
+  Assert.isTrue(
+    string.find(tostring(err), "mainObj", 1, true) ~= nil and string.find(tostring(err), "16", 1, true) ~= nil,
+    "undefined MAIN_OBJ failure identifies its plane and zero-based index"
+  )
+
+  palette:reset()
+  local reset = palette:snapshot().mainObj
+  Assert.equal(reset[1], source.fill, "reset restores the defined MAIN_OBJ fill state")
+  Assert.equal(reset[224], sparseObject[224], "reset restores the defined unfilled MAIN_OBJ slot")
+  Assert.isTrue(reset[17] == nil, "reset preserves undefined MAIN_OBJ slots")
+end
+
+function T.main_object_post_fill_palette_survives_opening_and_trainer_restore()
+  local source = stagedSource()
+  local trainerColor = 19 + 23 * 32 + 29 * 1024
+  source.mainObj[81] = nil
+  source.mainObjPostFill = { [81] = trainerColor }
+  local palette = BattleEncounterPalette.new({ battleType = "trainer", source = source })
+
+  palette:tick(10)
+  Assert.equal(
+    palette:snapshot().mainObj[81],
+    trainerColor,
+    "post-fill trainer palette overrides the setup fill at frame 10"
+  )
+  palette:tick(36)
+  Assert.equal(
+    palette:snapshot().mainObj[81],
+    trainerColor,
+    "post-fill trainer palette at physical slot 80 survives the 80-word trainer backup restore"
+  )
+
+  local missingSource = stagedSource()
+  missingSource.mainObjPostFill = nil
+  Assert.isFalse(
+    pcall(function()
+      BattleEncounterPalette.new({ battleType = "trainer", source = missingSource })
+    end),
+    "the source must provide an explicit post-fill object palette table"
+  )
+
+  local collidingSource = stagedSource()
+  collidingSource.mainObjPostFill = { [1] = trainerColor }
+  Assert.isFalse(
+    pcall(function()
+      BattleEncounterPalette.new({ battleType = "trainer", source = collidingSource })
+    end),
+    "a post-fill palette slot cannot overlap a pre-fill source slot"
+  )
+
+  local restoredSource = stagedSource()
+  restoredSource.mainObj[80] = nil
+  restoredSource.mainObjPostFill = { [80] = trainerColor }
+  Assert.isFalse(
+    pcall(function()
+      BattleEncounterPalette.new({ battleType = "trainer", source = restoredSource })
+    end),
+    "a post-fill palette slot cannot lie inside the native trainer restore span"
+  )
+
+  local outOfRangeSource = stagedSource()
+  outOfRangeSource.mainObjPostFill = { [225] = trainerColor }
+  Assert.isFalse(
+    pcall(function()
+      BattleEncounterPalette.new({ battleType = "trainer", source = outOfRangeSource })
+    end),
+    "a post-fill palette slot cannot exceed the native 224-slot range"
+  )
+end
+
+function T.lower_palette_keeps_opaque_and_displayed_sources_separate()
+  local source = stagedSource()
+  local opaqueBg = stagedBuffer(801)
+  local opaqueObj = stagedBuffer(1201)
+  local displayedBg = stagedBuffer(1801)
+  local displayedObj = stagedBuffer(2201)
+  source.subBgOpaque = opaqueBg
+  source.subObjOpaque = opaqueObj
+  source.initialDisplayed = {
+    subBg = displayedBg,
+    subObj = displayedObj,
+  }
+  opaqueBg[256] = 9 + 4 * 32 + 17 * 1024
+  opaqueObj[256] = 5 + 19 * 32 + 11 * 1024
+  displayedBg[256] = 1 + 2 * 32 + 3 * 1024
+  displayedObj[256] = 7 + 8 * 32 + 9 * 1024
+  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
+
+  for _, frame in ipairs({ 1, 10, 25, 27 }) do
+    palette:tick(frame)
+    local snapshot = palette:snapshot()
+    if frame >= 10 then
+      Assert.equal(
+        snapshot.subBg[1],
+        grayWord(math.min(16, frame - 9)),
+        "lower background follows the native gray ramp at frame " .. frame
+      )
+    else
+      Assert.equal(snapshot.subBg[1], displayedBg[1], "initial lower background uses its displayed source")
+    end
+    Assert.equal(
+      snapshot.subBg[256],
+      frame < 10 and displayedBg[256] or snapshot.subBg[1],
+      "lower background index 255 follows its displayed stage without an end-exclusive fill"
+    )
+    Assert.equal(snapshot.subObj[256], displayedObj[256], "lower object keeps its displayed source before restore")
+  end
+
+  palette:tick(28)
+  Assert.equal(palette:snapshot().subBg[256], source.fill, "frame 28 fades opaque lower background from target")
+  Assert.equal(palette:snapshot().subObj[256], source.fill, "frame 28 fades opaque lower objects from target")
+  palette:tick(30)
+  Assert.equal(
+    palette:snapshot().subBg[256],
+    blendWord(opaqueBg[256], source.fill, 12),
+    "frame 30 reveals lower background from its own opaque source"
+  )
+  Assert.equal(
+    palette:snapshot().subObj[256],
+    blendWord(opaqueObj[256], source.fill, 12),
+    "frame 30 reveals lower objects from their own opaque source"
+  )
+  Assert.equal(palette:snapshot().subBg[256], palette:colorAt("subBg", 255), "index 255 is sampled without overflow")
+end
+
+function T.sub_object_palette_preserves_undefined_source_slots()
+  local source = stagedSource()
+  local sparseOpaque = {}
+  local sparseDisplayed = {}
+  for _, index in ipairs({ 0, 17, 255 }) do
+    sparseOpaque[index + 1] = source.subObjOpaque[index + 1]
+    sparseDisplayed[index + 1] = source.initialDisplayed.subObj[index + 1]
+  end
+  source.subObjOpaque = sparseOpaque
+  source.initialDisplayed.subObj = sparseDisplayed
+
+  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
+  for _, frame in ipairs({ 0, 1, 28, 30 }) do
+    if frame > 0 then
+      palette:tick(frame)
+    end
+    local snapshot = palette:snapshot()
+    Assert.equal(#snapshot.mainBg, 256, "main background remains a dense native palette")
+    Assert.equal(#snapshot.mainObj, 224, "main object remains a dense native palette")
+    Assert.equal(#snapshot.subBg, 256, "lower background remains a dense native palette")
+    for _, index in ipairs({ 0, 17, 255 }) do
+      Assert.isTrue(snapshot.subObj[index + 1] ~= nil, "defined lower object slot " .. index .. " remains present")
+      local expected = sparseDisplayed[index + 1]
+      if frame >= 28 then
+        expected = blendWord(sparseOpaque[index + 1], source.fill, 16 - 2 * (frame - 28))
+      end
+      Assert.equal(snapshot.subObj[index + 1], expected, "defined lower object slot " .. index .. " follows its source")
+    end
+    for _, index in ipairs({ 1, 16, 254 }) do
+      Assert.isTrue(snapshot.subObj[index + 1] == nil, "undefined lower object slot " .. index .. " remains absent")
+    end
+  end
+
+  local ok, err = pcall(function()
+    palette:colorAt("subObj", 16)
+  end)
+  Assert.isFalse(ok, "sampling an undefined lower object slot fails")
+  Assert.isTrue(
+    string.find(tostring(err), "subObj", 1, true) ~= nil and string.find(tostring(err), "16", 1, true) ~= nil,
+    "undefined slot failure identifies its plane and zero-based index"
+  )
+end
+
 function T.encounter_start_preserves_unfilled_background_and_transparent_slot()
   local source = stagedSource()
   local _, log = runOpening(true, 2)
   local palette = encounterPalette(log.opening[1])
-  for index = 112, 191 do
+  for index = 112, 159 do
     Assert.equal(
       palette.mainBg[index + 1],
       source.mainBg[index + 1],
       "main background color " .. index .. " keeps its staged source color"
+    )
+  end
+  for index = 160, 191 do
+    Assert.equal(
+      palette.mainBg[index + 1],
+      0,
+      "main background color " .. index .. " keeps its displayed transparent clear"
     )
   end
   Assert.equal(palette.mainObj[224], source.mainObj[224], "main object index 223 stays untouched by the fill")
@@ -356,8 +694,10 @@ function T.encounter_restore_returns_ordinary_doubles_object_range()
     source = {
       mainBg = source.mainBg,
       mainObj = source.mainObj,
-      subBg = source.subBg,
-      subObj = source.subObj,
+      mainObjPostFill = source.mainObjPostFill,
+      subBgOpaque = source.subBgOpaque,
+      subObjOpaque = source.subObjOpaque,
+      initialDisplayed = source.initialDisplayed,
       fill = source.fill,
     },
   })
@@ -418,7 +758,7 @@ function T.encounter_main_fade_uses_integer_five_bit_blends()
   local _, log = runOpening(true, 12)
   local palette = encounterPalette(log.opening[11])
   local target = source.fill
-  for _, index in ipairs({ 0, 40, 88, 200 }) do
+  for _, index in ipairs({ 112, 120, 144, 152 }) do
     local staged = source.mainBg[index + 1]
     Assert.equal(
       palette.mainBg[index + 1],
@@ -480,12 +820,14 @@ end
 
 function T.encounter_object_pixels_resolve_their_source_bank_per_pixel()
   local source = stagedSource()
-  Assert.equal(source.mainObj[41], source.mainObj[89], "the fixture stages equal RGB in banks 2 and 5")
-  local _, log = runOpening(true, 12)
-  local palette = encounterPalette(log.opening[11])
+  source.mainObj[41] = 101
+  source.mainObj[42] = 1001
+  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
+  palette:tick(30)
+  local displayed = palette:snapshot()
   Assert.isTrue(
-    palette.mainObj[41] ~= palette.mainObj[89],
-    "a bank-2-only fade separates equal staged colors by source index, never by color"
+    displayed.mainObj[41] ~= displayed.mainObj[42],
+    "two restored object entries keep their own RGB555 source words within one bank"
   )
 end
 
@@ -502,8 +844,8 @@ function T.encounter_lower_ramp_keeps_object_pixels_on_their_own_buffer()
       )
       Assert.equal(
         palette.subObj[index + 1],
-        source.subObj[index + 1],
-        "lower object color " .. index .. " keeps its own buffer on frame " .. frame
+        source.initialDisplayed.subObj[index + 1],
+        "lower object color " .. index .. " keeps its displayed setup value on frame " .. frame
       )
     end
   end
@@ -519,8 +861,10 @@ function T.encounter_lower_reveal_matches_engine_rate_and_fade_color()
     source = {
       mainBg = source.mainBg,
       mainObj = source.mainObj,
-      subBg = source.subBg,
-      subObj = source.subObj,
+      mainObjPostFill = source.mainObjPostFill,
+      subBgOpaque = source.subBgOpaque,
+      subObjOpaque = source.subObjOpaque,
+      initialDisplayed = source.initialDisplayed,
       fill = 0,
     },
   })
@@ -564,8 +908,10 @@ function T.encounter_late_fade_darkens_only_background_banks_ten_and_eleven()
     source = {
       mainBg = source.mainBg,
       mainObj = source.mainObj,
-      subBg = source.subBg,
-      subObj = source.subObj,
+      mainObjPostFill = source.mainObjPostFill,
+      subBgOpaque = source.subBgOpaque,
+      subObjOpaque = source.subObjOpaque,
+      initialDisplayed = source.initialDisplayed,
       fill = source.fill,
     },
   })
@@ -573,22 +919,10 @@ function T.encounter_late_fade_darkens_only_background_banks_ten_and_eleven()
   palette:beginLateFade()
   local armed = palette:snapshot()
   for _, index in ipairs({ 160, 175, 191 }) do
-    Assert.equal(
-      armed.mainBg[index + 1],
-      0,
-      "frame 50 late background color " .. index .. " starts fully black"
-    )
+    Assert.equal(armed.mainBg[index + 1], 0, "frame 50 late background color " .. index .. " starts fully black")
   end
-  Assert.equal(
-    armed.mainBg[121],
-    source.mainBg[121],
-    "frame 50 bank 7 stays on its restored base under the late fade"
-  )
-  Assert.equal(
-    armed.mainBg[193],
-    source.fill,
-    "frame 50 bank 12 keeps its fill under the late fade"
-  )
+  Assert.equal(armed.mainBg[121], source.mainBg[121], "frame 50 bank 7 stays on its restored base under the late fade")
+  Assert.equal(armed.mainBg[193], source.fill, "frame 50 bank 12 keeps its fill under the late fade")
   Assert.equal(
     armed.mainObj[41],
     source.mainObj[41],
@@ -614,11 +948,7 @@ function T.encounter_late_fade_darkens_only_background_banks_ten_and_eleven()
   end
   palette:reset()
   palette:tick(60)
-  Assert.equal(
-    palette:snapshot().mainBg[161],
-    source.mainBg[161],
-    "reset clears the armed late fade"
-  )
+  Assert.equal(palette:snapshot().mainBg[161], 0, "reset clears the armed late fade")
 end
 
 function T.encounter_lower_reveal_fades_planes_without_a_uniform_wash()

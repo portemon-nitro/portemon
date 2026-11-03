@@ -105,6 +105,7 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _kind string battle kind wording for the opening narration
 ---@field _sceneKey string staged battle scene identity behind the launch
 ---@field _encounterSourceKey string? staged scene identity behind the installed encounter source, nil while unstaged
+---@field _encounterPaletteRestoreType string? accepted native palette restore class for this launch
 ---@field _queue table<integer, table<string, unknown>> queued raw input batches
 ---@field _notice string? transient refusal banner
 ---@field _showTimelineMessage boolean whether a source-selected event message temporarily replaces the command prompt
@@ -1078,6 +1079,7 @@ function BattleScreenState.new(opts)
   local self = setmetatable({
     _sceneKey = sceneKey,
     _encounterSourceKey = nil,
+    _encounterPaletteRestoreType = nil,
     _fadedIntroImage = nil,
     _fadedIntroFrame = nil,
     _fadedIntroUnavailable = false,
@@ -3780,6 +3782,17 @@ function BattleScreenState:_portEnter(plan)
   if type(plan) == "table" and type(plan.kind) == "string" then
     self._kind = plan.kind --[[@as string]]
   end
+  if type(plan) == "table" and plan.encounterPaletteRestoreType ~= nil then
+    local restoreType = plan.encounterPaletteRestoreType
+    assert(
+      restoreType == "wild"
+        or restoreType == "trainer"
+        or restoreType == "ordinary-doubles"
+        or restoreType == "special-doubles",
+      "battle entry carries a supported native palette restore class"
+    )
+    self._encounterPaletteRestoreType = restoreType
+  end
   return self._assets:state() == "ready"
 end
 
@@ -6206,6 +6219,12 @@ end
 -- as before. Runs on fixed updates only, never from draws.
 function BattleScreenState:_stageEncounterSource()
   if self._encounterSourceKey ~= nil then
+    return
+  end
+  -- The covered envelope can land and tick the scene before the battle
+  -- runtime's first update admits its native restore class. Wait for that
+  -- plan before starting the palette timeline.
+  if self._encounterPaletteRestoreType == nil then
     return
   end
   local layer = self._assets:sceneLayer()

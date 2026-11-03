@@ -455,7 +455,7 @@ local function driveToEnter(envelope, port, launchId, versionId)
   while ticks < DRIVE_BUDGET do
     envelope:updateFixed(TICK)
     ticks = ticks + 1
-    if port.enter({ launchId = launchId, kind = "wild" }) then
+    if port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" }) then
       return
     end
   end
@@ -792,7 +792,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
         envelope:updateFixed(TICK)
       end
       Assert.isFalse(
-        port.enter({ launchId = launchId, kind = "wild" }),
+        port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
         versionId .. " stays unacknowledged while pending"
       )
       Assert.isFalse(port.ready(), versionId .. " never reads interactive while pending")
@@ -990,7 +990,7 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
       host = host,
     })
     Assert.isFalse(
-      port.enter({ launchId = launchId, kind = "wild" }),
+      port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
       versionId .. " leaves its unstaged launch unacknowledged"
     )
     local screen = assert(envelope:liveScreen(), versionId .. " keeps its screen for inspection")
@@ -998,7 +998,7 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
       screen:updateFixed(TICK)
     end
     Assert.isFalse(
-      port.enter({ launchId = launchId, kind = "wild" }),
+      port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
       versionId .. " never acknowledges its unstaged launch"
     )
     local status = screen:status()

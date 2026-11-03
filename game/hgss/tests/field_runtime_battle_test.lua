@@ -298,7 +298,10 @@ function T.startBattle_rejects_a_second_launch_and_failed_battles_fault()
   }), "only one battle runs at a time")
 
   local failedRuntime = fakeRuntime()
-  local broken = failedRuntime:startBattle({ request = wildRequest("launch-broken"), scenario = {} })
+  local broken = failedRuntime:startBattle({
+    request = wildRequest("launch-broken"),
+    scenario = { format = "wild-single" },
+  })
   Assert.notNil(broken)
   local ok, failure
   for _ = 1, 10 do
@@ -2266,7 +2269,10 @@ function T.launch_suppresses_early_and_failed_battles_fault()
   runtime:updateBattle()
   Assert.isTrue(battleFlags[#battleFlags], "the leaving launch suppresses input before the battle exists")
   local failedRuntime = fakeRuntime()
-  local broken = failedRuntime:startBattle({ request = wildRequest("launch-interval-broken"), scenario = {} })
+  local broken = failedRuntime:startBattle({
+    request = wildRequest("launch-interval-broken"),
+    scenario = { format = "wild-single" },
+  })
   Assert.notNil(broken, "the broken launch still owns its lifetime")
   local ok = true
   for _ = 1, 10 do

@@ -587,9 +587,21 @@ function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_e
     local blue = (bank * 3) % 32
     words[#words + 1] = red + green * 32 + blue * 1024
   end
+  local mainObjectWords = {}
+  for index = 1, 224 do
+    mainObjectWords[index] = words[index]
+  end
   local palette = BattleEncounterPalette.new({
     battleType = "wild",
-    source = { mainBg = words, mainObj = words, subBg = words, subObj = words, fill = 0 },
+    source = {
+      mainBg = words,
+      mainObj = mainObjectWords,
+      mainObjPostFill = {},
+      subBgOpaque = words,
+      subObjOpaque = words,
+      initialDisplayed = { subBg = words, subObj = words },
+      fill = 0,
+    },
   })
   palette:tick(20)
   local snapshot = palette:snapshot()
@@ -599,8 +611,8 @@ function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_e
   )
   Assert.equal(
     snapshot.mainBg[10 * 16 + 1],
-    words[10 * 16 + 1],
-    "the staged snapshot spares the unselected main background bank"
+    0,
+    "the staged snapshot preserves the unselected transparent main background bank"
   )
   -- Lease-shaped sampler: forwards placement straight to the host draw
   -- and rejects non-numeric extras exactly like love.graphics.draw, so
@@ -611,20 +623,14 @@ function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_e
     draw = function(_, graphics, x, y, seen, ...)
       Assert.isTrue(type(x) == "number", "the scene sampler draws at a numeric x")
       Assert.isTrue(type(y) == "number", "the scene sampler draws at a numeric y")
-      Assert.isTrue(
-        seen == nil and select("#", ...) == 0,
-        "no palette state rides the scene sampler draw"
-      )
+      Assert.isTrue(seen == nil and select("#", ...) == 0, "no palette state rides the scene sampler draw")
       sampled[#sampled + 1] = { graphics = graphics, x = x, y = y }
       graphics.draw(sceneImage, x, y)
     end,
     drawQuad = function(_, graphics, quad, x, y, seen, ...)
       Assert.isTrue(type(x) == "number", "the scene sampler draws its quad at a numeric x")
       Assert.isTrue(type(y) == "number", "the scene sampler draws its quad at a numeric y")
-      Assert.isTrue(
-        seen == nil and select("#", ...) == 0,
-        "no palette state rides the scene sampler quad draw"
-      )
+      Assert.isTrue(seen == nil and select("#", ...) == 0, "no palette state rides the scene sampler quad draw")
       sampled[#sampled + 1] = { graphics = graphics, x = x, y = y }
       graphics.draw(sceneImage, quad, x, y)
     end,

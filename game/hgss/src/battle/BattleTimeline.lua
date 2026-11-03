@@ -3279,7 +3279,10 @@ function BattleTimeline:intro(view, wild)
     { elapsed = 0, phase = "init", secondStarted = false, secondActive = false, lateArmed = false }
   if self._encounterSource ~= nil then
     self._encounterPalette = BattleEncounterPalette.new({
-      battleType = wild and "wild" or "trainer",
+      battleType = assert(
+        self._encounterSource.restoreType,
+        "staged encounter palettes carry their accepted native restore class"
+      ),
       source = self._encounterSource,
     })
   else
@@ -3676,6 +3679,10 @@ local function tickEncounterAnimation(self)
   elseif frame == ENCOUNTER_SETTLE_SOUND then
     emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.encounterSettle))
   end
+  presentation.encounterFrame = frame
+  if self._encounterPalette ~= nil then
+    self._encounterPalette:tick(frame)
+  end
   if frame == ENCOUNTER_LATE_FADE and not track.lateArmed then
     track.lateArmed = true
     track.phase = "wait"
@@ -3683,9 +3690,7 @@ local function tickEncounterAnimation(self)
       self._encounterPalette:beginLateFade()
     end
   end
-  presentation.encounterFrame = frame
   if self._encounterPalette ~= nil then
-    self._encounterPalette:tick(frame)
     presentation.encounterPalette = self._encounterPalette:snapshot()
   end
   if frame < ENCOUNTER_FADE_START then
@@ -4771,7 +4776,7 @@ function BattleTimeline:stageEncounterSource(source)
     return
   end
   self._encounterPalette = BattleEncounterPalette.new({
-    battleType = self._encounterWild == false and "trainer" or "wild",
+    battleType = assert(source.restoreType, "staged encounter palettes carry their accepted native restore class"),
     source = source,
   })
 end

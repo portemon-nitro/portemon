@@ -93,6 +93,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@class BattleRuntime
 ---@field _request { id: string, kind: string, payload: table<string, unknown> }
 ---@field _scenario table<string, unknown>?
+---@field _encounterPaletteRestoreType string? accepted native palette restore class for encounter presentation
 ---@field _presentation BattlePresentationPort
 ---@field _party BattlePartyOwner?
 ---@field _bag table<string, unknown>?
@@ -288,6 +289,32 @@ local function checkEvolutionContext(args)
   )
 end
 
+---@param request table<string, unknown> accepted launch request
+---@param scenario table<string, unknown> accepted battle scenario
+---@return "wild"|"trainer"|"ordinary-doubles"|"special-doubles" native palette restore class
+local function encounterPaletteRestoreType(request, scenario)
+  local kind = request.kind
+  local format = scenario.format
+  if kind == "wild" and (format == "wild-single" or format == "single") then
+    return "wild"
+  end
+  if kind == "trainer" and format == "single" then
+    return "trainer"
+  end
+  if (kind == "wild" and format == "wild-double") or ((kind == "wild" or kind == "trainer") and format == "double") then
+    return "ordinary-doubles"
+  end
+  error(
+    "battle launch "
+      .. tostring(request.id)
+      .. " has an unsupported encounter palette restore class for "
+      .. tostring(kind)
+      .. " format "
+      .. tostring(format),
+    0
+  )
+end
+
 ---@param args BattleRuntimeArgs construction record carrying the optional consequence inputs
 local function checkConsequenceInputs(args)
   if args.bag ~= nil then
@@ -427,6 +454,8 @@ function BattleRuntime.new(args)
   checkEvolutionContext(args)
   local request = args.request --[[@as table<string, unknown>]]
   local presentation = checkPresentation(args.presentation, request.id --[[@as string]])
+  local scenario = args.scenario ~= nil and copyValue(args.scenario) or nil
+  local restoreType = scenario ~= nil and encounterPaletteRestoreType(request, scenario) or nil
   if args.seed ~= nil then
     assert(
       type(args.seed) == "number" and args.seed % 1 == 0 and args.seed >= 0 and args.seed <= 0xFFFFFFFF,
@@ -441,7 +470,8 @@ function BattleRuntime.new(args)
   end
   local self = setmetatable({
     _request = { id = request.id, kind = request.kind, payload = copyValue(request.payload) },
-    _scenario = args.scenario ~= nil and copyValue(args.scenario) or nil,
+    _scenario = scenario,
+    _encounterPaletteRestoreType = restoreType,
     _presentation = presentation,
     _party = args.party,
     _bag = args.bag,
@@ -675,6 +705,9 @@ end
 ---@return boolean ready true once presentation acknowledges entry
 function BattleRuntime:_enterPresentation()
   local plan = { launchId = self._request.id, kind = self._request.kind }
+  if self._encounterPaletteRestoreType ~= nil then
+    plan.encounterPaletteRestoreType = self._encounterPaletteRestoreType
+  end
   return self._presentation.enter(plan) == true
 end
 

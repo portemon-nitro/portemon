@@ -10,6 +10,7 @@
 -- this file proves the task schedule that drives it.
 
 local Assert = require("tests.support.Assert")
+local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
 local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
 local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
@@ -19,6 +20,15 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 local TICK = SourceTick.DT
+
+local function darkenWord(word, coefficient)
+  local red = word % 32
+  local green = math.floor(word / 32) % 32
+  local blue = math.floor(word / 1024) % 32
+  return (red + math.floor(-red * coefficient / 16))
+    + (green + math.floor(-green * coefficient / 16)) * 32
+    + (blue + math.floor(-blue * coefficient / 16)) * 1024
+end
 
 local function record(combatant, name, species, own)
   return {
@@ -146,14 +156,10 @@ end
 
 function T.encounter_task_runs_the_native_frame_and_emitter_schedule()
   local grass = BattlePresentationSources.encounterParticleSets("grass")
-  Assert.deepEqual(
-    grass,
-    {
-      { member = 5, emitterCount = 5 },
-      { member = 6, emitterCount = 11 },
-    },
-    "the grass terrain stages source members 5 and 6 with five and eleven emitters"
-  )
+  Assert.deepEqual(grass, {
+    { member = 5, emitterCount = 5 },
+    { member = 6, emitterCount = 11 },
+  }, "the grass terrain stages source members 5 and 6 with five and eleven emitters")
   local task = openTask(11, 200, 200)
   advance(task, 55)
   Assert.equal(#task.sets[1].emitters, 5, "the first staged set carries the five member-5 emitters")
@@ -178,14 +184,100 @@ end
 
 function T.encounter_task_arms_the_late_bank_fade_only_at_frame_50()
   local task = openTask(11, 200, 200)
-  advance(task, 55)
+  advance(task, 58)
+  local opaqueLateWords = { [160] = 2861, [175] = 2966, [191] = 3251 }
   Assert.isNil(task.lateMask[44], "no late bank operation runs before frame 50")
   Assert.isNil(task.lateMask[49], "the restore still owns frames 28 through 49")
   Assert.equal(task.lateMask[50], 0x0C00, "frame 50 arms the late fade over background banks 10 and 11")
   Assert.equal(task.lateMask[51], 0x0C00, "the late fade arms once and is not reissued")
+  for _, index in ipairs({ 160, 175, 191 }) do
+    Assert.equal(task.mainBg[50][index + 1], 0, "frame 50 starts selected background entry " .. index .. " at black")
+    Assert.equal(
+      task.mainBg[51][index + 1],
+      darkenWord(opaqueLateWords[index], 14),
+      "frame 51 advances selected background entry " .. index .. " to coefficient 14"
+    )
+    Assert.equal(
+      task.mainBg[58][index + 1],
+      opaqueLateWords[index],
+      "frame 58 returns selected background entry " .. index .. " to its opaque source"
+    )
+  end
+  Assert.equal(task.mainBg[50][121], task.mainBg[49][121], "frame 50 leaves an unselected background bank unchanged")
   Assert.isTrue(
-    task.mainBg[10][1] ~= task.mainBg[11][1],
-    "the scheduled frame-10 event reaches the palette evaluator"
+    task.mainBg[10][113] ~= task.mainBg[11][113],
+    "the scheduled frame-10 event advances an unfilled selected background entry"
+  )
+end
+
+function T.encounter_palette_restore_class_uses_the_accepted_battle_format()
+  local function objectPalette(format, wild)
+    local timeline = BattleTimeline.new()
+    local view = openingView()
+    view.format = format
+    timeline:reset(view)
+    timeline:intro(view, wild)
+    for _ = 1, 30 do
+      timeline:update(TICK, function(_)
+        return true
+      end)
+    end
+    local opening = assert(timeline:openingPresentation())
+    return assert(opening.encounterPalette).mainObj
+  end
+
+  local wild = objectPalette("single", true)
+  local trainer = objectPalette("single", false)
+  local ordinaryDoubles = objectPalette("double", false)
+  Assert.equal(wild[65], 24 + 12 * 32 + 3 * 1024, "wild singles restore only the native first 64 OBJ words")
+  Assert.isTrue(trainer[65] ~= wild[65], "trainer singles restore their native first 80 OBJ words")
+  Assert.isTrue(ordinaryDoubles[101] ~= wild[101], "ordinary doubles restore their native first 112 OBJ words")
+end
+
+function T.battle_entry_projects_a_validated_palette_restore_class()
+  local function entryClass(kind, format)
+    local plan = nil
+    local runtime = BattleRuntime.new({
+      request = {
+        id = "palette-class-" .. kind .. "-" .. format,
+        kind = kind,
+        payload = kind == "wild" and { species = "EEVEE", level = 5 } or { trainer = "YOUNGSTER" },
+      },
+      scenario = { format = format },
+      presentation = {
+        enter = function(value)
+          plan = value
+          return true
+        end,
+        present = function(_) end,
+        ready = function()
+          return true
+        end,
+        leave = function(_)
+          return true
+        end,
+        dispose = function() end,
+        openCompletion = function(_)
+          return false
+        end,
+        takeCompletion = function()
+          return nil
+        end,
+      },
+    })
+    Assert.isTrue(runtime:_enterPresentation(), "the presentation accepts the battle entry plan")
+    return assert(plan).encounterPaletteRestoreType
+  end
+
+  Assert.equal(entryClass("wild", "wild-single"), "wild", "wild singles use the wild OBJ restore span")
+  Assert.equal(entryClass("trainer", "single"), "trainer", "trainer singles use the trainer OBJ restore span")
+  Assert.equal(entryClass("wild", "wild-double"), "ordinary-doubles", "wild doubles use the ordinary doubles span")
+  Assert.equal(entryClass("trainer", "double"), "ordinary-doubles", "trainer doubles use the ordinary doubles span")
+  Assert.isFalse(
+    pcall(function()
+      entryClass("scripted", "single")
+    end),
+    "an unsupported scripted restore class fails with launch context"
   )
 end
 
