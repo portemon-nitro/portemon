@@ -575,6 +575,180 @@ function T.scene_selector_dispatches_the_registered_scene_job()
   Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
 end
 
+-- One trainer picture, one ball, and the selector-free evolution demand
+-- each dispatch the safe keyed worker job for the requested selector: a
+-- well-formed but unsourced selector still dispatches for the producer to
+-- validate, while malformed selectors fail their own requests without
+-- killing the controller.
+function T.battle_leaf_selectors_dispatch_safe_keyed_jobs()
+  local calls = {}
+  local answer = { ready = false, failure = nil }
+  local session = { pumps = 0 }
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session.requestJob(_, kind, key, urgency)
+    calls[#calls + 1] = { kind = kind, key = key, urgency = urgency }
+    return answer.ready, answer.failure
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  local worker, replies, queued = pushWorker(session, 7)
+  queued[#queued + 1] = {
+    op = "request",
+    epoch = 7,
+    requestId = 61,
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:YOUNGSTER",
+    urgency = "required",
+  }
+  queued[#queued + 1] = {
+    op = "request",
+    epoch = 7,
+    requestId = 62,
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:NOT_A_CLASS",
+    urgency = "near",
+  }
+  queued[#queued + 1] = {
+    op = "request",
+    epoch = 7,
+    requestId = 63,
+    requestKind = "battle-ball",
+    ballSelector = "ball:POKE_BALL",
+    urgency = "required",
+  }
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 64, requestKind = "battle-evolution", urgency = "required" }
+  worker:step()
+  -- The controller re-observes still-pending requests in the same step
+  -- through its documented flush, so the session sees each dispatch at
+  -- least once; the first four calls are the drain-phase dispatches in
+  -- queue order, matching the scene-test precedent.
+  Assert.isTrue(#calls >= 4, "each leaf demand dispatches its registered job")
+  Assert.equal(calls[1].kind, "battle-trainer-picture", "the trainer demand keeps its kind")
+  Assert.equal(calls[1].key, "front-YOUNGSTER", "the trainer demand carries its safe class key")
+  Assert.equal(calls[1].urgency, "required", "the trainer demand keeps its urgency")
+  Assert.equal(calls[2].key, "front-NOT_A_CLASS", "an unsourced selector keeps its exact safe spelling")
+  Assert.equal(calls[3].kind, "battle-ball", "the ball demand keeps its kind")
+  Assert.equal(calls[3].key, "POKE_BALL", "the ball demand carries its safe item key")
+  Assert.equal(calls[4].kind, "battle-evolution", "the evolution demand keeps its kind")
+  Assert.equal(calls[4].key, "global", "evolution stays one global-keyed job")
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "pending leaf jobs emit no terminal event yet")
+  answer.ready = true
+  worker:step()
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 4, "leaf readiness completes through one terminal event each")
+  for _, result in ipairs(results) do
+    Assert.equal(result.state, "ready", "the terminal event carries the ready state")
+    Assert.equal(result.epoch, 7, "the terminal event carries the epoch identity")
+  end
+  local badPackets = {
+    { requestKind = "battle-trainer-picture", urgency = "required" },
+    { requestKind = "battle-trainer-picture", trainerSelector = "", urgency = "required" },
+    { requestKind = "battle-trainer-picture", trainerSelector = "front:YOUNGSTER/x", urgency = "required" },
+    { requestKind = "battle-trainer-picture", trainerSelector = 7, urgency = "required" },
+    {
+      requestKind = "battle-trainer-picture",
+      trainerSelector = "front:YOUNGSTER",
+      urgency = "required",
+      sceneKey = "general/grass/day",
+    },
+    { requestKind = "battle-ball", urgency = "required" },
+    { requestKind = "battle-ball", ballSelector = "POKE_BALL", urgency = "required" },
+    { requestKind = "battle-ball", ballSelector = "ball:a/b", urgency = "required" },
+    {
+      requestKind = "battle-evolution",
+      urgency = "required",
+      trainerSelector = "front:YOUNGSTER",
+    },
+    { requestKind = "battle-trainer-picture", trainerSelector = "front:YOUNGSTER", urgency = "eventual" },
+  }
+  for offset, packet in ipairs(badPackets) do
+    packet.op = "request"
+    packet.epoch = 7
+    packet.requestId = 70 + offset
+    queued[#queued + 1] = packet
+  end
+  local dispatched = #calls
+  worker:step()
+  -- Malformed selectors fail closed without dispatching: the flush may
+  -- re-observe the still-pending valid jobs, but no call may carry a new
+  -- job identity beyond the four already dispatched.
+  for index = dispatched + 1, #calls do
+    local call = calls[index]
+    local redispatched = false
+    for prior = 1, dispatched do
+      if calls[prior].kind == call.kind and calls[prior].key == call.key then
+        redispatched = true
+        break
+      end
+    end
+    Assert.isTrue(
+      redispatched,
+      "malformed leaf selectors dispatch no further jobs: " .. tostring(call.kind) .. ":" .. tostring(call.key)
+    )
+  end
+  local settled = packetsOf(replies, "request-result")
+  local failures = 0
+  for index = 5, #settled do
+    Assert.equal(settled[index].state, "failed", "a malformed leaf selector reports failure")
+    Assert.isTrue(tostring(settled[index].errorMessage) ~= "", "a malformed leaf selector carries its cause")
+    failures = failures + 1
+  end
+  Assert.equal(failures, #badPackets, "each malformed leaf selector fails its own request")
+  Assert.isTrue(worker.lifecycle ~= "failed", "a malformed leaf selector never kills the controller")
+end
+
+-- A leaf demand for a retired epoch never reaches the worker: the stale
+-- packet is dropped without dispatching a job or emitting a terminal
+-- event, so it cannot make a new selection ready.
+function T.battle_leaf_requests_ignore_retired_epochs()
+  local calls = {}
+  local answer = { ready = false, failure = nil }
+  local session = { pumps = 0 }
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session.requestJob(_, kind, key, urgency)
+    calls[#calls + 1] = { kind = kind, key = key, urgency = urgency }
+    return answer.ready, answer.failure
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  local worker, replies, queued = pushWorker(session, 7)
+  queued[#queued + 1] = {
+    op = "request",
+    epoch = 6,
+    requestId = 61,
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:YOUNGSTER",
+    urgency = "required",
+  }
+  queued[#queued + 1] = {
+    op = "request",
+    epoch = 6,
+    requestId = 62,
+    requestKind = "battle-ball",
+    ballSelector = "ball:POKE_BALL",
+    urgency = "required",
+  }
+  queued[#queued + 1] =
+    { op = "request", epoch = 6, requestId = 63, requestKind = "battle-evolution", urgency = "required" }
+  worker:step()
+  Assert.equal(#calls, 0, "a retired epoch dispatches no leaf jobs")
+  Assert.equal(#packetsOf(replies, "request-result"), 0, "a retired epoch emits no terminal events")
+  Assert.isTrue(worker.lifecycle ~= "failed", "a retired epoch never kills the controller")
+end
+
 -- One cry bank demand dispatches the generic audio-bank job keyed by its
 -- numeric bank; a malformed bank fails its own request.
 function T.audio_bank_selector_dispatches_the_bank_job()
@@ -914,8 +1088,11 @@ function T.current_full_marker_boots_without_source_io()
   local info = GameVersion.info("heartgold")
   local currentProducer = "r" .. tostring(DerivedCacheVersions.heartgold)
   local staleProducer = "r" .. tostring(DerivedCacheVersions.heartgold - 1)
-  local identity =
-    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = currentProducer })
+  local identity = DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = info.sha1,
+    producerId = currentProducer,
+  })
   local backend = FakeCache.new()
   DerivedCacheState.publish(CacheFs.forVersion("heartgold", backend), identity)
   local status, detail, opens, held = driveBootGate(backend)

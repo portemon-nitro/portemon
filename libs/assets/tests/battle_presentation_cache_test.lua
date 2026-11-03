@@ -134,56 +134,56 @@ local function stagePng(cache, path, width, height)
   cache:write(path, PngWriter.encode(width, height, pixels))
 end
 
-function T.evolution_particles_load_only_from_verified_manifest_and_check_texture_closure()
+function T.evolution_particles_load_only_from_the_leaf_record_and_check_texture_closure()
   local cache = staging()
-  Assert.isNil(BattlePresentationCache.loadEvolutionParticles(cache), "planning manifests do not expose playable particles")
+  Assert.isNil(BattlePresentationCache.loadEvolutionParticles(cache), "an unstaged leaf exposes no playable particles")
   Assert.isFalse(
     BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
     "an unstaged EvolutionScene particle payload is not ready"
   )
 
-  local manifest = ManifestFixture.manifest()
-  cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
-  cache:write(BattlePresentationCache.markerPath(), "evolution-marker")
-  local texture = manifest.evolutionParticles.textures[1]
+  local leaf = ManifestFixture.evolutionRecord()
+  cache:writeLua(BattlePresentationCache.evolutionPath(), leaf)
+  cache:write(BattlePresentationCache.evolutionMarkerPath(), "evolution-marker")
+  local texture = leaf.particles.textures[1]
   stagePng(cache, texture.image, texture.width, texture.height)
 
   local particles = assert(BattlePresentationCache.loadEvolutionParticles(cache))
-  Assert.equal(particles.seed, 0, "the verified loader returns the normalized particle payload")
-  Assert.equal(#particles.emitters, #manifest.evolutionParticles.emitters, "the verified loader returns the complete emitter list")
+  Assert.equal(particles.seed, 0, "the leaf loader returns the normalized particle payload")
+  Assert.equal(#particles.emitters, #leaf.particles.emitters, "the leaf loader returns the complete emitter list")
   Assert.isTrue(
     BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
     "the marker and complete texture closure establish readiness"
   )
   Assert.isFalse(
     BattlePresentationCache.isEvolutionParticlesReady(cache, "stale-marker"),
-    "a stale global marker prevents readiness"
+    "a stale leaf marker prevents readiness"
   )
 
   stagePng(cache, texture.image, texture.width + 1, texture.height)
   Assert.isFalse(
     BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
-    "a texture with dimensions different from the manifest is not ready"
+    "a texture with dimensions different from the leaf record is not ready"
   )
 end
 
-function T.evolution_graphics_load_only_from_verified_manifest_and_check_all_screen_rasters()
+function T.evolution_graphics_load_only_from_the_leaf_record_and_check_all_screen_rasters()
   local cache = staging()
-  Assert.isNil(BattlePresentationCache.loadEvolutionGraphics(cache), "planning manifests do not expose evolution BG rasters")
+  Assert.isNil(BattlePresentationCache.loadEvolutionGraphics(cache), "an unstaged leaf exposes no evolution BG rasters")
   Assert.isFalse(
     BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
     "an unstaged EvolutionScene BG set is not ready"
   )
 
-  local manifest = ManifestFixture.manifest()
-  cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
-  cache:write(BattlePresentationCache.markerPath(), "evolution-marker")
+  local leaf = ManifestFixture.evolutionRecord()
+  cache:writeLua(BattlePresentationCache.evolutionPath(), leaf)
+  cache:write(BattlePresentationCache.evolutionMarkerPath(), "evolution-marker")
   for _, layer in ipairs({ "main", "sub", "menu" }) do
-    local image = manifest.evolutionGraphics[layer]
+    local image = leaf.graphics[layer]
     stagePng(cache, image.image, image.width, image.height)
   end
   for _, animationRole in ipairs({ "idle", "select" }) do
-    for _, frame in ipairs(manifest.evolutionGraphics.cursor.animations[animationRole].frames) do
+    for _, frame in ipairs(leaf.graphics.cursor.animations[animationRole].frames) do
       stagePng(cache, frame.image, frame.width, frame.height)
     end
   end
@@ -192,17 +192,17 @@ function T.evolution_graphics_load_only_from_verified_manifest_and_check_all_scr
   Assert.equal(
     graphics.main.image,
     "assets/generated/battle/evolution-main.png",
-    "verified loading returns the source-selected main BG raster"
+    "leaf loading returns the source-selected main BG raster"
   )
   Assert.equal(
     graphics.cursor.animations.select.frames[2].drawableKey,
     "battle:evolution-cursor:select:1",
-    "verified loading exposes the selected cursor sequence"
+    "leaf loading exposes the selected cursor sequence"
   )
   Assert.deepEqual(
     graphics.menuTextPalette.colors[2],
     { r = 2, g = 14, b = 26 },
-    "verified loading exposes the source-backed EvolutionScene font palette"
+    "leaf loading exposes the source-backed EvolutionScene font palette"
   )
   Assert.isTrue(
     BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
@@ -221,7 +221,7 @@ function T.evolution_graphics_load_only_from_verified_manifest_and_check_all_scr
   )
   local selectFrame = graphics.cursor.animations.select.frames[1]
   stagePng(cache, selectFrame.image, selectFrame.width, selectFrame.height)
-  local menu = manifest.evolutionGraphics.menu
+  local menu = leaf.graphics.menu
   stagePng(cache, menu.image, menu.width, menu.height - 1)
   Assert.isFalse(
     BattlePresentationCache.isEvolutionGraphicsReady(cache, "evolution-marker"),
@@ -401,7 +401,7 @@ function T.encounter_particle_textures_are_part_of_the_scene_readiness_closure()
 end
 
 function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
-  local manifest = validManifest()
+  local manifest = ManifestFixture.coreManifest()
   local selector = "ball:POKE_BALL"
   local portraitSelector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local demand = assert(
@@ -415,21 +415,25 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
     )
   )
   Assert.deepEqual(demand.battleBalls, { selector }, "the exact ball selector reaches the launch demand")
+  local leaf = ManifestFixture.ballRecord(selector)
   local cache = staging()
   stageBattle(cache, manifest, "general/grass/day")
   stageMonPage(cache, portraitSelector)
-  stagePng(cache, manifest.battleBalls.entries[selector].frames[1].image, 16, 16)
+  cache:writeLua(BattlePresentationCache.ballPath(selector), leaf)
+  stagePng(cache, leaf.entry.frames[1].image, 16, 16)
+  cache:write(BattlePresentationCache.ballMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "every requested frame is staged")
-  cache:write(manifest.battleBalls.entries[selector].frames[1].image, "truncated")
+  cache:write(leaf.entry.frames[1].image, "truncated")
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a broken requested frame is never ready")
 end
 
 function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
-  local manifest = validManifest()
+  local manifest = ManifestFixture.coreManifest()
   local selector = "back:PKMN_TRAINER_ETHAN"
-  local image0 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"
-  local image1 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-frame-1.png"
-  local sequenceImage = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-sequence-1-frame-0.png"
+  local leafPrefix = "assets/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN"
+  local image0 = leafPrefix .. "-0.png"
+  local image1 = leafPrefix .. "-1.png"
+  local sequenceImage = leafPrefix .. "-sequence-1-frame-0.png"
   local frames = {
     {
       drawableKey = "trainer:" .. selector,
@@ -448,48 +452,50 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
       userAttr = 0,
     },
   }
-  manifest.trainerPictures.entries[selector] = {
-    drawableKey = "trainer:" .. selector,
-    image = image0,
-    width = 8,
-    height = 8,
-    rasterOffset = { x = -40, y = -40 },
-    animation = {
-      sourceSequence = 0,
-      playMode = "forward_loop",
-      loopStartFrameIdx = 0,
-      frames = frames,
-      sequences = {
-        { sourceSequence = 0, playMode = "forward_loop", loopStartFrameIdx = 0, frames = frames },
-        {
-          sourceSequence = 1,
-          playMode = "forward",
-          loopStartFrameIdx = 0,
-          frames = {
-            {
-              drawableKey = "trainer:" .. selector .. ":sequence:1:frame:0",
-              image = sequenceImage,
-              rasterOffset = { x = -40, y = -40 },
-              durationTicks = 3,
-              sourceFrame = 0,
-              userAttr = 1,
+  local leaf = {
+    schema = "g4-battle-trainer-picture-v1",
+    selector = selector,
+    catalogIdentity = manifest.catalogIdentity,
+    entry = {
+      drawableKey = "trainer:" .. selector,
+      image = image0,
+      width = 8,
+      height = 8,
+      rasterOffset = { x = -40, y = -40 },
+      animation = {
+        sourceSequence = 0,
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = frames,
+        sequences = {
+          { sourceSequence = 0, playMode = "forward_loop", loopStartFrameIdx = 0, frames = frames },
+          {
+            sourceSequence = 1,
+            playMode = "forward",
+            loopStartFrameIdx = 0,
+            frames = {
+              {
+                drawableKey = "trainer:" .. selector .. ":sequence:1:frame:0",
+                image = sequenceImage,
+                rasterOffset = { x = -40, y = -40 },
+                durationTicks = 3,
+                sourceFrame = 0,
+                userAttr = 1,
+              },
             },
           },
         },
       },
-    },
-    throwOffsets = {
-      { x = 0, y = 128 },
-      { x = -34, y = 4 },
-      { x = -28, y = -11 },
-      { x = 50, y = -12 },
-      { x = 32767, y = 32767 },
-      { x = 32767, y = 32767 },
+      throwOffsets = {
+        { x = 0, y = 128 },
+        { x = -34, y = 4 },
+        { x = -28, y = -11 },
+        { x = 50, y = -12 },
+        { x = 32767, y = 32767 },
+        { x = 32767, y = 32767 },
+      },
     },
   }
-  manifest.menus.images[image0] = { width = 8, height = 8 }
-  manifest.menus.images[image1] = { width = 8, height = 8 }
-  manifest.menus.images[sequenceImage] = { width = 8, height = 8 }
   local demand = assert(
     BattlePresentationCache.requirements(
       manifest,
@@ -504,30 +510,43 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
   local cache = staging()
   stageBattle(cache, manifest, "general/grass/day")
   stageMonPage(cache, MonCache.portraitSelector("CHIKORITA", 0, "male", false))
+  cache:writeLua(BattlePresentationCache.trainerPicturePath(selector), leaf)
+  stagePng(cache, image0, 8, 8)
+  stagePng(cache, image1, 8, 8)
+  stagePng(cache, sequenceImage, 8, 8)
+  cache:write(BattlePresentationCache.trainerPictureMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "both source frames are staged for the requested class")
-  local stagedEntry = BattlePresentationCache.load(cache).trainerPictures.entries[selector]
+  local stagedEntry = assert(BattlePresentationCache.loadTrainerPicture(cache, selector))
   Assert.deepEqual(
-    stagedEntry.animation.sequences,
-    manifest.trainerPictures.entries[selector].animation.sequences,
+    stagedEntry.entry.animation.sequences,
+    leaf.entry.animation.sequences,
     "the staged trainer metadata retains every selected source sequence"
   )
   Assert.deepEqual(
-    stagedEntry.throwOffsets,
-    manifest.trainerPictures.entries[selector].throwOffsets,
+    stagedEntry.entry.throwOffsets,
+    leaf.entry.throwOffsets,
     "the staged trainer metadata retains all six source throw anchors"
   )
-  Assert.deepEqual(stagedEntry.throwOffsets[5], { x = 32767, y = 32767 }, "the first no-ball sentinel survives staging")
-  Assert.deepEqual(stagedEntry.throwOffsets[6], { x = 32767, y = 32767 }, "the final no-ball sentinel survives staging")
+  Assert.deepEqual(
+    stagedEntry.entry.throwOffsets[5],
+    { x = 32767, y = 32767 },
+    "the first no-ball sentinel survives staging"
+  )
+  Assert.deepEqual(
+    stagedEntry.entry.throwOffsets[6],
+    { x = 32767, y = 32767 },
+    "the final no-ball sentinel survives staging"
+  )
   cache:remove(sequenceImage)
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a missing throw sequence frame prevents readiness")
-  stageBattle(cache, manifest, "general/grass/day")
+  stagePng(cache, sequenceImage, 8, 8)
   cache:remove(image1)
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a missing non-first trainer frame prevents readiness")
 end
 
 function T.fully_staged_demands_read_ready_and_breakages_do_not()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back")
-  local manifest = validManifest()
+  local manifest = ManifestFixture.coreManifest()
   local valid, validationErr = BattlePresentationSchema.isValidManifest(manifest)
   Assert.isTrue(valid, "the staged manifest is schema-valid: " .. tostring(validationErr))
   local cache = staging()
@@ -606,7 +625,7 @@ end
 
 function T.delayed_pages_keep_readiness_pending()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back")
-  local manifest = validManifest()
+  local manifest = ManifestFixture.coreManifest()
   local cache = staging()
   stageBattle(cache, manifest, "general/grass/day")
   local demand = assert(
@@ -620,6 +639,322 @@ function T.delayed_pages_keep_readiness_pending()
     )
   )
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a delayed portrait page stays pending")
+end
+
+-- One trainer picture, one ball, and the evolution bundle stage and read
+-- through their own versioned paths: exact selectors publish standalone
+-- records under marker-last receipts, malformed selectors fail before any
+-- path exists, and a missing leaf never fabricates a record. An
+-- incomplete replacement never reads ready while the previously staged
+-- image stays on disk.
+function T.selective_leaf_records_stage_and_read_by_exact_selector()
+  Assert.isTrue(
+    type(BattlePresentationCache.trainerPicturePath) == "function",
+    "trainer pictures have their own contract path"
+  )
+  Assert.isTrue(
+    type(BattlePresentationCache.trainerPictureMarkerPath) == "function",
+    "trainer pictures have their own marker path"
+  )
+  Assert.isTrue(
+    type(BattlePresentationCache.loadTrainerPicture) == "function",
+    "trainer pictures load without the global manifest"
+  )
+  Assert.isTrue(
+    type(BattlePresentationCache.isTrainerPictureReady) == "function",
+    "trainer pictures carry their own readiness"
+  )
+  Assert.isTrue(type(BattlePresentationCache.ballPath) == "function", "balls have their own contract path")
+  Assert.isTrue(type(BattlePresentationCache.ballMarkerPath) == "function", "balls have their own marker path")
+  Assert.isTrue(type(BattlePresentationCache.loadBall) == "function", "balls load without the global manifest")
+  Assert.isTrue(type(BattlePresentationCache.isBallReady) == "function", "balls carry their own readiness")
+  Assert.isTrue(type(BattlePresentationCache.evolutionPath) == "function", "evolution has its own contract path")
+  Assert.isTrue(type(BattlePresentationCache.evolutionMarkerPath) == "function", "evolution has its own marker path")
+  Assert.isTrue(
+    type(BattlePresentationCache.loadEvolution) == "function",
+    "evolution loads without the global manifest"
+  )
+  Assert.isTrue(type(BattlePresentationCache.isEvolutionReady) == "function", "evolution carries its own readiness")
+  Assert.equal(
+    BattlePresentationCache.trainerPicturePath("front:YOUNGSTER"),
+    "data/generated/battle/trainer-pictures/front-YOUNGSTER.lua",
+    "a front picture record lives under its safe class key"
+  )
+  Assert.equal(
+    BattlePresentationCache.trainerPictureMarkerPath("front:YOUNGSTER"),
+    "data/generated/battle/trainer-pictures/front-YOUNGSTER.complete",
+    "a front picture marker lives beside its record"
+  )
+  Assert.equal(
+    BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"),
+    "data/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN.lua",
+    "a back picture record keeps its safe class key"
+  )
+  Assert.equal(
+    BattlePresentationCache.ballPath("ball:POKE_BALL"),
+    "data/generated/battle/balls/POKE_BALL.lua",
+    "a ball record lives under its safe item key"
+  )
+  Assert.equal(
+    BattlePresentationCache.ballMarkerPath("ball:POKE_BALL"),
+    "data/generated/battle/balls/POKE_BALL.complete",
+    "a ball marker lives beside its record"
+  )
+  Assert.equal(
+    BattlePresentationCache.evolutionPath(),
+    "data/generated/battle/evolution/presentation.lua",
+    "evolution stays one bundle record"
+  )
+  Assert.equal(
+    BattlePresentationCache.evolutionMarkerPath(),
+    "data/generated/battle/evolution/presentation.complete",
+    "the evolution marker lives beside its record"
+  )
+  local cache = staging()
+  Assert.isNil(
+    BattlePresentationCache.loadTrainerPicture(cache, "front:YOUNGSTER"),
+    "an unstaged trainer picture never resolves"
+  )
+  local missingBall, missingBallErr = BattlePresentationCache.loadBall(cache, "ball:POKE_BALL")
+  Assert.isNil(missingBall, "an unstaged ball never resolves")
+  Assert.isTrue(type(missingBallErr) == "string", "the missing ball names its failure: " .. tostring(missingBallErr))
+  Assert.isNil(BattlePresentationCache.loadEvolution(cache), "unstaged evolution never resolves")
+  Assert.isFalse(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
+    "an unstaged trainer picture is never ready"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
+    "an unstaged ball is never ready"
+  )
+  Assert.isFalse(BattlePresentationCache.isEvolutionReady(cache, "leaf-marker"), "unstaged evolution is never ready")
+  for _, badSelector in ipairs({ "", "YOUNGSTER", "front:lower!", "front:../evil", "ball:POKE_BALL", 7 }) do
+    Assert.isFalse(
+      pcall(BattlePresentationCache.trainerPicturePath, badSelector),
+      "a malformed trainer selector never reaches a path: " .. tostring(badSelector)
+    )
+  end
+  for _, badSelector in ipairs({ "", "POKE_BALL", "ball:lower!", "ball:a/b", "front:YOUNGSTER", 7 }) do
+    Assert.isFalse(
+      pcall(BattlePresentationCache.ballPath, badSelector),
+      "a malformed ball selector never reaches a path: " .. tostring(badSelector)
+    )
+  end
+  local badTrainer, badTrainerErr = BattlePresentationCache.loadTrainerPicture(cache, "front:lower!")
+  Assert.isNil(badTrainer, "a malformed trainer selector never loads")
+  Assert.isTrue(
+    type(badTrainerErr) == "string" and badTrainerErr:find("front:lower!", 1, true) ~= nil,
+    "the malformed trainer selector names itself: " .. tostring(badTrainerErr)
+  )
+  -- Leaf catalog identity matches the staged shared core.
+  local core = ManifestFixture.manifest()
+  cache:writeLua(BattlePresentationCache.manifestPath(), core)
+  cache:write(BattlePresentationCache.markerPath(), "core-marker")
+  local trainerImages = {}
+  local function leafTrainerImage(image)
+    if trainerImages[image] == nil then
+      local count = 0
+      for _ in pairs(trainerImages) do
+        count = count + 1
+      end
+      trainerImages[image] = "assets/generated/battle/trainer-pictures/front-YOUNGSTER-" .. count .. ".png"
+    end
+    return trainerImages[image]
+  end
+  local trainerEntry = core.trainerPictures.entries["front:YOUNGSTER"]
+  local stagedEntry = {
+    drawableKey = trainerEntry.drawableKey,
+    image = leafTrainerImage(trainerEntry.image),
+    width = trainerEntry.width,
+    height = trainerEntry.height,
+    rasterOffset = trainerEntry.rasterOffset,
+    animation = trainerEntry.animation,
+  }
+  local function rewriteFrames(frames)
+    local rewritten = {}
+    for _, frame in ipairs(frames) do
+      rewritten[#rewritten + 1] = {
+        drawableKey = frame.drawableKey,
+        image = leafTrainerImage(frame.image),
+        rasterOffset = frame.rasterOffset,
+        durationTicks = frame.durationTicks,
+        sourceFrame = frame.sourceFrame,
+        userAttr = frame.userAttr,
+      }
+    end
+    return rewritten
+  end
+  local function rewriteAnimation(animation)
+    local sequences = {}
+    for _, sequence in ipairs(animation.sequences) do
+      sequences[#sequences + 1] = {
+        sourceSequence = sequence.sourceSequence,
+        playMode = sequence.playMode,
+        loopStartFrameIdx = sequence.loopStartFrameIdx,
+        frames = rewriteFrames(sequence.frames),
+      }
+    end
+    return {
+      sourceSequence = animation.sourceSequence,
+      playMode = animation.playMode,
+      loopStartFrameIdx = animation.loopStartFrameIdx,
+      frames = rewriteFrames(animation.frames),
+      sequences = sequences,
+    }
+  end
+  stagedEntry.animation = rewriteAnimation(trainerEntry.animation)
+  local trainerRecord = {
+    schema = "g4-battle-trainer-picture-v1",
+    selector = "front:YOUNGSTER",
+    catalogIdentity = core.catalogIdentity,
+    entry = stagedEntry,
+  }
+  cache:writeLua(BattlePresentationCache.trainerPicturePath("front:YOUNGSTER"), trainerRecord)
+  for _, image in pairs(trainerImages) do
+    stagePng(cache, image, trainerEntry.width, trainerEntry.height)
+  end
+  cache:write(BattlePresentationCache.trainerPictureMarkerPath("front:YOUNGSTER"), "leaf-marker")
+  local staged, stagedErr = BattlePresentationCache.loadTrainerPicture(cache, "front:YOUNGSTER")
+  Assert.isNil(stagedErr, "the staged trainer picture loads cleanly: " .. tostring(stagedErr))
+  Assert.equal(assert(staged).selector, "front:YOUNGSTER", "the loaded record names its exact selector")
+  Assert.equal(
+    staged.entry.drawableKey,
+    "trainer:front:YOUNGSTER",
+    "the loaded record keeps its semantic drawable identity"
+  )
+  Assert.isTrue(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
+    "the staged trainer picture and its marker establish readiness"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "stale-marker"),
+    "a stale marker never proves the trainer picture"
+  )
+  Assert.isNil(BattlePresentationCache.loadBall(cache, "ball:POKE_BALL"), "staging a trainer picture stages no ball")
+  Assert.isFalse(
+    BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
+    "staging a trainer picture never readies a ball"
+  )
+  cache:write(BattlePresentationCache.trainerPicturePath("front:YOUNGSTER"), "truncated")
+  Assert.isFalse(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
+    "a corrupt trainer record never reads as ready"
+  )
+  cache:writeLua(BattlePresentationCache.trainerPicturePath("front:YOUNGSTER"), trainerRecord)
+  Assert.isTrue(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
+    "a restored trainer record reads ready again"
+  )
+  for _, image in pairs(trainerImages) do
+    cache:remove(image)
+  end
+  Assert.isFalse(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
+    "a missing trainer frame prevents readiness"
+  )
+  for _, image in pairs(trainerImages) do
+    stagePng(cache, image, trainerEntry.width, trainerEntry.height)
+  end
+  local ballEntry = core.battleBalls.entries["ball:POKE_BALL"]
+  local ballImage = "assets/generated/battle/balls/POKE_BALL-0.png"
+  local ballRecord = {
+    schema = "g4-battle-ball-v1",
+    selector = "ball:POKE_BALL",
+    catalogIdentity = core.catalogIdentity,
+    entry = {
+      fadeColor = ballEntry.fadeColor,
+      frames = {
+        {
+          drawableKey = ballEntry.frames[1].drawableKey,
+          image = ballImage,
+          width = ballEntry.frames[1].width,
+          height = ballEntry.frames[1].height,
+        },
+      },
+    },
+  }
+  cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), ballRecord)
+  stagePng(cache, ballImage, ballEntry.frames[1].width, ballEntry.frames[1].height)
+  cache:write(BattlePresentationCache.ballMarkerPath("ball:POKE_BALL"), "leaf-marker")
+  Assert.isTrue(
+    BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
+    "the staged ball and its marker establish readiness"
+  )
+  -- A later replacement that fails before its image and marker are
+  -- complete never reads ready, while the previously staged image
+  -- stays on disk.
+  local replacementImage = "assets/generated/battle/balls/POKE_BALL-1.png"
+  local replacement = {
+    schema = "g4-battle-ball-v1",
+    selector = "ball:POKE_BALL",
+    catalogIdentity = core.catalogIdentity,
+    entry = {
+      fadeColor = ballEntry.fadeColor,
+      frames = {
+        {
+          drawableKey = ballEntry.frames[1].drawableKey,
+          image = replacementImage,
+          width = ballEntry.frames[1].width,
+          height = ballEntry.frames[1].height,
+        },
+      },
+    },
+  }
+  cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), replacement)
+  Assert.isFalse(
+    BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
+    "a replacement without its staged image never reads as ready"
+  )
+  Assert.notNil(cache:read(ballImage), "the failed replacement preserves the previously staged ball image")
+  stagePng(cache, replacementImage, ballEntry.frames[1].width, ballEntry.frames[1].height)
+  Assert.isTrue(
+    BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
+    "completing the replacement image restores readiness"
+  )
+  local loadedBall = assert(BattlePresentationCache.loadBall(cache, "ball:POKE_BALL"))
+  Assert.equal(loadedBall.entry.frames[1].image, replacementImage, "the loaded ball names its exact published frame")
+  Assert.isTrue(
+    BattlePresentationCache.isTrainerPictureReady(cache, "front:YOUNGSTER", "leaf-marker"),
+    "staging a ball never disturbs the trainer picture"
+  )
+  local evolutionRecord = {
+    schema = "g4-battle-evolution-v1",
+    kind = "evolution",
+    catalogIdentity = core.catalogIdentity,
+    particles = core.evolutionParticles,
+    graphics = core.evolutionGraphics,
+  }
+  cache:writeLua(BattlePresentationCache.evolutionPath(), evolutionRecord)
+  for _, texture in ipairs(evolutionRecord.particles.textures) do
+    stagePng(cache, texture.image, texture.width, texture.height)
+  end
+  for _, layer in ipairs({ "main", "sub", "menu" }) do
+    local image = evolutionRecord.graphics[layer]
+    stagePng(cache, image.image, image.width, image.height)
+  end
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    for _, frame in ipairs(evolutionRecord.graphics.cursor.animations[animationRole].frames) do
+      stagePng(cache, frame.image, frame.width, frame.height)
+    end
+  end
+  cache:write(BattlePresentationCache.evolutionMarkerPath(), "leaf-marker")
+  local evolution, evolutionErr = BattlePresentationCache.loadEvolution(cache)
+  Assert.isNil(evolutionErr, "the staged evolution bundle loads cleanly: " .. tostring(evolutionErr))
+  Assert.equal(assert(evolution).kind, "evolution", "the loaded evolution record names its bundle kind")
+  Assert.equal(
+    evolution.particles.seed,
+    core.evolutionParticles.seed,
+    "the loaded evolution keeps its complete particle set"
+  )
+  Assert.isTrue(
+    BattlePresentationCache.isEvolutionReady(cache, "leaf-marker"),
+    "the staged evolution screens and its marker establish readiness"
+  )
+  cache:remove(evolutionRecord.graphics.cursor.animations.select.frames[1].image)
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionReady(cache, "leaf-marker"),
+    "a missing evolution cursor frame prevents readiness"
+  )
 end
 
 return { tests = T }

@@ -934,20 +934,18 @@ local function introSequenceKey(sequenceSymbol)
   return "audio/sequence/" .. sequenceSymbol
 end
 
-local function compileIntroMusic(romFs, audioPlan, audioPlanError)
+-- Pure semantic music selection lowering: route keys, source row
+-- correspondence, and selection rules from the source inventory alone.
+-- Selected bank audio stays authoritative in the audio class; the shared
+-- core never compiles banks or stages sample closures.
+local function compileIntroMusic()
   local source = Sources.INTRO_MUSIC
-  if audioPlan == nil then
-    error(audioPlanError, 0)
-  end
-
   local routes = {}
   local routeKeys = {}
   local sourceRoutes = {}
-  local sequenceSymbols = {}
   local function addRoute(sequenceSymbol, role)
     local routeKey = "battle/music/" .. role
     local sequenceKey = introSequenceKey(sequenceSymbol)
-    sequenceSymbols[sequenceKey] = sequenceSymbol
     if routeKeys[routeKey] == nil then
       local context = source.routeContexts[role]
       assert(context ~= nil, "every intro music role has a source context")
@@ -978,102 +976,6 @@ local function compileIntroMusic(romFs, audioPlan, audioPlanError)
 
   local selection = source.selectionSound
   local selectionSequenceKey = introSequenceKey(selection.sequenceSymbol)
-  sequenceSymbols[selectionSequenceKey] = selection.sequenceSymbol
-  local selectedBanks = {}
-  local selectedSequences = {}
-  local sequenceIndex = audioPlan.plan.index
-  for sequenceKey, sequenceSymbol in pairs(sequenceSymbols) do
-    local sequenceId = sequenceIndex.sequenceBySymbol[sequenceSymbol]
-    local record = sequenceId ~= nil and sequenceIndex.sequences[sequenceId] or nil
-    if record == nil then
-      error(
-        Errors.new(
-          "BATTLE_INTRO_MUSIC_SEQUENCE_MISSING",
-          "selected intro music sequence is absent from the audio plan",
-          {
-            sequenceKey = sequenceKey,
-            sequenceSymbol = sequenceSymbol,
-          }
-        ),
-        0
-      )
-    end
-    local bankId = record.bankId
-    if sequenceIndex.banks[bankId] == nil then
-      error(
-        Errors.new("BATTLE_INTRO_MUSIC_BANK_MISSING", "selected intro music bank is absent from the audio plan", {
-          sequenceKey = sequenceKey,
-          sequenceSymbol = sequenceSymbol,
-        }),
-        0
-      )
-    end
-    selectedBanks[bankId] = selectedBanks[bankId] or { sequenceIds = {} }
-    selectedBanks[bankId].sequenceIds[sequenceId] = true
-    selectedSequences[sequenceKey] = { sequenceId = sequenceId, bankId = bankId }
-  end
-
-  local AudioBank = require("libs.assets.src.audio.AudioBank")
-  local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
-  local sequenceClosures = {}
-  for bankId, selected in pairs(selectedBanks) do
-    local sequenceIds = {}
-    for sequenceId in pairs(selected.sequenceIds) do
-      sequenceIds[#sequenceIds + 1] = sequenceId
-    end
-    table.sort(sequenceIds)
-    local compiled, compileErr = AudioCompiler.compileBank(
-      romFs,
-      { bankId = bankId, sequenceIds = sequenceIds },
-      function() end
-    )
-    if compiled == nil then
-      error(compileErr, 0)
-    end
-    local sampleKeys = AudioBank.sampleKeys(compiled.bank)
-    if sampleKeys == nil then
-      error(
-        Errors.new("BATTLE_INTRO_MUSIC_BANK_INVALID", "compiled intro music bank has invalid sample references", {
-          bankIdentity = Hashing.hashLua(compiled.bank),
-        }),
-        0
-      )
-    end
-    for index, sampleKey in ipairs(sampleKeys) do
-      sampleKeys[index] = "audio/sample/content/" .. sampleKey
-    end
-    table.sort(sampleKeys)
-    local bankIdentity = Hashing.hashLua(compiled.bank)
-    local bankKey = "audio/bank/content/" .. bankIdentity
-    for sequenceKey, selectedSequence in pairs(selectedSequences) do
-      if selectedSequence.bankId == bankId then
-        local sequence = compiled.sequences[selectedSequence.sequenceId]
-        if sequence == nil then
-          error(
-            Errors.new("BATTLE_INTRO_MUSIC_SEQUENCE_MISSING", "compiled intro music sequence is absent from its bank", {
-              sequenceKey = sequenceKey,
-            }),
-            0
-          )
-        end
-        sequenceClosures[sequenceKey] = {
-          bankKey = bankKey,
-          player = {
-            volume = sequence.player.initialVolume,
-            channelPriority = sequence.player.channelPriority,
-            playerPriority = sequence.player.playerPriority,
-          },
-          sampleKeys = copyStrings(sampleKeys),
-          closureIdentity = Hashing.hashLua({
-            sequence = Hashing.hashLua(sequence),
-            bank = bankIdentity,
-            samples = sampleKeys,
-          }),
-        }
-      end
-    end
-  end
-
   return {
     inputs = copyStrings(source.inputs),
     inputTypes = source.inputTypes,
@@ -1091,7 +993,6 @@ local function compileIntroMusic(romFs, audioPlan, audioPlanError)
       eventInput = selection.eventInput,
       sequenceKey = selectionSequenceKey,
     },
-    sequenceClosures = sequenceClosures,
   }
 end
 
@@ -1501,17 +1402,6 @@ end
 ---@class BattleGlobalStaging
 ---@field catalog table<string, { kind: string, contentIdentity: string, format: string, geometry: table<string, unknown>, path: string }>
 ---@field payloads table<string, unknown>
----@field trainerPictures table<string, BattleTrainerPictureEntry>? semantic trainer portrait entries during global compilation
----@field trainerImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only trainer portrait pixels
----@field battleBalls table<string, BattlePresentationCache.BallEntry>? semantic ball animation frames and particles during global compilation
----@field ballImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only ball animation pixels
----@field ballParticlePngs table<string, string>? staged ball particle texture PNG bytes by cache path
----@field evolutionParticles BattlePresentationCache.EvolutionParticleSet? normalized EvolutionScene SPL payload
----@field evolutionParticlePngs table<string, string>? staged evolution particle texture PNG bytes by cache path
----@field evolutionParticleProvenance { archiveSymbol: string, memberId: integer, particleMemberHash: string }? source identity and content hash
----@field evolutionGraphics table<string, BattlePresentationCache.EvolutionGraphicsImage>? normalized EvolutionScene screen layers
----@field evolutionGraphicsImageSlices table<string, { width: integer, height: integer, pixels: string }>? build-only EvolutionScene rasters
----@field evolutionGraphicsProvenance table<string, unknown>? selected EvolutionScene source members
 
 ---@param staging BattleGlobalStaging
 ---@param resourceKey string semantic catalog key
@@ -2893,183 +2783,201 @@ local function compileBattleMessages(romFs, staging)
   }
 end
 
--- Compile the shared ordinary battle UI: menu compositions, health-box
--- and arrow sprites with their animations, party gauges, terrain bake
--- inputs, lower palettes per background, font/audio references, and the
--- supported scene inventory. Returns the verified manifest, the staged
--- image buffers by slice name, and the producer provenance beside it.
----@param romFs RomFs
----@return table<string, BattleTrainerPictureEntry> entries keyed by semantic front/back selector
----@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
-function BattlePresentationCompiler.compileTrainerPictures(romFs)
+-- Resolves one semantic trainer picture selector to its single source
+-- archive and member base. Front selectors address a trainer class id;
+-- back selectors address the player backpic id. Unknown selectors fail
+-- before any archive is opened.
+---@param selector string `front:CLASS` or `back:CLASS`
+---@return { archiveSymbol: string, memberBase: integer, backpicId: integer?, label: string }
+local function trainerSourceFor(selector)
   local source = Sources.TRAINER_PICTURES
-  local entries = {}
-  local imageSlices = {}
-  local imageByRaster = {}
-  local frontArchive = openArchive(romFs, source.frontArchive, "front trainer portraits")
-  local frontClassIds = {}
-  for classId in pairs(source.frontClasses) do
-    frontClassIds[#frontClassIds + 1] = classId
-  end
-  table.sort(frontClassIds)
-  for _, classId in ipairs(frontClassIds) do
-    local classKey = assert(source.frontClasses[classId], "trainer class id has a semantic key")
-    assert(type(classKey) == "string" and classKey ~= "", "trainer front keys are semantic strings")
-    local memberBase = classId * source.membersPerClass
-    local imageName = "trainer-front-" .. classKey
-    local sourceSequences = compileTrainerPicture(frontArchive, memberBase, "trainer front " .. classKey)
-    local selector = "front:" .. classKey
-    local drawableKey = source.outputPrefix .. selector
-    local publishedSequences = {}
-    for _, sequence in ipairs(sourceSequences) do
-      local publishedFrames = {}
-      for frameIndex, frame in ipairs(sequence.frames) do
-        local raster = frame.raster
-        local contentKey = raster.width .. "x" .. raster.height .. ":" .. raster.pixels
-        local stagedImageName = imageByRaster[contentKey]
-        if stagedImageName == nil then
-          if sequence.sourceSequence == 0 and frameIndex == 1 then
-            stagedImageName = imageName
-          elseif sequence.sourceSequence == 0 then
-            stagedImageName = imageName .. "-frame-" .. tostring(frame.sourceFrame)
-          else
-            stagedImageName = imageName
-              .. "-sequence-"
-              .. tostring(sequence.sourceSequence)
-              .. "-frame-"
-              .. tostring(frame.sourceFrame)
-          end
-          imageByRaster[contentKey] = stagedImageName
-          imageSlices[stagedImageName] = raster
-        end
-        local frameDrawableKey
-        if sequence.sourceSequence == 0 then
-          frameDrawableKey = frameIndex == 1 and drawableKey
-            or (drawableKey .. ":frame:" .. tostring(frame.sourceFrame))
-        else
-          frameDrawableKey = drawableKey
-            .. ":sequence:"
-            .. tostring(sequence.sourceSequence)
-            .. ":frame:"
-            .. tostring(frame.sourceFrame)
-        end
-        publishedFrames[#publishedFrames + 1] = {
-          drawableKey = frameDrawableKey,
-          image = BattlePresentationCache.globalImagePath(stagedImageName),
-          rasterOffset = raster.offset,
-          durationTicks = frame.durationTicks,
-          sourceFrame = frame.sourceFrame,
-          userAttr = frame.userAttr,
+  local frontClass = type(selector) == "string" and selector:match("^front:([A-Z][A-Z0-9_]*)$")
+  if frontClass ~= nil then
+    for classId, classKey in pairs(source.frontClasses) do
+      if classKey == frontClass then
+        return {
+          archiveSymbol = source.frontArchive,
+          memberBase = classId * source.membersPerClass,
+          label = "trainer front " .. classKey,
         }
       end
-      publishedSequences[#publishedSequences + 1] = {
-        sourceSequence = sequence.sourceSequence,
-        playMode = sequence.playMode,
-        loopStartFrameIdx = sequence.loopStartFrameIdx,
-        frames = publishedFrames,
+    end
+  end
+  local backClass = type(selector) == "string" and selector:match("^back:([A-Z][A-Z0-9_]*)$")
+  if backClass ~= nil then
+    local backpicId = source.backClasses[backClass]
+    if backpicId ~= nil then
+      return {
+        archiveSymbol = source.backArchive,
+        memberBase = backpicId * source.membersPerClass,
+        backpicId = backpicId,
+        label = "player trainer back " .. backClass,
       }
     end
-    local publishedFrames = assert(publishedSequences[1]).frames
-    local firstRaster = sourceSequences[1].frames[1].raster
-    entries[selector] = {
-      drawableKey = drawableKey,
-      image = publishedFrames[1].image,
-      width = firstRaster.width,
-      height = firstRaster.height,
-      rasterOffset = firstRaster.offset,
-      animation = {
-        sourceSequence = 0,
-        playMode = publishedSequences[1].playMode,
-        loopStartFrameIdx = publishedSequences[1].loopStartFrameIdx,
-        frames = publishedFrames,
-        sequences = publishedSequences,
-      },
+  end
+  error(
+    Errors.new("BATTLE_TRAINER_PICTURE_UNKNOWN", "unknown trainer picture selector: " .. tostring(selector), {
+      selector = selector,
+    }),
+    0
+  )
+end
+
+-- Compiles exactly one trainer picture selector: its entry plus the
+-- selector-owned image rasters. Within-selector identical rasters share
+-- one staged image; no sibling class archive is opened for this job.
+---@param romFs RomFs
+---@param opts { versionId: string }? compiler options
+---@param selector string `front:CLASS` or `back:CLASS`
+---@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, provenance: table<string, unknown>, catalogIdentity: string }
+function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts, selector)
+  opts = opts or {}
+  local versionId = opts.versionId or romFs:version()
+  checkVersion(versionId)
+  local source = Sources.TRAINER_PICTURES
+  local resolved = trainerSourceFor(selector)
+  local archive = openArchive(romFs, resolved.archiveSymbol, "trainer portraits")
+  local sourceSequences = compileTrainerPicture(archive, resolved.memberBase, resolved.label)
+  local drawableKey = source.outputPrefix .. selector
+  local imageBase = "trainer-pictures/" .. selector:gsub(":", "-")
+  local imageByRaster = {}
+  local images = {}
+  local publishedSequences = {}
+  for _, sequence in ipairs(sourceSequences) do
+    local publishedFrames = {}
+    for frameIndex, frame in ipairs(sequence.frames) do
+      local raster = frame.raster
+      local contentKey = raster.width .. "x" .. raster.height .. ":" .. raster.pixels
+      local stagedImageName = imageByRaster[contentKey]
+      local imagePath
+      if stagedImageName == nil then
+        if sequence.sourceSequence == 0 and frameIndex == 1 then
+          stagedImageName = imageBase
+        elseif sequence.sourceSequence == 0 then
+          stagedImageName = imageBase .. "-frame-" .. tostring(frame.sourceFrame)
+        else
+          stagedImageName = imageBase
+            .. "-sequence-"
+            .. tostring(sequence.sourceSequence)
+            .. "-frame-"
+            .. tostring(frame.sourceFrame)
+        end
+        imageByRaster[contentKey] = stagedImageName
+        imagePath = BattlePresentationCache.assetDir() .. "/" .. stagedImageName .. ".png"
+        images[imagePath] = raster
+      else
+        imagePath = BattlePresentationCache.assetDir() .. "/" .. stagedImageName .. ".png"
+      end
+      local frameDrawableKey
+      if sequence.sourceSequence == 0 then
+        frameDrawableKey = frameIndex == 1 and drawableKey or (drawableKey .. ":frame:" .. tostring(frame.sourceFrame))
+      else
+        frameDrawableKey = drawableKey
+          .. ":sequence:"
+          .. tostring(sequence.sourceSequence)
+          .. ":frame:"
+          .. tostring(frame.sourceFrame)
+      end
+      publishedFrames[#publishedFrames + 1] = {
+        drawableKey = frameDrawableKey,
+        image = imagePath,
+        rasterOffset = raster.offset,
+        durationTicks = frame.durationTicks,
+        sourceFrame = frame.sourceFrame,
+        userAttr = frame.userAttr,
+      }
+    end
+    publishedSequences[#publishedSequences + 1] = {
+      sourceSequence = sequence.sourceSequence,
+      playMode = sequence.playMode,
+      loopStartFrameIdx = sequence.loopStartFrameIdx,
+      frames = publishedFrames,
     }
   end
-  local backArchive = openArchive(romFs, source.backArchive, "player trainer portraits")
-  for classKey, backpicId in pairs(source.backClasses) do
-    assert(
-      type(classKey) == "string" and type(backpicId) == "number",
-      "player backpic map is semantic and source-owned"
-    )
-    local memberBase = backpicId * source.membersPerClass
-    local imageName = "trainer-back-" .. classKey
-    local sourceSequences = compileTrainerPicture(backArchive, memberBase, "player trainer back " .. classKey)
-    local selector = "back:" .. classKey
-    local drawableKey = source.outputPrefix .. selector
-    local publishedSequences = {}
-    for _, sequence in ipairs(sourceSequences) do
-      local publishedFrames = {}
-      for frameIndex, frame in ipairs(sequence.frames) do
-        local raster = frame.raster
-        local contentKey = raster.width .. "x" .. raster.height .. ":" .. raster.pixels
-        local stagedImageName = imageByRaster[contentKey]
-        if stagedImageName == nil then
-          if sequence.sourceSequence == 0 and frameIndex == 1 then
-            stagedImageName = imageName
-          elseif sequence.sourceSequence == 0 then
-            stagedImageName = imageName .. "-frame-" .. tostring(frame.sourceFrame)
-          else
-            stagedImageName = imageName
-              .. "-sequence-"
-              .. tostring(sequence.sourceSequence)
-              .. "-frame-"
-              .. tostring(frame.sourceFrame)
-          end
-          imageByRaster[contentKey] = stagedImageName
-          imageSlices[stagedImageName] = raster
-        end
-        local frameDrawableKey
-        if sequence.sourceSequence == 0 then
-          frameDrawableKey = frameIndex == 1 and drawableKey
-            or (drawableKey .. ":frame:" .. tostring(frame.sourceFrame))
-        else
-          frameDrawableKey = drawableKey
-            .. ":sequence:"
-            .. tostring(sequence.sourceSequence)
-            .. ":frame:"
-            .. tostring(frame.sourceFrame)
-        end
-        publishedFrames[#publishedFrames + 1] = {
-          drawableKey = frameDrawableKey,
-          image = BattlePresentationCache.globalImagePath(stagedImageName),
-          rasterOffset = raster.offset,
-          durationTicks = frame.durationTicks,
-          sourceFrame = frame.sourceFrame,
-          userAttr = frame.userAttr,
-        }
-      end
-      publishedSequences[#publishedSequences + 1] = {
-        sourceSequence = sequence.sourceSequence,
-        playMode = sequence.playMode,
-        loopStartFrameIdx = sequence.loopStartFrameIdx,
-        frames = publishedFrames,
-      }
-    end
-    local publishedFrames = assert(publishedSequences[1]).frames
-    local firstRaster = sourceSequences[1].frames[1].raster
-    local sourceThrowOffsets = assert(source.throwOffsets[backpicId], "trainer backpic has source throw offsets")
+  local publishedFrames = assert(publishedSequences[1]).frames
+  local firstRaster = sourceSequences[1].frames[1].raster
+  local entry = {
+    drawableKey = drawableKey,
+    image = publishedFrames[1].image,
+    width = firstRaster.width,
+    height = firstRaster.height,
+    rasterOffset = firstRaster.offset,
+    animation = {
+      sourceSequence = 0,
+      playMode = publishedSequences[1].playMode,
+      loopStartFrameIdx = publishedSequences[1].loopStartFrameIdx,
+      frames = publishedFrames,
+      sequences = publishedSequences,
+    },
+  }
+  if resolved.backpicId ~= nil then
+    local sourceThrowOffsets =
+      assert(source.throwOffsets[resolved.backpicId], "trainer backpic has source throw offsets")
     local throwOffsets = {}
     for _, offset in ipairs(sourceThrowOffsets) do
       throwOffsets[#throwOffsets + 1] = { x = offset.x, y = offset.y }
     end
-    entries[selector] = {
-      drawableKey = drawableKey,
-      image = publishedFrames[1].image,
-      width = firstRaster.width,
-      height = firstRaster.height,
-      rasterOffset = firstRaster.offset,
-      animation = {
-        sourceSequence = 0,
-        playMode = publishedSequences[1].playMode,
-        loopStartFrameIdx = publishedSequences[1].loopStartFrameIdx,
-        frames = publishedFrames,
-        sequences = publishedSequences,
-      },
-      throwOffsets = throwOffsets,
-    }
+    entry.throwOffsets = throwOffsets
   end
-  return entries, imageSlices
+  local metadata = romFs:metadata()
+  return {
+    selector = selector,
+    entry = entry,
+    images = images,
+    provenance = {
+      archiveSymbol = resolved.archiveSymbol,
+      memberBase = resolved.memberBase,
+    },
+    catalogIdentity = versionId .. ":" .. metadata.sha1,
+  }
+end
+
+-- Stages one compiled trainer picture leaf through a worker artifact: the
+-- schema-valid record, exactly its owned frame images, and the completion
+-- marker. Returns the marker.
+---@param artifact PreparedArtifact
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, catalogIdentity: string } compiled trainer picture leaf
+---@param marker string completion marker
+---@return string marker
+function BattlePresentationCompiler.stageTrainerPicture(artifact, leaf, marker)
+  assert(type(marker) == "string" and marker ~= "", "trainer picture staging requires its marker")
+  assert(type(leaf) == "table" and type(leaf.selector) == "string", "trainer picture staging requires its leaf")
+  local stage = artifact:stageFs()
+  artifact:addOwnedRoot(BattlePresentationCache.trainerPicturePath(leaf.selector))
+  artifact:addOwnedRoot(BattlePresentationCache.trainerPictureMarkerPath(leaf.selector))
+  stage:writeLua(BattlePresentationCache.trainerPicturePath(leaf.selector), {
+    schema = BattlePresentationSchema.TRAINER_PICTURE_SCHEMA,
+    selector = leaf.selector,
+    catalogIdentity = leaf.catalogIdentity,
+    entry = leaf.entry,
+  })
+  local paths = {}
+  for path in pairs(leaf.images) do
+    paths[#paths + 1] = path
+  end
+  table.sort(paths)
+  for _, path in ipairs(paths) do
+    local raster = leaf.images[path]
+    artifact:addOwnedRoot(path)
+    stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
+  end
+  stage:write(BattlePresentationCache.trainerPictureMarkerPath(leaf.selector), marker)
+  return marker
+end
+
+-- The content identity behind one trainer picture completion marker.
+---@param romSha1 string
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }> } compiled trainer picture leaf
+---@return string marker
+function BattlePresentationCompiler.trainerPictureMarker(romSha1, leaf)
+  local imageHashes = {}
+  for path, raster in pairs(leaf.images) do
+    imageHashes[path] = Hashing.sha1hex(raster.pixels)
+  end
+  return BattlePresentationCache.marker(
+    romSha1,
+    Hashing.hashLua({ selector = leaf.selector, entry = leaf.entry, images = imageHashes })
+  )
 end
 
 -- Reads sBallColors from the overlay image: one BGR555 word per ball id.
@@ -3137,88 +3045,177 @@ local function compileBallParticleSet(archive, memberId, emitterCount, itemKey, 
   return { seed = compiled.particles.seed, emitters = compiled.particles.emitters, textures = textures }
 end
 
+-- Compiles exactly one ball selector: its frame rasters plus the
+-- optional seal/burst particle sets. Only the selected sprite and particle
+-- source members are decoded; the shared fade-color table is read through
+-- the existing overlay helper.
 ---@param romFs RomFs
----@return table<string, BattlePresentationCache.BallEntry> entries keyed by semantic ball selector
----@return table<string, { width: integer, height: integer, pixels: string }> image slices keyed by generated image name
----@return table<string, string> particle texture PNG bytes keyed by cache path
-function BattlePresentationCompiler.compileBattleBalls(romFs)
+---@param opts { versionId: string }? compiler options
+---@param selector string `ball:ITEM` semantic ball selector
+---@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
+function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector)
+  opts = opts or {}
+  local versionId = opts.versionId or romFs:version()
+  checkVersion(versionId)
   local source = Sources.BALL_PICTURES
+  local itemKey = type(selector) == "string" and selector:match("^ball:([A-Z][A-Z0-9_]*)$")
+  local resource = itemKey ~= nil and source.entries[itemKey] or nil
+  if resource == nil then
+    error(
+      Errors.new("BATTLE_BALL_UNKNOWN", "unknown battle ball selector: " .. tostring(selector), {
+        selector = selector,
+      }),
+      0
+    )
+  end
   local archive = openArchive(romFs, source.archive, "ball sprites")
   local particleSources = Sources.BALL_PARTICLES
   local particleArchive = openArchive(romFs, particleSources.archive, "ball particles")
   local fadeColors = readBallFadeColors(romFs, source.fadeColors)
-  local entries = {}
-  local imageSlices = {}
-  local particlePngs = {}
-  for itemKey, resource in pairs(source.entries) do
-    local ballId = resource.ballId
-    local label = "battle ball " .. itemKey
-    local charData = decodeChars(archive, resource.characterMember, label .. " characters")
-    local paletteData = decodePalette(archive, resource.paletteMember, label .. " palette")
-    local cellBytes = decodeMember(archive, resource.cellMember, label .. " cells")
-    local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
-    cellData = mustDecode(cellData, cellErr, label .. " cells", resource.cellMember)
-    local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
-    mapping = mustDecode(mapping, mappingErr, label .. " cell mapping", resource.cellMember)
-    local animationData = decodeAnimation(archive, resource.animationMember, label .. " animation")
-    local animation = assert(animationData.anims[1], label .. " has its source animation")
-    local selector = "ball:" .. itemKey
-    local frames = {}
-    for sourceFrameIndex = 1, #animation.frames do
-      local raster = G2dRasterizer.renderAnimationFrame(
-        charData,
-        paletteData,
-        cellData,
-        animation,
-        sourceFrameIndex,
-        { asset = "battle-balls", member = resource.animationMember, role = label, frame = sourceFrameIndex - 1 },
-        nil,
-        mapping
-      )
-      local frameIndex = sourceFrameIndex - 1
-      local imageName = "battle-ball-" .. itemKey .. "-" .. frameIndex
-      local drawableKey = "battle-ball:" .. itemKey .. ":" .. frameIndex
-      imageSlices[imageName] = raster
-      frames[#frames + 1] = {
-        drawableKey = drawableKey,
-        image = BattlePresentationCache.globalImagePath(imageName),
-        width = raster.width,
-        height = raster.height,
-      }
-    end
-    assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
-    local entry = { frames = frames, fadeColor = fadeColors[ballId] }
-    local particleSource = assert(particleSources.entries[itemKey], "every ball sprite has its particle sources")
-    if particleSources.unrepresented[itemKey] == nil then
-      -- BallThrow_CaptureStateOpen starts the burst once the opening
-      -- animation (sequence 1) reaches its third frame, one task step after
-      -- the first two frames' durations elapsed.
-      local opening = assert(animationData.anims[2], label .. " has its opening animation")
-      assert(#opening.frames >= 3, label .. " opening animation reaches its third frame")
-      entry.particles = {
-        seal = compileBallParticleSet(
-          particleArchive,
-          particleSource.sealMember,
-          particleSource.sealEmitterCount,
-          itemKey,
-          "seal",
-          particlePngs
-        ),
-        burst = compileBallParticleSet(
-          particleArchive,
-          particleSource.burstMember,
-          particleSource.burstEmitterCount,
-          itemKey,
-          "burst",
-          particlePngs
-        ),
-        clickEmitter = particleSource.burstClickEmitter,
-        burstStartTick = opening.frames[1].duration + opening.frames[2].duration + 1,
-      }
-    end
-    entries[selector] = entry
+  local ballId = resource.ballId
+  local label = "battle ball " .. itemKey
+  local charData = decodeChars(archive, resource.characterMember, label .. " characters")
+  local paletteData = decodePalette(archive, resource.paletteMember, label .. " palette")
+  local cellBytes = decodeMember(archive, resource.cellMember, label .. " cells")
+  local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
+  cellData = mustDecode(cellData, cellErr, label .. " cells", resource.cellMember)
+  local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = label .. " cells" })
+  mapping = mustDecode(mapping, mappingErr, label .. " cell mapping", resource.cellMember)
+  local animationData = decodeAnimation(archive, resource.animationMember, label .. " animation")
+  local animation = assert(animationData.anims[1], label .. " has its source animation")
+  local images = {}
+  local frames = {}
+  for sourceFrameIndex = 1, #animation.frames do
+    local raster = G2dRasterizer.renderAnimationFrame(
+      charData,
+      paletteData,
+      cellData,
+      animation,
+      sourceFrameIndex,
+      { asset = "battle-balls", member = resource.animationMember, role = label, frame = sourceFrameIndex - 1 },
+      nil,
+      mapping
+    )
+    local frameIndex = sourceFrameIndex - 1
+    local imagePath = BattlePresentationCache.assetDir() .. "/balls/" .. itemKey .. "-" .. frameIndex .. ".png"
+    local drawableKey = "battle-ball:" .. itemKey .. ":" .. frameIndex
+    images[imagePath] = raster
+    frames[#frames + 1] = {
+      drawableKey = drawableKey,
+      image = imagePath,
+      width = raster.width,
+      height = raster.height,
+    }
   end
-  return entries, imageSlices, particlePngs
+  assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
+  local entry = { frames = frames, fadeColor = fadeColors[ballId] }
+  local particlePngs = {}
+  local particleSource = assert(particleSources.entries[itemKey], "every ball sprite has its particle sources")
+  if particleSources.unrepresented[itemKey] == nil then
+    -- BallThrow_CaptureStateOpen starts the burst once the opening
+    -- animation (sequence 1) reaches its third frame, one task step after
+    -- the first two frames' durations elapsed.
+    local opening = assert(animationData.anims[2], label .. " has its opening animation")
+    assert(#opening.frames >= 3, label .. " opening animation reaches its third frame")
+    entry.particles = {
+      seal = compileBallParticleSet(
+        particleArchive,
+        particleSource.sealMember,
+        particleSource.sealEmitterCount,
+        itemKey,
+        "seal",
+        particlePngs
+      ),
+      burst = compileBallParticleSet(
+        particleArchive,
+        particleSource.burstMember,
+        particleSource.burstEmitterCount,
+        itemKey,
+        "burst",
+        particlePngs
+      ),
+      clickEmitter = particleSource.burstClickEmitter,
+      burstStartTick = opening.frames[1].duration + opening.frames[2].duration + 1,
+    }
+  end
+  local metadata = romFs:metadata()
+  return {
+    selector = selector,
+    entry = entry,
+    images = images,
+    pngImages = particlePngs,
+    provenance = {
+      spriteMembers = {
+        animation = resource.animationMember,
+        cell = resource.cellMember,
+        character = resource.characterMember,
+        palette = resource.paletteMember,
+      },
+      particleMembers = { seal = particleSource.sealMember, burst = particleSource.burstMember },
+    },
+    catalogIdentity = versionId .. ":" .. metadata.sha1,
+  }
+end
+
+-- Stages one compiled ball leaf through a worker artifact: the
+-- schema-valid record, exactly its owned frame and particle images, and
+-- the completion marker. Returns the marker.
+---@param artifact PreparedArtifact
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, catalogIdentity: string } compiled ball leaf
+---@param marker string completion marker
+---@return string marker
+function BattlePresentationCompiler.stageBall(artifact, leaf, marker)
+  assert(type(marker) == "string" and marker ~= "", "ball staging requires its marker")
+  assert(type(leaf) == "table" and type(leaf.selector) == "string", "ball staging requires its leaf")
+  local stage = artifact:stageFs()
+  artifact:addOwnedRoot(BattlePresentationCache.ballPath(leaf.selector))
+  artifact:addOwnedRoot(BattlePresentationCache.ballMarkerPath(leaf.selector))
+  stage:writeLua(BattlePresentationCache.ballPath(leaf.selector), {
+    schema = BattlePresentationSchema.BALL_SCHEMA,
+    selector = leaf.selector,
+    catalogIdentity = leaf.catalogIdentity,
+    entry = leaf.entry,
+  })
+  local paths = {}
+  for path in pairs(leaf.images) do
+    paths[#paths + 1] = path
+  end
+  table.sort(paths)
+  for _, path in ipairs(paths) do
+    local raster = leaf.images[path]
+    artifact:addOwnedRoot(path)
+    stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
+  end
+  local pngPaths = {}
+  for path in pairs(leaf.pngImages) do
+    pngPaths[#pngPaths + 1] = path
+  end
+  table.sort(pngPaths)
+  for _, path in ipairs(pngPaths) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, leaf.pngImages[path])
+  end
+  stage:write(BattlePresentationCache.ballMarkerPath(leaf.selector), marker)
+  return marker
+end
+
+-- The content identity behind one ball completion marker.
+---@param romSha1 string
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string> } compiled ball leaf
+---@return string marker
+function BattlePresentationCompiler.ballMarker(romSha1, leaf)
+  local imageHashes = {}
+  for path, raster in pairs(leaf.images) do
+    imageHashes[path] = Hashing.sha1hex(raster.pixels)
+  end
+  local pngHashes = {}
+  for path, png in pairs(leaf.pngImages) do
+    pngHashes[path] = Hashing.sha1hex(png)
+  end
+  return BattlePresentationCache.marker(
+    romSha1,
+    Hashing.hashLua({ selector = leaf.selector, entry = leaf.entry, images = imageHashes, pngImages = pngHashes })
+  )
 end
 
 -- Compile the single EvolutionScene SPL resource and stage every texture
@@ -3449,6 +3446,116 @@ function BattlePresentationCompiler.compileEvolutionGraphics(romFs)
   return { records = records, images = images, provenance = provenance }
 end
 
+-- Compiles the single evolution bundle: the EvolutionScene particle set
+-- with the main, sub, and menu screen rasters plus the animated cursor.
+-- Requested only after an evolution need is known, never as ordinary
+-- battle preparation.
+---@param romFs RomFs
+---@param opts { versionId: string }? compiler options
+---@return { kind: string, particles: BattlePresentationCache.EvolutionParticleSet, graphics: BattlePresentationCache.EvolutionGraphics, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
+function BattlePresentationCompiler.compileEvolution(romFs, opts)
+  opts = opts or {}
+  local versionId = opts.versionId or romFs:version()
+  checkVersion(versionId)
+  local particles, particlePngs, particleProvenance = BattlePresentationCompiler.compileEvolutionParticles(romFs)
+  local compiled = BattlePresentationCompiler.compileEvolutionGraphics(romFs)
+  local graphics = compiled.records
+  local images = {}
+  for _, layerName in ipairs({ "main", "sub", "menu" }) do
+    images[graphics[layerName].image] =
+      assert(compiled.images[layerName], "evolution graphics carry the staged " .. layerName .. " raster")
+  end
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    for _, frame in ipairs(graphics.cursor.animations[animationRole].frames) do
+      local key = "cursor-" .. animationRole .. "-" .. frame.sourceFrame
+      images[frame.image] = assert(compiled.images[key], "evolution graphics carry the staged cursor frame " .. key)
+    end
+  end
+  local metadata = romFs:metadata()
+  return {
+    kind = "evolution",
+    particles = particles,
+    graphics = graphics,
+    images = images,
+    pngImages = particlePngs,
+    provenance = { particles = particleProvenance, graphics = compiled.provenance },
+    catalogIdentity = versionId .. ":" .. metadata.sha1,
+  }
+end
+
+-- Stages the compiled evolution bundle through a worker artifact: the
+-- schema-valid record, exactly its owned screens, cursor frames, and
+-- particle textures, and the completion marker. Returns the marker.
+---@param artifact PreparedArtifact
+---@param evolution { kind: string, particles: BattlePresentationCache.EvolutionParticleSet, graphics: BattlePresentationCache.EvolutionGraphics, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, catalogIdentity: string } compiled evolution bundle
+---@param marker string completion marker
+---@return string marker
+function BattlePresentationCompiler.stageEvolution(artifact, evolution, marker)
+  assert(type(marker) == "string" and marker ~= "", "evolution staging requires its marker")
+  assert(type(evolution) == "table" and evolution.kind == "evolution", "evolution staging requires its bundle")
+  local stage = artifact:stageFs()
+  artifact:addOwnedRoot(BattlePresentationCache.evolutionPath())
+  artifact:addOwnedRoot(BattlePresentationCache.evolutionMarkerPath())
+  stage:writeLua(BattlePresentationCache.evolutionPath(), {
+    schema = BattlePresentationSchema.EVOLUTION_SCHEMA,
+    kind = "evolution",
+    catalogIdentity = evolution.catalogIdentity,
+    particles = evolution.particles,
+    graphics = evolution.graphics,
+  })
+  local paths = {}
+  for path in pairs(evolution.images) do
+    paths[#paths + 1] = path
+  end
+  table.sort(paths)
+  for _, path in ipairs(paths) do
+    local raster = evolution.images[path]
+    artifact:addOwnedRoot(path)
+    stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
+  end
+  local pngPaths = {}
+  for path in pairs(evolution.pngImages) do
+    pngPaths[#pngPaths + 1] = path
+  end
+  table.sort(pngPaths)
+  for _, path in ipairs(pngPaths) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, evolution.pngImages[path])
+  end
+  stage:write(BattlePresentationCache.evolutionMarkerPath(), marker)
+  return marker
+end
+
+-- The content identity behind the evolution completion marker.
+---@param romSha1 string
+---@param evolution { particles: BattlePresentationCache.EvolutionParticleSet, graphics: BattlePresentationCache.EvolutionGraphics, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string> } compiled evolution bundle
+---@return string marker
+function BattlePresentationCompiler.evolutionMarker(romSha1, evolution)
+  local imageHashes = {}
+  for path, raster in pairs(evolution.images) do
+    imageHashes[path] = Hashing.sha1hex(raster.pixels)
+  end
+  local pngHashes = {}
+  for path, png in pairs(evolution.pngImages) do
+    pngHashes[path] = Hashing.sha1hex(png)
+  end
+  return BattlePresentationCache.marker(
+    romSha1,
+    Hashing.hashLua({
+      kind = "evolution",
+      particles = evolution.particles,
+      graphics = evolution.graphics,
+      images = imageHashes,
+      pngImages = pngHashes,
+    })
+  )
+end
+
+-- Compile the shared ordinary battle UI: menu compositions, health-box
+-- and arrow sprites with their animations, party gauges, terrain bake
+-- inputs, lower palettes per background, font/audio references, and the
+-- supported scene inventory. Returns the verified manifest, the staged
+-- image buffers by slice name, and the producer provenance beside it.
 function BattlePresentationCompiler.compileGlobal(romFs, opts)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -3483,24 +3590,9 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local function stageSlice(name, pixels, width, height)
       images[name] = { width = width, height = height, pixels = pixels }
     end
-    staging.trainerPictures, staging.trainerImageSlices = BattlePresentationCompiler.compileTrainerPictures(romFs)
-    for imageName, raster in pairs(staging.trainerImageSlices) do
-      stageSlice(imageName, raster.pixels, raster.width, raster.height)
-    end
-    staging.battleBalls, staging.ballImageSlices, staging.ballParticlePngs =
-      BattlePresentationCompiler.compileBattleBalls(romFs)
-    staging.evolutionParticles, staging.evolutionParticlePngs, staging.evolutionParticleProvenance =
-      BattlePresentationCompiler.compileEvolutionParticles(romFs)
-    local evolutionGraphics = BattlePresentationCompiler.compileEvolutionGraphics(romFs)
-    staging.evolutionGraphics = evolutionGraphics.records
-    staging.evolutionGraphicsImageSlices = evolutionGraphics.images
-    staging.evolutionGraphicsProvenance = evolutionGraphics.provenance
-    for layerName, raster in pairs(evolutionGraphics.images) do
-      stageSlice("evolution-" .. layerName, raster.pixels, raster.width, raster.height)
-    end
-    for imageName, raster in pairs(staging.ballImageSlices) do
-      stageSlice(imageName, raster.pixels, raster.width, raster.height)
-    end
+    -- Trainer pictures, ball art, and evolution presentation compile
+    -- through their own selector-scoped leaf jobs; the shared core stages
+    -- only genuinely shared art below.
     local shadowArchive = openArchive(romFs, Sources.POKE_SHADOW.archive, "Pokepic shadow art")
     local shadowCharacterBytes =
       decodeMember(shadowArchive, Sources.POKE_SHADOW.characterMember, "Pokepic shadow characters")
@@ -4008,9 +4100,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local transitionCatalogKeys = sortedSetValues(transition.keySet)
     local transitionCoverage = transitionRouteCoverage(transitionRoutes, resourceCatalog, messageEntries)
 
-    local audioCompiler = require("romdump.src.digest.audio.AudioCompiler")
-    local audioPlan, audioPlanError = audioCompiler.planSource(romFs)
-    local introMusic = compileIntroMusic(romFs, audioPlan, audioPlanError)
+    local introMusic = compileIntroMusic()
 
     local sourceMessageRouteKeys = {}
     for sourceName, sourceRoute in pairs(Sources.MESSAGE_SOURCE_ROUTES) do
@@ -4101,10 +4191,6 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           regions = shadowRegions,
         },
       },
-      trainerPictures = { entries = staging.trainerPictures },
-      battleBalls = { entries = staging.battleBalls },
-      evolutionParticles = staging.evolutionParticles,
-      evolutionGraphics = staging.evolutionGraphics,
       menus = {
         images = imageManifest,
         layouts = menuLayouts,
@@ -4224,8 +4310,6 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       transitionSourceResources = transition.sourceResources,
       transitionResourceMembers = transition.resourceMembers,
       transitionParticleMembers = transition.particleMembers,
-      evolutionParticles = staging.evolutionParticleProvenance,
-      evolutionGraphics = staging.evolutionGraphicsProvenance,
       menuTilemaps = menuTilemapProvenance,
       menuLayouts = menuLayoutProvenance,
       menuLayerIndices = menuLayerIndices,
@@ -4249,16 +4333,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     return {
       manifest = partialManifest,
       images = images,
-      pngImages = (function()
-        local pngImages = {}
-        for path, bytes in pairs(staging.ballParticlePngs) do
-          pngImages[path] = bytes
-        end
-        for path, bytes in pairs(staging.evolutionParticlePngs) do
-          pngImages[path] = bytes
-        end
-        return pngImages
-      end)(),
+      pngImages = {},
       resourcePayloads = resourcePayloads,
       provenance = provenance,
       blockers = blockers,

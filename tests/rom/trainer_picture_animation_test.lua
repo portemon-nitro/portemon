@@ -8,7 +8,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 
-function T.koga_objectless_animation_frames_compile_as_transparent(romFs)
+function T.koga_objectless_animation_frames_compile_as_transparent(romFs, versionId)
   local archive = assert(romFs:openNarc("NARC_a_0_5_8"))
   local cells = assert(G2dDecoder.decodeCell(assert(archive:readMember(447))))
   local animation = assert(G2dDecoder.decodeAnimation(assert(archive:readMember(448))))
@@ -21,16 +21,22 @@ function T.koga_objectless_animation_frames_compile_as_transparent(romFs)
   Assert.equal(animation.anims[2].frames[1].duration, 20, "the throw sequence keeps its blank phase duration")
   Assert.equal(animation.anims[3].frames[1].duration, 4, "the entry sequence keeps its blank phase duration")
 
-  local entries, slices = BattlePresentationCompiler.compileTrainerPictures(romFs)
-  local koga = assert(entries["front:ELITE_FOUR_KOGA"])
+  local leaf = assert(
+    BattlePresentationCompiler.compileTrainerPictureForSelector(
+      romFs,
+      { versionId = versionId },
+      "front:ELITE_FOUR_KOGA"
+    )
+  )
+  local koga = leaf.entry
+  local slices = leaf.images
   local sequences = assert(koga.animation and koga.animation.sequences)
   for sequenceIndex, duration in ipairs({ 20, 4 }) do
     local frame = assert(sequences[sequenceIndex + 1].frames[1])
     Assert.equal(frame.durationTicks, duration, "compiled blank phases retain source duration")
     Assert.equal(frame.userAttr, 0, "compiled blank phases retain source user attributes")
     Assert.deepEqual(frame.rasterOffset, { x = 0, y = 0 }, "blank cells have no source raster origin")
-    local imageName = assert(frame.image:match("([^/]+)%.png$"))
-    local image = assert(slices[imageName], "compiled blank phase has a staged raster")
+    local image = assert(slices[frame.image], "compiled blank phase has a staged raster")
     Assert.deepEqual(
       { image.width, image.height, image.pixels },
       { 1, 1, string.rep("\0", 4) },

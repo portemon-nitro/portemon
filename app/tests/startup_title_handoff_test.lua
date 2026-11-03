@@ -384,6 +384,73 @@ function T.tests.title_is_presented_while_menu_and_first_play_are_pending()
   end)
 end
 
+-- The opening movie queues the shared battle core once at title entry:
+-- exactly one near-priority demand for the selected epoch, no per-leaf
+-- bulk requests, and the pending core never gates the title journey.
+function T.tests.opening_movie_queues_only_the_shared_battle_core_once()
+  withStartup(function()
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the title journey reaches its movie while the shared core stays pending")
+    local shared, sharedUrgency, leaves = 0, nil, {}
+    for _, request in ipairs(active.requests) do
+      local selector = request.selector
+      if selector.requestKind == "battle-presentation" then
+        shared = shared + 1
+        sharedUrgency = selector.urgency
+      elseif
+        selector.requestKind == "battle-trainer-picture"
+        or selector.requestKind == "battle-ball"
+        or selector.requestKind == "battle-evolution"
+      then
+        leaves[#leaves + 1] = selector.requestKind
+      end
+    end
+    Assert.equal(shared, 1, "the opening movie queues the shared battle core exactly once")
+    Assert.equal(sharedUrgency, "near", "the startup core demand never outranks title work")
+    Assert.deepEqual(leaves, {}, "the opening never bulk-enqueues leaf art")
+    Assert.equal(#active.menus, 0, "the core demand precedes any menu transfer")
+    Assert.equal(active.sweeps or 0, 1, "the title entry authorizes background completion once")
+    for _ = 1, 10 do
+      App.update(SourceTick.DT)
+    end
+    local reselected = 0
+    for _, request in ipairs(active.requests) do
+      if request.selector.requestKind == "battle-presentation" then
+        reselected = reselected + 1
+      end
+    end
+    Assert.equal(reselected, 1, "repeated movie ticks issue no duplicate global interest")
+  end)
+end
+
+-- A failed save-agnostic warmup request stays a diagnostic: the title
+-- journey still presents while the failure is recorded.
+function T.tests.failed_core_warmup_keeps_the_title_journey()
+  withStartup(function()
+    local baseRequest = App.service.request
+    App.service.request = function(self, epoch, selector)
+      if selector.requestKind == "battle-presentation" then
+        error("synthetic battle core warmup failure")
+      end
+      return baseRequest(self, epoch, selector)
+    end
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "a failed core warmup never stalls the title movie")
+    Assert.isTrue(
+      tostring(App.startupWarmupError):find("synthetic battle core warmup failure", 1, true) ~= nil,
+      "the failed warmup is preserved for the diagnostic surface: " .. tostring(App.startupWarmupError)
+    )
+    local leaves = {}
+    for _, request in ipairs(active.requests) do
+      local kind = request.selector.requestKind
+      if kind == "battle-trainer-picture" or kind == "battle-ball" or kind == "battle-evolution" then
+        leaves[#leaves + 1] = kind
+      end
+    end
+    Assert.deepEqual(leaves, {}, "a failed core warmup enrolls no leaf art")
+  end)
+end
+
 function T.tests.early_skip_waits_on_the_title_then_transfers_the_staged_menu_once()
   withStartup(function()
     local state = startTitle()
@@ -1252,14 +1319,10 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
   }
   local function fakeLoading()
     local presentation = {}
-    function presentation:update()
-    end
-    function presentation:resize()
-    end
-    function presentation:draw()
-    end
-    function presentation:dispose()
-    end
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
     function presentation:adoptGeneratedAssets()
       return true
     end
@@ -1283,13 +1346,11 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
   end
   local function fakeMovie()
     local movie = { draws = 0 }
-    function movie:updateFixed()
-    end
+    function movie:updateFixed() end
     function movie:draw()
       self.draws = self.draws + 1
     end
-    function movie:resize()
-    end
+    function movie:resize() end
     function movie:skipAllowed()
       return false
     end
@@ -1302,8 +1363,7 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
     function movie:sceneNumber()
       return 1
     end
-    function movie:dispose()
-    end
+    function movie:dispose() end
     return movie
   end
   local function build(initialImport)
@@ -1624,7 +1684,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
         onFinished = function()
           error("the " .. mode .. " case never finishes")
         end,
-          onCancel = function()
+        onCancel = function()
           cancelled = true
         end,
         isCurrent = function()
@@ -1639,10 +1699,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
       for _ = 1, 5 do
         state:update(SourceTick.DT)
       end
-      Assert.isFalse(
-        state.phase == "movie",
-        "the " .. mode .. " never admits a silent movie"
-      )
+      Assert.isFalse(state.phase == "movie", "the " .. mode .. " never admits a silent movie")
       Assert.equal(ticks, 0, "the " .. mode .. " advances no source tick")
       state:draw()
       Assert.notNil(statuses[#statuses], "the " .. mode .. " stays visible with a diagnostic")
@@ -1694,13 +1751,25 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
         frames = frames,
         released = 0,
       }
-      function data:getSample() return 0 end
-      function data:getSampleCount() return frames end
-      function data:getChannelCount() return channels end
-      function data:getSize() return frames * channels * 2 end
-      function data:getFFIPointer() return backing end
+      function data:getSample()
+        return 0
+      end
+      function data:getSampleCount()
+        return frames
+      end
+      function data:getChannelCount()
+        return channels
+      end
+      function data:getSize()
+        return frames * channels * 2
+      end
+      function data:getFFIPointer()
+        return backing
+      end
       function data:setSample() end
-      function data:release() self.released = self.released + 1 end
+      function data:release()
+        self.released = self.released + 1
+      end
       host.soundData[#host.soundData + 1] = data
       return data
     end
@@ -1725,9 +1794,15 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
         self.playing = true
         return true
       end
-      function source:isPlaying() return self.playing end
-      function source:getFreeBufferCount() return self.free end
-      function source:release() self.released = self.released + 1 end
+      function source:isPlaying()
+        return self.playing
+      end
+      function source:getFreeBufferCount()
+        return self.free
+      end
+      function source:release()
+        self.released = self.released + 1
+      end
       host.sources[#host.sources + 1] = source
       return source
     end
@@ -1759,7 +1834,8 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
       versionId = "heartgold",
       titleRecord = { crySpeciesId = 250 },
       audioComposition = { sound = sound, sink = sink },
-    }), sink
+    }),
+      sink
   end
   local function fakeHostMilestones()
     local host = {}
@@ -1769,7 +1845,9 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
       end
       return false, nil
     end
-    function host.requestOpeningScene(_, _) return true, nil end
+    function host.requestOpeningScene(_, _)
+      return true, nil
+    end
     return host
   end
   local ok, err = xpcall(function()
@@ -1783,43 +1861,78 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
       local playCounter = { count = 0 }
       local session, _ = buildSession(host, playCounter)
       local movie = {}
-      function movie:updateFixed() ticks = ticks + 1 order[#order + 1] = "tick" end
+      function movie:updateFixed()
+        ticks = ticks + 1
+        order[#order + 1] = "tick"
+      end
       function movie:draw() end
       function movie:resize() end
-      function movie:skipAllowed() return false end
-      function movie:requestSkip() return false end
-      function movie:isFinished() return false end
-      function movie:sceneNumber() return 1 end
+      function movie:skipAllowed()
+        return false
+      end
+      function movie:requestSkip()
+        return false
+      end
+      function movie:isFinished()
+        return false
+      end
+      function movie:sceneNumber()
+        return 1
+      end
       function movie:dispose() end
-      CacheFs.forVersion = function(_) return {} end
-      MovieModule.loadValidatedScenes = function() return { {}, {}, {}, {}, {} } end
-      MovieModule.new = function(_) return movie end
+      CacheFs.forVersion = function(_)
+        return {}
+      end
+      MovieModule.loadValidatedScenes = function()
+        return { {}, {}, {}, {}, {} }
+      end
+      MovieModule.new = function(_)
+        return movie
+      end
       local state = StartupTitleState.new({
         versionId = "heartgold",
         epoch = 11,
         derivedAssets = fakeHostMilestones(),
-        stageMenu = function() error("refused queue never stages a menu") end,
-        onFinished = function() error("refused queue never finishes") end,
-          isCurrent = function() return true end,
+        stageMenu = function()
+          error("refused queue never stages a menu")
+        end,
+        onFinished = function()
+          error("refused queue never finishes")
+        end,
+        isCurrent = function()
+          return true
+        end,
         width = 800,
         height = 600,
         initialImport = false,
         loading = fakeLoading(),
-        audio = { openingReady = function() return session:beginOpening() end },
+        audio = {
+          openingReady = function()
+            return session:beginOpening()
+          end,
+        },
       })
-      for _ = 1, 5 do state:update(SourceTick.DT) end
+      for _ = 1, 5 do
+        state:update(SourceTick.DT)
+      end
       Assert.isFalse(state.phase == "movie", "a refused first queue never admits the movie")
       Assert.equal(ticks, 0, "a refused first queue advances no source tick")
       Assert.equal(playCounter.count, 1, "the refused priming still accepts the voice once")
       host.refuseQueue = false
-      for _ = 1, 5 do state:update(SourceTick.DT) end
+      for _ = 1, 5 do
+        state:update(SourceTick.DT)
+      end
       Assert.isTrue(state.phase == "movie", "the retry primes and admits the movie")
       Assert.isTrue(ticks > 0, "the admitted movie ticks")
       Assert.equal(playCounter.count, 1, "the retry must not restart the accepted voice")
       local firstPrimed, firstTick = nil, nil
       for index, kind in ipairs(order) do
-        if kind == "primed" and firstPrimed == nil then firstPrimed = index end
-        if kind == "tick" and firstTick == nil then firstTick = index end
+        if kind == "primed" and firstPrimed == nil then
+          firstPrimed = index
+        end
+        if kind == "tick" and firstTick == nil then
+          firstTick = index
+        end
       end
       Assert.notNil(firstPrimed, "the retry queues host output")
       Assert.notNil(firstTick, "the admitted movie ticks")
@@ -1831,7 +1944,9 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
   CacheFs.forVersion = saved.forVersion
   MovieModule.loadValidatedScenes = saved.loadScenes
   MovieModule.new = saved.movieNew
-  if not ok then error(err, 0) end
+  if not ok then
+    error(err, 0)
+  end
 end
 
 -- Output loss during an active movie is visible and bounded: the active
@@ -1863,7 +1978,9 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     function presentation:resize() end
     function presentation:draw() end
     function presentation:dispose() end
-    function presentation:adoptGeneratedAssets() return true end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
     return presentation
   end
   local ok, err = xpcall(function()
@@ -1871,13 +1988,23 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     -- title phase ignores the same signal.
     local ticks = 0
     local movie = {}
-    function movie:updateFixed() ticks = ticks + 1 end
+    function movie:updateFixed()
+      ticks = ticks + 1
+    end
     function movie:draw() end
     function movie:resize() end
-    function movie:skipAllowed() return false end
-    function movie:requestSkip() return false end
-    function movie:isFinished() return false end
-    function movie:sceneNumber() return 1 end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:isFinished()
+      return false
+    end
+    function movie:sceneNumber()
+      return 1
+    end
     function movie:dispose() end
     local milestones = {}
     function milestones.requestMilestone(name, _)
@@ -1886,30 +2013,52 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       end
       return false, nil
     end
-    function milestones.requestOpeningScene(_, _) return true, nil end
-    CacheFs.forVersion = function(_) return {} end
-    MovieModule.loadValidatedScenes = function() return { {}, {}, {}, {}, {} } end
-    MovieModule.new = function(_) return movie end
+    function milestones.requestOpeningScene(_, _)
+      return true, nil
+    end
+    CacheFs.forVersion = function(_)
+      return {}
+    end
+    MovieModule.loadValidatedScenes = function()
+      return { {}, {}, {}, {}, {} }
+    end
+    MovieModule.new = function(_)
+      return movie
+    end
     local state = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 23,
       derivedAssets = milestones,
-      stageMenu = function() error("loss test never stages a menu") end,
-      onFinished = function() error("loss test never finishes") end,
-      isCurrent = function() return true end,
+      stageMenu = function()
+        error("loss test never stages a menu")
+      end,
+      onFinished = function()
+        error("loss test never finishes")
+      end,
+      isCurrent = function()
+        return true
+      end,
       width = 800,
       height = 600,
       initialImport = false,
       loading = fakeLoading(),
-      audio = { openingReady = function() return true end },
+      audio = {
+        openingReady = function()
+          return true
+        end,
+      },
     })
-    for _ = 1, 5 do state:update(SourceTick.DT) end
+    for _ = 1, 5 do
+      state:update(SourceTick.DT)
+    end
     Assert.equal(state.phase, "movie", "the movie admits before output loss")
     local admittedTicks = ticks
     Assert.isTrue(admittedTicks > 0, "the admitted movie ticks")
     state:openingAudioFailed("synthetic output loss")
     Assert.notNil(state.audioError, "the active movie records its output diagnostic")
-    for _ = 1, 5 do state:update(SourceTick.DT) end
+    for _ = 1, 5 do
+      state:update(SourceTick.DT)
+    end
     Assert.equal(ticks, admittedTicks, "no further movie ticks follow output loss")
     local status = state:_status()
     Assert.notNil(status, "the lost movie keeps a visible diagnostic")
@@ -1918,14 +2067,22 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       versionId = "heartgold",
       epoch = 24,
       derivedAssets = milestones,
-      stageMenu = function() return { draw = function() end, dispose = function() end } end,
+      stageMenu = function()
+        return { draw = function() end, dispose = function() end }
+      end,
       onFinished = function() end,
-      isCurrent = function() return true end,
+      isCurrent = function()
+        return true
+      end,
       width = 800,
       height = 600,
       initialImport = false,
       loading = fakeLoading(),
-      audio = { openingReady = function() return true end },
+      audio = {
+        openingReady = function()
+          return true
+        end,
+      },
     })
     titleState.phase = "title"
     titleState:openingAudioFailed("synthetic output loss")
@@ -1941,11 +2098,21 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       local ffi = require("ffi")
       local backing = ffi.new("int16_t[?]", frames * channels)
       local data = {}
-      function data:getSample() return 0 end
-      function data:getSampleCount() return frames end
-      function data:getChannelCount() return channels end
-      function data:getSize() return frames * channels * 2 end
-      function data:getFFIPointer() return backing end
+      function data:getSample()
+        return 0
+      end
+      function data:getSampleCount()
+        return frames
+      end
+      function data:getChannelCount()
+        return channels
+      end
+      function data:getSize()
+        return frames * channels * 2
+      end
+      function data:getFFIPointer()
+        return backing
+      end
       function data:setSample() end
       function data:release() end
       return data
@@ -1953,14 +2120,27 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     function host.newQueueableSource(sampleRate, bitDepth, channels, bufferCount)
       local source = { queueCalls = {}, playCalls = 0, playing = false, free = bufferCount, released = 0 }
       function source:queue(data)
-        if host.refuseQueue then host.refuseQueue = false return false end
+        if host.refuseQueue then
+          host.refuseQueue = false
+          return false
+        end
         self.queueCalls[#self.queueCalls + 1] = data
         self.free = self.free - 1
       end
-      function source:play() self.playCalls = self.playCalls + 1 self.playing = true return true end
-      function source:isPlaying() return self.playing end
-      function source:getFreeBufferCount() return self.free end
-      function source:release() self.released = self.released + 1 end
+      function source:play()
+        self.playCalls = self.playCalls + 1
+        self.playing = true
+        return true
+      end
+      function source:isPlaying()
+        return self.playing
+      end
+      function source:getFreeBufferCount()
+        return self.free
+      end
+      function source:release()
+        self.released = self.released + 1
+      end
       host.sources[#host.sources + 1] = source
       return source
     end
@@ -2010,7 +2190,9 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       self.updates = self.updates + 1
       error("synthetic later output failure")
     end
-    function failingSink:release() releases = releases + 1 end
+    function failingSink:release()
+      releases = releases + 1
+    end
     function failingSink:resetForNewTrack() end
     local appSound = {}
     function appSound:playMusic(_)
@@ -2028,29 +2210,53 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     })
     local appTicks = 0
     local appMovie = {}
-    function appMovie:updateFixed() appTicks = appTicks + 1 end
+    function appMovie:updateFixed()
+      appTicks = appTicks + 1
+    end
     function appMovie:draw() end
     function appMovie:resize() end
-    function appMovie:skipAllowed() return false end
-    function appMovie:requestSkip() return false end
-    function appMovie:isFinished() return false end
-    function appMovie:sceneNumber() return 1 end
+    function appMovie:skipAllowed()
+      return false
+    end
+    function appMovie:requestSkip()
+      return false
+    end
+    function appMovie:isFinished()
+      return false
+    end
+    function appMovie:sceneNumber()
+      return 1
+    end
     function appMovie:dispose() end
-    MovieModule.new = function(_) return appMovie end
+    MovieModule.new = function(_)
+      return appMovie
+    end
     local appState = StartupTitleState.new({
       versionId = "soulsilver",
       epoch = 31,
       derivedAssets = milestones,
-      stageMenu = function() error("app routing test never stages a menu") end,
-      onFinished = function() error("app routing test never finishes") end,
-      isCurrent = function(epoch) return epoch == 31 end,
+      stageMenu = function()
+        error("app routing test never stages a menu")
+      end,
+      onFinished = function()
+        error("app routing test never finishes")
+      end,
+      isCurrent = function(epoch)
+        return epoch == 31
+      end,
       width = 800,
       height = 600,
       initialImport = false,
       loading = fakeLoading(),
-      audio = { openingReady = function() return true end },
+      audio = {
+        openingReady = function()
+          return true
+        end,
+      },
     })
-    for _ = 1, 5 do appState:update(SourceTick.DT) end
+    for _ = 1, 5 do
+      appState:update(SourceTick.DT)
+    end
     Assert.equal(appState.phase, "movie", "the app movie admits before routing")
     local ticksBeforeFailure = appTicks
     App.state = appState
@@ -2072,7 +2278,9 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     Assert.equal(appTicks, ticksAfterFailure, "no further movie ticks follow the routed loss")
     Assert.isTrue(ticksAfterFailure >= ticksBeforeFailure, "routing never rewinds admitted ticks")
     appState:dispose()
-    if App.state == appState then App.state = nil end
+    if App.state == appState then
+      App.state = nil
+    end
     App.startupAudioSession = nil
   end, debug.traceback)
   CacheFs.forVersion = saved.forVersion
@@ -2088,7 +2296,9 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
   App._startupWarmup = saved.appWarmup
   App._pendingImport = saved.appPending
   App.provisioner = saved.appProvisioner
-  if not ok then error(err, 0) end
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return T

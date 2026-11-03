@@ -422,15 +422,20 @@ DerivedAssetContract.trainerCatalog = {
 
 -- The battle presentation class carries the source-backed ordinary battle
 -- UI: shared menu/HUD definitions, persistent scene variants, and exact
--- per-launch demand (portrait pages resolve through the mon class). Its
--- global manifest also carries the normalized EvolutionScene SPL set,
--- screen rasters, and tokenized retail text. One battle scene stages per
--- demanded key, and one effect stages per demanded animation key (manifest
--- v5 carries no per-effect program catalog; effect v3 voices name shared
--- audio sequence symbols instead of staging private sound payloads).
+-- per-launch demand (portrait pages resolve through the mon class). The
+-- global manifest carries only shared presentation plus semantic music
+-- selection routes; trainer pictures, ball art, and evolution art stage
+-- as independent leaf records with their own schemas. One battle scene
+-- stages per demanded key, and one effect stages per demanded animation
+-- key (manifest v5 carries no per-effect program catalog; effect v3
+-- voices name shared audio sequence symbols instead of staging private
+-- sound payloads).
 DerivedAssetContract.battlePresentation = {
   cacheFormat = "battle-presentation-cache-v5",
-  schema = "g4-battle-presentation-v11",
+  schema = "g4-battle-presentation-v12",
+  trainerPictureSchema = "g4-battle-trainer-picture-v1",
+  ballSchema = "g4-battle-ball-v1",
+  evolutionSchema = "g4-battle-evolution-v1",
   sceneSchema = "g4-battle-scene-v4",
   effectSchema = "g4-battle-effect-v4",
 }

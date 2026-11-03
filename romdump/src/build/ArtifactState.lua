@@ -76,9 +76,14 @@ ArtifactState.KINDS = {
   trainers = true,
   encounters = true,
   -- One staged battle presentation artifact per job: the shared ordinary
-  -- menu/HUD definitions own the global payload and marker, and each
+  -- menu/HUD definitions own the global payload and marker, each
+  -- demanded trainer picture and ball owns its selector-scoped record and
+  -- marker, the evolution bundle owns its own record and marker, and each
   -- demanded persistent scene owns its own composed image and marker.
   ["battle-presentation"] = true,
+  ["battle-trainer-picture"] = true,
+  ["battle-ball"] = true,
+  ["battle-evolution"] = true,
   ["battle-scene"] = true,
   -- One staged battle effect artifact per independently requested key: the
   -- normalized program plus its closed transitive resources.
@@ -193,6 +198,22 @@ local function checkKey(kind, key)
   end
   if kind == "battle-presentation" then
     assert(key == "global", "battle presentation only has the global job")
+    return
+  end
+  if kind == "battle-trainer-picture" then
+    local role, classKey
+    if type(key) == "string" then
+      role, classKey = key:match("^([a-z]+)%-([A-Z][A-Z0-9_]*)$")
+    end
+    assert((role == "front" or role == "back") and classKey ~= nil, "invalid battle trainer picture key: " .. key)
+    return
+  end
+  if kind == "battle-ball" then
+    assert(type(key) == "string" and key:match("^[A-Z][A-Z0-9_]*$") ~= nil, "invalid battle ball key: " .. key)
+    return
+  end
+  if kind == "battle-evolution" then
+    assert(key == "global", "battle evolution only has the global job")
     return
   end
   if kind == "battle-scene" then

@@ -329,7 +329,7 @@ local function manifest()
     evolutionEmitters[#evolutionEmitters + 1] = emitter
   end
   local old = {
-    schema = "g4-battle-presentation-v11",
+    schema = "g4-battle-presentation-v12",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -1530,25 +1530,139 @@ makeIntroMusic = function()
       eventInput = "menuSelectionEvent",
       sequenceKey = "audio/sequence/SEQ_SE_DP_SELECT",
     },
-    sequenceClosures = {
-      [sequenceKey] = {
-        bankKey = "audio/bank/content/" .. string.rep("a", 40),
-        player = { volume = 100, channelPriority = 64, playerPriority = 64 },
-        sampleKeys = { "audio/sample/content/" .. string.rep("b", 40) },
-        closureIdentity = string.rep("c", 40),
-      },
-      ["audio/sequence/SEQ_SE_DP_SELECT"] = {
-        bankKey = "audio/bank/content/" .. string.rep("d", 40),
-        player = { volume = 100, channelPriority = 64, playerPriority = 64 },
-        sampleKeys = { "audio/sample/content/" .. string.rep("e", 40) },
-        closureIdentity = string.rep("f", 40),
-      },
-    },
+  }
+end
+
+-- The minimized shared core under test: the full fixture manifest with
+-- the independently staged trainer, ball, and evolution sections plus
+-- the compiled audio closures removed. Leaf sections stay available on
+-- manifest() itself as source data for leaf-record tests.
+local function coreManifest()
+  local core = manifest()
+  core.trainerPictures = nil
+  core.battleBalls = nil
+  core.evolutionParticles = nil
+  core.evolutionGraphics = nil
+  core.audioRoles.introMusic.sequenceClosures = nil
+  return core
+end
+
+-- One standalone trainer picture leaf record for tests: the shared entry
+-- with its staged images rewritten under the selector-owned leaf prefix
+-- the standalone validator requires. Distinct source rasters keep
+-- distinct staged names.
+local function trainerPictureRecord(selector)
+  local source = manifest().trainerPictures.entries[selector]
+  assert(source ~= nil, "fixture covers trainer selector " .. tostring(selector))
+  local prefix = "assets/generated/battle/trainer-pictures/" .. selector:gsub(":", "-")
+  local seen = {}
+  local function leafImage(path)
+    if seen[path] == nil then
+      local count = 0
+      for _ in pairs(seen) do
+        count = count + 1
+      end
+      seen[path] = prefix .. "-" .. count .. ".png"
+    end
+    return seen[path]
+  end
+  local function copyFrame(frame)
+    return {
+      drawableKey = frame.drawableKey,
+      image = leafImage(frame.image),
+      rasterOffset = { x = frame.rasterOffset.x, y = frame.rasterOffset.y },
+      durationTicks = frame.durationTicks,
+      sourceFrame = frame.sourceFrame,
+      userAttr = frame.userAttr,
+    }
+  end
+  local function copyFrames(frames)
+    local copies = {}
+    for index, frame in ipairs(frames) do
+      copies[index] = copyFrame(frame)
+    end
+    return copies
+  end
+  local animation = {
+    sourceSequence = source.animation.sourceSequence,
+    playMode = source.animation.playMode,
+    loopStartFrameIdx = source.animation.loopStartFrameIdx,
+    frames = copyFrames(source.animation.frames),
+    sequences = {},
+  }
+  for index, sequence in ipairs(source.animation.sequences) do
+    animation.sequences[index] = {
+      sourceSequence = sequence.sourceSequence,
+      playMode = sequence.playMode,
+      loopStartFrameIdx = sequence.loopStartFrameIdx,
+      frames = copyFrames(sequence.frames),
+    }
+  end
+  local entry = {
+    drawableKey = source.drawableKey,
+    image = leafImage(source.image),
+    width = source.width,
+    height = source.height,
+    rasterOffset = { x = source.rasterOffset.x, y = source.rasterOffset.y },
+    animation = animation,
+  }
+  if source.throwOffsets ~= nil then
+    entry.throwOffsets = {}
+    for index, offset in ipairs(source.throwOffsets) do
+      entry.throwOffsets[index] = { x = offset.x, y = offset.y }
+    end
+  end
+  return {
+    schema = "g4-battle-trainer-picture-v1",
+    selector = selector,
+    catalogIdentity = "synthetic-catalog",
+    entry = entry,
+  }
+end
+
+-- One standalone ball leaf record for tests: the shared entry with its
+-- staged frames rewritten under the item-owned leaf prefix. Particle
+-- textures already use selector-scoped paths and are kept as staged.
+local function ballRecord(selector)
+  local source = manifest().battleBalls.entries[selector]
+  assert(source ~= nil, "fixture covers ball selector " .. tostring(selector))
+  local prefix = "assets/generated/battle/balls/" .. selector:sub(6)
+  local frames = {}
+  for index, frame in ipairs(source.frames) do
+    frames[index] = {
+      drawableKey = frame.drawableKey,
+      image = prefix .. "-" .. (index - 1) .. ".png",
+      width = frame.width,
+      height = frame.height,
+    }
+  end
+  return {
+    schema = "g4-battle-ball-v1",
+    selector = selector,
+    catalogIdentity = "synthetic-catalog",
+    entry = { fadeColor = source.fadeColor, frames = frames, particles = source.particles },
+  }
+end
+
+-- One standalone evolution leaf record for tests: the shared particle set
+-- and screen rasters, already staged under their dedicated prefix.
+local function evolutionRecord()
+  local full = manifest()
+  return {
+    schema = "g4-battle-evolution-v1",
+    kind = "evolution",
+    catalogIdentity = "synthetic-catalog",
+    particles = full.evolutionParticles,
+    graphics = full.evolutionGraphics,
   }
 end
 
 return {
   manifest = manifest,
+  coreManifest = coreManifest,
+  trainerPictureRecord = trainerPictureRecord,
+  ballRecord = ballRecord,
+  evolutionRecord = evolutionRecord,
   scriptMessageProgramContext = scriptMessageProgramContext,
   makeIntroMusic = makeIntroMusic,
 }

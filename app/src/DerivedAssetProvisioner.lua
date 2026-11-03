@@ -180,9 +180,44 @@ function DerivedAssetProvisioner.new(options)
       return ask("battle-effect", urgency, { effectKey = effectKey })
     end,
     -- The work every battle shares: the global battle catalog with its
-    -- music and voice banks, behind one selector-free demand.
+    -- semantic music selection, behind one selector-free demand. Selected
+    -- bank audio stages through its own audio demand, never as this
+    -- demand's prerequisite.
     requestBattlePresentation = function(urgency)
       return ask("battle-presentation", urgency)
+    end,
+    -- One trainer picture for the current encounter (dot call): the caller
+    -- owns the front:CLASS or back:CLASS selection, the worker compiles
+    -- exactly that picture, and readiness observes only the matching leaf
+    -- receipt. A ready worker result reads true; anything else reads
+    -- pending with retained attribution.
+    requestBattleTrainerPicture = function(selector, urgency)
+      -- Lua patterns have no alternation: capture the role stem, then
+      -- require front/back explicitly.
+      local role, classKey
+      if type(selector) == "string" then
+        role, classKey = selector:match("^([a-z]+):([A-Z][A-Z0-9_]*)$")
+      end
+      assert(
+        (role == "front" or role == "back") and classKey ~= nil,
+        "battle trainer picture demand carries its front:CLASS or back:CLASS selector"
+      )
+      return ask("battle-trainer-picture", urgency, { trainerSelector = selector })
+    end,
+    -- One ball presentation for the current encounter (dot call): the
+    -- caller owns the ball:ITEM selection with the same readiness
+    -- contract as the trainer picture demand.
+    requestBattleBall = function(selector, urgency)
+      assert(
+        type(selector) == "string" and selector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil,
+        "battle ball demand carries its ball:ITEM selector"
+      )
+      return ask("battle-ball", urgency, { ballSelector = selector })
+    end,
+    -- The single evolution presentation bundle (dot call): requested only
+    -- once evolution is scheduled, with the same readiness contract.
+    requestBattleEvolution = function(urgency)
+      return ask("battle-evolution", urgency)
     end,
     -- The shared walking visuals for the loading stage (dot call): the
     -- worker compiles the one global subject catalog, and readiness

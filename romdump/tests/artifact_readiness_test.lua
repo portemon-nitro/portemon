@@ -532,7 +532,16 @@ local function publishMapDataRecord(cache, mapId, marker)
     wildEncounterMemberId = 0,
     rockSmash = {
       odds = 0,
-      items = { "MAX_ETHER", "REVIVE", "HEART_SCALE", "RED_SHARD", "BLUE_SHARD", "GREEN_SHARD", "YELLOW_SHARD", "STAR_PIECE" },
+      items = {
+        "MAX_ETHER",
+        "REVIVE",
+        "HEART_SCALE",
+        "RED_SHARD",
+        "BLUE_SHARD",
+        "GREEN_SHARD",
+        "YELLOW_SHARD",
+        "STAR_PIECE",
+      },
     },
     headbutt = { regularTrees = {}, secretTrees = {}, slots = { common = {}, rare = {}, secret = {} } },
     fieldUse = {
@@ -1536,13 +1545,36 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   local identity = { versionId = "heartgold", generationId = GENERATION, producerId = "readiness-producer" }
   writeReceipt(cache, "apricorn-box", "global", "separately-validated-apricorn-family")
   writeReceipt(cache, "bag", "global", "separately-validated-bag-family")
+  -- The complete inventory also enumerates the finite battle leaf
+  -- families (shared core, evolution bundle, and one trainer/ball leaf
+  -- per source selector) ahead of the summaries. This audit isolates
+  -- field-map completeness, so the battle leaves publish here while
+  -- their own compiler/worker readiness stays with the battle tests.
+  for _, job in ipairs(ArtifactJobs.completeJobs(plans)) do
+    if
+      job.kind == "battle-presentation"
+      or job.kind == "battle-evolution"
+      or job.kind == "battle-trainer-picture"
+      or job.kind == "battle-ball"
+    then
+      writeReceipt(cache, job.kind, job.key, "separately-validated-battle-leaf-family")
+    end
+  end
   local before = snapshot()
   local realValidate = ArtifactJobs.validate
   ArtifactJobs.validate = function(candidate, generation, kind, key, candidatePlans)
-    if (kind == "apricorn-box" or kind == "bag") and key == "global" then
+    if
+      (kind == "apricorn-box" and key == "global")
+      or (kind == "bag" and key == "global")
+      or kind == "battle-presentation"
+      or kind == "battle-evolution"
+      or kind == "battle-trainer-picture"
+      or kind == "battle-ball"
+    then
       -- Apricorn Box readiness has its own source-backed cache contract
-      -- tests, and bag readiness stays with the bag unit tests; this audit
-      -- isolates completeness of the field-map inventory.
+      -- tests, bag readiness stays with the bag unit tests, and the
+      -- battle leaf families stay with the battle compiler/worker tests;
+      -- this audit isolates completeness of the field-map inventory.
       return true
     end
     return realValidate(candidate, generation, kind, key, candidatePlans)

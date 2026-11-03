@@ -731,79 +731,17 @@ local function executeMart(artifact, context)
   return MartCacheWriter.stage(artifact, bundle)
 end
 
--- Every battle-music track the source selector can start: the ordinary
--- wild/trainer/rival tracks, the special-species and class tracks, the
--- Kanto regional variants, and the wild/trainer victory fanfares.
--- Resolved against the adopted normalized audio index; resolved bank
--- ids are never spelled here. The global catalog also carries the banks
--- every battle animation voices, so the whole closure every battle shares
--- sits behind this one job.
-local BATTLE_MUSIC_SEQUENCES = {
-  "SEQ_GS_VS_NORAPOKE",
-  "SEQ_GS_VS_TRAINER",
-  "SEQ_GS_VS_GYMREADER",
-  "SEQ_GS_VS_RIVAL",
-  "SEQ_GS_VS_ROCKET",
-  "SEQ_GS_VS_SUICUNE",
-  "SEQ_GS_VS_ENTEI",
-  "SEQ_GS_VS_RAIKOU",
-  "SEQ_GS_VS_CHAMP",
-  "SEQ_GS_VS_NORAPOKE_KANTO",
-  "SEQ_GS_VS_TRAINER_KANTO",
-  "SEQ_GS_VS_GYMREADER_KANTO",
-  "SEQ_GS_VS_HOUOU",
-  "SEQ_GS_VS_LUGIA",
-  "SEQ_GS_VS_KODAI",
-  "SEQ_GS_BA_BRAIN",
-  "SEQ_GS_WIN1",
-  "SEQ_GS_WIN2",
-}
-
+-- The shared battle core stages from the dump alone: music selection is
+-- static semantic source data, and selected bank audio stays authoritative
+-- in the audio class. The core carries no audio-bank or audio-catalog
+-- edges, so compiling music banks is never its prerequisite.
 ---@param key string
 ---@param plans ArtifactJobs.Plans
 ---@return { kind: string, key: string }[], boolean
 local function dependenciesBattlePresentation(key, plans)
   assert(key == "global", "battle presentation family only has the global job")
-  local jobs = { { kind = "audio-catalog", key = "global" } }
-  local audioPlan = plans.audioPlan
-  if audioPlan == nil then
-    return sortedJobs(jobs), false
-  end
-  assert(type(audioPlan) == "table", "battle music membership requires the adopted audio plan")
-  local index = assert(audioPlan.index, "battle music membership requires the adopted audio index")
-  assert(type(index.sequences) == "table", "battle music membership requires the adopted sequences")
-  assert(type(index.sequenceBySymbol) == "table", "battle music membership requires the adopted sequence symbols")
-  local seen = {}
-  for _, reference in ipairs(BATTLE_MUSIC_SEQUENCES) do
-    local sequenceId = index.sequenceBySymbol[reference]
-    if sequenceId == nil then
-      error("battle music reference has no adopted sequence: " .. reference, 0)
-    end
-    local entry = index.sequences[sequenceId]
-    if type(entry) ~= "table" then
-      error("battle music reference has no adopted sequence: " .. tostring(reference), 0)
-    end
-    local bankId = assert(entry.bankId, "battle music sequence has no bank")
-    local bankKey = tostring(bankId)
-    if not seen[bankKey] then
-      seen[bankKey] = true
-      jobs[#jobs + 1] = { kind = "audio-bank", key = bankKey }
-    end
-  end
-  local AnimationSources = require("romdump.src.config.BattleAnimationSources")
-  assert(type(index.bankBySymbol) == "table", "battle voice membership requires the adopted bank symbols")
-  for _, bankSymbol in ipairs(AnimationSources.EFFECT_SOUND_BANKS) do
-    local bankId = index.bankBySymbol[bankSymbol]
-    if bankId == nil then
-      error("battle voice bank has no adopted bank: " .. bankSymbol, 0)
-    end
-    local bankKey = tostring(bankId)
-    if not seen[bankKey] then
-      seen[bankKey] = true
-      jobs[#jobs + 1] = { kind = "audio-bank", key = bankKey }
-    end
-  end
-  return sortedJobs(jobs), true
+  assert(type(plans) == "table", "dependency edges require the session plans")
+  return {}, true
 end
 
 local function executeParty(artifact, context)
@@ -2028,14 +1966,30 @@ DESCRIPTORS = {
     validate = ArtifactBattleJobs.validateEncounters,
   },
   -- Battle presentation: the shared ordinary menu/HUD definitions once,
-  -- then one lazily compiled persistent scene per demanded semantic key.
-  -- The global carries the battle-music bank closures behind the source
-  -- music selector so the chosen track stages with the presentation.
+  -- one selector-scoped trainer/ball/evolution leaf per demanded semantic
+  -- key, then one lazily compiled persistent scene per demanded scene key.
+  -- The global carries only semantic music selection; selected bank audio
+  -- stages through the audio class, never as its prerequisite.
   ["battle-presentation"] = {
     size = "normal",
     dependencies = dependenciesBattlePresentation,
     execute = ArtifactBattleJobs.executePresentation,
     validate = ArtifactBattleJobs.validatePresentation,
+  },
+  ["battle-trainer-picture"] = {
+    size = "normal",
+    execute = ArtifactBattleJobs.executeTrainerPicture,
+    validate = ArtifactBattleJobs.validateTrainerPicture,
+  },
+  ["battle-ball"] = {
+    size = "normal",
+    execute = ArtifactBattleJobs.executeBall,
+    validate = ArtifactBattleJobs.validateBall,
+  },
+  ["battle-evolution"] = {
+    size = "normal",
+    execute = ArtifactBattleJobs.executeEvolution,
+    validate = ArtifactBattleJobs.validateEvolution,
   },
   ["battle-scene"] = {
     size = "normal",
@@ -2451,6 +2405,36 @@ function ArtifactJobs.completeIterator(plans)
   local position = 1
   local matrixPosition = 1
   local cellPosition = 1
+  local leafTrainerKeys = nil
+  local leafBallKeys = nil
+  local leafPosition = 1
+  -- Finite source-declared battle leaf selectors behind the shared global
+  -- and evolution jobs: every trainer front/back class and every ball
+  -- item, sorted deterministically. Built once on first entry; an ordinary
+  -- global request never enrolls this inventory.
+  ---@return string[] trainerSelectors trainer picture leaf keys, sorted deterministically
+  ---@return string[] ballSelectors ball leaf keys, sorted deterministically
+  local function leafSelectors()
+    if leafTrainerKeys == nil or leafBallKeys == nil then
+      local Sources = require("romdump.src.config.BattlePresentationSources")
+      local trainers = {}
+      for _, classKey in pairs(Sources.TRAINER_PICTURES.frontClasses) do
+        trainers[#trainers + 1] = "front-" .. classKey
+      end
+      for classKey in pairs(Sources.TRAINER_PICTURES.backClasses) do
+        trainers[#trainers + 1] = "back-" .. classKey
+      end
+      table.sort(trainers)
+      leafTrainerKeys = trainers
+      local balls = {}
+      for itemKey in pairs(Sources.BALL_PICTURES.entries) do
+        balls[#balls + 1] = itemKey
+      end
+      table.sort(balls)
+      leafBallKeys = balls
+    end
+    return leafTrainerKeys, leafBallKeys
+  end
   local function nextComplete()
     while true do
       if phase == 0 then
@@ -2530,6 +2514,28 @@ function ArtifactJobs.completeIterator(plans)
         end
         phase, position = 10, 1
       elseif phase == 10 then
+        phase, leafPosition = 11, 1
+        return identify("battle-presentation", "global")
+      elseif phase == 11 then
+        phase, leafPosition = 12, 1
+        return identify("battle-evolution", "global")
+      elseif phase == 12 then
+        local trainers = leafSelectors()
+        if leafPosition <= #trainers then
+          local key = trainers[leafPosition]
+          leafPosition = leafPosition + 1
+          return identify("battle-trainer-picture", key)
+        end
+        phase, position = 13, 1
+      elseif phase == 13 then
+        local _, balls = leafSelectors()
+        if position <= #balls then
+          local key = balls[position]
+          position = position + 1
+          return identify("battle-ball", key)
+        end
+        phase, position = 14, 1
+      elseif phase == 14 then
         -- Aggregate summaries close the enumeration so background
         -- registration meets already-ready leaves instead of expanding
         -- whole families at once. The enumerated set is unchanged; only

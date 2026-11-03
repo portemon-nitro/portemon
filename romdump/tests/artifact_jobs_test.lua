@@ -126,11 +126,11 @@ function T.incomplete_plans_reach_the_source_plan_through_declared_edges()
   end
 end
 
--- Effect voices play from the shared audio cache, so the global battle
--- catalog every effect stages on carries the banks holding battle animation
--- sequences beside the battle music; the bank identities come from the
--- adopted audio index.
-function T.battle_presentation_carries_the_shared_effect_sound_banks()
+-- The shared battle core carries no audio-bank closure: even with a fully
+-- adopted audio index it settles with no music or voice bank edges, while
+-- effects keep planning on top of the global core alone. Selected bank
+-- audio stays addressable through its own audio demand.
+function T.battle_presentation_global_carries_no_audio_bank_closure()
   local AnimationSources = require("romdump.src.config.BattleAnimationSources")
   local bankBySymbol = {}
   for index, bankSymbol in ipairs(AnimationSources.EFFECT_SOUND_BANKS) do
@@ -151,20 +151,183 @@ function T.battle_presentation_carries_the_shared_effect_sound_banks()
   local dependencies, complete =
     ArtifactJobs.dependencies("battle-presentation", "global", { audioPlan = { index = index, bankPlans = {} } })
   Assert.isTrue(complete, "the adopted audio index completes the global plan")
-  local dependencySet = {}
-  for _, dependency in ipairs(dependencies) do
-    dependencySet[dependency.kind .. ":" .. dependency.key] = true
-  end
-  Assert.isTrue(dependencySet["audio-bank:720"] == true, "the global carries its battle music bank")
-  for bankSymbol, bankId in pairs(bankBySymbol) do
-    Assert.isTrue(dependencySet["audio-bank:" .. bankId] == true, "the global carries " .. bankSymbol)
-  end
+  Assert.deepEqual(dependencies, {}, "the global carries no audio-bank closure")
   local effectDependencies, effectComplete = ArtifactJobs.dependencies("battle-effect", "TACKLE", {})
   Assert.isTrue(effectComplete, "an effect plans on top of the global catalog alone")
   Assert.deepEqual(
     effectDependencies,
     { { kind = "battle-presentation", key = "global" } },
-    "effects reach the shared banks through the global catalog"
+    "effects reach the shared core, never audio banks"
+  )
+end
+
+-- The minimized global core stages only shared battle presentation: its
+-- plan completes with a fully adopted audio index or with no plans at
+-- all, and it never edges to music or effect banks, so compiling those
+-- banks is never a prerequisite of the shared core.
+function T.battle_presentation_global_settles_without_audio_dependencies()
+  local AnimationSources = require("romdump.src.config.BattleAnimationSources")
+  local bankBySymbol = {}
+  for index, bankSymbol in ipairs(AnimationSources.EFFECT_SOUND_BANKS) do
+    bankBySymbol[bankSymbol] = 750 + index
+  end
+  -- Every battle music reference resolves onto one music bank.
+  local sequenceBySymbol = setmetatable({}, {
+    __index = function()
+      return 1
+    end,
+  })
+  local index = {
+    version = "heartgold",
+    bankBySymbol = bankBySymbol,
+    sequenceBySymbol = sequenceBySymbol,
+    sequences = { [1] = { bankId = 720 } },
+  }
+  local dependencies, complete =
+    ArtifactJobs.dependencies("battle-presentation", "global", { audioPlan = { index = index, bankPlans = {} } })
+  Assert.isTrue(complete, "the shared core settles without waiting on adopted audio")
+  for _, dependency in ipairs(dependencies) do
+    Assert.isTrue(
+      dependency.kind ~= "audio-bank",
+      "the core never compiles a music bank: " .. dependency.kind .. ":" .. dependency.key
+    )
+    Assert.isTrue(
+      dependency.kind ~= "audio-catalog",
+      "the core never waits on the audio catalog: " .. dependency.kind .. ":" .. dependency.key
+    )
+  end
+  local bareDependencies, bareComplete = ArtifactJobs.dependencies("battle-presentation", "global", {})
+  Assert.isTrue(bareComplete, "the shared core needs no adopted audio plan")
+  for _, dependency in ipairs(bareDependencies) do
+    Assert.isTrue(
+      dependency.kind ~= "audio-bank" and dependency.kind ~= "audio-catalog",
+      "a bare core request carries no audio edges: " .. dependency.kind .. ":" .. dependency.key
+    )
+  end
+end
+
+-- One trainer picture, one ball, and the evolution bundle are independent
+-- generated families beside the shared core: each registers its normal
+-- worker lane, resolves its safe keyed receipt, and rejects unsafe
+-- selectors before any receipt path exists. Leaf demands never fan out
+-- to sibling leaves, scenes, effects, or audio banks.
+function T.selective_battle_leaves_register_safe_keyed_jobs()
+  for _, kind in ipairs({ "battle-trainer-picture", "battle-ball", "battle-evolution" }) do
+    Assert.isTrue(ArtifactState.KINDS[kind] == true, kind .. " is a registered generated family")
+    Assert.equal(ArtifactJobs.sizeClass(kind), "normal", kind .. " jobs share the normal worker lane")
+  end
+  Assert.equal(
+    ArtifactJobs.jobKey("battle-trainer-picture", "front-YOUNGSTER"),
+    "battle-trainer-picture:front-YOUNGSTER",
+    "a trainer job key carries its safe class key"
+  )
+  Assert.equal(
+    ArtifactState.path("battle-trainer-picture", "front-YOUNGSTER"),
+    "data/generated/jobs/battle-trainer-picture/front-YOUNGSTER.lua",
+    "a trainer receipt nests under its kind"
+  )
+  Assert.equal(
+    ArtifactState.path("battle-trainer-picture", "back-PKMN_TRAINER_ETHAN"),
+    "data/generated/jobs/battle-trainer-picture/back-PKMN_TRAINER_ETHAN.lua",
+    "a back-picture receipt keeps its safe class key"
+  )
+  Assert.equal(
+    ArtifactJobs.jobKey("battle-ball", "POKE_BALL"),
+    "battle-ball:POKE_BALL",
+    "a ball job key carries its safe item key"
+  )
+  Assert.equal(
+    ArtifactState.path("battle-ball", "POKE_BALL"),
+    "data/generated/jobs/battle-ball/POKE_BALL.lua",
+    "a ball receipt nests under its kind"
+  )
+  Assert.equal(
+    ArtifactJobs.jobKey("battle-evolution", "global"),
+    "battle-evolution:global",
+    "evolution stays one global-keyed job"
+  )
+  Assert.equal(
+    ArtifactState.path("battle-evolution", "global"),
+    "data/generated/jobs/battle-evolution/global.lua",
+    "the evolution receipt nests under its kind"
+  )
+  for _, badKey in ipairs({ "front:YOUNGSTER", "front-YOUNGSTER/extra", "../evil", "", "global" }) do
+    Assert.isFalse(
+      pcall(ArtifactState.path, "battle-trainer-picture", badKey),
+      "a trainer key with separators or the global key never resolves: " .. tostring(badKey)
+    )
+  end
+  for _, badKey in ipairs({ "ball:POKE_BALL", "POKE_BALL/extra", "../evil", "" }) do
+    Assert.isFalse(
+      pcall(ArtifactState.path, "battle-ball", badKey),
+      "a ball key with separators never resolves: " .. tostring(badKey)
+    )
+  end
+  Assert.isFalse(
+    pcall(ArtifactState.path, "battle-evolution", "front-YOUNGSTER"),
+    "evolution never resolves a per-selector key"
+  )
+  for _, leaf in ipairs({
+    { kind = "battle-trainer-picture", key = "front-YOUNGSTER" },
+    { kind = "battle-ball", key = "POKE_BALL" },
+    { kind = "battle-evolution", key = "global" },
+  }) do
+    local dependencies = assert(ArtifactJobs.dependencies(leaf.kind, leaf.key, {}))
+    for _, dependency in ipairs(dependencies) do
+      local siblingLeaf = dependency.kind == "battle-trainer-picture"
+        or dependency.kind == "battle-ball"
+        or dependency.kind == "battle-evolution"
+      Assert.isFalse(
+        siblingLeaf and dependency.key ~= leaf.key,
+        leaf.kind .. " never enumerates a sibling leaf: " .. dependency.kind .. ":" .. dependency.key
+      )
+      Assert.isFalse(
+        dependency.kind == "audio-bank" or dependency.kind == "audio-catalog",
+        leaf.kind .. " carries no audio edges: " .. dependency.kind .. ":" .. dependency.key
+      )
+    end
+  end
+end
+
+-- Selected battle music stays independently sourced: the shared core
+-- settles while unused battle banks stay unadopted, and a selected bank
+-- keeps its own canonical job outside the core.
+function T.battle_core_settles_without_unused_audio_banks()
+  local AnimationSources = require("romdump.src.config.BattleAnimationSources")
+  local bankBySymbol = {}
+  for index, bankSymbol in ipairs(AnimationSources.EFFECT_SOUND_BANKS) do
+    if index > 1 then
+      bankBySymbol[bankSymbol] = 750 + index
+    end
+  end
+  local sequenceBySymbol = setmetatable({}, {
+    __index = function(symbol)
+      if symbol == "SEQ_GS_VS_RIVAL" then
+        return nil
+      end
+      return 1
+    end,
+  })
+  local index = {
+    version = "heartgold",
+    bankBySymbol = bankBySymbol,
+    sequenceBySymbol = sequenceBySymbol,
+    sequences = { [1] = { bankId = 720 } },
+  }
+  local dependencies, complete =
+    ArtifactJobs.dependencies("battle-presentation", "global", { audioPlan = { index = index, bankPlans = {} } })
+  Assert.isTrue(complete, "the core settles while unused battle banks stay unadopted")
+  for _, dependency in ipairs(dependencies) do
+    Assert.isTrue(
+      dependency.kind ~= "audio-bank" and dependency.kind ~= "audio-catalog",
+      "an unadopted bank never reappears as a core edge: " .. dependency.kind .. ":" .. dependency.key
+    )
+  end
+  Assert.isTrue(ArtifactState.KINDS["audio-bank"] == true, "selected banks stay independently addressable")
+  Assert.equal(
+    ArtifactJobs.jobKey("audio-bank", "720"),
+    "audio-bank:720",
+    "a selected bank keeps its canonical job key outside the core"
   )
 end
 
@@ -386,6 +549,86 @@ function T.complete_inventory_drains_the_incremental_enumerator()
   for _, job in ipairs(expected) do
     Assert.isTrue(seen[job.jobKey] == true, "the enumerator visits " .. job.jobKey)
   end
+end
+
+-- The background sweep enrolls the finite battle leaf inventory exactly
+-- once behind the shared core: the core and the single evolution job open
+-- the run, every source-declared trainer front/back class and ball item
+-- follows in sorted order, and no selector repeats. Cardinalities stay
+-- unsnapshotted; only presence, contiguity, order, and uniqueness are
+-- pinned, so an ordinary global request still enrolls no leaf.
+function T.complete_inventory_enumerates_battle_leaves_once_in_order()
+  local plans = sweepPlans()
+  local function drain()
+    local iterate = ArtifactJobs.completeIterator(plans)
+    local jobs = {}
+    while true do
+      local job = iterate()
+      if job == nil then
+        break
+      end
+      jobs[#jobs + 1] = job
+    end
+    return jobs
+  end
+  local first = drain()
+  local second = drain()
+  Assert.equal(#first, #second, "the leaf inventory drains deterministically")
+  for index, job in ipairs(first) do
+    Assert.equal(job.jobKey, second[index].jobKey, "the leaf inventory keeps its order: " .. tostring(job.jobKey))
+  end
+  local seen = {}
+  local positionOf = {}
+  for index, job in ipairs(first) do
+    Assert.isNil(seen[job.jobKey], "the enumerator visits each job once: " .. tostring(job.jobKey))
+    seen[job.jobKey] = true
+    positionOf[job.jobKey] = index
+  end
+  local globalAt = positionOf["battle-presentation:global"]
+  local evolutionAt = positionOf["battle-evolution:global"]
+  Assert.notNil(globalAt, "the sweep enrolls the shared battle core")
+  Assert.notNil(evolutionAt, "the sweep enrolls the single evolution bundle")
+  Assert.isTrue(globalAt < evolutionAt, "the shared core precedes its leaves")
+  Assert.notNil(
+    positionOf["battle-trainer-picture:front-YOUNGSTER"],
+    "the sweep enrolls one front picture per source class"
+  )
+  Assert.notNil(
+    positionOf["battle-trainer-picture:back-PKMN_TRAINER_ETHAN"],
+    "the sweep enrolls the sourced back pictures"
+  )
+  Assert.notNil(positionOf["battle-ball:POKE_BALL"], "the sweep enrolls one job per source ball")
+  local trainers, balls = {}, {}
+  local trainerFirst, trainerLast, ballFirst, ballLast = nil, nil, nil, nil
+  for index, job in ipairs(first) do
+    if job.kind == "battle-trainer-picture" then
+      Assert.isTrue(
+        job.key:find(":", 1, true) == nil and job.key:find("/", 1, true) == nil,
+        "trainer receipt keys stay colon-free and path-free: " .. tostring(job.key)
+      )
+      trainers[#trainers + 1] = job.key
+      trainerFirst = trainerFirst or index
+      trainerLast = index
+    elseif job.kind == "battle-ball" then
+      balls[#balls + 1] = job.key
+      ballFirst = ballFirst or index
+      ballLast = index
+    end
+  end
+  Assert.isTrue(#trainers > 0, "the sweep enrolls trainer pictures")
+  Assert.isTrue(#balls > 0, "the sweep enrolls ball presentations")
+  for index = 2, #trainers do
+    Assert.isTrue(trainers[index - 1] < trainers[index], "trainer leaves enumerate in sorted order")
+  end
+  for index = 2, #balls do
+    Assert.isTrue(balls[index - 1] < balls[index], "ball leaves enumerate in sorted order")
+  end
+  Assert.equal(trainerLast - trainerFirst + 1, #trainers, "trainer leaves enumerate in one contiguous run")
+  Assert.equal(ballLast - ballFirst + 1, #balls, "ball leaves enumerate in one contiguous run")
+  Assert.isTrue(evolutionAt < trainerFirst, "evolution precedes the trainer run")
+  Assert.isTrue(trainerLast < ballFirst, "the trainer run precedes the ball run")
+  local dependencies = assert(ArtifactJobs.dependencies("battle-presentation", "global", {}))
+  Assert.deepEqual(dependencies, {}, "an ordinary global request enrolls no leaf inventory")
 end
 
 -- Mon and battle execution share the dispatcher-owned stage and failure

@@ -22,6 +22,9 @@ local VALID_KINDS = {
   pokedex = true,
   ["battle-effect"] = true,
   ["battle-presentation"] = true,
+  ["battle-trainer-picture"] = true,
+  ["battle-ball"] = true,
+  ["battle-evolution"] = true,
   ["startup-walker"] = true,
   ["opening-scene"] = true,
 }
@@ -149,6 +152,8 @@ local function selectorKey(selector)
     assert(selector.index == nil, "pokedex request carries no cell selector")
     assert(selector.sceneKey == nil, "pokedex request carries no scene selector")
     assert(selector.bankId == nil, "pokedex request carries no bank selector")
+    assert(selector.trainerSelector == nil, "pokedex request carries no trainer selector")
+    assert(selector.ballSelector == nil, "pokedex request carries no ball selector")
     return "pokedex"
   elseif kind == "battle-effect" then
     assert(
@@ -157,13 +162,101 @@ local function selectorKey(selector)
     )
     return "battle-effect:" .. selector.effectKey
   elseif kind == "battle-presentation" then
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey" }) do
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "trainerSelector",
+      "ballSelector",
+    }) do
       assert(selector[field] == nil, "battle-presentation request carries no " .. field .. " selector")
     end
     return "battle-presentation"
+  elseif kind == "battle-trainer-picture" then
+    -- Lua patterns have no alternation: capture the role stem, then
+    -- require front/back explicitly. Syntax only; the producer proves
+    -- catalog membership.
+    local trainerRole, trainerClass
+    if type(selector.trainerSelector) == "string" then
+      trainerRole, trainerClass = selector.trainerSelector:match("^([a-z]+):([A-Z][A-Z0-9_]*)$")
+    end
+    assert(
+      (trainerRole == "front" or trainerRole == "back") and trainerClass ~= nil,
+      "battle-trainer-picture request requires its front:CLASS or back:CLASS trainerSelector"
+    )
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "ballSelector",
+      "sceneNumber",
+      "pairIndex",
+    }) do
+      assert(selector[field] == nil, "battle-trainer-picture request carries no " .. field .. " selector")
+    end
+    return "battle-trainer-picture:" .. selector.trainerSelector
+  elseif kind == "battle-ball" then
+    assert(
+      type(selector.ballSelector) == "string" and selector.ballSelector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil,
+      "battle-ball request requires its ball:ITEM ballSelector"
+    )
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "trainerSelector",
+      "sceneNumber",
+      "pairIndex",
+    }) do
+      assert(selector[field] == nil, "battle-ball request carries no " .. field .. " selector")
+    end
+    return "battle-ball:" .. selector.ballSelector
+  elseif kind == "battle-evolution" then
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "trainerSelector",
+      "ballSelector",
+      "sceneNumber",
+      "pairIndex",
+    }) do
+      assert(selector[field] == nil, "battle-evolution request carries no " .. field .. " selector")
+    end
+    return "battle-evolution"
   elseif kind == "startup-walker" then
     assert(selector.pairIndex == nil, "startup-walker request carries no pair selector")
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId" }) do
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "trainerSelector",
+      "ballSelector",
+    }) do
       assert(selector[field] == nil, "startup-walker request carries no " .. field .. " selector")
     end
     return "startup-walker"
@@ -290,6 +383,12 @@ function CacheService:request(epoch, selector)
     command.effectKey = selector.effectKey
   elseif selector.requestKind == "battle-presentation" then
     -- The selector-free shared battle demand names its kind and urgency only.
+  elseif selector.requestKind == "battle-trainer-picture" then
+    command.trainerSelector = selector.trainerSelector
+  elseif selector.requestKind == "battle-ball" then
+    command.ballSelector = selector.ballSelector
+  elseif selector.requestKind == "battle-evolution" then
+    -- The selector-free evolution demand names its kind and urgency only.
   elseif selector.requestKind == "startup-walker" then
     -- The shared walker demand carries no pair identity.
   elseif selector.requestKind == "opening-scene" then

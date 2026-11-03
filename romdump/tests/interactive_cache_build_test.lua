@@ -1076,9 +1076,12 @@ function T.repeated_requests_submit_only_once()
 end
 
 -- A wild encounter on an attested cache demands its battle scene with no
--- milestone or sweep pulling source discovery: the scene's global
--- prerequisite must schedule the source plan itself instead of waiting for
--- an adoption nothing will start.
+-- milestone or sweep pulling source discovery: the scene keeps its
+-- shared global core dependency while the core itself carries no audio/bank
+-- fanout, so the closure submits exactly the core and schedules no source
+-- discovery or audio banks. The independent trainer/ball/evolution leaves
+-- stay out of the closure, and the scene itself waits on its core instead
+-- of failing while the worker result is still outstanding.
 function T.lone_battle_scene_demand_schedules_source_discovery()
   local pool = recordingPool()
   local session, _ = isolatedSession("lone-battle-scene-generation", pool, FakeCache.new())
@@ -1088,7 +1091,31 @@ function T.lone_battle_scene_demand_schedules_source_discovery()
   for _ = 1, 8 do
     session:update()
   end
-  Assert.equal(submissionCount(pool, "source-plan:global"), 1, "the scene closure submits source discovery once")
+  Assert.equal(
+    submissionCount(pool, "battle-presentation:global"),
+    1,
+    "the scene closure submits its shared global core once"
+  )
+  Assert.equal(
+    submissionCount(pool, "source-plan:global"),
+    0,
+    "the scene closure schedules no source discovery"
+  )
+  local again, againFailure = session:requestJob("battle-scene", "general/grass/day", "required")
+  Assert.isFalse(again, "the scene waits on its global core instead of settling early")
+  Assert.isNil(againFailure, "the core wait reports no failure while the worker is outstanding")
+  for _, submitted in ipairs(pool.submitted) do
+    Assert.isTrue(
+      submitted:find("^audio-bank:", 1) == nil,
+      "the scene closure carries no audio-bank fanout: " .. tostring(submitted)
+    )
+    Assert.isTrue(
+      submitted:find("^battle-trainer-picture:", 1) == nil
+        and submitted:find("^battle-ball:", 1) == nil
+        and submitted ~= "battle-evolution:global",
+      "the scene closure enrolls no independent battle leaves: " .. tostring(submitted)
+    )
+  end
 end
 
 function T.promotion_while_executing_keeps_single_execution()

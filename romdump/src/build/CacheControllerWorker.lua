@@ -80,6 +80,9 @@ local VALID_KINDS = {
   pokedex = true,
   ["battle-effect"] = true,
   ["battle-presentation"] = true,
+  ["battle-trainer-picture"] = true,
+  ["battle-ball"] = true,
+  ["battle-evolution"] = true,
   ["startup-walker"] = true,
   ["opening-scene"] = true,
 }
@@ -337,7 +340,17 @@ local function validateSelectors(params)
   elseif kind == "pokedex" then
     -- The selector-free pokedex demand carries no job, source, page, or
     -- map identity: urgency alone rides the registered global job.
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId" }) do
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "trainerSelector",
+      "ballSelector",
+    }) do
       if params[field] ~= nil then
         return "pokedex request carries no " .. field .. " selector"
       end
@@ -348,9 +361,90 @@ local function validateSelectors(params)
     end
   elseif kind == "battle-presentation" then
     -- The shared battle catalog is one global job: urgency alone rides it.
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "effectKey" }) do
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "trainerSelector",
+      "ballSelector",
+    }) do
       if params[field] ~= nil then
         return "battle-presentation request carries no " .. field .. " selector"
+      end
+    end
+  elseif kind == "battle-trainer-picture" then
+    -- Source-independent syntax only: the worker compiles the exact
+    -- spelling and the producer proves catalog membership. The receipt
+    -- key never carries the colon. Lua patterns have no alternation, so
+    -- the role stem is captured and required explicitly.
+    local trainerRole, trainerClass
+    if type(params.trainerSelector) == "string" then
+      trainerRole, trainerClass = params.trainerSelector:match("^([a-z]+):([A-Z][A-Z0-9_]*)$")
+    end
+    if (trainerRole ~= "front" and trainerRole ~= "back") or trainerClass == nil then
+      return "battle-trainer-picture request needs its front:CLASS or back:CLASS trainerSelector"
+    end
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "ballSelector",
+      "sceneNumber",
+      "pairIndex",
+    }) do
+      if params[field] ~= nil then
+        return "battle-trainer-picture request carries no " .. field .. " selector"
+      end
+    end
+  elseif kind == "battle-ball" then
+    if type(params.ballSelector) ~= "string" or params.ballSelector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+      return "battle-ball request needs its ball:ITEM ballSelector"
+    end
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "trainerSelector",
+      "sceneNumber",
+      "pairIndex",
+    }) do
+      if params[field] ~= nil then
+        return "battle-ball request carries no " .. field .. " selector"
+      end
+    end
+  elseif kind == "battle-evolution" then
+    -- One global-keyed evolution job: urgency alone rides it.
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "effectKey",
+      "trainerSelector",
+      "ballSelector",
+      "sceneNumber",
+      "pairIndex",
+    }) do
+      if params[field] ~= nil then
+        return "battle-evolution request carries no " .. field .. " selector"
       end
     end
   elseif kind == "startup-walker" then
@@ -363,6 +457,8 @@ local function validateSelectors(params)
       "sceneKey",
       "bankId",
       "effectKey",
+      "trainerSelector",
+      "ballSelector",
       "sceneNumber",
       "pairIndex",
     }) do
@@ -379,7 +475,18 @@ local function validateSelectors(params)
     then
       return "opening-scene request needs an integer sceneNumber 1..5"
     end
-    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId", "pairIndex" }) do
+    for _, field in ipairs({
+      "name",
+      "mapId",
+      "matrixMemberId",
+      "index",
+      "pageId",
+      "sceneKey",
+      "bankId",
+      "pairIndex",
+      "trainerSelector",
+      "ballSelector",
+    }) do
       if params[field] ~= nil then
         return "opening-scene request carries no " .. field .. " selector"
       end
@@ -416,6 +523,21 @@ function Worker:_invoke(params)
     return session:requestJob("battle-effect", params.effectKey, urgency)
   elseif kind == "battle-presentation" then
     return session:requestJob("battle-presentation", "global", urgency)
+  elseif kind == "battle-trainer-picture" then
+    -- The validated semantic selector maps to the canonical safe receipt
+    -- key: the colon never reaches the filesystem.
+    local role, classKey = params.trainerSelector:match("^([a-z]+):([A-Z][A-Z0-9_]*)$")
+    assert(
+      (role == "front" or role == "back") and classKey ~= nil,
+      "battle-trainer-picture request needs its safe class key"
+    )
+    return session:requestJob("battle-trainer-picture", role .. "-" .. classKey, urgency)
+  elseif kind == "battle-ball" then
+    local itemKey = params.ballSelector:match("^ball:([A-Z][A-Z0-9_]*)$")
+    assert(itemKey ~= nil, "battle-ball request needs its safe item key")
+    return session:requestJob("battle-ball", itemKey, urgency)
+  elseif kind == "battle-evolution" then
+    return session:requestJob("battle-evolution", "global", urgency)
   elseif kind == "startup-walker" then
     return session:requestStartupWalker(urgency)
   elseif kind == "opening-scene" then
@@ -622,6 +744,8 @@ function Worker:_applyRequest(command)
     sceneKey = command.sceneKey,
     bankId = command.bankId,
     effectKey = command.effectKey,
+    trainerSelector = command.trainerSelector,
+    ballSelector = command.ballSelector,
     pairIndex = command.pairIndex,
     sceneNumber = command.sceneNumber,
   }

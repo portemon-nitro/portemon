@@ -164,16 +164,26 @@ function T.trainer_picture_rasterizer_uses_the_cell_bank_mapping()
         end,
       }
     end,
+    version = function()
+      return "heartgold"
+    end,
+    metadata = function()
+      return { sha1 = string.rep("a", 40) }
+    end,
   }
-  local ok, entries, slices = pcall(compiler.compileTrainerPictures, romFs)
+  local ok, leaf = pcall(compiler.compileTrainerPictureForSelector, romFs, {}, "back:PKMN_TRAINER_ETHAN")
   trainerPictures.frontClasses = previousFrontClasses
   trainerPictures.backClasses = previousBackClasses
-  Assert.isTrue(ok, "synthetic mapping-1 trainer resources compile: " .. tostring(entries))
-  local raster = assert(slices["trainer-back-PKMN_TRAINER_ETHAN"])
+  Assert.isTrue(ok, "synthetic mapping-1 trainer resources compile: " .. tostring(leaf))
+  local raster = assert(
+    leaf.images["assets/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN.png"],
+    "the selected backpic stages its own leaf image"
+  )
   local red, green, blue, alpha = string.byte(raster.pixels, 1, 4)
   Assert.deepEqual({ red, green, blue, alpha }, { 0, 255, 0, 255 }, "tile 32 samples character tile 64 in mapping 1")
-  Assert.equal(entries["back:PKMN_TRAINER_ETHAN"].width, 8)
-  Assert.deepEqual(entries["back:PKMN_TRAINER_ETHAN"].rasterOffset, { x = -40, y = -40 })
+  Assert.equal(leaf.entry.width, 8)
+  Assert.deepEqual(leaf.entry.rasterOffset, { x = -40, y = -40 })
+  Assert.equal(leaf.selector, "back:PKMN_TRAINER_ETHAN", "the leaf names its exact selector")
 end
 
 function T.trainer_picture_compilation_preserves_each_source_animation_frame()
@@ -198,13 +208,22 @@ function T.trainer_picture_compilation_preserves_each_source_animation_frame()
         end,
       }
     end,
+    version = function()
+      return "heartgold"
+    end,
+    metadata = function()
+      return { sha1 = string.rep("a", 40) }
+    end,
   }
 
-  local ok, entries, slices = pcall(compiler.compileTrainerPictures, romFs)
+  local ok, leaf = pcall(compiler.compileTrainerPictureForSelector, romFs, {}, "back:PKMN_TRAINER_ETHAN")
   trainerPictures.frontClasses = previousFrontClasses
   trainerPictures.backClasses = previousBackClasses
-  Assert.isTrue(ok, "source-shaped two-frame trainer resources compile: " .. tostring(entries))
-  local entry = assert(entries["back:PKMN_TRAINER_ETHAN"])
+  Assert.isTrue(ok, "source-shaped two-frame trainer resources compile: " .. tostring(leaf))
+  Assert.equal(leaf.selector, "back:PKMN_TRAINER_ETHAN", "the leaf names its exact selector")
+  Assert.equal(leaf.catalogIdentity, "heartgold:" .. string.rep("a", 40), "the leaf carries its catalog identity")
+  local slices = leaf.images
+  local entry = assert(leaf.entry)
   local frames =
     assert(entry.animation and entry.animation.frames, "the compiled trainer publishes its source sequence")
   Assert.equal(#frames, 2, "every source frame is retained in order")
@@ -240,8 +259,11 @@ function T.trainer_picture_compilation_preserves_each_source_animation_frame()
   Assert.equal(sequences[3].frames[1].durationTicks, 9, "entry blanking frames retain their source timing")
   for _, frame in ipairs({ sequences[2].frames[1], sequences[3].frames[1] }) do
     Assert.deepEqual(frame.rasterOffset, { x = 0, y = 0 }, "objectless cells have no geometric origin")
-    local imageName = assert(frame.image:match("([^/]+)%.png$"))
-    local transparent = assert(slices[imageName])
+    Assert.isTrue(
+      frame.image:sub(1, 65) == "assets/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN-",
+      "blank frames stage under the selector-owned leaf prefix"
+    )
+    local transparent = assert(slices[frame.image])
     Assert.deepEqual({ transparent.width, transparent.height, transparent.pixels }, { 1, 1, string.rep("\0", 4) })
   end
   Assert.equal(
@@ -249,10 +271,8 @@ function T.trainer_picture_compilation_preserves_each_source_animation_frame()
     entry.drawableKey .. ":sequence:2:frame:0",
     "entry frames keep their source sequence identity"
   )
-  local firstName = assert(frames[1].image:match("([^/]+)%.png$"))
-  local secondName = assert(frames[2].image:match("([^/]+)%.png$"))
-  local first = assert(slices[firstName])
-  local second = assert(slices[secondName])
+  local first = assert(slices[frames[1].image])
+  local second = assert(slices[frames[2].image])
   Assert.isFalse(first.pixels == second.pixels, "the distinct source cells retain distinct decoded pixels")
 end
 
@@ -1073,6 +1093,29 @@ function T.battler_particle_actions_reject_malformed_shapes()
     type(profileReason) == "string" and profileReason:find("pinned initializer table", 1, true) ~= nil,
     "an unknown emitter profile names its failure: " .. tostring(profileReason)
   )
+end
+
+-- Each detached family compiles through its own selector-scoped producer:
+-- one trainer picture and one ball lower independently instead of
+-- sweeping every source archive, and evolution lowers as one bundle.
+-- Each leaf stages through its own root rather than the shared core.
+function T.selective_leaf_lowerings_compile_one_selector_without_sibling_sweep()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  Assert.isTrue(
+    type(compiler.compileTrainerPictureForSelector) == "function",
+    "one trainer selector compiles without the sibling archive sweep"
+  )
+  Assert.isTrue(
+    type(compiler.compileBallForSelector) == "function",
+    "one ball selector compiles without the sibling archive sweep"
+  )
+  Assert.isTrue(
+    type(compiler.compileEvolution) == "function",
+    "evolution compiles as one bundle outside the shared core"
+  )
+  Assert.isTrue(type(compiler.stageTrainerPicture) == "function", "trainer leaves stage through their own owned root")
+  Assert.isTrue(type(compiler.stageBall) == "function", "ball leaves stage through their own owned root")
+  Assert.isTrue(type(compiler.stageEvolution) == "function", "evolution stages through its own owned root")
 end
 
 return { tests = T }

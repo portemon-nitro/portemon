@@ -822,6 +822,232 @@ function T.scene_failure_and_stale_epoch_never_read_ready()
   service:shutdown()
 end
 
+-- One trainer picture, one ball, and the evolution bundle travel the
+-- selected-game host as exact semantic demands: repeated visits share one
+-- worker identity, promotion strengthens it, a different selector stays
+-- distinct, and malformed selectors never leave the game thread. The
+-- selector-free evolution demand carries urgency alone, and no leaf
+-- selector ever rides the shared battle demand.
+function T.selective_battle_leaf_demands_route_by_exact_selector()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local epoch = assert(provisioner.epoch, "the selection borrows an epoch")
+  local gameHost = provisioner:gameHost()
+  Assert.isTrue(
+    type(gameHost.requestBattleTrainerPicture) == "function",
+    "the selected-game host demands one trainer picture per encounter"
+  )
+  Assert.isTrue(type(gameHost.requestBattleBall) == "function", "the selected-game host demands one ball per encounter")
+  Assert.isTrue(
+    type(gameHost.requestBattleEvolution) == "function",
+    "the selected-game host demands evolution only when scheduled"
+  )
+  local pending, pendingErr = gameHost.requestBattleTrainerPicture("front:YOUNGSTER", "near")
+  Assert.isNil(pending, "an unbuilt trainer picture observes no readiness")
+  Assert.isNil(pendingErr, "an unbuilt trainer picture observes no failure")
+  local promoted, promotedErr = gameHost.requestBattleTrainerPicture("front:YOUNGSTER", "required")
+  Assert.isNil(promoted, "a promoted trainer picture still observes no readiness")
+  Assert.isNil(promotedErr, "a promoted trainer picture still observes no failure")
+  local firstOk, firstId = pcall(service.request, service, epoch, {
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:YOUNGSTER",
+    urgency = "near",
+  })
+  Assert.isTrue(firstOk and type(firstId) == "number", "one trainer demand registers its worker identity")
+  local secondOk, secondId = pcall(service.request, service, epoch, {
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:YOUNGSTER",
+    urgency = "required",
+  })
+  Assert.isTrue(secondOk, "urgency promotion keeps the shared trainer demand")
+  Assert.equal(secondId, firstId, "promotion strengthens the shared demand instead of duplicating it")
+  local ballOk, ballId = pcall(service.request, service, epoch, {
+    requestKind = "battle-ball",
+    ballSelector = "ball:POKE_BALL",
+    urgency = "required",
+  })
+  Assert.isTrue(ballOk and ballId ~= firstId, "a ball demand keeps its own worker identity")
+  local evolutionOk, evolutionId = pcall(service.request, service, epoch, {
+    requestKind = "battle-evolution",
+    urgency = "required",
+  })
+  Assert.isTrue(evolutionOk and evolutionId ~= firstId, "evolution keeps its own worker identity")
+  local unsourcedOk, unsourcedId = pcall(service.request, service, epoch, {
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:NOT_A_CLASS",
+    urgency = "required",
+  })
+  Assert.isTrue(
+    unsourcedOk and unsourcedId ~= firstId,
+    "a well-formed but unsourced selector still dispatches for the producer to validate"
+  )
+  for _, badSelector in ipairs({ "", "YOUNGSTER", "front:lower!", "front:a/b", 7 }) do
+    local ok, _ = pcall(function()
+      gameHost.requestBattleTrainerPicture(badSelector, "required")
+    end)
+    Assert.isFalse(ok, "a malformed trainer selector never leaves the game thread: " .. tostring(badSelector))
+  end
+  for _, badSelector in ipairs({ "", "POKE_BALL", "ball:lower!", "ball:a/b", 7 }) do
+    local ok, _ = pcall(function()
+      gameHost.requestBattleBall(badSelector, "required")
+    end)
+    Assert.isFalse(ok, "a malformed ball selector never leaves the game thread: " .. tostring(badSelector))
+  end
+  local missingOk = pcall(service.request, service, epoch, {
+    requestKind = "battle-trainer-picture",
+    urgency = "required",
+  })
+  Assert.isFalse(missingOk, "a trainer demand without its selector never leaves the game thread")
+  local foreignOk = pcall(service.request, service, epoch, {
+    requestKind = "battle-trainer-picture",
+    trainerSelector = "front:YOUNGSTER",
+    urgency = "near",
+    sceneKey = "general/grass/day",
+  })
+  Assert.isFalse(foreignOk, "a scene selector never rides a trainer demand")
+  local evolutionForeignOk = pcall(service.request, service, epoch, {
+    requestKind = "battle-evolution",
+    urgency = "near",
+    trainerSelector = "front:YOUNGSTER",
+  })
+  Assert.isFalse(evolutionForeignOk, "evolution carries no trainer selector")
+  local sharedStrayOk = pcall(service.request, service, epoch, {
+    requestKind = "battle-presentation",
+    urgency = "near",
+    trainerSelector = "front:YOUNGSTER",
+  })
+  Assert.isFalse(sharedStrayOk, "a trainer selector never rides the shared battle demand")
+  service:update()
+  local trainerCommands, ballCommands, evolutionCommands = 0, 0, 0
+  local trainerSeen = {}
+  local command = service._command:pop()
+  while command ~= nil do
+    if command.op == "request" then
+      if command.requestKind == "battle-trainer-picture" then
+        trainerCommands = trainerCommands + 1
+        trainerSeen[command.trainerSelector] = command.urgency
+        Assert.isTrue(command.sceneKey == nil, "a trainer command carries no scene selector")
+        Assert.isTrue(command.ballSelector == nil, "a trainer command carries no ball selector")
+      elseif command.requestKind == "battle-ball" then
+        ballCommands = ballCommands + 1
+        Assert.equal(command.ballSelector, "ball:POKE_BALL", "the ball command carries its ball selector")
+      elseif command.requestKind == "battle-evolution" then
+        evolutionCommands = evolutionCommands + 1
+        Assert.isTrue(command.trainerSelector == nil, "an evolution command carries no trainer selector")
+        Assert.isTrue(command.ballSelector == nil, "an evolution command carries no ball selector")
+      end
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(trainerCommands, 2, "two trainer selectors leave exactly two worker requests")
+  Assert.equal(trainerSeen["front:YOUNGSTER"], "required", "the stronger urgency promotes the shared trainer demand")
+  Assert.equal(
+    trainerSeen["front:NOT_A_CLASS"],
+    "required",
+    "the unsourced selector dispatches with its exact spelling"
+  )
+  Assert.equal(ballCommands, 1, "one ball selector leaves exactly one worker request")
+  Assert.equal(evolutionCommands, 1, "evolution leaves exactly one worker request")
+  service:injectReply({ op = "request-result", epoch = epoch, requestId = firstId, state = "ready" })
+  service:update()
+  local ready, failure = gameHost.requestBattleTrainerPicture("front:YOUNGSTER", "required")
+  Assert.isTrue(ready, "the pushed ready event lands in the matching trainer observation")
+  Assert.isNil(failure, "a ready trainer picture carries no failure")
+  local stillPending, _ = gameHost.requestBattleBall("ball:POKE_BALL", "required")
+  Assert.isNil(stillPending, "the ball demand stays pending after the trainer completes")
+  provisioner:dispose()
+  service:shutdown()
+end
+
+-- A missing selected audio bank reports its producer failure instead of
+-- reading silently ready: pending stays pending until the worker answers.
+function T.missing_selected_audio_bank_fails_instead_of_staying_silent()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local epoch = assert(provisioner.epoch, "the selection borrows an epoch")
+  local gameHost = provisioner:gameHost()
+  local pending, pendingErr = gameHost.requestAudioBank(999, "required")
+  Assert.isNil(pending, "an unbuilt bank observes no readiness")
+  Assert.isNil(pendingErr, "an unbuilt bank observes no failure")
+  local ok, id = pcall(service.request, service, epoch, {
+    requestKind = "audio-bank",
+    bankId = 999,
+    urgency = "required",
+  })
+  Assert.isTrue(ok and type(id) == "number", "the selected bank registers its worker identity")
+  service:update()
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = id,
+    state = "failed",
+    errorMessage = "probe bank read failed",
+  })
+  service:update()
+  local failedReady, bankFailure = gameHost.requestAudioBank(999, "required")
+  Assert.isFalse(failedReady, "a failed bank never reads ready")
+  Assert.isTrue(
+    tostring(bankFailure):find("probe bank read failed", 1, true) ~= nil,
+    "the failed bank carries its producer cause: " .. tostring(bankFailure)
+  )
+  provisioner:dispose()
+  service:shutdown()
+end
+
+-- A retired selection grants leaf demands no rights: trainer, ball, and
+-- evolution requests for the retired epoch register nothing, observe
+-- nothing, and queue no worker traffic, so stale interest can never
+-- complete a newer selection.
+function T.retired_epochs_grant_battle_leaf_demands_no_rights()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local epoch = assert(provisioner.epoch, "the selection borrows an epoch")
+  local gameHost = provisioner:gameHost()
+  provisioner:dispose()
+  Assert.isNil(
+    service:request(epoch, {
+      requestKind = "battle-trainer-picture",
+      trainerSelector = "front:YOUNGSTER",
+      urgency = "required",
+    }),
+    "a retired trainer demand registers no worker identity"
+  )
+  Assert.isNil(
+    service:request(epoch, { requestKind = "battle-ball", ballSelector = "ball:POKE_BALL", urgency = "required" }),
+    "a retired ball demand registers no worker identity"
+  )
+  Assert.isNil(
+    service:request(epoch, { requestKind = "battle-evolution", urgency = "required" }),
+    "a retired evolution demand registers no worker identity"
+  )
+  local retiredOk, retiredErr = pcall(gameHost.requestBattleTrainerPicture, "front:YOUNGSTER", "required")
+  Assert.isFalse(retiredOk, "a retired trainer demand rejects instead of observing")
+  Assert.isTrue(
+    type(retiredErr) == "table" and retiredErr.code == "DERIVED_ASSETS_RETIRED",
+    "the rejection carries the retirement identity"
+  )
+  local retiredBallOk = pcall(gameHost.requestBattleBall, "ball:POKE_BALL", "required")
+  Assert.isFalse(retiredBallOk, "a retired ball demand rejects instead of observing")
+  local retiredEvolutionOk = pcall(gameHost.requestBattleEvolution, "required")
+  Assert.isFalse(retiredEvolutionOk, "a retired evolution demand rejects instead of observing")
+  service:update()
+  local command = service._command:pop()
+  while command ~= nil do
+    Assert.isTrue(command.op ~= "request", "a retired leaf demand queues no worker traffic")
+    command = service._command:pop()
+  end
+  service:shutdown()
+end
+
 -- A validated import hands its one immutable source buffer to the
 -- controller exactly once for the live epoch: the game thread never
 -- opens the ROM itself, the same userdata crosses the channel by

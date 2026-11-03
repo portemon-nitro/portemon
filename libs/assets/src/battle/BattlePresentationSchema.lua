@@ -1,6 +1,7 @@
 -- Authoritative validation for the generated battle presentation class:
--- the staged global manifest, one composed scene record, and exact launch
--- demands. Runtime-facing records use semantic keys only: physical archive
+-- the staged global core manifest, one composed scene record, exact launch
+-- demands, and the standalone trainer-picture, ball, and evolution leaf
+-- records. Runtime-facing records use semantic keys only: physical archive
 -- and member identities are rejected at any depth. Love-free and
 -- filesystem-free.
 
@@ -12,6 +13,9 @@ local Contract = require("libs.assets.src.DerivedAssetContract")
 local BattlePresentationSchema = {}
 
 BattlePresentationSchema.MANIFEST_SCHEMA = Contract.battlePresentation.schema
+BattlePresentationSchema.TRAINER_PICTURE_SCHEMA = Contract.battlePresentation.trainerPictureSchema
+BattlePresentationSchema.BALL_SCHEMA = Contract.battlePresentation.ballSchema
+BattlePresentationSchema.EVOLUTION_SCHEMA = Contract.battlePresentation.evolutionSchema
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v4"
 
 local fail = SchemaCheck.fail
@@ -2954,58 +2958,17 @@ local function checkMessagePlaceholders(placeholders, placeholderBanks, context,
   end
 end
 
-local AUDIO_BANK_KEY = "^audio/bank/content/" .. ("%x"):rep(40) .. "$"
-local AUDIO_SAMPLE_KEY = "^audio/sample/content/" .. ("%x"):rep(40) .. "$"
-
--- Resolves a semantic sequence key to its compiled closure.
-local function checkSequenceKey(sequenceKey, closures, context, code, field)
+-- Resolves a semantic sequence key. Selected audio banks stay authoritative
+-- in the audio class; the core carries no compiled bank closures.
+local function checkSequenceKey(sequenceKey, context, code, field)
   checkString(sequenceKey, context, code, field)
   if not sequenceKey:match("^audio/sequence/[a-zA-Z0-9_%-]+$") then
     fail(code, field .. " must use a semantic sequence key", context)
-  end
-  if closures[sequenceKey] == nil then
-    fail(code, field .. " has no compiled sequence closure", context)
-  end
-end
-
-local function checkSequenceClosure(closure, context, code, record)
-  SchemaCheck.checkRecord(
-    closure,
-    { bankKey = true, player = true, sampleKeys = true, closureIdentity = true },
-    context,
-    code,
-    record
-  )
-  if type(closure.bankKey) ~= "string" or not closure.bankKey:match(AUDIO_BANK_KEY) then
-    fail(code, record .. ".bankKey must name content-addressed compiled audio", context)
-  end
-  SchemaCheck.checkRecord(
-    closure.player,
-    { volume = true, channelPriority = true, playerPriority = true },
-    context,
-    code,
-    record .. ".player"
-  )
-  checkInt(closure.player.volume, 0, 127, context, code, record .. ".player.volume")
-  checkInt(closure.player.channelPriority, 0, 127, context, code, record .. ".player.channelPriority")
-  checkInt(closure.player.playerPriority, 0, 127, context, code, record .. ".player.playerPriority")
-  checkStringArray(closure.sampleKeys, context, code, record .. ".sampleKeys")
-  if #closure.sampleKeys == 0 then
-    fail(code, record .. ".sampleKeys must close the selected bank resources", context)
-  end
-  for index, sampleKey in ipairs(closure.sampleKeys) do
-    if not sampleKey:match(AUDIO_SAMPLE_KEY) then
-      fail(code, record .. ".sampleKeys[" .. index .. "] must be a content-addressed sample key", context)
-    end
-  end
-  if not isSha1Text(closure.closureIdentity) then
-    fail(code, record .. ".closureIdentity must be a SHA-1 identity", context)
   end
 end
 
 -- Returns the set of declared semantic route keys.
 local function checkIntroMusicRoutes(introMusic, inputSet, context, code, field)
-  local closures = introMusic.sequenceClosures
   if not Validate.isArray(introMusic.routes) or #introMusic.routes == 0 then
     fail(code, field .. ".routes must include source-normalized music routes", context)
   end
@@ -3018,7 +2981,7 @@ local function checkIntroMusicRoutes(introMusic, inputSet, context, code, field)
       fail(code, record .. ".key is duplicated", context)
     end
     routes[route.key] = true
-    checkSequenceKey(route.sequenceKey, closures, context, code, record .. ".sequenceKey")
+    checkSequenceKey(route.sequenceKey, context, code, record .. ".sequenceKey")
     checkStringArray(route.context, context, code, record .. ".context")
     if #route.context == 0 then
       fail(code, record .. ".context must declare the source selection inputs", context)
@@ -3043,7 +3006,7 @@ local function checkIntroMusicRoutes(introMusic, inputSet, context, code, field)
     )
     checkString(route.sequenceSymbol, context, code, record .. ".sequenceSymbol")
     checkString(route.routeKey, context, code, record .. ".routeKey")
-    checkSequenceKey(route.sequenceKey, closures, context, code, record .. ".sequenceKey")
+    checkSequenceKey(route.sequenceKey, context, code, record .. ".sequenceKey")
     if routes[route.routeKey] ~= true or type(route.transitionFallback) ~= "boolean" then
       fail(code, record .. " must link to a semantic route and preserve fallback selection", context)
     end
@@ -3109,13 +3072,7 @@ local function checkIntroMusicSelection(introMusic, context, code, field)
   )
   checkString(selection.key, context, code, field .. ".selectionSound.key")
   checkString(selection.eventInput, context, code, field .. ".selectionSound.eventInput")
-  checkSequenceKey(
-    selection.sequenceKey,
-    introMusic.sequenceClosures,
-    context,
-    code,
-    field .. ".selectionSound.sequenceKey"
-  )
+  checkSequenceKey(selection.sequenceKey, context, code, field .. ".selectionSound.sequenceKey")
 end
 
 local function checkIntroMusic(introMusic, context, code, field)
@@ -3129,7 +3086,6 @@ local function checkIntroMusic(introMusic, context, code, field)
     selectionRules = true,
     transitionFallbackIndependent = true,
     selectionSound = true,
-    sequenceClosures = true,
   }, context, code, field)
   checkStringArray(introMusic.inputs, context, code, field .. ".inputs")
   SchemaCheck.checkRecord(introMusic.inputTypes, nil, context, code, field .. ".inputTypes")
@@ -3142,13 +3098,6 @@ local function checkIntroMusic(introMusic, context, code, field)
     if inputSet[input] ~= true then
       fail(code, field .. ".inputTypes contains an undeclared input", context)
     end
-  end
-  local closures = introMusic.sequenceClosures
-  local closureField = field .. ".sequenceClosures"
-  SchemaCheck.checkRecord(closures, nil, context, code, closureField)
-  for sequenceKey, closure in pairs(closures) do
-    checkSequenceKey(sequenceKey, closures, context, code, closureField .. " key")
-    checkSequenceClosure(closure, context, code, closureField .. "." .. sequenceKey)
   end
   checkIntroMusicRoutes(introMusic, inputSet, context, code, field)
   checkIntroMusicSelection(introMusic, context, code, field)
@@ -3209,10 +3158,6 @@ local function checkManifestHeader(manifest, context)
     battlefield = true,
     hud = true,
     pictures = true,
-    trainerPictures = true,
-    battleBalls = true,
-    evolutionParticles = true,
-    evolutionGraphics = true,
     menus = true,
     messages = true,
     transitions = true,
@@ -3695,198 +3640,225 @@ local function checkPictures(manifest, context)
   checkPictureShadow(pictures.shadow, manifest.menus.images, context)
 end
 
-local function checkTrainerPictures(manifest, context)
-  local section = manifest.trainerPictures
-  SchemaCheck.checkRecord(section, { entries = true }, context, CODE_MANIFEST, "manifest trainerPictures")
-  SchemaCheck.checkRecord(section.entries, nil, context, CODE_MANIFEST, "manifest trainerPictures.entries")
-  if next(section.entries) == nil then
-    fail(CODE_MANIFEST, "manifest trainerPictures.entries must inventory source trainer art", context)
+-- Semantic trainer picture selectors: any sourced front/back class. The
+-- producer owns source-catalog membership; these predicates prove shape
+-- only.
+local function isTrainerPictureSelector(selector)
+  if type(selector) ~= "string" then
+    return false
   end
-  for selector, record in pairs(section.entries) do
-    local validFront = type(selector) == "string" and selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
-    local validBack = selector == "back:PKMN_TRAINER_ETHAN" or selector == "back:PKMN_TRAINER_LYRA"
-    if not validFront and not validBack then
-      fail(CODE_MANIFEST, "manifest trainer picture selector is not semantic", context)
+  if selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil then
+    return true
+  end
+  return selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
+end
+
+-- Semantic ball selectors: one sourced item key behind the `ball:` role.
+local function isBallSelector(selector)
+  return type(selector) == "string" and selector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil
+end
+
+-- Proves one staged image lives under its selector-owned leaf prefix: the
+-- exact stem image or a suffixed sibling without nested directories.
+local function checkLeafImage(path, prefix, context, field)
+  checkImagePath(path, context, CODE_MANIFEST, field)
+  if type(path) ~= "string" or path:sub(-4) ~= ".png" then
+    fail(CODE_MANIFEST, field .. " must stage a PNG under its selector-owned leaf prefix", context)
+  end
+  if path ~= prefix .. ".png" then
+    if path:sub(1, #prefix + 1) ~= prefix .. "-" then
+      fail(CODE_MANIFEST, field .. " must stage under its selector-owned leaf prefix", context)
     end
-    local field = "manifest trainerPictures.entries[" .. selector .. "]"
-    SchemaCheck.checkRecord(record, {
-      drawableKey = true,
-      image = true,
-      width = true,
-      height = true,
-      rasterOffset = true,
-      animation = true,
-      throwOffsets = true,
-    }, context, CODE_MANIFEST, field)
-    if record.drawableKey ~= "trainer:" .. selector then
-      fail(CODE_MANIFEST, field .. ".drawableKey must match its role selector", context)
+    local rest = path:sub(#prefix + 2)
+    if rest == "" or rest:find("/", 1, true) ~= nil then
+      fail(CODE_MANIFEST, field .. " must stage under its selector-owned leaf prefix", context)
     end
-    checkImagePath(record.image, context, CODE_MANIFEST, field .. ".image")
-    checkInt(record.width, 1, 128, context, CODE_MANIFEST, field .. ".width")
-    checkInt(record.height, 1, 128, context, CODE_MANIFEST, field .. ".height")
+  end
+end
+
+-- One trainer picture entry: semantic selector identity, source frame data,
+-- and raster origins. The caller proves image staging: the former global
+-- manifest proved membership in its shared image index, while a standalone
+-- leaf record proves its selector-owned prefix instead.
+local function checkTrainerPictureEntry(selector, record, checkImage, context, field)
+  if not isTrainerPictureSelector(selector) then
+    fail(CODE_MANIFEST, "trainer picture selector is not semantic: " .. tostring(selector), context)
+  end
+  local validBack = type(selector) == "string" and selector:match("^back:") ~= nil
+  if type(record) ~= "table" then
+    fail(CODE_MANIFEST, field .. " must carry its trainer picture entry", context)
+  end
+  SchemaCheck.checkRecord(record, {
+    drawableKey = true,
+    image = true,
+    width = true,
+    height = true,
+    rasterOffset = true,
+    animation = true,
+    throwOffsets = true,
+  }, context, CODE_MANIFEST, field)
+  if record.drawableKey ~= "trainer:" .. selector then
+    fail(CODE_MANIFEST, field .. ".drawableKey must match its role selector", context)
+  end
+  checkImagePath(record.image, context, CODE_MANIFEST, field .. ".image")
+  checkInt(record.width, 1, 128, context, CODE_MANIFEST, field .. ".width")
+  checkInt(record.height, 1, 128, context, CODE_MANIFEST, field .. ".height")
+  SchemaCheck.checkRecord(record.rasterOffset, { x = true, y = true }, context, CODE_MANIFEST, field .. ".rasterOffset")
+  checkInt(record.rasterOffset.x, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.x")
+  checkInt(record.rasterOffset.y, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.y")
+  checkImage(record.image, field .. ".image")
+  if record.animation == nil then
+    fail(CODE_MANIFEST, field .. ".animation must carry every source trainer sequence", context)
+  end
+  if record.animation ~= nil then
     SchemaCheck.checkRecord(
-      record.rasterOffset,
-      { x = true, y = true },
+      record.animation,
+      { sourceSequence = true, playMode = true, loopStartFrameIdx = true, frames = true, sequences = true },
       context,
       CODE_MANIFEST,
-      field .. ".rasterOffset"
+      field .. ".animation"
     )
-    checkInt(record.rasterOffset.x, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.x")
-    checkInt(record.rasterOffset.y, -128, 127, context, CODE_MANIFEST, field .. ".rasterOffset.y")
-    checkImageRef(manifest.menus.images, record.image, context, field .. ".image")
-    if record.animation == nil then
-      fail(CODE_MANIFEST, field .. ".animation must carry every source trainer sequence", context)
+    local frames = record.animation.frames
+    if not Validate.isArray(frames) or #frames == 0 then
+      fail(CODE_MANIFEST, field .. ".animation.frames must carry ordered source frames", context)
     end
-    if record.animation ~= nil then
+    if record.animation.sourceSequence ~= 0 then
+      fail(CODE_MANIFEST, field .. ".animation.sourceSequence must preserve source sequence zero", context)
+    end
+    local sequences = record.animation.sequences
+    if not Validate.isArray(sequences) or #sequences == 0 then
+      fail(CODE_MANIFEST, field .. ".animation.sequences must carry every source animation", context)
+    end
+    for sequenceIndex, sequence in ipairs(sequences) do
+      local sequenceField = field .. ".animation.sequences[" .. sequenceIndex .. "]"
       SchemaCheck.checkRecord(
-        record.animation,
-        { sourceSequence = true, playMode = true, loopStartFrameIdx = true, frames = true, sequences = true },
+        sequence,
+        { sourceSequence = true, playMode = true, loopStartFrameIdx = true, frames = true },
         context,
         CODE_MANIFEST,
-        field .. ".animation"
+        sequenceField
       )
-      local frames = record.animation.frames
-      if not Validate.isArray(frames) or #frames == 0 then
-        fail(CODE_MANIFEST, field .. ".animation.frames must carry ordered source frames", context)
+      local sourceSequence = sequenceIndex - 1
+      if sequence.sourceSequence ~= sourceSequence then
+        fail(CODE_MANIFEST, sequenceField .. ".sourceSequence must follow source order from zero", context)
       end
-      if record.animation.sourceSequence ~= 0 then
-        fail(CODE_MANIFEST, field .. ".animation.sourceSequence must preserve source sequence zero", context)
+      if
+        not (
+          sequence.playMode == "forward"
+          or sequence.playMode == "forward_loop"
+          or sequence.playMode == "reverse"
+          or sequence.playMode == "reverse_loop"
+        )
+      then
+        fail(CODE_MANIFEST, sequenceField .. ".playMode must retain its supported source mode", context)
       end
-      local sequences = record.animation.sequences
-      if not Validate.isArray(sequences) or #sequences == 0 then
-        fail(CODE_MANIFEST, field .. ".animation.sequences must carry every source animation", context)
+      local sequenceFrames = sequence.frames
+      if not Validate.isArray(sequenceFrames) or #sequenceFrames == 0 then
+        fail(CODE_MANIFEST, sequenceField .. ".frames must carry ordered source frames", context)
       end
-      for sequenceIndex, sequence in ipairs(sequences) do
-        local sequenceField = field .. ".animation.sequences[" .. sequenceIndex .. "]"
+      checkInt(
+        sequence.loopStartFrameIdx,
+        0,
+        #sequenceFrames - 1,
+        context,
+        CODE_MANIFEST,
+        sequenceField .. ".loopStartFrameIdx"
+      )
+      for frameIndex, frame in ipairs(sequenceFrames) do
+        local frameField = sequenceField .. ".frames[" .. frameIndex .. "]"
+        SchemaCheck.checkRecord(frame, {
+          drawableKey = true,
+          image = true,
+          rasterOffset = true,
+          durationTicks = true,
+          sourceFrame = true,
+          userAttr = true,
+        }, context, CODE_MANIFEST, frameField)
+        local sourceFrame = frameIndex - 1
+        if frame.sourceFrame ~= sourceFrame then
+          fail(CODE_MANIFEST, frameField .. ".sourceFrame must follow source order from zero", context)
+        end
+        local drawableKey
+        if sourceSequence == 0 then
+          drawableKey = sourceFrame == 0 and record.drawableKey
+            or (record.drawableKey .. ":frame:" .. tostring(sourceFrame))
+        else
+          drawableKey = record.drawableKey
+            .. ":sequence:"
+            .. tostring(sourceSequence)
+            .. ":frame:"
+            .. tostring(sourceFrame)
+        end
+        if frame.drawableKey ~= drawableKey then
+          fail(CODE_MANIFEST, frameField .. ".drawableKey must match its source sequence and frame", context)
+        end
+        checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
+        checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, frameField .. ".durationTicks")
+        checkInt(frame.userAttr, 0, 0xFFFFFFFF, context, CODE_MANIFEST, frameField .. ".userAttr")
         SchemaCheck.checkRecord(
-          sequence,
-          { sourceSequence = true, playMode = true, loopStartFrameIdx = true, frames = true },
+          frame.rasterOffset,
+          { x = true, y = true },
           context,
           CODE_MANIFEST,
-          sequenceField
+          frameField .. ".rasterOffset"
         )
-        local sourceSequence = sequenceIndex - 1
-        if sequence.sourceSequence ~= sourceSequence then
-          fail(CODE_MANIFEST, sequenceField .. ".sourceSequence must follow source order from zero", context)
-        end
+        checkInt(frame.rasterOffset.x, -128, 127, context, CODE_MANIFEST, frameField .. ".rasterOffset.x")
+        checkInt(frame.rasterOffset.y, -128, 127, context, CODE_MANIFEST, frameField .. ".rasterOffset.y")
+        checkImage(frame.image, frameField .. ".image")
         if
-          not (
-            sequence.playMode == "forward"
-            or sequence.playMode == "forward_loop"
-            or sequence.playMode == "reverse"
-            or sequence.playMode == "reverse_loop"
+          sourceSequence == 0
+          and frameIndex == 1
+          and (
+            frame.image ~= record.image
+            or frame.rasterOffset.x ~= record.rasterOffset.x
+            or frame.rasterOffset.y ~= record.rasterOffset.y
           )
         then
-          fail(CODE_MANIFEST, sequenceField .. ".playMode must retain its supported source mode", context)
+          fail(CODE_MANIFEST, field .. ".animation frame zero must preserve the legacy image and origin", context)
         end
-        local sequenceFrames = sequence.frames
-        if not Validate.isArray(sequenceFrames) or #sequenceFrames == 0 then
-          fail(CODE_MANIFEST, sequenceField .. ".frames must carry ordered source frames", context)
+      end
+      if sourceSequence == 0 then
+        if
+          sequence.playMode ~= record.animation.playMode
+          or sequence.loopStartFrameIdx ~= record.animation.loopStartFrameIdx
+          or #sequenceFrames ~= #frames
+        then
+          fail(CODE_MANIFEST, field .. ".animation must mirror source sequence zero", context)
         end
-        checkInt(
-          sequence.loopStartFrameIdx,
-          0,
-          #sequenceFrames - 1,
-          context,
-          CODE_MANIFEST,
-          sequenceField .. ".loopStartFrameIdx"
-        )
-        for frameIndex, frame in ipairs(sequenceFrames) do
-          local frameField = sequenceField .. ".frames[" .. frameIndex .. "]"
-          SchemaCheck.checkRecord(frame, {
-            drawableKey = true,
-            image = true,
-            rasterOffset = true,
-            durationTicks = true,
-            sourceFrame = true,
-            userAttr = true,
-          }, context, CODE_MANIFEST, frameField)
-          local sourceFrame = frameIndex - 1
-          if frame.sourceFrame ~= sourceFrame then
-            fail(CODE_MANIFEST, frameField .. ".sourceFrame must follow source order from zero", context)
-          end
-          local drawableKey
-          if sourceSequence == 0 then
-            drawableKey = sourceFrame == 0 and record.drawableKey
-              or (record.drawableKey .. ":frame:" .. tostring(sourceFrame))
-          else
-            drawableKey = record.drawableKey
-              .. ":sequence:"
-              .. tostring(sourceSequence)
-              .. ":frame:"
-              .. tostring(sourceFrame)
-          end
-          if frame.drawableKey ~= drawableKey then
-            fail(CODE_MANIFEST, frameField .. ".drawableKey must match its source sequence and frame", context)
-          end
-          checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
-          checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, frameField .. ".durationTicks")
-          checkInt(frame.userAttr, 0, 0xFFFFFFFF, context, CODE_MANIFEST, frameField .. ".userAttr")
-          SchemaCheck.checkRecord(
-            frame.rasterOffset,
-            { x = true, y = true },
-            context,
-            CODE_MANIFEST,
-            frameField .. ".rasterOffset"
-          )
-          checkInt(frame.rasterOffset.x, -128, 127, context, CODE_MANIFEST, frameField .. ".rasterOffset.x")
-          checkInt(frame.rasterOffset.y, -128, 127, context, CODE_MANIFEST, frameField .. ".rasterOffset.y")
-          checkImageRef(manifest.menus.images, frame.image, context, frameField .. ".image")
+        for frameIndex, frame in ipairs(frames) do
+          local sourceFrame = sequenceFrames[frameIndex]
           if
-            sourceSequence == 0
-            and frameIndex == 1
-            and (
-              frame.image ~= record.image
-              or frame.rasterOffset.x ~= record.rasterOffset.x
-              or frame.rasterOffset.y ~= record.rasterOffset.y
-            )
+            sourceFrame.drawableKey ~= frame.drawableKey
+            or sourceFrame.image ~= frame.image
+            or sourceFrame.durationTicks ~= frame.durationTicks
+            or sourceFrame.sourceFrame ~= frame.sourceFrame
+            or sourceFrame.userAttr ~= frame.userAttr
+            or sourceFrame.rasterOffset.x ~= frame.rasterOffset.x
+            or sourceFrame.rasterOffset.y ~= frame.rasterOffset.y
           then
-            fail(CODE_MANIFEST, field .. ".animation frame zero must preserve the legacy image and origin", context)
-          end
-        end
-        if sourceSequence == 0 then
-          if
-            sequence.playMode ~= record.animation.playMode
-            or sequence.loopStartFrameIdx ~= record.animation.loopStartFrameIdx
-            or #sequenceFrames ~= #frames
-          then
-            fail(CODE_MANIFEST, field .. ".animation must mirror source sequence zero", context)
-          end
-          for frameIndex, frame in ipairs(frames) do
-            local sourceFrame = sequenceFrames[frameIndex]
-            if
-              sourceFrame.drawableKey ~= frame.drawableKey
-              or sourceFrame.image ~= frame.image
-              or sourceFrame.durationTicks ~= frame.durationTicks
-              or sourceFrame.sourceFrame ~= frame.sourceFrame
-              or sourceFrame.userAttr ~= frame.userAttr
-              or sourceFrame.rasterOffset.x ~= frame.rasterOffset.x
-              or sourceFrame.rasterOffset.y ~= frame.rasterOffset.y
-            then
-              fail(CODE_MANIFEST, field .. ".animation.frames must mirror source sequence zero", context)
-            end
+            fail(CODE_MANIFEST, field .. ".animation.frames must mirror source sequence zero", context)
           end
         end
       end
     end
-    if validBack and record.throwOffsets == nil then
-      fail(CODE_MANIFEST, field .. ".throwOffsets are required for player backpics", context)
+  end
+  if validBack and record.throwOffsets == nil then
+    fail(CODE_MANIFEST, field .. ".throwOffsets are required for player backpics", context)
+  end
+  if not validBack and record.throwOffsets ~= nil then
+    fail(CODE_MANIFEST, field .. ".throwOffsets are only valid for player backpics", context)
+  end
+  if record.throwOffsets ~= nil then
+    if not Validate.isArray(record.throwOffsets) or #record.throwOffsets ~= 6 then
+      fail(CODE_MANIFEST, field .. ".throwOffsets must carry six source frame attachments", context)
     end
-    if not validBack and record.throwOffsets ~= nil then
-      fail(CODE_MANIFEST, field .. ".throwOffsets are only valid for player backpics", context)
-    end
-    if record.throwOffsets ~= nil then
-      if not Validate.isArray(record.throwOffsets) or #record.throwOffsets ~= 6 then
-        fail(CODE_MANIFEST, field .. ".throwOffsets must carry six source frame attachments", context)
-      end
-      for frameIndex, offset in ipairs(record.throwOffsets) do
-        local offsetField = field .. ".throwOffsets[" .. frameIndex .. "]"
-        SchemaCheck.checkRecord(offset, { x = true, y = true }, context, CODE_MANIFEST, offsetField)
-        checkInt(offset.x, -32768, 32767, context, CODE_MANIFEST, offsetField .. ".x")
-        checkInt(offset.y, -32768, 32767, context, CODE_MANIFEST, offsetField .. ".y")
-        if (offset.x == 32767) ~= (offset.y == 32767) then
-          fail(CODE_MANIFEST, offsetField .. " must use the paired 0x7FFF sentinel", context)
-        end
+    for frameIndex, offset in ipairs(record.throwOffsets) do
+      local offsetField = field .. ".throwOffsets[" .. frameIndex .. "]"
+      SchemaCheck.checkRecord(offset, { x = true, y = true }, context, CODE_MANIFEST, offsetField)
+      checkInt(offset.x, -32768, 32767, context, CODE_MANIFEST, offsetField .. ".x")
+      checkInt(offset.y, -32768, 32767, context, CODE_MANIFEST, offsetField .. ".y")
+      if (offset.x == 32767) ~= (offset.y == 32767) then
+        fail(CODE_MANIFEST, offsetField .. " must use the paired 0x7FFF sentinel", context)
       end
     end
   end
@@ -3939,78 +3911,67 @@ local function checkBallParticleSet(set, itemKey, kind, context, field)
   end
 end
 
-local function checkBattleBalls(manifest, context)
-  local section = manifest.battleBalls
-  SchemaCheck.checkRecord(section, { entries = true }, context, CODE_MANIFEST, "manifest battleBalls")
-  SchemaCheck.checkRecord(section.entries, nil, context, CODE_MANIFEST, "manifest battleBalls.entries")
-  if next(section.entries) == nil then
-    fail(CODE_MANIFEST, "manifest battleBalls.entries must inventory source ball art", context)
+-- One ball entry: ordered frame rasters plus the optional seal/burst
+-- particle sets. Image staging is proved by the caller, as with trainer
+-- pictures.
+local function checkBallEntry(selector, record, checkImage, context, field)
+  if not isBallSelector(selector) then
+    fail(CODE_MANIFEST, "battle ball selector is not semantic: " .. tostring(selector), context)
   end
-  for selector, record in pairs(section.entries) do
-    if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
-      fail(CODE_MANIFEST, "manifest battle ball selector is not semantic", context)
-    end
-    local field = "manifest battleBalls.entries[" .. selector .. "]"
+  if type(record) ~= "table" then
+    fail(CODE_MANIFEST, field .. " must carry its ball entry", context)
+  end
+  SchemaCheck.checkRecord(record, { frames = true, fadeColor = true, particles = true }, context, CODE_MANIFEST, field)
+  checkInt(record.fadeColor, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".fadeColor")
+  local particles = record.particles
+  if particles ~= nil then
+    local particleField = field .. ".particles"
     SchemaCheck.checkRecord(
-      record,
-      { frames = true, fadeColor = true, particles = true },
+      particles,
+      { seal = true, burst = true, clickEmitter = true, burstStartTick = true },
       context,
       CODE_MANIFEST,
-      field
+      particleField
     )
-    checkInt(record.fadeColor, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".fadeColor")
-    local particles = record.particles
-    if particles ~= nil then
-      local particleField = field .. ".particles"
-      SchemaCheck.checkRecord(
-        particles,
-        { seal = true, burst = true, clickEmitter = true, burstStartTick = true },
-        context,
-        CODE_MANIFEST,
-        particleField
-      )
-      local itemKey = selector:sub(6)
-      checkBallParticleSet(particles.seal, itemKey, "seal", context, particleField .. ".seal")
-      checkBallParticleSet(particles.burst, itemKey, "burst", context, particleField .. ".burst")
-      checkInt(
-        particles.clickEmitter,
-        0,
-        #particles.burst.emitters - 1,
-        context,
-        CODE_MANIFEST,
-        particleField .. ".clickEmitter"
-      )
-      checkInt(particles.burstStartTick, 1, 255, context, CODE_MANIFEST, particleField .. ".burstStartTick")
+    local itemKey = selector:sub(6)
+    checkBallParticleSet(particles.seal, itemKey, "seal", context, particleField .. ".seal")
+    checkBallParticleSet(particles.burst, itemKey, "burst", context, particleField .. ".burst")
+    checkInt(
+      particles.clickEmitter,
+      0,
+      #particles.burst.emitters - 1,
+      context,
+      CODE_MANIFEST,
+      particleField .. ".clickEmitter"
+    )
+    checkInt(particles.burstStartTick, 1, 255, context, CODE_MANIFEST, particleField .. ".burstStartTick")
+  end
+  if not Validate.isArray(record.frames) or #record.frames == 0 then
+    fail(CODE_MANIFEST, field .. ".frames must carry ordered animation frames", context)
+  end
+  for frameIndex, frame in ipairs(record.frames) do
+    local frameField = field .. ".frames[" .. frameIndex .. "]"
+    SchemaCheck.checkRecord(
+      frame,
+      { drawableKey = true, image = true, width = true, height = true },
+      context,
+      CODE_MANIFEST,
+      frameField
+    )
+    local itemKey = selector:sub(6)
+    if frame.drawableKey ~= "battle-ball:" .. itemKey .. ":" .. (frameIndex - 1) then
+      fail(CODE_MANIFEST, frameField .. ".drawableKey must match its ordered animation frame", context)
     end
-    if not Validate.isArray(record.frames) or #record.frames == 0 then
-      fail(CODE_MANIFEST, field .. ".frames must carry ordered animation frames", context)
-    end
-    for frameIndex, frame in ipairs(record.frames) do
-      local frameField = field .. ".frames[" .. frameIndex .. "]"
-      SchemaCheck.checkRecord(
-        frame,
-        { drawableKey = true, image = true, width = true, height = true },
-        context,
-        CODE_MANIFEST,
-        frameField
-      )
-      local itemKey = selector:sub(6)
-      if frame.drawableKey ~= "battle-ball:" .. itemKey .. ":" .. (frameIndex - 1) then
-        fail(CODE_MANIFEST, frameField .. ".drawableKey must match its ordered animation frame", context)
-      end
-      checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
-      checkInt(frame.width, 1, 128, context, CODE_MANIFEST, frameField .. ".width")
-      checkInt(frame.height, 1, 128, context, CODE_MANIFEST, frameField .. ".height")
-      checkImageRef(manifest.menus.images, frame.image, context, frameField .. ".image")
-    end
+    checkImage(frame.image, frameField .. ".image")
+    checkInt(frame.width, 1, 128, context, CODE_MANIFEST, frameField .. ".width")
+    checkInt(frame.height, 1, 128, context, CODE_MANIFEST, frameField .. ".height")
   end
 end
 
 -- EvolutionScene loads one SPL set and creates retail emitter IDs 0 through
 -- 12 across its phases. Source archive/member identity stays in producer
 -- provenance; this persisted contract carries compiled records and images.
-local function checkEvolutionParticles(particles, context)
-  local field = "manifest evolutionParticles"
+local function checkEvolutionParticles(particles, context, field)
   SchemaCheck.checkRecord(particles, { seed = true, emitters = true, textures = true }, context, CODE_MANIFEST, field)
   if particles.seed ~= 0 then
     fail(CODE_MANIFEST, field .. ".seed must be the retail zero seed", context)
@@ -4052,8 +4013,7 @@ end
 
 -- The retail EvolutionScene owns visible main, sub, and sub-menu BG maps.
 -- Runtime receives only complete screen-sized images and semantic paths.
-local function checkEvolutionGraphics(graphics, manifest, context)
-  local field = "manifest evolutionGraphics"
+local function checkEvolutionGraphics(graphics, context, field)
   SchemaCheck.checkRecord(
     graphics,
     { main = true, sub = true, menu = true, cursor = true, menuTextPalette = true },
@@ -4071,7 +4031,6 @@ local function checkEvolutionGraphics(graphics, manifest, context)
     if image.width ~= 256 or image.height ~= 192 then
       fail(CODE_MANIFEST, at .. " must carry a 256×192 screen raster", context)
     end
-    checkImageRef(manifest.menus.images, image.image, context, at .. ".image")
   end
   checkPalette(graphics.menuTextPalette, context, CODE_MANIFEST, field .. ".menuTextPalette")
   if #graphics.menuTextPalette.colors ~= 16 then
@@ -4170,7 +4129,6 @@ local function checkEvolutionGraphics(graphics, manifest, context)
       if frame.rasterOffset.x ~= expectedOffsetX or frame.rasterOffset.y ~= expectedOffsetY then
         fail(CODE_MANIFEST, at .. ".rasterOffset must preserve the composite cell origin", context)
       end
-      checkImageRef(manifest.menus.images, frame.image, context, at .. ".image")
     end
   end
 end
@@ -4432,21 +4390,20 @@ local function checkMenuTilemapResources(manifest, context)
   end
 end
 
--- The staged global manifest: source-normalized catalogs grouped by the
--- runtime owner that consumes each role. Physical IDs stay producer-only.
--- Sections validate in dependency order; cross-section references resolve
--- against catalogs that earlier sections have already proven.
+-- The staged global core manifest: the shared source-normalized catalogs
+-- grouped by the runtime owner that consumes each role. Trainer pictures,
+-- ball art, and evolution presentation stage as independent leaf records
+-- validated by their own standalone checks below. Physical IDs stay
+-- producer-only. Sections validate in dependency order; cross-section
+-- references resolve against catalogs that earlier sections have already
+-- proven.
 function BattlePresentationSchema.assertManifest(manifest)
   local context = {}
   checkManifestHeader(manifest, context)
   checkMenus(manifest, context)
   checkHud(manifest, context)
   checkScreenImageRefs(manifest, context)
-  checkEvolutionGraphics(manifest.evolutionGraphics, manifest, context)
   checkPictures(manifest, context)
-  checkTrainerPictures(manifest, context)
-  checkBattleBalls(manifest, context)
-  checkEvolutionParticles(manifest.evolutionParticles, context)
   checkMessages(manifest, context)
   checkTransitions(manifest, context)
   checkAudioRoles(manifest.audioRoles, context, CODE_MANIFEST, "manifest audioRoles")
@@ -4459,6 +4416,92 @@ end
 
 function BattlePresentationSchema.isValidManifest(manifest)
   return pcall(BattlePresentationSchema.assertManifest, manifest)
+end
+
+-- One standalone trainer picture leaf record: exactly the selected
+-- entry with its image closure under the selector-owned prefix.
+function BattlePresentationSchema.assertTrainerPicture(record)
+  local context = {}
+  if type(record) ~= "table" then
+    fail(CODE_MANIFEST, "trainer picture record must be a record", context)
+  end
+  SchemaCheck.checkRecord(
+    record,
+    { schema = true, selector = true, catalogIdentity = true, entry = true },
+    context,
+    CODE_MANIFEST,
+    "trainer picture record"
+  )
+  if record.schema ~= BattlePresentationSchema.TRAINER_PICTURE_SCHEMA then
+    fail(CODE_MANIFEST, "trainer picture schema must be " .. BattlePresentationSchema.TRAINER_PICTURE_SCHEMA, context)
+  end
+  checkString(record.selector, context, CODE_MANIFEST, "trainer picture selector")
+  checkString(record.catalogIdentity, context, CODE_MANIFEST, "trainer picture catalogIdentity")
+  local prefix = "assets/generated/battle/trainer-pictures/" .. record.selector:gsub(":", "-")
+  local field = "trainer picture " .. tostring(record.selector)
+  local function checkImage(path, imageField)
+    checkLeafImage(path, prefix, context, imageField)
+  end
+  checkTrainerPictureEntry(record.selector, record.entry, checkImage, context, field)
+  checkNoNativeKeys(record, context, CODE_MANIFEST, field)
+  return true
+end
+
+-- One standalone ball leaf record: exactly the selected ball entry with
+-- its frame closure under the selector-owned prefix.
+function BattlePresentationSchema.assertBall(record)
+  local context = {}
+  if type(record) ~= "table" then
+    fail(CODE_MANIFEST, "ball record must be a record", context)
+  end
+  SchemaCheck.checkRecord(
+    record,
+    { schema = true, selector = true, catalogIdentity = true, entry = true },
+    context,
+    CODE_MANIFEST,
+    "ball record"
+  )
+  if record.schema ~= BattlePresentationSchema.BALL_SCHEMA then
+    fail(CODE_MANIFEST, "ball schema must be " .. BattlePresentationSchema.BALL_SCHEMA, context)
+  end
+  checkString(record.selector, context, CODE_MANIFEST, "ball selector")
+  checkString(record.catalogIdentity, context, CODE_MANIFEST, "ball catalogIdentity")
+  local prefix = "assets/generated/battle/balls/" .. tostring(record.selector):sub(6)
+  local field = "ball " .. tostring(record.selector)
+  local function checkImage(path, imageField)
+    checkLeafImage(path, prefix, context, imageField)
+  end
+  checkBallEntry(record.selector, record.entry, checkImage, context, field)
+  checkNoNativeKeys(record, context, CODE_MANIFEST, field)
+  return true
+end
+
+-- One standalone evolution leaf record: the single particle set with its
+-- screen rasters and cursor frames.
+function BattlePresentationSchema.assertEvolution(record)
+  local context = {}
+  if type(record) ~= "table" then
+    fail(CODE_MANIFEST, "evolution record must be a record", context)
+  end
+  SchemaCheck.checkRecord(
+    record,
+    { schema = true, kind = true, catalogIdentity = true, particles = true, graphics = true },
+    context,
+    CODE_MANIFEST,
+    "evolution record"
+  )
+  if record.schema ~= BattlePresentationSchema.EVOLUTION_SCHEMA then
+    fail(CODE_MANIFEST, "evolution schema must be " .. BattlePresentationSchema.EVOLUTION_SCHEMA, context)
+  end
+  if record.kind ~= "evolution" then
+    fail(CODE_MANIFEST, "evolution record kind must be evolution", context)
+  end
+  checkString(record.catalogIdentity, context, CODE_MANIFEST, "evolution catalogIdentity")
+  local field = "evolution record"
+  checkEvolutionParticles(record.particles, context, field .. " particles")
+  checkEvolutionGraphics(record.graphics, context, field .. " graphics")
+  checkNoNativeKeys(record, context, CODE_MANIFEST, field)
+  return true
 end
 
 -- One composed scene record: its semantic context, native source layers,
@@ -4579,15 +4622,13 @@ function BattlePresentationSchema.assertDemand(demand)
   checkStringList(demand.pages, context, CODE_DEMAND, "demand pages", true)
   checkStringList(demand.trainerPictures, context, CODE_DEMAND, "demand trainerPictures", true)
   for _, selector in ipairs(demand.trainerPictures) do
-    local validFront = selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
-    local validBack = selector == "back:PKMN_TRAINER_ETHAN" or selector == "back:PKMN_TRAINER_LYRA"
-    if not validFront and not validBack then
+    if not isTrainerPictureSelector(selector) then
       fail(CODE_DEMAND, "demand trainer picture selector is not semantic: " .. selector, context)
     end
   end
   checkStringList(demand.battleBalls, context, CODE_DEMAND, "demand battleBalls", true)
   for _, selector in ipairs(demand.battleBalls) do
-    if selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+    if not isBallSelector(selector) then
       fail(CODE_DEMAND, "demand battle ball selector is not semantic", context)
     end
   end

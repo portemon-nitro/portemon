@@ -135,6 +135,34 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field fadeColor integer
 ---@field particles BattlePresentationCache.BallParticles|nil
 
+---@class BattlePresentationCache.TrainerPictureEntry
+---@field drawableKey string
+---@field image string cache-relative staged PNG path
+---@field width integer
+---@field height integer
+---@field rasterOffset { x: integer, y: integer }
+---@field animation table<string, unknown> source trainer animation sequences and frames
+---@field throwOffsets table<string, unknown> source throw anchor offsets
+
+---@class BattlePresentationCache.TrainerPictureRecord
+---@field schema string
+---@field selector string
+---@field catalogIdentity string
+---@field entry BattlePresentationCache.TrainerPictureEntry
+
+---@class BattlePresentationCache.BallRecord
+---@field schema string
+---@field selector string
+---@field catalogIdentity string
+---@field entry BattlePresentationCache.BallEntry
+
+---@class BattlePresentationCache.EvolutionRecord
+---@field schema string
+---@field kind string
+---@field catalogIdentity string
+---@field particles BattlePresentationCache.EvolutionParticleSet
+---@field graphics BattlePresentationCache.EvolutionGraphics
+
 ---@class BattlePresentationCache.SceneRecord
 ---@field schema string
 ---@field key string
@@ -436,37 +464,37 @@ function BattlePresentationCache.load(cacheFs)
   return planningManifest(assert(cacheFs.versionId, "presentation loading requires a versioned cache"))
 end
 
--- Returns the source-normalized EvolutionScene particle set only from a
--- verified global manifest. An unstaged planning manifest has no playable
+-- Returns the source-normalized EvolutionScene particle set from the
+-- standalone evolution leaf record. An unstaged leaf has no playable
 -- particle payload.
 ---@param cacheFs CacheFs
 ---@return BattlePresentationCache.EvolutionParticleSet|nil particles
 function BattlePresentationCache.loadEvolutionParticles(cacheFs)
-  local manifest = BattlePresentationCache.load(cacheFs)
-  if manifest.verified ~= true then
+  local record, _ = BattlePresentationCache.loadEvolution(cacheFs)
+  if record == nil then
     return nil
   end
-  return manifest.evolutionParticles
+  return record.particles
 end
 
--- Returns screen-sized EvolutionScene BG rasters only from a verified
--- global manifest.
+-- Returns screen-sized EvolutionScene BG rasters from the standalone
+-- evolution leaf record.
 ---@param cacheFs CacheFs
 ---@return BattlePresentationCache.EvolutionGraphics|nil graphics
 function BattlePresentationCache.loadEvolutionGraphics(cacheFs)
-  local manifest = BattlePresentationCache.load(cacheFs)
-  if manifest.verified ~= true then
+  local record, _ = BattlePresentationCache.loadEvolution(cacheFs)
+  if record == nil then
     return nil
   end
-  return manifest.evolutionGraphics
+  return record.graphics
 end
 
--- Checks the particle texture closure behind a global presentation marker.
+-- Checks the particle texture closure behind the evolution leaf marker.
 ---@param cacheFs CacheFs
 ---@param expectedMarker string
 ---@return boolean ready
 function BattlePresentationCache.isEvolutionParticlesReady(cacheFs, expectedMarker)
-  if cacheFs:read(BattlePresentationCache.markerPath()) ~= expectedMarker then
+  if cacheFs:read(BattlePresentationCache.evolutionMarkerPath()) ~= expectedMarker then
     return false
   end
   local particles = BattlePresentationCache.loadEvolutionParticles(cacheFs)
@@ -487,12 +515,12 @@ function BattlePresentationCache.isEvolutionParticlesReady(cacheFs, expectedMark
 end
 
 -- Checks the visible main, sub, and menu EvolutionScene BG images behind
--- the exact global marker and validated manifest.
+-- the exact evolution leaf marker and validated leaf record.
 ---@param cacheFs CacheFs
 ---@param expectedMarker string
 ---@return boolean ready
 function BattlePresentationCache.isEvolutionGraphicsReady(cacheFs, expectedMarker)
-  if cacheFs:read(BattlePresentationCache.markerPath()) ~= expectedMarker then
+  if cacheFs:read(BattlePresentationCache.evolutionMarkerPath()) ~= expectedMarker then
     return false
   end
   local graphics = BattlePresentationCache.loadEvolutionGraphics(cacheFs)
@@ -690,6 +718,89 @@ local function resolveBanks(roles, audioPlan)
   return banks
 end
 
+---@param cacheFs CacheFs
+---@param record BattlePresentationCache.TrainerPictureRecord validated trainer picture leaf record
+---@return boolean true only when every staged frame image parses with its staged size
+local function hasTrainerPictureImageClosure(cacheFs, record)
+  local entry = record.entry
+  local seen = {}
+  local firstImage = nil
+  local animation = entry.animation
+  local sequences = animation.sequences
+  for _, sequence in ipairs(sequences) do
+    for frameIndex, frame in ipairs(sequence.frames) do
+      if seen[frame.image] == nil then
+        seen[frame.image] = true
+        local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
+        if width == nil or height == nil then
+          return false
+        end
+        if sequence.sourceSequence == 0 and frameIndex == 1 then
+          firstImage = frame.image
+          if width ~= entry.width or height ~= entry.height then
+            return false
+          end
+        end
+      end
+    end
+  end
+  return firstImage == entry.image
+end
+
+---@param cacheFs CacheFs
+---@param record BattlePresentationCache.BallRecord validated ball leaf record
+---@return boolean true only when every staged frame and particle texture parses
+local function hasBallImageClosure(cacheFs, record)
+  local entry = record.entry
+  for _, frame in ipairs(entry.frames) do
+    local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
+    if width ~= frame.width or height ~= frame.height then
+      return false
+    end
+  end
+  local particles = entry.particles
+  if particles ~= nil then
+    for _, set in ipairs({ particles.seal, particles.burst }) do
+      for _, texture in ipairs(set.textures) do
+        local width, height = PngWriter.completeDimensions(cacheFs:read(texture.image))
+        if width ~= texture.width or height ~= texture.height then
+          return false
+        end
+      end
+    end
+  end
+  return true
+end
+
+---@param cacheFs CacheFs
+---@param record BattlePresentationCache.EvolutionRecord validated evolution leaf record
+---@return boolean true only when every staged screen and texture parses
+local function hasEvolutionImageClosure(cacheFs, record)
+  local graphics = record.graphics
+  for _, layer in ipairs({ "main", "sub", "menu" }) do
+    local image = graphics[layer]
+    local width, height = PngWriter.completeDimensions(cacheFs:read(image.image))
+    if width ~= image.width or height ~= image.height then
+      return false
+    end
+  end
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    for _, frame in ipairs(graphics.cursor.animations[animationRole].frames) do
+      local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
+      if width ~= frame.width or height ~= frame.height then
+        return false
+      end
+    end
+  end
+  for _, texture in ipairs(record.particles.textures) do
+    local width, height = PngWriter.completeDimensions(cacheFs:read(texture.image))
+    if width ~= texture.width or height ~= texture.height then
+      return false
+    end
+  end
+  return true
+end
+
 -- Build the exact deduplicated demand for one battle context: the single
 -- inventoried scene, the sorted portrait selectors, and the audio
 -- roles/banks/cries the launch reaches. Returns whether all planning
@@ -741,9 +852,9 @@ function BattlePresentationCache.requirements(
     if type(selector) ~= "string" then
       return nil, "trainer selectors must be semantic strings"
     end
-    local validFront = selector:match("^front:[A-Z0-9_]+$") ~= nil
-    local validBack = selector == "back:PKMN_TRAINER_ETHAN" or selector == "back:PKMN_TRAINER_LYRA"
-    if not validFront and not validBack then
+    local validTrainer = selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
+      or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
+    if not validTrainer then
       return nil, "unknown trainer picture selector: " .. selector
     end
     if not seenTrainerSelectors[selector] then
@@ -755,19 +866,14 @@ function BattlePresentationCache.requirements(
   if type(battleBallSelectors) ~= "table" then
     return nil, "battle demands require semantic ball selectors"
   end
-  local ballSection = manifest.battleBalls
-  local ballEntries = type(ballSection) == "table" and ballSection.entries or nil
-  if #battleBallSelectors > 0 and type(ballEntries) ~= "table" then
-    return nil, "battle demands require a ball inventory"
-  end
+  -- Ball selectors validate by shape alone: the producer owns source
+  -- catalog membership, never a global all-ball inventory on the demand
+  -- path. Each named leaf resolves through its own staged record.
   local battleBalls = {}
   local seenBattleBalls = {}
   for _, selector in ipairs(battleBallSelectors) do
     if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
       return nil, "unknown battle ball selector: " .. tostring(selector)
-    end
-    if type(ballEntries) ~= "table" or type(ballEntries[selector]) ~= "table" then
-      return nil, "unknown battle ball selector: " .. selector
     end
     if not seenBattleBalls[selector] then
       seenBattleBalls[selector] = true
@@ -869,81 +975,15 @@ function BattlePresentationCache.isReady(cacheFs, demand)
     end
   end
   for _, selector in ipairs(demand.trainerPictures) do
-    local entry = staged.trainerPictures.entries[selector]
-    if type(entry) ~= "table" or type(entry.image) ~= "string" then
+    local record, _ = BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
+    if record == nil or not hasTrainerPictureImageClosure(cacheFs, record) then
       return false
-    end
-    local animation = entry.animation
-    local sequences = type(animation) == "table" and animation.sequences or nil
-    if type(sequences) ~= "table" or #sequences == 0 then
-      return false
-    else
-      for sequenceIndex, sequence in ipairs(sequences) do
-        if type(sequence) ~= "table" or sequence.sourceSequence ~= sequenceIndex - 1 then
-          return false
-        end
-        local frames = sequence.frames
-        if type(frames) ~= "table" or #frames == 0 then
-          return false
-        end
-        for frameIndex, frame in ipairs(frames) do
-          local expectedKey
-          if sequence.sourceSequence == 0 then
-            expectedKey = frameIndex == 1 and entry.drawableKey
-              or (entry.drawableKey .. ":frame:" .. tostring(frameIndex - 1))
-          else
-            expectedKey = entry.drawableKey
-              .. ":sequence:"
-              .. tostring(sequence.sourceSequence)
-              .. ":frame:"
-              .. tostring(frameIndex - 1)
-          end
-          if
-            type(frame) ~= "table"
-            or frame.sourceFrame ~= frameIndex - 1
-            or frame.drawableKey ~= expectedKey
-            or type(frame.image) ~= "string"
-          then
-            return false
-          end
-          local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
-          if width == nil or height == nil then
-            return false
-          end
-          if sequence.sourceSequence == 0 and frameIndex == 1 and (width ~= entry.width or height ~= entry.height) then
-            return false
-          end
-        end
-      end
     end
   end
   for _, selector in ipairs(demand.battleBalls) do
-    local entry = staged.battleBalls.entries[selector]
-    if type(entry) ~= "table" or type(entry.frames) ~= "table" or #entry.frames == 0 then
+    local record, _ = BattlePresentationCache.loadBall(cacheFs, selector)
+    if record == nil or not hasBallImageClosure(cacheFs, record) then
       return false
-    end
-    for frameIndex, frame in ipairs(entry.frames) do
-      if
-        type(frame) ~= "table"
-        or frame.drawableKey ~= ("battle-ball:" .. selector:sub(6) .. ":" .. tostring(frameIndex - 1))
-      then
-        return false
-      end
-      local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
-      if width ~= frame.width or height ~= frame.height then
-        return false
-      end
-    end
-    local particles = entry.particles
-    if particles ~= nil then
-      for _, set in ipairs({ particles.seal, particles.burst }) do
-        for _, texture in ipairs(set.textures) do
-          local width, height = PngWriter.completeDimensions(cacheFs:read(texture.image))
-          if width ~= texture.width or height ~= texture.height then
-            return false
-          end
-        end
-      end
     end
   end
   return true
@@ -982,6 +1022,198 @@ function BattlePresentationCache.isSceneReady(cacheFs, sceneKey, expectedMarker)
     and imageHeight == record.canvasHeight
     and hasSceneLayerClosure(cacheFs, record)
     and hasSceneImageClosure(cacheFs, record)
+end
+
+-- Standalone leaf records: one trainer picture, one ball, and the
+-- evolution bundle stage apart from the shared core manifest. Each leaf
+-- owns exactly its selector-scoped images under a versioned record path;
+-- markers publish last, exactly like the global receipt.
+local LEAF_TRAINER_DIR = DATA_DIR .. "/trainer-pictures"
+local LEAF_BALL_DIR = DATA_DIR .. "/balls"
+local LEAF_EVOLUTION_DIR = DATA_DIR .. "/evolution"
+
+---@param selector string `front:CLASS` or `back:CLASS` semantic trainer selector
+---@return string file-safe leaf stem
+local function trainerStem(selector)
+  assert(
+    type(selector) == "string"
+      and (selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil),
+    "unknown trainer picture selector: " .. tostring(selector)
+  )
+  return (selector:gsub(":", "-"))
+end
+
+---@param selector string `front:CLASS` or `back:CLASS` semantic trainer selector
+---@return string cache-relative staged leaf record path
+function BattlePresentationCache.trainerPicturePath(selector)
+  return LEAF_TRAINER_DIR .. "/" .. trainerStem(selector) .. ".lua"
+end
+
+---@param selector string `front:CLASS` or `back:CLASS` semantic trainer selector
+---@return string cache-relative leaf completion marker path
+function BattlePresentationCache.trainerPictureMarkerPath(selector)
+  return LEAF_TRAINER_DIR .. "/" .. trainerStem(selector) .. ".complete"
+end
+
+---@param selector string `ball:ITEM` semantic ball selector
+---@return string file-safe leaf item key
+local function ballItemKey(selector)
+  assert(
+    type(selector) == "string" and selector:match("^ball:[A-Z][A-Z0-9_]*$") ~= nil,
+    "unknown battle ball selector: " .. tostring(selector)
+  )
+  return selector:sub(6)
+end
+
+---@param selector string `ball:ITEM` semantic ball selector
+---@return string cache-relative staged leaf record path
+function BattlePresentationCache.ballPath(selector)
+  return LEAF_BALL_DIR .. "/" .. ballItemKey(selector) .. ".lua"
+end
+
+---@param selector string `ball:ITEM` semantic ball selector
+---@return string cache-relative leaf completion marker path
+function BattlePresentationCache.ballMarkerPath(selector)
+  return LEAF_BALL_DIR .. "/" .. ballItemKey(selector) .. ".complete"
+end
+
+---@return string cache-relative staged evolution bundle record path
+function BattlePresentationCache.evolutionPath()
+  return LEAF_EVOLUTION_DIR .. "/presentation.lua"
+end
+
+---@return string cache-relative evolution completion marker path
+function BattlePresentationCache.evolutionMarkerPath()
+  return LEAF_EVOLUTION_DIR .. "/presentation.complete"
+end
+
+-- Load one staged trainer picture leaf: the record must validate and name
+-- exactly the requested selector. A missing leaf is pending, never a
+-- fallback record.
+---@param cacheFs CacheFs
+---@param selector string
+---@return BattlePresentationCache.TrainerPictureRecord|nil leaf record
+---@return unknown|nil reason
+function BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
+  assert(cacheFs ~= nil, "trainer picture loading requires a cache filesystem")
+  if
+    type(selector) ~= "string"
+    or (selector:match("^front:[A-Z][A-Z0-9_]*$") == nil and selector:match("^back:[A-Z][A-Z0-9_]*$") == nil)
+  then
+    return nil, "unknown trainer picture selector: " .. tostring(selector)
+  end
+  local record, loadErr = cacheFs:loadLua(BattlePresentationCache.trainerPicturePath(selector))
+  if record == nil then
+    local reason = loadErr == nil and "no staged trainer picture file" or tostring(loadErr)
+    return nil, "no staged trainer picture for " .. tostring(selector) .. ": " .. reason
+  end
+  local ok, schemaErr = pcall(BattlePresentationSchema.assertTrainerPicture, record)
+  if not ok then
+    return nil, schemaErr
+  end
+  assert(record ~= nil, "the staged trainer picture carries its record")
+  if record.selector ~= selector then
+    return nil, "staged trainer picture names " .. tostring(record.selector) .. ", not " .. selector
+  end
+  return record
+end
+
+-- Load one staged ball leaf: the record must validate and name exactly
+-- the requested selector. A missing leaf is pending, never a fallback.
+---@param cacheFs CacheFs
+---@param selector string
+---@return BattlePresentationCache.BallRecord|nil leaf record
+---@return unknown|nil reason
+function BattlePresentationCache.loadBall(cacheFs, selector)
+  assert(cacheFs ~= nil, "ball loading requires a cache filesystem")
+  if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+    return nil, "unknown battle ball selector: " .. tostring(selector)
+  end
+  local record, loadErr = cacheFs:loadLua(BattlePresentationCache.ballPath(selector))
+  if record == nil then
+    local reason = loadErr == nil and "no staged ball file" or tostring(loadErr)
+    return nil, "no staged ball for " .. tostring(selector) .. ": " .. reason
+  end
+  local ok, schemaErr = pcall(BattlePresentationSchema.assertBall, record)
+  if not ok then
+    return nil, schemaErr
+  end
+  assert(record ~= nil, "the staged ball carries its record")
+  if record.selector ~= selector then
+    return nil, "staged ball names " .. tostring(record.selector) .. ", not " .. selector
+  end
+  return record
+end
+
+-- Load the staged evolution bundle leaf. A missing leaf is pending, never
+-- a fallback record.
+---@param cacheFs CacheFs
+---@return BattlePresentationCache.EvolutionRecord|nil leaf record
+---@return unknown|nil reason
+function BattlePresentationCache.loadEvolution(cacheFs)
+  assert(cacheFs ~= nil, "evolution loading requires a cache filesystem")
+  local record, loadErr = cacheFs:loadLua(BattlePresentationCache.evolutionPath())
+  if record == nil then
+    local reason = loadErr == nil and "no staged evolution file" or tostring(loadErr)
+    return nil, "no staged evolution bundle: " .. reason
+  end
+  local ok, schemaErr = pcall(BattlePresentationSchema.assertEvolution, record)
+  if not ok then
+    return nil, schemaErr
+  end
+  assert(record ~= nil, "the staged evolution bundle carries its record")
+  return record
+end
+
+-- True only when the trainer leaf marker is exact and the staged leaf
+-- record names exactly the requested selector with its complete image
+-- closure.
+---@param cacheFs CacheFs
+---@param selector string
+---@param expectedMarker string
+---@return boolean
+function BattlePresentationCache.isTrainerPictureReady(cacheFs, selector, expectedMarker)
+  if cacheFs:read(BattlePresentationCache.trainerPictureMarkerPath(selector)) ~= expectedMarker then
+    return false
+  end
+  local record, _ = BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
+  if record == nil then
+    return false
+  end
+  return hasTrainerPictureImageClosure(cacheFs, record)
+end
+
+-- True only when the ball leaf marker is exact and the staged leaf record
+-- names exactly the requested selector with its complete image closure.
+---@param cacheFs CacheFs
+---@param selector string
+---@param expectedMarker string
+---@return boolean
+function BattlePresentationCache.isBallReady(cacheFs, selector, expectedMarker)
+  if cacheFs:read(BattlePresentationCache.ballMarkerPath(selector)) ~= expectedMarker then
+    return false
+  end
+  local record, _ = BattlePresentationCache.loadBall(cacheFs, selector)
+  if record == nil then
+    return false
+  end
+  return hasBallImageClosure(cacheFs, record)
+end
+
+-- True only when the evolution marker is exact and the staged bundle
+-- record carries its complete screen and texture closure.
+---@param cacheFs CacheFs
+---@param expectedMarker string
+---@return boolean
+function BattlePresentationCache.isEvolutionReady(cacheFs, expectedMarker)
+  if cacheFs:read(BattlePresentationCache.evolutionMarkerPath()) ~= expectedMarker then
+    return false
+  end
+  local record, _ = BattlePresentationCache.loadEvolution(cacheFs)
+  if record == nil then
+    return false
+  end
+  return hasEvolutionImageClosure(cacheFs, record)
 end
 
 -- Load one staged effect record: the record must validate and name exactly

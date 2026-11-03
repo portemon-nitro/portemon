@@ -484,7 +484,14 @@ end
 function T.ball_particles_stage_for_every_reproducible_ball(romFs, versionId)
   local compiler = requireBoundary("romdump.src.digest.battle.BattlePresentationCompiler", "compiler loads")
   local Sources = requireBoundary("romdump.src.config.BattlePresentationSources", "sources load")
-  local entries, _, pngs = compiler.compileBattleBalls(romFs)
+  local entries, pngs = {}, {}
+  for itemKey in pairs(Sources.BALL_PARTICLES.entries) do
+    local leaf = compiler.compileBallForSelector(romFs, { versionId = versionId }, "ball:" .. itemKey)
+    entries[leaf.selector] = leaf.entry
+    for image, png in pairs(leaf.pngImages) do
+      pngs[image] = png
+    end
+  end
   for itemKey in pairs(Sources.BALL_PARTICLES.entries) do
     local entry = entries["ball:" .. itemKey]
     if Sources.BALL_PARTICLES.unrepresented[itemKey] ~= nil then

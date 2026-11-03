@@ -10,7 +10,7 @@ local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture"
 local T = {}
 
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-local manifest = ManifestFixture.manifest
+local manifest = ManifestFixture.coreManifest
 local makeIntroMusic = ManifestFixture.makeIntroMusic
 local scriptMessageProgramContext = ManifestFixture.scriptMessageProgramContext
 
@@ -83,28 +83,62 @@ function T.wild_fallback_routes_require_the_staged_cell_grid_order_contract()
 end
 
 function T.trainer_pictures_validate_semantic_role_selectors_and_staged_images()
-  local valid = manifest()
-  Assert.isTrue(Schema.isValidManifest(valid), "semantic front and back trainer images validate")
+  Assert.isTrue(
+    pcall(Schema.assertTrainerPicture, ManifestFixture.trainerPictureRecord("front:YOUNGSTER")),
+    "semantic front trainer leaf images validate"
+  )
+  Assert.isTrue(
+    pcall(Schema.assertTrainerPicture, ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")),
+    "player backpic leaf images validate"
+  )
 
-  valid.trainerPictures.entries["front:YOUNGSTER"].drawableKey = "trainer:front:POKEBALL"
-  Assert.isFalse(Schema.isValidManifest(valid), "a trainer selector cannot point at another drawable identity")
+  local badDrawable = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  badDrawable.entry.drawableKey = "trainer:front:POKEBALL"
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, badDrawable),
+    "a trainer selector cannot point at another drawable identity"
+  )
 
-  local missingOffset = manifest()
-  missingOffset.trainerPictures.entries["front:YOUNGSTER"].rasterOffset = nil
-  Assert.isFalse(Schema.isValidManifest(missingOffset), "trainer pictures require their source raster offset")
+  local missingOffset = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  missingOffset.entry.rasterOffset = nil
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, missingOffset),
+    "trainer pictures require their source raster offset"
+  )
 
-  local missingAnimation = manifest()
-  missingAnimation.trainerPictures.entries["front:YOUNGSTER"].animation = nil
-  Assert.isFalse(Schema.isValidManifest(missingAnimation), "every trainer picture retains its source frame sequence")
-  local fractionalOffset = manifest()
-  fractionalOffset.trainerPictures.entries["front:YOUNGSTER"].rasterOffset.x = -40.5
-  Assert.isFalse(Schema.isValidManifest(fractionalOffset), "trainer raster offsets are integer source coordinates")
+  local missingAnimation = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  missingAnimation.entry.animation = nil
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, missingAnimation),
+    "every trainer picture retains its source frame sequence"
+  )
+  local fractionalOffset = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  fractionalOffset.entry.rasterOffset.x = -40.5
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, fractionalOffset),
+    "trainer raster offsets are integer source coordinates"
+  )
+  local foreignImage = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
+  foreignImage.entry.image = "assets/generated/battle/trainer-pictures/front-LEADER_FALKNER-0.png"
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, foreignImage),
+    "a trainer leaf never stages through a sibling selector prefix"
+  )
 end
 
 function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
-  local image0 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"
-  local image1 = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-frame-1.png"
-  local sequenceImage = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-sequence-1-frame-0.png"
+  local leafPrefix = "assets/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN"
+  local image0 = leafPrefix .. "-0.png"
+  local image1 = leafPrefix .. "-1.png"
+  local sequenceImage = leafPrefix .. "-sequence-1-frame-0.png"
+  local function leafRecord(entry)
+    return {
+      schema = Schema.TRAINER_PICTURE_SCHEMA,
+      selector = "back:PKMN_TRAINER_ETHAN",
+      catalogIdentity = "synthetic-catalog",
+      entry = entry,
+    }
+  end
   local function entryFixture()
     local frames = {
       {
@@ -164,95 +198,82 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
       },
     }
   end
-  local valid = manifest()
-  local entry = entryFixture()
-  valid.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = entry
-  valid.menus.images[image0] = { width = 8, height = 8 }
-  valid.menus.images[image1] = { width = 8, height = 8 }
-  valid.menus.images[sequenceImage] = { width = 8, height = 8 }
-  local validResult, validError = Schema.isValidManifest(valid)
+  local validResult, validError = pcall(Schema.assertTrainerPicture, leafRecord(entryFixture()))
   Assert.isTrue(
     validResult,
-    "two source-order trainer frames and their image closure validate: " .. tostring(validError)
+    "two source-order trainer frames and their leaf image closure validate: " .. tostring(validError)
   )
 
-  local missingImage = manifest()
   local missingEntry = entryFixture()
   missingEntry.animation.frames[2].image = "assets/generated/battle/missing-trainer-frame.png"
-  missingImage.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = missingEntry
-  missingImage.menus.images[image0] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(missingImage), "every source frame image must be staged")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(missingEntry)),
+    "every source frame image must stage under the leaf prefix"
+  )
 
-  local duplicateFrame = manifest()
   local duplicateEntry = entryFixture()
   duplicateEntry.animation.frames[2].sourceFrame = 0
-  duplicateFrame.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = duplicateEntry
-  duplicateFrame.menus.images[image0] = { width = 8, height = 8 }
-  duplicateFrame.menus.images[image1] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(duplicateFrame), "source frame indices are unique and ordered")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(duplicateEntry)),
+    "source frame indices are unique and ordered"
+  )
 
-  local invalidDuration = manifest()
   local invalidEntry = entryFixture()
   invalidEntry.animation.frames[2].durationTicks = 0.5
-  invalidDuration.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = invalidEntry
-  invalidDuration.menus.images[image0] = { width = 8, height = 8 }
-  invalidDuration.menus.images[image1] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(invalidDuration), "source frame durations are integer ticks")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(invalidEntry)),
+    "source frame durations are integer ticks"
+  )
 
-  local invalidUserAttr = manifest()
   local invalidAttrEntry = entryFixture()
   invalidAttrEntry.animation.sequences[2].frames[1].userAttr = -1
-  invalidUserAttr.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = invalidAttrEntry
-  invalidUserAttr.menus.images[image0] = { width = 8, height = 8 }
-  invalidUserAttr.menus.images[image1] = { width = 8, height = 8 }
-  invalidUserAttr.menus.images[sequenceImage] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(invalidUserAttr), "UAAT values are unsigned source integers")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(invalidAttrEntry)),
+    "UAAT values are unsigned source integers"
+  )
 
-  local oversizedUserAttr = manifest()
   local oversizedAttrEntry = entryFixture()
   oversizedAttrEntry.animation.sequences[2].frames[1].userAttr = 0x100000000
-  oversizedUserAttr.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = oversizedAttrEntry
-  oversizedUserAttr.menus.images[image0] = { width = 8, height = 8 }
-  oversizedUserAttr.menus.images[image1] = { width = 8, height = 8 }
-  oversizedUserAttr.menus.images[sequenceImage] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(oversizedUserAttr), "UAAT values fit their source u32 representation")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(oversizedAttrEntry)),
+    "UAAT values fit their source u32 representation"
+  )
 
-  local missingSequenceImage = manifest()
   local missingSequenceEntry = entryFixture()
   missingSequenceEntry.animation.sequences[2].frames[1].image =
     "assets/generated/battle/missing-trainer-sequence-frame.png"
-  missingSequenceImage.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = missingSequenceEntry
-  missingSequenceImage.menus.images[image0] = { width = 8, height = 8 }
-  missingSequenceImage.menus.images[image1] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(missingSequenceImage), "every selected source sequence frame must be staged")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(missingSequenceEntry)),
+    "every selected source sequence frame must stage under the leaf prefix"
+  )
 
-  local skippedSequence = manifest()
   local skippedSequenceEntry = entryFixture()
   skippedSequenceEntry.animation.sequences[2].sourceSequence = 2
-  skippedSequence.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = skippedSequenceEntry
-  skippedSequence.menus.images[image0] = { width = 8, height = 8 }
-  skippedSequence.menus.images[image1] = { width = 8, height = 8 }
-  skippedSequence.menus.images[sequenceImage] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(skippedSequence), "source sequence IDs remain ordered and explicit")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(skippedSequenceEntry)),
+    "source sequence IDs remain ordered and explicit"
+  )
 
-  local missingThrowAnchor = manifest()
   local missingAnchorEntry = entryFixture()
   missingAnchorEntry.throwOffsets = nil
-  missingThrowAnchor.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"] = missingAnchorEntry
-  missingThrowAnchor.menus.images[image0] = { width = 8, height = 8 }
-  missingThrowAnchor.menus.images[image1] = { width = 8, height = 8 }
-  Assert.isFalse(Schema.isValidManifest(missingThrowAnchor), "animated backpics require source throw attachments")
+  Assert.isFalse(
+    pcall(Schema.assertTrainerPicture, leafRecord(missingAnchorEntry)),
+    "animated backpics require source throw attachments"
+  )
 end
 
 function T.battle_ball_frames_validate_ordered_semantic_drawables_and_staged_images()
-  local valid = manifest()
-  Assert.isTrue(Schema.isValidManifest(valid), "the source-shaped ball frame manifest validates")
-  local missingImage = manifest()
-  missingImage.battleBalls.entries["ball:POKE_BALL"].frames[1].image = "assets/generated/battle/missing.png"
-  Assert.isFalse(Schema.isValidManifest(missingImage), "ball frames must reference staged images")
-  local wrongFrame = manifest()
-  wrongFrame.battleBalls.entries["ball:POKE_BALL"].frames[1].drawableKey = "battle-ball:POKE_BALL:1"
-  Assert.isFalse(Schema.isValidManifest(wrongFrame), "ball frame drawables follow the zero-based source order")
+  local valid = ManifestFixture.ballRecord("ball:POKE_BALL")
+  Assert.isTrue(pcall(Schema.assertBall, valid), "the source-shaped ball frame leaf validates")
+  local missingImage = ManifestFixture.ballRecord("ball:POKE_BALL")
+  missingImage.entry.frames[1].image = "assets/generated/battle/missing.png"
+  Assert.isFalse(pcall(Schema.assertBall, missingImage), "ball frames must stage under the item-owned leaf prefix")
+  local wrongFrame = ManifestFixture.ballRecord("ball:POKE_BALL")
+  wrongFrame.entry.frames[1].drawableKey = "battle-ball:POKE_BALL:1"
+  Assert.isFalse(pcall(Schema.assertBall, wrongFrame), "ball frame drawables follow the zero-based source order")
+  local foreignImage = ManifestFixture.ballRecord("ball:POKE_BALL")
+  foreignImage.entry.frames[1].image = "assets/generated/battle/balls/GREAT_BALL-0.png"
+  Assert.isFalse(pcall(Schema.assertBall, foreignImage), "a ball leaf never stages through a sibling item prefix")
 end
 
 function T.transition_routes_accept_strict_normalized_camera_task_data()
@@ -601,53 +622,63 @@ function T.staged_manifests_validate()
 end
 
 function T.evolution_particle_contract_requires_thirteen_ordered_emitters_and_staged_textures()
-  local valid = manifest()
-  Assert.isTrue(Schema.isValidManifest(valid), "the normalized EvolutionScene SPL payload validates")
+  Assert.isTrue(
+    pcall(Schema.assertEvolution, ManifestFixture.evolutionRecord()),
+    "the normalized EvolutionScene SPL payload validates"
+  )
 
-  local wrongCount = manifest()
-  table.remove(wrongCount.evolutionParticles.emitters)
-  Assert.isFalse(Schema.isValidManifest(wrongCount), "the payload requires all thirteen retail emitters")
+  local wrongCount = ManifestFixture.evolutionRecord()
+  table.remove(wrongCount.particles.emitters)
+  Assert.isFalse(pcall(Schema.assertEvolution, wrongCount), "the payload requires all thirteen retail emitters")
 
-  local wrongOrder = manifest()
-  wrongOrder.evolutionParticles.emitters[1].id = 1
-  Assert.isFalse(Schema.isValidManifest(wrongOrder), "the payload preserves ordered retail emitter IDs")
+  local wrongOrder = ManifestFixture.evolutionRecord()
+  wrongOrder.particles.emitters[1].id = 1
+  Assert.isFalse(pcall(Schema.assertEvolution, wrongOrder), "the payload preserves ordered retail emitter IDs")
 
-  local wrongImage = manifest()
-  wrongImage.evolutionParticles.textures[1].image = "assets/generated/battle/source-narc-member-0.png"
-  Assert.isFalse(Schema.isValidManifest(wrongImage), "texture paths use the normalized evolution asset contract")
+  local wrongImage = ManifestFixture.evolutionRecord()
+  wrongImage.particles.textures[1].image = "assets/generated/battle/source-narc-member-0.png"
+  Assert.isFalse(pcall(Schema.assertEvolution, wrongImage), "texture paths use the normalized evolution asset contract")
 end
 
 function T.evolution_graphics_require_all_visible_source_rasters()
-  local valid = manifest()
-  Assert.isTrue(Schema.isValidManifest(valid), "all visible EvolutionScene BG rasters validate")
+  Assert.isTrue(
+    pcall(Schema.assertEvolution, ManifestFixture.evolutionRecord()),
+    "all visible EvolutionScene BG rasters validate"
+  )
 
-  local missingMenu = manifest()
-  missingMenu.evolutionGraphics.menu = nil
-  Assert.isFalse(Schema.isValidManifest(missingMenu), "the sub-screen menu BG remains in the source contract")
+  local missingMenu = ManifestFixture.evolutionRecord()
+  missingMenu.graphics.menu = nil
+  Assert.isFalse(pcall(Schema.assertEvolution, missingMenu), "the sub-screen menu BG remains in the source contract")
 
-  local wrongSize = manifest()
-  wrongSize.evolutionGraphics.main.height = 256
-  Assert.isFalse(Schema.isValidManifest(wrongSize), "evolution BG rasters match the visible display size")
+  local wrongSize = ManifestFixture.evolutionRecord()
+  wrongSize.graphics.main.height = 256
+  Assert.isFalse(pcall(Schema.assertEvolution, wrongSize), "evolution BG rasters match the visible display size")
 
-  local wrongPath = manifest()
-  wrongPath.evolutionGraphics.sub.image = "assets/generated/battle/fallback.png"
-  Assert.isFalse(Schema.isValidManifest(wrongPath), "evolution layers use their semantic staged paths")
+  local wrongPath = ManifestFixture.evolutionRecord()
+  wrongPath.graphics.sub.image = "assets/generated/battle/fallback.png"
+  Assert.isFalse(pcall(Schema.assertEvolution, wrongPath), "evolution layers use their semantic staged paths")
 
-  local missingCursor = manifest()
-  missingCursor.evolutionGraphics.cursor = nil
-  Assert.isFalse(Schema.isValidManifest(missingCursor), "the animated retail menu cursor remains in the source contract")
+  local missingCursor = ManifestFixture.evolutionRecord()
+  missingCursor.graphics.cursor = nil
+  Assert.isFalse(
+    pcall(Schema.assertEvolution, missingCursor),
+    "the animated retail menu cursor remains in the source contract"
+  )
 
-  local wrongCursorFrame = manifest()
-  wrongCursorFrame.evolutionGraphics.cursor.animations.select.frames[2].sourceFrame = 0
-  Assert.isFalse(Schema.isValidManifest(wrongCursorFrame), "cursor select frames preserve source order")
+  local wrongCursorFrame = ManifestFixture.evolutionRecord()
+  wrongCursorFrame.graphics.cursor.animations.select.frames[2].sourceFrame = 0
+  Assert.isFalse(pcall(Schema.assertEvolution, wrongCursorFrame), "cursor select frames preserve source order")
 
-  local missingTextPalette = manifest()
-  missingTextPalette.evolutionGraphics.menuTextPalette = nil
-  Assert.isFalse(Schema.isValidManifest(missingTextPalette), "the EvolutionScene font palette is required")
+  local missingTextPalette = ManifestFixture.evolutionRecord()
+  missingTextPalette.graphics.menuTextPalette = nil
+  Assert.isFalse(pcall(Schema.assertEvolution, missingTextPalette), "the EvolutionScene font palette is required")
 
-  local partialTextPalette = manifest()
-  table.remove(partialTextPalette.evolutionGraphics.menuTextPalette.colors)
-  Assert.isFalse(Schema.isValidManifest(partialTextPalette), "the EvolutionScene font palette carries one complete color bank")
+  local partialTextPalette = ManifestFixture.evolutionRecord()
+  table.remove(partialTextPalette.graphics.menuTextPalette.colors)
+  Assert.isFalse(
+    pcall(Schema.assertEvolution, partialTextPalette),
+    "the EvolutionScene font palette carries one complete color bank"
+  )
 end
 
 function T.text_roles_reject_native_font_ids()
@@ -678,33 +709,85 @@ function T.trainer_pair_message_route_requires_both_source_index_tables()
   Assert.isFalse(Schema.isValidManifest(wrongStride), "trainer-pair rows retain the source four-byte stride")
 end
 
-function T.intro_music_requires_source_routes_and_audio_closure()
+function T.intro_music_requires_source_routes_without_audio_closures()
   local valid = manifest()
   valid.audioRoles.introMusic = makeIntroMusic()
-  Assert.isTrue(Schema.isValidManifest(valid), "source-normalized intro music routes and closures validate")
+  Assert.isTrue(
+    Schema.isValidManifest(valid),
+    "source-normalized intro music routes validate without compiled closures"
+  )
 
-  local missingBank = manifest()
-  missingBank.audioRoles.introMusic = makeIntroMusic()
-  missingBank.audioRoles.introMusic.sequenceClosures["audio/sequence/SEQ_GS_VS_NORAPOKE"].bankKey = nil
-  Assert.isFalse(Schema.isValidManifest(missingBank), "every selected sequence closure names its compiled bank")
+  local withClosures = manifest()
+  withClosures.audioRoles.introMusic = makeIntroMusic()
+  withClosures.audioRoles.introMusic.sequenceClosures = {
+    ["audio/sequence/SEQ_GS_VS_NORAPOKE"] = {
+      bankKey = "audio/bank/content/" .. string.rep("a", 40),
+      player = { volume = 100, channelPriority = 64, playerPriority = 64 },
+      sampleKeys = { "audio/sample/content/" .. string.rep("b", 40) },
+      closureIdentity = string.rep("c", 40),
+    },
+  }
+  Assert.isFalse(Schema.isValidManifest(withClosures), "compiled audio closures are rejected from the shared core")
 
-  local missingSamples = manifest()
-  missingSamples.audioRoles.introMusic = makeIntroMusic()
-  missingSamples.audioRoles.introMusic.sequenceClosures["audio/sequence/SEQ_GS_VS_NORAPOKE"].sampleKeys = {}
-  Assert.isFalse(Schema.isValidManifest(missingSamples), "every selected sequence closure lists its samples")
+  local missingRoutes = manifest()
+  missingRoutes.audioRoles.introMusic = makeIntroMusic()
+  missingRoutes.audioRoles.introMusic.routes = {}
+  Assert.isFalse(Schema.isValidManifest(missingRoutes), "the core keeps its semantic music routes")
 
-  local malformedIdentity = manifest()
-  malformedIdentity.audioRoles.introMusic = makeIntroMusic()
-  malformedIdentity.audioRoles.introMusic.sequenceClosures["audio/sequence/SEQ_GS_VS_NORAPOKE"].closureIdentity =
-    "not-a-sha1"
-  Assert.isFalse(Schema.isValidManifest(malformedIdentity), "every selected sequence closure has a content identity")
+  local missingSourceRoutes = manifest()
+  missingSourceRoutes.audioRoles.introMusic = makeIntroMusic()
+  missingSourceRoutes.audioRoles.introMusic.sourceRoutes = {}
+  Assert.isFalse(Schema.isValidManifest(missingSourceRoutes), "the core keeps the source route correspondence")
+
+  local badSequenceKey = manifest()
+  badSequenceKey.audioRoles.introMusic = makeIntroMusic()
+  badSequenceKey.audioRoles.introMusic.routes[1].sequenceKey = "audio/sequence/lower case"
+  Assert.isFalse(Schema.isValidManifest(badSequenceKey), "selected sequences keep their semantic keys")
 
   for _, field in ipairs({ "categoryId", "sequenceId", "bankId", "playerId" }) do
     local nativeId = manifest()
     nativeId.audioRoles.introMusic = makeIntroMusic()
-    nativeId.audioRoles.introMusic.sequenceClosures["audio/sequence/SEQ_GS_VS_NORAPOKE"][field] = 1
+    nativeId.audioRoles.introMusic[field] = 1
     Assert.isFalse(Schema.isValidManifest(nativeId), "intro music runtime records reject native " .. field)
   end
+end
+
+-- The minimized shared core carries menu, HUD, messages, transition
+-- selection, and semantic music routes without the detached trainer,
+-- ball, and evolution sections and without compiled audio closures.
+-- Each detached family validates through its own standalone record
+-- instead of the global manifest.
+function T.core_manifest_excludes_detached_families_and_audio_closures()
+  Assert.isTrue(type(Schema.assertTrainerPicture) == "function", "trainer pictures validate as standalone leaf records")
+  Assert.isTrue(type(Schema.assertBall) == "function", "ball records validate as standalone leaf records")
+  Assert.isTrue(type(Schema.assertEvolution) == "function", "evolution validates as one standalone leaf record")
+  local core = manifest()
+  core.trainerPictures = nil
+  core.battleBalls = nil
+  core.evolutionParticles = nil
+  core.evolutionGraphics = nil
+  local music = makeIntroMusic()
+  music.sequenceClosures = nil
+  core.audioRoles.introMusic = music
+  local valid, failure = Schema.isValidManifest(core)
+  Assert.isTrue(valid, "the shared core validates without detached families or audio closures: " .. tostring(failure))
+  local produced = makeIntroMusic()
+  Assert.deepEqual(core.audioRoles.introMusic.routes, produced.routes, "the core keeps the semantic music routes")
+  Assert.deepEqual(
+    core.audioRoles.introMusic.sourceRoutes,
+    produced.sourceRoutes,
+    "the core keeps the source route correspondence"
+  )
+  Assert.deepEqual(
+    core.audioRoles.introMusic.selectionRules,
+    produced.selectionRules,
+    "music selection semantics are unchanged"
+  )
+  Assert.deepEqual(
+    core.audioRoles.introMusic.selectionSound,
+    produced.selectionSound,
+    "the core keeps the selection sound key"
+  )
 end
 
 function T.resources_require_decoded_cache_payloads()

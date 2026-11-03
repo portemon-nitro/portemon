@@ -256,6 +256,122 @@ local function validateBattleScene(check)
   return BattlePresentationCache.isSceneReady(check.cacheFs, check.key, check.marker)
 end
 
+-- Safe leaf key mapping: artifact keys carry hyphens and item stems, never
+-- colons or paths. Shape is checked here; source-catalog membership is
+-- proved by the selector-scoped compiler behind the worker.
+---@param key string `front-CLASS` or `back-CLASS` safe artifact key
+---@return string `front:CLASS` or `back:CLASS` semantic selector
+local function trainerSelectorForKey(key)
+  local role, classKey
+  if type(key) == "string" then
+    role, classKey = key:match("^([a-z]+)%-([A-Z][A-Z0-9_]*)$")
+  end
+  if (role ~= "front" and role ~= "back") or classKey == nil then
+    error("invalid battle trainer picture key: " .. tostring(key), 0)
+  end
+  return role .. ":" .. classKey
+end
+
+---@param key string `ITEM` safe ball artifact key
+---@return string `ball:ITEM` semantic selector
+local function ballSelectorForKey(key)
+  if type(key) ~= "string" or key:match("^[A-Z][A-Z0-9_]*$") == nil then
+    error("invalid battle ball key: " .. tostring(key), 0)
+  end
+  return "ball:" .. key
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string compiler marker for the receipt
+local function executeTrainerPictureJob(artifact, context, job)
+  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local romFs = assert(context.romFs, "trainer picture jobs require a source reader")
+  local versionId = assert(context.versionId, "trainer picture jobs require a version")
+  local selector = trainerSelectorForKey(job.key)
+  local ok, leaf =
+    pcall(BattlePresentationCompiler.compileTrainerPictureForSelector, romFs, { versionId = versionId }, selector)
+  if not ok then
+    error("trainer picture emission failed for generation " .. job.generationId .. ": " .. tostring(leaf), 0)
+  end
+  assert(leaf ~= nil, "trainer picture emission produced no leaf")
+  local metadata = romFs:metadata()
+  return BattlePresentationCompiler.stageTrainerPicture(
+    artifact,
+    leaf,
+    BattlePresentationCompiler.trainerPictureMarker(metadata.sha1, leaf)
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateTrainerPicture(check)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  return BattlePresentationCache.isTrainerPictureReady(check.cacheFs, trainerSelectorForKey(check.key), check.marker)
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string compiler marker for the receipt
+local function executeBallJob(artifact, context, job)
+  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local romFs = assert(context.romFs, "ball jobs require a source reader")
+  local versionId = assert(context.versionId, "ball jobs require a version")
+  local selector = ballSelectorForKey(job.key)
+  local ok, leaf = pcall(BattlePresentationCompiler.compileBallForSelector, romFs, { versionId = versionId }, selector)
+  if not ok then
+    error("ball emission failed for generation " .. job.generationId .. ": " .. tostring(leaf), 0)
+  end
+  assert(leaf ~= nil, "ball emission produced no leaf")
+  local metadata = romFs:metadata()
+  return BattlePresentationCompiler.stageBall(
+    artifact,
+    leaf,
+    BattlePresentationCompiler.ballMarker(metadata.sha1, leaf)
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateBall(check)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  return BattlePresentationCache.isBallReady(check.cacheFs, ballSelectorForKey(check.key), check.marker)
+end
+
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@return string compiler marker for the receipt
+local function executeEvolutionJob(artifact, context, job)
+  local BattlePresentationCompiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local Errors = require("libs.errors.src.Errors")
+  local romFs = assert(context.romFs, "evolution jobs require a source reader")
+  local versionId = assert(context.versionId, "evolution jobs require a version")
+  if job.key ~= "global" then
+    error(Errors.new("BATTLE_EVOLUTION_KEY_INVALID", "evolution only has the global job", { key = job.key }), 0)
+  end
+  local ok, bundle = pcall(BattlePresentationCompiler.compileEvolution, romFs, { versionId = versionId })
+  if not ok then
+    error("evolution emission failed for generation " .. job.generationId .. ": " .. tostring(bundle), 0)
+  end
+  assert(bundle ~= nil, "evolution emission produced no bundle")
+  local metadata = romFs:metadata()
+  return BattlePresentationCompiler.stageEvolution(
+    artifact,
+    bundle,
+    BattlePresentationCompiler.evolutionMarker(metadata.sha1, bundle)
+  )
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateEvolution(check)
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  return BattlePresentationCache.isEvolutionReady(check.cacheFs, check.marker)
+end
+
 ArtifactBattleJobs.dependenciesBattleData = dependenciesBattleData
 ArtifactBattleJobs.dependenciesTrainers = dependenciesTrainers
 ArtifactBattleJobs.dependenciesEncounters = dependenciesEncounters
@@ -266,6 +382,12 @@ ArtifactBattleJobs.validateBattleData = validateBattleData
 ArtifactBattleJobs.validateTrainers = validateTrainers
 ArtifactBattleJobs.validateEncounters = validateEncounters
 ArtifactBattleJobs.executePresentation = executeBattlePresentationJob
+ArtifactBattleJobs.executeTrainerPicture = executeTrainerPictureJob
+ArtifactBattleJobs.validateTrainerPicture = validateTrainerPicture
+ArtifactBattleJobs.executeBall = executeBallJob
+ArtifactBattleJobs.validateBall = validateBall
+ArtifactBattleJobs.executeEvolution = executeEvolutionJob
+ArtifactBattleJobs.validateEvolution = validateEvolution
 ArtifactBattleJobs.dependenciesScene = dependenciesBattleScene
 ArtifactBattleJobs.executeScene = executeBattleSceneJob
 ArtifactBattleJobs.validatePresentation = validateBattlePresentation
