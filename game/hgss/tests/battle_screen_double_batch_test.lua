@@ -283,6 +283,10 @@ local function openDoubleRig(opts)
     seed = 0x12345678,
   })
   rig.battle = holder.battle
+  -- The screen wraps this manifest in an __index proxy, which pairs
+  -- traversal cannot see: keep the original so the intro stager below
+  -- walks every staged source-index map instead of an empty table.
+  rig.manifest = manifest
   function rig.pump(ticks)
     for _ = 1, ticks or 1 do
       rig.battle:update()
@@ -333,7 +337,7 @@ local function stageRendererIntro(rig)
       visit(child)
     end
   end
-  visit(rig.screen._manifest)
+  visit(assert(rig.manifest, "the double rig keeps its staged manifest"))
   local image = {
     getWidth = function()
       return 512

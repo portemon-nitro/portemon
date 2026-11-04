@@ -262,10 +262,11 @@ end
 function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
   local selector = "back:PKMN_TRAINER_ETHAN"
   local record = ManifestFixture.trainerPictureRecord(selector)
+  local staged = stagedManifest()
   local cacheFs = { versionId = "staged-art-leaf-probe" }
   function cacheFs:loadLua(path)
     if path == BattlePresentationCache.manifestPath() then
-      return stagedManifest()
+      return staged
     end
     if path == BattlePresentationCache.trainerPicturePath(selector) then
       return record
@@ -275,7 +276,14 @@ function T.trainer_sequence_drawable_resolves_its_exact_staged_image()
     end
     return nil
   end
-  function cacheFs:read(_)
+  -- Validated source-index maps need their exact byte size, both from the
+  -- staged core and from the demanded trainer leaf, while every other
+  -- staged image answers with a non-empty placeholder like the probe pool.
+  function cacheFs:read(path)
+    local source = findSourceIndices(staged, path) or findSourceIndices(record, path)
+    if source ~= nil then
+      return string.rep("\0", source.width * source.height * 4)
+    end
     return "staged"
   end
   function cacheFs:exists(_, _)

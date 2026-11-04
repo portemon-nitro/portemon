@@ -200,15 +200,18 @@ end
 ---@param cache table versioned derived cache under staging
 local function stageBattlePresentation(cache)
   local staged = stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
+  -- Every source-index map the launch validator reads beside the menu,
+  -- HUD, and scene images: validated maps fail closed naming their path,
+  -- so the bytes stage with the manifest and leaves they describe.
+  stageSourceIndexMaps(staged, cache)
   cache:writeLua(BattlePresentationCache.manifestPath(), staged)
-  cache:writeLua(
-    BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"),
+  local trainerRecord =
     BattlePresentationManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
-  )
-  cache:writeLua(
-    BattlePresentationCache.ballPath("ball:POKE_BALL"),
-    BattlePresentationManifestFixture.ballRecord("ball:POKE_BALL")
-  )
+  stageSourceIndexMaps(trainerRecord, cache)
+  cache:writeLua(BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"), trainerRecord)
+  local ballRecord = BattlePresentationManifestFixture.ballRecord("ball:POKE_BALL")
+  stageSourceIndexMaps(ballRecord, cache)
+  cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), ballRecord)
   cache:write(MENU_IMAGE, solidPng(8, 8))
   -- The field narration renderer behind battle text reads font 1:
   -- stage it beside the menu font the shared fixture already carries.
