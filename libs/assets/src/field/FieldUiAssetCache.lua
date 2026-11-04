@@ -544,13 +544,13 @@ local function checkOptionsSequence(sequence, what, atlases, assets)
 end
 
 local function checkOptions(s, atlases, assets)
-  if type(s.version) ~= "number" or s.version ~= 6 then
-    reject("options.version must be 6", { version = s.version })
+  if type(s.version) ~= "number" or s.version ~= 7 then
+    reject("options.version must be 7", { version = s.version })
   end
   demandCount(
     s,
-    11,
-    "options must carry exactly its version, backdrops, row plates, selection overlay, labels, choices, arrows, actions, slider cursor, frame previews, and tick rate",
+    10,
+    "options must carry exactly its version, backdrops, row plates, selection overlay, labels, choices, arrows, actions, frame previews, and tick rate",
     {}
   )
   local backdrops = s.backdrops
@@ -730,10 +730,9 @@ local function checkOptions(s, atlases, assets)
   for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
     checkOptionsSequence(actions[state], "options.actions." .. state, atlases, assets)
   end
-  -- The slider cursor is the single masked selection-marker frame the
-  -- producer extracts from the selected pill overhang: a left-pointing
-  -- marker the runtime rotates to point down, never an arrow state.
-  checkOptionsSequence(s.sliderCursor, "options.sliderCursor", atlases, assets)
+  -- The slider thumb is the bag quantity-decrement pressed visual, borrowed
+  -- through the bag manifest at draw time: the options section carries no
+  -- cursor art of its own.
   if type(s.framePreviewText) ~= "table" then
     reject("options.framePreviewText must be a table", {})
   end

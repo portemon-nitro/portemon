@@ -610,16 +610,14 @@ local function renderShellBand(archive, dependencies, chars, palettes, base, fir
   return png, asset, screen
 end
 
--- Copies one 8px source tile row into a full-width plate row, hiding only
--- the preprinted pill faces: face tiles borrow the backing entry observed
--- at the interior filler column of the same tile row, while dividers,
--- inter-pill separators, and control-side backing keep their exact source
--- entries. Tiles in the span that are neither audited faces nor audited
--- kept material fail loudly instead of shipping guessed art. Every face
--- hides, so the plate behind the opaque printed pills never shows printed
--- ink; the retained label, divider, separator, and edge spans keep their
--- exact source entries, and kept flips travel with the entry. Private to
--- this module; the compiled bundle carries the staged bytes.
+-- Copies one 8px source tile row into a full-width plate row, flattening
+-- the whole control span to the backing entry observed at the interior
+-- filler column of the same tile row. Native dividers, inter-pill
+-- separators, and control-side backing are intentionally not preserved:
+-- custom option layouts move controls freely, so a baked divider at a
+-- fixed x would ghost under relocated chrome. The retained label and
+-- edge spans keep their exact source entries. Private to this module;
+-- the compiled bundle carries the staged bytes.
 ---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
 ---@param tileRow integer zero-based source tile row copied for one plate row
 ---@param expectedFiller integer audited backing tile for this tile row
@@ -663,48 +661,98 @@ local function scrubbedPlateRow(screen, tileRow, expectedFiller, role)
     end
   end
   local row = {}
-  local changed = false
   for col = 0, columns - 1 do
-    local kept = screen.entries[tileRow * columns + col + 1]
     if col >= plates.faceFirstColumn and col <= plates.faceLastColumn then
-      local faces = assert(plates.faceTiles, "the producer records its audited face tile range")
-      local keptTiles = assert(plates.keptTiles, "the producer records its audited kept span tiles")
-      if kept.tile >= faces.first and kept.tile <= faces.last then
-        if kept.palette ~= 0 then
-          sourceError("the options row band face leaves its audited palette", {
-            role = role,
-            tileRow = tileRow,
-            column = col,
-            tile = kept.tile,
-            palette = kept.palette,
-          })
-        end
-        changed = true
-        row[#row + 1] = { tile = filler.tile, palette = filler.palette, flipH = filler.flipH, flipV = filler.flipV }
-      elseif keptTiles[kept.tile] ~= true then
-        sourceError("the options row band carries unaudited span material", {
-          role = role,
-          tileRow = tileRow,
-          column = col,
-          tile = kept.tile,
-          palette = kept.palette,
-        })
-      else
-        row[#row + 1] = { tile = kept.tile, palette = kept.palette, flipH = kept.flipH, flipV = kept.flipV }
-      end
+      row[#row + 1] = { tile = filler.tile, palette = filler.palette, flipH = filler.flipH, flipV = filler.flipV }
     else
+      local kept = screen.entries[tileRow * columns + col + 1]
       row[#row + 1] = { tile = kept.tile, palette = kept.palette, flipH = kept.flipH, flipV = kept.flipV }
     end
-  end
-  if not changed then
-    sourceError("the options row scrub span carries no face material to remove", { role = role, tileRow = tileRow })
   end
   return row
 end
 
+-- Flattens the rendered plate interior to the source filler color so
+-- relocated controls never inherit baked native trim: every pixel inside
+-- the outer window frame (x4..251, y1..height-2) takes the mid-band filler
+-- backing sampled from the plate's own render, discarding the divider
+-- remnant at the label edge and the lighter edge-cap backing beside the
+-- right border. The outer frame itself (top/bottom rows, left/right
+-- border columns) keeps exact source pixels, so rows keep their
+-- separators and window borders. No invented color ever ships: the flat
+-- comes from the audited filler tile through the shared rasterizer.
+---@param pixels string rendered 256-wide RGBA bytes
+---@param height integer plate height in pixels
+---@return string flattened 256-wide RGBA bytes
+local function flattenInterior(pixels, height)
+  assert(#pixels == 256 * height * 4, "a bounded options plate flattens above")
+  local midY = math.floor(height / 2)
+  local sample = (midY * 256 + 8) * 4
+  local flat = string
+    .char(string.byte(pixels, sample + 1), string.byte(pixels, sample + 2), string.byte(pixels, sample + 3), 255)
+    :rep(248)
+  local parts = {}
+  for y = 0, height - 1 do
+    local rowStart = y * 256 * 4
+    if y == 0 or y == height - 1 then
+      parts[#parts + 1] = pixels:sub(rowStart + 1, rowStart + 256 * 4)
+    else
+      parts[#parts + 1] = pixels:sub(rowStart + 1, rowStart + 4 * 4)
+      parts[#parts + 1] = flat
+      parts[#parts + 1] = pixels:sub(rowStart + 252 * 4 + 1, rowStart + 256 * 4)
+    end
+  end
+  return table.concat(parts)
+end
+
+-- Clears the baseline backing blue out of an unselected face patch so the
+-- printed pill blends onto any backing: the crop footprint spans the pill
+-- plus the inter-pill spacing, whose backing ink would otherwise frame
+-- every pill in the retail control-side color and ghost under relocated
+-- controls. The trim color is sampled from the crop's own top-right
+-- backing margin; a crop carrying no trimmable backing fails loudly
+-- instead of shipping guessed art. RGB is preserved and only alpha
+-- clears, so the packed atlas keeps its shape and no manifest contract
+-- moves. Private to this module; the packed atlas carries the staged pixels.
+---@param frame { width: integer, height: integer, pixels: string } packed face raster
+---@param role string face role for failure detail
+local function stripFaceTrim(frame, role)
+  assert(frame.width > 0 and frame.height > 0, "a bounded options face strips above")
+  assert(#frame.pixels == frame.width * frame.height * 4, "an options face carries its pixel census")
+  local sample = (4 * frame.width + (frame.width - 1)) * 4
+  local r = string.byte(frame.pixels, sample + 1)
+  local g = string.byte(frame.pixels, sample + 2)
+  local b = string.byte(frame.pixels, sample + 3)
+  if string.byte(frame.pixels, sample + 4) ~= 255 then
+    sourceError("the options face trim leaves its audited backing margin", { role = role })
+  end
+  local parts = {}
+  local masked = 0
+  for i = 1, #frame.pixels, 4 do
+    if
+      string.byte(frame.pixels, i) == r
+      and string.byte(frame.pixels, i + 1) == g
+      and string.byte(frame.pixels, i + 2) == b
+    then
+      masked = masked + 1
+      parts[#parts + 1] = string.char(r, g, b, 0)
+    else
+      parts[#parts + 1] = frame.pixels:sub(i, i + 3)
+    end
+  end
+  if masked == 0 then
+    sourceError("the options face patch carries no backing trim to remove", { role = role })
+  end
+  frame.pixels = table.concat(parts)
+end
+
 -- Renders one fully opaque source-derived row plate: the listed source tile
 -- rows scrubbed per row, rasterized through the shared screen path with
--- palette-zero normalized to the opaque backdrop color. Private to this
+-- palette-zero normalized to the opaque backdrop color, then leveled to
+-- the flat interior behind the kept source frame. The tile-level scrub
+-- still removes the preprinted faces and still audits the filler backing;
+-- the pixel flatten additionally erases the divider remnant and
+-- edge-cap backing the tile grid cannot split. Private to this
 -- module; the compiled bundle carries the staged bytes.
 ---@param charData OptionsAssetCompiler.CharData decoded MAIN base tiles
 ---@param palette OptionsAssetCompiler.PaletteData decoded MAIN base palette
@@ -739,188 +787,8 @@ local function renderRowPlate(charData, palette, screen, tileRows, expectedFille
       sourceError("the options row plate is not fully opaque", { role = role, pixel = math.floor(offset / 4) })
     end
   end
-  return PngWriter.encode(256, height, render.pixels), { image = image, width = 256, height = height }
-end
-
--- Extracts the slider cursor from the selected small pill's raster: the
--- right-pointing selection marker bundled on the pill's left overhang.
--- The raster offset is negative exactly by the marker columns the
--- unselected face never paints, so every opaque pixel left of the body
--- edge is marker ink and nothing else: a rectangular crop cannot separate
--- the marker base from the pill border it touches, but the overhang mask
--- keeps marker pixels and drops the shared edge columns. The kept marker
--- must reach the body edge (otherwise a detached future marker would ship
--- as a fragment). The arrowhead tip fuses into that edge, so the mask
--- then follows marker fill/shade 4-connected to the overhang ink one body
--- column in: the pill's own full-height slate border stops the walk, and
--- the tip reaches at most that single apex column. The masked box is then
--- transposed clockwise in software so the staged frame is a down-pointing
--- marker with its tip centered on its bottom edge, closed by one outline
--- row below the transposed apex: the fused source edge carries no outer
--- outline of its own, so the staged tip would otherwise touch the track.
--- The runtime draws the closed frame axis-aligned through the exact
--- sampler instead of rotating at draw time.
--- Returns the packable cursor frame with a zero offset and a tight box.
--- Private to this module; the packed atlas carries the staged pixels.
----@param raster { width: integer, height: integer, pixels: string, offset: { x: integer, y: integer } } first selected-small raster
----@param role string cursor role for failure detail
----@return { width: integer, height: integer, pixels: string, offset: { x: integer, y: integer }, ticks: integer, rect: { x: integer, y: integer, width: integer, height: integer } } cursor frame
-local function extractSliderCursor(raster, role)
-  local offsetX = assert(raster.offset and raster.offset.x, role .. " raster carries its source offset")
-  assert(
-    type(offsetX) == "number" and offsetX % 1 == 0 and offsetX < 0,
-    role .. " marker overhangs its pill body to the left"
-  )
-  local overhang = -offsetX
-  local width, height = raster.width, raster.height
-  local pixels = assert(raster.pixels, role .. " raster carries its pixels")
-  if #pixels ~= width * height * 4 then
-    sourceError("the options cursor raster carries no audited pixel census", {
-      role = role,
-      bytes = #pixels,
-      width = width,
-      height = height,
-    })
-  end
-  local minX, maxX, minY, maxY = nil, nil, nil, nil
-  local kept = 0
-  for y = 0, height - 1 do
-    for x = 0, overhang - 1 do
-      if string.byte(pixels, (y * width + x) * 4 + 4) >= 128 then
-        kept = kept + 1
-        if minX == nil or x < minX then
-          minX = x
-        end
-        if maxX == nil or x > maxX then
-          maxX = x
-        end
-        if minY == nil or y < minY then
-          minY = y
-        end
-        if maxY == nil or y > maxY then
-          maxY = y
-        end
-      end
-    end
-  end
-  if minX == nil then
-    sourceError("the options cursor overhang carries no marker ink", { role = role, overhang = overhang })
-  end
-  assert(maxX ~= nil and minY ~= nil and maxY ~= nil, "a kept options marker bounds above")
-  if maxX ~= overhang - 1 then
-    sourceError("the options cursor marker leaves its pill body edge", {
-      role = role,
-      maxX = maxX,
-      overhang = overhang,
-    })
-  end
-  -- The audited pill-outline slate shared by the marker border and the
-  -- pill body: light marker fill/shade walks through anything else opaque.
-  -- The same slate closes the transposed tip below.
-  local OUTLINE_R, OUTLINE_G, OUTLINE_B = 0x4A, 0x63, 0x5A
-  local function isLightInk(x, y)
-    if x < 0 or x >= width or y < 0 or y >= height then
-      return false
-    end
-    local base = (y * width + x) * 4
-    local r, g, b, a = string.byte(pixels, base + 1, base + 4)
-    return a >= 128 and not (r == OUTLINE_R and g == OUTLINE_G and b == OUTLINE_B)
-  end
-  -- The tip apex sits just past the body edge, fused with the border:
-  -- follow light ink connected to the overhang marker. The pill body's
-  -- own slate column breaks the walk, so the tip reaches at most one
-  -- body column in and a drifting source fails loudly below.
-  local tipMaxX = maxX
-  do
-    local seen = {}
-    local stack = {}
-    -- Orthogonal steps only: diagonal chalk never bridges the slate barrier.
-    local neighbors = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
-    for y = minY, maxY do
-      for x = minX, overhang - 1 do
-        if isLightInk(x, y) then
-          seen[y * width + x] = true
-          stack[#stack + 1] = x
-          stack[#stack + 1] = y
-        end
-      end
-    end
-    while #stack > 0 do
-      local y = stack[#stack]
-      stack[#stack] = nil
-      local x = stack[#stack]
-      stack[#stack] = nil
-      if x > tipMaxX then
-        tipMaxX = x
-      end
-      for _, step in ipairs(neighbors) do
-        local nx, ny = x + step[1], y + step[2]
-        if seen[ny * width + nx] == nil and isLightInk(nx, ny) then
-          seen[ny * width + nx] = true
-          stack[#stack + 1] = nx
-          stack[#stack + 1] = ny
-        end
-      end
-    end
-  end
-  if tipMaxX > overhang then
-    sourceError("the options cursor tip walks past its apex column", {
-      role = role,
-      tipMaxX = tipMaxX,
-      overhang = overhang,
-    })
-  end
-  local finalMaxX = tipMaxX > maxX and tipMaxX or maxX
-  -- The rotation contract needs light apex ink centered on the tip
-  -- column: the rows carrying it must straddle the kept middle, so a
-  -- blunt cut or a border-only column fails instead of shipping.
-  local tipTop, tipBottom = nil, nil
-  for y = minY, maxY do
-    if isLightInk(finalMaxX, y) then
-      if tipTop == nil then
-        tipTop = y
-      end
-      tipBottom = y
-    end
-  end
-  assert(tipTop ~= nil and tipBottom ~= nil, "a kept options marker tips above")
-  local tipMid = (tipTop + tipBottom) / 2
-  local boxMid = (minY + maxY) / 2
-  if math.abs(tipMid - boxMid) > 1 then
-    sourceError("the options cursor tip leaves its marker middle", {
-      role = role,
-      tipMid = tipMid,
-      boxMid = boxMid,
-    })
-  end
-  local boxWidth, boxHeight = finalMaxX - minX + 1, maxY - minY + 1
-  -- Clockwise transpose of the masked box: staged (x', y') reads
-  -- source (minX + y', minY + x'), so the apex ink lands centered on the
-  -- staged tip row with its side outlines. Staged dims swap to boxHeight
-  -- wide by boxWidth tall, plus one closing outline row: the fused apex
-  -- edge carries no outer outline of its own, so the outline slate seals
-  -- the full tip width and no tip ink touches the track below.
-  local staged = {}
-  for yPrime = 0, boxWidth - 1 do
-    for xPrime = 0, boxHeight - 1 do
-      local sx, sy = minX + yPrime, minY + xPrime
-      staged[#staged + 1] = pixels:sub((sy * width + sx) * 4 + 1, (sy * width + sx) * 4 + 4)
-    end
-  end
-  local closing = string.char(OUTLINE_R, OUTLINE_G, OUTLINE_B, 255)
-  for _ = 1, boxHeight do
-    staged[#staged + 1] = closing
-  end
-  return {
-    width = boxHeight,
-    height = boxWidth + 1,
-    pixels = table.concat(staged),
-    offset = { x = 0, y = 0 },
-    ticks = 1,
-    -- The packing pass assigns the staged atlas position below; the
-    -- zero rect only reserves the field the packer fills.
-    rect = { x = 0, y = 0, width = 0, height = 0 },
-  }
+  local flat = flattenInterior(render.pixels, height)
+  return PngWriter.encode(256, height, flat), { image = image, width = 256, height = height }
 end
 
 -- Renders the transparent selected-row indicator from the separate MAIN
@@ -1064,10 +932,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     end
     -- The packed frame order is fixed: both pill sizes with their selected
     -- states, both arrow idle/pressed pairs, then the four footer action
-    -- states. Packing is producer layout, never a runtime contract. The
-    -- first packed raster is the selected small pill, whose marker the
-    -- slider cursor extracts below.
-    local packedMark = #packed
+    -- states. Packing is producer layout, never a runtime contract.
     local selectedSmall = sequenceFor("pills", 0, "options:pills:small")
     local selectedWide = sequenceFor("pills", 1, "options:pills:wide")
     local leftIdle = sequenceFor("leftArrow", 0, "options:arrow:left:idle")
@@ -1080,8 +945,10 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     local actionPressedFocused = sequenceFor("actions", 3, "options:action:pressed-focused")
     -- The unselected face patches crop the baseline screen at the curated
     -- origins using the decoded pill frame footprints, never a guessed
-    -- width. The atlas keeps the crop's screen position out of the frame
-    -- record: the crop origin is producer layout, the frame is runtime art.
+    -- width, then clear the baseline backing trim to transparent so the
+    -- prints blend onto the leveled plates. The atlas keeps the crop's
+    -- screen position out of the frame record: the crop origin is producer
+    -- layout, the frame is runtime art.
     local faceScreenBytes = decodeMember(archive, OptionsSources.members.faceScreen, "options-face-screen")
     dependencies[#dependencies + 1] = {
       name = OptionsSources.archive.symbol .. ":member:" .. OptionsSources.members.faceScreen,
@@ -1130,6 +997,10 @@ function OptionsAssetCompiler.compile(romFs, versionId)
         offset = { x = 0, y = 0 },
         ticks = 1,
       }
+      -- Unselected faces are the only cropFace callers: their footprints
+      -- carry the baseline inter-pill backing, which must clear so the
+      -- prints blend onto the leveled plates and any custom backing.
+      stripFaceTrim(frame, role)
       packed[#packed + 1] = frame
       frame.rect = { x = 0, y = 0, width = 0, height = 0 }
       return {
@@ -1151,30 +1022,6 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     -- the unselected state of each size precedes its selected state.
     local unselectedSmall = cropFace(OptionsSources.faceOrigins.small, pillSmallFootprint, "options:face:small")
     local unselectedWide = cropFace(OptionsSources.faceOrigins.wide, pillWideFootprint, "options:face:wide")
-    -- The slider cursor reuses the selected pill's bundled marker through
-    -- the overhang mask, packed after the face patches so the marker
-    -- raster index stays the compile-order first. The atlas keeps the
-    -- crop position out of the frame record: the tight box is runtime
-    -- art, the raster position is producer layout.
-    local cursorRaster = packed[packedMark + 1]
-    if cursorRaster == nil then
-      sourceError("the options pills carry no selected raster for the cursor", { role = "options:cursor" })
-    end
-    assert(cursorRaster ~= nil, "a missing options cursor raster fails above")
-    local cursorFrame = extractSliderCursor(cursorRaster, "options:cursor")
-    packed[#packed + 1] = cursorFrame
-    local sliderCursor = {
-      frames = {
-        {
-          image = image,
-          atlas = cursorFrame.rect,
-          offset = cursorFrame.offset,
-          ticks = 1,
-        },
-      },
-      loop = true,
-      bounds = { x = 0, y = 0, width = cursorFrame.width, height = cursorFrame.height },
-    }
     -- Labels lower through the shared message bank; the stored tokens keep
     -- the exact control stream the runtime text renderer consumes.
     local messageArchive = loadArchive(romFs, OptionsSources.messagesArchive.symbol)
@@ -1351,7 +1198,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       [frameImage] = framePng,
     }
     local section = {
-      version = 6,
+      version = 7,
       backdrops = {
         header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
         footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
@@ -1378,7 +1225,6 @@ function OptionsAssetCompiler.compile(romFs, versionId)
         pressed = actionPressed,
         pressedFocused = actionPressedFocused,
       },
-      sliderCursor = sliderCursor,
       framePreviewText = framePreviewText,
       animationTickSeconds = 1 / DisplayTiming.REFRESH_HZ,
     }

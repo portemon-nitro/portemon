@@ -23,11 +23,22 @@ OptionsInterface.FOOTER_HEIGHT = 24
 OptionsInterface.LABEL_X = 12
 OptionsInterface.CONTROL_LEFT = 112
 OptionsInterface.CONTROL_RIGHT = 248
+-- Layout-driven divider: one pixel left of the control rect, clearing the
+-- selected pill's left overhang so relocated controls carry their
+-- separator along. Ink per band matches the audited native divider tiles
+-- on the controls screen (odd mid tile 14 carries palette-2 index 3, even
+-- mid tile 40 carries index 5); the ROM audit pins both against the
+-- decoded palette in romdump/tests/options_assets_test.lua.
+OptionsInterface.DIVIDER_GAP = 9
+OptionsInterface.DIVIDER_INK = {
+  odd = { r = 0x42, g = 0x9C, b = 0xE6 },
+  even = { r = 0x3A, g = 0x84, b = 0xC5 },
+}
 OptionsInterface.INPUT_KEY = "options"
 
 local CONTENT_NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local KNOB_EXTENT = 8
+local KNOB_EXTENT = 32
 
 ---@alias OptionsInterface.Rect { x: number, y: number, width: number, height: number }
 ---@alias OptionsInterface.Point { x: number, y: number }
@@ -428,14 +439,13 @@ function OptionsInterface.hitTest(content, x, y)
           and contentY >= rail.y
           and contentY < rail.y + rail.height
         if not insideRail then
-          -- The fallback box covers the down-arrow cursor's rotated
-          -- visual extent around the stop center, not the resolve-time
-          -- knob rect: the masked marker spans wider than the rail once rotated.
+          -- The fallback box covers the borrowed 32x24 bag thumb around
+          -- the stop center, mirroring the drawn thumb extent.
           local thumb = assert(resolved.thumbRect, "resolved sliders carry their thumb rect")
           local thumbCenterX = thumb.x + thumb.width / 2
           local thumbCenterY = thumb.y + thumb.height / 2
-          local halfWidth = OptionsWidgets.SLIDER_CURSOR_HALF_WIDTH
-          local halfHeight = OptionsWidgets.SLIDER_CURSOR_HALF_HEIGHT
+          local halfWidth = OptionsWidgets.SLIDER_THUMB_HALF_WIDTH
+          local halfHeight = OptionsWidgets.SLIDER_THUMB_HALF_HEIGHT
           local insideThumb = x >= thumbCenterX - halfWidth
             and x < thumbCenterX + halfWidth
             and contentY >= thumbCenterY - halfHeight

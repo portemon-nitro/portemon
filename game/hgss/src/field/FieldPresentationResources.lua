@@ -1645,6 +1645,22 @@ end
 function FieldPresentationResources:openOptionsPresentation()
   assert(self._optionsRenderer == nil, "one options presentation owns the presented lifetime")
   local narration = self.battleTextRenderers ~= nil and self.battleTextRenderers.narration or nil
+  -- The sliders borrow the bag quantity-decrement pressed visual, resolved
+  -- through the validated bag manifest so the bag stays the single owner
+  -- of that art.
+  local bagManifest = assert(self.bagManifest, "options presentation borrows the bag manifest for its slider thumb")
+  local quantity = assert(
+    bagManifest.interactive and bagManifest.interactive.overlays and bagManifest.interactive.overlays.quantity,
+    "the bag manifest carries its quantity overlay for the options slider thumb"
+  )
+  local decrement = assert(
+    quantity.visuals and quantity.visuals.decrement,
+    "the bag manifest carries its quantity decrement visuals for the options slider thumb"
+  )
+  local thumb = assert(
+    decrement.pressed,
+    "the bag manifest carries the quantity-decrement pressed visual for the options slider thumb"
+  )
   local renderer = OptionsRenderer.new({
     cacheFs = self.cacheFs,
     manifest = assert(self.uiManifest, "options presentation requires the field-UI manifest"),
@@ -1654,6 +1670,7 @@ function FieldPresentationResources:openOptionsPresentation()
       narration
     ),
     window = assert(self.windowRenderer, "options presentation borrows the field window renderer"),
+    sliderThumb = thumb,
   })
   self._optionsRenderer = renderer
   local port = {}

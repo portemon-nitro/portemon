@@ -289,6 +289,7 @@ function T.tests.preparing_renderer_paints_and_returns_leases_to_baseline(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingText(),
     window = recordingWindow(),
   })
@@ -354,6 +355,7 @@ local function preparedPainter(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = text,
     window = window,
   })
@@ -454,6 +456,7 @@ local function preparedPlacedPainter(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = text,
     window = window,
   })
@@ -525,6 +528,7 @@ local function preparedSourcePainter(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = text,
     window = window,
   })
@@ -1078,7 +1082,7 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   Assert.deepEqual(
     quantizePixel(dataMax, thumbHx, thumbHy),
     { 20, 170, 190, 255 },
-    "the battle-speed cursor tip lands on the track at maximum scroll"
+    "the battle-speed thumb centers on the track at maximum scroll"
   )
   renderer:dispose()
 end
@@ -1150,6 +1154,7 @@ function T.tests.pane_backing_stays_opaque_while_host_pixels_outside_stay_untouc
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingPlacedText(),
     window = recordingWindow(),
   })
@@ -1205,6 +1210,7 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
       cacheFs = cache,
       manifest = manifest,
       imagePool = pool,
+      sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
       text = recordingText(),
       window = recordingWindow(),
     })
@@ -1279,6 +1285,7 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
       cacheFs = cache2,
       manifest = manifest2,
       imagePool = pool2,
+      sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
       text = recordingText(),
       window = recordingWindow(),
     })
@@ -1315,6 +1322,7 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
     cacheFs = cache2,
     manifest = manifest2,
     imagePool = pool2,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingText(),
     window = recordingWindow(),
   })
@@ -1384,6 +1392,7 @@ local function tokenPainter(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = text,
     window = window,
   })
@@ -1525,6 +1534,19 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   local resources = setmetatable({
     cacheFs = cache,
     uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
     _imagePool = pool,
     textRenderer = stubText,
     windowRenderer = stubWindow,
@@ -1706,7 +1728,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
-  Assert.equal(manifest.options.version, 6, "the staged section carries its indicator contract")
+  Assert.equal(manifest.options.version, 7, "the staged section carries its indicator contract")
   Assert.equal(
     manifest.options.selectionOverlay,
     FieldUiFixture.optionsSelectionOverlayKey(),
@@ -1721,6 +1743,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
     FieldUiFixture.OPTIONS_ROW_ODD_PATH,
     FieldUiFixture.OPTIONS_ROW_EVEN_PATH,
     FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
+    FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH,
   }) do
     Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
   end
@@ -1917,6 +1940,7 @@ function T.tests.scrolling_list_paints_moving_row_plates_over_stale_faces(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingPlacedText(),
     window = recordingWindow(),
   })
@@ -1993,6 +2017,7 @@ function T.tests.list_replacement_keeps_header_footer_and_preview_fixed(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingPlacedText(),
     window = recordingWindow(),
   })
@@ -2069,6 +2094,7 @@ function T.tests.focused_indicator_paints_over_plates_and_row_chrome(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingPlacedText(),
     window = recordingWindow(),
   })
@@ -2158,6 +2184,7 @@ function T.tests.row_plate_leases_prepare_draw_and_release_cleanly(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = recordingText(),
     window = recordingWindow(),
   })
@@ -2343,7 +2370,7 @@ function T.tests.slider_values_keep_a_measured_window_clear_of_their_rail(scope)
       Assert.deepEqual(
         quantizePixel(data, volumeHx, volumeHy),
         { 20, 170, 190, 255 },
-        "the volume cursor tip lands on its own rail at " .. case.volume
+        "the volume thumb centers on its own rail at " .. case.volume
       )
       local speedSlider = assert(rowsById.battleSpeed.control.slider, "the speed row carries its rail")
       local speedCx = math.floor(speedSlider.thumbRect.x + speedSlider.thumbRect.width / 2)
@@ -2355,7 +2382,7 @@ function T.tests.slider_values_keep_a_measured_window_clear_of_their_rail(scope)
       Assert.deepEqual(
         quantizePixel(data, speedHx, speedHy),
         { 20, 170, 190, 255 },
-        "the speed cursor tip lands on its own rail at " .. case.speed
+        "the speed thumb centers on its own rail at " .. case.speed
       )
     end
   end
@@ -2363,8 +2390,8 @@ function T.tests.slider_values_keep_a_measured_window_clear_of_their_rail(scope)
 end
 -- Composition gate: the production renderer over source-shaped art must keep
 -- every choice center on its decomp window-relative glyph center, clip
--- 32px-tall face art to its own row, land the slider cursor tip on the
--- track with no white square remnant, reveal the full 72px frame item at
+-- 32px-tall face art to its own row, center the borrowed slider thumb on
+-- the track with no white square remnant, reveal the full 72px frame item at
 -- maximum scroll, and paint only shell bands over a hostile base. The
 -- renderer draws through the real field window renderer here (never the
 -- recording stub), so the sample window paints production frame art.
@@ -2387,6 +2414,7 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
     cacheFs = cache,
     manifest = manifest,
     imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
     text = text,
     window = window,
   })
@@ -2407,7 +2435,7 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
   local headR, headG, headB = FieldUiFixture.optionsHeaderBackgroundColor()
   local footR, footG, footB = FieldUiFixture.optionsFooterBackgroundColor()
   local borderR, borderG, borderB = FieldUiFixture.optionsSelectionOverlayBorderColor()
-  local cursorInk = { 20, 170, 190, 255 }
+  local thumbInk = { 20, 170, 190, 255 }
   local function planFor(view, case)
     return resolvers[case](contextFor(case, measurements), view)
   end
@@ -2533,8 +2561,8 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
       "the slider band keeps its plate clear of the neighbor faces at offset " .. offset
     )
   end
-  -- (c) The slider cursor points down with its tip on the track value at
-  -- the first, middle, and last volume stops; the marker fits its row
+  -- (c) The borrowed thumb centers on the track value at
+  -- the first, middle, and last volume stops; the thumb fills its row
   -- and no white square pixels remain anywhere near the stop.
   for _, stop in ipairs({ { index = 1 }, { index = 51 }, { index = 101 } }) do
     local view = headlessSourceView()
@@ -2559,18 +2587,28 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
     local data = scope:own(canvas:newImageData())
     Assert.deepEqual(
       at(data, placement, stopX, railY),
-      cursorInk,
-      "the cursor tip lands on the track at volume stop " .. stop.index
+      thumbInk,
+      "the thumb centers on the track at volume stop " .. stop.index
     )
     Assert.deepEqual(
       at(data, placement, stopX, railY - 4),
-      cursorInk,
-      "the down marker body rises above the rail at volume stop " .. stop.index
+      thumbInk,
+      "the thumb body covers the rail at volume stop " .. stop.index
     )
     Assert.deepEqual(
-      at(data, placement, stopX, railY - 8),
+      at(data, placement, stopX, railY - 11),
+      thumbInk,
+      "the thumb reaches its top edge above the rail at volume stop " .. stop.index
+    )
+    Assert.deepEqual(
+      at(data, placement, stopX, railY + 11),
+      thumbInk,
+      "the thumb reaches its bottom edge below the rail at volume stop " .. stop.index
+    )
+    Assert.deepEqual(
+      at(data, placement, stopX - 20, railY - 8),
       { oddR, oddG, oddB, 255 },
-      "the marker stays inside its row at volume stop " .. stop.index
+      "the plate stays clear beside the thumb at volume stop " .. stop.index
     )
     local white, whiteAt = false, ""
     for ly = railY - 14, railY - 2 do
@@ -2666,6 +2704,147 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
       end
     end
   end
+  renderer:dispose()
+end
+
+-- Painter over a custom odd plate with an unmistakable frame ink: flat
+-- interior plus the frame color down the right border columns. The pool
+-- worker resolves images through the version's love-backend root, so the
+-- custom plate overwrites the same real-tree path the fixture wrote,
+-- exactly like the row-plate lifecycle test does. Returns the renderer,
+-- a logical sampler, and the frame ink for border/divider assertions.
+local function framedPainter(scope)
+  local Interface, Renderer = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local PngWriter = require("tests.support.PngEncoder")
+  local edge = { 9, 99, 199 }
+  local interior = string.char(250, 230, 180, 255)
+  local frameInk = string.char(edge[1], edge[2], edge[3], 255)
+  local parts = {}
+  for _ = 0, 23 do
+    parts[#parts + 1] = interior:rep(252) .. frameInk:rep(4)
+  end
+  local cache, manifest = optionsCache()
+  CacheFs.forVersion(ISOLATED_VERSION):write(
+    FieldUiFixture.OPTIONS_ROW_ODD_PATH,
+    PngWriter.encode(256, 24, table.concat(parts))
+  )
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    sliderThumb = FieldUiFixture.optionsSliderThumbVisual(),
+    text = recordingPlacedText(),
+    window = recordingWindow(),
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the painter prepares: " .. tostring(failure))
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = sampleView("confirm", 0)
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function at(lx, ly)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    return quantizePixel(data, hx, hy)
+  end
+  return renderer, at, edge
+end
+
+-- The window frame owns containment: every visible row repaints its own
+-- right border over pills but beneath the focus strip, so edge-reaching
+-- chrome never opens the frame. The wide battle-style pills reach the
+-- plate edge, so the border sample only passes when the border paints
+-- after contents.
+function T.tests.row_borders_close_over_edge_reaching_pills(scope)
+  local renderer, at, edge = framedPainter(scope)
+  local pill = at(240, 84)
+  Assert.isTrue(
+    pill[1] ~= edge[1] or pill[2] ~= edge[2] or pill[3] ~= edge[3],
+    "the probe sits on pill chrome, not the border"
+  )
+  Assert.deepEqual(
+    at(254, 84),
+    { edge[1], edge[2], edge[3], 255 },
+    "the right border closes over edge-reaching pills"
+  )
+  renderer:dispose()
+end
+
+-- The label/control divider follows the layout instead of baked pixels:
+-- every row paints its band's audited divider ink at the control
+-- boundary, so relocated controls keep their separator. Both control
+-- rects start at x112, so the divider samples only pass when each band
+-- paints its own ink at the laid-out boundary. Stock fixture plates keep
+-- this test honest: no custom art carries the divider.
+function T.tests.row_dividers_follow_the_control_boundary(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer = preparedPlacedPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = sampleView("confirm", 0)
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function at(lx, ly)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    return quantizePixel(data, hx, hy)
+  end
+  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
+  local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
+  Assert.deepEqual(at(100, 84), { oddR, oddG, oddB, 255 }, "the probe sits on odd plate interior")
+  Assert.deepEqual(at(100, 108), { evenR, evenG, evenB, 255 }, "the probe sits on even plate interior")
+  Assert.deepEqual(at(103, 84), { 0x42, 0x9C, 0xE6, 255 }, "the odd divider paints its audited ink")
+  Assert.deepEqual(at(103, 108), { 0x3A, 0x84, 0xC5, 255 }, "the even divider paints its audited ink")
+  -- The divider never crosses another frame: the row separators above and
+  -- below the battle-style row keep their plate pixels.
+  Assert.deepEqual(at(103, 72), { oddR, oddG, oddB, 255 }, "the divider stops above the separator")
+  Assert.deepEqual(at(103, 95), { oddR, oddG, oddB, 255 }, "the divider stops below the separator")
+  renderer:dispose()
+end
+
+-- The divider stops at the frame row's sample window: it separates the
+-- label and arrow controls above the window but never crosses its frame.
+-- The scrolled plan brings the 72px frame item into view with footer
+-- focus, so no selection strip interferes with either sample.
+function T.tests.row_dividers_stop_at_the_frame_preview_window(scope)
+  local Interface = modules()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local renderer = preparedPlacedPainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = sampleView("confirm", 72)
+  view.preview = {}
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local placement = assert(plan.panes[1].placement, "the plan places its pane")
+  local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+  local data = scope:own(canvas:newImageData())
+  local function at(lx, ly)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    return quantizePixel(data, hx, hy)
+  end
+  local frameR, frameG, frameB = FieldUiFixture.optionsRowFrameColor()
+  Assert.deepEqual(at(103, 97), { 0x42, 0x9C, 0xE6, 255 }, "the divider separates the frame controls")
+  Assert.deepEqual(
+    at(103, 130),
+    { frameR, frameG, frameB, 255 },
+    "the divider stops above the sample window"
+  )
   renderer:dispose()
 end
 

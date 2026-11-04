@@ -7,6 +7,7 @@
 
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local OptionsInterface = require("game.hgss.src.options.OptionsInterface")
 local OptionsWidgets = require("game.hgss.src.ui.OptionsWidgets")
 
 -- Resolves the glyph origin inside the label's own bounded window:
@@ -67,6 +68,9 @@ end
 ---@field _leaseByRole table<string, ImageAssetPoolLease> semantic role to its acquired image lease
 ---@field _leaseByPath table<string, ImageAssetPoolLease> generated image path to its acquired image lease
 ---@field _quadByFrame table<table, love.Quad> prepared viewport per immutable compiled frame
+---@field _borderQuadByLease table<ImageAssetPoolLease, love.Quad> prepared right-border viewport per plate lease
+---@field _sliderThumbVisual { image: string, width: integer, height: integer } borrowed bag quantity-decrement pressed visual backing the sliders
+---@field _sliderThumbQuad love.Quad? prepared full-image viewport over the borrowed thumb
 ---@field _ready boolean
 ---@field _disposed boolean
 local OptionsRenderer = {}
@@ -78,13 +82,18 @@ local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest"
 -- the 6px difference lifts the box above the row top.
 local STRIP_LIFT = 3
 
+-- The window frame keeps a 4px right border on every row plate; the
+-- renderer repaints those columns over pills and strip so relocated
+-- chrome never opens the frame. The width matches the staged plates,
+-- whose right frame columns the overlay viewports reuse.
+local BORDER_WIDTH = 4
+
 ---@class OptionsRenderer.Section
 ---@field version integer
 ---@field labels table<string, unknown>
 ---@field choices table<string, unknown>
 ---@field arrows table<string, unknown>
 ---@field actions table<string, unknown>
----@field sliderCursor table<string, unknown>
 ---@field backdrops table<string, string> semantic role to its indexed backdrop asset key
 ---@field selectionOverlay string required indexed selected-row strip asset key
 ---@field rowBackings table<string, string> semantic role to its indexed row backing asset key
@@ -98,6 +107,7 @@ local STRIP_LIFT = 3
 ---@field imagePool ImageAssetPool borrowed shared session image owner
 ---@field text table<string, unknown> borrowed text collaborator, cast after its capability checks
 ---@field window OptionsRenderer.WindowCollaborator borrowed window collaborator
+---@field sliderThumb { image: string, width: integer, height: integer } borrowed bag quantity-decrement pressed visual backing the sliders
 
 ---@param opts OptionsRenderer.Options
 ---@return OptionsRenderer
@@ -118,12 +128,22 @@ function OptionsRenderer.new(opts)
   )
   ---@cast text OptionsWidgets.TextCollaborator
   assert(type(opts.window) == "table", "the options renderer borrows its window service")
+  local sliderThumb = assert(opts.sliderThumb, "the options renderer borrows its slider thumb visual")
+  assert(type(sliderThumb.image) == "string" and sliderThumb.image ~= "", "the slider thumb visual names its bag image")
+  assert(
+    type(sliderThumb.width) == "number"
+      and sliderThumb.width > 0
+      and type(sliderThumb.height) == "number"
+      and sliderThumb.height > 0,
+    "the slider thumb visual carries its art extent"
+  )
   return setmetatable({
     _cacheFs = opts.cacheFs,
     _manifest = opts.manifest,
     _imagePool = opts.imagePool,
     _text = text,
     _window = opts.window,
+    _sliderThumbVisual = sliderThumb,
     _tokens = {},
     _tokenRoles = {},
     _tokenPaths = {},
@@ -131,6 +151,7 @@ function OptionsRenderer.new(opts)
     _leaseByRole = {},
     _leaseByPath = {},
     _quadByFrame = {},
+    _borderQuadByLease = {},
     _ready = false,
     _disposed = false,
   }, OptionsRenderer)
@@ -141,7 +162,7 @@ function OptionsRenderer:_section()
   local manifest = self._manifest
   local section = manifest.options
   assert(type(section) == "table", "the field-UI manifest carries the options section")
-  assert(section.version == 6, "the options section carries its locked version")
+  assert(section.version == 7, "the options section carries its locked version")
   return section
 end
 
@@ -196,10 +217,8 @@ function OptionsRenderer:_requestChrome()
       add(frame.image, "chrome")
     end
   end
-  local cursor = assert(section.sliderCursor, "the options section carries its slider cursor")
-  for _, frame in ipairs(assert(cursor.frames, "slider cursor carries frames")) do
-    add(frame.image, "chrome")
-  end
+  local thumb = assert(self._sliderThumbVisual, "the options renderer borrows its slider thumb visual")
+  add(assert(thumb.image, "the slider thumb visual names its bag image"), "sliderThumb")
   local backdrops = assert(section.backdrops, "the options section carries its source backdrops")
   local assets = assert(self._manifest.assets, "the field-UI manifest indexes its assets")
   for _, role in ipairs({ "header", "footer", "preview" }) do
@@ -251,26 +270,42 @@ function OptionsRenderer:_buildQuads()
   for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
     add(assert(section.actions[state], "actions carry every compiled state"), "actions." .. state)
   end
-  add(assert(section.sliderCursor, "the options section carries its slider cursor"), "sliderCursor")
+  -- One full-image viewport over the borrowed bag thumb. Extents derive
+  -- from the acquired image, cross-checked against the borrowed visual
+  -- below, never from a hardcoded thumb size.
+  do
+    local lease = assert(self._leaseByRole.sliderThumb, "prepared slider thumb carries its lease")
+    local image = assert(lease.image, "slider thumb lease carries its resolved image")
+    local width, height = image:getWidth(), image:getHeight()
+    self._sliderThumbQuad = graphics.newQuad(0, 0, width, height, width, height)
+  end
+  -- One viewport over each plate's own right border columns, drawn after
+  -- pills but beneath the focus strip. No new asset: the viewport reuses
+  -- the plate lease's image, so the frame always matches its plate.
+  -- Extents derive from the acquired image, never from a hardcoded plate size.
+  for _, role in ipairs({ "rowOdd", "rowEven", "rowFrame" }) do
+    local lease = assert(self._leaseByRole[role], "prepared " .. role .. " carries its plate lease")
+    local image = assert(lease.image, role .. " lease carries its resolved image")
+    local width, height = image:getWidth(), image:getHeight()
+    self._borderQuadByLease[lease] = graphics.newQuad(width - BORDER_WIDTH, 0, BORDER_WIDTH, height, width, height)
+  end
 end
 
--- Assembles the per-frame slider cursor record from the prepared marker
--- viewport: the chrome lease draws the down-pointing marker through it
--- axis-aligned, with the bottom tip row landing on the track. The
--- extent derives from the compiled atlas rect, never from a hardcoded
--- trim.
----@param chrome ImageAssetPoolLease borrowed chrome lease
----@return OptionsWidgets.SliderCursor cursor { chrome, quad, width, height }
-function OptionsRenderer:_sliderCursor(chrome)
-  local section = self:_section()
-  local cursor = assert(section.sliderCursor, "the options section carries its slider cursor")
-  local cursorFrame = assert(cursor.frames[1], "slider cursor carries its marker frame")
-  local quad = assert(self._quadByFrame[cursorFrame], "prepared chrome carries the cursor viewport")
-  local width = assert(cursorFrame.atlas.width, "slider cursor carries its compiled width")
-  local height = assert(cursorFrame.atlas.height, "slider cursor carries its compiled height")
-  assert(width > 0 and height > 0, "slider cursor art is non-empty")
+-- Assembles the per-frame slider thumb record from the borrowed bag
+-- visual: the thumb lease draws the quantity-decrement pressed art
+-- centered on the track value. Extents cross-check the borrowed visual
+-- against the acquired image, never a hardcoded trim.
+---@return OptionsWidgets.SliderThumb thumb { lease, quad, width, height }
+function OptionsRenderer:_sliderThumb()
+  local visual = assert(self._sliderThumbVisual, "the options renderer borrows its slider thumb visual")
+  local lease = assert(self._leaseByRole.sliderThumb, "prepared slider thumb carries its lease")
+  local quad = assert(self._sliderThumbQuad, "prepared slider thumb carries its viewport")
+  local image = assert(lease.image, "slider thumb lease carries its resolved image")
+  local width, height = image:getWidth(), image:getHeight()
+  assert(width == visual.width and height == visual.height, "the slider thumb resolves its borrowed visual extent")
+  assert(width > 0 and height > 0, "slider thumb art is non-empty")
   return {
-    chrome = chrome,
+    lease = lease,
     quad = quad,
     width = width,
     height = height,
@@ -373,6 +408,7 @@ function OptionsRenderer:prepare()
     assert(self._leaseByRole.rowOdd ~= nil, "prepared odd row plate carries its lease")
     assert(self._leaseByRole.rowEven ~= nil, "prepared even row plate carries its lease")
     assert(self._leaseByRole.rowFrame ~= nil, "prepared frame plate carries its lease")
+    assert(self._leaseByRole.sliderThumb ~= nil, "prepared slider thumb carries its lease")
     self:_buildQuads()
     self:_checkLabels()
   end)
@@ -406,11 +442,14 @@ end
 -- header feedback, the footer shell, and the fixed footer buttons over it,
 -- while the upper preview pane paints only its decorative backdrop. Every
 -- visible row plate paints before the row contents with the single focused
--- strip last under one translation, and each visible row's contents paint
--- under that row's own clip so 32px-tall face/arrow art never bleeds into
--- a neighbor; rows outside the published viewport never draw. Draw acquires
--- nothing and leaves shared owners alone. No full-screen controls image
--- is ever painted: the header and footer shells own their own bands.
+-- strip last under one translation, with every row's own right border
+-- just beneath it so relocated chrome never opens the window frame while
+-- the focus indicator keeps both side bars, and each visible row's
+-- contents paint under that row's own clip so 32px-tall face/arrow art
+-- never bleeds into a neighbor; rows outside the published viewport never
+-- draw. Draw acquires nothing and leaves shared owners alone. No
+-- full-screen controls image is ever painted: the header and footer shells
+-- own their own bands.
 ---@param view table<string, unknown> the screen semantic snapshot
 ---@param plan table<string, unknown> the resolved plan
 function OptionsRenderer:draw(view, plan)
@@ -459,9 +498,11 @@ function OptionsRenderer:draw(view, plan)
         LogicalSurface.clip(graphics, viewport, function()
           graphics.push("all")
           -- One content-space translation serves every scrolled layer: all
-          -- row plates first, then every visible row's contents, then the
-          -- single focused strip on top so opaque pill chrome never buries
-          -- the indicator. Nothing paints a second offset.
+          -- row plates first, then every visible row's contents, then every
+          -- row's own right border so relocated chrome never opens the
+          -- window frame, then the single focused strip last so the focus
+          -- indicator keeps both side bars over pills and borders alike.
+          -- Nothing paints a second offset.
           graphics.translate(0, viewport.y - content.scrollOffset)
           for _, row in ipairs(assert(content.rows, "content carries its rows")) do
             if not row.clipped then
@@ -469,6 +510,7 @@ function OptionsRenderer:draw(view, plan)
             end
           end
           drawRows()
+          self:_drawBorders(graphics, content)
           self:_drawStrip(graphics, content, view)
           graphics.pop()
         end)
@@ -518,6 +560,63 @@ function OptionsRenderer:_drawStrip(graphics, content, view)
   end
   local lease = assert(self._leaseByRole.selectionOverlay, "prepared selection overlay carries its lease")
   lease:draw(graphics, focused.rect.x, focused.rect.y - STRIP_LIFT)
+end
+
+-- Selects the divider ink for one laid-out row: the odd tone for the
+-- compound frame item, otherwise the alternating band tone by content
+-- position, mirroring the plate assignment so ink and backing agree.
+---@param row OptionsInterface.RowLayout laid-out row
+---@return { r: integer, g: integer, b: integer } 0..255 divider ink
+function OptionsRenderer:_dividerInkFor(row)
+  if row.id == "textFrame" then
+    return assert(OptionsInterface.DIVIDER_INK.odd, "the divider contract carries its odd ink")
+  end
+  if row.position % 2 == 1 then
+    return assert(OptionsInterface.DIVIDER_INK.odd, "the divider contract carries its odd ink")
+  end
+  return assert(OptionsInterface.DIVIDER_INK.even, "the divider contract carries its even ink")
+end
+
+-- Paints one row's layout divider: a single column of the band's audited
+-- divider ink at the control boundary, spanning only the live area above
+-- the separators and, on the frame row, above the sample window, so it
+-- never crosses another frame. Caller color is preserved; draw acquires
+-- nothing.
+---@param graphics love.graphics
+---@param row OptionsInterface.RowLayout laid-out row
+function OptionsRenderer:_drawDivider(graphics, row)
+  local controlRect = assert(assert(row.control, "rows carry their control geometry").rect, "controls carry their rect")
+  local top = row.rect.y + 1
+  local bottom = row.rect.y + row.rect.height - 1
+  if row.previewRect ~= nil then
+    bottom = math.min(bottom, row.previewRect.y)
+  end
+  if bottom <= top then
+    return
+  end
+  local ink = self:_dividerInkFor(row)
+  local r, g, b, a = graphics.getColor()
+  graphics.setColor(ink.r / 255, ink.g / 255, ink.b / 255, 1)
+  graphics.rectangle("fill", controlRect.x - OptionsInterface.DIVIDER_GAP, top, 1, bottom - top)
+  graphics.setColor(r, g, b, a)
+end
+
+-- Repaints every visible row's own right window border over pills but
+-- beneath the focus strip: edge-reaching pills paint to the plate edge by
+-- retail geometry, so the frame owns containment yet the transient focus
+-- indicator keeps both side bars. Borders reuse their plate's pixels
+-- through the prepared viewports; rows outside the published viewport
+-- never draw.
+---@param graphics love.graphics
+---@param content OptionsInterface.ContentGeometry
+function OptionsRenderer:_drawBorders(graphics, content)
+  for _, row in ipairs(assert(content.rows, "content carries its rows")) do
+    if not row.clipped then
+      local lease = self:_plateFor(row)
+      local quad = assert(self._borderQuadByLease[lease], "prepared plates carry their border viewport")
+      lease:drawQuad(graphics, quad, row.rect.x + row.rect.width - BORDER_WIDTH, row.rect.y)
+    end
+  end
 end
 
 -- Draws one source label record inside its bounded window: validates the
@@ -589,10 +688,11 @@ function OptionsRenderer:_drawTitle(graphics, view)
   end)
 end
 
--- Paints one published row: the row name once from source tokens (or the
--- authored string where no source record exists), then the control chrome
--- with value glyphs centered from measured advances. One palette pass
--- per label; selected values use the dark source ink.
+-- Paints one published row: first the layout divider in the plate's own
+-- frame ink at the control boundary, then the row name once from source
+-- tokens (or the authored string where no source record exists), then the
+-- control chrome with value glyphs centered from measured advances. One
+-- palette pass per label; selected values use the dark source ink.
 ---@param graphics love.graphics
 ---@param chrome ImageAssetPoolLease
 ---@param quadFor fun(frame: OptionsWidgets.SequenceFrame): love.Quad prepared viewport per immutable compiled frame
@@ -601,6 +701,10 @@ end
 ---@param rowView table<string, unknown>
 ---@param view table<string, unknown>
 function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowView, view)
+  -- Background family, like the baked divider it replaces: the separator
+  -- paints before labels and chrome so relocated controls carry it along
+  -- while text keeps priority over it.
+  self:_drawDivider(graphics, row)
   local labelY = row.rect.y + 5
   if rowView.sourceLabel ~= nil then
     LogicalSurface.clip(graphics, { x = 12, y = row.rect.y, width = 100, height = 24 }, function()
@@ -628,11 +732,11 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
       "the " .. row.id .. " value " .. valueLabel .. " exceeds its numeric window"
     )
     -- The row owns focus through the source selection strip; the
-    -- slider paints only its rail, fill, and down-arrow cursor.
+    -- slider paints only its rail, fill, and borrowed bag thumb.
     OptionsWidgets.drawSlider(graphics, resolved, {
       rail = { r = 0.25, g = 0.25, b = 0.25, a = 1 },
       fill = { r = 0.9, g = 0.9, b = 0.9, a = 1 },
-    }, self:_sliderCursor(chrome))
+    }, self:_sliderThumb())
     self:_drawPlainLabel(
       valueLabel,
       { x = valueWindow.x + valueWindow.width - valueWidth, y = valueWindow.y },
@@ -880,6 +984,8 @@ function OptionsRenderer:_releaseOwned()
   self._leaseByRole = {}
   self._leaseByPath = {}
   self._quadByFrame = {}
+  self._borderQuadByLease = {}
+  self._sliderThumbQuad = nil
   self._ready = false
 end
 

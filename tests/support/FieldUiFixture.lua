@@ -1228,21 +1228,13 @@ local OPTIONS_FRAME_COLORS = {
   actionPressed2 = { 200, 200, 90 },
   actionPressedFocused1 = { 90, 90, 90 },
   actionPressedFocused2 = { 220, 140, 60 },
-  sliderCursor = { 20, 170, 190 },
 }
-
--- The slider cursor is the masked selection-marker frame: the producer
--- extracts the right-pointing marker bundled on the selected pill
--- overhang and transposes it clockwise to point down into its own tight
--- atlas frame, so the cursor keeps its own flat color, never the
--- right-arrow idle ink.
 
 -- Fixed single-row frame order: every frame id maps to one flat color
 -- above and one atlas rect below. Sizes mirror the audited source
 -- bounding dims the generated contract locks: small faces 48x32, wide
--- faces 64x32, arrows 32x32, footer actions 64x24, and the 12x8 masked
--- down-pointing selection marker. Fresh tables per call so tests never share mutable
--- manifest state.
+-- faces 64x32, arrows 32x32, footer actions 64x24. Fresh tables per call
+-- so tests never share mutable manifest state.
 ---@return table frames ordered atlas frames { id, width, height }
 local function optionsFrameOrder()
   return {
@@ -1262,7 +1254,6 @@ local function optionsFrameOrder()
     { id = "actionPressed2", width = 64, height = 24 },
     { id = "actionPressedFocused1", width = 64, height = 24 },
     { id = "actionPressedFocused2", width = 64, height = 24 },
-    { id = "sliderCursor", width = 12, height = 8 },
   }
 end
 
@@ -1337,6 +1328,28 @@ function FieldUiFixture.optionsSelectionOverlayBytes()
     end
   end
   return PngWriter.encode(256, 30, table.concat(rows))
+end
+
+-- Synthetic slider thumb: the 32x24 bag quantity-decrement pressed visual
+-- the option sliders borrow at draw time. One flat color distinct from
+-- every chrome frame, so a painter sampling the wrong art is a pixel
+-- mismatch. Dimensions match the generated bag asset exactly.
+FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH = "assets/generated/field/ui/test-options-slider-thumb.png"
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsSliderThumbColor()
+  return 20, 170, 190
+end
+
+---@return string png
+function FieldUiFixture.optionsSliderThumbBytes()
+  local r, g, b = FieldUiFixture.optionsSliderThumbColor()
+  return PngWriter.encode(32, 24, string.rep(string.char(r, g, b, 255), 32 * 24))
+end
+
+---@return { image: string, width: integer, height: integer }
+function FieldUiFixture.optionsSliderThumbVisual()
+  return { image = FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH, width = 32, height = 24 }
 end
 
 ---@return integer, integer, integer
@@ -1441,7 +1454,7 @@ function FieldUiFixture.addOptionsContract(manifest)
     return { frames = frames, loop = loop, bounds = bounds }
   end
   manifest.options = {
-    version = 6,
+    version = 7,
     backdrops = {
       header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
       footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
@@ -1501,8 +1514,10 @@ function FieldUiFixture.addOptionsContract(manifest)
         { x = 0, y = 0, width = 64, height = 24 }
       ),
     },
-    sliderCursor = sequence({ frame("sliderCursor") }, true, { x = 0, y = 0, width = 12, height = 8 }),
   }
+  -- The slider thumb is the bag quantity-decrement pressed visual, borrowed
+  -- through the bag manifest at draw time: the synthetic section carries
+  -- no cursor art of its own.
   FieldUiFixture.addRowBackings(manifest)
   return manifest
 end
@@ -1514,6 +1529,7 @@ function FieldUiFixture.writeOptionsPngs(cache)
   cache:write(FieldUiFixture.OPTIONS_FOOTER_BACKGROUND_PATH, FieldUiFixture.optionsFooterBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH, FieldUiFixture.optionsPreviewBackgroundBytes())
   cache:write(FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, FieldUiFixture.optionsSelectionOverlayBytes())
+  cache:write(FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH, FieldUiFixture.optionsSliderThumbBytes())
   FieldUiFixture.writeRowPlatePngs(cache)
 end
 
@@ -1583,7 +1599,7 @@ function FieldUiFixture.addRowBackings(manifest)
     height = 72,
   }
   local options = assert(manifest.options, "the fixture manifest carries the options section")
-  options.version = 6
+  options.version = 7
   options.rowBackings = {
     odd = FieldUiFixture.OPTIONS_ROW_ODD_KEY,
     even = FieldUiFixture.OPTIONS_ROW_EVEN_KEY,

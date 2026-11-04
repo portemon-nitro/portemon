@@ -321,10 +321,11 @@ local function validManifest()
     pcall(FieldUiFixture.addOptionsContract, FieldUiFixture.addNamingSemantics(built))
   assetIds.OPTIONS_CONTROLS_BACKGROUND = staleControls
   local manifest = assert(builtOptions and fixtureOk, builtOptions)
-  -- Upgrade the synthetic section to the current v5 contract in place:
+  -- Upgrade the synthetic section to the current v7 contract in place:
   -- the header/footer 256x24 shell bands replace the full controls
-  -- backdrop, and the frame plate grows to 256x72.
-  manifest.options.version = 6
+  -- backdrop, the frame plate grows to 256x72, and the sliders borrow
+  -- the bag thumb instead of carrying cursor art.
+  manifest.options.version = 7
   manifest.options.backdrops = {
     header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
     footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
@@ -1078,7 +1079,7 @@ end
 -- roles (header and footer 256x24 shell bands plus the 256x192 preview)
 -- plus the required transparent 256x30 selected-row indicator and the three
 -- mandatory scrolling row plates (odd/even 256x24, frame 256x72) under
--- manifest version 6. A missing role, an extra role, a swapped or unindexed
+-- manifest version 7. A missing role, an extra role, a swapped or unindexed
 -- asset id, a missized indexed asset, or a previous version shape is stale.
 function T.options_backdrops_require_the_two_indexed_roles()
   local overlayKey = "hgss.options.selection_overlay"
@@ -1087,7 +1088,7 @@ function T.options_backdrops_require_the_two_indexed_roles()
   -- shared fixtures keep proving the current runtime contract.
   local function completeManifest()
     local manifest = validManifest()
-    manifest.options.version = 6
+    manifest.options.version = 7
     manifest.options.selectionOverlay = overlayKey
     manifest.assets[overlayKey] = {
       image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
@@ -1105,7 +1106,7 @@ function T.options_backdrops_require_the_two_indexed_roles()
       height = 24,
     }
     FieldUiFixture.addRowBackings(manifest)
-    manifest.options.version = 6
+    manifest.options.version = 7
     manifest.options.backdrops = {
       header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
       footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
@@ -1115,7 +1116,7 @@ function T.options_backdrops_require_the_two_indexed_roles()
     return manifest
   end
   local manifest = completeManifest()
-  Assert.equal(manifest.options.version, 6, "the fixture carries the current options section")
+  Assert.equal(manifest.options.version, 7, "the fixture carries the current options section")
   Assert.equal(manifest.options.selectionOverlay, overlayKey, "the fixture indexes its selected-row strip")
   Assert.equal(
     FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
@@ -1165,8 +1166,11 @@ function T.options_backdrops_require_the_two_indexed_roles()
     ["shell-band version"] = function(o)
       o.version = 5
     end,
-    ["missing slider cursor"] = function(o)
-      o.sliderCursor = nil
+    ["stale slider cursor art"] = function(o)
+      o.sliderCursor = { frames = {}, loop = true, bounds = { x = 0, y = 0, width = 1, height = 1 } }
+    end,
+    ["cursor-carrying version"] = function(o)
+      o.version = 6
     end,
     ["older version"] = function(o)
       o.version = 3
@@ -1238,7 +1242,7 @@ function T.options_selection_overlay_rejects_source_identities_and_foreign_keys(
   local overlayKey = "hgss.options.selection_overlay"
   local function completeManifest()
     local manifest = validManifest()
-    manifest.options.version = 6
+    manifest.options.version = 7
     manifest.options.selectionOverlay = overlayKey
     manifest.assets[overlayKey] = {
       image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,

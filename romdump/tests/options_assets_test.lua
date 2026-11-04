@@ -142,7 +142,7 @@ end
 function T.compiled_section_carries_the_locked_semantic_shapes(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 6)
+  Assert.equal(section.version, 7)
   local DisplayTiming = require("libs.nds.src.gx.DisplayTiming")
   Assert.equal(section.animationTickSeconds, 1 / DisplayTiming.REFRESH_HZ)
   local labels = assert(section.labels, "the section carries its labels")
@@ -209,140 +209,23 @@ function T.compiled_section_carries_the_locked_semantic_shapes(romFs, versionId)
   assertSequence(actions.focused, "action focused", 1, false)
   assertSequence(actions.pressed, "action pressed", 2, false)
   assertSequence(actions.pressedFocused, "action pressed-focused", 2, false)
-  local cursor = assert(section.sliderCursor, "the section carries its slider cursor")
-  assertSequence(cursor, "slider cursor", 1, true)
-  local cursorFrame = assert(cursor.frames[1], "the slider cursor carries its marker frame")
-  Assert.deepEqual(cursorFrame.offset, { x = 0, y = 0 }, "the cursor frame draws without a source offset")
-  Assert.equal(cursorFrame.ticks, 1, "the cursor frame keeps its single source tick")
-  Assert.deepEqual(
-    cursor.bounds,
-    { x = 0, y = 0, width = cursorFrame.atlas.width, height = cursorFrame.atlas.height },
-    "the cursor bounds match its tight marker box"
-  )
+  -- The sliders borrow the bag quantity-decrement pressed visual at draw time:
+  -- the options section carries no cursor art of its own.
+  Assert.isNil(section.sliderCursor, "the options section carries no slider cursor art")
 end
 
--- The slider cursor is the selected pill's bundled marker, not a crop of
--- an arrow state: the first seven staged down-pointing rows match the
--- independently decoded selected small raster transposed clockwise inside
--- its left overhang columns plus the light apex column just past the pill
--- body edge, the box reaches one column past that edge, the white tip
--- straddles the box middle, and the eighth row closes the tip with the
--- marker outline so no tip ink touches the track.
-function T.slider_cursor_masks_the_selected_marker_overhang(romFs, versionId)
+-- The sliders borrow the bag quantity-decrement pressed visual at draw time,
+-- so the compiled section carries no cursor art and the chrome atlas packs
+-- only the pills, arrows, actions, and face patches.
+function T.compiled_section_carries_no_slider_cursor_art(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  local cursorFrame = assert(section.sliderCursor.frames[1], "the slider cursor carries its marker frame")
-  local selectedFrame = assert(
-    section.choices.small.selected.frames[1],
-    "the small selected pill carries its marker source"
-  )
-  local overhang = -assert(selectedFrame.offset.x, "the selected pill carries its negative source offset")
-  Assert.isTrue(overhang > 0, "the marker overhangs its pill body to the left")
-  local box = cursorFrame.atlas
-  Assert.equal(box.width, 12, "the staged cursor keeps the marker height as its width")
-  Assert.equal(box.height, 8, "the staged cursor closes its transposed tip with one outline row")
-  local chromeBytes = assert(bundle.files[cursorFrame.image], "the chrome atlas must be published")
-  local chromeWidth, _, chromeRgba = PngReader.rgba(chromeBytes)
-  local function staged(atlasX, atlasY)
-    return chromeRgba:sub((atlasY * chromeWidth + atlasX) * 4 + 1, (atlasY * chromeWidth + atlasX) * 4 + 4)
-  end
-  local cursor = {}
-  for ly = 0, box.height - 1 do
-    for lx = 0, box.width - 1 do
-      cursor[#cursor + 1] = staged(box.x + lx, box.y + ly)
-    end
-  end
-  local Sources = optionsSources()
-  local archive = assert(romFs:openNarc(Sources.archive.symbol))
-  local function decoded(kind, memberId)
-    local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
-    assert(decodedValue, tostring(err and err.message or err))
-    return decodedValue
-  end
-  local reference = G2dRasterizer.renderAnimationFrame(
-    decoded("decodeChar", Sources.members.chars[1]),
-    { colors = decoded("decodePalette", Sources.members.palettes[1]).colors },
-    decoded("decodeCell", Sources.members.cells[1]),
-    decoded("decodeAnimation", Sources.members.animations[1]).anims[1],
-    1,
-    { asset = "options", member = Sources.members.chars[1] }
-  )
-  local function referencePixel(x, y)
-    return reference.pixels:sub((y * reference.width + x) * 4 + 1, (y * reference.width + x) * 4 + 4)
-  end
-  -- The first seven staged rows reproduce the decoded raster transposed
-  -- clockwise with its source box inside the overhang plus the apex
-  -- column: staged (x', y') reads raster (ox + y', oy + x'). The eighth
-  -- row is the producer-closing outline, never source pixels, so it stays
-  -- out of the reference search. A rectangular crop reaching into the
-  -- pill border matches nowhere in that span.
-  local artHeight = box.height - 1
-  local found = nil
-  for oy = 0, reference.height - box.width do
-    for ox = 0, overhang + 1 - artHeight do
-      local matches = true
-      for yPrime = 0, artHeight - 1 do
-        for xPrime = 0, box.width - 1 do
-          local want = referencePixel(ox + yPrime, oy + xPrime)
-          if cursor[yPrime * box.width + xPrime + 1] ~= want then
-            matches = false
-            break
-          end
-        end
-        if not matches then
-          break
-        end
-      end
-      if matches then
-        found = { x = ox, y = oy }
-        break
-      end
-    end
-    if found ~= nil then
-      break
-    end
-  end
-  Assert.notNil(found, "the cursor box reproduces the decoded marker overhang")
-  assert(found ~= nil, "a found cursor box bounds above")
-  Assert.equal(
-    found.x + artHeight,
-    overhang + 1,
-    "the cursor box reaches one apex column past the pill body edge"
-  )
-  -- The closing row seals the transposed tip with the marker outline ink
-  -- sampled from the staged base row middle, so the white tip never
-  -- touches the track: every closing pixel is that same opaque outline.
-  local outline = cursor[6]
-  Assert.equal(string.byte(outline, 4), 255, "the cursor base carries its opaque outline ink")
-  for xPrime = 0, box.width - 1 do
-    Assert.equal(
-      cursor[artHeight * box.width + xPrime + 1],
-      outline,
-      "the closing row outlines the tip at column " .. xPrime
-    )
-  end
-  local opaque, tipFirst, tipLast = 0, nil, nil
-  for xPrime = 0, box.width - 1 do
-    if string.byte(cursor[(artHeight - 1) * box.width + xPrime + 1], 4) >= 128 then
-      if tipFirst == nil then
-        tipFirst = xPrime
-      end
-      tipLast = xPrime
-    end
-  end
-  for _, pixel in ipairs(cursor) do
-    if string.byte(pixel, 4) >= 128 then
-      opaque = opaque + 1
-    end
-  end
-  Assert.isTrue(opaque > 0, "the cursor keeps marker ink")
-  Assert.isTrue(opaque < box.width * box.height, "the cursor mask drops its transparent corners")
-  Assert.notNil(tipFirst, "the marker tips above its closing outline")
-  assert(tipLast ~= nil, "a tipped marker bounds above")
-  Assert.isTrue(
-    math.abs((tipFirst + tipLast) / 2 - (box.width - 1) / 2) <= 1,
-    "the cursor tip straddles the box middle"
-  )
+  Assert.equal(section.version, 7, "the options section carries the thumb-borrowing contract")
+  Assert.isNil(section.sliderCursor, "the options section carries no slider cursor art")
+  local chromeImage = FieldUiAssetCache.assetDir() .. "/options-chrome.png"
+  local chromeBytes = assert(bundle.files[chromeImage], "the chrome atlas must be published")
+  local chromeWidth, chromeHeight, _ = PngReader.rgba(chromeBytes)
+  Assert.isTrue(chromeWidth > 0 and chromeHeight > 0, "the chrome atlas keeps its packed extent")
 end
 
 function T.compiled_frames_keep_their_decoded_anchors_and_sizes(romFs, versionId)
@@ -420,8 +303,12 @@ function T.compiled_pixels_match_the_decoded_source_art(romFs, versionId)
     )
     Assert.deepEqual(atlasPixels(section.choices.small.selected.frames[1]), referencePixels(reference))
   end
-  -- The unselected small face reproduces the baseline screen crop.
-  do
+  -- The unselected faces reproduce the baseline screen crop with the
+  -- inter-pill backing trim cleared to transparent, so printed pills
+  -- blend onto the leveled plates instead of framing themselves in
+  -- retail control-side blue. The trim color is sampled from each crop's
+  -- own top-right backing margin, mirroring the compiler rule.
+  local function expectTrimmedCrop(originX, originY, width, height, what)
     local char = decoded("decodeChar", 7)
     local palette = decoded("decodePalette", 2)
     local screen = decoded("decodeScreen", 17)
@@ -431,15 +318,38 @@ function T.compiled_pixels_match_the_decoded_source_art(romFs, versionId)
       screen,
       { asset = "options", member = 17 }
     )
-    local crop = {}
-    for y = 24, 24 + 32 - 1 do
-      for x = 112, 112 + 48 - 1 do
+    local rows = {}
+    for y = originY, originY + height - 1 do
+      for x = originX, originX + width - 1 do
         local off = (y * reference.width + x) * 4 + 1
-        crop[#crop + 1] = reference.pixels:sub(off, off + 3)
+        rows[#rows + 1] = reference.pixels:sub(off, off + 3)
       end
     end
-    Assert.deepEqual(atlasPixels(section.choices.small.unselected.frames[1]), crop)
+    local crop = table.concat(rows)
+    local toff = (4 * width + (width - 1)) * 4 + 1
+    local tr, tg, tb, ta = string.byte(crop, toff, toff + 3)
+    Assert.equal(ta, 255, what .. " trim margin stays opaque backing in source")
+    local expected, masked = {}, 0
+    for i = 1, #crop, 4 do
+      local r, g, b = string.byte(crop, i, i + 2)
+      if r == tr and g == tg and b == tb then
+        masked = masked + 1
+        expected[#expected + 1] = string.char(r, g, b, 0)
+      else
+        expected[#expected + 1] = crop:sub(i, i + 3)
+      end
+    end
+    Assert.isTrue(masked > 0, what .. " carries backing trim to clear")
+    return expected
   end
+  Assert.deepEqual(
+    atlasPixels(section.choices.small.unselected.frames[1]),
+    expectTrimmedCrop(112, 24, 48, 32, "small unselected")
+  )
+  Assert.deepEqual(
+    atlasPixels(section.choices.wide.unselected.frames[1]),
+    expectTrimmedCrop(112, 72, 64, 32, "wide unselected")
+  )
   -- The pressed arrow reproduces its decoded pressed cell.
   do
     local char = decoded("decodeChar", 5)
@@ -467,7 +377,7 @@ end
 function T.selection_strip_matches_the_native_selected_row_layer(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 6, "the options section carries its selection-layer contract")
+  Assert.equal(section.version, 7, "the options section carries its selection-layer contract")
   local overlayKey = "hgss.options.selection_overlay"
   Assert.equal(section.selectionOverlay, overlayKey, "the section indexes its selected-row strip")
   Assert.equal(
@@ -530,7 +440,7 @@ end
 function T.backdrops_derive_from_the_audited_base_screens(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 6, "the options section carries its backdrop contract")
+  Assert.equal(section.version, 7, "the options section carries its backdrop contract")
   Assert.equal(
     section.backdrops.header,
     FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
@@ -662,7 +572,7 @@ function T.field_ui_compilation_publishes_ready_options(romFs, versionId)
   local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
   local bundle = assert(FieldUiCompiler.compile(romFs))
   local options = assert(bundle.manifest.options, "the field-UI class carries its options section")
-  Assert.equal(options.version, 6)
+  Assert.equal(options.version, 7)
   Assert.isTrue(bundle.manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] ~= nil, "the chrome atlas is indexed")
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest), "the extended class still validates")
   local cache = CacheFs.forVersion(versionId, FakeCache.new())
@@ -753,7 +663,7 @@ end
 function T.compiled_row_plates_publish_indexed_opaque_backings(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 6, "the options section carries the row-plate contract")
+  Assert.equal(section.version, 7, "the options section carries the row-plate contract")
   local backings = assert(section.rowBackings, "the section indexes its row plates")
   Assert.equal(backings.odd, "hgss.options.row_odd", "the odd row plate carries its semantic role")
   Assert.equal(backings.even, "hgss.options.row_even", "the even row plate carries its semantic role")
@@ -809,7 +719,7 @@ function T.compiled_row_plates_publish_indexed_opaque_backings(romFs, versionId)
   Assert.isTrue(indexed["hgss.options.row_frame"] ~= nil, "the frame plate is indexed")
   local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
   local full = assert(FieldUiCompiler.compile(romFs))
-  Assert.equal(full.manifest.options.version, 6, "the field-UI class carries the row-plate section")
+  Assert.equal(full.manifest.options.version, 7, "the field-UI class carries the row-plate section")
   Assert.isTrue(FieldUiAssetCache.validateManifest(full.manifest), "the extended class still validates")
   local stale = assert(FieldUiCompiler.compile(romFs))
   stale.manifest.options.version = 4
@@ -884,14 +794,14 @@ function T.row_plate_filler_is_plain_audited_band_backing(romFs, versionId)
   end
 end
 
--- The retained label and edge spans match the decoded MAIN base bytes
--- exactly, and the compound frame item reuses the odd band rows. The
--- face-selective scrub contract (dividers, separators, and control-side
--- backing preserved; only pill faces hidden) lives with
--- row_plates_hide_only_pill_faces; this test keeps the span and frame
--- composition facts. The reference is the decoded source base, never the
--- plate builder under test.
-function T.row_plates_hide_faces_with_band_backing_only(romFs, versionId)
+-- The outer window frame matches the decoded MAIN base bytes exactly:
+-- the top/bottom rows carry the row separators and the border columns
+-- close the window, while the compound frame item reuses the odd band
+-- rows. The leveled-interior contract (one flat backing per band inside
+-- the frame) lives with row_plates_flatten_interior_to_band_backing; this
+-- test keeps the frame and composition facts. The reference is the
+-- decoded source base, never the plate builder under test.
+function T.row_plates_keep_the_source_frame(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local Sources = optionsSources()
   local archive = assert(romFs:openNarc(Sources.archive.symbol))
@@ -933,26 +843,40 @@ function T.row_plates_hide_faces_with_band_backing_only(romFs, versionId)
     { rgba = evenRgba, height = 24, baseY = 48, baseTileRow = 6, name = "even" },
   }
   for _, band in ipairs(bands) do
-    for y = 0, band.height - 1 do
+    for _, y in ipairs({ 0, band.height - 1 }) do
       Assert.equal(
-        rowSpan(band.rgba, 256, y, 0, 103),
-        rowSpan(controlsRgba, 256, band.baseY + y, 0, 103),
-        "the " .. band.name .. " plate keeps its source label span at row " .. y
+        rowSpan(band.rgba, 256, y, 0, 255),
+        rowSpan(controlsRgba, 256, band.baseY + y, 0, 255),
+        "the " .. band.name .. " plate keeps its source separator row " .. y
+      )
+    end
+    for y = 1, band.height - 2 do
+      Assert.equal(
+        rowSpan(band.rgba, 256, y, 0, 3),
+        rowSpan(controlsRgba, 256, band.baseY + y, 0, 3),
+        "the " .. band.name .. " plate keeps its source left border at row " .. y
       )
       Assert.equal(
-        rowSpan(band.rgba, 256, y, 248, 255),
-        rowSpan(controlsRgba, 256, band.baseY + y, 248, 255),
-        "the " .. band.name .. " plate keeps its source edge cap at row " .. y
+        rowSpan(band.rgba, 256, y, 252, 255),
+        rowSpan(controlsRgba, 256, band.baseY + y, 252, 255),
+        "the " .. band.name .. " plate keeps its source right border at row " .. y
       )
     end
   end
-  for y = 0, 23 do
+  for y = 0, 22 do
     Assert.equal(
       rowSpan(frameRgba, 256, y, 0, 255),
       rowSpan(oddRgba, 256, y, 0, 255),
       "the frame selector band matches the odd band at row " .. y
     )
   end
+  -- Row 23 closes the frame's first segment inside the item, so it levels
+  -- to the flat interior; the odd plate keeps it as its bottom separator.
+  Assert.equal(
+    rowSpan(frameRgba, 256, 23, 4, 251),
+    rowSpan(oddRgba, 256, 12, 4, 251),
+    "the frame selector band levels its interior segment boundary"
+  )
   for y = 24, 63 do
     Assert.equal(
       rowSpan(frameRgba, 256, y, 0, 255),
@@ -969,22 +893,16 @@ function T.row_plates_hide_faces_with_band_backing_only(romFs, versionId)
   end
 end
 
--- The scrolling plates keep the native vertical divider, separators, and
--- control-side backing: only the preprinted pill-face tiles hide behind
--- band backing, so the divider never shifts and the right side never
--- inherits label-side colors. Every non-face pixel in columns 13..30
--- matches the decoded MAIN base exactly; every face pixel matches the
--- plate's own filler column. The reference is the decoded source base,
--- never the plate builder under test.
-function T.row_plates_hide_only_pill_faces(romFs, versionId)
+-- The scrolling plates level every interior pixel inside the outer window
+-- frame to one flat band backing so custom option layouts can relocate
+-- controls: no native divider, separator, control-side backing, divider
+-- remnant, or lighter edge-cap strip survives beside the pills, and the
+-- flat is the decoded source filler backing, never an invented color. The
+-- reference is the decoded source base, never the plate builder under test.
+function T.row_plates_flatten_interior_to_band_backing(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local Sources = optionsSources()
-  local plates = assert(Sources.rowPlates, "the producer records its audited plate material")
-  local faceRange = assert(plates.faceTiles, "the producer records its audited face tile range")
-  Assert.isTrue(
-    type(faceRange.first) == "number" and type(faceRange.last) == "number" and faceRange.first <= faceRange.last,
-    "the face tile range bounds pill-face material"
-  )
+  assert(Sources.rowPlates, "the producer records its audited plate material")
   local archive = assert(romFs:openNarc(Sources.archive.symbol))
   local function decoded(kind, memberId)
     local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
@@ -1013,32 +931,106 @@ function T.row_plates_hide_only_pill_faces(romFs, versionId)
   end
   local oddRgba = plateRgba("/options-row-odd.png", 24)
   local evenRgba = plateRgba("/options-row-even.png", 24)
+  local frameBytes = assert(bundle.files[FieldUiAssetCache.assetDir() .. "/options-row-frame.png"], "row-frame is staged")
+  local frameWidth, frameHeight, frameRgba = PngReader.rgba(frameBytes)
+  Assert.equal(frameWidth, 256, "row-frame width")
+  Assert.equal(frameHeight, 72, "row-frame height")
   local function pixel(rgba, width, x, y)
     return rgba:sub((y * width + x) * 4 + 1, (y * width + x) * 4 + 4)
   end
   local bands = {
-    { rgba = oddRgba, baseTileRow = 3, name = "odd" },
-    { rgba = evenRgba, baseTileRow = 6, name = "even" },
+    { rgba = oddRgba, baseY = 24, name = "odd" },
+    { rgba = evenRgba, baseY = 48, name = "even" },
   }
+  local flats = {}
   for _, band in ipairs(bands) do
-    for y = 0, 23 do
-      local tileRow = band.baseTileRow + math.floor(y / 8)
-      for x = 0, 255 do
-        local col = math.floor(x / 8)
-        local entry = baseScreen.entries[tileRow * 32 + col + 1]
-        local where = string.format("the %s plate at %d,%d (tile row %d col %d tile %d)", band.name, x, y, tileRow, col, entry.tile)
-        local got = pixel(band.rgba, 256, x, y)
-        if col >= plates.faceFirstColumn and col <= plates.faceLastColumn and entry.tile >= faceRange.first and entry.tile <= faceRange.last then
-          Assert.equal(entry.palette, 0, where .. " keeps its face on palette 0")
-          -- The scrub copies the interior filler column, so the hidden
-          -- face matches the plate's own backing at the same intra-tile pixel.
-          Assert.equal(got, pixel(band.rgba, 256, 8 + (x % 8), y), where .. " hides its face behind band backing")
-        else
-          Assert.equal(got, pixel(controlsRgba, 256, x, tileRow * 8 + (y % 8)), where .. " keeps its source pixel")
-        end
+    local flat = pixel(band.rgba, 256, 8, 12)
+    flats[band.name] = flat
+    Assert.equal(
+      flat,
+      pixel(controlsRgba, 256, 8, band.baseY + 12),
+      "the " .. band.name .. " interior levels to its source filler backing"
+    )
+    for y = 1, 22 do
+      for x = 4, 251 do
+        local where = string.format("the %s plate at %d,%d", band.name, x, y)
+        Assert.equal(pixel(band.rgba, 256, x, y), flat, where .. " flattens inside the frame")
       end
     end
   end
+  Assert.equal(
+    pixel(frameRgba, 256, 8, 36),
+    flats.odd,
+    "the frame interior shares the odd band backing"
+  )
+  for y = 1, 70 do
+    for x = 4, 251 do
+      Assert.equal(
+        pixel(frameRgba, 256, x, y),
+        flats.odd,
+        string.format("the frame plate at %d,%d flattens inside the frame", x, y)
+      )
+    end
+  end
+end
+
+-- The product divider inks match the audited native divider tiles: the
+-- odd mid-band tile 14 carries palette-2 index 3 and the even mid-band
+-- tile 40 carries index 5 on the controls screen, so a source revision
+-- carrying different divider ink fails here instead of drifting the
+-- product constants silently. Test-only cross-boundary require, mirroring
+-- game tests over ROM helpers.
+function T.product_divider_inks_match_the_audited_tiles(romFs, _)
+  local ok, Interface = pcall(require, "game.hgss.src.options.OptionsInterface")
+  Assert.isTrue(ok, "OptionsInterface loads: " .. tostring(Interface))
+  local Sources = optionsSources()
+  local plates = assert(Sources.rowPlates, "the producer records its audited plate material")
+  local archive = assert(romFs:openNarc(Sources.archive.symbol))
+  local function decoded(kind, memberId)
+    local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
+    assert(decodedValue, tostring(err and err.message or err))
+    return decodedValue
+  end
+  local palette = decoded("decodePalette", Sources.members.facePalette)
+  local function ink(index, what)
+    local color = assert(palette.colors[index + 1], what .. " resolves its palette entry")
+    return { r = color.r, g = color.g, b = color.b }
+  end
+  Assert.deepEqual(Interface.DIVIDER_INK.odd, ink(3, "odd divider"), "odd divider ink matches audited tile-14 ink")
+  Assert.deepEqual(
+    Interface.DIVIDER_INK.even,
+    ink(5, "even divider"),
+    "even divider ink matches audited tile-40 ink"
+  )
+  local screen = decoded("decodeScreen", Sources.members.faceScreen)
+  local oddTileRow = assert(plates.oddBand, "the producer records its odd band").midTileRow
+  local evenTileRow = assert(plates.evenBand, "the producer records its even band").midTileRow
+  local oddEntry = screen.entries[oddTileRow * 32 + plates.faceFirstColumn + 1]
+  local evenEntry = screen.entries[evenTileRow * 32 + plates.faceFirstColumn + 1]
+  Assert.equal(oddEntry.tile, 14, "the odd divider column carries tile 14")
+  Assert.equal(evenEntry.tile, 40, "the even divider column carries tile 40")
+  local char = decoded("decodeChar", Sources.members.faceChar)
+  local tileBytes = char.depth == 3 and 32 or 64
+  local function indices(tile)
+    local raw = char.tiles:sub(tile * tileBytes + 1, (tile + 1) * tileBytes)
+    local seen = {}
+    if char.depth == 3 then
+      for i = 1, #raw do
+        local byte = string.byte(raw, i)
+        seen[byte % 16] = true
+        seen[math.floor(byte / 16)] = true
+      end
+    else
+      for i = 1, #raw do
+        seen[string.byte(raw, i)] = true
+      end
+    end
+    return seen
+  end
+  local oddSeen = indices(14)
+  Assert.isTrue(oddSeen[3] == true, "odd divider tile 14 carries its edge ink")
+  local evenSeen = indices(40)
+  Assert.isTrue(evenSeen[5] == true, "even divider tile 40 carries its edge ink")
 end
 
 local suite = RomSuite.fromFacts(T)

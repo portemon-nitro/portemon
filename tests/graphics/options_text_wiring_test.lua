@@ -137,6 +137,19 @@ local function preparedWiring(scope)
   local resources = setmetatable({
     cacheFs = cache,
     uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
     _imagePool = pool,
     textRenderer = stubText,
     windowRenderer = stubWindow,
@@ -356,6 +369,19 @@ local function preparedSourceWiring(scope)
   local resources = setmetatable({
     cacheFs = cache,
     uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
     _imagePool = pool,
     textRenderer = stub,
     windowRenderer = stubWindow,
@@ -522,6 +548,19 @@ function T.tests.menu_preview_prints_through_the_dedicated_preview_font_path(sco
   local resources = setmetatable({
     cacheFs = cache,
     uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
     _imagePool = pool,
     textRenderer = menuText,
     battleTextRenderers = { narration = previewText },
@@ -697,6 +736,19 @@ function T.tests.menu_and_preview_measures_use_their_own_font_advances(scope)
   local resources = setmetatable({
     cacheFs = cache,
     uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
     _imagePool = pool,
     textRenderer = menuText,
     battleTextRenderers = { narration = previewText },
@@ -777,7 +829,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
-  Assert.equal(manifest.options.version, 6, "the staged section carries its indicator contract")
+  Assert.equal(manifest.options.version, 7, "the staged section carries its indicator contract")
   Assert.equal(
     manifest.options.selectionOverlay,
     FieldUiFixture.optionsSelectionOverlayKey(),
@@ -792,6 +844,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
     FieldUiFixture.OPTIONS_ROW_ODD_PATH,
     FieldUiFixture.OPTIONS_ROW_EVEN_PATH,
     FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
+    FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH,
   }) do
     Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
   end
@@ -843,6 +896,19 @@ function T.tests.slider_values_measure_in_font_advances_and_overflow_fails_loudl
   local resources = setmetatable({
     cacheFs = cache,
     uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
     _imagePool = pool,
     textRenderer = menuText,
     windowRenderer = stubWindow,

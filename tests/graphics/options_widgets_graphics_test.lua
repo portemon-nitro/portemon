@@ -2,7 +2,7 @@
 -- and unselected choice states sample their own source frames through the
 -- shared image-pool leases, pressed arrow and footer states resolve their
 -- compiled frames by animation age, and the project-authored slider draws
--- only its rail, fill, and masked-marker down cursor on the logical pixel
+-- only its rail, fill, and borrowed bag thumb on the logical pixel
 -- grid: a focused row is marked by the list selection strip, never by an
 -- extra slider outline, and no white square thumb remains. Missing
 -- art fails explicitly and every draw restores the borrowed graphics
@@ -69,9 +69,12 @@ local function optionsCache()
   FieldUiFixture.addOptionsContract(manifest)
   cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
   -- The pool worker reads PNG bytes through the versioned love-backend
-  -- cache, never the test FakeCache: publish the fixture chrome at its
-  -- fixture-specific path so production bytes are never confused.
+  -- cache, never the test FakeCache: publish the fixture chrome and the
+  -- borrowed slider thumb at their fixture-specific paths so production
+  -- bytes are never confused.
   CacheFs.forVersion("heartgold"):write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
+  CacheFs.forVersion("heartgold")
+    :write(FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH, FieldUiFixture.optionsSliderThumbBytes())
   return cache, manifest
 end
 
@@ -102,6 +105,33 @@ local function acquireChrome(scope, pool, manifest)
   end
 end
 
+local function acquireThumb(scope, pool)
+  local visual = FieldUiFixture.optionsSliderThumbVisual()
+  local token = pool:request(visual.image, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local ok, status, failure = pcall(pool.poll, pool, token)
+    if ok and status == "ready" then
+      local lease = pool:acquire(token)
+      return scope:own({
+        release = function()
+          pool:release(lease)
+        end,
+        lease = lease,
+      }).lease
+    end
+    Assert.isTrue(
+      ok and status == "pending",
+      "thumb resolves through the pool worker: " .. tostring(status) .. " / " .. tostring(failure)
+    )
+    stalled = stalled + 1
+    Assert.isTrue(stalled < 10000, "thumb acquisition stalls")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+  end
+end
+
 local function setup(scope)
   local cache, manifest = optionsCache()
   local pool = ImageAssetPool.new(cache)
@@ -111,7 +141,8 @@ local function setup(scope)
     end,
   })
   local chrome = acquireChrome(scope, pool, manifest)
-  return manifest, chrome
+  local thumb = acquireThumb(scope, pool)
+  return manifest, chrome, thumb
 end
 
 local function renderInto(scope, width, height, draw)
@@ -206,57 +237,47 @@ function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
   Assert.deepEqual(pixel(pressed, 34, 42), { 200, 200, 90, 255 }, "an aged footer press samples its second frame")
 end
 
--- The slider cursor is the down-pointing selection-marker frame drawn
--- axis-aligned: the caller prepares the full-frame viewport once and
--- lends it with the compiled marker extent, mirroring the renderer
+-- The slider thumb is the borrowed 32x24 bag visual drawn centered on
+-- the track value: the caller prepares the full-image viewport once and
+-- lends it with the borrowed visual extent, mirroring the renderer
 -- contract.
-local function cursorFor(chrome, manifest)
-  local cursor = assert(manifest.options.sliderCursor, "the section carries its slider cursor")
-  local frame = assert(cursor.frames[1], "the slider cursor carries its marker frame")
-  local image = assert(chrome.image, "the chrome lease carries its resolved image")
+local function thumbFor(thumbLease)
+  local visual = FieldUiFixture.optionsSliderThumbVisual()
+  local image = assert(thumbLease.image, "the thumb lease carries its resolved image")
   local width, height = image:getWidth(), image:getHeight()
-  local quad = love.graphics.newQuad(
-    frame.atlas.x,
-    frame.atlas.y,
-    frame.atlas.width,
-    frame.atlas.height,
-    width,
-    height
-  )
+  Assert.equal(width, visual.width, "the thumb resolves its borrowed visual width")
+  Assert.equal(height, visual.height, "the thumb resolves its borrowed visual height")
+  local quad = love.graphics.newQuad(0, 0, width, height, width, height)
   return {
-    chrome = chrome,
+    lease = thumbLease,
     quad = quad,
-    width = frame.atlas.width,
-    height = frame.atlas.height,
+    width = width,
+    height = height,
   }
 end
 
-function T.slider_cursor_points_down_with_its_tip_on_the_track(scope)
+function T.slider_thumb_centers_the_borrowed_bag_visual_on_the_track(scope)
   local Widgets = widgetsModule()
   local Slider = sliderModule()
-  local manifest, chrome = setup(scope)
-  local cursor = cursorFor(chrome, manifest)
+  local _, _, thumbLease = setup(scope)
+  local thumb = thumbFor(thumbLease)
   local resolved =
-    Slider.resolve({ rect = { x = 10, y = 20, width = 210, height = 30 }, count = 5, index = 4, knobExtent = 10 })
+    Slider.resolve({ rect = { x = 10, y = 20, width = 210, height = 30 }, count = 5, index = 4, knobExtent = 32 })
   local style = {
     rail = { r = 0, g = 0, b = 1, a = 1 },
     fill = { r = 0, g = 1, b = 0, a = 1 },
   }
-  -- The cursor ink is the fixture's flat selection-marker frame color.
-  local cursorInk = { 20, 170, 190, 255 }
+  -- The thumb ink is the fixture's flat borrowed-thumb color.
+  local thumbInk = { 20, 170, 190, 255 }
   local before = graphicsState()
   local unfocused = renderInto(scope, 256, 64, function()
-    Widgets.drawSlider(love.graphics, resolved, style, cursor)
+    Widgets.drawSlider(love.graphics, resolved, style, thumb)
   end)
   assertSameState(before, graphicsState(), "slider painting")
-  local thumb = resolved.thumbRect
-  local centerX = math.floor(thumb.x + thumb.width / 2)
+  local thumbRect = resolved.thumbRect
+  local centerX = math.floor(thumbRect.x + thumbRect.width / 2)
   local centerY = math.floor(resolved.centerY)
-  Assert.deepEqual(
-    pixel(unfocused, centerX, centerY),
-    cursorInk,
-    "the cursor tip lands on the track value"
-  )
+  Assert.deepEqual(pixel(unfocused, centerX, centerY), thumbInk, "the thumb centers on the track value")
   Assert.deepEqual(
     pixel(unfocused, math.floor(resolved.trackStartX) + 2, centerY),
     { 0, 255, 0, 255 },
@@ -285,26 +306,18 @@ function T.slider_cursor_points_down_with_its_tip_on_the_track(scope)
   end
   local squared, squareX, squareY = hasWhiteSquare(unfocused)
   Assert.isFalse(squared, "no white square thumb remains at " .. tostring(squareX) .. "," .. tostring(squareY))
-  -- The rotated marker stands above the rail around the stop center:
-  -- the 8px-tall marker fits its row while pixels clear of it keep the
-  -- backdrop.
+  -- The borrowed thumb stands centered on the rail around the stop
+  -- center: the 24px-tall thumb fills its row while pixels clear of it
+  -- keep the backdrop.
+  Assert.deepEqual(pixel(unfocused, centerX, centerY - 3), thumbInk, "the thumb body covers the rail at the stop")
+  Assert.deepEqual(pixel(unfocused, centerX, centerY - 11), thumbInk, "the thumb reaches its top edge above the rail")
   Assert.deepEqual(
-    pixel(unfocused, centerX, centerY - 3),
-    cursorInk,
-    "the down marker body rises above the rail at the stop"
-  )
-  Assert.deepEqual(
-    pixel(unfocused, centerX, centerY - 8),
+    pixel(unfocused, centerX, centerY - 13),
     { 0, 0, 0, 0 },
-    "the marker stays inside its row above the tip"
-  )
-  Assert.deepEqual(
-    pixel(unfocused, centerX, centerY - 12),
-    { 0, 0, 0, 0 },
-    "the marker stays inside its row above the tip"
+    "the thumb stays inside its row above its top edge"
   )
   local focused = renderInto(scope, 256, 64, function()
-    Widgets.drawSlider(love.graphics, resolved, style, cursor)
+    Widgets.drawSlider(love.graphics, resolved, style, thumb)
   end)
   local function hasFocusTone(image)
     for y = 0, 63 do
@@ -318,14 +331,10 @@ function T.slider_cursor_points_down_with_its_tip_on_the_track(scope)
     return false
   end
   local leaked, leakX, leakY = hasFocusTone(focused)
-  Assert.isFalse(leaked, "a focused slider paints no extra outline beyond its rail and cursor")
-  local thumbCenter = math.floor(thumb.x + thumb.width / 2)
+  Assert.isFalse(leaked, "a focused slider paints no extra outline beyond its rail and thumb")
+  local thumbCenter = math.floor(thumbRect.x + thumbRect.width / 2)
   local railCenter = math.floor(resolved.centerY)
-  Assert.deepEqual(
-    pixel(focused, thumbCenter, railCenter),
-    cursorInk,
-    "the focused cursor keeps its tip on the track"
-  )
+  Assert.deepEqual(pixel(focused, thumbCenter, railCenter), thumbInk, "the focused thumb keeps its center on the track")
   Assert.deepEqual(
     pixel(focused, math.floor(resolved.trackStartX) + 2, railCenter),
     { 0, 255, 0, 255 },

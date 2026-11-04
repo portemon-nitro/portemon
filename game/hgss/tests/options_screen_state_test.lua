@@ -804,19 +804,22 @@ function T.tests.presented_slider_list_and_capture_identity()
   local status = state:status()
   local content = assert(status.presentation.content, "the plan carries its content")
   local pane = presentationPane(status, "content")
-  -- The down-arrow cursor fallback answers a wider band than the rail knob,
-  -- so the first volume hit may sit on the cursor instead of the track: scan
-  -- the rail interior at x204 (between the value gap and every stop's
-  -- cursor fallback) for the true track row the drag must travel.
-  local railY = nil
-  for y = 0, 191 do
-    local hit = Interface.hitTest(content, 204, y)
-    if hit ~= nil and hit.target == "volume" and hit.control == "thumb" then
-      railY = y
-      break
+  -- The borrowed thumb fallback answers a wider band than the rail knob,
+  -- so anchor the drag row to the rail middle (never the thumb fringe
+  -- above it): the resolved centerY translated through the list offset.
+  local volumeRow = nil
+  for _, row in ipairs(assert(content.rows, "the plan carries its rows")) do
+    if row.id == "volume" then
+      volumeRow = row
     end
   end
-  Assert.notNil(railY, "the volume rail interior hit-tests inside the track")
+  local resolved = assert(volumeRow ~= nil and volumeRow.control.slider, "the volume row carries its resolved rail")
+  local railY = math.floor(resolved.centerY + content.listViewport.y - content.scrollOffset)
+  local probe = Interface.hitTest(content, 204, railY)
+  Assert.isTrue(
+    probe ~= nil and probe.target == "volume" and probe.control == "thumb",
+    "the volume rail middle hit-tests inside the track"
+  )
   local startX, endX = nil, nil
   for x = 0, 255 do
     local hit = Interface.hitTest(content, x, railY)
@@ -1751,16 +1754,16 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
   for _, x in ipairs({ 112, 120, 140, 155, 156, 160, 163 }) do
     Assert.isNil(Interface.hitTest(content, x, 132), "the volume slot and gap arm no stop at x" .. x)
   end
-  for _, x in ipairs({ 112, 130, 155, 160 }) do
+  for _, x in ipairs({ 112, 130, 155, 160, 163 }) do
     Assert.isNil(Interface.hitTest(content, x, 156), "the speed slot and gap arm no stop at x" .. x)
   end
-  -- The down-arrow cursor fallback is 12 wide around the stop center:
-  -- battle speed rests on its first stop (center x168), so x163 answers
-  -- through the cursor while x160 stays a dead gap.
-  local cursorHit = Interface.hitTest(content, 163, 156)
+  -- The borrowed thumb fallback is 32 wide around the stop center:
+  -- battle speed rests on its first stop (center x180), so x165 answers
+  -- through the thumb while x163 stays a dead gap.
+  local thumbHit = Interface.hitTest(content, 165, 156)
   Assert.isTrue(
-    cursorHit ~= nil and cursorHit.target == "battleSpeed" and cursorHit.control == "thumb",
-    "the cursor fallback arms the resting stop at x163"
+    thumbHit ~= nil and thumbHit.target == "battleSpeed" and thumbHit.control == "thumb",
+    "the thumb fallback arms the resting stop at x165"
   )
   local volumeMin = Interface.hitTest(content, 164, 132)
   Assert.isTrue(
