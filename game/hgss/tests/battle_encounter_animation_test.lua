@@ -210,7 +210,7 @@ function T.encounter_task_arms_the_late_bank_fade_only_at_frame_50()
   )
 end
 
-function T.encounter_palette_restore_class_uses_the_accepted_battle_format()
+function T.encounter_palette_restore_class_matches_the_accepted_battle_format()
   local function objectPalette(format, wild)
     local timeline = BattleTimeline.new()
     local view = openingView()
@@ -232,9 +232,7 @@ function T.encounter_palette_restore_class_uses_the_accepted_battle_format()
   Assert.equal(wild[65], 24 + 12 * 32 + 3 * 1024, "wild singles restore only the native first 64 OBJ words")
   Assert.isTrue(trainer[65] ~= wild[65], "trainer singles restore their native first 80 OBJ words")
   Assert.isTrue(ordinaryDoubles[101] ~= wild[101], "ordinary doubles restore their native first 112 OBJ words")
-end
 
-function T.battle_entry_projects_a_validated_palette_restore_class()
   local function entryClass(kind, format)
     local plan = nil
     local runtime = BattleRuntime.new({
@@ -349,32 +347,29 @@ function T.encounter_line_waits_for_the_122_frame_hold_and_the_foe_health_slide(
   Assert.equal(foeHud[messageTick].offset, 0, "the foe health slide finished before the line")
 end
 
-function T.encounter_task_waits_for_a_late_second_system()
-  local task = openTask(1, 10, 56)
-  advance(task, 90)
-  Assert.equal(task.frame[75], 75, "the task still runs while the second system stays active")
-  local silent = firstSilentTick(task)
+function T.encounter_task_outlives_both_emitter_retirement_orders()
+  local late = openTask(1, 10, 56)
+  advance(late, 90)
+  Assert.equal(late.frame[75], 75, "the task still runs while the second system stays active")
+  local lateSilent = firstSilentTick(late)
   Assert.isTrue(
-    silent == nil or silent > 75,
-    "the task ends only after the second system retires, got " .. tostring(silent)
+    lateSilent == nil or lateSilent > 75,
+    "the task ends only after the second system retires, got " .. tostring(lateSilent)
+  )
+  local early = openTask(1, 10, 43)
+  advance(early, 70)
+  Assert.equal(early.frame[30], 30, "the task runs on while the first system is already gone")
+  Assert.equal(early.systems[30], 1, "the retired first system leaves the second running")
+  Assert.equal(early.frame[60], 60, "the task still runs while the second system stays active")
+  Assert.equal(early.frame[62], 62, "the task reaches the second system's retirement tick")
+  local earlySilent = firstSilentTick(early)
+  Assert.isTrue(
+    earlySilent == nil or earlySilent > 62,
+    "the task ends only after the second system retires, got " .. tostring(earlySilent)
   )
 end
 
-function T.encounter_task_outlives_an_early_first_system()
-  local task = openTask(1, 10, 43)
-  advance(task, 70)
-  Assert.equal(task.frame[30], 30, "the task runs on while the first system is already gone")
-  Assert.equal(task.systems[30], 1, "the retired first system leaves the second running")
-  Assert.equal(task.frame[60], 60, "the task still runs while the second system stays active")
-  Assert.equal(task.frame[62], 62, "the task reaches the second system's retirement tick")
-  local silent = firstSilentTick(task)
-  Assert.isTrue(
-    silent == nil or silent > 62,
-    "the task ends only after the second system retires, got " .. tostring(silent)
-  )
-end
-
-function T.encounter_reset_restarts_the_task_cleanly()
+function T.encounter_reset_and_dispose_control_the_task_lifecycle()
   local task = openTask(1, 10, 43)
   advance(task, 30)
   Assert.equal(task.frame[30], 30, "the task runs before the reset")
@@ -398,19 +393,13 @@ function T.encounter_reset_restarts_the_task_cleanly()
     "the reset voices the opening sound once per run, heard " .. tostring(#task.sounds - soundsBefore) .. " new voices"
   )
   Assert.equal(task.systems[60], 1, "the cleared systems restart from the first set")
-end
-
-function T.encounter_dispose_stops_the_task()
-  local task = openTask(1, 10, 43)
-  advance(task, 30)
-  Assert.equal(task.frame[30], 30, "the task runs before disposal")
-  local soundsBefore = #task.sounds
   task.timeline:dispose()
   Assert.isNil(task.timeline:openingPresentation(), "disposal drops the opening presentation")
+  local disposedSounds = #task.sounds
   task.timeline:update(TICK, function(_)
     return true
   end)
-  Assert.equal(#task.sounds, soundsBefore, "disposal voices no further sounds")
+  Assert.equal(#task.sounds, disposedSounds, "disposal voices no further sounds")
 end
 
 return { tests = T }

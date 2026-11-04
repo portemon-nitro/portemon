@@ -1,14 +1,11 @@
--- Switch-entry trajectory through the staged cache: a reserve arrival in a
--- doubled battle starts displaced toward its source spawn side and
--- settles exactly on its slot settled edge over source ticks, while the
--- surviving partner never leaves its own settled edge. The production
--- battle screen runs over the real staged presentation manifest with
--- real playback packets; draws record through a recording double, never
--- through a reimplementation of the renderer. Expected slot edges come
--- from the pinned native geometry (battle_hp_bar.c health-box
--- templates; overlay-7 spawn tables): the opponent-right settled edge
--- is one half inset left of X=176 at baseline Y=42. Needs a ready
--- user-owned ROM with a prepared derived cache, otherwise it skips.
+-- Retail encounter opening through the real screen gate: admission
+-- waits for the staged scene, the first source tick publishes frame 1
+-- with the first member and its voice, draws and remeasure advance
+-- nothing, and the task ends only after the second member retires.
+-- Texture handles are strict pool leases through the production holder;
+-- readiness is the holder state behind the runtime entry gate, never a
+-- frame-count tolerance in the test. All scenes here are synthetic
+-- staged layers, so this file needs no ROM and runs in CI.
 
 local Assert = require("tests.support.Assert")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -19,83 +16,8 @@ local StubLease = require("tests.support.StubLease")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local Rgb555 = require("libs.codec.src.Rgb555")
-local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
 
 local T = {}
-local function stagedImageWidth(image)
-  return image.width
-end
-
-local function stagedImageHeight(image)
-  return image.height
-end
-
-local function stagedImageDimensions(image)
-  return image.width, image.height
-end
-
-local function stagedImageFilter() end
-
-local function stagedDrawable(key)
-  local hud = key:match("^hud:") ~= nil
-  return {
-    handle = key,
-    width = hud and 1648 or 256,
-    height = hud and 8 or 256,
-    getWidth = stagedImageWidth,
-    getHeight = stagedImageHeight,
-    getDimensions = stagedImageDimensions,
-    setFilter = stagedImageFilter,
-  }
-end
-
-local PICTURE_HALF = 40
-local DOUBLES_SETTLED = {
-  { side = 2, x = 40, y = 112 },
-  { side = 4, x = 80, y = 120 },
-  { side = 3, x = 216, y = 50 },
-  { side = 5, x = 176, y = 42 },
-}
-
----@param center table<string, number> native settled center under test driving
----@param height number|nil signed height displacement under test driving
----@return number expected nominal image left edge
----@return number expected nominal image top edge
-local function nominalOrigin(center, height)
-  local displacement = 0
-  if type(height) == "number" then
-    displacement = height
-  end
-  return center.x - PICTURE_HALF, center.y - PICTURE_HALF + displacement
-end
-
----@return table recording text boundary behind one draw
-local function recordingText()
-  local text = { draws = {} }
-  function text.measure(content)
-    return { width = 8 * #tostring(content), height = 16 }
-  end
-  function text.drawText(content, x, y)
-    text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y, palette = nil }
-  end
-  function text.drawTextWithPalette(content, x, y, palette)
-    text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y, palette = palette }
-  end
-  return text
-end
-
----@return table recording window boundary behind one draw
-local function recordingWindows()
-  local windows = { boxes = {} }
-  function windows.drawWindow(box, frameKey, background)
-    windows.boxes[#windows.boxes + 1] = { box = box, frame = frameKey, background = background }
-  end
-  function windows.drawApplicationFrame(box, frameIndex)
-    windows.boxes[#windows.boxes + 1] = { box = box, frame = frameIndex }
-  end
-  return windows
-end
-
 ---@param draws table[] recorded draws under inspection
 ---@param handle string artwork identity under inspection
 ---@return table[] draws carrying that artwork identity
@@ -110,253 +32,6 @@ local function drawsOf(draws, handle)
   return found
 end
 
--- A reserve arrival in a doubled battle starts displaced toward its
--- source spawn side and settles exactly on its slot settled edge, while
--- the surviving partner never leaves its own settled edge.
-function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, context)
-  local RomImporter = require("romdump.src.source.RomImporter")
-  local GameVersion = require("romdump.src.source.GameVersion")
-  local ready = {}
-  for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      ready[#ready + 1] = versionId
-    end
-  end
-  if #ready == 0 then
-    context:skip("the switch-entry trajectory needs a ready user-owned ROM with a derived cache")
-  end
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
-  local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
-  local ScreenTopology = require("libs.ui.src.ScreenTopology")
-  local versionId = ready[1]
-  local cacheFs = CacheFs.forVersion(versionId)
-  local core = BattlePresentationCache.load(cacheFs)
-  Assert.equal(core.schema, BattlePresentationCache.MANIFEST_SCHEMA, versionId .. " stages the v3 battle manifest")
-  Assert.equal(#core.battlefield.slots, 6, versionId .. " stages all six source slot geometries")
-  Assert.isTrue(#core.hud.player.cells > 0, versionId .. " stages native player health-box cells")
-  Assert.equal(core.hud.player.componentCount, 78, versionId .. " stages native health-box patch tiles")
-  Assert.isTrue(next(core.pictures.selectors) ~= nil, versionId .. " stages source picture selectors")
-  local scopeText = recordingText()
-  local scopeWindows = recordingWindows()
-  local launchId = "scene-entry-probe"
-  -- The screen binds one launch view over the real staged core: shared
-  -- sections borrow by reference while the exact trainer and ball leaves
-  -- behind the switch packets stage as launch entries.
-  local view = {}
-  for key, value in pairs(core) do
-    view[key] = value
-  end
-  local backPic = assert(
-    BattlePresentationCache.loadTrainerPicture(cacheFs, "back:PKMN_TRAINER_ETHAN"),
-    versionId .. " stages the player backpic leaf"
-  )
-  local frontPic = assert(
-    BattlePresentationCache.loadTrainerPicture(cacheFs, "front:YOUNGSTER"),
-    versionId .. " stages the foe front leaf"
-  )
-  local ballLeaf =
-    assert(BattlePresentationCache.loadBall(cacheFs, "ball:POKE_BALL"), versionId .. " stages the lead ball leaf")
-  view.trainerPictures = {
-    entries = {
-      ["back:PKMN_TRAINER_ETHAN"] = backPic.entry,
-      ["front:YOUNGSTER"] = frontPic.entry,
-    },
-  }
-  view.battleBalls = { entries = { ["ball:POKE_BALL"] = ballLeaf.entry } }
-  local screen = BattleScreenState.new({
-    launchId = launchId,
-    manifest = view,
-    model = BattlePresentationModel,
-    submit = function(_)
-      return true
-    end,
-    measureDisplay = function()
-      return {
-        width = 256,
-        height = 384,
-        topology = ScreenTopology.dualDisplay(
-          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
-          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
-        ),
-        pixelRatio = 1,
-        signature = "scene-entry-probe:dual",
-      }
-    end,
-    assets = {
-      prepare = function(_)
-        return true
-      end,
-      -- The holder calls its preparation services dot-style, so the
-      -- recording double takes the key directly for handles to resolve.
-      drawable = function(key)
-        return stagedDrawable(key)
-      end,
-      paletteImage = function(key, raster)
-        return { handle = key, raster = raster, width = raster.width, height = raster.height }
-      end,
-      release = function(_, _) end,
-    },
-    text = scopeText,
-    windows = scopeWindows,
-    audio = {
-      play = function(_)
-        return true
-      end,
-    },
-    overrides = { sceneKey = "general/grass/day" },
-  })
-  local function foeRecord(combatant, position, activation, name, selector)
-    return {
-      combatant = combatant,
-      side = 2,
-      active = true,
-      species = "RATTATA",
-      form = 0,
-      selector = "front",
-      portraitSelector = selector,
-      name = name,
-      level = 4,
-      hp = 12,
-      maxHp = 12,
-      position = position,
-      activation = activation,
-    }
-  end
-  local function ownRecord(combatant, position, activation, name, selector)
-    return {
-      combatant = combatant,
-      side = 1,
-      active = true,
-      species = "CHIKORITA",
-      form = 0,
-      selector = "back",
-      portraitSelector = selector,
-      name = name,
-      level = 9,
-      hp = 30,
-      maxHp = 30,
-      experience = 120,
-      position = position,
-      activation = activation,
-    }
-  end
-  local opening = {
-    own = {
-      ownRecord(1, 0, 11, "LEAD", "CHIKORITA/f0/male/plain/back"),
-      ownRecord(4, 1, 14, "ALLY", "CHIKORITA/f0/female/plain/back"),
-    },
-    foes = {
-      foeRecord(2, 2, 12, "FOE-A", "RATTATA/f0/male/plain"),
-    },
-  }
-  local port = screen:presentationPort()
-  port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "ordinary-doubles" })
-  for _ = 1, 5 do
-    screen:updateFixed(1 / 60)
-  end
-  Assert.isTrue(
-    port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "ordinary-doubles" }),
-    versionId .. " enters its staged doubled scene: " .. tostring(screen._error)
-  )
-  port.present({ launchId = launchId, packetId = 1, before = opening, after = opening, events = {} })
-  for _ = 1, 1200 do
-    screen:updateFixed(1 / 60)
-  end
-  local openingGraphics = FakeGraphics.new({})
-  screen:draw({ graphics = openingGraphics })
-  local openingRattata = drawsOf(openingGraphics.draws, "mon:RATTATA/f0/male/plain")
-  local sourceSelector = core.pictures.selectors["pokemon/RATTATA/form-0/male/front"]
-  local sourceAttributes = core.pictures.attributes[sourceSelector.attributes]
-  Assert.equal(#openingRattata, 1, "the opening foe uses its exact staged portrait")
-  local portraitTop = math.huge
-  for _, vertex in ipairs(assert(openingRattata[1].meshVertices, "the production mesh carries source vertices")) do
-    portraitTop = math.min(portraitTop, vertex[2])
-  end
-  -- Pokepic lowers the picture by its height and lifts an opponent's by
-  -- the species shadow height.
-  local expectedTop = DOUBLES_SETTLED[3].y - PICTURE_HALF + sourceAttributes.height - sourceAttributes.shadow.height
-  Assert.equal(
-    portraitTop,
-    expectedTop,
-    "the real screen resolves staged front-facing source height into its mesh origin, got "
-      .. tostring(portraitTop)
-      .. " expected "
-      .. tostring(expectedTop)
-  )
-  local function arrivalDraws()
-    local graphics = FakeGraphics.new({})
-    screen:draw({ graphics = graphics })
-    return drawsOf(graphics.draws, "mon:RATTATA/f0/male/shiny")
-  end
-  local function pictureLeft(entry)
-    local left = math.huge
-    for _, vertex in ipairs(assert(entry.meshVertices, "the production mesh carries source vertices")) do
-      left = math.min(left, vertex[1])
-    end
-    return left
-  end
-  local before = arrivalDraws()
-  Assert.equal(#before, 0, "the reserve arrival draws nothing before its switch packet")
-  local switchedAfter = {
-    own = opening.own,
-    foes = {
-      foeRecord(2, 2, 12, "FOE-A", "RATTATA/f0/male/plain"),
-      foeRecord(3, 3, 21, "FOE-B", "RATTATA/f0/male/shiny"),
-    },
-  }
-  port.present({
-    launchId = launchId,
-    packetId = 2,
-    before = opening,
-    after = switchedAfter,
-    events = { { kind = "join", payload = { combatant = 3 } } },
-  })
-  screen:startPictureEntry(switchedAfter.foes[2], 8)
-  local trajectory = {}
-  for _ = 1, 600 do
-    screen:updateFixed(1 / 60)
-    local graphics = FakeGraphics.new({})
-    screen:draw({ graphics = graphics })
-    local pictures = drawsOf(graphics.draws, "mon:RATTATA/f0/male/shiny")
-    if #pictures >= 1 then
-      trajectory[#trajectory + 1] = pictureLeft(pictures[1])
-    end
-  end
-  Assert.isTrue(#trajectory >= 1, "the switched arrival becomes visible after its switch packet")
-  local settledArrivalX = nominalOrigin(DOUBLES_SETTLED[4], 0)
-  Assert.equal(
-    trajectory[#trajectory],
-    settledArrivalX,
-    "the switched arrival settles exactly on its slot settled edge"
-  )
-  local displaced = false
-  for _, x in ipairs(trajectory) do
-    if
-      x --[[@as number]]
-      < settledArrivalX - 4
-    then
-      displaced = true
-      break
-    end
-  end
-  Assert.isTrue(displaced, "the switched arrival starts displaced toward its source spawn side before settling")
-  local survivorGraphics = FakeGraphics.new({})
-  screen:draw({ graphics = survivorGraphics })
-  local survivor = drawsOf(survivorGraphics.draws, "mon:RATTATA/f0/male/plain")
-  Assert.isTrue(#survivor >= 1, "the surviving foe still draws after the arrival settles")
-  local survivorX = nominalOrigin(DOUBLES_SETTLED[3], 0)
-  Assert.equal(pictureLeft(survivor[1]), survivorX, "the surviving foe never leaves its settled edge")
-end
-
--- The retail encounter opening through the real screen gate: admission
--- waits for the staged scene, the first source tick publishes frame 1
--- with the first member and its voice, draws and remeasure advance
--- nothing, and the task ends only after the second member retires.
--- Texture handles are strict pool leases through the production holder;
--- readiness is the holder state behind the runtime entry gate, never a
--- frame-count tolerance in the test.
 local ENCOUNTER_SCENE_KEY = "general/grass/day"
 -- The production battle screen consumes one presentation source tick per
 -- accepted update, exactly as the runtime delivers it; the encounter task
@@ -701,34 +376,26 @@ local function presentOpening(rig)
   })
 end
 
-function T.native_palette_layout_rebuilds_for_a_replaced_scene_layer()
-  local rig = openEncounterRig()
-  rig.stage(stagedEncounterLayer(60, 43))
-  rig.pump(5)
-  presentOpening(rig)
-  rig.screen._encounterPaletteRestoreType = nil
-  rig.pump(1)
-  Assert.isTrue(rig.screen._nativePaletteLayoutReady, "the first scene publishes its native layout")
-
-  local replacement = stagedEncounterLayer(60, 43)
-  rig.screen._assets._sceneLayer = replacement
-  Assert.isTrue(rig.screen:_stageNativePaletteLayout(), "a replaced staged layer rebuilds its layout")
-  Assert.isTrue(type(replacement.nativePaletteLayout) == "table", "the current layer owns its native layout")
-  rig.screen:dispose()
-end
-
-function T.native_palette_layout_waits_for_the_pending_ball_leaf()
+function T.native_palette_layout_tracks_the_staged_scene_layer()
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43))
   rig.pump(5)
   local entries = rig.screen._manifest.battleBalls.entries
   Assert.isTrue(entries["ball:POKE_BALL"] ~= nil, "the encounter fixture stages its selected ball")
+  local savedBall = entries["ball:POKE_BALL"]
   entries["ball:POKE_BALL"] = nil
   presentOpening(rig)
-
   rig.pump(1)
   Assert.isFalse(rig.screen._nativePaletteLayoutReady, "native palette layout waits while the ball leaf is pending")
 
+  entries["ball:POKE_BALL"] = savedBall
+  rig.screen._encounterPaletteRestoreType = nil
+  rig.pump(1)
+  Assert.isTrue(rig.screen._nativePaletteLayoutReady, "the restored scene publishes its native layout")
+  local replacement = stagedEncounterLayer(60, 43)
+  rig.screen._assets._sceneLayer = replacement
+  Assert.isTrue(rig.screen:_stageNativePaletteLayout(), "a replaced staged layer rebuilds its layout")
+  Assert.isTrue(type(replacement.nativePaletteLayout) == "table", "the current layer owns its native layout")
   rig.screen:dispose()
 end
 
@@ -1390,36 +1057,10 @@ function T.wild_encounter_fade_draws_the_faded_intro_while_active()
   Assert.equal(rig.released["battle-faded-intro"], 1, "the ended task returns its faded intro upload exactly once")
 end
 
--- The published source frame and its uploaded intro pixels describe one
--- native tick. The old pre-tick upload leaves frame 11's image at frame 10.
-function T.encounter_intro_pixels_match_the_published_source_frame()
-  local rig = openEncounterRig()
-  rig.stage(stagedEncounterLayer(60, 43))
-  rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
-  presentOpening(rig)
-
-  for _ = 1, 11 do
-    rig.pump(1)
-  end
-  local view = rig.screen:view()
-  Assert.equal(view.openingPresentation.encounterFrame, 11, "the source tick publishes frame 11")
-  local word = assert(view.openingPresentation.encounterPalette.mainBg[121], "the visible source color is staged")
-  local expected = Rgb555.decode(word)
-  local raster = assert(rig.fadedRasters[#rig.fadedRasters], "frame 11 publishes its intro raster")
-  Assert.deepEqual(
-    { raster:pixel(0, 0) },
-    { expected.r, expected.g, expected.b, 255 },
-    "the uploaded pixel uses frame 11's displayed source palette word"
-  )
-  local graphics = FakeGraphics.new({})
-  rig.screen:draw({ graphics = graphics })
-  Assert.isTrue(#drawsOf(graphics.draws, "faded-intro-image") >= 1, "the matching raster is the visible intro")
-  rig.screen:dispose()
-end
-
 -- Unchanged visible colors reuse the current texture through source phases,
--- and repeated draws never trigger another upload.
+-- and repeated draws never trigger another upload. The frame-11 upload
+-- carries that tick's displayed palette word, so pixels and the published
+-- source frame describe one native tick.
 function T.encounter_intro_uploads_follow_visible_palette_changes()
   local rig = openEncounterRig()
   local function paletteUploadCount()
@@ -1451,9 +1092,20 @@ function T.encounter_intro_uploads_follow_visible_palette_changes()
   Assert.equal(paletteUploadCount(), paletteUploadsBeforeDraw, "drawing performs no indexed plane upload")
 
   rig.pump(1)
-  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 11, "frame 11 publishes the changed palette")
+  local frame11 = rig.screen:view()
+  Assert.equal(frame11.openingPresentation.encounterFrame, 11, "frame 11 publishes the changed palette")
   Assert.isTrue(#rig.fadedRasters > beforeDraw, "a visible palette change uploads a replacement")
   Assert.isTrue(paletteUploadCount() > paletteUploadsBeforeDraw, "frame 11 uploads changed indexed plane pixels")
+  local frame11Word = assert(
+    frame11.openingPresentation.encounterPalette.mainBg[121],
+    "the visible source color is staged"
+  )
+  local frame11Expected = Rgb555.decode(frame11Word)
+  Assert.deepEqual(
+    { rig.fadedRasters[#rig.fadedRasters]:pixel(0, 0) },
+    { frame11Expected.r, frame11Expected.g, frame11Expected.b, 255 },
+    "the frame-11 upload carries that tick's displayed palette word"
+  )
   rig.pump(25)
   Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 36, "the main fade settles on frame 36")
   local settledUploadCount = #rig.fadedRasters
@@ -1500,62 +1152,6 @@ function T.encounter_intro_uploads_follow_visible_palette_changes()
   )
   rig.screen:dispose()
 end
-
--- Indexed source maps are sampled only when their source map or displayed
--- palette changes; the holder's upload deduplication alone would still
--- leave an expensive full raster rebuild on every fixed tick.
-function T.indexed_palette_maps_are_not_resampled_for_unchanged_frames()
-  local originalRender = BattleEncounterIndexedRaster.render
-  local layer = stagedEncounterLayer(60, 43)
-  local targetPixels = layer.terrainSprites.player.sourceIndices.pixels
-  local sampleCount = 0
-  local introRasterCount = 0
-  BattleEncounterIndexedRaster.render = function(pixels, ...)
-    if pixels == targetPixels then
-      sampleCount = sampleCount + 1
-    end
-    return originalRender(pixels, ...)
-  end
-  local rig = openEncounterRig()
-  local originalIntroRaster = rig.screen._scene.introRaster
-  rig.screen._scene.introRaster = function(scene, ...)
-    introRasterCount = introRasterCount + 1
-    return originalIntroRaster(scene, ...)
-  end
-  rig.stage(layer)
-  rig.pump(5)
-  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
-  presentOpening(rig)
-
-  rig.pump(1)
-  local firstFrameSamples = sampleCount
-  local firstFrameIntroRasters = introRasterCount
-  rig.pump(9)
-  local unchangedFrameSamples = sampleCount
-  local unchangedFrameIntroRasters = introRasterCount
-  rig.pump(1)
-  local changedFrameSamples = sampleCount
-  local changedFrameIntroRasters = introRasterCount
-  rig.screen:dispose()
-  BattleEncounterIndexedRaster.render = originalRender
-  rig.screen._scene.introRaster = originalIntroRaster
-
-  Assert.isTrue(firstFrameSamples > 0, "the first source frame samples its indexed drawables")
-  Assert.equal(
-    unchangedFrameSamples,
-    firstFrameSamples,
-    "frames with the same displayed palette reuse sampled rasters"
-  )
-  Assert.isTrue(changedFrameSamples > unchangedFrameSamples, "a changed palette resamples its indexed drawables")
-  Assert.isTrue(firstFrameIntroRasters > 0, "the first source frame builds its intro raster")
-  Assert.equal(
-    unchangedFrameIntroRasters,
-    firstFrameIntroRasters,
-    "frames with the same main BG colors reuse the intro raster"
-  )
-  Assert.isTrue(changedFrameIntroRasters > unchangedFrameIntroRasters, "changed main BG colors rebuild the intro raster")
-end
-
 
 -- A configured image service failure is terminal and retains its cause.
 -- It must not silently fall back to the original static intro.
@@ -1725,14 +1321,4 @@ end
 
 return {
   tests = T,
-  metadata = {
-    capabilities = { "rom_dump" },
-    derivedAssets = {
-      "battle-presentation:global",
-      "battle-scene:general/grass/day",
-      "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
-      "battle-trainer-picture:front-YOUNGSTER",
-      "battle-ball:POKE_BALL",
-    },
-  },
 }

@@ -1796,7 +1796,7 @@ function T.background_resource_cleanup_removes_the_layer_exactly_once()
   Assert.equal(#cleanupJournal.released, #cleanupJournal.acquired, "cleanup stages no leases")
 end
 
-function T.background_resource_load_rejects_double_install_and_cleanup_rejects_unknown_layers()
+function T.background_resource_failures_stay_closed()
   local scene = sceneWithEffectBackground()
   local journal = { acquired = {}, released = {} }
   local services = backgroundServices(scene, journal)
@@ -1832,12 +1832,7 @@ function T.background_resource_load_rejects_double_install_and_cleanup_rejects_u
     "the unknown-layer rejection names the layer"
   )
   cleanup:dispose()
-end
 
-function T.background_resource_load_fails_closed_on_malformed_arguments()
-  local scene = sceneWithEffectBackground()
-  local journal = { acquired = {}, released = {} }
-  local services = backgroundServices(scene, journal)
   local malformed = {
     { values = { 9 }, resourceKeys = BACKGROUND_RESOURCE_KEYS },
     { values = "nine", resourceKeys = BACKGROUND_RESOURCE_KEYS },
@@ -1868,44 +1863,49 @@ function T.background_resource_load_fails_closed_on_malformed_arguments()
     end
   end
   Assert.equal(#journal.released, #journal.acquired, "failed loads release every staged lease")
-end
 
-function T.background_resource_load_without_staged_slots_fails_closed()
-  local scene = sceneWithEffectBackground()
-  local services, _ = journalServices(scene)
-  local ok, failure = pcall(
+  local slotlessScene = sceneWithEffectBackground()
+  local slotlessServices, _ = journalServices(slotlessScene)
+  local slotOk, slotFailure = pcall(
     BattleEffectTasks.create,
     "battle-background-resource-load",
     { values = { 9, 0x1234 } },
     occurrenceContext(),
-    services
+    slotlessServices
   )
-  if ok then
-    local stepOk = pcall(failure.stepSourceTick, failure, { tick = 1 })
-    failure:dispose()
+  if slotOk then
+    local stepOk = pcall(slotFailure.stepSourceTick, slotFailure, { tick = 1 })
+    slotFailure:dispose()
     Assert.isTrue(not stepOk, "a slotless load never installs")
   else
     Assert.isTrue(
-      string.find(tostring(failure), "battle-background-resource-load", 1, true) ~= nil,
+      string.find(tostring(slotFailure), "battle-background-resource-load", 1, true) ~= nil,
       "a slotless load fails naming its kind"
     )
   end
-end
 
-function T.background_resource_cancel_before_start_never_installs()
-  local scene = sceneWithEffectBackground()
-  local journal = { acquired = {}, released = {} }
-  local services = backgroundServices(scene, journal)
-  local task = assert(
-    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  local cancelScene = sceneWithEffectBackground()
+  local cancelJournal = { acquired = {}, released = {} }
+  local cancelServices = backgroundServices(cancelScene, cancelJournal)
+  local cancelled = assert(
+    BattleEffectTasks.create(
+      "battle-background-resource-load",
+      backgroundLoadArgs(),
+      occurrenceContext(),
+      cancelServices
+    )
   )
-  task:cancel("withdrawn")
-  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
-  task:stepSourceTick({ tick = 1 })
-  Assert.equal(task:status(), "cancelled", "cancelled loads never install late")
-  Assert.deepEqual({ scene:backgroundRaster():pixel(1, 0) }, { 200, 0, 0, 255 }, "the persistent plane is untouched")
-  task:dispose()
-  Assert.equal(#journal.released, #journal.acquired, "cancelled loads release every staged lease")
+  cancelled:cancel("withdrawn")
+  Assert.equal(cancelled:status(), "cancelled", "cancellation lands on cancelled")
+  cancelled:stepSourceTick({ tick = 1 })
+  Assert.equal(cancelled:status(), "cancelled", "cancelled loads never install late")
+  Assert.deepEqual(
+    { cancelScene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "the persistent plane is untouched"
+  )
+  cancelled:dispose()
+  Assert.equal(#cancelJournal.released, #cancelJournal.acquired, "cancelled loads release every staged lease")
 end
 
 return { tests = T }

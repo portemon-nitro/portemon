@@ -273,7 +273,7 @@ local function fullscreenRectangles(graphics)
   return found
 end
 
-function T.encounter_start_fills_main_buffers_from_the_background_fill_color()
+function T.encounter_start_maps_source_ranges_from_the_background_fill_color()
   local source = stagedSource()
   local _, log = runOpening(true, 2)
   local palette = encounterPalette(log.opening[1])
@@ -286,6 +286,21 @@ function T.encounter_start_fills_main_buffers_from_the_background_fill_color()
   for index = 0, 222 do
     Assert.equal(palette.mainObj[index + 1], source.fill, "main object color " .. index .. " takes the fill")
   end
+  for index = 112, 159 do
+    Assert.equal(
+      palette.mainBg[index + 1],
+      source.mainBg[index + 1],
+      "main background color " .. index .. " keeps its staged source color"
+    )
+  end
+  for index = 160, 191 do
+    Assert.equal(
+      palette.mainBg[index + 1],
+      0,
+      "main background color " .. index .. " keeps its displayed transparent clear"
+    )
+  end
+  Assert.equal(palette.mainObj[224], source.mainObj[224], "main object index 223 stays untouched by the fill")
 end
 
 function T.encounter_fade_keeps_the_filled_source_at_frame_ten()
@@ -395,7 +410,7 @@ function T.encounter_object_palette_uses_native_buffer_size_and_each_color()
   end
 end
 
-function T.main_object_palette_preserves_undefined_source_slots()
+function T.object_palettes_preserve_undefined_source_slots()
   local source = stagedSource()
   local sparseObject = {
     [1] = source.mainObj[1],
@@ -446,6 +461,45 @@ function T.main_object_palette_preserves_undefined_source_slots()
   Assert.equal(reset[1], source.fill, "reset restores the defined MAIN_OBJ fill state")
   Assert.equal(reset[224], sparseObject[224], "reset restores the defined unfilled MAIN_OBJ slot")
   Assert.isTrue(reset[17] == nil, "reset preserves undefined MAIN_OBJ slots")
+
+  local lowerSource = stagedSource()
+  local sparseOpaque = {}
+  local sparseDisplayed = {}
+  for _, index in ipairs({ 0, 17, 255 }) do
+    sparseOpaque[index + 1] = lowerSource.subObjOpaque[index + 1]
+    sparseDisplayed[index + 1] = lowerSource.initialDisplayed.subObj[index + 1]
+  end
+  lowerSource.subObjOpaque = sparseOpaque
+  lowerSource.initialDisplayed.subObj = sparseDisplayed
+
+  local lower = BattleEncounterPalette.new({ battleType = "wild", source = lowerSource })
+  for _, frame in ipairs({ 0, 1, 28, 30 }) do
+    if frame > 0 then
+      lower:tick(frame)
+    end
+    local snapshot = lower:snapshot()
+    for _, index in ipairs({ 0, 17, 255 }) do
+      Assert.isTrue(snapshot.subObj[index + 1] ~= nil, "defined lower object slot " .. index .. " remains present")
+      local expected = sparseDisplayed[index + 1]
+      if frame >= 28 then
+        expected = blendWord(sparseOpaque[index + 1], lowerSource.fill, 16 - 2 * (frame - 28))
+      end
+      Assert.equal(snapshot.subObj[index + 1], expected, "defined lower object slot " .. index .. " follows its source")
+    end
+    for _, index in ipairs({ 1, 16, 254 }) do
+      Assert.isTrue(snapshot.subObj[index + 1] == nil, "undefined lower object slot " .. index .. " remains absent")
+    end
+  end
+
+  local lowerOk, lowerErr = pcall(function()
+    lower:colorAt("subObj", 16)
+  end)
+  Assert.isFalse(lowerOk, "sampling an undefined lower object slot fails")
+  Assert.isTrue(
+    string.find(tostring(lowerErr), "subObj", 1, true) ~= nil
+      and string.find(tostring(lowerErr), "16", 1, true) ~= nil,
+    "undefined slot failure identifies its plane and zero-based index"
+  )
 end
 
 function T.main_object_post_fill_palette_survives_opening_and_trainer_restore()
@@ -567,76 +621,12 @@ function T.lower_palette_keeps_opaque_and_displayed_sources_separate()
   Assert.equal(palette:snapshot().subBg[256], palette:colorAt("subBg", 255), "index 255 is sampled without overflow")
 end
 
-function T.sub_object_palette_preserves_undefined_source_slots()
+function T.encounter_restore_returns_saved_ranges_per_battle_class()
   local source = stagedSource()
-  local sparseOpaque = {}
-  local sparseDisplayed = {}
-  for _, index in ipairs({ 0, 17, 255 }) do
-    sparseOpaque[index + 1] = source.subObjOpaque[index + 1]
-    sparseDisplayed[index + 1] = source.initialDisplayed.subObj[index + 1]
-  end
-  source.subObjOpaque = sparseOpaque
-  source.initialDisplayed.subObj = sparseDisplayed
-
-  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
-  for _, frame in ipairs({ 0, 1, 28, 30 }) do
-    if frame > 0 then
-      palette:tick(frame)
-    end
-    local snapshot = palette:snapshot()
-    Assert.equal(#snapshot.mainBg, 256, "main background remains a dense native palette")
-    Assert.equal(#snapshot.mainObj, 224, "main object remains a dense native palette")
-    Assert.equal(#snapshot.subBg, 256, "lower background remains a dense native palette")
-    for _, index in ipairs({ 0, 17, 255 }) do
-      Assert.isTrue(snapshot.subObj[index + 1] ~= nil, "defined lower object slot " .. index .. " remains present")
-      local expected = sparseDisplayed[index + 1]
-      if frame >= 28 then
-        expected = blendWord(sparseOpaque[index + 1], source.fill, 16 - 2 * (frame - 28))
-      end
-      Assert.equal(snapshot.subObj[index + 1], expected, "defined lower object slot " .. index .. " follows its source")
-    end
-    for _, index in ipairs({ 1, 16, 254 }) do
-      Assert.isTrue(snapshot.subObj[index + 1] == nil, "undefined lower object slot " .. index .. " remains absent")
-    end
-  end
-
-  local ok, err = pcall(function()
-    palette:colorAt("subObj", 16)
-  end)
-  Assert.isFalse(ok, "sampling an undefined lower object slot fails")
-  Assert.isTrue(
-    string.find(tostring(err), "subObj", 1, true) ~= nil and string.find(tostring(err), "16", 1, true) ~= nil,
-    "undefined slot failure identifies its plane and zero-based index"
-  )
-end
-
-function T.encounter_start_preserves_unfilled_background_and_transparent_slot()
-  local source = stagedSource()
-  local _, log = runOpening(true, 2)
-  local palette = encounterPalette(log.opening[1])
-  for index = 112, 159 do
-    Assert.equal(
-      palette.mainBg[index + 1],
-      source.mainBg[index + 1],
-      "main background color " .. index .. " keeps its staged source color"
-    )
-  end
-  for index = 160, 191 do
-    Assert.equal(
-      palette.mainBg[index + 1],
-      0,
-      "main background color " .. index .. " keeps its displayed transparent clear"
-    )
-  end
-  Assert.equal(palette.mainObj[224], source.mainObj[224], "main object index 223 stays untouched by the fill")
-end
-
-function T.encounter_restore_returns_saved_background_and_wild_object_ranges()
-  local source = stagedSource()
-  local _, log = runOpening(true, 40)
-  local flash28 = assert(log.flash[28], "the second blend starts on frame 28")
+  local _, wildLog = runOpening(true, 40)
+  local flash28 = assert(wildLog.flash[28], "the second blend starts on frame 28")
   Assert.equal(flash28.coefficient, 16, "the frame 28 fade holds blend coefficient 16")
-  local blended = encounterPalette(log.opening[30])
+  local blended = encounterPalette(wildLog.opening[30])
   for index = 0, 111 do
     Assert.equal(
       blended.mainBg[index + 1],
@@ -652,7 +642,7 @@ function T.encounter_restore_returns_saved_background_and_wild_object_ranges()
     )
   end
   for _, frame in ipairs({ 36, 40 }) do
-    local palette = encounterPalette(log.opening[frame])
+    local palette = encounterPalette(wildLog.opening[frame])
     for index = 0, 111 do
       Assert.equal(
         palette.mainBg[index + 1],
@@ -668,21 +658,18 @@ function T.encounter_restore_returns_saved_background_and_wild_object_ranges()
       )
     end
   end
-end
 
-function T.encounter_restore_returns_trainer_object_range()
-  local source = stagedSource()
-  local _, log = runOpening(false, 40)
-  local blended = encounterPalette(log.opening[30])
+  local _, trainerLog = runOpening(false, 40)
+  local trainerBlended = encounterPalette(trainerLog.opening[30])
   for index = 0, 79 do
     Assert.equal(
-      blended.mainObj[index + 1],
+      trainerBlended.mainObj[index + 1],
       blendWord(source.mainObj[index + 1], source.fill, 12),
       "frame 30 restored trainer main object color " .. index .. " blends the restored base at coefficient 12"
     )
   end
   for _, frame in ipairs({ 36, 40 }) do
-    local palette = encounterPalette(log.opening[frame])
+    local palette = encounterPalette(trainerLog.opening[frame])
     for index = 0, 79 do
       Assert.equal(
         palette.mainObj[index + 1],
@@ -691,11 +678,8 @@ function T.encounter_restore_returns_trainer_object_range()
       )
     end
   end
-end
 
-function T.encounter_restore_returns_ordinary_doubles_object_range()
-  local source = stagedSource()
-  local palette = BattleEncounterPalette.new({
+  local doubles = BattleEncounterPalette.new({
     battleType = "ordinary-doubles",
     source = {
       mainBg = source.mainBg,
@@ -707,46 +691,47 @@ function T.encounter_restore_returns_ordinary_doubles_object_range()
       fill = source.fill,
     },
   })
-  palette:tick(1)
-  Assert.equal(palette:snapshot().mainObj[1], source.fill, "doubles objects start under the background fill")
-  palette:tick(30)
-  local blended = palette:snapshot()
+  doubles:tick(1)
+  Assert.equal(doubles:snapshot().mainObj[1], source.fill, "doubles objects start under the background fill")
+  doubles:tick(30)
+  local doublesBlended = doubles:snapshot()
   for index = 0, 111 do
     Assert.equal(
-      blended.mainBg[index + 1],
+      doublesBlended.mainBg[index + 1],
       blendWord(source.mainBg[index + 1], source.fill, 12),
       "frame 30 doubles main background color " .. index .. " blends the restored base at coefficient 12"
     )
     Assert.equal(
-      blended.mainObj[index + 1],
+      doublesBlended.mainObj[index + 1],
       blendWord(source.mainObj[index + 1], source.fill, 12),
       "frame 30 doubles main object color " .. index .. " blends the restored base at coefficient 12"
     )
   end
-  palette:tick(36)
-  local snapshot = palette:snapshot()
+  doubles:tick(36)
+  local doublesSettled = doubles:snapshot()
   for index = 0, 111 do
     Assert.equal(
-      snapshot.mainBg[index + 1],
+      doublesSettled.mainBg[index + 1],
       source.mainBg[index + 1],
       "frame 36 doubles main background color " .. index .. " matches the saved buffer"
     )
     Assert.equal(
-      snapshot.mainObj[index + 1],
+      doublesSettled.mainObj[index + 1],
       source.mainObj[index + 1],
       "frame 36 doubles main object color " .. index .. " matches the saved buffer"
     )
   end
   Assert.equal(
-    palette:colorAt("mainObj", 111),
+    doubles:colorAt("mainObj", 111),
     source.mainObj[112],
     "the doubles restore reaches object index 111 through its source bank"
   )
-  palette:reset()
-  Assert.equal(palette:snapshot().mainObj[1], source.fill, "reset restores the background fill after a canceled intro")
+  doubles:reset()
+  Assert.equal(doubles:snapshot().mainObj[1], source.fill, "reset restores the background fill after a canceled intro")
 end
 
-function T.encounter_main_fade_advances_two_blend_units_per_tick()
+function T.encounter_main_fade_blends_two_units_with_native_masks()
+  local source = stagedSource()
   local _, log = runOpening(true, 20)
   local expected = { 0, 2, 4, 6, 8, 10, 12, 14, 16 }
   for offset, coefficient in ipairs(expected) do
@@ -757,11 +742,6 @@ function T.encounter_main_fade_advances_two_blend_units_per_tick()
       "the frame " .. (9 + offset) .. " fade holds blend coefficient " .. coefficient
     )
   end
-end
-
-function T.encounter_main_fade_uses_integer_five_bit_blends()
-  local source = stagedSource()
-  local _, log = runOpening(true, 12)
   local palette = encounterPalette(log.opening[11])
   local target = source.fill
   for _, index in ipairs({ 112, 120, 144, 152 }) do
@@ -772,10 +752,6 @@ function T.encounter_main_fade_uses_integer_five_bit_blends()
       "main background color " .. index .. " blends with integer five-bit math at coefficient 2"
     )
   end
-end
-
-function T.encounter_main_fade_names_its_selected_bank_masks()
-  local _, log = runOpening(true, 12)
   local flash = assert(log.flash[10], "the main fade runs on frame 10")
   Assert.equal(flash.mainBgMask, MAIN_BG_MASK, "the frame 10 main background fade selects banks 0xF3FF")
   Assert.equal(flash.mainObjMask, MAIN_OBJ_MASK, "the frame 10 main object fade selects banks 0x3FFF")
@@ -801,7 +777,7 @@ function T.encounter_late_fade_targets_only_background_banks_ten_and_eleven()
   Assert.isFalse(maskSelects(LATE_BG_MASK, 12), "the late fade leaves bank 12 alone")
 end
 
-function T.encounter_main_fade_does_not_wash_the_composed_scene()
+function T.encounter_fades_avoid_fullscreen_washes()
   local graphics = drawDetailPane({ color = "white", coefficient = 8 })
   Assert.isTrue(#graphics.draws > 0, "the detail pane stages its scene art under the encounter fade")
   local washed = false
@@ -811,6 +787,15 @@ function T.encounter_main_fade_does_not_wash_the_composed_scene()
     end
   end
   Assert.isFalse(washed, "no fullscreen wash paints over the composed scene and particle planes")
+  local _, log = runOpening(true, 30)
+  local child = drawChildInteractionPane(log.lower[28])
+  local uniformWhite = false
+  for _, record in ipairs(fullscreenRectangles(child)) do
+    if record.color[1] == 1 and record.color[2] == 1 and record.color[3] == 1 and record.color[4] > 0 then
+      uniformWhite = true
+    end
+  end
+  Assert.isFalse(uniformWhite, "the lower reveal fades background and object planes without one white wash")
 end
 
 function T.encounter_object_pixels_resolve_their_source_bank_per_pixel()
@@ -944,19 +929,6 @@ function T.encounter_late_fade_darkens_only_background_banks_ten_and_eleven()
   palette:reset()
   palette:tick(60)
   Assert.equal(palette:snapshot().mainBg[161], 0, "reset clears the armed late fade")
-end
-
-function T.encounter_lower_reveal_fades_planes_without_a_uniform_wash()
-  local _, log = runOpening(true, 30)
-  local graphics = drawChildInteractionPane(log.lower[28])
-  local washes = fullscreenRectangles(graphics)
-  local uniformWhite = false
-  for _, record in ipairs(washes) do
-    if record.color[1] == 1 and record.color[2] == 1 and record.color[3] == 1 and record.color[4] > 0 then
-      uniformWhite = true
-    end
-  end
-  Assert.isFalse(uniformWhite, "the lower reveal fades background and object planes without one white wash")
 end
 
 return { tests = T }

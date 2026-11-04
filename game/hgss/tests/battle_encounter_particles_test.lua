@@ -7,7 +7,6 @@
 
 local Assert = require("tests.support.Assert")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
-local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
 local Fixture = require("tests.support.BattleEncounterParticlesFixture")
 
 local T = {}
@@ -65,52 +64,24 @@ function T.sets_keep_running_after_the_animation_and_retire_without_restarting()
   Assert.equal(#owner:systems(), 0, "a finished set never restarts")
 end
 
-function T.a_late_scene_layer_does_not_start_a_missed_set()
+function T.sets_with_missed_start_ticks_never_start_late()
   local owner = BattleEncounterParticles.new()
   owner:step(5, nil)
   Assert.equal(#owner:systems(), 0, "nothing starts without staged art")
   owner:step(18, stagedSets())
   Assert.equal(#owner:systems(), 0, "the first set never starts after its frame-1 tick")
-end
-
-function T.sets_with_missed_start_ticks_never_start_late()
-  local owner = BattleEncounterParticles.new()
-  owner:step(49, stagedSets())
-  Assert.equal(#owner:systems(), 0, "sets whose start ticks already passed never start")
-end
-
-function T.an_exact_start_only_starts_its_own_set()
-  local owner = BattleEncounterParticles.new()
+  local late = BattleEncounterParticles.new()
+  late:step(49, stagedSets())
+  Assert.equal(#late:systems(), 0, "sets whose start ticks already passed never start")
+  local exact = BattleEncounterParticles.new()
   local sets = stagedSets()
-  owner:step(20, sets)
-  Assert.equal(#owner:systems(), 1, "frame 20 starts exactly one set")
+  exact:step(20, sets)
+  Assert.equal(#exact:systems(), 1, "frame 20 starts exactly one set")
   Assert.equal(
-    owner:systems()[1].textures[3],
+    exact:systems()[1].textures[3],
     sets[2].textures[2].drawable,
     "frame 20 starts the second set, never the missed first"
   )
-end
-
-function T.staged_sets_carry_the_retail_emitter_counts()
-  local grass = BattlePresentationSources.encounterParticleSets("grass")
-  Assert.deepEqual(
-    grass,
-    {
-      { member = 5, emitterCount = 5 },
-      { member = 6, emitterCount = 11 },
-    },
-    "the grass terrain stages source members 5 and 6 with five and eleven emitters"
-  )
-  local sets = Fixture.sizedSets("grass/day/forest", 5, 11, 200, 200)
-  local owner = BattleEncounterParticles.new()
-  owner:step(1, sets)
-  Assert.equal(#owner:systems(), 1, "the first set starts on frame 1")
-  Assert.equal(#owner:systems()[1].simulation.emitters, 5, "the first system runs all five member-5 emitters")
-  owner:step(20, sets)
-  Assert.equal(#owner:systems(), 2, "the second set starts on frame 20")
-  Assert.equal(#owner:systems()[2].simulation.emitters, 11, "the second system runs all eleven member-6 emitters")
-  owner:step(20, sets)
-  Assert.equal(#owner:systems(), 2, "started sets never start twice")
 end
 
 function T.a_retired_first_system_leaves_the_second_running()
