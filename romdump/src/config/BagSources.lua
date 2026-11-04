@@ -351,6 +351,22 @@ BagSources.moveOriginRows = {
   { x = 16, y = 14, width = 16, height = 6 },
 }
 
+-- Browse slot-art bounds in canonical pane pixels, left-to-right and
+-- top-to-bottom in visible-cell order: each count adds the next cell's
+-- art, and one row art serves both its cells. The bounds are the opaque
+-- pixel extents of the slot tile art within its row band (the surrounding
+-- tiles rasterize transparent, so the wash shows through outside these
+-- rects); the runtime draws the pocket's row patch at each visible cell's
+-- rect over the blank-slot base.
+BagSources.browseCellRects = {
+  { x = 2, y = 37, width = 124, height = 38 },
+  { x = 130, y = 37, width = 124, height = 38 },
+  { x = 2, y = 77, width = 124, height = 38 },
+  { x = 130, y = 77, width = 124, height = 38 },
+  { x = 2, y = 117, width = 124, height = 38 },
+  { x = 130, y = 117, width = 124, height = 38 },
+}
+
 -- Marker band entry offsets (flat tile-entry starts) selecting the stamp
 -- source within the decoded move screen: the 0x600-byte region for
 -- original rows 0..1, the 0x6C0-byte region otherwise. LoadRectToBgTilemapRect

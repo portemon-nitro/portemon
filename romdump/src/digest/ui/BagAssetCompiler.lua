@@ -996,7 +996,7 @@ local function compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
     local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
     local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
     local counts = {}
-    for count = 0, 6 do
+    for count = 0, 4 do
       local slots = moveScreenForCountOrigin(assert(lower.screens[slotsRole]), count, nil)
       local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
       local image = RgbaImage.compose({ wash, slotLayer }, "interactive background move")
@@ -1006,6 +1006,11 @@ local function compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
       counts[count] = { image = path, width = image.width, height = image.height }
     end
+    -- Counts 5 and 6 replay no count mutation, so their screens are the
+    -- unmutated count-0 screen: all three counts share one realized base
+    -- instead of three byte-identical files.
+    counts[5] = counts[0]
+    counts[6] = counts[0]
     pockets[pocketState.pocket] = counts
     local patches = {}
     for _, spec in ipairs({ { band = "low", origin = 0 }, { band = "high", origin = 2 } }) do
@@ -1028,34 +1033,53 @@ local function compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
   return pockets, markers
 end
 
--- Browse backgrounds carry one realized variant per pocket and visible
--- occupied-item count 0..6: each variant replays its audited tilemap block
--- against an independent copy of the decoded slot screen before
--- rasterization and Cancel composition.
-local function compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
+-- Browse backgrounds carry one blank-slot base plus three row patches per
+-- pocket: counts fill slot cells left-to-right, top-to-bottom, and one row
+-- art serves both its cells. The base replays the count-0 screen (blank
+-- slots) under the wash with the Cancel chrome; each row patch crops the
+-- first count completing its row (2, 4, 6) to that row's left-cell rect.
+-- Earlier cells stay stable under later counts, so the left-cell crop
+-- carries the row art exactly. The runtime draws the base plus one patch
+-- per visible cell at the generated cell rects.
+local function compileBrowseBackgrounds(lower, screenRoles, cancelFace, cellRects, assets)
   local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
   local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
   local pockets = {}
   for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
     local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
     local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
-    local variants = {}
-    for count = 0, 6 do
-      local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
-      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
-      local image = RgbaImage.compose({ wash, slotLayer }, "interactive background browse")
-      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background browse")
-      image = compositeCancelChrome(image, cancelFace)
-      local path = BagCache.assetDir() .. "/background-browse-" .. pocketState.pocket .. "-count-" .. count .. ".png"
-      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
-      variants[count + 1] = { image = path, width = image.width, height = image.height }
+    local emptySlots = browseScreenForCount(assert(lower.screens[slotsRole]), 0)
+    local emptyLayer = rasterizeScreen(lower.charData, palette.colors, emptySlots, slotsRole)
+    local base = RgbaImage.compose({ wash, emptyLayer }, "interactive background browse")
+    base = RgbaImage.crop(base, { x = 0, y = 0, width = 256, height = 192 }, "interactive background browse")
+    base = compositeCancelChrome(base, cancelFace)
+    local basePath = BagCache.assetDir() .. "/background-browse-base-" .. pocketState.pocket .. ".png"
+    assets[basePath] = PngWriter.encode(base.width, base.height, base.pixels)
+    local rows = {}
+    for row = 0, 2 do
+      local filled = browseScreenForCount(assert(lower.screens[slotsRole]), row * 2 + 2)
+      local filledLayer = rasterizeScreen(lower.charData, palette.colors, filled, slotsRole)
+      local composed = RgbaImage.compose({ wash, filledLayer }, "interactive browse row " .. row)
+      local rect = assert(cellRects[row * 2 + 1], "browse rows resolve their left-cell rect")
+      local patch = RgbaImage.crop(composed, {
+        x = rect.x,
+        y = rect.y,
+        width = rect.width,
+        height = rect.height,
+      }, "interactive browse row " .. row)
+      local path = BagCache.assetDir() .. "/background-browse-row-" .. pocketState.pocket .. "-" .. row .. ".png"
+      assets[path] = PngWriter.encode(patch.width, patch.height, patch.pixels)
+      rows[row + 1] = { image = path, width = patch.width, height = patch.height }
     end
-    pockets[pocketState.pocket] = variants
+    pockets[pocketState.pocket] = {
+      base = { image = basePath, width = base.width, height = base.height },
+      rows = rows,
+    }
   end
   return pockets
 end
 
-local function compileLowerBackgrounds(lower, cancelFace, moveMarkerRects, assets)
+local function compileLowerBackgrounds(lower, cancelFace, moveMarkerRects, browseCellRects, assets)
   local screenRoles = {
     listWash = "list-wash",
     listSlots = "list-slots",
@@ -1082,7 +1106,9 @@ local function compileLowerBackgrounds(lower, cancelFace, moveMarkerRects, asset
   -- Marker placement rects arrive from the presentation geometry; the
   -- images above carry only the realized band patches.
   backgrounds.moveMarker = { images = moveMarkers, rects = assert(moveMarkerRects, "move markers carry their rects") }
-  backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, browseCellRects, assets)
+  assert(browseCellRects, "browse rows carry their cell rects")
+  backgrounds.browseCells = browseCellRects
   return backgrounds, { image = salePath, width = saleScreen.width, height = saleScreen.height }
 end
 
@@ -1575,8 +1601,13 @@ local function _compile(romFs)
   moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
   local earlyGeometry = BagPresentationCompiler.compileGeometry(BagSources)
-  local backgrounds, saleQuantityBackground =
-    compileLowerBackgrounds(lower, sprites.cancelFace, earlyGeometry.moveMarkerRects, assets)
+  local backgrounds, saleQuantityBackground = compileLowerBackgrounds(
+    lower,
+    sprites.cancelFace,
+    earlyGeometry.moveMarkerRects,
+    earlyGeometry.browseCellRects,
+    assets
+  )
   local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)

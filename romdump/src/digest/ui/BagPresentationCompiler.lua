@@ -351,6 +351,16 @@ function BagPresentationCompiler.compileGeometry(config)
       "move origin marker rect " .. index
     )
   end)
+  -- Browse slot-art cell rects: six audited pixel bounds in visible-cell
+  -- order. Each rect must fit the pane; the art-width contract itself is
+  -- proven by the asset schema.
+  local cellRows = checkCollection(config.browseCellRects, 6, "bag source config must carry six browse cell rects")
+  local browseCellRects = mapList(cellRows, function(cell, index)
+    if type(cell) ~= "table" then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "browse cell rect " .. index .. " is malformed", {})
+    end
+    return checkRect({ x = cell.x, y = cell.y, width = cell.width, height = cell.height }, "browse cell rect " .. index)
+  end)
   local prompt = saleSource.compactPrompt
   if type(prompt) ~= "table" or prompt.shapeParam ~= 0 or prompt.initialCursorPos ~= 0 then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "sale prompt must be the compact YES prompt", {})
@@ -408,6 +418,7 @@ function BagPresentationCompiler.compileGeometry(config)
     quantityCancelHitRect = quantityCancelHitRect,
     quantityCancelLabelAt = quantityCancelLabelAt,
     moveMarkerRects = moveMarkerRects,
+    browseCellRects = browseCellRects,
     sale = sale,
   }
 end

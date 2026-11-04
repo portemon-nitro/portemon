@@ -483,10 +483,11 @@ DerivedAssetContract.mart = {
 -- table) plus the lower-
 -- pane controls (one pocket strip per active pocket carrying the persistent
 -- selected-pocket treatment, six item slots, count readout, Cancel with
--- its source-centered label area, the layered lower-pane backgrounds (seven
--- browse count variants per pocket shared as the runtime base, one action
--- and one quantity overlay per pocket, seven move count bases per pocket
--- plus the low/high origin-marker patches at the six origin rects), four action
+-- its source-centered label area, the layered lower-pane backgrounds (one
+-- browse base plus three row patches per pocket at the six cell rects, one
+-- action and one quantity overlay per pocket, seven move count bases per
+-- pocket plus the low/high origin-marker patches at the six origin rects),
+-- four action
 -- slots, six quantity controls with static press visuals, the retained
 -- selected-item panel, the short/tall lower-message geometry, activation
 -- feedback timing with control visuals, the unchanged/changed move commit
@@ -494,14 +495,15 @@ DerivedAssetContract.mart = {
 -- text/templates, the toss prompt placement with its post-choice result
 -- text, and the two registration-slot markers). Item icons stay in the item
 -- class; the bag manifest references no icon pixels.
--- bag schema 19: action/quantity resolve through one pocket overlay each
--- composited over the shared browse count-variant base at runtime, and move
+-- bag schema 20: browse resolves through one pocket base plus three row
+-- patches placed at the six cell rects, action/quantity resolve through
+-- one pocket overlay each composited over that base at runtime, and move
 -- resolves through one count-variant base plus the low/high origin-marker
--- patches, so the baked per-count action/quantity and per-origin move
--- variants are gone. A stale pre-change cache must fail readiness.
+-- patches, so the baked per-count browse/action/quantity and per-origin
+-- move variants are gone. A stale pre-change cache must fail readiness.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v19",
+  schema = "g4-bag-assets-v20",
 }
 
 -- The move-icons class carries the type and damage-category icon sprites

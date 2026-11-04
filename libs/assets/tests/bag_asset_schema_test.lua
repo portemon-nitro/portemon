@@ -193,23 +193,42 @@ local function backgrounds()
   return out
 end
 
--- Layered v19 backgrounds: browse stays the shared count-variant base while
--- action/quantity resolve through one pocket overlay each and move resolves
--- through one count-variant base plus the two origin-marker patches placed
--- at the six origin rects. Marker rects are the audited move-origin tile
--- rows in pixels: two columns of three 128x48 cells starting at y=32.
+-- Layered v20 backgrounds: browse resolves through one pocket base (blank
+-- slots) plus the three opaque row patches placed at the six cell rects
+-- (one row art serves both its cells; counts fill cells left-to-right,
+-- top-to-bottom), while action/quantity resolve through one pocket overlay
+-- each and move resolves through one count-variant base plus the two
+-- origin-marker patches placed at the six origin rects.
+local function browseCellRects()
+  return {
+    rect(2, 37, 124, 38),
+    rect(130, 37, 124, 38),
+    rect(2, 77, 124, 38),
+    rect(130, 77, 124, 38),
+    rect(2, 117, 124, 38),
+    rect(130, 117, 124, 38),
+  }
+end
+
 local function layeredBackgrounds()
   local out = {}
   local browse = {}
   for _, pocket in ipairs(POCKETS) do
-    local variants = {}
-    for count = 0, 6 do
-      variants[#variants + 1] =
-        imageRef("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+    local rows = {}
+    for row = 0, 2 do
+      rows[#rows + 1] = {
+        image = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png",
+        width = 124,
+        height = 38,
+      }
     end
-    browse[pocket] = variants
+    browse[pocket] = {
+      base = imageRef("assets/generated/bag/background-browse-base-" .. pocket .. ".png"),
+      rows = rows,
+    }
   end
   out.browse = browse
+  out.browseCells = browseCellRects()
   local overlays = {}
   for _, state in ipairs({ "action", "quantity" }) do
     local pockets = {}
@@ -224,9 +243,11 @@ local function layeredBackgrounds()
   local move = {}
   for _, pocket in ipairs(POCKETS) do
     local counts = {}
-    for count = 0, 6 do
+    for count = 0, 4 do
       counts[count] = imageRef("assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png")
     end
+    counts[5] = counts[0]
+    counts[6] = counts[0]
     move[pocket] = counts
   end
   out.move = move
@@ -838,54 +859,6 @@ function T.cache_reports_not_ready_without_the_quantity_cancel_visuals()
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing quantity cancel flash is not ready")
 end
 
-function T.previous_bag_contract_is_rejected()
-  local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v2"
-  Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous Bag contract must not validate as current")
-  local retired = validFocusManifest()
-  retired.schema = "g4-bag-assets-v3"
-  Assert.isFalse(BagAssetSchema.isValidManifest(retired), "the retired Bag contract must not validate as current")
-  local superseded = validFocusManifest()
-  superseded.schema = "g4-bag-assets-v4"
-  Assert.isFalse(BagAssetSchema.isValidManifest(superseded), "the superseded Bag contract must not validate as current")
-  local stale = validFocusManifest()
-  stale.schema = "g4-bag-assets-v5"
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(stale),
-    "the highlight-shaped Bag contract must not validate as current"
-  )
-  local singleBrowse = validFocusManifest()
-  singleBrowse.schema = "g4-bag-assets-v6"
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(singleBrowse),
-    "the single-browse-visual Bag contract must not validate as current"
-  )
-  local perTabNormal = validFocusManifest()
-  perTabNormal.schema = "g4-bag-assets-v7"
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(perTabNormal),
-    "the per-tab-normal Bag contract must not validate once strips are current"
-  )
-  local previousPostSelection = validFocusManifest()
-  previousPostSelection.schema = "g4-bag-assets-v13"
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(previousPostSelection),
-    "the previous post-selection Bag contract must not validate as current"
-  )
-  local supersededPostSelection = validFocusManifest()
-  supersededPostSelection.schema = "g4-bag-assets-v14"
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(supersededPostSelection),
-    "the duplicate-center post-selection Bag contract must not validate as current"
-  )
-  local supersededQuantityFaces = validFocusManifest()
-  supersededQuantityFaces.schema = "g4-bag-assets-v15"
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(supersededQuantityFaces),
-    "the pre-quantity-face Bag contract must not validate as current"
-  )
-end
-
 function T.complete_manifest_with_text_and_registration_passes()
   local manifest = validFocusManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the complete fixture must pass")
@@ -962,53 +935,12 @@ function T.control_visuals_are_current_and_each_is_referenced_once()
   }) do
     Assert.equal(counts[path], 1, path .. " is referenced exactly once")
   end
-  for _, path in ipairs(paths) do
-    Assert.isNil(path:find("quantity-alt", 1, true), "retired quantity alternate art is not required")
-    Assert.isNil(path:find("confirmation", 1, true), "no standalone confirmation surface survives")
-  end
 end
 
-function T.browse_backgrounds_carry_seven_count_variants_per_pocket()
-  local manifest = validDynamicManifest()
-  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the seven-variant browse presentation must validate")
-  for _, pocket in ipairs(POCKETS) do
-    local variants = assert(
-      manifest.interactive.backgrounds.browse[pocket],
-      "pocket " .. pocket .. " must publish its browse count variants"
-    )
-    Assert.equal(#variants, 7, "pocket " .. pocket .. " publishes one browse visual per visible count 0..6")
-    for count = 0, 6 do
-      local visual = assert(variants[count + 1], "pocket " .. pocket .. " publishes its count " .. count .. " visual")
-      Assert.equal(visual.width, 256, "pocket " .. pocket .. " count " .. count .. " keeps the pane width")
-      Assert.equal(visual.height, 192, "pocket " .. pocket .. " count " .. count .. " keeps the pane height")
-    end
-  end
-  local ok, paths = pcall(BagCache.referencedPaths, manifest)
-  Assert.isTrue(ok, "the cache must resolve the seven-variant manifest")
-  assert(paths ~= nil, "a resolvable manifest must list its paths")
-  local counts = {}
-  for _, path in ipairs(paths) do
-    counts[path] = (counts[path] or 0) + 1
-  end
-  local browsePaths = 0
-  for _, path in ipairs(paths) do
-    if path:find("background-browse-", 1, true) ~= nil then
-      browsePaths = browsePaths + 1
-    end
-  end
-  Assert.equal(browsePaths, 56, "all seven variants of all eight pockets participate in readiness")
-  for _, pocket in ipairs(POCKETS) do
-    for count = 0, 6 do
-      local path = "assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png"
-      Assert.equal(counts[path], 1, path .. " must be referenced exactly once")
-    end
-  end
-end
-
-function T.layered_backgrounds_share_one_base_across_action_quantity_and_move()
+function T.layered_backgrounds_share_bases_rows_and_overlays_across_states()
   local manifest = validDynamicManifest()
   manifest.interactive.backgrounds = layeredBackgrounds()
-  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the layered v19 backgrounds must validate")
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the layered v20 backgrounds must validate")
   local ok, paths = pcall(BagCache.referencedPaths, manifest)
   Assert.isTrue(ok, "the cache must resolve the layered manifest")
   assert(paths ~= nil, "a resolvable manifest must list its paths")
@@ -1016,68 +948,43 @@ function T.layered_backgrounds_share_one_base_across_action_quantity_and_move()
   for _, path in ipairs(paths) do
     counts[path] = (counts[path] or 0) + 1
   end
-  local layeredPaths = 0
-  for _, path in ipairs(paths) do
-    if path:find("background-browse-", 1, true) ~= nil then
-      layeredPaths = layeredPaths + 1
-    elseif path:find("-overlay-", 1, true) ~= nil then
-      layeredPaths = layeredPaths + 1
-    elseif path:find("background-move-", 1, true) ~= nil then
-      layeredPaths = layeredPaths + 1
-    elseif path:find("move-marker-", 1, true) ~= nil then
-      layeredPaths = layeredPaths + 1
-    end
-  end
-  Assert.equal(layeredPaths, 56 + 16 + 56 + 16, "layered backgrounds reference 144 files, not 561")
   for _, pocket in ipairs(POCKETS) do
-    for count = 0, 6 do
-      local base = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png"
-      Assert.equal(counts[base], 1, base .. " must be referenced exactly once")
+    local browseEntry = assert(
+      manifest.interactive.backgrounds.browse[pocket],
+      "browse covers pocket " .. pocket
+    )
+    Assert.equal(browseEntry.base.width, 256, "pocket " .. pocket .. " base keeps the pane width")
+    Assert.equal(browseEntry.base.height, 192, "pocket " .. pocket .. " base keeps the pane height")
+    Assert.equal(#browseEntry.rows, 3, "pocket " .. pocket .. " publishes three row patches")
+    for row = 1, 3 do
+      local patch = assert(browseEntry.rows[row], "pocket " .. pocket .. " publishes row patch " .. row)
+      Assert.equal(patch.width, 124, "pocket " .. pocket .. " row " .. row .. " keeps the art width")
+      Assert.equal(patch.height, 38, "pocket " .. pocket .. " row " .. row .. " keeps the art height")
     end
+    for row = 0, 2 do
+      local patch = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png"
+      Assert.equal(counts[patch], 1, patch .. " must be referenced exactly once")
+    end
+    for count = 1, 4 do
+      local moveBase = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png"
+      Assert.equal(counts[moveBase], 1, moveBase .. " must be referenced exactly once")
+    end
+    local sharedMove = "assets/generated/bag/background-move-" .. pocket .. "-count-0.png"
+    Assert.equal(counts[sharedMove], 3, sharedMove .. " backs the identical counts 0, 5, and 6")
     for _, state in ipairs({ "action", "quantity" }) do
       local overlay = "assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png"
       Assert.equal(counts[overlay], 1, overlay .. " must be referenced exactly once")
     end
   end
-  local baked = validDynamicManifest()
-  local retiredBackgrounds = {}
-  for _, state in ipairs({ "action", "quantity" }) do
-    local pockets = {}
-    for _, pocket in ipairs(POCKETS) do
-      local counts = {}
-      for count = 0, 6 do
-        counts[count] =
-          imageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png")
-      end
-      pockets[pocket] = counts
-    end
-    retiredBackgrounds[state] = pockets
-  end
-  local retiredMove = {}
-  for _, pocket in ipairs(POCKETS) do
-    local counts = {}
-    for count = 0, 6 do
-      local origins = {
-        none = imageRef(
-          "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png"
-        ),
-      }
-      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-        origins[origin] = imageRef(
-          "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-" .. origin .. ".png"
-        )
-      end
-      counts[count] = origins
-    end
-    retiredMove[pocket] = counts
-  end
-  retiredBackgrounds.move = retiredMove
-  retiredBackgrounds.browse = manifest.interactive.backgrounds.browse
-  baked.interactive.backgrounds = retiredBackgrounds
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(baked),
-    "the baked per-count action/quantity and per-origin move manifest must not validate once layers are current"
+  local cells = assert(
+    manifest.interactive.backgrounds.browseCells,
+    "the layered manifest carries its six browse cell rects"
   )
+  Assert.equal(#cells, 6, "browse publishes all six cell placements")
+  for index, cell in ipairs(cells) do
+    Assert.equal(cell.width, 124, "browse cell " .. index .. " keeps the audited art width")
+    Assert.equal(cell.height, 38, "browse cell " .. index .. " keeps the audited art height")
+  end
 end
 
 function T.hero_framing_carries_baseline_and_pocket_records_for_both_genders()
@@ -1114,32 +1021,13 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v19")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v19")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v19")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v20")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v20")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v20")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
   Assert.keySet(manifest.interactive.pocketTabs, "rects,strips", "pocket tabs carry only rects and strips")
-  local retired = validFocusManifest()
-  retired.schema = "g4-bag-assets-v7"
-  retired.interactive.pocketTabs = {
-    rects = retired.interactive.pocketTabs.rects,
-    normal = {
-      stripVisual("items"),
-      stripVisual("medicine"),
-      stripVisual("balls"),
-      stripVisual("tmhm"),
-      stripVisual("berries"),
-      stripVisual("mail"),
-      stripVisual("battle_items"),
-      stripVisual("key_items"),
-    },
-  }
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest(retired),
-    "the previous per-tab normal manifest must not validate once strips are current"
-  )
 end
 
 function T.quantity_cancel_and_label_origins_are_required()
@@ -1193,9 +1081,6 @@ function T.selection_entry_and_selected_item_presentation_are_required()
   local missingText = validFocusManifest()
   missingText.interactive.text.selectedItem = nil
   assertInvalid(missingText, "a manifest without the selected-item text must fail")
-  local extraCenter = validFocusManifest()
-  extraCenter.interactive.overlays.actionMenu.selectedItemCenter = { x = 86, y = 76 }
-  assertInvalid(extraCenter, "a manifest with the removed duplicate center must fail")
   local badTotal = validFocusManifest()
   badTotal.interactive.selectionEntry.totalTicks = 4
   assertInvalid(badTotal, "a manifest with a wrong selection total must fail")

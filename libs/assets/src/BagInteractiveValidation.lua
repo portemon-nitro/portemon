@@ -257,20 +257,57 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
 
   local COUNT_KEYS = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true }
 
-  -- Lower-pane backgrounds: seven browse count variants per pocket (an
-  -- array) shared as the runtime base for every state, one action and one
-  -- quantity overlay per pocket composited over that base, seven move count
-  -- bases per pocket (keyed by visible count 0..6) plus the low/high
-  -- origin-marker patches placed at the six origin rects. No standalone
-  -- confirmation surface survives.
+  -- Lower-pane backgrounds: one browse base plus three row patches per
+  -- pocket placed at the six cell rects (one row art serves both its
+  -- cells), one action and one quantity overlay per pocket composited over
+  -- that base, seven move count bases per pocket (keyed by visible count
+  -- 0..6) plus the low/high origin-marker patches placed at the six
+  -- origin rects. No standalone confirmation surface survives.
   local function checkPaneBackgrounds(backgrounds, schemaContext)
     Checks.checkRecord(backgrounds, {
       browse = true,
+      browseCells = true,
       actionOverlay = true,
       quantityOverlay = true,
       move = true,
       moveMarker = true,
     }, schemaContext, "interactive.backgrounds")
+    do
+      local browse = backgrounds.browse
+      Checks.checkRecord(browse, POCKET_SET, schemaContext, "interactive.backgrounds.browse", "a pocket record")
+      for _, pocket in ipairs(constantsForValidation.POCKETS) do
+        local perPocket = browse[pocket]
+        local pocketWhat = "interactive.backgrounds.browse." .. pocket
+        Checks.checkRecord(perPocket, { base = true, rows = true }, schemaContext, pocketWhat)
+        checkCountBackground(perPocket.base, pocketWhat .. ".base", schemaContext)
+        Checks.checkFixedArray(
+          perPocket.rows,
+          3,
+          schemaContext,
+          pocketWhat .. ".rows must carry exactly three row patches"
+        )
+        for index, patch in ipairs(perPocket.rows) do
+          local what = pocketWhat .. ".rows[" .. index .. "]"
+          Checks.checkVisual(patch, schemaContext, what)
+          if patch.width ~= 124 or patch.height ~= 38 then
+            Checks.reject(what .. " must be exactly 124x38", schemaContext)
+          end
+        end
+      end
+      Checks.checkFixedArray(
+        backgrounds.browseCells,
+        6,
+        schemaContext,
+        "interactive.backgrounds.browseCells must carry exactly six cell rects"
+      )
+      for index, cellRect in ipairs(backgrounds.browseCells) do
+        local what = "interactive.backgrounds.browseCells[" .. index .. "]"
+        checkRect(cellRect, schemaContext, what)
+        if cellRect.width ~= 124 or cellRect.height ~= 38 then
+          Checks.reject(what .. " must be exactly 124x38", schemaContext)
+        end
+      end
+    end
     for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
       local pockets = backgrounds[state]
       local what = "interactive.backgrounds." .. state
@@ -325,19 +362,6 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
         checkRect(markerRect, schemaContext, what)
         if markerRect.width ~= 128 or markerRect.height ~= 48 then
           Checks.reject(what .. " must be exactly 128x48", schemaContext)
-        end
-      end
-    end
-    local browse = backgrounds.browse
-    Checks.checkRecord(browse, POCKET_SET, schemaContext, "interactive.backgrounds.browse", "a pocket record")
-    for _, pocket in ipairs(constantsForValidation.POCKETS) do
-      local what = "interactive.backgrounds.browse." .. pocket
-      local variants = browse[pocket]
-      Checks.checkFixedArray(variants, 7, schemaContext, what .. " must carry exactly seven count visuals")
-      for index, visual in ipairs(variants) do
-        Checks.checkVisual(visual, schemaContext, what .. "[" .. index .. "]")
-        if visual.width ~= constantsForValidation.PANE_WIDTH or visual.height ~= constantsForValidation.PANE_HEIGHT then
-          Checks.reject(what .. "[" .. index .. "] must use the canonical pane size", schemaContext)
         end
       end
     end

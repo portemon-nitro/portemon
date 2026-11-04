@@ -724,17 +724,32 @@ local function layeredPocketBackgrounds()
   do
     local browse = {}
     for _, pocket in ipairs(POCKETS) do
-      local variants = {}
-      for count = 0, 6 do
-        variants[#variants + 1] = {
-          image = "assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png",
-          width = 256,
-          height = 192,
+      local rows = {}
+      for row = 0, 2 do
+        rows[#rows + 1] = {
+          image = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png",
+          width = 124,
+          height = 38,
         }
       end
-      browse[pocket] = variants
+      browse[pocket] = {
+        base = {
+          image = "assets/generated/bag/background-browse-base-" .. pocket .. ".png",
+          width = 256,
+          height = 192,
+        },
+        rows = rows,
+      }
     end
     backgrounds.browse = browse
+    backgrounds.browseCells = {
+      { x = 2, y = 37, width = 124, height = 38 },
+      { x = 130, y = 37, width = 124, height = 38 },
+      { x = 2, y = 77, width = 124, height = 38 },
+      { x = 130, y = 77, width = 124, height = 38 },
+      { x = 2, y = 117, width = 124, height = 38 },
+      { x = 130, y = 117, width = 124, height = 38 },
+    }
   end
   for _, state in ipairs({ "action", "quantity" }) do
     local overlays = {}
@@ -751,13 +766,15 @@ local function layeredPocketBackgrounds()
     local move = {}
     for _, pocket in ipairs(POCKETS) do
       local counts = {}
-      for count = 0, 6 do
+      for count = 0, 4 do
         counts[count] = {
           image = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png",
           width = 256,
           height = 192,
         }
       end
+      counts[5] = counts[0]
+      counts[6] = counts[0]
       move[pocket] = counts
     end
     backgrounds.move = move
@@ -815,7 +832,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v19",
+    schema = "g4-bag-assets-v20",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -1245,7 +1262,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v19")
+  Assert.equal(loaded.schema, "g4-bag-assets-v20")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)
@@ -1265,31 +1282,33 @@ function T.writer_publishes_the_class_and_reports_ready()
   )
 end
 
--- Publication closure for the layered backgrounds: 56 browse bases, 16
--- state overlays, 56 move bases, and 16 marker patches. No baked
--- per-count action/quantity variant and no per-origin move variant may
--- survive in the published class.
-function T.writer_closure_lists_layered_backgrounds_without_baked_variants()
+-- Publication closure for the layered backgrounds: shared browse bases and
+-- row patches, one overlay per pocket for action/quantity, count-variant
+-- move bases with the identical counts sharing one file, and marker patches.
+function T.writer_closure_lists_layered_backgrounds_once_per_shared_layer()
   local bundle = syntheticBundle(BagCache.marker("rom", "deps"))
-  local backgroundPaths = {}
-  for _, path in ipairs(BagCache.referencedPaths(bundle.manifest)) do
-    if path:find("background-", 1, true) ~= nil or path:find("move-marker-", 1, true) ~= nil then
-      backgroundPaths[#backgroundPaths + 1] = path
-    end
+  local paths = BagCache.referencedPaths(bundle.manifest)
+  local counts = {}
+  for _, path in ipairs(paths) do
+    counts[path] = (counts[path] or 0) + 1
   end
-  Assert.equal(
-    #backgroundPaths,
-    56 + 16 + 56 + 16 + 1,
-    "layered backgrounds publish 144 files plus the single sale chrome, not 561"
-  )
-  for _, path in ipairs(backgroundPaths) do
-    Assert.isNil(path:find("-origin-", 1, true), path .. " must not be a baked per-origin variant")
-    if path:find("background-action-", 1, true) ~= nil or path:find("background-quantity-", 1, true) ~= nil then
-      Assert.notNil(
-        path:find("-overlay-", 1, true),
-        path .. " must be the pocket overlay, not a baked per-count variant"
-      )
+  for _, pocket in ipairs(POCKETS) do
+    local base = "assets/generated/bag/background-browse-base-" .. pocket .. ".png"
+    Assert.equal(counts[base], 1, base .. " is referenced exactly once")
+    for row = 0, 2 do
+      local patch = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png"
+      Assert.equal(counts[patch], 1, patch .. " is referenced exactly once")
     end
+    for _, state in ipairs({ "action", "quantity" }) do
+      local overlay = "assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png"
+      Assert.equal(counts[overlay], 1, overlay .. " is referenced exactly once")
+    end
+    for count = 1, 4 do
+      local moveBase = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png"
+      Assert.equal(counts[moveBase], 1, moveBase .. " is referenced exactly once")
+    end
+    local shared = "assets/generated/bag/background-move-" .. pocket .. "-count-0.png"
+    Assert.equal(counts[shared], 3, shared .. " backs the identical move counts 0, 5, and 6")
   end
 end
 

@@ -133,7 +133,7 @@ function T.summary_family_carries_the_v4_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.bag.schema,
-    "g4-bag-assets-v19",
+    "g4-bag-assets-v20",
     "the bag sibling identity survives the summary schema change"
   )
 end

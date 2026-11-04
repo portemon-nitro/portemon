@@ -8,11 +8,11 @@
 -- text windows and explicit text anchors plus registration markers, the
 -- semantic focus visuals with their canonical target points, the count
 -- readout, Cancel with its text window and source-centered label area,
--- the layered lower-pane backgrounds (seven browse count variants per pocket
--- shared as the base for every state, one action and one quantity overlay
--- per pocket composited over that base at runtime, seven move count bases
--- per pocket plus the low/high origin-marker patches placed at the six
--- origin rects), the
+-- the layered lower-pane backgrounds (one browse base plus three row
+-- patches per pocket placed at the six cell rects, one action and one
+-- quantity overlay per pocket composited over that base at runtime, seven
+-- move count bases per pocket plus the low/high origin-marker patches
+-- placed at the six origin rects), the
 -- retained selected-item panel, short/tall lower-message geometry,
 -- activation feedback timing with control visuals, unchanged/changed move
 -- commit clips, original/candidate move target visuals, pocket-aware hero
@@ -32,7 +32,7 @@ local InteractiveValidation = require("libs.assets.src.BagInteractiveValidation"
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v19"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v20"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8

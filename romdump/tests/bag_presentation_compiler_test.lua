@@ -67,6 +67,22 @@ function T.move_marker_rects_lower_the_audited_origin_rows_to_pixels()
   )
 end
 
+function T.browse_cell_rects_lower_the_audited_slot_art_bounds()
+  local geometry = BagPresentationCompiler.compileGeometry(BagSources)
+  Assert.deepEqual(
+    assert(geometry.browseCellRects, "compiled geometry includes the browse cell rects"),
+    {
+      { x = 2, y = 37, width = 124, height = 38 },
+      { x = 130, y = 37, width = 124, height = 38 },
+      { x = 2, y = 77, width = 124, height = 38 },
+      { x = 130, y = 77, width = 124, height = 38 },
+      { x = 2, y = 117, width = 124, height = 38 },
+      { x = 130, y = 117, width = 124, height = 38 },
+    },
+    "cell rects carry the audited slot-art bounds left-to-right, top-to-bottom"
+  )
+end
+
 function T.sale_geometry_compiles_two_digits_and_four_source_controls()
   local geometry = BagPresentationCompiler.compileGeometry(BagSources)
   local sale = assert(geometry.sale, "compiled geometry includes the source sale context")
@@ -262,6 +278,7 @@ function T.slot_icon_centers_follow_the_item_icon_record()
     geometry = BagSources.geometry,
     saleQuantity = BagSources.saleQuantity,
     moveOriginRows = BagSources.moveOriginRows,
+    browseCellRects = BagSources.browseCellRects,
   }
   local geometry = BagPresentationCompiler.compileGeometry(edited)
   Assert.deepEqual(geometry.slots[1].iconCenter, { x = 23, y = 59 }, "compiled icons track the icon record")
@@ -398,6 +415,7 @@ function T.geometry_accepts_a_point_on_the_pane_edge()
     geometry = BagSources.geometry,
     saleQuantity = BagSources.saleQuantity,
     moveOriginRows = BagSources.moveOriginRows,
+    browseCellRects = BagSources.browseCellRects,
   }
   local geometry = BagPresentationCompiler.compileGeometry(edited)
   Assert.deepEqual(geometry.focus.items[1], { x = 256, y = 192 }, "the inclusive pane edge must stay accepted")

@@ -73,6 +73,12 @@ function BagCache.referencedPaths(manifest)
   addImage(interactive.sale.quantityBackground)
   addVisual(interactive.sale.confirm.visual)
   addVisual(interactive.sale.cancel.visual)
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    addVisual(interactive.backgrounds.browse[pocket].base)
+    for _, patch in ipairs(interactive.backgrounds.browse[pocket].rows) do
+      addVisual(patch)
+    end
+  end
   for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       addVisual(interactive.backgrounds[state][pocket])

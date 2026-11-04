@@ -179,10 +179,12 @@ function BagPresentationFixture.manifest()
     local move = {}
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       local counts = {}
-      for count = 0, 6 do
+      for count = 0, 4 do
         counts[count] =
           bagImageRef("assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png")
       end
+      counts[5] = counts[0]
+      counts[6] = counts[0]
       move[pocket] = counts
     end
     backgrounds.move = move
@@ -210,14 +212,25 @@ function BagPresentationFixture.manifest()
   do
     local browse = {}
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      local variants = {}
-      for count = 0, 6 do
-        variants[#variants + 1] =
-          bagImageRef("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+      local rows = {}
+      for row = 0, 2 do
+        rows[#rows + 1] =
+          { image = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png", width = 124, height = 38 }
       end
-      browse[pocket] = variants
+      browse[pocket] = {
+        base = bagImageRef("assets/generated/bag/background-browse-base-" .. pocket .. ".png"),
+        rows = rows,
+      }
     end
     backgrounds.browse = browse
+    backgrounds.browseCells = {
+      bagRect(2, 37, 124, 38),
+      bagRect(130, 37, 124, 38),
+      bagRect(2, 77, 124, 38),
+      bagRect(130, 77, 124, 38),
+      bagRect(2, 117, 124, 38),
+      bagRect(130, 117, 124, 38),
+    }
   end
   local function framingRecord()
     return { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.2, modelY = -2.8 }

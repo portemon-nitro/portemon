@@ -97,17 +97,32 @@ local function manifest()
   do
     local browse = {}
     for _, pocket in ipairs(pockets) do
-      local variants = {}
-      for count = 0, 6 do
-        variants[count + 1] = {
-          image = "bag/background-browse-" .. pocket .. "-" .. count .. ".png",
-          width = 256,
-          height = 192,
+      local rows = {}
+      for row = 0, 2 do
+        rows[row + 1] = {
+          image = "bag/background-browse-row-" .. pocket .. "-" .. row .. ".png",
+          width = 124,
+          height = 38,
         }
       end
-      browse[pocket] = variants
+      browse[pocket] = {
+        base = {
+          image = "bag/background-browse-base-" .. pocket .. ".png",
+          width = 256,
+          height = 192,
+        },
+        rows = rows,
+      }
     end
     backgrounds.browse = browse
+    backgrounds.browseCells = {
+      { x = 2, y = 37, width = 124, height = 38 },
+      { x = 130, y = 37, width = 124, height = 38 },
+      { x = 2, y = 77, width = 124, height = 38 },
+      { x = 130, y = 77, width = 124, height = 38 },
+      { x = 2, y = 117, width = 124, height = 38 },
+      { x = 130, y = 117, width = 124, height = 38 },
+    }
   end
   local slots = {}
   local shapes = {
@@ -421,8 +436,9 @@ local function seedCache()
     end
   end
   for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
-    for count = 0, 6 do
-      paths[#paths + 1] = "bag/background-browse-" .. pocket .. "-" .. count .. ".png"
+    paths[#paths + 1] = "bag/background-browse-base-" .. pocket .. ".png"
+    for row = 0, 2 do
+      paths[#paths + 1] = "bag/background-browse-row-" .. pocket .. "-" .. row .. ".png"
     end
   end
   for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
@@ -1046,8 +1062,12 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
     )
   end
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:browse:balls:2"]),
+    wasDrawn(graphics, draw._images["background:browse:balls:base"]),
     "browse uses the pocket-specific background"
+  )
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["browseRow:balls:0"]),
+    "browse draws its visible row patch"
   )
   Assert.equal(#graphics.rectangles, 0, "item focus never falls back to primitive outlines")
   local itemFocus = manifested.interactive.focus.items
@@ -1073,9 +1093,9 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
       record.actionNode = 0
     end
     admitted(draw, record, plan(true), { icons = icons() })
-    local keys = state == "action_menu" and { "background:browse:balls:2", "overlay:action:balls" }
-      or state == "toss_quantity" and { "background:browse:balls:2", "overlay:quantity:balls" }
-      or state == "toss_confirm" and { "background:browse:balls:2", "overlay:action:balls" }
+    local keys = state == "action_menu" and { "background:browse:balls:base", "browseRow:balls:0", "overlay:action:balls" }
+      or state == "toss_quantity" and { "background:browse:balls:base", "browseRow:balls:0", "overlay:quantity:balls" }
+      or state == "toss_confirm" and { "background:browse:balls:base", "browseRow:balls:0", "overlay:action:balls" }
       or { "background:move:balls:2", "moveMarker:balls:low" }
     for _, key in ipairs(keys) do
       Assert.isTrue(
@@ -1107,13 +1127,17 @@ function T.layered_backgrounds_composite_base_before_overlay_and_marker()
   record.actions = { { id = "toss", slot = 1 } }
   record.actionNode = 0
   admitted(draw, record, plan(true), { icons = icons() })
-  local base = assert(draw._images["background:browse:balls:2"], "action binds its browse base")
+  local base = assert(draw._images["background:browse:balls:base"], "action binds its browse base")
+  local row = assert(draw._images["browseRow:balls:0"], "action binds its visible row patch")
   local overlay = assert(draw._images["overlay:action:balls"], "action binds its pocket overlay")
   local cancelFace = assert(draw._images["cancelFace"], "action binds its retained Cancel face")
-  local baseAt, overlayAt, cancelAt = nil, nil, nil
+  local baseAt, rowAt, overlayAt, cancelAt = nil, nil, nil, nil
   for index, entry in ipairs(graphics.draws) do
     if entry.image == base and entry.x == 0 and entry.y == 0 then
       baseAt = baseAt or index
+    end
+    if entry.image == row and entry.x == 2 and entry.y == 37 then
+      rowAt = rowAt or index
     end
     if entry.image == overlay and entry.x == 0 and entry.y == 0 then
       overlayAt = overlayAt or index
@@ -1123,9 +1147,11 @@ function T.layered_backgrounds_composite_base_before_overlay_and_marker()
     end
   end
   Assert.isTrue(baseAt ~= nil, "action draws its browse base at the pane origin")
+  Assert.isTrue(rowAt ~= nil, "action draws its row patch at the first cell rect")
   Assert.isTrue(overlayAt ~= nil, "action draws its pocket overlay at the pane origin")
   Assert.isTrue(cancelAt ~= nil, "action draws its Cancel face at the Cancel target")
-  Assert.isTrue(baseAt < overlayAt, "the overlay composites over the base")
+  Assert.isTrue(baseAt < rowAt, "the row patch composites over the base")
+  Assert.isTrue(rowAt < overlayAt, "the overlay composites over the row patch")
   Assert.isTrue(overlayAt < cancelAt, "the Cancel face composites over the overlay")
   clearDraws(graphics)
   local move = status({ state = "move_select", moveTarget = 1, moveOrigin = 0 })
@@ -1164,7 +1190,7 @@ function T.browse_keeps_generated_chrome()
   Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "browse draws its pocket-specific strip")
   Assert.equal(#readPathsContaining(requested, "highlight"), 0, "the selected pocket enrolls no synthetic highlight")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:browse:balls:2"]),
+    wasDrawn(graphics, draw._images["background:browse:balls:base"]),
     "browse uses its pocket-specific background"
   )
   Assert.isTrue(printedText(content, "BACK OUT"), "the generated cancel affordance prints its label")
@@ -2536,10 +2562,10 @@ function T.browse_selects_the_background_of_the_current_pocket()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw, manifested = composedRenderer(graphics, text(), nil)
   admitted(draw, status({ pocket = "items" }), singlePane(), { icons = icons() })
-  local itemsBackground = assert(draw._images["background:browse:items:2"], "the items browse background resolves")
+  local itemsBackground = assert(draw._images["background:browse:items:base"], "the items browse background resolves")
   Assert.isTrue(wasDrawn(graphics, itemsBackground), "the items pocket draws its own background")
   Assert.isNil(
-    draw._images["background:browse:medicine:2"],
+    draw._images["background:browse:medicine:base"],
     "the one-step-ahead pocket warms as soft interest without installing"
   )
   for key in pairs(graphics.draws) do
@@ -2547,11 +2573,11 @@ function T.browse_selects_the_background_of_the_current_pocket()
   end
   admitted(draw, status({ pocket = "medicine" }), singlePane(), { icons = icons() })
   local medicineBackground =
-    assert(draw._images["background:browse:medicine:2"], "the medicine browse background resolves")
+    assert(draw._images["background:browse:medicine:base"], "the medicine browse background resolves")
   Assert.isTrue(itemsBackground ~= medicineBackground, "pocket variants are distinct bindings")
   Assert.isTrue(wasDrawn(graphics, medicineBackground), "the medicine pocket draws its own background")
   Assert.isFalse(wasDrawn(graphics, itemsBackground), "the medicine pocket never falls back to items")
-  Assert.equal(manifested.interactive.backgrounds.browse.items[3].width, 256, "the pocket variant keeps pane size")
+  Assert.equal(manifested.interactive.backgrounds.browse.items.base.width, 256, "the pocket variant keeps pane size")
   draw:release()
 end
 
@@ -2571,26 +2597,44 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local record = status({ pocket = "balls", focus = "tabs" })
   record.selected = nil
   admitted(draw, record, singlePane(), { icons = icons() })
-  -- Single-pane draws without selection: background, then the pocket strip,
-  -- then the one tab focus visual. No item focus may appear.
-  local visuals = {}
-  for _, entry in ipairs(graphics.draws) do
-    if type(entry.quad) ~= "table" then
-      visuals[#visuals + 1] = entry
+  -- Single-pane draws without selection: the browse base and its visible
+  -- row patches, then the pocket strip, then the one tab focus visual.
+  -- No item focus may appear. Assert relative order rather than an exact
+  -- draw count so added background layers do not break the contract.
+  local function drawIndex(image)
+    for position, entry in ipairs(graphics.draws) do
+      if type(entry.quad) ~= "table" and entry.image == image then
+        return position
+      end
     end
+    return nil
   end
-  Assert.equal(#visuals, 3, "one background, the pocket strip, and one tab focus are drawn")
+  local baseAt = assert(drawIndex(draw._images["background:browse:balls:base"]), "the browse base draws")
+  local rowAt = assert(drawIndex(draw._images["browseRow:balls:0"]), "the visible row patch draws")
+  local stripAt = assert(drawIndex(draw._images["strip:balls"]), "the pocket strip draws")
   local tabFocus = manifested.interactive.focus.tabs
   local focusOffset = tabFocus.visual.offset or { x = 0, y = 0 }
   local target = tabFocus.targets[3]
-  Assert.equal(visuals[3].x, target.x + focusOffset.x, "the tab focus applies its horizontal offset once")
-  Assert.equal(visuals[3].y, target.y + focusOffset.y, "the tab focus applies its vertical offset once")
-  local strip = assert(manifested.interactive.pocketTabs.strips.balls, "the balls strip is generated")
-  Assert.isTrue(visuals[2].image == draw._images["strip:balls"], "the pocket strip draws at the strip origin")
-  Assert.equal(visuals[2].x, 0, "the pocket strip draws at the canonical strip origin")
-  Assert.equal(visuals[2].y, 0, "the pocket strip keeps the canonical strip height origin")
-  Assert.equal(strip.width, 256, "the generated strip keeps the canonical strip width")
-  Assert.equal(strip.height, 32, "the generated strip keeps the canonical strip height")
+  local focusX, focusY = target.x + focusOffset.x, target.y + focusOffset.y
+  local focusAt = nil
+  for position, entry in ipairs(graphics.draws) do
+    if type(entry.quad) ~= "table" and entry.x == focusX and entry.y == focusY then
+      focusAt = focusAt or position
+    end
+  end
+  Assert.notNil(focusAt, "the tab focus draws at its generated target")
+  Assert.isTrue(baseAt < rowAt, "the row patch composites over the base")
+  Assert.isTrue(rowAt < stripAt, "the pocket strip draws after the background layers")
+  Assert.isTrue(stripAt < focusAt, "the foreground cursor draws after the pocket strip")
+  local secondCell = nil
+  for _, entry in ipairs(graphics.draws) do
+    if type(entry.quad) ~= "table" and entry.image == draw._images["browseRow:balls:0"] then
+      if entry.x == 130 and entry.y == 37 then
+        secondCell = entry
+      end
+    end
+  end
+  Assert.notNil(secondCell, "the second cell draws the shared row art at its own rect")
   Assert.equal(#graphics.rectangles, 0, "tab selection never uses a primitive outline")
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
@@ -2598,10 +2642,10 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local unfocused = status({ pocket = "balls", focus = "items" })
   unfocused.selected = nil
   admitted(draw, unfocused, singlePane(), { icons = icons() })
-  Assert.equal(staticDrawCount(graphics), 3, "item focus leaves the tab row without its focus visual")
+  Assert.isTrue(wasDrawn(graphics, draw._images["background:browse:balls:base"]), "item focus keeps the browse base")
   Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "item focus keeps the active pocket strip")
   Assert.isFalse(
-    staticDrawnAt(graphics, target.x + focusOffset.x, target.y + focusOffset.y),
+    staticDrawnAt(graphics, focusX, focusY),
     "the tab focus follows semantic focus, not pocket identity"
   )
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
@@ -2780,7 +2824,7 @@ local function occupiedCells(count)
   return cells
 end
 
-function T.browse_background_follows_the_visible_occupied_count()
+function T.browse_background_layers_base_and_visible_row_patches()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = BagRenderer.new({
     cacheFs = seedCache(),
@@ -2791,7 +2835,7 @@ function T.browse_background_follows_the_visible_occupied_count()
     heroRenderer = heroSpy(nil),
     imagePool = SharedImagePoolFake.new(),
   })
-  for _, count in ipairs({ 0, 3, 6 }) do
+  for _, count in ipairs({ 0, 1, 2, 3, 4, 5, 6 }) do
     for key in pairs(graphics.draws) do
       graphics.draws[key] = nil
     end
@@ -2802,14 +2846,17 @@ function T.browse_background_follows_the_visible_occupied_count()
       record.selected = record.visibleSlots[1]
     end
     admitted(draw, record, plan(true), { icons = icons() })
-    local expected = draw._images["background:browse:items:" .. count]
-    Assert.notNil(expected, "the count " .. count .. " browse variant is bound")
-    Assert.isTrue(wasDrawn(graphics, expected), "the visible count " .. count .. " draws its own background")
-    for _, other in ipairs({ 0, 1, 2, 3, 4, 5, 6 }) do
-      if other ~= count then
-        Assert.isFalse(
-          wasDrawn(graphics, draw._images["background:browse:items:" .. other]),
-          "the visible count " .. count .. " never borrows count " .. other
+    local base = assert(draw._images["background:browse:items:base"], "the count " .. count .. " base is bound")
+    Assert.isTrue(wasDrawn(graphics, base), "the visible count " .. count .. " draws its pocket base")
+    for row = 0, 2 do
+      local patch = draw._images["browseRow:items:" .. row]
+      if count > row * 2 then
+        Assert.notNil(patch, "the visible count " .. count .. " binds row " .. row)
+        Assert.isTrue(wasDrawn(graphics, patch), "the visible count " .. count .. " draws row " .. row)
+      else
+        Assert.isTrue(
+          patch == nil or not wasDrawn(graphics, patch),
+          "the visible count " .. count .. " never draws row " .. row
         )
       end
     end
@@ -2820,6 +2867,11 @@ function T.browse_background_follows_the_visible_occupied_count()
   Assert.throws(function()
     admitted(draw, status({ pocket = "items", visibleSlots = mixed }), plan(true), { icons = icons() })
   end, "a non-contiguous visible window fails instead of guessing a count")
+  local leadingGap = occupiedCells(0)
+  leadingGap[2] = slot("ITEM_2", 1)
+  Assert.throws(function()
+    admitted(draw, status({ pocket = "items", visibleSlots = leadingGap }), plan(true), { icons = icons() })
+  end, "an empty first cell with occupied cells behind it fails instead of guessing a count")
   Assert.equal(#graphics.rectangles, 0, "count chrome never falls back to primitive outlines")
   draw:release()
 end
@@ -2877,55 +2929,6 @@ function T.cancel_label_centers_inside_its_source_label_area()
   Assert.deepEqual(label.palette, paletteRecord(content, 15, 14), "Cancel uses the description window roles")
   Assert.equal(#graphics.rectangles, 0, "Cancel emits no primitive button face")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
-  draw:release()
-end
-
-function T.browse_background_selects_each_partial_count()
-  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local draw = BagRenderer.new({
-    cacheFs = seedCache(),
-    manifest = manifest(),
-    promptManifest = promptManifest(),
-    text = text(),
-    graphics = graphics,
-    heroRenderer = heroSpy(nil),
-    imagePool = SharedImagePoolFake.new(),
-  })
-  for _, count in ipairs({ 1, 2, 4, 5 }) do
-    for key in pairs(graphics.draws) do
-      graphics.draws[key] = nil
-    end
-    local record = status({ pocket = "balls", visibleSlots = occupiedCells(count) })
-    record.selected = record.visibleSlots[1]
-    admitted(draw, record, plan(true), { icons = icons() })
-    local expected = draw._images["background:browse:balls:" .. count]
-    Assert.notNil(expected, "the count " .. count .. " browse variant is bound")
-    Assert.isTrue(wasDrawn(graphics, expected), "the visible count " .. count .. " draws its own background")
-    Assert.isFalse(
-      wasDrawn(graphics, draw._images["background:browse:balls:" .. (count + 1)]),
-      "the visible count " .. count .. " never borrows its neighbor variant"
-    )
-  end
-  Assert.equal(#graphics.rectangles, 0, "count chrome never falls back to primitive outlines")
-  draw:release()
-end
-
-function T.leading_empty_cell_fails_the_visible_count()
-  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local draw = BagRenderer.new({
-    cacheFs = seedCache(),
-    manifest = manifest(),
-    promptManifest = promptManifest(),
-    text = text(),
-    graphics = graphics,
-    heroRenderer = heroSpy(nil),
-    imagePool = SharedImagePoolFake.new(),
-  })
-  local cells = occupiedCells(0)
-  cells[2] = slot("ITEM_2", 1)
-  Assert.throws(function()
-    admitted(draw, status({ pocket = "items", visibleSlots = cells }), plan(true), { icons = icons() })
-  end, "an empty first cell with occupied cells behind it fails instead of guessing a count")
   draw:release()
 end
 
@@ -3626,7 +3629,7 @@ function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
   Assert.isFalse(printedText(content, "1/1"), "the acknowledgement draws no page indicator")
   Assert.isFalse(printedText(content, "BACK OUT"), "the acknowledgement draws no cancel label")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:browse:balls:2"]),
+    wasDrawn(graphics, draw._images["background:browse:balls:base"]),
     "the acknowledgement retains its browse base"
   )
   Assert.isTrue(
@@ -4642,7 +4645,7 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
   Assert.isTrue(#graphics.draws > 0, "the admitted browsing menu draws its composition")
   local browseDigest = drawDigest(graphics, true)
   local browseBackground =
-    assert(draw._images["background:browse:balls:2"], "the browsing menu binds its pocket background")
+    assert(draw._images["background:browse:balls:base"], "the browsing menu binds its pocket background")
   local stripInstalled = assert(draw._images["strip:balls"], "the browsing menu binds its pocket strip")
   local uploadsBefore = state.inner.uploads
   local held = pool:stats().outstandingLeases
@@ -4847,11 +4850,12 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
         })
         Assert.isTrue(draw:prepare(sale), "the sale state publishes without re-enrolling chrome")
         Assert.equal(state.requests, requestsBefore, "the background-free sale state enrolls no new demand")
-        Assert.isNil(draw._images["background:browse:balls:2"], "the sale state drops the obsolete background")
+        Assert.isNil(draw._images["background:browse:balls:base"], "the sale state drops the obsolete background")
+        Assert.isNil(draw._images["browseRow:balls:0"], "the sale state drops the obsolete row patch")
         Assert.equal(
           pool:stats().outstandingLeases,
-          held - 1,
-          "the sale state returns exactly the obsolete background lease"
+          held - 2,
+          "the sale state returns exactly the obsolete background leases"
         )
         clearDraws(graphics)
         draw:draw(sale, plan(true), { icons = icons() })
