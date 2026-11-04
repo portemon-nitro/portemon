@@ -48,10 +48,14 @@ OptionsSources.members = {
   previewScreen = 19,
 }
 
--- The two opaque base planes the generated backdrops compile, keyed by
+-- The two opaque source planes the generated backdrops compile, keyed by
 -- their display binding. The selection overlay screen 18 stays outside
 -- this table: it animates the selected row on MAIN_0, it never backs
--- the full plane.
+-- the full plane. The MAIN base (screen 17, char 7, palette 2) carries
+-- the 256x256 controls plane: the header shell band is pixel rows 0..23
+-- (tile rows 0..2) and the footer shell band is pixel rows 168..191
+-- (tile rows 21..23). Both bands keep their exact source entries; only
+-- the scrolling row plates scrub the preprinted control faces.
 OptionsSources.bases = {
   controls = { display = "MAIN" },
   preview = { display = "SUB" },
@@ -113,27 +117,47 @@ OptionsSources.faceOrigins = {
   wide = { x = 112, y = 72 },
 }
 
--- Audited material for the scrolling list row plates, verified against the
--- retail MAIN base (screen 17 with char 7 and palette 2). The first two
--- native 24px bands are the alternating row references: tile rows 3..5 carry
--- the odd band, tile rows 6..8 the even band. Columns 14..30 (x112..247)
--- hold the preprinted control faces and are scrubbed per tile row with the
--- filler entry observed at interior column 4 of the same tile row; the
--- recorded tile ids are the cross-check expectation, so a source revision
--- carrying different backing material fails instead of shipping new art.
+-- Audited material for the scrolling list row plates and the shell
+-- bands, verified against the retail MAIN base (screen 17 with char 7
+-- and palette 2). The header shell band is tile rows 0..2 (pixel rows
+-- 0..23, the title band) and the footer shell band is tile rows 21..23
+-- (pixel rows 168..191, the Confirm/Quit band); both keep exact source
+-- entries with no scrubbing. The first two native 24px bands are the alternating row references: tile rows 3..5 carry
+-- the odd band, tile rows 6..8 the even band. Columns 13..30 (x104..247)
+-- hold the preprinted control faces interleaved with native dividers,
+-- inter-pill separators, and control-side backing: only the pill-face
+-- tiles (faceTiles.first..faceTiles.last) hide behind the filler entry
+-- observed at interior column 4 of the same tile row, while every other
+-- entry in the span keeps its exact source tile. Column 13 carries the
+-- native vertical divider (tiles 14/26/34/40, never face material): the
+-- base holds unselected prints starting at the pill anchors, the
+-- selection nub lives only in the runtime sprite, so preserving the
+-- divider never ghosts nub ink. The even band's right-of-pills backing
+-- (columns 26..30, tiles 24/12) stays native light control backing
+-- instead of the dark label-side filler. The recorded tile ids are the
+-- cross-check expectation, so a source revision carrying different
+-- backing material fails instead of shipping new art.
 -- Column 31 (x248..255) keeps its source edge cap: those tiles carry only
 -- band backing and window edge colors, never control-face colors, and they
 -- continue the row's right window border that the retained column 0 starts.
 -- Observed tile palette entries: odd mid tile 12 is one flat color, even
 -- mid tile 38 is one flat color, edge tiles 24/32 pair one backing color
--- with one edge line color, and face tiles 64..74 carry the distinct
--- control-face colors absent from every filler.
+-- with one edge line color. The compound frame
+-- plate is 72px (9 tile rows): the odd top, mid, and bottom rows, then
+-- the odd mid row five more times, closed by the odd bottom row; its
+-- per-row fillers match oddFillers[1], [2], [3], [2] x5, [3].
 OptionsSources.rowPlates = {
   oddBand = { topTileRow = 3, midTileRow = 4, bottomTileRow = 5 },
   evenBand = { topTileRow = 6, midTileRow = 7, bottomTileRow = 8 },
-  faceFirstColumn = 14,
+  faceFirstColumn = 13,
   faceLastColumn = 30,
   fillerColumn = 4,
+  -- Preprinted pill-face tile ids inside columns 13..30: the rounded
+  -- face borders and interiors the scrub hides. Every other tile in the
+  -- span (dividers 13/14/25/26/33/34/39/40, separators 17/29, backing
+  -- 12/24) keeps its exact source entry.
+  faceTiles = { first = 64, last = 74 },
+  keptTiles = { [12] = true, [14] = true, [17] = true, [24] = true, [26] = true, [29] = true, [34] = true, [40] = true },
   -- Expected filler tile per band tile row (top, mid, bottom), palette 0.
   oddFillers = { 24, 12, 24 },
   evenFillers = { 32, 38, 32 },

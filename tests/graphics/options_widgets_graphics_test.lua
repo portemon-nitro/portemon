@@ -2,8 +2,9 @@
 -- and unselected choice states sample their own source frames through the
 -- shared image-pool leases, pressed arrow and footer states resolve their
 -- compiled frames by animation age, and the project-authored slider draws
--- only its rail, fill, and thumb on the logical pixel grid: a focused row is
--- marked by the list selection strip, never by an extra slider outline. Missing
+-- only its rail, fill, and masked-marker down cursor on the logical pixel
+-- grid: a focused row is marked by the list selection strip, never by an
+-- extra slider outline, and no white square thumb remains. Missing
 -- art fails explicitly and every draw restores the borrowed graphics
 -- state; releasing the borrowed leases returns pool references to
 -- baseline.
@@ -170,7 +171,7 @@ function T.choice_states_sample_their_own_compiled_frames(scope)
     { 40, 200, 40, 255 },
     "selected honors the signed source offset left of its anchor"
   )
-  Assert.deepEqual(pixel(selected, 35, 30), { 0, 0, 0, 0 }, "pixels outside the frame rect stay untouched")
+  Assert.deepEqual(pixel(selected, 31, 30), { 0, 0, 0, 0 }, "pixels outside the frame rect stay untouched")
 end
 
 function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
@@ -205,27 +206,57 @@ function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
   Assert.deepEqual(pixel(pressed, 34, 42), { 200, 200, 90, 255 }, "an aged footer press samples its second frame")
 end
 
-function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
+-- The slider cursor is the down-pointing selection-marker frame drawn
+-- axis-aligned: the caller prepares the full-frame viewport once and
+-- lends it with the compiled marker extent, mirroring the renderer
+-- contract.
+local function cursorFor(chrome, manifest)
+  local cursor = assert(manifest.options.sliderCursor, "the section carries its slider cursor")
+  local frame = assert(cursor.frames[1], "the slider cursor carries its marker frame")
+  local image = assert(chrome.image, "the chrome lease carries its resolved image")
+  local width, height = image:getWidth(), image:getHeight()
+  local quad = love.graphics.newQuad(
+    frame.atlas.x,
+    frame.atlas.y,
+    frame.atlas.width,
+    frame.atlas.height,
+    width,
+    height
+  )
+  return {
+    chrome = chrome,
+    quad = quad,
+    width = frame.atlas.width,
+    height = frame.atlas.height,
+  }
+end
+
+function T.slider_cursor_points_down_with_its_tip_on_the_track(scope)
   local Widgets = widgetsModule()
   local Slider = sliderModule()
-  setup(scope)
+  local manifest, chrome = setup(scope)
+  local cursor = cursorFor(chrome, manifest)
   local resolved =
     Slider.resolve({ rect = { x = 10, y = 20, width = 210, height = 30 }, count = 5, index = 4, knobExtent = 10 })
   local style = {
     rail = { r = 0, g = 0, b = 1, a = 1 },
     fill = { r = 0, g = 1, b = 0, a = 1 },
-    thumb = { r = 1, g = 0, b = 0, a = 1 },
-    thumbEdge = { r = 1, g = 1, b = 1, a = 1 },
   }
+  -- The cursor ink is the fixture's flat selection-marker frame color.
+  local cursorInk = { 20, 170, 190, 255 }
   local before = graphicsState()
   local unfocused = renderInto(scope, 256, 64, function()
-    Widgets.drawSlider(love.graphics, resolved, style)
+    Widgets.drawSlider(love.graphics, resolved, style, cursor)
   end)
   assertSameState(before, graphicsState(), "slider painting")
   local thumb = resolved.thumbRect
   local centerX = math.floor(thumb.x + thumb.width / 2)
   local centerY = math.floor(resolved.centerY)
-  Assert.deepEqual(pixel(unfocused, centerX, centerY), { 255, 0, 0, 255 }, "the thumb fills its resolved rect")
+  Assert.deepEqual(
+    pixel(unfocused, centerX, centerY),
+    cursorInk,
+    "the cursor tip lands on the track value"
+  )
   Assert.deepEqual(
     pixel(unfocused, math.floor(resolved.trackStartX) + 2, centerY),
     { 0, 255, 0, 255 },
@@ -241,8 +272,39 @@ function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
     { 0, 0, 0, 0 },
     "no focus outline leaks outside an unfocused slider"
   )
+  local function hasWhiteSquare(image)
+    for y = 0, 63 do
+      for x = 0, 255 do
+        local sampled = pixel(image, x, y)
+        if sampled[1] >= 240 and sampled[2] >= 240 and sampled[3] >= 240 and sampled[4] == 255 then
+          return true, x, y
+        end
+      end
+    end
+    return false
+  end
+  local squared, squareX, squareY = hasWhiteSquare(unfocused)
+  Assert.isFalse(squared, "no white square thumb remains at " .. tostring(squareX) .. "," .. tostring(squareY))
+  -- The rotated marker stands above the rail around the stop center:
+  -- the 8px-tall marker fits its row while pixels clear of it keep the
+  -- backdrop.
+  Assert.deepEqual(
+    pixel(unfocused, centerX, centerY - 3),
+    cursorInk,
+    "the down marker body rises above the rail at the stop"
+  )
+  Assert.deepEqual(
+    pixel(unfocused, centerX, centerY - 8),
+    { 0, 0, 0, 0 },
+    "the marker stays inside its row above the tip"
+  )
+  Assert.deepEqual(
+    pixel(unfocused, centerX, centerY - 12),
+    { 0, 0, 0, 0 },
+    "the marker stays inside its row above the tip"
+  )
   local focused = renderInto(scope, 256, 64, function()
-    Widgets.drawSlider(love.graphics, resolved, style)
+    Widgets.drawSlider(love.graphics, resolved, style, cursor)
   end)
   local function hasFocusTone(image)
     for y = 0, 63 do
@@ -256,13 +318,13 @@ function T.slider_thumb_tracks_the_resolved_stop_on_the_pixel_grid(scope)
     return false
   end
   local leaked, leakX, leakY = hasFocusTone(focused)
-  Assert.isFalse(leaked, "a focused slider paints no extra outline beyond its rail and thumb")
+  Assert.isFalse(leaked, "a focused slider paints no extra outline beyond its rail and cursor")
   local thumbCenter = math.floor(thumb.x + thumb.width / 2)
   local railCenter = math.floor(resolved.centerY)
   Assert.deepEqual(
     pixel(focused, thumbCenter, railCenter),
-    { 255, 0, 0, 255 },
-    "the focused thumb keeps its resolved fill"
+    cursorInk,
+    "the focused cursor keeps its tip on the track"
   )
   Assert.deepEqual(
     pixel(focused, math.floor(resolved.trackStartX) + 2, railCenter),

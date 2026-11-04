@@ -310,7 +310,40 @@ local function validManifest()
       }
     end)(),
   }
-  return FieldUiFixture.addOptionsContract(FieldUiFixture.addNamingSemantics(built))
+  -- The shared options fixture still targets the pre-shell-band shape
+  -- (it indexes the removed controls backdrop constant): lend it the
+  -- stale key for the duration of the call so the synthetic section
+  -- builds, then restore the removal before upgrading to v6 in place.
+  local assetIds = FieldUiAssetCache.ASSET
+  local staleControls = assetIds.OPTIONS_CONTROLS_BACKGROUND
+  assetIds.OPTIONS_CONTROLS_BACKGROUND = staleControls or "hgss.options.controls_background"
+  local builtOptions, fixtureOk =
+    pcall(FieldUiFixture.addOptionsContract, FieldUiFixture.addNamingSemantics(built))
+  assetIds.OPTIONS_CONTROLS_BACKGROUND = staleControls
+  local manifest = assert(builtOptions and fixtureOk, builtOptions)
+  -- Upgrade the synthetic section to the current v5 contract in place:
+  -- the header/footer 256x24 shell bands replace the full controls
+  -- backdrop, and the frame plate grows to 256x72.
+  manifest.options.version = 6
+  manifest.options.backdrops = {
+    header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
+    footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
+    preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+  }
+  manifest.assets["hgss.options.controls_background"] = nil
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND] = {
+    image = "assets/generated/field/ui/options-header-background.png",
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND] = {
+    image = "assets/generated/field/ui/options-footer-background.png",
+    width = 256,
+    height = 24,
+  }
+  local framePlate = assert(manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME])
+  framePlate.height = 72
+  return manifest
 end
 
 local function publishedCache(manifest)
@@ -1041,12 +1074,12 @@ function T.stale_prompt_less_manifest_schema_is_rejected()
   Assert.isFalse(ok, "a manifest on the previous schema without the prompt section is stale")
 end
 
--- The option-control section carries exactly the two indexed backdrop
--- roles (controls and preview) at the 256x192 field size plus the required
--- transparent 256x24 selected-row strip and the three mandatory scrolling
--- row plates under manifest version 4. A missing role, an extra role, a
--- swapped or unindexed asset id, a missized indexed asset, or a previous
--- version shape is stale.
+-- The option-control section carries exactly the three indexed backdrop
+-- roles (header and footer 256x24 shell bands plus the 256x192 preview)
+-- plus the required transparent 256x30 selected-row indicator and the three
+-- mandatory scrolling row plates (odd/even 256x24, frame 256x72) under
+-- manifest version 6. A missing role, an extra role, a swapped or unindexed
+-- asset id, a missized indexed asset, or a previous version shape is stale.
 function T.options_backdrops_require_the_two_indexed_roles()
   local overlayKey = "hgss.options.selection_overlay"
   -- The complete synthetic section the producer must emit: backdrops, the
@@ -1054,44 +1087,68 @@ function T.options_backdrops_require_the_two_indexed_roles()
   -- shared fixtures keep proving the current runtime contract.
   local function completeManifest()
     local manifest = validManifest()
-    manifest.options.version = 4
+    manifest.options.version = 6
     manifest.options.selectionOverlay = overlayKey
     manifest.assets[overlayKey] = {
       image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
       width = 256,
+      height = 30,
+    }
+    manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND] = {
+      image = "assets/generated/field/ui/options-header-background.png",
+      width = 256,
+      height = 24,
+    }
+    manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND] = {
+      image = "assets/generated/field/ui/options-footer-background.png",
+      width = 256,
       height = 24,
     }
     FieldUiFixture.addRowBackings(manifest)
+    manifest.options.version = 6
+    manifest.options.backdrops = {
+      header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
+      footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
+      preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+    }
+    manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME].height = 72
     return manifest
   end
   local manifest = completeManifest()
-  Assert.equal(manifest.options.version, 4, "the fixture carries the current options section")
+  Assert.equal(manifest.options.version, 6, "the fixture carries the current options section")
   Assert.equal(manifest.options.selectionOverlay, overlayKey, "the fixture indexes its selected-row strip")
   Assert.equal(
     FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
     overlayKey,
     "the asset index names the selected-row strip"
   )
-  Assert.equal(manifest.options.backdrops.controls, FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND)
+  Assert.equal(manifest.options.backdrops.header, FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND)
+  Assert.equal(manifest.options.backdrops.footer, FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND)
   Assert.equal(manifest.options.backdrops.preview, FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND)
   local overlayEntry = assert(manifest.assets[overlayKey], "the selected-row strip asset is indexed")
   Assert.equal(overlayEntry.width, 256, "the selected-row strip width")
-  Assert.equal(overlayEntry.height, 24, "the selected-row strip height")
+  Assert.equal(overlayEntry.height, 30, "the selected-row strip height")
   Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the indexed backdrops and strip validate")
-  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v26")
-  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v26")
+  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v28")
+  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v28")
   local cases = {
     ["missing preview role"] = function(o)
       o.backdrops.preview = nil
+    end,
+    ["missing header role"] = function(o)
+      o.backdrops.header = nil
+    end,
+    ["missing footer role"] = function(o)
+      o.backdrops.footer = nil
     end,
     ["missing selection overlay role"] = function(o)
       o.selectionOverlay = nil
     end,
     ["extra role"] = function(o)
-      o.backdrops.overlay = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND
+      o.backdrops.overlay = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND
     end,
     ["swapped roles"] = function(o)
-      o.backdrops.controls, o.backdrops.preview = o.backdrops.preview, o.backdrops.controls
+      o.backdrops.header, o.backdrops.preview = o.backdrops.preview, o.backdrops.header
     end,
     ["unindexed asset id"] = function(o)
       o.backdrops.preview = "hgss.options.missing"
@@ -1103,10 +1160,16 @@ function T.options_backdrops_require_the_two_indexed_roles()
       o.backdrops = nil
     end,
     ["previous version"] = function(o)
-      o.version = 3
+      o.version = 4
+    end,
+    ["shell-band version"] = function(o)
+      o.version = 5
+    end,
+    ["missing slider cursor"] = function(o)
+      o.sliderCursor = nil
     end,
     ["older version"] = function(o)
-      o.version = 2
+      o.version = 3
     end,
     ["first version"] = function(o)
       o.version = 1
@@ -1136,6 +1199,16 @@ function T.options_backdrops_require_the_two_indexed_roles()
   local ok, err = FieldUiAssetCache.validateManifest(missized)
   Assert.isFalse(ok, "a missized indexed backdrop asset is rejected")
   Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedHeader = completeManifest()
+  missizedHeader.assets[FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND].height = 32
+  local headerOk, headerErr = FieldUiAssetCache.validateManifest(missizedHeader)
+  Assert.isFalse(headerOk, "a missized header shell band is rejected")
+  Assert.equal(assert(headerErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedFooter = completeManifest()
+  missizedFooter.assets[FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND].width = 128
+  local footerOk, footerErr = FieldUiAssetCache.validateManifest(missizedFooter)
+  Assert.isFalse(footerOk, "a missized footer shell band is rejected")
+  Assert.equal(assert(footerErr).code, "FIELD_UI_MANIFEST_INVALID")
   local missizedStrip = completeManifest()
   missizedStrip.assets[overlayKey].height = 32
   local stripOk, stripErr = FieldUiAssetCache.validateManifest(missizedStrip)
@@ -1165,12 +1238,12 @@ function T.options_selection_overlay_rejects_source_identities_and_foreign_keys(
   local overlayKey = "hgss.options.selection_overlay"
   local function completeManifest()
     local manifest = validManifest()
-    manifest.options.version = 4
+    manifest.options.version = 6
     manifest.options.selectionOverlay = overlayKey
     manifest.assets[overlayKey] = {
       image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
       width = 256,
-      height = 24,
+      height = 30,
     }
     return manifest
   end
@@ -1184,7 +1257,7 @@ function T.options_selection_overlay_rejects_source_identities_and_foreign_keys(
   local foreign = completeManifest()
   foreign.options.selectionOverlay = "hgss.options.foreign_strip"
   foreign.assets["hgss.options.foreign_strip"] =
-    { image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, width = 256, height = 24 }
+    { image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, width = 256, height = 30 }
   local foreignOk, foreignErr = FieldUiAssetCache.validateManifest(foreign)
   Assert.isFalse(foreignOk, "a foreign strip key is rejected")
   Assert.equal(assert(foreignErr).code, "FIELD_UI_MANIFEST_INVALID")

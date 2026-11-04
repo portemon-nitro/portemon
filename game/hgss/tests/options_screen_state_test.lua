@@ -804,9 +804,19 @@ function T.tests.presented_slider_list_and_capture_identity()
   local status = state:status()
   local content = assert(status.presentation.content, "the plan carries its content")
   local pane = presentationPane(status, "content")
-  local _, railY = findLogicalForHit(Interface, content, function(hit)
-    return hit ~= nil and hit.target == "volume"
-  end)
+  -- The down-arrow cursor fallback answers a wider band than the rail knob,
+  -- so the first volume hit may sit on the cursor instead of the track: scan
+  -- the rail interior at x204 (between the value gap and every stop's
+  -- cursor fallback) for the true track row the drag must travel.
+  local railY = nil
+  for y = 0, 191 do
+    local hit = Interface.hitTest(content, 204, y)
+    if hit ~= nil and hit.target == "volume" and hit.control == "thumb" then
+      railY = y
+      break
+    end
+  end
+  Assert.notNil(railY, "the volume rail interior hit-tests inside the track")
   local startX, endX = nil, nil
   for x = 0, 255 do
     local hit = Interface.hitTest(content, x, railY)
@@ -826,7 +836,7 @@ function T.tests.presented_slider_list_and_capture_identity()
   Assert.equal(rowById(state:status(), "volume").value, 79, "dragging the rail between stops edits the percent")
   Assert.equal(state:status().scrollOffset, settled, "a slider drag never scrolls")
   Assert.isNil(state:takeResult(), "releasing the slider closes nothing")
-  state:updateFixed({ { type = "scroll", delta = -64 } })
+  state:updateFixed({ { type = "scroll", delta = -72 } })
   Assert.equal(state:status().scrollOffset, 0, "a wheel scroll returns the list to the top")
   status = state:status()
   content = assert(status.presentation.content, "the plan carries its content")
@@ -1499,18 +1509,18 @@ function T.tests.frame_is_last_with_co_scrolling_preview_and_full_reveal()
   )
   Assert.equal(content.footer.y, 168, "the footer stays pinned below the list")
   Assert.isNil(content.preview, "no fixed preview rides outside the rows")
-  Assert.equal(content.scrollMax, 64, "the tall frame sets the scroll limit")
-  Assert.equal(content.totalHeight, 208, "the row heights sum to the list height")
+  Assert.equal(content.scrollMax, 72, "the tall frame sets the scroll limit")
+  Assert.equal(content.totalHeight, 216, "the row heights sum to the list height")
   Assert.equal(#content.rows, 7, "seven rows publish")
   local starts = { 0, 24, 48, 72, 96, 120, 144 }
-  local heights = { 24, 24, 24, 24, 24, 24, 64 }
+  local heights = { 24, 24, 24, 24, 24, 24, 72 }
   for position, row in ipairs(content.rows) do
     Assert.equal(row.rect.y, starts[position], "row keeps its list offset")
     Assert.equal(row.rect.height, heights[position], "row keeps its own height")
     if row.id == "textFrame" then
       Assert.deepEqual(
         row.previewRect,
-        { x = 16, y = 172, width = 216, height = 32 },
+        { x = 16, y = 176, width = 216, height = 32 },
         "the sample lives inside the frame row"
       )
     else
@@ -1523,7 +1533,7 @@ function T.tests.frame_is_last_with_co_scrolling_preview_and_full_reveal()
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
   Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
-  Assert.equal(state:status().scrollOffset, 64, "focusing the frame reveals its window")
+  Assert.equal(state:status().scrollOffset, 72, "focusing the frame reveals its window")
   local frameRow = rowById(state:status(), "textFrame")
   Assert.equal(frameRow.valueLabel, "TYPE 10", "the draft frame reads one-based")
   Assert.equal(state:status().preview.textFrame, 9, "the sample follows the draft frame")
@@ -1545,7 +1555,7 @@ function T.tests.frame_preview_stays_passive_while_gestures_settle_whole()
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
   Assert.equal(state:status().focusId, "textFrame", "six downs reach the closing frame")
-  Assert.equal(state:status().scrollOffset, 64, "the frame rests fully revealed")
+  Assert.equal(state:status().scrollOffset, 72, "the frame rests fully revealed")
   local content = assert(state:status().presentation.content, "the revealed plan carries its list")
   Assert.isNil(Interface.hitTest(content, 124, 148), "tapping the sample selects nothing")
   Assert.isTrue(Interface.inList(content, 124, 148), "the sample still starts a list drag")
@@ -1594,7 +1604,7 @@ function T.tests.frame_preview_stays_passive_while_gestures_settle_whole()
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = downHx, y = downHy } })
   state:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = movedHx, y = movedHy } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = movedHx, y = movedHy } })
-  Assert.equal(state:status().scrollOffset, 64, "a drag toward the end settles fully revealed")
+  Assert.equal(state:status().scrollOffset, 72, "a drag toward the end settles fully revealed")
   status = state:status()
   content = assert(status.presentation.content, "the settled plan carries its list")
   pane = nil
@@ -1627,14 +1637,14 @@ function T.tests.real_wheel_events_drive_the_list_with_signed_dy()
   Assert.equal(state:status().scrollOffset, 24, "a downward wheel step advances toward the frame")
   state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
   state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
-  Assert.equal(state:status().scrollOffset, 64, "repeated downward steps settle fully revealed")
+  Assert.equal(state:status().scrollOffset, 72, "repeated downward steps settle fully revealed")
   Assert.equal(rowById(state:status(), "volume").value, volumeBefore, "wheel travel edits no draft value")
   state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = 1 } })
-  Assert.equal(state:status().scrollOffset, 40, "an upward wheel step returns toward the top")
+  Assert.equal(state:status().scrollOffset, 48, "an upward wheel step returns toward the top")
   state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = 0 } })
-  Assert.equal(state:status().scrollOffset, 40, "a zero wheel step holds the offset")
+  Assert.equal(state:status().scrollOffset, 48, "a zero wheel step holds the offset")
   state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 5, dy = 0 } })
-  Assert.equal(state:status().scrollOffset, 40, "horizontal travel alone never scrolls")
+  Assert.equal(state:status().scrollOffset, 48, "horizontal travel alone never scrolls")
   Assert.equal(rowById(state:status(), "volume").value, volumeBefore, "horizontal travel edits nothing")
   local status = state:status()
   local content = assert(status.presentation.content, "the presented plan carries its list")
@@ -1741,9 +1751,17 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
   for _, x in ipairs({ 112, 120, 140, 155, 156, 160, 163 }) do
     Assert.isNil(Interface.hitTest(content, x, 132), "the volume slot and gap arm no stop at x" .. x)
   end
-  for _, x in ipairs({ 112, 130, 155, 160, 163 }) do
+  for _, x in ipairs({ 112, 130, 155, 160 }) do
     Assert.isNil(Interface.hitTest(content, x, 156), "the speed slot and gap arm no stop at x" .. x)
   end
+  -- The down-arrow cursor fallback is 12 wide around the stop center:
+  -- battle speed rests on its first stop (center x168), so x163 answers
+  -- through the cursor while x160 stays a dead gap.
+  local cursorHit = Interface.hitTest(content, 163, 156)
+  Assert.isTrue(
+    cursorHit ~= nil and cursorHit.target == "battleSpeed" and cursorHit.control == "thumb",
+    "the cursor fallback arms the resting stop at x163"
+  )
   local volumeMin = Interface.hitTest(content, 164, 132)
   Assert.isTrue(
     volumeMin ~= nil and volumeMin.target == "volume" and volumeMin.index == 1,
@@ -1924,7 +1942,7 @@ function T.tests.frame_arrows_wrap_in_both_input_modes_while_sliders_clamp()
   for _ = 1, 6 do
     screen:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(screen:status().scrollOffset, 64, "focusing the frame reveals it")
+  Assert.equal(screen:status().scrollOffset, 72, "focusing the frame reveals it")
   local content = assert(screen:status().presentation.content, "the revealed plan carries its list")
   local pane = presentationPane(screen:status(), "content")
   local left = Interface.hitTest(content, 130, 116)
@@ -2147,8 +2165,8 @@ function T.tests.touch_focuses_the_touched_row_for_keyboard_continuation()
   Assert.equal(state:status().focusId, "battleSpeed", "touching the speed rail focuses the speed row")
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = speedHx, y = speedHy } })
   Assert.equal(state:status().focusId, "battleSpeed", "releasing the speed rail keeps its row focused")
-  state:updateFixed({ { type = "scroll", delta = 64 } })
-  Assert.equal(state:status().scrollOffset, 64, "a wheel scroll reveals the closing frame")
+  state:updateFixed({ { type = "scroll", delta = 72 } })
+  Assert.equal(state:status().scrollOffset, 72, "a wheel scroll reveals the closing frame")
   Assert.equal(state:status().focusId, "battleSpeed", "scrolling keeps the row focus")
   status = state:status()
   content = assert(status.presentation.content, "the revealed plan carries its list")
@@ -2159,7 +2177,7 @@ function T.tests.touch_focuses_the_touched_row_for_keyboard_continuation()
   local frameHx, frameHy = hostForLogical(pane, frameX, frameY)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:3", x = frameHx, y = frameHy } })
   Assert.equal(state:status().focusId, "textFrame", "touching a frame arrow focuses the closing row")
-  Assert.equal(state:status().scrollOffset, 64, "focusing the frame on press never moves the list")
+  Assert.equal(state:status().scrollOffset, 72, "focusing the frame on press never moves the list")
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:3", x = frameHx, y = frameHy } })
   Assert.equal(state:status().focusId, "textFrame", "releasing the arrow keeps the frame focused")
   state:updateFixed({ { type = "direct-select", row = "soundMode", index = 1 } })
@@ -2258,7 +2276,7 @@ function T.tests.held_pointer_keeps_list_still_until_release_then_reveals()
   Assert.equal(rowById(state:status(), "textFrame").value, 19, "the matching release steps the frame once")
   Assert.equal(
     state:status().scrollOffset,
-    64,
+    72,
     "the release reveals the whole frame item once settled"
   )
   Assert.isNil(state:takeResult(), "an arrow release closes nothing")
@@ -2271,12 +2289,12 @@ function T.tests.held_pointer_keeps_list_still_until_release_then_reveals()
   local railHx, railHy = hostForLogical(pane, railX, railY)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = railHx, y = railHy } })
   Assert.equal(state:status().focusId, "volume", "pressing the rail focuses the volume row")
-  Assert.equal(state:status().scrollOffset, 64, "the held slider never reflows the list")
-  state:updateFixed({ { type = "scroll", delta = -64 } })
-  Assert.equal(state:status().scrollOffset, 64, "a wheel during a slider capture never scrolls")
+  Assert.equal(state:status().scrollOffset, 72, "the held slider never reflows the list")
+  state:updateFixed({ { type = "scroll", delta = -72 } })
+  Assert.equal(state:status().scrollOffset, 72, "a wheel during a slider capture never scrolls")
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = railHx, y = railHy } })
   Assert.equal(state:status().focusId, "volume", "releasing the rail keeps the volume focused")
-  Assert.equal(state:status().scrollOffset, 64, "the settled slider keeps the revealed list")
+  Assert.equal(state:status().scrollOffset, 72, "the settled slider keeps the revealed list")
   Assert.isNil(state:takeResult(), "releasing the slider closes nothing")
   status = state:status()
   content = assert(status.presentation.content, "the settled plan carries its list")

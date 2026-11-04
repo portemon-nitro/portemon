@@ -8,6 +8,7 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local OptionsRows = require("game.hgss.src.options.OptionsRows")
+local OptionsWidgets = require("game.hgss.src.ui.OptionsWidgets")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 local Slider = require("libs.ui.src.Slider")
 
@@ -141,11 +142,11 @@ function OptionsInterface.focusNext(currentId, direction)
 end
 
 -- The one variable-height content list: six 24px setting rows plus the
--- closing 64px frame item (24px selector band, 32px sample window inset
--- 28px below the item top, 4px bottom margin). Cumulative content offsets
+-- closing 72px frame item (24px selector band, 32px sample window inset
+-- 32px below the item top, 8px bottom margin). Cumulative content offsets
 -- are the single source of row geometry; nothing recomputes y from an
 -- index.
-OptionsInterface.FRAME_ITEM_HEIGHT = 64
+OptionsInterface.FRAME_ITEM_HEIGHT = 72
 
 ---@param rowId string
 ---@return integer row height in logical pixels
@@ -204,29 +205,27 @@ function OptionsInterface.valueCount(rowId)
   return OptionsRows.valueCount(rowId)
 end
 
--- Native per-row control geometry: explicit source sprite anchors, glyph
--- centers, and touch regions per row. Choice chrome is row-specific, never
--- inferred from the stop count: Text Speed and Battle Scene wear the
--- narrow pill, Battle Style and Sound wear the wide pill.
+-- Native per-row control geometry: explicit source sprite anchors and
+-- touch regions per row. Choice chrome is row-specific, never inferred
+-- from the stop count: Text Speed and Battle Scene wear the narrow pill,
+-- Battle Style and Sound wear the wide pill. Each stop's glyph center
+-- derives from its own touch band, so one rectangle owns face, glyph, and
+-- hit and no independent center can drift from the band.
 local CHOICE_GEOMETRY = {
   textSpeed = {
     anchors = { 112, 160, 208 },
-    centers = { 124, 172, 220 },
     hits = { { 112, 152 }, { 160, 201 }, { 208, 249 } },
   },
   battleScene = {
     anchors = { 112, 160 },
-    centers = { 124, 172 },
     hits = { { 112, 152 }, { 160, 201 } },
   },
   battleStyle = {
     anchors = { 112, 192 },
-    centers = { 132, 212 },
     hits = { { 112, 168 }, { 192, 248 } },
   },
   soundMode = {
     anchors = { 112, 192 },
-    centers = { 132, 212 },
     hits = { { 112, 168 }, { 192, 248 } },
   },
 }
@@ -263,7 +262,7 @@ local function layoutControl(rowId, rowRect, index)
   end
   if kind == "cycle" then
     -- The frame row keeps 32px source arrows at x115/x213 with the value
-    -- centered about x172. Touch bands are row-local.
+    -- centered about x180. Touch bands are row-local.
     local arrowY = rowRect.y + 2
     return {
       kind = kind,
@@ -278,7 +277,7 @@ local function layoutControl(rowId, rowRect, index)
       },
       value = {
         hitRect = { x = 150, y = arrowY, width = 58, height = 20 },
-        textCenterX = 172,
+        textCenterX = 180,
         labelWindow = { x = 150, y = arrowY, width = 58, height = 20 },
       },
     }
@@ -288,11 +287,12 @@ local function layoutControl(rowId, rowRect, index)
   local choices = {}
   for stop, anchorX in ipairs(geometry.anchors) do
     local hit = geometry.hits[stop]
-    local hitRect = { x = hit[1], y = rowRect.y + 2, width = hit[2] - hit[1], height = 20 }
+    local hitWidth = hit[2] - hit[1]
+    local hitRect = { x = hit[1], y = rowRect.y + 2, width = hitWidth, height = 20 }
     choices[stop] = {
       hitRect = hitRect,
       chromeAnchor = { x = anchorX, y = rowRect.y },
-      textCenterX = geometry.centers[stop],
+      textCenterX = hit[1] + math.floor(hitWidth / 2),
       labelWindow = hitRect,
     }
   end
@@ -302,7 +302,7 @@ end
 -- Builds the row rectangles and footer placement for one 256x192 logical
 -- body: a fixed header, the scrolling list region, and a footer pinned
 -- below the list. Rows stack cumulatively from content y=0; only the
--- closing frame row carries a child sample rect inset 28px below its own
+-- closing frame row carries a child sample rect inset 32px below its own
 -- top.
 ---@param listY integer list top within the body
 ---@param listHeight integer visible list height within the body
@@ -331,7 +331,7 @@ local function buildContent(listY, listHeight, footerY, view)
       rect = rect,
       labelAnchor = { x = OptionsInterface.LABEL_X, y = y + 5 },
       control = layoutControl(rowId, rect, index),
-      previewRect = rowId == "textFrame" and { x = 16, y = y + 28, width = 216, height = 32 } or nil,
+      previewRect = rowId == "textFrame" and { x = 16, y = y + 32, width = 216, height = 32 } or nil,
       clipped = false,
     }
     y = y + height
@@ -418,7 +418,7 @@ function OptionsInterface.hitTest(content, x, y)
       end
       local control = row.control
       if control.kind == "slider" then
-        -- Only the resolved rail/thumb answers: the numeric window and
+        -- Only the resolved rail/cursor answers: the numeric window and
         -- the gap between the regions never arm a stop.
         local resolved = assert(control.slider, "slider rows carry resolved geometry")
         local contentY = y - viewport.y + offset
@@ -428,11 +428,18 @@ function OptionsInterface.hitTest(content, x, y)
           and contentY >= rail.y
           and contentY < rail.y + rail.height
         if not insideRail then
+          -- The fallback box covers the down-arrow cursor's rotated
+          -- visual extent around the stop center, not the resolve-time
+          -- knob rect: the masked marker spans wider than the rail once rotated.
           local thumb = assert(resolved.thumbRect, "resolved sliders carry their thumb rect")
-          local insideThumb = x >= thumb.x
-            and x < thumb.x + thumb.width
-            and contentY >= thumb.y
-            and contentY < thumb.y + thumb.height
+          local thumbCenterX = thumb.x + thumb.width / 2
+          local thumbCenterY = thumb.y + thumb.height / 2
+          local halfWidth = OptionsWidgets.SLIDER_CURSOR_HALF_WIDTH
+          local halfHeight = OptionsWidgets.SLIDER_CURSOR_HALF_HEIGHT
+          local insideThumb = x >= thumbCenterX - halfWidth
+            and x < thumbCenterX + halfWidth
+            and contentY >= thumbCenterY - halfHeight
+            and contentY < thumbCenterY + halfHeight
           if not insideThumb then
             return nil
           end

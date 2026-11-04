@@ -8,6 +8,7 @@
 -- are deterministic stubs, every controller and menu object is production.
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -15,6 +16,7 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -239,7 +241,7 @@ local function openHarness()
       gender = 0,
       trainerId = 0,
       money = 3000,
-      badges = 0,
+      badges = BadgeSets.empty(),
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
@@ -344,7 +346,7 @@ local function openHarness()
         queueAvatarTransition = function() end,
         applyAvatarTransitions = function() end,
       },
-      profile = { badges = 0xFFFF },
+      profile = { badges = BadgeSets.all() },
       weather = {
         change = function() end,
       },
@@ -696,6 +698,7 @@ function T.tests.failed_factory_open_releases_owned_port_and_permits_a_fresh_ope
       dialogueFrames = { continueCursor = CURSOR },
     },
     fontDef = { glyphs = { [0] = { advance = 8 } } },
+    cacheFs = FieldDialogueFixture.cacheWithFontId(1),
     presentationDisplay = stubMeasurement(),
   }
   runtime.optionsPresentationFactory = function()

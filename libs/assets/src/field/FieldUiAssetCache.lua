@@ -132,7 +132,8 @@ FieldUiAssetCache.ASSET = {
   YES_NO_PROMPT_NO_NORMAL = "hgss.yes_no_prompt.no_normal",
   YES_NO_PROMPT_NO_SELECTED = "hgss.yes_no_prompt.no_selected",
   OPTIONS_CHROME = "hgss.options.chrome",
-  OPTIONS_CONTROLS_BACKGROUND = "hgss.options.controls_background",
+  OPTIONS_HEADER_BACKGROUND = "hgss.options.header_background",
+  OPTIONS_FOOTER_BACKGROUND = "hgss.options.footer_background",
   OPTIONS_PREVIEW_BACKGROUND = "hgss.options.preview_background",
   OPTIONS_SELECTION_OVERLAY = "hgss.options.selection_overlay",
   OPTIONS_ROW_ODD = "hgss.options.row_odd",
@@ -543,41 +544,50 @@ local function checkOptionsSequence(sequence, what, atlases, assets)
 end
 
 local function checkOptions(s, atlases, assets)
-  if type(s.version) ~= "number" or s.version ~= 4 then
-    reject("options.version must be 4", { version = s.version })
+  if type(s.version) ~= "number" or s.version ~= 6 then
+    reject("options.version must be 6", { version = s.version })
   end
   demandCount(
     s,
-    10,
-    "options must carry exactly its version, backdrops, row plates, selection overlay, labels, choices, arrows, actions, frame previews, and tick rate",
+    11,
+    "options must carry exactly its version, backdrops, row plates, selection overlay, labels, choices, arrows, actions, slider cursor, frame previews, and tick rate",
     {}
   )
   local backdrops = s.backdrops
   if type(backdrops) ~= "table" then
     reject("options.backdrops must be a table", {})
   end
-  demandCount(backdrops, 2, "options.backdrops must carry exactly the controls and preview roles", {})
+  demandCount(backdrops, 3, "options.backdrops must carry exactly the header, footer, and preview roles", {})
   local expectedRoles = {
-    controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
-    preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+    header = { key = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND, width = 256, height = 24 },
+    footer = { key = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND, width = 256, height = 24 },
+    preview = { key = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND, width = 256, height = 192 },
   }
-  for role, assetKey in pairs(expectedRoles) do
-    if backdrops[role] ~= assetKey then
-      reject("options.backdrops." .. role .. " must reference its indexed backdrop asset", {
+  for role, spec in pairs(expectedRoles) do
+    if backdrops[role] ~= spec.key then
+      reject("options.backdrops." .. role .. " must reference its indexed shell band asset", {
         role = role,
         value = backdrops[role],
       })
     end
-    local dims = atlases[assetKey]
+    local dims = atlases[spec.key]
     if type(dims) ~= "table" then
       reject("options.backdrops." .. role .. " must reference an indexed asset", { role = role })
     end
-    if dims.width ~= 256 or dims.height ~= 192 then
-      reject("options.backdrops." .. role .. " must be the 256x192 field screen", {
-        role = role,
-        width = dims.width,
-        height = dims.height,
-      })
+    if dims.width ~= spec.width or dims.height ~= spec.height then
+      if role == "preview" then
+        reject("options.backdrops." .. role .. " must be the 256x192 field screen", {
+          role = role,
+          width = dims.width,
+          height = dims.height,
+        })
+      else
+        reject("options.backdrops." .. role .. " must be the 256x24 shell band", {
+          role = role,
+          width = dims.width,
+          height = dims.height,
+        })
+      end
     end
   end
   for role in pairs(backdrops) do
@@ -593,7 +603,7 @@ local function checkOptions(s, atlases, assets)
   local expectedPlates = {
     odd = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD, height = 24 },
     even = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_EVEN, height = 24 },
-    frame = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME, height = 64 },
+    frame = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME, height = 72 },
   }
   for role, plate in pairs(expectedPlates) do
     if rowBackings[role] ~= plate.key then
@@ -628,8 +638,8 @@ local function checkOptions(s, atlases, assets)
   if type(strip) ~= "table" then
     reject("options.selectionOverlay must reference an indexed asset", {})
   end
-  if strip.width ~= 256 or strip.height ~= 24 then
-    reject("options.selectionOverlay must be the 256x24 selected-row strip", {
+  if strip.width ~= 256 or strip.height ~= 30 then
+    reject("options.selectionOverlay must be the 256x30 selected-row indicator", {
       width = strip.width,
       height = strip.height,
     })
@@ -720,6 +730,10 @@ local function checkOptions(s, atlases, assets)
   for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
     checkOptionsSequence(actions[state], "options.actions." .. state, atlases, assets)
   end
+  -- The slider cursor is the single masked selection-marker frame the
+  -- producer extracts from the selected pill overhang: a left-pointing
+  -- marker the runtime rotates to point down, never an arrow state.
+  checkOptionsSequence(s.sliderCursor, "options.sliderCursor", atlases, assets)
   if type(s.framePreviewText) ~= "table" then
     reject("options.framePreviewText must be a table", {})
   end

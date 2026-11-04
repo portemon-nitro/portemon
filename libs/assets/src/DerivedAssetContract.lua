@@ -367,9 +367,24 @@ DerivedAssetContract.fieldEmotes = {
 -- compound frame item scrubbed of preprinted control faces) as indexed
 -- assets under the mandatory rowBackings roles, so a stale cache without
 -- them must fail readiness.
+-- fieldUi schema 27: the option-control section carries the 256x72
+-- compound frame plate (the odd selector band over five mid-band rows
+-- closed by the odd lower edge) and versions the shell-band backdrop
+-- contract at options section v5: the opaque 256x24 header and footer
+-- shell bands (the MAIN title and footer rows) replace the full-screen
+-- controls backdrop, beside the unchanged 256x192 preview. A stale cache
+-- without them must fail readiness.
+-- fieldUi schema 28: the option-control section versions the indicator
+-- contract at options section v6: the transparent selected-row indicator
+-- is the full 256x30 native border box (rows 13..42 of the selection
+-- layer, centered on the 24px row) instead of the cropped 24px side
+-- bars, and the section carries the masked slider cursor (the
+-- left-pointing selection marker extracted from the selected pill
+-- overhang) the authored volume and battle-speed rails point with. A
+-- stale cache without them must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v26",
+  schema = "g4-field-ui-v28",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

@@ -1,6 +1,6 @@
 -- Concrete chrome painting for the generated option controls: choice
--- pills, frame arrow cycles, project-authored slider rails with thumbs,
--- and footer action chrome. A focused slider row is marked by the list
+-- pills, frame arrow cycles, project-authored slider rails with the
+-- masked selection-marker cursor, and footer action chrome. A focused slider row is marked by the list
 -- selection strip; these routines paint art only. Every visual
 -- state resolves through prepared caller-owned viewports: the renderer
 -- builds each frame Quad once outside draw and lends a lookup, so this
@@ -28,7 +28,16 @@ local OptionsWidgets = {}
 ---@alias OptionsWidgets.ArrowSet { left: OptionsWidgets.ArrowPair, right: OptionsWidgets.ArrowPair }
 ---@alias OptionsWidgets.ActionStates { normal: OptionsWidgets.CompiledSequence, focused: OptionsWidgets.CompiledSequence, pressed: OptionsWidgets.CompiledSequence, pressedFocused: OptionsWidgets.CompiledSequence }
 ---@alias OptionsWidgets.SliderGeometry { rect: OptionsWidgets.Rect, trackStartX: number, trackEndX: number, centerY: number, thumbRect: OptionsWidgets.Rect, count: integer, index: integer }
----@alias OptionsWidgets.SliderStyle { rail: OptionsWidgets.Color, fill: OptionsWidgets.Color, thumb: OptionsWidgets.Color, thumbEdge: OptionsWidgets.Color }
+---@alias OptionsWidgets.SliderStyle { rail: OptionsWidgets.Color, fill: OptionsWidgets.Color }
+---@alias OptionsWidgets.SliderCursor { chrome: ImageAssetPoolLease, quad: love.Quad, width: number, height: number }
+
+-- The slider cursor is the producer-masked selection marker: the tight
+-- right-pointing arrow frame extracted from the selected pill overhang
+-- (6 wide x 12 tall in source pixels), drawn at 1:1 with no trim. The
+-- halo fallback box covers the rotated marker extent around the stop
+-- center: 12 wide x 8 tall once the marker points down.
+OptionsWidgets.SLIDER_CURSOR_HALF_WIDTH = 6
+OptionsWidgets.SLIDER_CURSOR_HALF_HEIGHT = 4
 
 local function point(value, name)
   assert(type(value) == "table", name .. " is required")
@@ -174,8 +183,9 @@ end
 
 ---@param graphics love.graphics borrowed graphics namespace
 ---@param resolved OptionsWidgets.SliderGeometry caller-owned Slider.resolve geometry
----@param style OptionsWidgets.SliderStyle project-authored { rail, fill, thumb, thumbEdge } 0..1 colors
-function OptionsWidgets.drawSlider(graphics, resolved, style)
+---@param style OptionsWidgets.SliderStyle project-authored { rail, fill } 0..1 colors
+---@param cursor OptionsWidgets.SliderCursor prepared down-pointing marker record
+function OptionsWidgets.drawSlider(graphics, resolved, style, cursor)
   assert(type(resolved) == "table", "slider painting needs its resolved geometry")
   assert(
     type(resolved.trackStartX) == "number"
@@ -183,25 +193,35 @@ function OptionsWidgets.drawSlider(graphics, resolved, style)
       and resolved.trackEndX > resolved.trackStartX,
     "slider painting needs its usable track"
   )
-  assert(type(resolved.thumbRect) == "table", "slider needs its thumb rect")
-  local thumb = resolved.thumbRect
+  assert(
+    type(resolved.centerY) == "number" and resolved.centerY == resolved.centerY,
+    "slider painting needs its rail center"
+  )
   assert(type(style) == "table", "slider painting needs its project-authored style")
   local railR, railG, railB, railA = color(assert(style.rail, "slider style needs its rail treatment"), "rail")
   local fillR, fillG, fillB, fillA = color(assert(style.fill, "slider style needs its fill treatment"), "fill")
-  local thumbR, thumbG, thumbB, thumbA = color(assert(style.thumb, "slider style needs its thumb treatment"), "thumb")
-  local edgeR, edgeG, edgeB, edgeA =
-    color(assert(style.thumbEdge, "slider style needs its thumb edge treatment"), "thumbEdge")
-  local railY = math.floor(resolved.centerY - 1 + 0.5)
+  assert(type(cursor) == "table", "slider painting needs its prepared cursor")
+  local chrome = assert(cursor.chrome, "slider cursor carries its chrome lease")
+  assert(cursor.quad ~= nil, "slider cursor carries its prepared viewport")
+  assert(
+    type(cursor.width) == "number" and cursor.width > 0 and type(cursor.height) == "number" and cursor.height > 0,
+    "slider cursor carries its compiled marker extent"
+  )
+  local thumb = assert(resolved.thumbRect, "slider needs its stop center")
   local thumbCenterX = thumb.x + thumb.width / 2
+  local railY = math.floor(resolved.centerY - 1 + 0.5)
   withColor(graphics, function()
     graphics.setColor(railR, railG, railB, railA)
     graphics.rectangle("fill", resolved.trackStartX, railY, resolved.trackEndX - resolved.trackStartX, 2)
     graphics.setColor(fillR, fillG, fillB, fillA)
     graphics.rectangle("fill", resolved.trackStartX, railY, thumbCenterX - resolved.trackStartX, 2)
-    graphics.setColor(thumbR, thumbG, thumbB, thumbA)
-    graphics.rectangle("fill", thumb.x, thumb.y, thumb.width, thumb.height)
-    graphics.setColor(edgeR, edgeG, edgeB, edgeA)
-    graphics.rectangle("line", thumb.x + 0.5, thumb.y + 0.5, thumb.width - 1, thumb.height - 1)
+    -- The marker arrives pointing down with its tip centered on its
+    -- bottom edge, so it draws axis-aligned through the exact sampler
+    -- like every other frame: the bottom row lands on the track value
+    -- position. White reset first: the fill color is still active and
+    -- the sampler multiplies texels by it.
+    graphics.setColor(1, 1, 1, 1)
+    chrome:drawQuad(graphics, cursor.quad, thumbCenterX - cursor.width / 2, resolved.centerY - cursor.height + 1)
   end)
 end
 

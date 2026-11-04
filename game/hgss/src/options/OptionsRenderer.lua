@@ -74,12 +74,17 @@ OptionsRenderer.__index = OptionsRenderer
 
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
+-- The native 30px indicator box centers on the 24px selector band: half
+-- the 6px difference lifts the box above the row top.
+local STRIP_LIFT = 3
+
 ---@class OptionsRenderer.Section
 ---@field version integer
 ---@field labels table<string, unknown>
 ---@field choices table<string, unknown>
 ---@field arrows table<string, unknown>
 ---@field actions table<string, unknown>
+---@field sliderCursor table<string, unknown>
 ---@field backdrops table<string, string> semantic role to its indexed backdrop asset key
 ---@field selectionOverlay string required indexed selected-row strip asset key
 ---@field rowBackings table<string, string> semantic role to its indexed row backing asset key
@@ -136,12 +141,12 @@ function OptionsRenderer:_section()
   local manifest = self._manifest
   local section = manifest.options
   assert(type(section) == "table", "the field-UI manifest carries the options section")
-  assert(section.version == 4, "the options section carries its locked version")
+  assert(section.version == 6, "the options section carries its locked version")
   return section
 end
 
 -- Requests every unique required art path once through the shared pool:
--- the packed chrome atlas frames plus the two semantic source backdrops
+-- the packed chrome atlas frames plus the semantic source shell bands
 -- resolved through the manifest asset index, never hardcoded producer
 -- paths. Pending interests accumulate under this owner; the pool keeps the
 -- shared GPU objects. Each request remembers the semantic roles it serves
@@ -191,9 +196,13 @@ function OptionsRenderer:_requestChrome()
       add(frame.image, "chrome")
     end
   end
+  local cursor = assert(section.sliderCursor, "the options section carries its slider cursor")
+  for _, frame in ipairs(assert(cursor.frames, "slider cursor carries frames")) do
+    add(frame.image, "chrome")
+  end
   local backdrops = assert(section.backdrops, "the options section carries its source backdrops")
   local assets = assert(self._manifest.assets, "the field-UI manifest indexes its assets")
-  for _, role in ipairs({ "controls", "preview" }) do
+  for _, role in ipairs({ "header", "footer", "preview" }) do
     local assetKey = assert(backdrops[role], "the options section carries its " .. role .. " backdrop role")
     local entry = assert(assets[assetKey], "the " .. role .. " backdrop indexes its asset")
     add(assert(entry.image, "the " .. role .. " backdrop asset carries its image path"), role)
@@ -242,6 +251,30 @@ function OptionsRenderer:_buildQuads()
   for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
     add(assert(section.actions[state], "actions carry every compiled state"), "actions." .. state)
   end
+  add(assert(section.sliderCursor, "the options section carries its slider cursor"), "sliderCursor")
+end
+
+-- Assembles the per-frame slider cursor record from the prepared marker
+-- viewport: the chrome lease draws the down-pointing marker through it
+-- axis-aligned, with the bottom tip row landing on the track. The
+-- extent derives from the compiled atlas rect, never from a hardcoded
+-- trim.
+---@param chrome ImageAssetPoolLease borrowed chrome lease
+---@return OptionsWidgets.SliderCursor cursor { chrome, quad, width, height }
+function OptionsRenderer:_sliderCursor(chrome)
+  local section = self:_section()
+  local cursor = assert(section.sliderCursor, "the options section carries its slider cursor")
+  local cursorFrame = assert(cursor.frames[1], "slider cursor carries its marker frame")
+  local quad = assert(self._quadByFrame[cursorFrame], "prepared chrome carries the cursor viewport")
+  local width = assert(cursorFrame.atlas.width, "slider cursor carries its compiled width")
+  local height = assert(cursorFrame.atlas.height, "slider cursor carries its compiled height")
+  assert(width > 0 and height > 0, "slider cursor art is non-empty")
+  return {
+    chrome = chrome,
+    quad = quad,
+    width = width,
+    height = height,
+  }
 end
 
 -- Validates the generated source label contract once at preparation: every
@@ -333,7 +366,8 @@ function OptionsRenderer:prepare()
       self._tokenPaths[token] = nil
     end
     assert(self._leaseByRole.chrome ~= nil, "prepared chrome carries its lease")
-    assert(self._leaseByRole.controls ~= nil, "prepared controls carry their backdrop lease")
+    assert(self._leaseByRole.header ~= nil, "prepared header carries its shell lease")
+    assert(self._leaseByRole.footer ~= nil, "prepared footer carries its shell lease")
     assert(self._leaseByRole.preview ~= nil, "prepared preview carries its backdrop lease")
     assert(self._leaseByRole.selectionOverlay ~= nil, "prepared selection overlay carries its lease")
     assert(self._leaseByRole.rowOdd ~= nil, "prepared odd row plate carries its lease")
@@ -366,14 +400,17 @@ function OptionsRenderer:_plateFor(row)
 end
 
 -- Paints one resolved plan: each pane first paints its own semantic
--- source backdrop, then the controls/content pane paints the header, the
--- clipped scrolling rows translated by the list offset (the closing frame
--- row paints its child sample window inside the same clip), and the
--- fixed footer, while the upper preview pane paints only its decorative
--- backdrop. Every visible row plate paints before the single focused
--- strip and the row contents under one translation; rows outside the
--- published viewport never draw; draw acquires nothing and leaves shared
--- owners alone.
+-- source band, then the controls/content pane paints the header shell, the
+-- clipped scrolling list translated by the list offset (the closing frame
+-- row paints its child sample window inside the same clip), the title and
+-- header feedback, the footer shell, and the fixed footer buttons over it,
+-- while the upper preview pane paints only its decorative backdrop. Every
+-- visible row plate paints before the row contents with the single focused
+-- strip last under one translation, and each visible row's contents paint
+-- under that row's own clip so 32px-tall face/arrow art never bleeds into
+-- a neighbor; rows outside the published viewport never draw. Draw acquires
+-- nothing and leaves shared owners alone. No full-screen controls image
+-- is ever painted: the header and footer shells own their own bands.
 ---@param view table<string, unknown> the screen semantic snapshot
 ---@param plan table<string, unknown> the resolved plan
 function OptionsRenderer:draw(view, plan)
@@ -399,7 +436,13 @@ function OptionsRenderer:draw(view, plan)
           end
         end
         assert(rowView ~= nil, "every laid-out row has a published value")
-        self:_drawRow(graphics, chrome, quadFor, section, row, rowView, view)
+        -- Each row paints under its own content-space clip so 32px-tall
+        -- face/arrow art never bleeds into neighboring rows. The nested
+        -- clip intersects the surrounding list-viewport scissor; the
+        -- strip stays unclipped at list level above every row.
+        LogicalSurface.clip(graphics, { x = 0, y = row.rect.y, width = 256, height = row.rect.height }, function()
+          self:_drawRow(graphics, chrome, quadFor, section, row, rowView, view)
+        end)
       end
     end
   end
@@ -407,29 +450,31 @@ function OptionsRenderer:draw(view, plan)
     local paneId = assert(pane.id, "panes carry their semantic id")
     if paneId == "preview" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
-        self:_drawBackdrop(graphics, "preview")
+        self:_drawShellBand(graphics, "preview", 0, 0)
       end)
     elseif paneId == "controls" or paneId == "content" then
       LogicalSurface.draw(graphics, assert(pane.placement, "panes carry placements"), function()
-        self:_drawBackdrop(graphics, "controls")
+        self:_drawShellBand(graphics, "header", 0, 0)
         local viewport = assert(content.listViewport, "content carries its list viewport")
         LogicalSurface.clip(graphics, viewport, function()
           graphics.push("all")
           -- One content-space translation serves every scrolled layer: all
-          -- row plates first, then the single focused strip, then every
-          -- visible row's contents. Nothing paints a second offset.
+          -- row plates first, then every visible row's contents, then the
+          -- single focused strip on top so opaque pill chrome never buries
+          -- the indicator. Nothing paints a second offset.
           graphics.translate(0, viewport.y - content.scrollOffset)
           for _, row in ipairs(assert(content.rows, "content carries its rows")) do
             if not row.clipped then
               self:_plateFor(row):draw(graphics, row.rect.x, row.rect.y)
             end
           end
-          self:_drawStrip(graphics, content, view)
           drawRows()
+          self:_drawStrip(graphics, content, view)
           graphics.pop()
         end)
         self:_drawTitle(graphics, view)
         self:drawHeaderFeedback(view)
+        self:_drawShellBand(graphics, "footer", 0, 168)
         self:_drawFooter(graphics, chrome, quadFor, section, content, view)
       end)
     else
@@ -439,15 +484,20 @@ function OptionsRenderer:draw(view, plan)
 end
 
 ---@param graphics love.graphics
----@param role string "controls"|"preview" the semantic backdrop role
-function OptionsRenderer:_drawBackdrop(graphics, role)
-  local lease = assert(self._leaseByRole[role], "prepared backdrops carry their " .. role .. " lease")
-  lease:draw(graphics, 0, 0)
+---@param role string "header"|"footer"|"preview" the semantic shell role
+---@param x number logical x
+---@param y number logical y
+function OptionsRenderer:_drawShellBand(graphics, role, x, y)
+  local lease = assert(self._leaseByRole[role], "prepared shell bands carry their " .. role .. " lease")
+  lease:draw(graphics, x, y)
 end
 
--- Paints the selected-row strip behind the focused scrollable row only,
--- at its content-space selector band under the single list translation.
--- Footer focus hides the layer.
+-- Paints the selected-row indicator over the focused scrollable row only,
+-- centered on its content-space selector band under the single list
+-- translation. The native indicator is a 30px border box around the 24px
+-- band, so it lifts 3px above the row top; the overhang overlaps the
+-- neighboring plates exactly like the source layer. Footer focus hides
+-- the layer.
 ---@param graphics love.graphics
 ---@param content OptionsInterface.ContentGeometry
 ---@param view table<string, unknown>
@@ -467,7 +517,7 @@ function OptionsRenderer:_drawStrip(graphics, content, view)
     return
   end
   local lease = assert(self._leaseByRole.selectionOverlay, "prepared selection overlay carries its lease")
-  lease:draw(graphics, focused.rect.x, focused.rect.y)
+  lease:draw(graphics, focused.rect.x, focused.rect.y - STRIP_LIFT)
 end
 
 -- Draws one source label record inside its bounded window: validates the
@@ -578,13 +628,11 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
       "the " .. row.id .. " value " .. valueLabel .. " exceeds its numeric window"
     )
     -- The row owns focus through the source selection strip; the
-    -- slider paints only its rail, fill, and thumb.
+    -- slider paints only its rail, fill, and down-arrow cursor.
     OptionsWidgets.drawSlider(graphics, resolved, {
       rail = { r = 0.25, g = 0.25, b = 0.25, a = 1 },
       fill = { r = 0.9, g = 0.9, b = 0.9, a = 1 },
-      thumb = { r = 0.95, g = 0.95, b = 0.95, a = 1 },
-      thumbEdge = { r = 0.1, g = 0.1, b = 0.1, a = 1 },
-    })
+    }, self:_sliderCursor(chrome))
     self:_drawPlainLabel(
       valueLabel,
       { x = valueWindow.x + valueWindow.width - valueWidth, y = valueWindow.y },
@@ -652,7 +700,14 @@ function OptionsRenderer:_drawRow(graphics, chrome, quadFor, section, row, rowVi
   local index = assert(rowView.valueIndex, "rows carry their value stop")
   local display = rowView.choiceDisplay
   for choiceIndex, stop in ipairs(assert(control.choices, "choice rows carry choice stops")) do
-    OptionsWidgets.drawChoice(graphics, chrome, quadFor, group, stop.chromeAnchor, choiceIndex == index, 0)
+    -- Every stop paints its opaque printed face; the chosen stop then
+    -- wears its selected sprite over that same print, exactly like the
+    -- source layer. Transparent sprite pixels reveal the print instead of
+    -- the scrubbed plate, so the backing never changes with the value.
+    OptionsWidgets.drawChoice(graphics, chrome, quadFor, group, stop.chromeAnchor, false, 0)
+    if choiceIndex == index then
+      OptionsWidgets.drawChoice(graphics, chrome, quadFor, group, stop.chromeAnchor, true, 0)
+    end
     local paletteRole = choiceIndex == index and "selected" or "normal"
     local box = { x = stop.labelWindow.x, y = labelY, width = stop.labelWindow.width, height = 19 }
     local entry = display ~= nil and display[choiceIndex] or nil

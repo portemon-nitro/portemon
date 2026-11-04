@@ -386,7 +386,7 @@ end
 
 function T.tests.preview_forwards_the_draft_frame_and_window_background(scope)
   local renderer, text, window = preparedPainter(scope)
-  local view = sampleView("textFrame", 64)
+  local view = sampleView("textFrame", 72)
   view.preview = { textSpeed = "fastest", textFrame = 7 }
   local plan = drawNative(scope, renderer, view)
   Assert.isNil(plan.content.preview, "the native plan keeps no fixed preview")
@@ -669,8 +669,10 @@ function T.tests.options_title_and_footer_keep_their_source_windows(scope)
   Assert.isTrue(confirm.x < 183 and quit.x >= 183, "the two footer actions share one window instead of their own")
   local quitView = headlessSourceView(nil, true)
   local quitPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), quitView)
+  -- At maximum scroll the first visible content row is soundMode, so the
+  -- strip-free sample moves to the odd volume plate below it.
   Assert.deepEqual(
-    sampleLogical(2, 26, quitView, quitPlan),
+    sampleLogical(6, 60, quitView, quitPlan),
     { 250, 230, 180, 255 },
     "no selected-row strip paints while the footer holds focus; the odd row plate shows"
   )
@@ -709,7 +711,7 @@ function T.tests.choice_rows_use_their_source_pill_family_and_geometry(scope)
     "the second battle-style pill misses"
   )
   local frameView = headlessSourceView()
-  frameView.scrollOffset = 64
+  frameView.scrollOffset = 72
   local framePlan = resolvers.nativeLike(contextFor("nativeLike", measurements), frameView)
   local frameContent = assert(framePlan.content, "the scrolled plan carries its options content")
   local left = Interface.hitTest(frameContent, 140, 116)
@@ -729,6 +731,47 @@ function T.tests.choice_rows_use_their_source_pill_family_and_geometry(scope)
   local valueDraw = findPlacedLine(text.plain, "TYPE 1") or findRecordedToken(text.tokens, "TYPE 1")
   Assert.notNil(valueDraw, "the frame value never paints")
   Assert.isTrue(valueDraw.x < 172, "the frame value paints its center as a left origin instead of centering about it")
+  renderer:dispose()
+end
+
+-- Choice chrome layers like the source screen: every stop paints its
+-- opaque printed face, and the chosen stop paints its selected sprite
+-- over that same print, so transparent sprite pixels reveal the print
+-- instead of the scrubbed plate and the backing never changes with the
+-- value. Unselected stops paint exactly one face each.
+function T.tests.selected_choice_paints_its_sprite_over_its_printed_face(scope)
+  local Interface = modules()
+  local renderer, _ = preparedSourcePainter(scope)
+  local measurements = topologies()
+  local resolvers = Interface.defaults()
+  local view = headlessSourceView()
+  local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
+  local Widgets = require("game.hgss.src.ui.OptionsWidgets")
+  local realDrawChoice = assert(Widgets.drawChoice, "OptionsWidgets carries drawChoice")
+  local seen = {}
+  Widgets.drawChoice = function(graphics, chrome, quadFor, choice, anchor, selected, ageTicks)
+    seen[#seen + 1] = { x = anchor.x, y = anchor.y, selected = selected }
+    return realDrawChoice(graphics, chrome, quadFor, choice, anchor, selected, ageTicks)
+  end
+  local ok, drawErr = pcall(drawPlan, scope, renderer, view, plan, 512, 384)
+  Widgets.drawChoice = realDrawChoice
+  Assert.isTrue(ok, "the choice rows draw: " .. tostring(drawErr))
+  local function callsAt(x, y)
+    local out = {}
+    for _, call in ipairs(seen) do
+      if call.x == x and call.y == y then
+        out[#out + 1] = call.selected
+      end
+    end
+    return out
+  end
+  -- headlessSourceView selects the first stop of every row: the narrow
+  -- text-speed row and the wide battle-style row pin the contract.
+  Assert.deepEqual(callsAt(112, 0), { false, true }, "the chosen narrow stop layers its sprite over its print")
+  Assert.deepEqual(callsAt(160, 0), { false }, "an unchosen narrow stop paints one face")
+  Assert.deepEqual(callsAt(208, 0), { false }, "an unchosen narrow stop paints one face")
+  Assert.deepEqual(callsAt(112, 48), { false, true }, "the chosen wide stop layers its sprite over its print")
+  Assert.deepEqual(callsAt(192, 48), { false }, "an unchosen wide stop paints one face")
   renderer:dispose()
 end
 
@@ -886,10 +929,12 @@ function T.tests.options_paints_single_pass_labels_without_chrome_overflow(scope
   for _, line in ipairs({ "TEXT SPEED", "CONFIRM", "QUIT", "MID" }) do
     Assert.equal(counts[line], 1, "label paints its shadow and face as two text passes: " .. line)
   end
+  -- The footer shell band owns its pixels: no footer or arrow chrome
+  -- lingers over the band once the native anchors move in.
   Assert.deepEqual(
     sampleChrome(26, 176),
-    { 24, 120, 200, 255 },
-    "footer action chrome still spans the broad pre-source rectangle"
+    { 190, 80, 30, 255 },
+    "the footer shell band shows its own base, not stale action chrome"
   )
   Assert.deepEqual(
     sampleChrome(113, 130),
@@ -1012,7 +1057,7 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   end
   Assert.equal(edited, "set", "a tap on the painted row edits that same row")
   text.draws = {}
-  local maxView = sampleView("textFrame", 64)
+  local maxView = sampleView("textFrame", 72)
   local maxPlan = planFor(maxView)
   local canvasMax = drawPlan(scope, renderer, maxView, maxPlan, 512, 384)
   local dataMax = scope:own(canvasMax:newImageData())
@@ -1032,8 +1077,8 @@ function T.tests.scrolled_rows_paint_at_their_hit_tested_positions(scope)
   )
   Assert.deepEqual(
     quantizePixel(dataMax, thumbHx, thumbHy),
-    { 242, 242, 242, 255 },
-    "the battle-speed row stays reachable at maximum scroll"
+    { 20, 170, 190, 255 },
+    "the battle-speed cursor tip lands on the track at maximum scroll"
   )
   renderer:dispose()
 end
@@ -1055,7 +1100,7 @@ function T.tests.dual_upper_pane_stays_decorative_while_the_sample_scrolls_in_th
   end
   Assert.deepEqual(
     assert(hiddenFrame ~= nil and hiddenFrame.previewRect, "the closing row carries its sample"),
-    { x = 16, y = 172, width = 216, height = 32 },
+    { x = 16, y = 176, width = 216, height = 32 },
     "the sample lives inside the closing row"
   )
   window.draws = 0
@@ -1069,10 +1114,10 @@ function T.tests.dual_upper_pane_stays_decorative_while_the_sample_scrolls_in_th
   )
   Assert.deepEqual(
     quantizePixel(hiddenData, 266, 10),
-    { 24, 120, 200, 255 },
-    "the lower pane paints the controls backdrop"
+    { 24, 110, 190, 255 },
+    "the lower pane paints the header shell band"
   )
-  local shown = sampleView("textFrame", 64)
+  local shown = sampleView("textFrame", 72)
   shown.preview = { textSpeed = "mid", textFrame = 3 }
   local plan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), shown)
   Assert.isNil(plan.content.preview, "the revealed plan keeps no fixed preview")
@@ -1080,17 +1125,17 @@ function T.tests.dual_upper_pane_stays_decorative_while_the_sample_scrolls_in_th
   local canvas = drawPlan(scope, renderer, shown, plan, 512, 192)
   local data = scope:own(canvas:newImageData())
   Assert.deepEqual(quantizePixel(data, 10, 10), { 210, 110, 30, 255 }, "the upper pane paints the preview backdrop")
-  Assert.deepEqual(quantizePixel(data, 266, 10), { 24, 120, 200, 255 }, "the lower pane paints the controls backdrop")
+  Assert.deepEqual(quantizePixel(data, 266, 10), { 24, 110, 190, 255 }, "the lower pane paints the header shell band")
   Assert.equal(window.draws, 1, "the revealed sample paints once in the lower list")
   Assert.deepEqual(
     { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
-    { x = 16, y = 172, width = 216, height = 32 },
+    { x = 16, y = 176, width = 216, height = 32 },
     "the sample window paints with its row in the lower pane"
   )
   Assert.deepEqual(
-    quantizePixel(data, 506, 180),
-    { 24, 120, 200, 255 },
-    "no preview window overpaints the lower controls"
+    quantizePixel(data, 262, 180),
+    { 190, 80, 30, 255 },
+    "no preview window overpaints the lower footer shell"
   )
   renderer:dispose()
 end
@@ -1126,11 +1171,11 @@ function T.tests.pane_backing_stays_opaque_while_host_pixels_outside_stay_untouc
   local placement = assert(plan.panes[1].placement, "the wide plan places its pane")
   local canvas = drawPlan(scope, renderer, view, plan, 960, 540, { 1, 0, 1, 1 })
   local data = scope:own(canvas:newImageData())
-  local hx, hy = LayoutGeometry.logicalToHost(placement, 250, 190)
+  local hx, hy = LayoutGeometry.logicalToHost(placement, 6, 190)
   Assert.deepEqual(
     quantizePixel(data, hx, hy),
-    { 24, 120, 200, 255 },
-    "every controls-pane pixel is source-backed opaque"
+    { 190, 80, 30, 255 },
+    "every footer-shell pixel is source-backed opaque"
   )
   Assert.deepEqual(
     quantizePixel(data, 5, 5),
@@ -1367,7 +1412,7 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
   local renderer, text, window = tokenPainter(scope)
   local measurements = topologies()
   local resolvers = Interface.defaults()
-  local view = sampleView("textFrame", 64)
+  local view = sampleView("textFrame", 72)
   view.preview = {
     textSpeed = "mid",
     textFrame = 0,
@@ -1384,7 +1429,7 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
     end
   end
   local preview = assert(frameRow ~= nil and frameRow.previewRect, "the closing row carries its sample")
-  Assert.deepEqual(preview, { x = 16, y = 172, width = 216, height = 32 }, "the sample lives inside the closing row")
+  Assert.deepEqual(preview, { x = 16, y = 176, width = 216, height = 32 }, "the sample lives inside the closing row")
   drawPlan(scope, renderer, view, plan, 512, 384)
   Assert.equal(window.lastFrame, 0, "the preview border uses the draft frame")
   Assert.equal(#text.tokenDraws, 2, "every visible token line draws once")
@@ -1420,7 +1465,7 @@ function T.tests.frame_preview_paints_live_token_lines_without_static_text(scope
   end
   Assert.deepEqual(
     assert(dualFrame ~= nil and dualFrame.previewRect, "the dual closing row carries its sample"),
-    { x = 16, y = 172, width = 216, height = 32 },
+    { x = 16, y = 176, width = 216, height = 32 },
     "the dual sample lives inside the closing row"
   )
   drawPlan(scope, renderer, view, dualPlan, 512, 192)
@@ -1572,7 +1617,7 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
   local measurements = topologies()
   local resolvers = Interface.defaults()
   local starts = { 0, 24, 48, 72, 96, 120, 144 }
-  local heights = { 24, 24, 24, 24, 24, 24, 64 }
+  local heights = { 24, 24, 24, 24, 24, 24, 72 }
   for _, case in ipairs({ "dualDisplay", "nativeLike", "wide", "tall" }) do
     local context = contextFor(case, measurements)
     local view = sampleView("textSpeed", 0)
@@ -1585,7 +1630,7 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
       case .. " shares one tall viewport"
     )
     Assert.equal(content.footer.y, 168, case .. " pins its footer")
-    Assert.equal(content.scrollMax, 64, case .. " shares the scroll limit")
+    Assert.equal(content.scrollMax, 72, case .. " shares the scroll limit")
     Assert.isNil(content.preview, case .. " keeps no fixed preview")
     Assert.equal(#content.rows, 7, case .. " lays out seven rows")
     Assert.equal(content.rows[7].id, "textFrame", case .. " closes with the frame")
@@ -1596,12 +1641,12 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
     local frame = content.rows[7]
     Assert.deepEqual(
       frame.rect,
-      { x = 0, y = 144, width = 256, height = 64 },
+      { x = 0, y = 144, width = 256, height = 72 },
       case .. " gives the closing row its tall item"
     )
     Assert.deepEqual(
       frame.previewRect,
-      { x = 16, y = 172, width = 216, height = 32 },
+      { x = 16, y = 176, width = 216, height = 32 },
       case .. " nests the sample inside the closing row"
     )
   end
@@ -1612,7 +1657,7 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
   window.draws = 0
   drawPlan(scope, renderer, hiddenView, hiddenPlan, 512, 384)
   Assert.equal(window.draws, 0, "the sample stays hidden at the top")
-  local shownView = sampleView("textFrame", 64)
+  local shownView = sampleView("textFrame", 72)
   shownView.preview = { textSpeed = "mid", textFrame = 3 }
   local shownPlan = resolvers.nativeLike(contextFor("nativeLike", measurements), shownView)
   window.draws = 0
@@ -1620,7 +1665,7 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
   Assert.equal(window.draws, 1, "the revealed sample paints once")
   Assert.deepEqual(
     { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
-    { x = 16, y = 172, width = 216, height = 32 },
+    { x = 16, y = 176, width = 216, height = 32 },
     "the revealed sample covers its row rect"
   )
   local dualHidden = sampleView("textSpeed", 0)
@@ -1629,7 +1674,7 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
   window.draws = 0
   drawPlan(scope, renderer, dualHidden, dualHiddenPlan, 512, 192)
   Assert.equal(window.draws, 0, "no upper copy appears while scrolled away")
-  local dualShown = sampleView("textFrame", 64)
+  local dualShown = sampleView("textFrame", 72)
   dualShown.preview = { textSpeed = "mid", textFrame = 3 }
   local dualShownPlan = resolvers.dualDisplay(contextFor("dualDisplay", measurements), dualShown)
   window.draws = 0
@@ -1637,7 +1682,7 @@ function T.tests.sample_scrolls_with_its_row_once_on_every_layout(scope)
   Assert.equal(window.draws, 1, "the lower list paints the one sample")
   Assert.deepEqual(
     { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
-    { x = 16, y = 172, width = 216, height = 32 },
+    { x = 16, y = 176, width = 216, height = 32 },
     "the dual sample paints with its row below"
   )
   renderer:dispose()
@@ -1645,13 +1690,14 @@ end
 
 -- Every suite stages its own complete synthetic image set under its own
 -- disposable namespace: the namespace starts clean without another suite
--- having run first, carries all four required roles where the pool worker
+-- having run first, carries every required role (chrome, header/footer
+-- shell bands, preview, strip, and row plates) where the pool worker
 -- reads them, and never equals a real game version.
 function T.tests.stages_a_private_complete_image_set(scope)
   local workerVisible = CacheFs.forVersion(ISOLATED_VERSION)
   workerVisible:removeTree("")
   Assert.isNil(
-    workerVisible:read(FieldUiFixture.OPTIONS_CHROME_PATH),
+    workerVisible:read(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH),
     "the private namespace starts clean without another suite running first"
   )
   local cache, manifest = optionsCache()
@@ -1660,7 +1706,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
-  Assert.equal(manifest.options.version, 4, "the staged section carries its row-plate contract")
+  Assert.equal(manifest.options.version, 6, "the staged section carries its indicator contract")
   Assert.equal(
     manifest.options.selectionOverlay,
     FieldUiFixture.optionsSelectionOverlayKey(),
@@ -1668,7 +1714,8 @@ function T.tests.stages_a_private_complete_image_set(scope)
   )
   for _, path in ipairs({
     FieldUiFixture.OPTIONS_CHROME_PATH,
-    FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_FOOTER_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
     FieldUiFixture.OPTIONS_ROW_ODD_PATH,
@@ -1680,7 +1727,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   local overlay =
     assert(manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()], "the selected-row strip asset is indexed")
   Assert.equal(overlay.width, 256, "the selected-row strip width")
-  Assert.equal(overlay.height, 24, "the selected-row strip height")
+  Assert.equal(overlay.height, 30, "the selected-row strip height")
 end
 
 -- Held, quick, and cancelled presses paint the exact compiled source
@@ -1695,7 +1742,7 @@ function T.tests.held_quick_and_cancelled_presses_paint_exact_source_frames(scop
   local resolvers = Interface.defaults()
   local view = headlessSourceView()
   view.focusId = "textFrame"
-  view.scrollOffset = 64
+  view.scrollOffset = 72
   local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
   local placement = assert(plan.panes[1].placement, "the native plan places its pane")
   local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
@@ -1829,7 +1876,7 @@ function T.tests.corrected_options_screen_reads_clean_on_every_layout(scope)
     Assert.equal(window.draws, 0, case .. " hides the sample at the top")
     local bottom = headlessSourceView()
     bottom.focusId = "textFrame"
-    bottom.scrollOffset = 64
+    bottom.scrollOffset = 72
     bottom.error = "SAVE_WRITE_FAILED: disk is full"
     local bottomPlan = resolvers[case](contextFor(case, measurements), bottom)
     text.draws = {}
@@ -1839,11 +1886,11 @@ function T.tests.corrected_options_screen_reads_clean_on_every_layout(scope)
     Assert.notNil(frameLabel, case .. " paints its frame row when revealed")
     local value = findPlacedLine(text.draws, "TYPE 1")
     Assert.notNil(value, case .. " paints its frame value when revealed")
-    Assert.isTrue(value.x >= 140 and value.x <= 172, case .. " centers its frame value")
+    Assert.equal(value.x + math.floor(#"TYPE 1" * 8 / 2), 180, case .. " centers its frame value about 180")
     Assert.equal(window.draws, 1, case .. " paints the revealed sample exactly once")
     Assert.deepEqual(
       { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
-      { x = 16, y = 172, width = 216, height = 32 },
+      { x = 16, y = 176, width = 216, height = 32 },
       case .. " nests the revealed sample in its row"
     )
     local failed = findPlacedLine(text.draws, "APPLY FAILED")
@@ -1919,7 +1966,7 @@ function T.tests.scrolling_list_paints_moving_row_plates_over_stale_faces(scope)
     { oddR, oddG, oddB, 255 },
     "the scrolled third row keeps its odd plate in the middle"
   )
-  local bottom = sampleView("textFrame", 64)
+  local bottom = sampleView("textFrame", 72)
   bottom.preview = { textSpeed = "mid", textFrame = 1 }
   Assert.deepEqual(
     sampleLogical(bottom, 64, 6, 140),
@@ -1974,13 +2021,13 @@ function T.tests.list_replacement_keeps_header_footer_and_preview_fixed(scope)
     end
     return at
   end
-  for _, offset in ipairs({ 0, 64 }) do
+  for _, offset in ipairs({ 0, 72 }) do
     local focus = offset == 0 and "textSpeed" or "textFrame"
     local view = sampleView(focus, offset)
     view.preview = { textSpeed = "mid", textFrame = 1 }
     local at = sampleNative(view)
-    Assert.deepEqual(at(6, 10), { 24, 120, 200, 255 }, "the header keeps its source base at offset " .. offset)
-    Assert.deepEqual(at(6, 180), { 24, 120, 200, 255 }, "the footer keeps its source base at offset " .. offset)
+    Assert.deepEqual(at(6, 10), { 24, 110, 190, 255 }, "the header keeps its shell band at offset " .. offset)
+    Assert.deepEqual(at(6, 180), { 190, 80, 30, 255 }, "the footer keeps its shell band at offset " .. offset)
     if offset == 0 then
       Assert.deepEqual(at(6, 36), { oddR, oddG, oddB, 255 }, "the list paints plates below the fixed header")
     else
@@ -2004,10 +2051,11 @@ function T.tests.list_replacement_keeps_header_footer_and_preview_fixed(scope)
   renderer:dispose()
 end
 
--- The focused strip paints between its own moving background and the row
--- foreground: the border follows the focused selector band at any offset
--- and footer focus hides the list strip entirely.
-function T.tests.focused_strip_paints_between_plate_and_row_content(scope)
+-- The focused indicator paints over its row's plates and chrome: the
+-- 30px border box centers on the focused selector band at any offset so
+-- both side bars survive opaque pill faces, the overhanging bottom edge
+-- lands on the next row, and footer focus hides the list strip entirely.
+function T.tests.focused_indicator_paints_over_plates_and_row_chrome(scope)
   local Interface, Renderer = modules()
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
   local cache, manifest = optionsCache()
@@ -2053,6 +2101,16 @@ function T.tests.focused_strip_paints_between_plate_and_row_content(scope)
   local topAt = sampleNative(sampleView("textSpeed", 0))
   Assert.deepEqual(topAt(2, 26), { borderR, borderG, borderB, 255 }, "the strip backs the focused first row")
   Assert.deepEqual(topAt(6, 36), { oddR, oddG, oddB, 255 }, "the strip center leaves the odd plate visible")
+  Assert.deepEqual(
+    topAt(254, 36),
+    { borderR, borderG, borderB, 255 },
+    "the right bar paints over the third pill face"
+  )
+  Assert.deepEqual(
+    topAt(6, 48),
+    { borderR, borderG, borderB, 255 },
+    "the overhanging bottom edge lands on the next row"
+  )
   local scrolledView = sampleView("battleStyle", 32)
   local scrolledAt, scrolledPlan = sampleNative(scrolledView)
   local scrolledContent = assert(scrolledPlan.content, "the scrolled plan carries its list")
@@ -2069,10 +2127,15 @@ function T.tests.focused_strip_paints_between_plate_and_row_content(scope)
     { borderR, borderG, borderB, 255 },
     "the strip follows its row away from the static source band"
   )
-  local footerView = sampleView("confirm", 64)
+  Assert.deepEqual(
+    scrolledAt(254, stripTop + 12),
+    { borderR, borderG, borderB, 255 },
+    "the scrolled right bar paints over the wide pill face"
+  )
+  local footerView = sampleView("confirm", 72)
   footerView.preview = { textSpeed = "mid", textFrame = 1 }
   local footerAt = sampleNative(footerView)
-  Assert.deepEqual(footerAt(2, 26), { oddR, oddG, oddB, 255 }, "footer focus hides the list strip")
+  Assert.deepEqual(footerAt(6, 60), { oddR, oddG, oddB, 255 }, "footer focus hides the list strip")
   renderer:dispose()
 end
 
@@ -2112,7 +2175,7 @@ function T.tests.row_plate_leases_prepare_draw_and_release_cleanly(scope)
   local requestsAfterPrepare = pool:stats().requests
   local topView = sampleView("textSpeed", 0)
   drawPlan(scope, renderer, topView, resolvers.nativeLike(contextFor("nativeLike", measurements), topView), 512, 384)
-  local movedView = sampleView("textFrame", 64)
+  local movedView = sampleView("textFrame", 72)
   movedView.preview = { textSpeed = "mid", textFrame = 1 }
   drawPlan(
     scope,
@@ -2279,8 +2342,8 @@ function T.tests.slider_values_keep_a_measured_window_clear_of_their_rail(scope)
       )
       Assert.deepEqual(
         quantizePixel(data, volumeHx, volumeHy),
-        { 242, 242, 242, 255 },
-        "the volume thumb paints inside its own rail at " .. case.volume
+        { 20, 170, 190, 255 },
+        "the volume cursor tip lands on its own rail at " .. case.volume
       )
       local speedSlider = assert(rowsById.battleSpeed.control.slider, "the speed row carries its rail")
       local speedCx = math.floor(speedSlider.thumbRect.x + speedSlider.thumbRect.width / 2)
@@ -2291,313 +2354,315 @@ function T.tests.slider_values_keep_a_measured_window_clear_of_their_rail(scope)
       )
       Assert.deepEqual(
         quantizePixel(data, speedHx, speedHy),
-        { 242, 242, 242, 255 },
-        "the speed thumb paints inside its own rail at " .. case.speed
+        { 20, 170, 190, 255 },
+        "the speed cursor tip lands on its own rail at " .. case.speed
       )
     end
   end
   renderer:dispose()
 end
-
--- Slider values and rails travel together without bleed: at every list
--- offset the measured slot and the resolved track keep their gap, move
--- with their row, stay out of neighboring rows and the fixed footer, and
--- the focused row keeps its strip.
-function T.tests.slider_value_and_rail_travel_together_without_bleed(scope)
-  local Interface = modules()
-  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-  local renderer, text, _ = preparedPlacedPainter(scope)
-  local measurements = topologies()
-  local resolvers = Interface.defaults()
-  local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
-  local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
-  for _, offset in ipairs({ 0, 32, 64 }) do
-    for _, focusId in ipairs({ "volume", "battleSpeed" }) do
-      local view = headlessSourceView({ battleSpeed = 2 })
-      view.focusId = focusId
-      view.scrollOffset = offset
-      local plan = resolvers.nativeLike(contextFor("nativeLike", measurements), view)
-      local content = assert(plan.content, "the native plan carries its list at offset " .. offset)
-      Assert.equal(content.scrollOffset, offset, "the plan carries offset " .. offset)
-      Assert.equal(content.footer.y, 168, "the footer stays pinned at offset " .. offset)
-      local rowsById = {}
-      for _, row in ipairs(content.rows) do
-        rowsById[row.id] = row
-      end
-      for _, id in ipairs({ "volume", "battleSpeed" }) do
-        local row = assert(rowsById[id], id .. " keeps its row at offset " .. offset)
-        local control = assert(row.control, id .. " carries its control at offset " .. offset)
-        Assert.deepEqual(
-          assert(control.valueWindow, id .. " carries its numeric window at offset " .. offset),
-          { x = 112, y = row.rect.y + 5, width = 44, height = 18 },
-          id .. " keeps content-space geometry at offset " .. offset
-        )
-        Assert.deepEqual(
-          assert(control.slider, id .. " carries its resolved rail at offset " .. offset).rect,
-          { x = 164, y = row.rect.y + 6, width = 80, height = 12 },
-          id .. " keeps its content-space rail at offset " .. offset
-        )
-      end
-      text.draws = {}
-      local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
-      local volumeDraw = findPlacedLine(text.draws, "80%")
-      Assert.isTrue(volumeDraw ~= nil, "the volume value paints at offset " .. offset)
-      Assert.equal(
-        volumeDraw.x,
-        112 + 44 - text:measurePlain("80%"),
-        "the volume value right-aligns at offset " .. offset
-      )
-      Assert.equal(
-        volumeDraw.y,
-        rowsById.volume.rect.y + 5,
-        "the volume value shares the row transform at offset " .. offset
-      )
-      local speedDraw = findPlacedLine(text.draws, "2x")
-      Assert.isTrue(speedDraw ~= nil, "the speed value paints at offset " .. offset)
-      Assert.equal(
-        speedDraw.x,
-        112 + 44 - text:measurePlain("2x"),
-        "the speed value right-aligns at offset " .. offset
-      )
-      Assert.equal(
-        speedDraw.y,
-        rowsById.battleSpeed.rect.y + 5,
-        "the speed value shares the row transform at offset " .. offset
-      )
-      local footerDraw = findPlacedLine(text.draws, "CONFIRM")
-      Assert.isTrue(footerDraw ~= nil, "the footer paints at offset " .. offset)
-      Assert.isTrue(footerDraw.y >= 168, "the footer stays below the list at offset " .. offset)
-      local placement = assert(plan.panes[1].placement, "the native plan places its pane")
-      local data = scope:own(canvas:newImageData())
-      local volumeCenter = content.listViewport.y + (rowsById.volume.rect.y + 12 - offset)
-      local speedCenter = content.listViewport.y + (rowsById.battleSpeed.rect.y + 12 - offset)
-      local function at(lx, ly)
-        local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
-        return quantizePixel(data, hx, hy)
-      end
-      Assert.deepEqual(
-        at(160, volumeCenter),
-        { oddR, oddG, oddB, 255 },
-        "the volume gap keeps its plate at offset " .. offset
-      )
-      Assert.deepEqual(
-        at(130, volumeCenter),
-        { oddR, oddG, oddB, 255 },
-        "the volume slot holds no rail paint at offset " .. offset
-      )
-      Assert.deepEqual(
-        at(160, speedCenter),
-        { evenR, evenG, evenB, 255 },
-        "the speed gap keeps its plate at offset " .. offset
-      )
-      Assert.deepEqual(
-        at(130, speedCenter),
-        { evenR, evenG, evenB, 255 },
-        "the speed slot holds no rail paint at offset " .. offset
-      )
-      local volumeSlider = assert(rowsById.volume.control.slider, "the volume row carries its rail")
-      local volumeCx = math.floor(volumeSlider.thumbRect.x + volumeSlider.thumbRect.width / 2)
-      local volumeHx, volumeHy = LayoutGeometry.logicalToHost(
-        placement,
-        volumeCx,
-        volumeSlider.centerY + content.listViewport.y - offset
-      )
-      Assert.deepEqual(
-        quantizePixel(data, volumeHx, volumeHy),
-        { 242, 242, 242, 255 },
-        "the volume thumb travels with its row at offset " .. offset
-      )
-      local speedSlider = assert(rowsById.battleSpeed.control.slider, "the speed row carries its rail")
-      local speedCx = math.floor(speedSlider.thumbRect.x + speedSlider.thumbRect.width / 2)
-      local speedHx, speedHy = LayoutGeometry.logicalToHost(
-        placement,
-        speedCx,
-        speedSlider.centerY + content.listViewport.y - offset
-      )
-      Assert.deepEqual(
-        quantizePixel(data, speedHx, speedHy),
-        { 242, 242, 242, 255 },
-        "the speed thumb travels with its row at offset " .. offset
-      )
-    end
-  end
-  renderer:dispose()
-end
-
--- The completed screen stays coherent in one composition: at every
--- scroll position the moving plates cover the list, the focused row wears
--- only the source strip, slider values never touch their rails, no extra
--- slider outline paints, the frame sample co-scrolls, and the header and
--- footer stay fixed on all four display arrangements.
-function T.tests.touched_rows_keep_one_strip_across_offsets_sliders_and_layouts(scope)
+-- Composition gate: the production renderer over source-shaped art must keep
+-- every choice center on its decomp window-relative glyph center, clip
+-- 32px-tall face art to its own row, land the slider cursor tip on the
+-- track with no white square remnant, reveal the full 72px frame item at
+-- maximum scroll, and paint only shell bands over a hostile base. The
+-- renderer draws through the real field window renderer here (never the
+-- recording stub), so the sample window paints production frame art.
+-- This single real-window composition subsumes the retired offset/layout
+-- matrices; cheap unit tests keep stop arithmetic and pointer state.
+function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
   local Interface, Renderer = modules()
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-  local renderer, text, window = preparedPlacedPainter(scope)
+  local Widgets = require("game.hgss.src.ui.OptionsWidgets")
   local measurements = topologies()
   local resolvers = Interface.defaults()
-  local borderR, borderG, borderB = FieldUiFixture.optionsSelectionOverlayBorderColor()
+  local cache, manifest = optionsCache()
+  CacheFs.forVersion(ISOLATED_VERSION):write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local text = tokenRecordingText()
+  local window = scope:own(FieldWindowRenderer.new({ cacheFs = CacheFs.forVersion(ISOLATED_VERSION), manifest = manifest }))
+  local renderer = Renderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    imagePool = pool,
+    text = text,
+    window = window,
+  })
+  local ready, failure = renderer:prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready, failure = renderer:prepare()
+  end
+  Assert.isTrue(ready == true, "the painter prepares: " .. tostring(failure))
   local oddR, oddG, oddB = FieldUiFixture.optionsRowOddColor()
   local evenR, evenG, evenB = FieldUiFixture.optionsRowEvenColor()
   local frameR, frameG, frameB = FieldUiFixture.optionsRowFrameColor()
-  local fullMatrix = {
-    { offset = 0, focus = "textSpeed", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
-    { offset = 32, focus = "volume", volume = "0%", volumeIndex = 1, speed = "1x", speedValue = 1, speedIndex = 1 },
-    { offset = 32, focus = "battleSpeed", volume = "100%", volumeIndex = 101, speed = "4x", speedValue = 4, speedIndex = 3 },
-    { offset = 64, focus = "textFrame", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
-    { offset = 64, focus = "confirm", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
-  }
-  local compactMatrix = {
-    { offset = 0, focus = "textSpeed", volume = "80%", volumeIndex = 81, speed = "2x", speedValue = 2, speedIndex = 2 },
-    { offset = 32, focus = "volume", volume = "0%", volumeIndex = 1, speed = "1x", speedValue = 1, speedIndex = 1 },
-    { offset = 64, focus = "confirm", volume = "100%", volumeIndex = 101, speed = "4x", speedValue = 4, speedIndex = 3 },
-  }
-  local function plateFor(rowId, position)
-    if rowId == "textFrame" then
-      return { frameR, frameG, frameB, 255 }
-    end
-    if position % 2 == 1 then
-      return { oddR, oddG, oddB, 255 }
-    end
-    return { evenR, evenG, evenB, 255 }
+  local headR, headG, headB = FieldUiFixture.optionsHeaderBackgroundColor()
+  local footR, footG, footB = FieldUiFixture.optionsFooterBackgroundColor()
+  local borderR, borderG, borderB = FieldUiFixture.optionsSelectionOverlayBorderColor()
+  local cursorInk = { 20, 170, 190, 255 }
+  local function planFor(view, case)
+    return resolvers[case](contextFor(case, measurements), view)
   end
-  for _, case in ipairs({ "nativeLike", "wide", "tall", "dualDisplay" }) do
-    local matrix = case == "nativeLike" and fullMatrix or compactMatrix
-    for _, scenario in ipairs(matrix) do
-      local tag = case .. " offset " .. scenario.offset .. " focus " .. scenario.focus
-      local view = headlessSourceView({ battleSpeed = scenario.speedValue })
-      for _, row in ipairs(view.rows) do
-        if row.id == "volume" then
-          row.valueLabel = scenario.volume
-          row.valueIndex = scenario.volumeIndex
-        end
-        if row.id == "battleSpeed" then
-          row.valueLabel = scenario.speed
-          row.valueIndex = scenario.speedIndex
-        end
+  local function at(data, placement, lx, ly)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    return quantizePixel(data, hx, hy)
+  end
+  local function centerOf(draw)
+    local width
+    if draw.tokens ~= nil then
+      width = text:measureTokens(draw.tokens)
+    else
+      width = text:measurePlain(draw.line)
+    end
+    return draw.x + math.floor(width / 2)
+  end
+  local function findDraw(word)
+    for _, draw in ipairs(text.tokens) do
+      if joinRecordedGlyphs(draw.tokens) == word then
+        return draw
       end
-      view.focusId = scenario.focus
-      view.scrollOffset = scenario.offset
-      if scenario.offset == 64 then
-        view.preview = { textSpeed = "mid", textFrame = 1 }
+    end
+    for _, draw in ipairs(text.plain) do
+      if draw.line == word then
+        return draw
       end
-      local plan = resolvers[case](contextFor(case, measurements), view)
-      local content = assert(plan.content, tag .. " carries its list")
-      Assert.equal(content.scrollOffset, scenario.offset, tag .. " keeps its scroll")
-      Assert.equal(content.footer.y, 168, tag .. " pins its footer")
-      local placement = nil
-      for _, pane in ipairs(assert(plan.panes, tag .. " carries its panes")) do
-        if pane.id == "controls" or pane.id == "content" then
-          placement = pane.placement
-        end
+    end
+    return nil
+  end
+  -- (a) Choice glyph-ink centers match the decomp screen centers
+  -- (window origin x=8, centers window-relative +8): text speed
+  -- {132,180,228}, battle scene {132,180}, battle style and sound
+  -- {140,220}, frame value 180. The constants below are the decomp
+  -- truth, never recomputed from the production hit bands.
+  local defaultView = headlessSourceView()
+  local defaultPlan = planFor(defaultView, "nativeLike")
+  text.tokens = {}
+  text.plain = {}
+  drawPlan(scope, renderer, defaultView, defaultPlan, 512, 384)
+  for _, stop in ipairs({
+    { word = "MID", center = 132, label = "text-speed stop 1" },
+    { word = "FAST", center = 180, label = "text-speed stop 2" },
+    { word = "ON", center = 132, label = "battle-scene stop 1" },
+    { word = "OFF", center = 180, label = "battle-scene stop 2" },
+    { word = "SHIFT", center = 140, label = "battle-style stop 1" },
+    { word = "SET", center = 220, label = "battle-style stop 2" },
+    { word = "STEREO", center = 140, label = "sound stop 1" },
+    { word = "MONO", center = 220, label = "sound stop 2" },
+  }) do
+    local draw = assert(findDraw(stop.word), stop.label .. " paints " .. stop.word)
+    Assert.equal(centerOf(draw), stop.center, stop.label .. " centers glyph ink about " .. stop.center)
+  end
+  -- The frame value only paints once its row scrolls into view.
+  local frameView = headlessSourceView()
+  frameView.focusId = "textFrame"
+  frameView.scrollOffset = 72
+  local framePlan = planFor(frameView, "nativeLike")
+  text.tokens = {}
+  text.plain = {}
+  drawPlan(scope, renderer, frameView, framePlan, 512, 384)
+  local frameValue = assert(findDraw("TYPE 1"), "frame value paints TYPE 1")
+  Assert.equal(centerOf(frameValue), 180, "frame value centers glyph ink about 180")
+  local turboView = headlessSourceView({ textSpeed = "fastest" })
+  local turboPlan = planFor(turboView, "nativeLike")
+  text.tokens = {}
+  text.plain = {}
+  drawPlan(scope, renderer, turboView, turboPlan, 512, 384)
+  local turbo = assert(findDraw("TURBO"), "turbo paints its selected stop")
+  Assert.equal(centerOf(turbo), 228, "the narrow turbo stop centers glyph ink about 228")
+  -- (b) 32px-tall face art never spills into a neighbor: the focused
+  -- row's top edge and gap pixels keep their own plate or strip border
+  -- while the row above would paint its own face colors there.
+  for _, offset in ipairs({ 0, 32 }) do
+    local view = headlessSourceView()
+    view.focusId = "battleStyle"
+    view.scrollOffset = offset
+    local plan = planFor(view, "nativeLike")
+    local placement = assert(plan.panes[1].placement, "the native plan places its pane at offset " .. offset)
+    local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+    local data = scope:own(canvas:newImageData())
+    local shift = offset
+    Assert.deepEqual(
+      at(data, placement, 120, 72 - shift),
+      { 200, 200, 40, 255 },
+      "the focused wide row keeps its selected face at offset " .. offset
+    )
+    Assert.deepEqual(
+      at(data, placement, 200, 72 - shift),
+      { 40, 40, 200, 255 },
+      "the focused wide row keeps its unselected face at offset " .. offset
+    )
+    Assert.deepEqual(
+      at(data, placement, 184, 72 - shift),
+      { oddR, oddG, oddB, 255 },
+      "the focused face gap keeps its own plate where the box middle stays transparent at offset " .. offset
+    )
+    Assert.deepEqual(
+      at(data, placement, 2, 84 - shift),
+      { borderR, borderG, borderB, 255 },
+      "the focused left bar paints over the plate at offset " .. offset
+    )
+    Assert.deepEqual(
+      at(data, placement, 184, 76 - shift),
+      { oddR, oddG, oddB, 255 },
+      "the focused face gap keeps its own plate below the strip at offset " .. offset
+    )
+    -- The second row keeps mid-row plate where the text-speed stop 3
+    -- would spill without the clip (mid-row stays inside the viewport
+    -- at both offsets, unlike the clipped row top at offset 32).
+    Assert.deepEqual(
+      at(data, placement, 220, 60 - shift),
+      { evenR, evenG, evenB, 255 },
+      "the narrow second row keeps its own plate above the spill at offset " .. offset
+    )
+    Assert.deepEqual(
+      at(data, placement, 120, 122 - shift),
+      { oddR, oddG, oddB, 255 },
+      "the slider band top keeps its plate below the wide spill at offset " .. offset
+    )
+    Assert.deepEqual(
+      at(data, placement, 200, 122 - shift),
+      { oddR, oddG, oddB, 255 },
+      "the slider band keeps its plate clear of the neighbor faces at offset " .. offset
+    )
+  end
+  -- (c) The slider cursor points down with its tip on the track value at
+  -- the first, middle, and last volume stops; the marker fits its row
+  -- and no white square pixels remain anywhere near the stop.
+  for _, stop in ipairs({ { index = 1 }, { index = 51 }, { index = 101 } }) do
+    local view = headlessSourceView()
+    for _, row in ipairs(view.rows) do
+      if row.id == "volume" then
+        row.valueIndex = stop.index
       end
-      placement = assert(placement, tag .. " places its list pane")
-      local rowsById = {}
-      for _, row in ipairs(content.rows) do
-        rowsById[row.id] = row
+    end
+    local plan = planFor(view, "nativeLike")
+    local content = assert(plan.content, "the plan carries its list")
+    local volumeRow = nil
+    for _, row in ipairs(content.rows) do
+      if row.id == "volume" then
+        volumeRow = row
       end
-      text.draws = {}
-      window.draws = 0
-      local canvas = drawPlan(scope, renderer, view, plan, measurements[case].width, measurements[case].height)
-      local data = scope:own(canvas:newImageData())
-      local function at(lx, ly)
+    end
+    local slider = assert(volumeRow ~= nil and volumeRow.control.slider, "the volume row carries its rail")
+    local stopX = math.floor(slider.thumbRect.x + slider.thumbRect.width / 2)
+    local railY = math.floor(slider.centerY + content.listViewport.y - content.scrollOffset)
+    local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+    local canvas = drawPlan(scope, renderer, view, plan, 512, 384)
+    local data = scope:own(canvas:newImageData())
+    Assert.deepEqual(
+      at(data, placement, stopX, railY),
+      cursorInk,
+      "the cursor tip lands on the track at volume stop " .. stop.index
+    )
+    Assert.deepEqual(
+      at(data, placement, stopX, railY - 4),
+      cursorInk,
+      "the down marker body rises above the rail at volume stop " .. stop.index
+    )
+    Assert.deepEqual(
+      at(data, placement, stopX, railY - 8),
+      { oddR, oddG, oddB, 255 },
+      "the marker stays inside its row at volume stop " .. stop.index
+    )
+    local white, whiteAt = false, ""
+    for ly = railY - 14, railY - 2 do
+      for lx = stopX - 12, stopX + 12 do
         local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
-        return quantizePixel(data, hx, hy)
+        local sampled = quantizePixel(data, hx, hy)
+        if sampled[1] >= 240 and sampled[2] >= 240 and sampled[3] >= 240 and sampled[4] == 255 then
+          white, whiteAt = true, lx .. "," .. ly
+          break
+        end
       end
-      Assert.deepEqual(at(6, 10), { 24, 120, 200, 255 }, tag .. " keeps its header base")
-      Assert.deepEqual(at(6, 180), { 24, 120, 200, 255 }, tag .. " keeps its footer base")
-      local volumeRow = assert(rowsById.volume, tag .. " keeps its volume row")
-      local speedRow = assert(rowsById.battleSpeed, tag .. " keeps its speed row")
-      local volumeDraw = findPlacedLine(text.draws, scenario.volume)
-      Assert.isTrue(volumeDraw ~= nil, tag .. " paints " .. scenario.volume)
-      Assert.equal(
-        volumeDraw.x,
-        112 + 44 - text:measurePlain(scenario.volume),
-        tag .. " right-aligns " .. scenario.volume
-      )
-      Assert.equal(volumeDraw.y, volumeRow.rect.y + 5, tag .. " keeps the volume band")
-      local speedDraw = findPlacedLine(text.draws, scenario.speed)
-      Assert.isTrue(speedDraw ~= nil, tag .. " paints " .. scenario.speed)
-      Assert.equal(
-        speedDraw.x,
-        112 + 44 - text:measurePlain(scenario.speed),
-        tag .. " right-aligns " .. scenario.speed
-      )
-      Assert.equal(speedDraw.y, speedRow.rect.y + 5, tag .. " keeps the speed band")
-      local volumeSlider = assert(volumeRow.control.slider, tag .. " carries its volume rail")
-      local volumeCx = math.floor(volumeSlider.thumbRect.x + volumeSlider.thumbRect.width / 2)
-      local volumeHx, volumeHy = LayoutGeometry.logicalToHost(
-        placement,
-        volumeCx,
-        volumeSlider.centerY + content.listViewport.y - scenario.offset
+      if white then
+        break
+      end
+    end
+    Assert.isFalse(white, "no white square pixels remain near volume stop " .. stop.index .. " at " .. whiteAt)
+  end
+  -- (d) The full 72px frame item is revealed at maximum scroll on the
+  -- native and one resized topology: the plate's top 8px band shows
+  -- clear of the row chrome, and the sample window's own top and bottom
+  -- 8px span borders (draft frame 0 tiles 2 and 14 over the synthetic
+  -- frame strip) paint intact above the fixed footer.
+  for _, case in ipairs({ "nativeLike", "wide" }) do
+    local view = headlessSourceView()
+    view.focusId = "confirm"
+    view.scrollOffset = 72
+    local plan = planFor(view, case)
+    local placement = assert(plan.panes[1].placement, case .. " places its pane")
+    local canvas = drawPlan(scope, renderer, view, plan, measurements[case].width, measurements[case].height)
+    local data = scope:own(canvas:newImageData())
+    for _, edgeY in ipairs({ 96, 99, 102 }) do
+      for _, edgeX in ipairs({ 2, 250, 252 }) do
+        Assert.deepEqual(
+          at(data, placement, edgeX, edgeY),
+          { frameR, frameG, frameB, 255 },
+          case .. " keeps the frame plate band at " .. edgeX .. "," .. edgeY
+        )
+      end
+    end
+    for _, spanX in ipairs({ 64, 128, 192 }) do
+      Assert.deepEqual(
+        at(data, placement, spanX, 124),
+        { 26, 154, 233, 255 },
+        case .. " keeps the sample top span border at " .. spanX
       )
       Assert.deepEqual(
-        quantizePixel(data, volumeHx, volumeHy),
-        { 242, 242, 242, 255 },
-        tag .. " keeps the volume thumb inside its rail"
+        at(data, placement, spanX, 164),
+        { 182, 148, 221, 255 },
+        case .. " keeps the sample bottom span border at " .. spanX
       )
-      for _, checked in ipairs({ { id = "volume", row = volumeRow }, { id = "battleSpeed", row = speedRow } }) do
-        local edgeY = content.listViewport.y + checked.row.rect.y + 4 - scenario.offset
-        local leaked = false
-        for x = 162, 246 do
-          local hx, hy = LayoutGeometry.logicalToHost(placement, x, edgeY)
-          local sampled = quantizePixel(data, hx, hy)
-          if sampled[1] == 255 and sampled[2] == 217 and sampled[3] == 51 and sampled[4] == 255 then
-            leaked = true
-            break
-          end
-        end
-        Assert.isFalse(leaked, tag .. " paints no extra outline around the " .. checked.id .. " rail")
-        local midHx, midHy = LayoutGeometry.logicalToHost(placement, 204, edgeY)
-        Assert.deepEqual(
-          quantizePixel(data, midHx, midHy),
-          plateFor(checked.id, checked.row.position),
-          tag .. " keeps the " .. checked.id .. " outline band on its row plate"
+    end
+    Assert.deepEqual(
+      at(data, placement, 100, 175),
+      { footR, footG, footB, 255 },
+      case .. " keeps the footer shell below the revealed frame"
+    )
+  end
+  -- (e) Hostile base check: a hostile color beneath the list never shows
+  -- through, no stale control faces appear, and the shell bands keep
+  -- their own colors.
+  do
+    local view = headlessSourceView()
+    local plan = planFor(view, "nativeLike")
+    local placement = assert(plan.panes[1].placement, "the native plan places its pane")
+    local canvas = drawPlan(scope, renderer, view, plan, 512, 384, { 1, 0, 1, 1 })
+    local data = scope:own(canvas:newImageData())
+    Assert.deepEqual(
+      at(data, placement, 6, 10),
+      { headR, headG, headB, 255 },
+      "the header shell keeps its band over the hostile base"
+    )
+    Assert.deepEqual(
+      at(data, placement, 6, 180),
+      { footR, footG, footB, 255 },
+      "the footer shell keeps its band over the hostile base"
+    )
+    Assert.deepEqual(
+      at(data, placement, 50, 36),
+      { oddR, oddG, oddB, 255 },
+      "the list plates cover the hostile base"
+    )
+    for ly = 24, 167, 4 do
+      for lx = 0, 255, 8 do
+        local sampled = at(data, placement, lx, ly)
+        Assert.isFalse(
+          sampled[1] == 255 and sampled[2] == 0 and sampled[3] == 255,
+          "no hostile pixel shows through the list at " .. lx .. "," .. ly
         )
-      end
-      if scenario.focus == "confirm" or scenario.focus == "quit" then
-        Assert.deepEqual(at(2, 26), { oddR, oddG, oddB, 255 }, tag .. " hides the list strip")
-      else
-        local focusedRow = assert(rowsById[scenario.focus], tag .. " keeps its focused row")
-        local stripTop = content.listViewport.y + focusedRow.rect.y - scenario.offset
-        Assert.deepEqual(
-          at(2, stripTop + 2),
-          { borderR, borderG, borderB, 255 },
-          tag .. " backs the touched row with the strip"
+        Assert.isFalse(
+          sampled[1] == 24 and sampled[2] == 120 and sampled[3] == 200,
+          "no stale control face survives at " .. lx .. "," .. ly
         )
-        local expectedPlate = plateFor(scenario.focus, focusedRow.position)
-        Assert.deepEqual(
-          at(6, stripTop + 12),
-          expectedPlate,
-          tag .. " leaves the strip center on the row plate"
-        )
-      end
-      if scenario.offset == 0 then
-        Assert.equal(window.draws, 0, tag .. " hides the sample at the top")
-      else
-        Assert.equal(window.draws, 1, tag .. " paints the co-scrolling sample exactly once")
-      end
-      if scenario.offset == 64 then
-        Assert.deepEqual(
-          { x = window.lastBox.x, y = window.lastBox.y, width = window.lastBox.width, height = window.lastBox.height },
-          { x = 16, y = 172, width = 216, height = 32 },
-          tag .. " nests the revealed sample in its row"
-        )
-      end
-      if case == "dualDisplay" and scenario.offset == 0 then
-        local upperPlacement = nil
-        for _, pane in ipairs(assert(plan.panes, tag .. " carries its panes")) do
-          if pane.id == "preview" then
-            upperPlacement = pane.placement
-          end
-        end
-        if upperPlacement ~= nil then
-          local upperHx, upperHy = LayoutGeometry.logicalToHost(upperPlacement, 10, 10)
-          Assert.deepEqual(
-            quantizePixel(data, upperHx, upperHy),
-            { 210, 110, 30, 255 },
-            tag .. " keeps the upper pane decorative"
-          )
-        end
       end
     end
   end

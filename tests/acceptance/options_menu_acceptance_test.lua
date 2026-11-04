@@ -392,13 +392,13 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
     game:step()
     state:wheelmoved(0, -1)
     game:step()
-    Assert.equal(optionsView(game).scrollOffset, 64, "genuine wheel travel settles the list fully revealed")
+    Assert.equal(optionsView(game).scrollOffset, 72, "genuine wheel travel settles the list fully revealed")
     for _ = 1, 6 do
       pressKey(game, state, "s")
     end
     local framed = optionsView(game)
     Assert.equal(framed.focusId, "textFrame", "six downs reach the closing frame")
-    Assert.equal(framed.scrollOffset, 64, "the frame rests fully revealed")
+    Assert.equal(framed.scrollOffset, 72, "the frame rests fully revealed")
     Assert.equal(
       framed.preview.textFrame,
       game.runtime.playerData.options.textFrame,

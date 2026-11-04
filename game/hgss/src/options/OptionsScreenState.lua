@@ -709,7 +709,7 @@ end
 
 -- Keeps the focused row fully visible: scrolling never edits values or
 -- moves focus, it only reveals the focused interval. Focusing the closing
--- frame reveals its whole 64px item, sample window included.
+-- frame reveals its whole 72px item, sample window included.
 function OptionsScreenState:_ensureVisible()
   if not OptionsInterface.isRow(self._focusId) then
     return
@@ -732,7 +732,7 @@ end
 -- focused frame always rests fully revealed; otherwise a drag ending
 -- with the frame only partially visible rests fully revealed when the
 -- gesture moved toward the end, or back at the top when it moved toward
--- the start. With this leaf's 64px overflow, a strictly interior offset
+-- the start. With this leaf's 72px overflow, a strictly interior offset
 -- is exactly the partially visible frame. Active drags never settle.
 ---@param startY number? logical press y
 ---@param releaseY number? logical release y

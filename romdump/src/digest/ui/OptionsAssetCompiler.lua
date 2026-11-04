@@ -509,12 +509,117 @@ local function renderBackdrop(archive, dependencies, chars, palettes, base, imag
   return PngWriter.encode(256, 192, table.concat(rows)), { image = image, width = 256, height = 192 }, screen
 end
 
--- Copies one 8px source tile row into a full-width plate row, replacing the
--- audited face span with the backing entry observed at the interior filler
--- column of the same tile row. The retained label and edge spans keep their
--- exact source entries; flips travel with the filler so the scrubbed span
--- tiles seamlessly. Private to this module; the compiled bundle carries the
--- staged bytes.
+-- Copies one opaque 256x24 shell band from the decoded 256x256 MAIN
+-- base: the listed source tile rows copied with their exact source
+-- entries (no scrubbing), rasterized through the shared screen path with
+-- palette-zero normalized to the opaque backdrop color. Private to this
+-- module; the compiled bundle carries the staged bytes.
+---@param charData OptionsAssetCompiler.CharData decoded MAIN base tiles
+---@param palette OptionsAssetCompiler.PaletteData decoded MAIN base palette
+---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
+---@param firstTileRow integer zero-based first source tile row copied
+---@param tileRowCount integer count of source tile rows copied
+---@param image string staged output path
+---@param role string band role for failure detail
+---@return string png
+---@return { image: string, width: integer, height: integer }
+local function renderBandFromScreen(charData, palette, screen, firstTileRow, tileRowCount, image, role)
+  if tileRowCount <= 0 or firstTileRow < 0 or (firstTileRow + tileRowCount) * 8 > screen.height then
+    sourceError("the options shell band leaves its audited source screen", {
+      role = role,
+      firstTileRow = firstTileRow,
+      tileRowCount = tileRowCount,
+      height = screen.height,
+    })
+  end
+  local columns = screen.width / 8
+  if columns ~= 32 or #screen.entries ~= (screen.width / 8) * (screen.height / 8) then
+    sourceError("the options shell band leaves its audited source screen", {
+      role = role,
+      width = screen.width,
+      height = screen.height,
+      entries = #screen.entries,
+    })
+  end
+  assert(columns == 32, "a bounded options shell band fails above")
+  local entries = {}
+  for tileRow = firstTileRow, firstTileRow + tileRowCount - 1 do
+    for col = 0, columns - 1 do
+      entries[#entries + 1] = screen.entries[tileRow * columns + col + 1]
+    end
+  end
+  local height = tileRowCount * 8
+  local render = G2dRasterizer.renderScreen(
+    charData,
+    { colors = palette.colors },
+    { width = 256, height = height, entries = entries },
+    { asset = "options " .. role, member = OptionsSources.members.faceScreen },
+    { backdrop = true }
+  )
+  for offset = 4, #render.pixels, 4 do
+    if string.byte(render.pixels, offset) ~= 255 then
+      sourceError("the options shell band is not fully opaque", { role = role, pixel = math.floor(offset / 4) })
+    end
+  end
+  return PngWriter.encode(256, height, render.pixels), { image = image, width = 256, height = height }
+end
+
+-- Renders one opaque 256x24 shell band from its audited base triple by
+-- decoding the full source map once and slicing the requested tile rows
+-- with exact source entries. Returns the decoded source screen alongside
+-- the staged band so the header decode also serves the footer band and
+-- the row plates without redecoding. Private to this module; the compiled
+-- bundle carries the staged bytes.
+---@param archive Narc
+---@param dependencies table[]
+---@param chars table<integer, OptionsAssetCompiler.CharData>
+---@param palettes table<integer, OptionsAssetCompiler.PaletteData>
+---@param base { paletteMember: integer, charMember: integer, screenMember: integer }
+---@param firstTileRow integer zero-based first source tile row copied
+---@param tileRowCount integer count of source tile rows copied
+---@param image string staged output path
+---@param role string
+---@return string png
+---@return { image: string, width: integer, height: integer }
+---@return OptionsAssetCompiler.ScreenData decoded source screen
+local function renderShellBand(archive, dependencies, chars, palettes, base, firstTileRow, tileRowCount, image, role)
+  local screenBytes = decodeMember(archive, base.screenMember, "options-shell-band:" .. base.screenMember)
+  dependencies[#dependencies + 1] = {
+    name = OptionsSources.archive.symbol .. ":member:" .. base.screenMember,
+    sha1 = Hashing.sha1hex(screenBytes),
+  }
+  local screen = decodeG2d(screenBytes, "decodeScreen", base.screenMember) --[[@as OptionsAssetCompiler.ScreenData]]
+  if screen.width ~= 256 or screen.height ~= 256 then
+    sourceError("the options shell band is not the audited 256x256 surface", {
+      role = role,
+      member = base.screenMember,
+      width = screen.width,
+      height = screen.height,
+    })
+  end
+  local charData = chars[base.charMember]
+  if charData == nil then
+    sourceError("the options shell band char is not decoded", { role = role, member = base.charMember })
+  end
+  local palette = palettes[base.paletteMember]
+  if palette == nil then
+    sourceError("the options shell band palette is not decoded", { role = role, member = base.paletteMember })
+  end
+  assert(charData ~= nil and palette ~= nil, "a missing options shell band bank fails above")
+  local png, asset = renderBandFromScreen(charData, palette, screen, firstTileRow, tileRowCount, image, role)
+  return png, asset, screen
+end
+
+-- Copies one 8px source tile row into a full-width plate row, hiding only
+-- the preprinted pill faces: face tiles borrow the backing entry observed
+-- at the interior filler column of the same tile row, while dividers,
+-- inter-pill separators, and control-side backing keep their exact source
+-- entries. Tiles in the span that are neither audited faces nor audited
+-- kept material fail loudly instead of shipping guessed art. Every face
+-- hides, so the plate behind the opaque printed pills never shows printed
+-- ink; the retained label, divider, separator, and edge spans keep their
+-- exact source entries, and kept flips travel with the entry. Private to
+-- this module; the compiled bundle carries the staged bytes.
 ---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
 ---@param tileRow integer zero-based source tile row copied for one plate row
 ---@param expectedFiller integer audited backing tile for this tile row
@@ -562,15 +667,31 @@ local function scrubbedPlateRow(screen, tileRow, expectedFiller, role)
   for col = 0, columns - 1 do
     local kept = screen.entries[tileRow * columns + col + 1]
     if col >= plates.faceFirstColumn and col <= plates.faceLastColumn then
-      if
-        kept.tile ~= filler.tile
-        or kept.palette ~= filler.palette
-        or kept.flipH ~= filler.flipH
-        or kept.flipV ~= filler.flipV
-      then
+      local faces = assert(plates.faceTiles, "the producer records its audited face tile range")
+      local keptTiles = assert(plates.keptTiles, "the producer records its audited kept span tiles")
+      if kept.tile >= faces.first and kept.tile <= faces.last then
+        if kept.palette ~= 0 then
+          sourceError("the options row band face leaves its audited palette", {
+            role = role,
+            tileRow = tileRow,
+            column = col,
+            tile = kept.tile,
+            palette = kept.palette,
+          })
+        end
         changed = true
+        row[#row + 1] = { tile = filler.tile, palette = filler.palette, flipH = filler.flipH, flipV = filler.flipV }
+      elseif keptTiles[kept.tile] ~= true then
+        sourceError("the options row band carries unaudited span material", {
+          role = role,
+          tileRow = tileRow,
+          column = col,
+          tile = kept.tile,
+          palette = kept.palette,
+        })
+      else
+        row[#row + 1] = { tile = kept.tile, palette = kept.palette, flipH = kept.flipH, flipV = kept.flipV }
       end
-      row[#row + 1] = { tile = filler.tile, palette = filler.palette, flipH = filler.flipH, flipV = filler.flipV }
     else
       row[#row + 1] = { tile = kept.tile, palette = kept.palette, flipH = kept.flipH, flipV = kept.flipV }
     end
@@ -621,12 +742,195 @@ local function renderRowPlate(charData, palette, screen, tileRows, expectedFille
   return PngWriter.encode(256, height, render.pixels), { image = image, width = 256, height = height }
 end
 
--- Renders the transparent selected-row strip from the separate MAIN
+-- Extracts the slider cursor from the selected small pill's raster: the
+-- right-pointing selection marker bundled on the pill's left overhang.
+-- The raster offset is negative exactly by the marker columns the
+-- unselected face never paints, so every opaque pixel left of the body
+-- edge is marker ink and nothing else: a rectangular crop cannot separate
+-- the marker base from the pill border it touches, but the overhang mask
+-- keeps marker pixels and drops the shared edge columns. The kept marker
+-- must reach the body edge (otherwise a detached future marker would ship
+-- as a fragment). The arrowhead tip fuses into that edge, so the mask
+-- then follows marker fill/shade 4-connected to the overhang ink one body
+-- column in: the pill's own full-height slate border stops the walk, and
+-- the tip reaches at most that single apex column. The masked box is then
+-- transposed clockwise in software so the staged frame is a down-pointing
+-- marker with its tip centered on its bottom edge, closed by one outline
+-- row below the transposed apex: the fused source edge carries no outer
+-- outline of its own, so the staged tip would otherwise touch the track.
+-- The runtime draws the closed frame axis-aligned through the exact
+-- sampler instead of rotating at draw time.
+-- Returns the packable cursor frame with a zero offset and a tight box.
+-- Private to this module; the packed atlas carries the staged pixels.
+---@param raster { width: integer, height: integer, pixels: string, offset: { x: integer, y: integer } } first selected-small raster
+---@param role string cursor role for failure detail
+---@return { width: integer, height: integer, pixels: string, offset: { x: integer, y: integer }, ticks: integer, rect: { x: integer, y: integer, width: integer, height: integer } } cursor frame
+local function extractSliderCursor(raster, role)
+  local offsetX = assert(raster.offset and raster.offset.x, role .. " raster carries its source offset")
+  assert(
+    type(offsetX) == "number" and offsetX % 1 == 0 and offsetX < 0,
+    role .. " marker overhangs its pill body to the left"
+  )
+  local overhang = -offsetX
+  local width, height = raster.width, raster.height
+  local pixels = assert(raster.pixels, role .. " raster carries its pixels")
+  if #pixels ~= width * height * 4 then
+    sourceError("the options cursor raster carries no audited pixel census", {
+      role = role,
+      bytes = #pixels,
+      width = width,
+      height = height,
+    })
+  end
+  local minX, maxX, minY, maxY = nil, nil, nil, nil
+  local kept = 0
+  for y = 0, height - 1 do
+    for x = 0, overhang - 1 do
+      if string.byte(pixels, (y * width + x) * 4 + 4) >= 128 then
+        kept = kept + 1
+        if minX == nil or x < minX then
+          minX = x
+        end
+        if maxX == nil or x > maxX then
+          maxX = x
+        end
+        if minY == nil or y < minY then
+          minY = y
+        end
+        if maxY == nil or y > maxY then
+          maxY = y
+        end
+      end
+    end
+  end
+  if minX == nil then
+    sourceError("the options cursor overhang carries no marker ink", { role = role, overhang = overhang })
+  end
+  assert(maxX ~= nil and minY ~= nil and maxY ~= nil, "a kept options marker bounds above")
+  if maxX ~= overhang - 1 then
+    sourceError("the options cursor marker leaves its pill body edge", {
+      role = role,
+      maxX = maxX,
+      overhang = overhang,
+    })
+  end
+  -- The audited pill-outline slate shared by the marker border and the
+  -- pill body: light marker fill/shade walks through anything else opaque.
+  -- The same slate closes the transposed tip below.
+  local OUTLINE_R, OUTLINE_G, OUTLINE_B = 0x4A, 0x63, 0x5A
+  local function isLightInk(x, y)
+    if x < 0 or x >= width or y < 0 or y >= height then
+      return false
+    end
+    local base = (y * width + x) * 4
+    local r, g, b, a = string.byte(pixels, base + 1, base + 4)
+    return a >= 128 and not (r == OUTLINE_R and g == OUTLINE_G and b == OUTLINE_B)
+  end
+  -- The tip apex sits just past the body edge, fused with the border:
+  -- follow light ink connected to the overhang marker. The pill body's
+  -- own slate column breaks the walk, so the tip reaches at most one
+  -- body column in and a drifting source fails loudly below.
+  local tipMaxX = maxX
+  do
+    local seen = {}
+    local stack = {}
+    -- Orthogonal steps only: diagonal chalk never bridges the slate barrier.
+    local neighbors = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+    for y = minY, maxY do
+      for x = minX, overhang - 1 do
+        if isLightInk(x, y) then
+          seen[y * width + x] = true
+          stack[#stack + 1] = x
+          stack[#stack + 1] = y
+        end
+      end
+    end
+    while #stack > 0 do
+      local y = stack[#stack]
+      stack[#stack] = nil
+      local x = stack[#stack]
+      stack[#stack] = nil
+      if x > tipMaxX then
+        tipMaxX = x
+      end
+      for _, step in ipairs(neighbors) do
+        local nx, ny = x + step[1], y + step[2]
+        if seen[ny * width + nx] == nil and isLightInk(nx, ny) then
+          seen[ny * width + nx] = true
+          stack[#stack + 1] = nx
+          stack[#stack + 1] = ny
+        end
+      end
+    end
+  end
+  if tipMaxX > overhang then
+    sourceError("the options cursor tip walks past its apex column", {
+      role = role,
+      tipMaxX = tipMaxX,
+      overhang = overhang,
+    })
+  end
+  local finalMaxX = tipMaxX > maxX and tipMaxX or maxX
+  -- The rotation contract needs light apex ink centered on the tip
+  -- column: the rows carrying it must straddle the kept middle, so a
+  -- blunt cut or a border-only column fails instead of shipping.
+  local tipTop, tipBottom = nil, nil
+  for y = minY, maxY do
+    if isLightInk(finalMaxX, y) then
+      if tipTop == nil then
+        tipTop = y
+      end
+      tipBottom = y
+    end
+  end
+  assert(tipTop ~= nil and tipBottom ~= nil, "a kept options marker tips above")
+  local tipMid = (tipTop + tipBottom) / 2
+  local boxMid = (minY + maxY) / 2
+  if math.abs(tipMid - boxMid) > 1 then
+    sourceError("the options cursor tip leaves its marker middle", {
+      role = role,
+      tipMid = tipMid,
+      boxMid = boxMid,
+    })
+  end
+  local boxWidth, boxHeight = finalMaxX - minX + 1, maxY - minY + 1
+  -- Clockwise transpose of the masked box: staged (x', y') reads
+  -- source (minX + y', minY + x'), so the apex ink lands centered on the
+  -- staged tip row with its side outlines. Staged dims swap to boxHeight
+  -- wide by boxWidth tall, plus one closing outline row: the fused apex
+  -- edge carries no outer outline of its own, so the outline slate seals
+  -- the full tip width and no tip ink touches the track below.
+  local staged = {}
+  for yPrime = 0, boxWidth - 1 do
+    for xPrime = 0, boxHeight - 1 do
+      local sx, sy = minX + yPrime, minY + xPrime
+      staged[#staged + 1] = pixels:sub((sy * width + sx) * 4 + 1, (sy * width + sx) * 4 + 4)
+    end
+  end
+  local closing = string.char(OUTLINE_R, OUTLINE_G, OUTLINE_B, 255)
+  for _ = 1, boxHeight do
+    staged[#staged + 1] = closing
+  end
+  return {
+    width = boxHeight,
+    height = boxWidth + 1,
+    pixels = table.concat(staged),
+    offset = { x = 0, y = 0 },
+    ticks = 1,
+    -- The packing pass assigns the staged atlas position below; the
+    -- zero rect only reserves the field the packer fills.
+    rect = { x = 0, y = 0, width = 0, height = 0 },
+  }
+end
+
+-- Renders the transparent selected-row indicator from the separate MAIN
 -- selection layer: the audited 256x56 source map rasterized with
--- palette-zero kept transparent, cropped to source rows 16..39 (the
--- documented zero-row offset is -8, so logical row top y=24 samples rows
--- 16..39). Private to this module; the compiled bundle carries the
--- staged bytes.
+-- palette-zero kept transparent, cropped to source rows 13..42. The
+-- native indicator is a full rounded border box 30px tall, centered on
+-- the 24px row with a 3px overhang on each side; cropping only the
+-- middle rows would keep the side bars while dropping the top and
+-- bottom borders. Private to this module; the compiled bundle carries
+-- the staged bytes.
 ---@param archive Narc
 ---@param dependencies table[]
 ---@param chars table<integer, OptionsAssetCompiler.CharData>
@@ -667,10 +971,10 @@ local function renderSelectionOverlay(archive, dependencies, chars, palettes, im
     { asset = "options selection overlay", member = screenMember }
   )
   local strip = {}
-  for y = 16, 39 do
+  for y = 13, 42 do
     strip[#strip + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
   end
-  return PngWriter.encode(256, 24, table.concat(strip)), { image = image, width = 256, height = 24 }
+  return PngWriter.encode(256, 30, table.concat(strip)), { image = image, width = 256, height = 30 }
 end
 
 ---@param romFs RomFs
@@ -760,7 +1064,10 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     end
     -- The packed frame order is fixed: both pill sizes with their selected
     -- states, both arrow idle/pressed pairs, then the four footer action
-    -- states. Packing is producer layout, never a runtime contract.
+    -- states. Packing is producer layout, never a runtime contract. The
+    -- first packed raster is the selected small pill, whose marker the
+    -- slider cursor extracts below.
+    local packedMark = #packed
     local selectedSmall = sequenceFor("pills", 0, "options:pills:small")
     local selectedWide = sequenceFor("pills", 1, "options:pills:wide")
     local leftIdle = sequenceFor("leftArrow", 0, "options:arrow:left:idle")
@@ -844,6 +1151,30 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     -- the unselected state of each size precedes its selected state.
     local unselectedSmall = cropFace(OptionsSources.faceOrigins.small, pillSmallFootprint, "options:face:small")
     local unselectedWide = cropFace(OptionsSources.faceOrigins.wide, pillWideFootprint, "options:face:wide")
+    -- The slider cursor reuses the selected pill's bundled marker through
+    -- the overhang mask, packed after the face patches so the marker
+    -- raster index stays the compile-order first. The atlas keeps the
+    -- crop position out of the frame record: the tight box is runtime
+    -- art, the raster position is producer layout.
+    local cursorRaster = packed[packedMark + 1]
+    if cursorRaster == nil then
+      sourceError("the options pills carry no selected raster for the cursor", { role = "options:cursor" })
+    end
+    assert(cursorRaster ~= nil, "a missing options cursor raster fails above")
+    local cursorFrame = extractSliderCursor(cursorRaster, "options:cursor")
+    packed[#packed + 1] = cursorFrame
+    local sliderCursor = {
+      frames = {
+        {
+          image = image,
+          atlas = cursorFrame.rect,
+          offset = cursorFrame.offset,
+          ticks = 1,
+        },
+      },
+      loop = true,
+      bounds = { x = 0, y = 0, width = cursorFrame.width, height = cursorFrame.height },
+    }
     -- Labels lower through the shared message bank; the stored tokens keep
     -- the exact control stream the runtime text renderer consumes.
     local messageArchive = loadArchive(romFs, OptionsSources.messagesArchive.symbol)
@@ -917,19 +1248,33 @@ function OptionsAssetCompiler.compile(romFs, versionId)
         end
       end
     end
-    -- The two opaque base backdrops: the MAIN base behind the controls
-    -- and the SUB base behind the preview, each staged as its own file
-    -- and indexed asset beside the packed chrome atlas.
-    local controlsImage = FieldUiAssetCache.assetDir() .. "/options-controls-background.png"
+    -- The opaque header/footer shell bands plus the SUB preview: the
+    -- MAIN base title rows (tile rows 0..2) and footer rows (tile rows
+    -- 21..23) staged as their own 256x24 files, and the SUB base behind
+    -- the preview, each staged as its own file and indexed asset beside
+    -- the packed chrome atlas.
+    local headerImage = FieldUiAssetCache.assetDir() .. "/options-header-background.png"
+    local footerImage = FieldUiAssetCache.assetDir() .. "/options-footer-background.png"
     local previewImage = FieldUiAssetCache.assetDir() .. "/options-preview-background.png"
-    local controlsPng, controlsAsset, controlsScreen = renderBackdrop(
+    local headerPng, headerAsset, controlsScreen = renderShellBand(
       archive,
       dependencies,
       chars,
       palettes,
       OptionsSources.bases.controls,
-      controlsImage,
-      "options:backdrop:controls"
+      0,
+      3,
+      headerImage,
+      "options:backdrop:header"
+    )
+    local footerPng, footerAsset = renderBandFromScreen(
+      chars[OptionsSources.bases.controls.charMember],
+      palettes[OptionsSources.bases.controls.paletteMember],
+      controlsScreen,
+      21,
+      3,
+      footerImage,
+      "options:backdrop:footer"
     )
     local previewPng, previewAsset = renderBackdrop(
       archive,
@@ -944,9 +1289,9 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     local overlayPng, overlayAsset =
       renderSelectionOverlay(archive, dependencies, chars, palettes, overlayImage, "options:selection-overlay")
     -- The scrolling list row plates share the decoded MAIN base: the two
-    -- native 24px bands as the alternating plates, and the 64px compound
-    -- frame item as the odd selector band over mid-band interior with the
-    -- odd lower edge closing the item.
+    -- native 24px bands as the alternating plates, and the 72px compound
+    -- frame item as the odd selector band over five mid-band rows with
+    -- the odd lower edge closing the item.
     local rowPlates = OptionsSources.rowPlates
     local oddTileRows = { rowPlates.oddBand.topTileRow, rowPlates.oddBand.midTileRow, rowPlates.oddBand.bottomTileRow }
     local evenTileRows =
@@ -959,12 +1304,14 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       rowPlates.oddBand.midTileRow,
       rowPlates.oddBand.midTileRow,
       rowPlates.oddBand.midTileRow,
+      rowPlates.oddBand.midTileRow,
       rowPlates.oddBand.bottomTileRow,
     }
     local frameFillers = {
       rowPlates.oddFillers[1],
       rowPlates.oddFillers[2],
       rowPlates.oddFillers[3],
+      rowPlates.oddFillers[2],
       rowPlates.oddFillers[2],
       rowPlates.oddFillers[2],
       rowPlates.oddFillers[2],
@@ -995,7 +1342,8 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       renderRowPlate(plateChar, platePalette, controlsScreen, frameTileRows, frameFillers, frameImage, "row-frame")
     local files = {
       [image] = PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)),
-      [controlsImage] = controlsPng,
+      [headerImage] = headerPng,
+      [footerImage] = footerPng,
       [previewImage] = previewPng,
       [overlayImage] = overlayPng,
       [oddImage] = oddPng,
@@ -1003,9 +1351,10 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       [frameImage] = framePng,
     }
     local section = {
-      version = 4,
+      version = 6,
       backdrops = {
-        controls = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND,
+        header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
+        footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
         preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
       },
       rowBackings = {
@@ -1029,6 +1378,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
         pressed = actionPressed,
         pressedFocused = actionPressedFocused,
       },
+      sliderCursor = sliderCursor,
       framePreviewText = framePreviewText,
       animationTickSeconds = 1 / DisplayTiming.REFRESH_HZ,
     }
@@ -1038,7 +1388,8 @@ function OptionsAssetCompiler.compile(romFs, versionId)
       dependencies = dependencies,
       atlas = { image = image, width = atlasWidth, height = atlasHeight },
       backgrounds = {
-        { key = FieldUiAssetCache.ASSET.OPTIONS_CONTROLS_BACKGROUND, asset = controlsAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND, asset = headerAsset },
+        { key = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND, asset = footerAsset },
         { key = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND, asset = previewAsset },
         { key = FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY, asset = overlayAsset },
         { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD, asset = oddAsset },

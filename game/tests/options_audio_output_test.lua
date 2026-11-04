@@ -10,6 +10,7 @@
 local ffi = require("ffi")
 
 local Assert = require("tests.support.Assert")
+local BadgeSets = require("tests.support.BadgeSets")
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
@@ -363,7 +364,7 @@ local function validatedPlayerData(soundMode)
       gender = 0,
       trainerId = 0,
       money = 3000,
-      badges = 0,
+      badges = BadgeSets.empty(),
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,

@@ -229,7 +229,7 @@ function T.tests.labels_paint_a_single_source_palette_pass(scope)
   -- Scrolling to the bottom reveals the closing frame row; it paints once
   -- there and never at the top.
   local bottomed = sampleView()
-  bottomed.scrollOffset = 64
+  bottomed.scrollOffset = 72
   drawNative(scope, renderer, bottomed)
   local bottomCounts = {}
   for _, line in ipairs(drawnLines) do
@@ -498,8 +498,10 @@ function T.tests.source_control_prefixes_render_as_glyphs_never_as_markers(scope
       label .. " glyphs are not centered about their source position"
     )
   end
-  assertCentered("MID", 124, "the first text-speed stop")
-  assertCentered("FAST", 172, "the second text-speed stop")
+  -- Screen label centers are window-relative +8 from the decomp ground
+  -- truth (window origin x=8): text speed stops center on 132/180/228.
+  assertCentered("MID", 132, "the first text-speed stop")
+  assertCentered("FAST", 180, "the second text-speed stop")
   assertCentered("CONFIRM", 148, "footer Confirm")
   Assert.isTrue(quit.x >= 192 and quit.x < 192 + 56, "footer Quit glyphs escape their source label window")
 end
@@ -759,13 +761,14 @@ end
 
 -- This suite stages its own complete synthetic image set under its own
 -- disposable namespace: the namespace starts clean without the other suite
--- having run first, carries all four required roles where the pool worker
+-- having run first, carries every required role (chrome, header/footer
+-- shell bands, preview, strip, and row plates) where the pool worker
 -- reads them, and never equals a real game version.
 function T.tests.stages_a_private_complete_image_set(scope)
   local workerVisible = CacheFs.forVersion(ISOLATED_VERSION)
   workerVisible:removeTree("")
   Assert.isNil(
-    workerVisible:read(FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH),
+    workerVisible:read(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH),
     "the private namespace starts clean without another suite running first"
   )
   local cache, manifest = optionsCache()
@@ -774,7 +777,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
-  Assert.equal(manifest.options.version, 4, "the staged section carries its row-plate contract")
+  Assert.equal(manifest.options.version, 6, "the staged section carries its indicator contract")
   Assert.equal(
     manifest.options.selectionOverlay,
     FieldUiFixture.optionsSelectionOverlayKey(),
@@ -782,7 +785,8 @@ function T.tests.stages_a_private_complete_image_set(scope)
   )
   for _, path in ipairs({
     FieldUiFixture.OPTIONS_CHROME_PATH,
-    FieldUiFixture.OPTIONS_CONTROLS_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH,
+    FieldUiFixture.OPTIONS_FOOTER_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
     FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
     FieldUiFixture.OPTIONS_ROW_ODD_PATH,
@@ -794,7 +798,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
   local overlay =
     assert(manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()], "the selected-row strip asset is indexed")
   Assert.equal(overlay.width, 256, "the selected-row strip width")
-  Assert.equal(overlay.height, 24, "the selected-row strip height")
+  Assert.equal(overlay.height, 30, "the selected-row strip height")
 end
 
 -- Slider values measure in their own font advances and never silently
