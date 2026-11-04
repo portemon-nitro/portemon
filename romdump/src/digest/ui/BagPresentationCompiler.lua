@@ -329,6 +329,28 @@ function BagPresentationCompiler.compileGeometry(config)
       labelAt = checkPoint(button.labelAt, what .. " label"),
     }
   end
+  -- Move origin-marker rects: the six audited tile rows lowered to
+  -- canonical pixel rects at eight pixels per tile. The runtime draws the
+  -- pocket's low/high marker patch at the visible origin's rect.
+  local markerRows = checkCollection(config.moveOriginRows, 6, "bag source config must carry six move origin rows")
+  local moveMarkerRects = mapList(markerRows, function(row, index)
+    if type(row) ~= "table" then
+      Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "move origin row " .. index .. " is malformed", {})
+    end
+    for _, field in ipairs({ "x", "y", "width", "height" }) do
+      if type(row[field]) ~= "number" or row[field] % 1 ~= 0 or row[field] < 0 then
+        Errors.raise(
+          BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+          "move origin row " .. index .. " field " .. field .. " is invalid",
+          {}
+        )
+      end
+    end
+    return checkRect(
+      { x = row.x * 8, y = row.y * 8, width = row.width * 8, height = row.height * 8 },
+      "move origin marker rect " .. index
+    )
+  end)
   local prompt = saleSource.compactPrompt
   if type(prompt) ~= "table" or prompt.shapeParam ~= 0 or prompt.initialCursorPos ~= 0 then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "sale prompt must be the compact YES prompt", {})
@@ -385,6 +407,7 @@ function BagPresentationCompiler.compileGeometry(config)
     quantityConfirm = quantityConfirm,
     quantityCancelHitRect = quantityCancelHitRect,
     quantityCancelLabelAt = quantityCancelLabelAt,
+    moveMarkerRects = moveMarkerRects,
     sale = sale,
   }
 end

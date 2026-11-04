@@ -1,6 +1,8 @@
 -- Compiles the generated field-bag presentation class: upper-pane hero
--- backdrops and description frame, lower-pane browse/action/quantity/move
--- state screens, one pocket strip per active pocket replaying the
+-- backdrops and description frame, layered lower-pane backgrounds (the
+-- browse count-variant base shared by every state, one action and one
+-- quantity overlay per pocket, move count bases plus origin-marker
+-- patches), one pocket strip per active pocket replaying the
 -- retail tab palette state plus the movable focus sprite visuals, the two
 -- registration-slot markers cropped from the marker source bitmap, semantic
 -- action labels and prompt templates lowered from the message banks, the
@@ -865,59 +867,21 @@ local function compositeCancelChrome(image, cancelFace)
   return { width = image.width, height = image.height, pixels = table.concat(spans) }
 end
 
--- Action backgrounds carry one realized variant per pocket and visible
--- occupied-item count 0..6 (retail variant 2): the count-mutated browse BG5
--- retained under the action overlay on BG6.
-local function compileActionBackgrounds(lower, screenRoles, cancelFace, assets)
-  local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
-  local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
-  local overlayRole = assert(screenRoles.actionOverlay, "audited Bag action overlay has no semantic role")
+-- State overlays carry one realized full-pane layer per pocket (retail
+-- variants 2 and 3): the action overlay applies over the retained browse
+-- BG5 on BG6, and the quantity overlay applies over its own base on BG6.
+-- The runtime composites the overlay over the shared browse base, so the
+-- count dimension the baked variants duplicated byte-for-byte is gone; one
+-- overlay per pocket reaches the bundle.
+local function compileStateOverlay(lower, screenKey, stem, assets)
   local pockets = {}
   for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
     local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
-    local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
-    local overlay = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[overlayRole]), overlayRole)
-    local variants = {}
-    for count = 0, 6 do
-      local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
-      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
-      local image = RgbaImage.compose({ wash, slotLayer, overlay }, "interactive background action")
-      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background action")
-      image = compositeCancelChrome(image, cancelFace)
-      local path = BagCache.assetDir() .. "/background-action-" .. pocketState.pocket .. "-count-" .. count .. ".png"
-      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
-      variants[count] = { image = path, width = image.width, height = image.height }
-    end
-    pockets[pocketState.pocket] = variants
-  end
-  return pockets
-end
-
--- Quantity backgrounds carry one realized variant per pocket and visible
--- occupied-item count 0..6 (retail variant 3): the retained action BG5
--- under the quantity overlay on BG6. The quantity Cancel face is runtime
--- art owned by the quantity overlay below, so no generic Cancel chrome is
--- baked here; every other state keeps its finalized chrome.
-local function compileQuantityBackgrounds(lower, screenRoles, assets)
-  local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
-  local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
-  local overlayRole = assert(screenRoles.quantityOverlay, "audited Bag quantity overlay has no semantic role")
-  local pockets = {}
-  for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
-    local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
-    local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
-    local overlay = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[overlayRole]), overlayRole)
-    local variants = {}
-    for count = 0, 6 do
-      local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
-      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
-      local image = RgbaImage.compose({ wash, slotLayer, overlay }, "interactive background quantity")
-      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background quantity")
-      local path = BagCache.assetDir() .. "/background-quantity-" .. pocketState.pocket .. "-count-" .. count .. ".png"
-      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
-      variants[count] = { image = path, width = image.width, height = image.height }
-    end
-    pockets[pocketState.pocket] = variants
+    local layer = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[screenKey]), stem)
+    local image = RgbaImage.crop(layer, { x = 0, y = 0, width = 256, height = 192 }, stem)
+    local path = BagCache.assetDir() .. "/" .. stem .. "-" .. pocketState.pocket .. ".png"
+    assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+    pockets[pocketState.pocket] = { image = path, width = image.width, height = image.height }
   end
   return pockets
 end
@@ -1014,43 +978,54 @@ local function moveScreenForCountOrigin(slots, count, origin)
   return screen
 end
 
--- Move backgrounds carry one realized variant per pocket, visible
--- occupied-item count 0..6, and origin selection (retail variant 1): the
--- move wash under the count-mutated move slots, with the original-item
--- marker stamped only when the origin cell is visible.
+-- Move backgrounds carry one realized base per pocket and visible
+-- occupied-item count 0..6 (retail variant 1): the move wash under the
+-- count-mutated move slots, without the original-item marker. The marker
+-- ships as two pocket patches (the low band shared by origins 0..1, the
+-- high band shared by origins 2..5): each patch crops the stamped marker
+-- block composed over the pocket wash, so the runtime draw of the patch at
+-- the visible origin rect reproduces the stamped variant exactly. Tile
+-- rasterization is position-independent and the stamp covers its whole row
+-- rect, so one patch per band serves every row it stamps.
 local function compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
   local washRole = assert(screenRoles.moveWash, "audited Bag move wash has no semantic role")
   local slotsRole = assert(screenRoles.moveSlots, "audited Bag move slots have no semantic role")
   local pockets = {}
+  local markers = {}
   for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
     local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
     local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
     local counts = {}
     for count = 0, 6 do
-      local origins = {}
-      for _, originKey in ipairs({ "none", "0", "1", "2", "3", "4", "5" }) do
-        local origin = originKey == "none" and nil or tonumber(originKey)
-        local slots = moveScreenForCountOrigin(assert(lower.screens[slotsRole]), count, origin)
-        local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
-        local image = RgbaImage.compose({ wash, slotLayer }, "interactive background move")
-        image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background move")
-        image = compositeCancelChrome(image, cancelFace)
-        local path = BagCache.assetDir()
-          .. "/background-move-"
-          .. pocketState.pocket
-          .. "-count-"
-          .. count
-          .. "-origin-"
-          .. originKey
-          .. ".png"
-        assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
-        origins[originKey] = { image = path, width = image.width, height = image.height }
-      end
-      counts[count] = origins
+      local slots = moveScreenForCountOrigin(assert(lower.screens[slotsRole]), count, nil)
+      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
+      local image = RgbaImage.compose({ wash, slotLayer }, "interactive background move")
+      image = RgbaImage.crop(image, { x = 0, y = 0, width = 256, height = 192 }, "interactive background move")
+      image = compositeCancelChrome(image, cancelFace)
+      local path = BagCache.assetDir() .. "/background-move-" .. pocketState.pocket .. "-count-" .. count .. ".png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      counts[count] = { image = path, width = image.width, height = image.height }
     end
     pockets[pocketState.pocket] = counts
+    local patches = {}
+    for _, spec in ipairs({ { band = "low", origin = 0 }, { band = "high", origin = 2 } }) do
+      local stamped = moveScreenForCountOrigin(assert(lower.screens[slotsRole]), 6, spec.origin)
+      local markerLayer = rasterizeScreen(lower.charData, palette.colors, stamped, slotsRole)
+      local composed = RgbaImage.compose({ wash, markerLayer }, "interactive move marker " .. spec.band)
+      local row = assert(BagSources.moveOriginRows[spec.origin + 1], "move marker selects an audited row")
+      local patch = RgbaImage.crop(composed, {
+        x = row.x * 8,
+        y = row.y * 8,
+        width = row.width * 8,
+        height = row.height * 8,
+      }, "interactive move marker " .. spec.band)
+      local path = BagCache.assetDir() .. "/move-marker-" .. pocketState.pocket .. "-" .. spec.band .. ".png"
+      assets[path] = PngWriter.encode(patch.width, patch.height, patch.pixels)
+      patches[spec.band] = { image = path, width = patch.width, height = patch.height }
+    end
+    markers[pocketState.pocket] = patches
   end
-  return pockets
+  return pockets, markers
 end
 
 -- Browse backgrounds carry one realized variant per pocket and visible
@@ -1080,7 +1055,7 @@ local function compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
   return pockets
 end
 
-local function compileLowerBackgrounds(lower, cancelFace, assets)
+local function compileLowerBackgrounds(lower, cancelFace, moveMarkerRects, assets)
   local screenRoles = {
     listWash = "list-wash",
     listSlots = "list-slots",
@@ -1099,9 +1074,14 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
   saleScreen = RgbaImage.crop(saleScreen, { x = 0, y = 0, width = 256, height = 192 }, "interactive sale quantity")
   local salePath = BagCache.assetDir() .. "/background-sale-quantity.png"
   assets[salePath] = PngWriter.encode(saleScreen.width, saleScreen.height, saleScreen.pixels)
-  backgrounds.action = compileActionBackgrounds(lower, screenRoles, cancelFace, assets)
-  backgrounds.quantity = compileQuantityBackgrounds(lower, screenRoles, assets)
-  backgrounds.move = compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.actionOverlay = compileStateOverlay(lower, screenRoles.actionOverlay, "background-action-overlay", assets)
+  backgrounds.quantityOverlay =
+    compileStateOverlay(lower, screenRoles.quantityOverlay, "background-quantity-overlay", assets)
+  local moveBases, moveMarkers = compileMoveBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.move = moveBases
+  -- Marker placement rects arrive from the presentation geometry; the
+  -- images above carry only the realized band patches.
+  backgrounds.moveMarker = { images = moveMarkers, rects = assert(moveMarkerRects, "move markers carry their rects") }
   backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
   return backgrounds, { image = salePath, width = saleScreen.width, height = saleScreen.height }
 end
@@ -1594,7 +1574,9 @@ local function _compile(romFs)
   local moveSummary = compileMoveSummary(messageArchive, dependencies)
   moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
-  local backgrounds, saleQuantityBackground = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
+  local earlyGeometry = BagPresentationCompiler.compileGeometry(BagSources)
+  local backgrounds, saleQuantityBackground =
+    compileLowerBackgrounds(lower, sprites.cancelFace, earlyGeometry.moveMarkerRects, assets)
   local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
@@ -1614,7 +1596,7 @@ local function _compile(romFs)
     end
   end
 
-  local geometry = BagPresentationCompiler.compileGeometry(BagSources)
+  local geometry = earlyGeometry
   local states = BagPresentationCompiler.compileStates(BagSources)
   local materials = BagPresentationCompiler.compileMaterials(BagSources)
   local framing = compileFraming()

@@ -719,25 +719,10 @@ local function heroDescriptor(gender)
   }
 end
 
-local function countKeyedBackgrounds(state)
-  local pockets = {}
-  for _, pocket in ipairs(POCKETS) do
-    local variants = {}
-    for count = 0, 6 do
-      variants[count] = {
-        image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png",
-        width = 256,
-        height = 192,
-      }
-    end
-    pockets[pocket] = variants
-  end
-  return pockets
-end
-
-local function pocketBackgrounds(state)
-  if state == "browse" then
-    local pockets = {}
+local function layeredPocketBackgrounds()
+  local backgrounds = {}
+  do
+    local browse = {}
     for _, pocket in ipairs(POCKETS) do
       local variants = {}
       for count = 0, 6 do
@@ -747,43 +732,57 @@ local function pocketBackgrounds(state)
           height = 192,
         }
       end
-      pockets[pocket] = variants
+      browse[pocket] = variants
     end
-    return pockets
+    backgrounds.browse = browse
   end
-  return countKeyedBackgrounds(state)
-end
-
-local function movePocketBackgrounds()
-  local pockets = {}
-  for _, pocket in ipairs(POCKETS) do
-    local counts = {}
-    for count = 0, 6 do
-      local origins = {
-        none = {
-          image = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png",
-          width = 256,
-          height = 192,
-        },
+  for _, state in ipairs({ "action", "quantity" }) do
+    local overlays = {}
+    for _, pocket in ipairs(POCKETS) do
+      overlays[pocket] = {
+        image = "assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
       }
-      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-        origins[origin] = {
-          image = "assets/generated/bag/background-move-"
-            .. pocket
-            .. "-count-"
-            .. count
-            .. "-origin-"
-            .. origin
-            .. ".png",
+    end
+    backgrounds[state .. "Overlay"] = overlays
+  end
+  do
+    local move = {}
+    for _, pocket in ipairs(POCKETS) do
+      local counts = {}
+      for count = 0, 6 do
+        counts[count] = {
+          image = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png",
           width = 256,
           height = 192,
         }
       end
-      counts[count] = origins
+      move[pocket] = counts
     end
-    pockets[pocket] = counts
+    backgrounds.move = move
   end
-  return pockets
+  do
+    local images = {}
+    for _, pocket in ipairs(POCKETS) do
+      images[pocket] = {
+        low = { image = "assets/generated/bag/move-marker-" .. pocket .. "-low.png", width = 128, height = 48 },
+        high = { image = "assets/generated/bag/move-marker-" .. pocket .. "-high.png", width = 128, height = 48 },
+      }
+    end
+    backgrounds.moveMarker = {
+      images = images,
+      rects = {
+        { x = 0, y = 32, width = 128, height = 48 },
+        { x = 128, y = 32, width = 128, height = 48 },
+        { x = 0, y = 72, width = 128, height = 48 },
+        { x = 128, y = 72, width = 128, height = 48 },
+        { x = 0, y = 112, width = 128, height = 48 },
+        { x = 128, y = 112, width = 128, height = 48 },
+      },
+    }
+  end
+  return backgrounds
 end
 
 local function framingRecord()
@@ -816,7 +815,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v18",
+    schema = "g4-bag-assets-v19",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -908,12 +907,7 @@ local function syntheticBundle(marker)
       },
     },
     interactive = {
-      backgrounds = {
-        browse = pocketBackgrounds("browse"),
-        action = pocketBackgrounds("action"),
-        quantity = pocketBackgrounds("quantity"),
-        move = movePocketBackgrounds(),
-      },
+      backgrounds = layeredPocketBackgrounds(),
       feedback = {
         totalTicks = 4,
         actionFace = {
@@ -1251,7 +1245,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v18")
+  Assert.equal(loaded.schema, "g4-bag-assets-v19")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)
@@ -1269,6 +1263,34 @@ function T.writer_publishes_the_class_and_reports_ready()
     bundle.dependencies,
     "published bag dependencies must read back from the provenance path"
   )
+end
+
+-- Publication closure for the layered backgrounds: 56 browse bases, 16
+-- state overlays, 56 move bases, and 16 marker patches. No baked
+-- per-count action/quantity variant and no per-origin move variant may
+-- survive in the published class.
+function T.writer_closure_lists_layered_backgrounds_without_baked_variants()
+  local bundle = syntheticBundle(BagCache.marker("rom", "deps"))
+  local backgroundPaths = {}
+  for _, path in ipairs(BagCache.referencedPaths(bundle.manifest)) do
+    if path:find("background-", 1, true) ~= nil or path:find("move-marker-", 1, true) ~= nil then
+      backgroundPaths[#backgroundPaths + 1] = path
+    end
+  end
+  Assert.equal(
+    #backgroundPaths,
+    56 + 16 + 56 + 16 + 1,
+    "layered backgrounds publish 144 files plus the single sale chrome, not 561"
+  )
+  for _, path in ipairs(backgroundPaths) do
+    Assert.isNil(path:find("-origin-", 1, true), path .. " must not be a baked per-origin variant")
+    if path:find("background-action-", 1, true) ~= nil or path:find("background-quantity-", 1, true) ~= nil then
+      Assert.notNil(
+        path:find("-overlay-", 1, true),
+        path .. " must be the pocket overlay, not a baked per-count variant"
+      )
+    end
+  end
 end
 
 function T.cache_readiness_requires_published_provenance()

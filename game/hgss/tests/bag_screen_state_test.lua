@@ -644,42 +644,48 @@ local function composedManifest()
   for _, state in ipairs({ "action", "quantity" }) do
     local pockets = {}
     for _, pocket in ipairs(POCKETS) do
-      local counts = {}
-      for count = 0, 6 do
-        counts[count] = {
-          image = "test/bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png",
-          width = 256,
-          height = 192,
-        }
-      end
-      pockets[pocket] = counts
+      pockets[pocket] = {
+        image = "test/bag/background-" .. state .. "-overlay-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
     end
-    backgrounds[state] = pockets
+    backgrounds[state .. "Overlay"] = pockets
   end
   do
     local move = {}
     for _, pocket in ipairs(POCKETS) do
       local counts = {}
       for count = 0, 6 do
-        local origins = {
-          none = {
-            image = "test/bag/background-move-" .. pocket .. "-" .. count .. "-none.png",
-            width = 256,
-            height = 192,
-          },
+        counts[count] = {
+          image = "test/bag/background-move-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
         }
-        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-          origins[origin] = {
-            image = "test/bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png",
-            width = 256,
-            height = 192,
-          }
-        end
-        counts[count] = origins
       end
       move[pocket] = counts
     end
     backgrounds.move = move
+  end
+  do
+    local images = {}
+    for _, pocket in ipairs(POCKETS) do
+      images[pocket] = {
+        low = { image = "test/bag/move-marker-" .. pocket .. "-low.png", width = 128, height = 48 },
+        high = { image = "test/bag/move-marker-" .. pocket .. "-high.png", width = 128, height = 48 },
+      }
+    end
+    backgrounds.moveMarker = {
+      images = images,
+      rects = {
+        { x = 0, y = 32, width = 128, height = 48 },
+        { x = 128, y = 32, width = 128, height = 48 },
+        { x = 0, y = 72, width = 128, height = 48 },
+        { x = 128, y = 72, width = 128, height = 48 },
+        { x = 0, y = 112, width = 128, height = 48 },
+        { x = 128, y = 112, width = 128, height = 48 },
+      },
+    }
   end
   do
     local browse = {}
@@ -933,17 +939,15 @@ local function seedComposedCache()
   put("test/bag/description.png")
   for _, state in ipairs({ "action", "quantity" }) do
     for _, pocket in ipairs(POCKETS) do
-      for count = 0, 6 do
-        put("test/bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png")
-      end
+      put("test/bag/background-" .. state .. "-overlay-" .. pocket .. ".png")
     end
   end
   for _, pocket in ipairs(POCKETS) do
     for count = 0, 6 do
-      put("test/bag/background-move-" .. pocket .. "-" .. count .. "-none.png")
-      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-        put("test/bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png")
-      end
+      put("test/bag/background-move-" .. pocket .. "-" .. count .. ".png")
+    end
+    for _, band in ipairs({ "low", "high" }) do
+      put("test/bag/move-marker-" .. pocket .. "-" .. band .. ".png")
     end
   end
   put("test/bag/action-face-selected.png")

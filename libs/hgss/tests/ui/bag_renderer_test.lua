@@ -51,42 +51,48 @@ local function manifest()
   for _, state in ipairs({ "action", "quantity" }) do
     local variants = {}
     for _, pocket in ipairs(pockets) do
-      local counts = {}
-      for count = 0, 6 do
-        counts[count] = {
-          image = "bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png",
-          width = 256,
-          height = 192,
-        }
-      end
-      variants[pocket] = counts
+      variants[pocket] = {
+        image = "bag/background-" .. state .. "-overlay-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
     end
-    backgrounds[state] = variants
+    backgrounds[state .. "Overlay"] = variants
   end
   do
     local move = {}
     for _, pocket in ipairs(pockets) do
       local counts = {}
       for count = 0, 6 do
-        local origins = {
-          none = {
-            image = "bag/background-move-" .. pocket .. "-" .. count .. "-none.png",
-            width = 256,
-            height = 192,
-          },
+        counts[count] = {
+          image = "bag/background-move-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
         }
-        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-          origins[origin] = {
-            image = "bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png",
-            width = 256,
-            height = 192,
-          }
-        end
-        counts[count] = origins
       end
       move[pocket] = counts
     end
     backgrounds.move = move
+  end
+  do
+    local images = {}
+    for _, pocket in ipairs(pockets) do
+      images[pocket] = {
+        low = { image = "bag/move-marker-" .. pocket .. "-low.png", width = 128, height = 48 },
+        high = { image = "bag/move-marker-" .. pocket .. "-high.png", width = 128, height = 48 },
+      }
+    end
+    backgrounds.moveMarker = {
+      images = images,
+      rects = {
+        { x = 0, y = 32, width = 128, height = 48 },
+        { x = 128, y = 32, width = 128, height = 48 },
+        { x = 0, y = 72, width = 128, height = 48 },
+        { x = 128, y = 72, width = 128, height = 48 },
+        { x = 0, y = 112, width = 128, height = 48 },
+        { x = 128, y = 112, width = 128, height = 48 },
+      },
+    }
   end
   do
     local browse = {}
@@ -403,17 +409,15 @@ local function seedCache()
   }
   for _, state in ipairs({ "action", "quantity" }) do
     for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
-      for count = 0, 6 do
-        paths[#paths + 1] = "bag/background-" .. state .. "-" .. pocket .. "-" .. count .. ".png"
-      end
+      paths[#paths + 1] = "bag/background-" .. state .. "-overlay-" .. pocket .. ".png"
     end
   end
   for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
     for count = 0, 6 do
-      paths[#paths + 1] = "bag/background-move-" .. pocket .. "-" .. count .. "-none.png"
-      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-        paths[#paths + 1] = "bag/background-move-" .. pocket .. "-" .. count .. "-" .. origin .. ".png"
-      end
+      paths[#paths + 1] = "bag/background-move-" .. pocket .. "-" .. count .. ".png"
+    end
+    for _, band in ipairs({ "low", "high" }) do
+      paths[#paths + 1] = "bag/move-marker-" .. pocket .. "-" .. band .. ".png"
     end
   end
   for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
@@ -1069,12 +1073,77 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
       record.actionNode = 0
     end
     admitted(draw, record, plan(true), { icons = icons() })
-    local key = state == "action_menu" and "background:action:balls:2"
-      or state == "toss_quantity" and "background:quantity:balls:2"
-      or state == "toss_confirm" and "background:action:balls:2"
-      or "background:move:balls:2:0"
-    Assert.isTrue(wasDrawn(graphics, draw._images[key]), state .. " selects its pocket-specific background")
+    local keys = state == "action_menu" and { "background:browse:balls:2", "overlay:action:balls" }
+      or state == "toss_quantity" and { "background:browse:balls:2", "overlay:quantity:balls" }
+      or state == "toss_confirm" and { "background:browse:balls:2", "overlay:action:balls" }
+      or { "background:move:balls:2", "moveMarker:balls:low" }
+    for _, key in ipairs(keys) do
+      Assert.isTrue(
+        wasDrawn(graphics, draw._images[key]),
+        state .. " draws its pocket-specific layer " .. key
+      )
+    end
   end
+  draw:release()
+end
+
+-- Layered-background smoke: action composites its browse base before its
+-- pocket overlay at the pane origin, and move selection composites its
+-- count base before its origin marker at the generated marker rect. Draw
+-- order is the composition contract: the overlay/marker must cover the
+-- base exactly like the retired baked variants did.
+function T.layered_backgrounds_composite_base_before_overlay_and_marker()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
+  })
+  local record = status({ state = "action_menu", quantity = 2, quantityMax = 5 })
+  record.actions = { { id = "toss", slot = 1 } }
+  record.actionNode = 0
+  admitted(draw, record, plan(true), { icons = icons() })
+  local base = assert(draw._images["background:browse:balls:2"], "action binds its browse base")
+  local overlay = assert(draw._images["overlay:action:balls"], "action binds its pocket overlay")
+  local cancelFace = assert(draw._images["cancelFace"], "action binds its retained Cancel face")
+  local baseAt, overlayAt, cancelAt = nil, nil, nil
+  for index, entry in ipairs(graphics.draws) do
+    if entry.image == base and entry.x == 0 and entry.y == 0 then
+      baseAt = baseAt or index
+    end
+    if entry.image == overlay and entry.x == 0 and entry.y == 0 then
+      overlayAt = overlayAt or index
+    end
+    if entry.image == cancelFace and entry.x == 224 and entry.y == 176 then
+      cancelAt = cancelAt or index
+    end
+  end
+  Assert.isTrue(baseAt ~= nil, "action draws its browse base at the pane origin")
+  Assert.isTrue(overlayAt ~= nil, "action draws its pocket overlay at the pane origin")
+  Assert.isTrue(cancelAt ~= nil, "action draws its Cancel face at the Cancel target")
+  Assert.isTrue(baseAt < overlayAt, "the overlay composites over the base")
+  Assert.isTrue(overlayAt < cancelAt, "the Cancel face composites over the overlay")
+  clearDraws(graphics)
+  local move = status({ state = "move_select", moveTarget = 1, moveOrigin = 0 })
+  admitted(draw, move, plan(true), { icons = icons() })
+  local moveBase = assert(draw._images["background:move:balls:2"], "move binds its count base")
+  local marker = assert(draw._images["moveMarker:balls:low"], "move binds its origin marker")
+  local moveBaseAt, markerAt = nil, nil
+  for index, entry in ipairs(graphics.draws) do
+    if entry.image == moveBase and entry.x == 0 and entry.y == 0 then
+      moveBaseAt = moveBaseAt or index
+    end
+    if entry.image == marker and entry.x == 0 and entry.y == 32 then
+      markerAt = markerAt or index
+    end
+  end
+  Assert.isTrue(moveBaseAt ~= nil, "move draws its count base at the pane origin")
+  Assert.isTrue(markerAt ~= nil, "move draws its origin marker at the first origin rect")
+  Assert.isTrue(moveBaseAt < markerAt, "the marker composites over the base")
   draw:release()
 end
 
@@ -3557,8 +3626,12 @@ function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
   Assert.isFalse(printedText(content, "1/1"), "the acknowledgement draws no page indicator")
   Assert.isFalse(printedText(content, "BACK OUT"), "the acknowledgement draws no cancel label")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:action:balls:2"]),
-    "the acknowledgement retains its action base"
+    wasDrawn(graphics, draw._images["background:browse:balls:2"]),
+    "the acknowledgement retains its browse base"
+  )
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["overlay:action:balls"]),
+    "the acknowledgement retains its action overlay"
   )
   local joined = joinedText(content)
   Assert.isTrue(
@@ -4597,10 +4670,13 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
   draw:draw(action, plan(true), { icons = icons() })
   Assert.isTrue(#graphics.draws > 0, "the revisited menu draws instead of a blank pane")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:action:balls:2"]),
-    "the revisited menu draws its new-state background"
+    wasDrawn(graphics, draw._images["overlay:action:balls"]),
+    "the revisited menu draws its new-state overlay"
   )
-  Assert.isFalse(wasDrawn(graphics, browseBackground), "the revisited menu no longer draws the previous background")
+  Assert.isTrue(
+    wasDrawn(graphics, browseBackground),
+    "the revisited menu keeps drawing the shared browse base"
+  )
   Assert.isTrue(directlyBuiltCount(graphics, graphics.draws) == 0, "the revisited composition borrows every visual")
   Assert.isTrue(
     state.requests - requestsBefore < 8,
@@ -4699,13 +4775,13 @@ function T.stalled_superseded_and_failed_new_art_leaves_the_admitted_view_untouc
   draw:draw(action, plan(true), { icons = icons() })
   Assert.isTrue(#graphics.draws > 0, "the recovered menu draws its new state")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:action:balls:2"]),
-    "the recovered menu draws its new-state background"
+    wasDrawn(graphics, draw._images["overlay:action:balls"]),
+    "the recovered menu draws its new-state overlay"
   )
   Assert.equal(
     pool:stats().outstandingLeases,
-    held,
-    "the recovery swaps one obsolete background lease for one new lease"
+    held + 1,
+    "the recovery keeps the shared base lease and adds exactly one overlay lease"
   )
   draw:release()
   Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle exactly once")

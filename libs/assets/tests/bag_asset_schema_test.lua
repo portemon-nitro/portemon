@@ -193,6 +193,64 @@ local function backgrounds()
   return out
 end
 
+-- Layered v19 backgrounds: browse stays the shared count-variant base while
+-- action/quantity resolve through one pocket overlay each and move resolves
+-- through one count-variant base plus the two origin-marker patches placed
+-- at the six origin rects. Marker rects are the audited move-origin tile
+-- rows in pixels: two columns of three 128x48 cells starting at y=32.
+local function layeredBackgrounds()
+  local out = {}
+  local browse = {}
+  for _, pocket in ipairs(POCKETS) do
+    local variants = {}
+    for count = 0, 6 do
+      variants[#variants + 1] =
+        imageRef("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+    end
+    browse[pocket] = variants
+  end
+  out.browse = browse
+  local overlays = {}
+  for _, state in ipairs({ "action", "quantity" }) do
+    local pockets = {}
+    for _, pocket in ipairs(POCKETS) do
+      pockets[pocket] =
+        imageRef("assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png")
+    end
+    overlays[state] = pockets
+  end
+  out.actionOverlay = overlays.action
+  out.quantityOverlay = overlays.quantity
+  local move = {}
+  for _, pocket in ipairs(POCKETS) do
+    local counts = {}
+    for count = 0, 6 do
+      counts[count] = imageRef("assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png")
+    end
+    move[pocket] = counts
+  end
+  out.move = move
+  local function markerImage(pocket, band)
+    return { image = "assets/generated/bag/move-marker-" .. pocket .. "-" .. band .. ".png", width = 128, height = 48 }
+  end
+  local images = {}
+  for _, pocket in ipairs(POCKETS) do
+    images[pocket] = { low = markerImage(pocket, "low"), high = markerImage(pocket, "high") }
+  end
+  out.moveMarker = {
+    images = images,
+    rects = {
+      rect(0, 32, 128, 48),
+      rect(128, 32, 128, 48),
+      rect(0, 72, 128, 48),
+      rect(128, 72, 128, 48),
+      rect(0, 112, 128, 48),
+      rect(128, 112, 128, 48),
+    },
+  }
+  return out
+end
+
 local function semanticText()
   return {
     actions = {
@@ -398,22 +456,6 @@ local function focusTargets()
   }
 end
 
-local function countVariantImage(pocket, count)
-  return imageRef("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
-end
-
-local function countVariantBackgrounds()
-  local pockets = {}
-  for _, pocket in ipairs(POCKETS) do
-    local variants = {}
-    for count = 0, 6 do
-      variants[#variants + 1] = countVariantImage(pocket, count)
-    end
-    pockets[pocket] = variants
-  end
-  return pockets
-end
-
 local function framingRecord()
   return { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.2, modelY = -2.8 }
 end
@@ -521,7 +563,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v18"
+  manifest.schema = BagAssetSchema.SCHEMA
   manifest.interactive.sale = salePresentation()
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.overlays.selectedItem = {
@@ -615,7 +657,7 @@ local function validFocusManifest()
     typeCenter = { x = 48, y = 112 },
     categoryCenter = { x = 144, y = 112 },
   }
-  manifest.interactive.backgrounds.browse = countVariantBackgrounds()
+  manifest.interactive.backgrounds = layeredBackgrounds()
   manifest.interactive.cancel = {
     rect = rect(192, 168, 64, 24),
     textRect = rect(192, 168, 56, 16),
@@ -665,7 +707,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v18"
+  manifest.schema = BagAssetSchema.SCHEMA
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -963,6 +1005,81 @@ function T.browse_backgrounds_carry_seven_count_variants_per_pocket()
   end
 end
 
+function T.layered_backgrounds_share_one_base_across_action_quantity_and_move()
+  local manifest = validDynamicManifest()
+  manifest.interactive.backgrounds = layeredBackgrounds()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the layered v19 backgrounds must validate")
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the layered manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  local counts = {}
+  for _, path in ipairs(paths) do
+    counts[path] = (counts[path] or 0) + 1
+  end
+  local layeredPaths = 0
+  for _, path in ipairs(paths) do
+    if path:find("background-browse-", 1, true) ~= nil then
+      layeredPaths = layeredPaths + 1
+    elseif path:find("-overlay-", 1, true) ~= nil then
+      layeredPaths = layeredPaths + 1
+    elseif path:find("background-move-", 1, true) ~= nil then
+      layeredPaths = layeredPaths + 1
+    elseif path:find("move-marker-", 1, true) ~= nil then
+      layeredPaths = layeredPaths + 1
+    end
+  end
+  Assert.equal(layeredPaths, 56 + 16 + 56 + 16, "layered backgrounds reference 144 files, not 561")
+  for _, pocket in ipairs(POCKETS) do
+    for count = 0, 6 do
+      local base = "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png"
+      Assert.equal(counts[base], 1, base .. " must be referenced exactly once")
+    end
+    for _, state in ipairs({ "action", "quantity" }) do
+      local overlay = "assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png"
+      Assert.equal(counts[overlay], 1, overlay .. " must be referenced exactly once")
+    end
+  end
+  local baked = validDynamicManifest()
+  local retiredBackgrounds = {}
+  for _, state in ipairs({ "action", "quantity" }) do
+    local pockets = {}
+    for _, pocket in ipairs(POCKETS) do
+      local counts = {}
+      for count = 0, 6 do
+        counts[count] =
+          imageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png")
+      end
+      pockets[pocket] = counts
+    end
+    retiredBackgrounds[state] = pockets
+  end
+  local retiredMove = {}
+  for _, pocket in ipairs(POCKETS) do
+    local counts = {}
+    for count = 0, 6 do
+      local origins = {
+        none = imageRef(
+          "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png"
+        ),
+      }
+      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
+        origins[origin] = imageRef(
+          "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-" .. origin .. ".png"
+        )
+      end
+      counts[count] = origins
+    end
+    retiredMove[pocket] = counts
+  end
+  retiredBackgrounds.move = retiredMove
+  retiredBackgrounds.browse = manifest.interactive.backgrounds.browse
+  baked.interactive.backgrounds = retiredBackgrounds
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(baked),
+    "the baked per-count action/quantity and per-origin move manifest must not validate once layers are current"
+  )
+end
+
 function T.hero_framing_carries_baseline_and_pocket_records_for_both_genders()
   local manifest = validDynamicManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-aware hero framing must validate")
@@ -997,9 +1114,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v18")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v18")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v18")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v19")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v19")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v19")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")

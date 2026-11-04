@@ -258,23 +258,33 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
   local COUNT_KEYS = { [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true }
 
   -- Lower-pane backgrounds: seven browse count variants per pocket (an
-  -- array), seven action and quantity count variants per pocket (keyed by
-  -- visible count 0..6), and seven move count variants per pocket each
-  -- carrying the origin-absent variant plus one variant per visible
-  -- original-item cell. No standalone confirmation surface survives.
+  -- array) shared as the runtime base for every state, one action and one
+  -- quantity overlay per pocket composited over that base, seven move count
+  -- bases per pocket (keyed by visible count 0..6) plus the low/high
+  -- origin-marker patches placed at the six origin rects. No standalone
+  -- confirmation surface survives.
   local function checkPaneBackgrounds(backgrounds, schemaContext)
     Checks.checkRecord(backgrounds, {
       browse = true,
-      action = true,
-      quantity = true,
+      actionOverlay = true,
+      quantityOverlay = true,
       move = true,
+      moveMarker = true,
     }, schemaContext, "interactive.backgrounds")
-    for _, state in ipairs({ "action", "quantity" }) do
+    for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
       local pockets = backgrounds[state]
       local what = "interactive.backgrounds." .. state
       Checks.checkRecord(pockets, POCKET_SET, schemaContext, what, "a pocket record")
       for _, pocket in ipairs(constantsForValidation.POCKETS) do
-        local perPocket = pockets[pocket]
+        checkCountBackground(pockets[pocket], what .. "." .. pocket, schemaContext)
+      end
+    end
+    do
+      local move = backgrounds.move
+      local what = "interactive.backgrounds.move"
+      Checks.checkRecord(move, POCKET_SET, schemaContext, what, "a pocket record")
+      for _, pocket in ipairs(constantsForValidation.POCKETS) do
+        local perPocket = move[pocket]
         local pocketWhat = what .. "." .. pocket
         Checks.checkRecord(perPocket, COUNT_KEYS, schemaContext, pocketWhat, "a visible-count record")
         for count = 0, 6 do
@@ -283,23 +293,38 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
       end
     end
     do
-      local move = backgrounds.move
-      local what = "interactive.backgrounds.move"
-      Checks.checkRecord(move, POCKET_SET, schemaContext, what, "a pocket record")
-      local originKeys =
-        { none = true, ["0"] = true, ["1"] = true, ["2"] = true, ["3"] = true, ["4"] = true, ["5"] = true }
+      local marker = backgrounds.moveMarker
+      Checks.checkRecord(marker, { images = true, rects = true }, schemaContext, "interactive.backgrounds.moveMarker")
+      Checks.checkRecord(
+        marker.images,
+        POCKET_SET,
+        schemaContext,
+        "interactive.backgrounds.moveMarker.images",
+        "a pocket record"
+      )
       for _, pocket in ipairs(constantsForValidation.POCKETS) do
-        local perPocket = move[pocket]
-        local pocketWhat = what .. "." .. pocket
-        Checks.checkRecord(perPocket, COUNT_KEYS, schemaContext, pocketWhat, "a visible-count record")
-        for count = 0, 6 do
-          local perCount = perPocket[count]
-          local countWhat = pocketWhat .. "[" .. count .. "]"
-          Checks.checkRecord(perCount, originKeys, schemaContext, countWhat, "a move-origin record")
-          checkCountBackground(perCount.none, countWhat .. ".none", schemaContext)
-          for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-            checkCountBackground(perCount[origin], countWhat .. "[" .. origin .. "]", schemaContext)
+        local patches = marker.images[pocket]
+        local what = "interactive.backgrounds.moveMarker.images." .. pocket
+        Checks.checkRecord(patches, { low = true, high = true }, schemaContext, what)
+        for _, band in ipairs({ "low", "high" }) do
+          local visual = patches[band]
+          Checks.checkVisual(visual, schemaContext, what .. "." .. band)
+          if visual.width ~= 128 or visual.height ~= 48 then
+            Checks.reject(what .. "." .. band .. " must be exactly 128x48", schemaContext)
           end
+        end
+      end
+      Checks.checkFixedArray(
+        marker.rects,
+        6,
+        schemaContext,
+        "interactive.backgrounds.moveMarker.rects must carry exactly six origin rects"
+      )
+      for index, markerRect in ipairs(marker.rects) do
+        local what = "interactive.backgrounds.moveMarker.rects[" .. index .. "]"
+        checkRect(markerRect, schemaContext, what)
+        if markerRect.width ~= 128 or markerRect.height ~= 48 then
+          Checks.reject(what .. " must be exactly 128x48", schemaContext)
         end
       end
     end

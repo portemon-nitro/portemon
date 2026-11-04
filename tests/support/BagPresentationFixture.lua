@@ -167,15 +167,11 @@ function BagPresentationFixture.manifest()
     }
   end
   local backgrounds = {}
-  for _, state in ipairs({ "action", "quantity" }) do
+  for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
+    local overlayName = state == "actionOverlay" and "action" or "quantity"
     local pockets = {}
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      local variants = {}
-      for count = 0, 6 do
-        variants[count] =
-          bagImageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. "-count-" .. count .. ".png")
-      end
-      pockets[pocket] = variants
+      pockets[pocket] = bagImageRef("assets/generated/bag/background-" .. overlayName .. "-overlay-" .. pocket .. ".png")
     end
     backgrounds[state] = pockets
   end
@@ -184,21 +180,32 @@ function BagPresentationFixture.manifest()
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       local counts = {}
       for count = 0, 6 do
-        local origins = {
-          none = bagImageRef(
-            "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-none.png"
-          ),
-        }
-        for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-          origins[origin] = bagImageRef(
-            "assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. "-origin-" .. origin .. ".png"
-          )
-        end
-        counts[count] = origins
+        counts[count] =
+          bagImageRef("assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png")
       end
       move[pocket] = counts
     end
     backgrounds.move = move
+  end
+  do
+    local images = {}
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      images[pocket] = {
+        low = { image = "assets/generated/bag/move-marker-" .. pocket .. "-low.png", width = 128, height = 48 },
+        high = { image = "assets/generated/bag/move-marker-" .. pocket .. "-high.png", width = 128, height = 48 },
+      }
+    end
+    backgrounds.moveMarker = {
+      images = images,
+      rects = {
+        bagRect(0, 32, 128, 48),
+        bagRect(128, 32, 128, 48),
+        bagRect(0, 72, 128, 48),
+        bagRect(128, 72, 128, 48),
+        bagRect(0, 112, 128, 48),
+        bagRect(128, 112, 128, 48),
+      },
+    }
   end
   do
     local browse = {}

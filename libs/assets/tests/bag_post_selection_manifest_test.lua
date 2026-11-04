@@ -1,8 +1,9 @@
 -- Post-selection manifest contract: the generated Bag presentation must
--- publish source-variant Action/Quantity/Move backgrounds, the retained
--- selected-item panel, lower-message geometry, activation feedback timing,
--- and move commit clips under the strict v14 schema with no standalone
--- confirmation background.
+-- publish the layered Action/Quantity/Move backgrounds (one pocket overlay
+-- each for action/quantity over the shared browse base, count-variant move
+-- bases plus the origin-marker patches), the retained selected-item panel,
+-- lower-message geometry, activation feedback timing, and move commit clips
+-- under the strict v19 schema with no standalone confirmation background.
 
 local Assert = require("tests.support.Assert")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
@@ -14,44 +15,51 @@ local function manifest()
   return BagPresentationFixture.manifest()
 end
 
-function T.schema_identity_is_strictly_v16()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v18", "the generated contract carries the current identity")
-  Assert.equal(manifest().schema, "g4-bag-assets-v18", "the published manifest carries the current identity")
+function T.schema_identity_is_strictly_v19()
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v19", "the generated contract carries the current identity")
+  Assert.equal(manifest().schema, "g4-bag-assets-v19", "the published manifest carries the current identity")
 end
 
-function T.action_and_quantity_backgrounds_vary_by_visible_count()
+function T.action_and_quantity_backgrounds_share_one_overlay_per_pocket()
   local backgrounds = assert(manifest().interactive.backgrounds, "the manifest publishes backgrounds")
-  for _, state in ipairs({ "action", "quantity" }) do
-    local variants = assert(backgrounds[state], "the manifest publishes the " .. state .. " background")
+  for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
+    local overlays = assert(backgrounds[state], "the manifest publishes the " .. state)
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      local perPocket = assert(variants[pocket], state .. " covers pocket " .. pocket)
-      Assert.isTrue(type(perPocket) == "table", state .. "/" .. pocket .. " is a variant map")
-      Assert.isNil(perPocket.image, state .. "/" .. pocket .. " is count-keyed, not one fixed image")
-      for count = 0, 6 do
-        local variant = perPocket[count] or perPocket[tostring(count)]
-        Assert.isTrue(
-          type(variant) == "table" and type(variant.image) == "string",
-          state .. "/" .. pocket .. " publishes a realized background for visible count " .. count
-        )
-      end
+      local overlay = assert(overlays[pocket], state .. " covers pocket " .. pocket)
+      Assert.isTrue(
+        type(overlay) == "table" and type(overlay.image) == "string",
+        state .. "/" .. pocket .. " publishes one overlay shared across every visible count"
+      )
     end
   end
+  Assert.isNil(backgrounds.action, "no baked per-count action background survives")
+  Assert.isNil(backgrounds.quantity, "no baked per-count quantity background survives")
 end
 
-function T.move_backgrounds_vary_by_visible_count_and_origin_row()
+function T.move_backgrounds_carry_count_bases_and_origin_marker_patches()
   local backgrounds = assert(manifest().interactive.backgrounds, "the manifest publishes backgrounds")
   local move = assert(backgrounds.move, "the manifest publishes the move background")
   for _, pocket in ipairs(BagAssetSchema.POCKETS) do
     local perPocket = assert(move[pocket], "move covers pocket " .. pocket)
     for count = 0, 6 do
-      local perCount = perPocket[count] or perPocket[tostring(count)]
-      Assert.isTrue(type(perCount) == "table", "move/" .. pocket .. " covers visible count " .. count)
-      Assert.notNil(perCount.none, "move publishes the origin-absent variant")
-      for _, origin in ipairs({ "0", "1", "2", "3", "4", "5" }) do
-        Assert.notNil(perCount[origin], "move publishes the origin-row variant " .. origin)
-      end
+      local base = perPocket[count] or perPocket[tostring(count)]
+      Assert.isTrue(
+        type(base) == "table" and type(base.image) == "string",
+        "move/" .. pocket .. " publishes its count " .. count .. " base without baked origins"
+      )
+      Assert.isNil(base.none, "move bases carry no origin-absent sub-variant")
     end
   end
+  local marker = assert(backgrounds.moveMarker, "the manifest publishes the move origin marker")
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    local patches = assert(marker.images[pocket], "the marker covers pocket " .. pocket)
+    for _, band in ipairs({ "low", "high" }) do
+      local patch = assert(patches[band], "the marker publishes the " .. band .. " band")
+      Assert.equal(patch.width, 128, "marker patches are one row wide")
+      Assert.equal(patch.height, 48, "marker patches are one row tall")
+    end
+  end
+  Assert.equal(#marker.rects, 6, "the marker publishes all six origin rects")
   Assert.isNil(backgrounds.confirmation, "no standalone confirmation background survives")
 end
 

@@ -200,12 +200,14 @@ local function buildPathMap(manifest, moveIcons)
       add("moveCategory:" .. key, visual)
     end
   end
-  -- Seven realized count variants per pocket for browse, action, and
-  -- quantity, plus seven count/origin variants per pocket for move: bind
-  -- each variant under its count (and origin) so the state selection can
-  -- resolve it. Anything else fails at the lookup below instead of
-  -- borrowing another shape. Toss confirmation owns no background of its
-  -- own; it retains its action/quantity base.
+  -- Seven browse count variants per pocket shared as the runtime base for
+  -- every state, one action and one quantity overlay per pocket composited
+  -- over that base, seven move count bases per pocket, and the low/high
+  -- origin-marker patches per pocket placed at the six origin rects: bind
+  -- each layer under its pocket (plus count, band, or overlay class) so the
+  -- state selection can resolve it. Anything else fails at the lookup below
+  -- instead of borrowing another shape. Toss confirmation owns no background
+  -- of its own; it retains its action/quantity base.
   do
     local browse = assert(interactive.backgrounds.browse, "the bag manifest carries its browse backgrounds")
     for _, pocket in ipairs(BagSave.POCKET_ORDER) do
@@ -219,15 +221,10 @@ local function buildPathMap(manifest, moveIcons)
     end
   end
   for _, state in ipairs({ "action", "quantity" }) do
-    local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
+    local overlays =
+      assert(interactive.backgrounds[state .. "Overlay"], "the bag manifest carries its " .. state .. " overlay")
     for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-      local published = assert(pockets[pocket], state .. " carries " .. pocket)
-      for count = 0, 6 do
-        add(
-          "background:" .. state .. ":" .. pocket .. ":" .. count,
-          assert(published[count], state .. " carries " .. pocket .. " count " .. count)
-        )
-      end
+      add("overlay:" .. state .. ":" .. pocket, assert(overlays[pocket], state .. " overlay carries " .. pocket))
     end
   end
   do
@@ -235,17 +232,33 @@ local function buildPathMap(manifest, moveIcons)
     for _, pocket in ipairs(BagSave.POCKET_ORDER) do
       local published = assert(move[pocket], "move carries " .. pocket)
       for count = 0, 6 do
-        local perCount = assert(published[count], "move carries " .. pocket .. " count " .. count)
-        for _, origin in ipairs({ "none", "0", "1", "2", "3", "4", "5" }) do
-          add(
-            "background:move:" .. pocket .. ":" .. count .. ":" .. origin,
-            assert(perCount[origin], "move carries " .. pocket .. " count " .. count .. " origin " .. origin)
-          )
-        end
+        add(
+          "background:move:" .. pocket .. ":" .. count,
+          assert(published[count], "move carries " .. pocket .. " count " .. count)
+        )
+      end
+    end
+  end
+  do
+    local marker = assert(interactive.backgrounds.moveMarker, "the bag manifest carries its move origin marker")
+    local images = assert(marker.images, "the move marker carries its pocket patches")
+    for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+      local patches = assert(images[pocket], "the move marker carries " .. pocket)
+      for _, band in ipairs({ "low", "high" }) do
+        add(
+          "moveMarker:" .. pocket .. ":" .. band,
+          assert(patches[band], "the move marker carries " .. pocket .. " " .. band)
+        )
       end
     end
   end
   local feedback = assert(interactive.feedback, "the bag manifest carries its activation feedback")
+  -- The unselected Cancel face doubles as retained chrome: action-family
+  -- states draw it over their overlay exactly where the retired baked
+  -- variants composited it, sharing the feedback latch art with no new
+  -- asset. Quantity and move states never draw it: their overlays and
+  -- bases already carry their finalized pixels.
+  add("cancelFace", assert(feedback.cancelFace.normal, "feedback carries its cancel face"))
   add("feedback:action:normal", assert(feedback.actionFace.normal, "feedback carries its action face"))
   add("feedback:action:selected", assert(feedback.actionFace.selected, "feedback carries its action flash"))
   add("feedback:cancel:normal", assert(feedback.cancelFace.normal, "feedback carries its cancel face"))
@@ -708,9 +721,14 @@ local function collectEntries(paths, presentation)
   add("saleQuantityBackground")
   add("moveCursor:original")
   add("moveCursor:candidate")
-  local function backgroundKey(targetPocket, origin)
+  -- Layered backgrounds in bottom-to-top draw order: the shared browse
+  -- base, then the state overlay, then the retained Cancel face for the
+  -- action family (which the retired baked variants composited on top) or
+  -- the move origin marker. The sale quantity state draws the sale chrome
+  -- without a lower-pane background and enrolls nothing below.
+  local function backgroundKeys(targetPocket, origin)
     if state == "browsing" or state == "description_overlay" or state == "item_select" then
-      return "background:browse:" .. targetPocket .. ":" .. count
+      return { "background:browse:" .. targetPocket .. ":" .. count }
     elseif
       state == "action_menu"
       or state == "sale_offer"
@@ -718,31 +736,44 @@ local function collectEntries(paths, presentation)
       or state == "sale_refusal"
       or state == "sale_ack"
     then
-      return "background:action:" .. targetPocket .. ":" .. count
+      return {
+        "background:browse:" .. targetPocket .. ":" .. count,
+        "overlay:action:" .. targetPocket,
+        "cancelFace",
+      }
     elseif state == "toss_quantity" then
-      return "background:quantity:" .. targetPocket .. ":" .. count
+      return { "background:browse:" .. targetPocket .. ":" .. count, "overlay:quantity:" .. targetPocket }
     elseif state == "sale_quantity" then
-      return ""
+      return {}
     elseif state == "toss_confirm" or state == "toss_ack" then
       local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
       assert(base == "action" or base == "quantity", "toss confirmation retains a known base")
-      return "background:" .. base .. ":" .. targetPocket .. ":" .. count
+      local keys = { "background:browse:" .. targetPocket .. ":" .. count, "overlay:" .. base .. ":" .. targetPocket }
+      if base == "action" then
+        keys[#keys + 1] = "cancelFace"
+      end
+      return keys
     elseif state == "move_select" then
-      return "background:move:" .. targetPocket .. ":" .. count .. ":" .. origin
+      local keys = { "background:move:" .. targetPocket .. ":" .. count }
+      if origin ~= "none" then
+        local cell = assert(tonumber(origin), "move origins resolve to visible cells")
+        keys[#keys + 1] = "moveMarker:" .. targetPocket .. ":" .. (cell <= 1 and "low" or "high")
+      end
+      return keys
     end
     error("the bag renderer draws a known lower-pane state", 0)
   end
-  -- The sale quantity state draws the sale chrome without a lower-pane
-  -- background: the empty key enrolls nothing below.
-  local stateBackgroundKey = backgroundKey(pocket, targetPocketOrigin(presentation, pocket, pocket))
-  if stateBackgroundKey ~= "" then
-    add(stateBackgroundKey)
+  for _, key in ipairs(backgroundKeys(pocket, targetPocketOrigin(presentation, pocket, pocket))) do
+    add(key)
   end
   add("strip:" .. pocket)
   local ahead = nextPocket(pocket)
-  local aheadBackgroundKey = backgroundKey(ahead, "none")
-  if aheadBackgroundKey ~= "" then
-    softKeys[#softKeys + 1] = aheadBackgroundKey
+  for _, key in ipairs(backgroundKeys(ahead, "none")) do
+    -- The origin-absent prefetch enrolls the base and overlay layers only;
+    -- marker patches resolve on demand when a move origin is visible.
+    if key:sub(1, 11) ~= "moveMarker:" then
+      softKeys[#softKeys + 1] = key
+    end
   end
   softKeys[#softKeys + 1] = "strip:" .. ahead
   local selected = presentation.selected
@@ -1095,39 +1126,76 @@ local function advanceDemand(self, presentation)
   return false, progressed
 end
 
--- Draws the one generated lower-pane background for the current state and
--- pocket. Browse, action, and quantity states resolve the realized count
--- variant from the visible occupied prefix; move resolves the count/origin
--- variant; toss confirmation owns no background of its own and retains its
--- recorded action/quantity base. Every image is asserted at construction,
+-- Draws the layered lower-pane background for the current state and
+-- pocket: the shared browse count-variant base first, then the state
+-- overlay, then the retained Cancel face for the action family or the move
+-- origin marker at its generated rect. Browse states draw the base alone;
+-- action and sale states add the action overlay with the Cancel face on
+-- top; quantity adds the quantity overlay; toss confirmation retains its
+-- recorded action/quantity base layers; move adds its marker only when
+-- the origin cell is visible. Every image is asserted at construction,
 -- so an unknown state/pocket fails instead of borrowing another screen.
 ---@param state string
 ---@param pocket string
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawStateBackground(state, pocket, presentation)
   local count = backgroundCount(presentation)
-  local key
+  local keys
+  local cancelAt = nil
   if state == "browsing" or state == "description_overlay" or state == "item_select" then
-    key = "background:browse:" .. pocket .. ":" .. count
+    keys = { "background:browse:" .. pocket .. ":" .. count }
   elseif state == "action_menu" then
-    key = "background:action:" .. pocket .. ":" .. count
+    keys = { "background:browse:" .. pocket .. ":" .. count, "overlay:action:" .. pocket }
+    cancelAt = true
   elseif state == "toss_quantity" then
-    key = "background:quantity:" .. pocket .. ":" .. count
+    keys = { "background:browse:" .. pocket .. ":" .. count, "overlay:quantity:" .. pocket }
   elseif state == "sale_quantity" then
     drawVisual(self._graphics, assert(self._visuals.saleQuantityBackground), 0, 0)
     return
   elseif state == "sale_offer" or state == "sale_result" or state == "sale_refusal" or state == "sale_ack" then
-    key = "background:action:" .. pocket .. ":" .. count
+    keys = { "background:browse:" .. pocket .. ":" .. count, "overlay:action:" .. pocket }
+    cancelAt = true
   elseif state == "toss_confirm" or state == "toss_ack" then
     local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
     assert(base == "action" or base == "quantity", "toss confirmation retains a known base")
-    key = "background:" .. base .. ":" .. pocket .. ":" .. count
+    keys = { "background:browse:" .. pocket .. ":" .. count, "overlay:" .. base .. ":" .. pocket }
+    cancelAt = base == "action"
   elseif state == "move_select" then
-    key = "background:move:" .. pocket .. ":" .. count .. ":" .. moveOriginKey(presentation)
+    keys = { "background:move:" .. pocket .. ":" .. count }
+    local originKey = moveOriginKey(presentation)
+    if originKey ~= "none" then
+      local cell = assert(tonumber(originKey), "move origins resolve to visible cells")
+      local markerRects =
+        assert(self._manifest.interactive.backgrounds.moveMarker.rects, "the bag manifest carries its marker rects")
+      local markerRect = assert(markerRects[cell + 1], "the move origin selects its marker rect")
+      drawVisual(self._graphics, assert(self._visuals[keys[1]], "the bag presentation names its pocket"), 0, 0)
+      drawVisual(
+        self._graphics,
+        assert(self._visuals["moveMarker:" .. pocket .. ":" .. (cell <= 1 and "low" or "high")]),
+        markerRect.x,
+        markerRect.y
+      )
+      return
+    end
   else
     error("the bag renderer draws a known lower-pane state", 0)
   end
-  drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
+  for _, key in ipairs(keys) do
+    drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
+  end
+  if cancelAt then
+    -- The retained Cancel face sits over the overlay at the generated
+    -- Cancel target, exactly where the retired baked variants composited
+    -- it. The target shares the audited source coordinates the producer
+    -- baked, so no second placement truth exists.
+    local target = assert(self._manifest.interactive.focus.cancel.target, "the bag manifest carries Cancel")
+    drawVisual(
+      self._graphics,
+      assert(self._visuals.cancelFace, "the bag presentation names Cancel"),
+      target.x,
+      target.y
+    )
+  end
 end
 
 -- Resolves the one-based pocket index of a supplied pocket key. Pocket
