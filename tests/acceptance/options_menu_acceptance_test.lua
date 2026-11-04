@@ -254,9 +254,9 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
       "textSpeed",
       "battleScene",
       "battleStyle",
+      "battleSpeed",
       "soundMode",
       "volume",
-      "battleSpeed",
       "textFrame",
     }, "the menu carries exactly the seven settings in order, frame last")
     Assert.isTrue(view.footer ~= nil and view.footer.confirm ~= nil, "the footer carries confirm")
@@ -314,12 +314,12 @@ function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives
     pressKey(game, state, "a")
     pressKey(game, state, "s")
     pressKey(game, state, "d")
-    for _ = 1, 3 do
-      pressKey(game, state, "s")
-    end
-    pressKey(game, state, "d")
+    pressKey(game, state, "s")
+    pressKey(game, state, "s")
     pressKey(game, state, "d")
     pressKey(game, state, "s")
+    pressKey(game, state, "s")
+    pressKey(game, state, "d")
     pressKey(game, state, "d")
     pressKey(game, state, "s")
     pressKey(game, state, "d")

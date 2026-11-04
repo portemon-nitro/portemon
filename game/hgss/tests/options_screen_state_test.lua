@@ -323,9 +323,9 @@ function T.tests.seven_rows_publish_in_order_with_footer_actions()
     "textSpeed",
     "battleScene",
     "battleStyle",
+    "battleSpeed",
     "soundMode",
     "volume",
-    "battleSpeed",
     "textFrame",
   }, "rows keep their stable order")
   Assert.isTrue(status.footer ~= nil and status.footer.confirm ~= nil, "the footer carries confirm")
@@ -369,12 +369,14 @@ function T.tests.focus_graph_reaches_footer_and_returns()
   Assert.equal(state:status().focusId, "quit", "up from the first row reaches quit")
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(state:status().focusId, "textSpeed", "down from the footer returns to the first row")
-  for _ = 1, 5 do
+  for _ = 1, 3 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
   Assert.equal(state:status().focusId, "battleSpeed", "down walks the fixed row order")
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().focusId, "textFrame", "down from battle speed reaches the closing frame")
+  for _ = 1, 3 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(state:status().focusId, "textFrame", "downs from battle speed reach the closing frame")
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(state:status().focusId, "confirm", "down from the frame reaches confirm")
   state:updateFixed({ { type = "navigate", direction = "right" } })
@@ -428,10 +430,10 @@ function T.tests.volume_spans_zero_to_one_hundred_with_one_percent_stops()
   Assert.equal(row.valueCount, 101, "volume offers one-percent stops")
   Assert.equal(row.value, 80, "the draft opens at the committed volume")
   Assert.equal(opened.state:status().focusId, "textSpeed", "edits start on the first row")
-  for _ = 1, 4 do
+  for _ = 1, 5 do
     opened.state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(opened.state:status().focusId, "volume", "four downs reach the volume row")
+  Assert.equal(opened.state:status().focusId, "volume", "five downs reach the volume row")
   for _ = 1, 200 do
     opened.state:updateFixed({ { type = "navigate", direction = "right" } })
   end
@@ -451,10 +453,10 @@ function T.tests.battle_speed_snaps_to_one_two_four()
   local opened = openMenu()
   local row = rowById(opened.state:status(), "battleSpeed")
   Assert.equal(row.valueCount, 3, "battle speed offers three stops")
-  for _ = 1, 5 do
+  for _ = 1, 3 do
     opened.state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(opened.state:status().focusId, "battleSpeed", "five downs reach the battle speed row")
+  Assert.equal(opened.state:status().focusId, "battleSpeed", "three downs reach the battle speed row")
   opened.state:updateFixed({ { type = "slider-set", row = "battleSpeed", index = 2 } })
   row = rowById(opened.state:status(), "battleSpeed")
   Assert.equal(row.value, 2, "the middle stop is 2x")
@@ -522,10 +524,10 @@ end
 function T.tests.confirm_publishes_an_edited_volume_once()
   local opened = openMenu({ volume = 80 })
   local state = opened.state
-  for _ = 1, 4 do
+  for _ = 1, 5 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(state:status().focusId, "volume", "four downs reach the volume row")
+  Assert.equal(state:status().focusId, "volume", "five downs reach the volume row")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   state:updateFixed({ { type = "activate", id = "confirm" } })
   Assert.deepEqual(state:takeResult(), { kind = "close" }, "confirm closes once")
@@ -537,10 +539,10 @@ function T.tests.failed_volume_commit_keeps_menu_open_with_draft_and_baseline()
   local opened = openMenu({ failCommit = "SAVE_WRITE_FAILED: disk is full" })
   local state = opened.state
   state:updateFixed({ { type = "navigate", direction = "left" } })
-  for _ = 1, 4 do
+  for _ = 1, 5 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(state:status().focusId, "volume", "four downs reach the volume row")
+  Assert.equal(state:status().focusId, "volume", "five downs reach the volume row")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(state:status().dirty, true, "the draft carries the staged edits")
   state:updateFixed({ { type = "activate", id = "confirm" } })
@@ -619,9 +621,9 @@ function T.tests.scroll_moves_list_without_editing_values_or_focus()
     "textSpeed",
     "battleScene",
     "battleStyle",
+    "battleSpeed",
     "soundMode",
     "volume",
-    "battleSpeed",
     "textFrame",
   }, "the interface row order is the seven-setting order")
   local before = rowById(state:status(), "textSpeed").value
@@ -704,8 +706,7 @@ function T.tests.slider_capture_survives_wheel_while_row_presses_disarm()
   local settled = state:status().scrollOffset
   Assert.isTrue(settled > 0, "focusing the frame row scrolls it into view")
   state:updateFixed({ { type = "navigate", direction = "up" } })
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().focusId, "volume", "two ups return to the volume row")
+  Assert.equal(state:status().focusId, "volume", "one up returns to the volume row")
   Assert.equal(state:status().scrollOffset, settled, "revealing an earlier row keeps the scrolled list")
   state:updateFixed({
     { type = "slider-set", row = "volume", index = 42 },
@@ -798,15 +799,14 @@ function T.tests.presented_slider_list_and_capture_identity()
   local settled = state:status().scrollOffset
   Assert.isTrue(settled > 0, "focusing the frame row scrolls it into view")
   state:updateFixed({ { type = "navigate", direction = "up" } })
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().focusId, "volume", "two ups return to the volume row")
+  Assert.equal(state:status().focusId, "volume", "one up returns to the volume row")
   Assert.equal(state:status().scrollOffset, settled, "revealing an earlier row keeps the scrolled list")
   local status = state:status()
   local content = assert(status.presentation.content, "the plan carries its content")
   local pane = presentationPane(status, "content")
-  -- The borrowed thumb fallback answers a wider band than the rail knob,
-  -- so anchor the drag row to the rail middle (never the thumb fringe
-  -- above it): the resolved centerY translated through the list offset.
+  -- The borrowed thumb fallback answers above the rail, so anchor the
+  -- drag row to the rail middle (never the thumb fringe above it): the
+  -- resolved centerY translated through the list offset.
   local volumeRow = nil
   for _, row in ipairs(assert(content.rows, "the plan carries its rows")) do
     if row.id == "volume" then
@@ -1496,9 +1496,9 @@ function T.tests.frame_is_last_with_co_scrolling_preview_and_full_reveal()
     "textSpeed",
     "battleScene",
     "battleStyle",
+    "battleSpeed",
     "soundMode",
     "volume",
-    "battleSpeed",
     "textFrame",
   }, "the frame row closes the list")
   local opened = openPresentedMenu({ playerOptions = { textFrame = 9 } })
@@ -1673,24 +1673,24 @@ function T.tests.label_taps_select_nothing_while_rail_presses_edit()
   local state = opened.state
   local status = state:status()
   local content = assert(status.presentation.content, "the presented plan carries its list")
-  local volumeLabel = Interface.hitTest(content, 12, 132)
+  local volumeLabel = Interface.hitTest(content, 12, 156)
   Assert.isNil(volumeLabel, "a tap on the volume label arms no slider stop")
-  local speedLabel = Interface.hitTest(content, 12, 156)
+  local speedLabel = Interface.hitTest(content, 12, 108)
   Assert.isNil(speedLabel, "a tap on the battle-speed label arms no slider stop")
   local pane = presentationPane(status, "content")
   local previewsBefore = opened.port.previews
-  local labelHx, labelHy = hostForLogical(pane, 12, 132)
+  local labelHx, labelHy = hostForLogical(pane, 12, 156)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = labelHx, y = labelHy } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = labelHx, y = labelHy } })
   Assert.equal(rowById(state:status(), "volume").value, 80, "a label tap leaves the volume alone")
   Assert.equal(opened.port.previews, previewsBefore, "a label tap previews no audio change")
   Assert.isNil(state:takeResult(), "a label tap closes nothing")
-  local railHit = Interface.hitTest(content, 243, 132)
+  local railHit = Interface.hitTest(content, 247, 156)
   Assert.isTrue(
     railHit ~= nil and railHit.target == "volume" and railHit.control == "thumb",
     "a press at the rail end still arms the slider"
   )
-  local railHx, railHy = hostForLogical(pane, 243, 132)
+  local railHx, railHy = hostForLogical(pane, 247, 156)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = railHx, y = railHy } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = railHx, y = railHy } })
   Assert.equal(rowById(state:status(), "volume").value, 100, "the rail-end press clamps to full volume")
@@ -1727,11 +1727,11 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
     local slider = assert(control.slider, id .. " carries its resolved rail")
     Assert.deepEqual(
       slider.rect,
-      { x = 164, y = row.rect.y + 6, width = 80, height = 12 },
+      { x = 160, y = row.rect.y + 6, width = 88, height = 12 },
       id .. " keeps its rail clear of the numeric slot"
     )
     Assert.equal(
-      control.valueWindow.x + control.valueWindow.width + 8,
+      control.valueWindow.x + control.valueWindow.width + 4,
       slider.rect.x,
       id .. " leaves a gap between the value and the rail"
     )
@@ -1751,77 +1751,85 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
     footerHit ~= nil and footerHit.target == "confirm",
     "the fixed footer keeps its action beside the sliders"
   )
-  for _, x in ipairs({ 112, 120, 140, 155, 156, 160, 163 }) do
-    Assert.isNil(Interface.hitTest(content, x, 132), "the volume slot and gap arm no stop at x" .. x)
+  for _, x in ipairs({ 112, 120, 140, 155, 156, 157, 158, 159 }) do
+    Assert.isNil(Interface.hitTest(content, x, 156), "the volume slot and gap arm no stop at x" .. x)
   end
-  for _, x in ipairs({ 112, 130, 155, 160, 163 }) do
-    Assert.isNil(Interface.hitTest(content, x, 156), "the speed slot and gap arm no stop at x" .. x)
+  for _, x in ipairs({ 112, 130, 155, 156, 159 }) do
+    Assert.isNil(Interface.hitTest(content, x, 108), "the speed slot and gap arm no stop at x" .. x)
   end
-  -- The borrowed thumb fallback is 32 wide around the stop center:
-  -- battle speed rests on its first stop (center x180), so x165 answers
-  -- through the thumb while x163 stays a dead gap.
-  local thumbHit = Interface.hitTest(content, 165, 156)
+  -- The borrowed thumb fallback is 16 wide around the stop center:
+  -- battle speed rests on its first stop (center x168), so x165 answers
+  -- through the rail while x159 stays a dead gap.
+  local thumbHit = Interface.hitTest(content, 165, 108)
   Assert.isTrue(
     thumbHit ~= nil and thumbHit.target == "battleSpeed" and thumbHit.control == "thumb",
     "the thumb fallback arms the resting stop at x165"
   )
-  local volumeMin = Interface.hitTest(content, 164, 132)
+  -- The raised half-size thumb still answers just above the rail:
+  -- x161 sits at the rail's left edge but above it, inside only the
+  -- thumb fringe.
+  local fringeHit = Interface.hitTest(content, 161, 101)
+  Assert.isTrue(
+    fringeHit ~= nil and fringeHit.target == "battleSpeed" and fringeHit.control == "thumb",
+    "the raised thumb arms its stop above the longer rail at x161"
+  )
+  local volumeMin = Interface.hitTest(content, 160, 156)
   Assert.isTrue(
     volumeMin ~= nil and volumeMin.target == "volume" and volumeMin.index == 1,
     "the volume rail starts at silence"
   )
-  local volumeMax = Interface.hitTest(content, 243, 132)
+  local volumeMax = Interface.hitTest(content, 247, 156)
   Assert.isTrue(
     volumeMax ~= nil and volumeMax.target == "volume" and volumeMax.index == 101,
     "the volume rail ends at full volume"
   )
-  local speedMin = Interface.hitTest(content, 164, 156)
+  local speedMin = Interface.hitTest(content, 160, 108)
   Assert.isTrue(
     speedMin ~= nil and speedMin.target == "battleSpeed" and speedMin.index == 1,
     "the speed rail starts at 1x"
   )
-  local speedMax = Interface.hitTest(content, 243, 156)
+  local speedMax = Interface.hitTest(content, 247, 108)
   Assert.isTrue(
     speedMax ~= nil and speedMax.target == "battleSpeed" and speedMax.index == 3,
     "the speed rail ends at 4x"
   )
   local middleX = nil
-  for x = 164, 243 do
-    local hit = Interface.hitTest(content, x, 132)
+  for x = 160, 247 do
+    local hit = Interface.hitTest(content, x, 156)
     if hit ~= nil and hit.target == "volume" and hit.index == 80 then
       middleX = x
       break
     end
   end
   Assert.isTrue(
-    middleX ~= nil and middleX >= 164 and middleX <= 243,
+    middleX ~= nil and middleX >= 160 and middleX <= 247,
     "a middle stop resolves on the visible rail"
   )
   local pane = presentationPane(status, "content")
   local previewsBefore = opened.port.previews
-  local slotHx, slotHy = hostForLogical(pane, 120, 132)
+  local slotHx, slotHy = hostForLogical(pane, 120, 156)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = slotHx, y = slotHy } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = slotHx, y = slotHy } })
   Assert.equal(rowById(state:status(), "volume").value, 80, "a value-slot tap leaves the volume alone")
   Assert.equal(opened.port.previews, previewsBefore, "a value-slot tap previews no audio change")
   Assert.isNil(state:takeResult(), "a value-slot tap closes nothing")
-  local gapHx, gapHy = hostForLogical(pane, 160, 132)
+  local gapHx, gapHy = hostForLogical(pane, 158, 156)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = gapHx, y = gapHy } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = gapHx, y = gapHy } })
   Assert.equal(rowById(state:status(), "volume").value, 80, "a gap tap leaves the volume alone")
   Assert.equal(opened.port.previews, previewsBefore, "a gap tap previews no audio change")
   Assert.isNil(state:takeResult(), "a gap tap closes nothing")
   local scrollBefore = state:status().scrollOffset
-  local startHx, startHy = hostForLogical(pane, middleX, 132)
+  local startHx, startHy = hostForLogical(pane, middleX, 156)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = startHx, y = startHy } })
-  local beyondLeftHx, beyondLeftHy = hostForLogical(pane, 100, 132)
+  local beyondLeftHx, beyondLeftHy = hostForLogical(pane, 100, 156)
   state:updateFixed({ { type = "pointer_move", pointerId = "touch:2", x = beyondLeftHx, y = beyondLeftHy } })
   Assert.equal(rowById(state:status(), "volume").value, 0, "dragging past the rail start clamps to silence")
   Assert.equal(state:status().scrollOffset, scrollBefore, "a captured slider drag never scrolls")
   state:updateFixed({ { type = "pointer_scroll", pointerId = "mouse", dx = 0, dy = -1 } })
   Assert.equal(state:status().scrollOffset, scrollBefore, "a wheel during a slider capture never scrolls")
   Assert.equal(rowById(state:status(), "volume").value, 0, "a wheel during a capture edits no value")
-  local beyondRightHx, beyondRightHy = hostForLogical(pane, 250, 132)
+  local beyondRightHx, beyondRightHy = hostForLogical(pane, 250, 156)
   state:updateFixed({ { type = "pointer_move", pointerId = "touch:2", x = beyondRightHx, y = beyondRightHy } })
   Assert.equal(rowById(state:status(), "volume").value, 100, "dragging past the rail end clamps to full volume")
   Assert.equal(state:status().scrollOffset, scrollBefore, "a slider drag never scrolls its list")
@@ -1844,18 +1852,18 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
   content = assert(status.presentation.content, "the scrolled plan carries its list")
   local scrolledOffset = assert(content.scrollOffset, "the scrolled plan carries its offset")
   Assert.isTrue(scrolledOffset > 0, "the list rests scrolled")
-  local volumeTop = 24 + (96 - scrolledOffset)
+  local volumeTop = 24 + (120 - scrolledOffset)
   Assert.isNil(
     Interface.hitTest(content, 120, volumeTop + 12),
     "the scrolled value slot arms no stop"
   )
-  Assert.isNil(Interface.hitTest(content, 160, volumeTop + 12), "the scrolled gap arms no stop")
-  local scrolledMin = Interface.hitTest(content, 164, volumeTop + 12)
+  Assert.isNil(Interface.hitTest(content, 158, volumeTop + 12), "the scrolled gap arms no stop")
+  local scrolledMin = Interface.hitTest(content, 160, volumeTop + 12)
   Assert.isTrue(
     scrolledMin ~= nil and scrolledMin.target == "volume" and scrolledMin.index == 1,
     "the scrolled rail start still clamps to silence"
   )
-  local scrolledMax = Interface.hitTest(content, 243, volumeTop + 12)
+  local scrolledMax = Interface.hitTest(content, 247, volumeTop + 12)
   Assert.isTrue(
     scrolledMax ~= nil and scrolledMax.target == "volume" and scrolledMax.index == 101,
     "the scrolled rail end still clamps to full volume"
@@ -1881,7 +1889,7 @@ function T.tests.published_slider_geometry_matches_the_shared_track_math()
     local published = assert(control.slider, id .. " carries its resolved rail")
     local window = assert(control.valueWindow, id .. " carries its numeric window")
     Assert.equal(
-      window.x + window.width + 8,
+      window.x + window.width + 4,
       published.rect.x,
       id .. " leaves a gap between the value and the rail"
     )
@@ -1925,18 +1933,16 @@ function T.tests.frame_arrows_wrap_in_both_input_modes_while_sliders_clamp()
   Assert.equal(rowById(state:status(), "textFrame").value, 19, "direct selection still reaches the last frame")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(rowById(state:status(), "textFrame").value, 0, "keyboard right wraps instead of clamping")
-  for _ = 1, 2 do
-    state:updateFixed({ { type = "navigate", direction = "up" } })
-  end
-  Assert.equal(state:status().focusId, "volume", "two ups return to the volume row")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(state:status().focusId, "volume", "one up returns to the volume row")
   state:updateFixed({ { type = "slider-set", row = "volume", index = 101 } })
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(rowById(state:status(), "volume").value, 100, "volume right still clamps at full")
   state:updateFixed({ { type = "slider-set", row = "battleSpeed", index = 9 } })
-  for _ = 1, 1 do
-    state:updateFixed({ { type = "navigate", direction = "down" } })
+  for _ = 1, 2 do
+    state:updateFixed({ { type = "navigate", direction = "up" } })
   end
-  Assert.equal(state:status().focusId, "battleSpeed", "one down reaches the battle speed row")
+  Assert.equal(state:status().focusId, "battleSpeed", "two ups reach the battle speed row")
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(rowById(state:status(), "battleSpeed").value, 4, "battle speed right still clamps at 4x")
   local Interface = interfaceModule()

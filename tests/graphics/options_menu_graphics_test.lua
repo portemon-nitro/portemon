@@ -1221,19 +1221,20 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
       "the narrow second row keeps its own plate above the spill at offset " .. offset
     )
     Assert.deepEqual(
-      at(data, placement, 120, 122 - shift),
-      { oddR, oddG, oddB, 255 },
+      at(data, placement, 120, 146 - shift),
+      { evenR, evenG, evenB, 255 },
       "the slider band top keeps its plate below the wide spill at offset " .. offset
     )
     Assert.deepEqual(
-      at(data, placement, 200, 122 - shift),
-      { oddR, oddG, oddB, 255 },
+      at(data, placement, 200, 146 - shift),
+      { evenR, evenG, evenB, 255 },
       "the slider band keeps its plate clear of the neighbor faces at offset " .. offset
     )
   end
   -- (c) The borrowed thumb centers on the track value at
-  -- the first, middle, and last volume stops; the thumb fills its row
-  -- and no white square pixels remain anywhere near the stop.
+  -- the first, middle, and last volume stops; the half-size thumb rides
+  -- above the rail with its tip in the bar and no white square pixels
+  -- remain anywhere near the stop.
   for _, stop in ipairs({ { index = 1 }, { index = 51 }, { index = 101 } }) do
     local view = headlessSourceView()
     for _, row in ipairs(view.rows) do
@@ -1271,13 +1272,18 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
       "the thumb reaches its top edge above the rail at volume stop " .. stop.index
     )
     Assert.deepEqual(
-      at(data, placement, stopX, railY + 11),
-      thumbInk,
-      "the thumb reaches its bottom edge below the rail at volume stop " .. stop.index
+      at(data, placement, stopX, railY + 2),
+      { evenR, evenG, evenB, 255 },
+      "the plate stays clear below the rail once the tip stops in the bar at volume stop " .. stop.index
+    )
+    Assert.deepEqual(
+      at(data, placement, stopX - 12, railY - 5),
+      { evenR, evenG, evenB, 255 },
+      "the plate stays clear beside the half-size thumb at volume stop " .. stop.index
     )
     Assert.deepEqual(
       at(data, placement, stopX - 20, railY - 8),
-      { oddR, oddG, oddB, 255 },
+      { evenR, evenG, evenB, 255 },
       "the plate stays clear beside the thumb at volume stop " .. stop.index
     )
     local white, whiteAt = false, ""

@@ -292,15 +292,27 @@ function T.slider_thumb_centers_the_borrowed_bag_visual_on_the_track(scope)
     { 0, 0, 0, 0 },
     "no focus outline leaks outside an unfocused slider"
   )
-  -- The borrowed thumb stands centered on the rail around the stop
-  -- center: the 24px-tall thumb fills its row while pixels clear of it
-  -- keep the backdrop.
+  -- The borrowed thumb draws at half size above the rail with its tip
+  -- in the bar: the 12px-tall thumb spans the stop center minus 11 up
+  -- to the bar, stays 16 wide, and leaves the bar below its tip and
+  -- the fringe beside it clear while pixels clear of it keep the
+  -- backdrop.
   Assert.deepEqual(pixel(unfocused, centerX, centerY - 3), thumbInk, "the thumb body covers the rail at the stop")
   Assert.deepEqual(pixel(unfocused, centerX, centerY - 11), thumbInk, "the thumb reaches its top edge above the rail")
   Assert.deepEqual(
     pixel(unfocused, centerX, centerY - 13),
     { 0, 0, 0, 0 },
     "the thumb stays inside its row above its top edge"
+  )
+  Assert.deepEqual(
+    pixel(unfocused, centerX, centerY + 2),
+    { 0, 0, 0, 0 },
+    "the thumb tip stops in the bar instead of hanging below the rail"
+  )
+  Assert.deepEqual(
+    pixel(unfocused, centerX + 9, centerY - 5),
+    { 0, 0, 0, 0 },
+    "the half-size thumb stays 16 wide around the stop center"
   )
   local focused = renderInto(scope, 256, 64, function()
     Widgets.drawSlider(love.graphics, resolved, style, thumb)

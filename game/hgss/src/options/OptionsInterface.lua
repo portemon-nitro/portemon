@@ -38,7 +38,9 @@ OptionsInterface.INPUT_KEY = "options"
 
 local CONTENT_NATIVE = { id = "content", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local KNOB_EXTENT = 32
+-- The knob travel matches the half-size slider thumb draw: 16 wide, so
+-- the usable track spans the rail minus half a thumb at each end.
+local KNOB_EXTENT = 16
 
 ---@alias OptionsInterface.Rect { x: number, y: number, width: number, height: number }
 ---@alias OptionsInterface.Point { x: number, y: number }
@@ -110,10 +112,10 @@ local KNOB_EXTENT = 32
 local FOCUS_DOWN = {
   textSpeed = "battleScene",
   battleScene = "battleStyle",
-  battleStyle = "soundMode",
+  battleStyle = "battleSpeed",
+  battleSpeed = "soundMode",
   soundMode = "volume",
-  volume = "battleSpeed",
-  battleSpeed = "textFrame",
+  volume = "textFrame",
   textFrame = "confirm",
   confirm = "textSpeed",
   quit = "textSpeed",
@@ -122,10 +124,10 @@ local FOCUS_UP = {
   textSpeed = "quit",
   battleScene = "textSpeed",
   battleStyle = "battleScene",
-  soundMode = "battleStyle",
+  battleSpeed = "battleStyle",
+  soundMode = "battleSpeed",
   volume = "soundMode",
-  battleSpeed = "volume",
-  textFrame = "battleSpeed",
+  textFrame = "volume",
   confirm = "textFrame",
   quit = "textFrame",
 }
@@ -259,11 +261,11 @@ local function layoutControl(rowId, rowRect, index)
   }
   local kind = OptionsInterface.rowKind(rowId)
   if kind == "slider" then
-    -- The numeric value owns x112..155; the rail owns x164..243 with an
-    -- 8px gap between the regions. Both rects share the row's content
+    -- The numeric value owns x112..155; the rail owns x160..247 with a
+    -- 4px gap between the regions. Both rects share the row's content
     -- coordinates; input resolves through the same Slider geometry.
     local resolved = Slider.resolve({
-      rect = { x = 164, y = controlRect.y + 6, width = 80, height = 12 },
+      rect = { x = 160, y = controlRect.y + 6, width = 88, height = 12 },
       count = OptionsInterface.valueCount(rowId),
       index = index,
       knobExtent = KNOB_EXTENT,
@@ -439,17 +441,18 @@ function OptionsInterface.hitTest(content, x, y)
           and contentY >= rail.y
           and contentY < rail.y + rail.height
         if not insideRail then
-          -- The fallback box covers the borrowed 32x24 bag thumb around
-          -- the stop center, mirroring the drawn thumb extent.
+          -- The fallback box covers the drawn half-size thumb: 16 wide
+          -- around the stop center with its tip in the bar, mirroring
+          -- the painted thumb extent.
           local thumb = assert(resolved.thumbRect, "resolved sliders carry their thumb rect")
           local thumbCenterX = thumb.x + thumb.width / 2
-          local thumbCenterY = thumb.y + thumb.height / 2
           local halfWidth = OptionsWidgets.SLIDER_THUMB_HALF_WIDTH
-          local halfHeight = OptionsWidgets.SLIDER_THUMB_HALF_HEIGHT
+          local drawnHeight = OptionsWidgets.SLIDER_THUMB_HALF_HEIGHT * 2
+          local thumbTop = resolved.centerY - drawnHeight + 1
           local insideThumb = x >= thumbCenterX - halfWidth
             and x < thumbCenterX + halfWidth
-            and contentY >= thumbCenterY - halfHeight
-            and contentY < thumbCenterY + halfHeight
+            and contentY >= thumbTop
+            and contentY < thumbTop + drawnHeight
           if not insideThumb then
             return nil
           end

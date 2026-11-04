@@ -32,11 +32,13 @@ local OptionsWidgets = {}
 ---@alias OptionsWidgets.SliderThumb { lease: ImageAssetPoolLease, quad: love.Quad, width: number, height: number }
 
 -- The slider thumb is the borrowed 32x24 bag quantity-decrement pressed
--- visual, drawn centered on the track value at 1:1 with no trim. The half
--- extents below cover the thumb around the stop center for hit testing:
--- 16 wide x 12 tall halves of the 32x24 thumb.
-OptionsWidgets.SLIDER_THUMB_HALF_WIDTH = 16
-OptionsWidgets.SLIDER_THUMB_HALF_HEIGHT = 12
+-- visual, drawn at half size above the track value with its tip in the
+-- bar: 16 wide x 12 tall, centered on the stop center with its bottom
+-- row on the bar's bottom edge. The half extents below cover the drawn
+-- thumb for hit testing: 8 wide x 6 tall halves of the 16x12 draw.
+OptionsWidgets.SLIDER_THUMB_SCALE = 0.5
+OptionsWidgets.SLIDER_THUMB_HALF_WIDTH = 8
+OptionsWidgets.SLIDER_THUMB_HALF_HEIGHT = 6
 
 local function point(value, name)
   assert(type(value) == "table", name .. " is required")
@@ -208,18 +210,37 @@ function OptionsWidgets.drawSlider(graphics, resolved, style, thumb)
   )
   local thumbRect = assert(resolved.thumbRect, "slider needs its stop center")
   local thumbCenterX = thumbRect.x + thumbRect.width / 2
+  local scale = OptionsWidgets.SLIDER_THUMB_SCALE
+  -- The drawn extent stays in lockstep with the hit-testing halves
+  -- below, so paint and input cannot drift apart.
+  assert(
+    thumb.width * scale == OptionsWidgets.SLIDER_THUMB_HALF_WIDTH * 2
+      and thumb.height * scale == OptionsWidgets.SLIDER_THUMB_HALF_HEIGHT * 2,
+    "slider thumb draw matches its hit-testing extent"
+  )
+  local drawnWidth = thumb.width * scale
+  local drawnHeight = thumb.height * scale
   local railY = math.floor(resolved.centerY - 1 + 0.5)
   withColor(graphics, function()
     graphics.setColor(railR, railG, railB, railA)
     graphics.rectangle("fill", resolved.trackStartX, railY, resolved.trackEndX - resolved.trackStartX, 2)
     graphics.setColor(fillR, fillG, fillB, fillA)
     graphics.rectangle("fill", resolved.trackStartX, railY, thumbCenterX - resolved.trackStartX, 2)
-    -- The thumb draws centered on its value: axis-aligned through the
-    -- exact sampler like every other frame, centered on the track value
-    -- position. White reset first: the fill color is still active and
-    -- the sampler multiplies texels by it.
+    -- The thumb draws centered on its value with its tip in the bar:
+    -- axis-aligned through the exact sampler like every other frame,
+    -- its bottom row on the bar's bottom edge. White reset first: the
+    -- fill color is still active and the sampler multiplies texels by
+    -- it.
     graphics.setColor(1, 1, 1, 1)
-    lease:drawQuad(graphics, thumb.quad, thumbCenterX - thumb.width / 2, resolved.centerY - thumb.height / 2)
+    lease:drawQuad(
+      graphics,
+      thumb.quad,
+      thumbCenterX - drawnWidth / 2,
+      resolved.centerY - drawnHeight + 1,
+      0,
+      scale,
+      scale
+    )
   end)
 end
 

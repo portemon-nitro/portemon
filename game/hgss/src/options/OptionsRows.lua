@@ -13,9 +13,9 @@ OptionsRows.ROW_IDS = {
   "textSpeed",
   "battleScene",
   "battleStyle",
+  "battleSpeed",
   "soundMode",
   "volume",
-  "battleSpeed",
   "textFrame",
 }
 
