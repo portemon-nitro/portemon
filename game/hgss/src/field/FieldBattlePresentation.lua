@@ -51,6 +51,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
 ---@field _launchManifest table<string, unknown>? shallow per-launch battle view over the verified core
 ---@field _launchLeafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries, released with the launch
+---@field _stagedSourceSelectors { trainerPictures: table<string, boolean>, battleBalls: table<string, boolean> } selectors whose staged source-index maps passed membership validation
 ---@field _stagedMembersOk boolean true once the staged menu, HUD, font, and audio membership validated
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -1876,9 +1877,10 @@ end
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param manifest FieldBattlePresentation.StagedManifest
 ---@param demand table<string, unknown> selected launch context
+---@param leafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries
 ---@return string? reason, nil when the staged members validate
 ---@return table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>? maps
-local function checkStagedMembers(cacheFs, manifest, demand)
+local function checkStagedMembers(cacheFs, manifest, demand, leafRecords)
   local moveIcons = cacheFs:loadLua(MoveIconCache.manifestPath())
   if type(moveIcons) ~= "table" or moveIcons.schema ~= MoveIconCache.SCHEMA then
     return "battle move type icons are not staged"
@@ -2039,7 +2041,7 @@ local function checkStagedMembers(cacheFs, manifest, demand)
     end
   end
   for _, selector in ipairs(demand ~= nil and demand.trainerPictures or {}) do
-    local entry = manifest.trainerPictures ~= nil and manifest.trainerPictures.entries[selector] or nil
+    local entry = leafRecords.trainerPictures[selector]
     if type(entry) ~= "table" then
       return "battle trainer source map is not staged: " .. selector
     end
@@ -2054,7 +2056,7 @@ local function checkStagedMembers(cacheFs, manifest, demand)
     end
   end
   for _, selector in ipairs(demand ~= nil and demand.battleBalls or {}) do
-    local entry = manifest.battleBalls ~= nil and manifest.battleBalls.entries[selector] or nil
+    local entry = leafRecords.battleBalls[selector]
     if type(entry) ~= "table" then
       return "battle ball source map is not staged: " .. selector
     end
@@ -2199,6 +2201,17 @@ function FieldBattlePresentation:_preparationServices()
     end
     if core == nil then
       return false, nil
+    end
+    if graphics ~= nil and not envelope._stagedMembersOk then
+      local stagedErr, sourceIndices = checkStagedMembers(cacheFs, core, {
+        trainerPictures = {},
+        battleBalls = {},
+      }, envelope._launchLeafRecords)
+      if stagedErr ~= nil then
+        return nil, stagedErr
+      end
+      stagedMenuSourceIndices = assert(sourceIndices, "validated menu maps have a staged record")
+      envelope._stagedMembersOk = true
     end
     for _, sceneKey in ipairs(demand.scenes or {}) do
       if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
@@ -2590,12 +2603,23 @@ function FieldBattlePresentation:_preparationServices()
       if staged == nil then
         return nil, NOT_STAGED
       end
+      local newSourceSelector = false
+      for _, selector in ipairs(demand.trainerPictures or {}) do
+        if not envelope._stagedSourceSelectors.trainerPictures[selector] then
+          newSourceSelector = true
+        end
+      end
+      for _, selector in ipairs(demand.battleBalls or {}) do
+        if not envelope._stagedSourceSelectors.battleBalls[selector] then
+          newSourceSelector = true
+        end
+      end
       -- Membership validates once per envelope: staged files never
       -- un-stage under a live envelope, so repeat launches skip the
       -- full manifest and art reads the first launch already proved.
       -- A failure always re-checks instead of pinning a stale answer.
-      if not envelope._stagedMembersOk then
-        local stagedErr, sourceIndices = checkStagedMembers(cacheFs, staged, demand)
+      if not envelope._stagedMembersOk or newSourceSelector then
+        local stagedErr, sourceIndices = checkStagedMembers(cacheFs, staged, demand, envelope._launchLeafRecords)
         if stagedErr ~= nil then
           return nil, stagedErr
         end
@@ -2604,6 +2628,12 @@ function FieldBattlePresentation:_preparationServices()
           stagedSceneLayer.menuSourceIndices = stagedMenuSourceIndices
         end
         envelope._stagedMembersOk = true
+        for _, selector in ipairs(demand.trainerPictures or {}) do
+          envelope._stagedSourceSelectors.trainerPictures[selector] = true
+        end
+        for _, selector in ipairs(demand.battleBalls or {}) do
+          envelope._stagedSourceSelectors.battleBalls[selector] = true
+        end
       end
       local audioErr = checkAudioMembers(staged, envelope._musicRole, demand)
       if audioErr ~= nil then

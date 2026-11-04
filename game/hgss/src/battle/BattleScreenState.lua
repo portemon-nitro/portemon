@@ -1944,7 +1944,6 @@ function BattleScreenState:_snapshot()
             trainerPictures[#trainerPictures + 1] = "front:" .. trainer.classKey
           end
         end
-        assert(slide.paletteLayoutIndex ~= nil, "trainer slides bind to their accepted physical palette instance")
       end
     end
     self._assets:addTrainerPictures(trainerPictures)
@@ -1964,9 +1963,18 @@ function BattleScreenState:_snapshot()
     self._assets:addBattleBalls(battleBalls)
     local view = self._manifest --[[@as table<string, unknown>]]
     local trainerEntries = view.trainerPictures.entries
-    for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
+    local nativePaletteLayout = type(sceneAssets) == "table" and sceneAssets.nativePaletteLayout or nil
+    local nativeTrainerLayouts = type(nativePaletteLayout) == "table" and nativePaletteLayout.trainers or nil
+    for slideIndex, slide in ipairs(openingPresentation.trainerSlides or {}) do
       local selector =
         assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
+      if type(nativeTrainerLayouts) == "table" then
+        local layout =
+          assert(nativeTrainerLayouts[slideIndex], "visible trainer slides have an ordered physical palette instance")
+        assert(layout.selector == selector, "trainer slides follow their accepted physical palette order")
+        slide.paletteLayoutIndex = slideIndex
+        slide.sourceIndexPaths = layout.sourceIndexPaths
+      end
       local entry = trainerEntries[selector]
       if entry ~= nil then
         local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
@@ -6633,6 +6641,9 @@ function BattleScreenState:_stageNativePaletteLayout()
   local latestView = self._pendingFinal or self._latestView
   local sceneAssets = self._assets:sceneLayer()
   if type(latestView) ~= "table" or type(sceneAssets) ~= "table" then
+    return false
+  end
+  if not self:_launchLeavesStaged({ latestView }) then
     return false
   end
   if self._nativePaletteLayoutReady and type(sceneAssets.nativePaletteLayout) == "table" then

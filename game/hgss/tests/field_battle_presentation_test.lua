@@ -90,7 +90,7 @@ end
 
 local function recordingAudio()
   local audio = { plays = {} }
-  function audio.play(name)
+  function audio.play(_, name)
     audio.plays[#audio.plays + 1] = name
     return true
   end
@@ -2919,7 +2919,8 @@ end
 
 -- One presented wild win carries every phase-shaped assertion of the
 -- shared fixture: cover completes before construction with semantic
--- leave under full cover, follower clocks freeze under the hold, fixed
+-- leave under full cover, entry stays covered until its first native
+-- frame is ready, follower clocks freeze under the hold, fixed
 -- updates paint nothing without an explicit draw at the command root,
 -- menu input reaches the screen without leaking to the field, the
 -- reveal withholds its receipt until the safe field commits, and the
@@ -2948,12 +2949,14 @@ function T.presented_win_carries_every_phase_assertion()
       local before = { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ }
       local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       -- The claim holds presence while covering: cover completes before
-      -- construction and semantic leave follows under full cover, with
-      -- the battle starting one reveal step after full cover.
+      -- construction and semantic leave follows under full cover.
       Assert.equal(runtime.overworld:phase(), "present", "the claim holds presence while covering")
       local coveredAt, leftAt, coverAtLeave = nil, nil, nil
       local ticks = 0
-      while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
+      while
+        (runtime.battleCoordinator:activeBattle() == nil or envelope:cover().coefficient ~= 0)
+        and ticks < 900
+      do
         runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
@@ -2971,10 +2974,9 @@ function T.presented_win_carries_every_phase_assertion()
       Assert.notNil(leftAt, "semantic leave follows cover")
       Assert.isTrue(coveredAt <= leftAt, "leave never precedes full cover")
       Assert.equal(coverAtLeave, 16, "semantic leave happens under full cover")
-      -- Construction follows the full-cover leave by one accepted tick, and that
-      -- tick performs the reveal's single cover step first, so the battle starts
-      -- one step into the reveal beside its intro instead of under full cover.
-      Assert.equal(envelope:cover().coefficient, 14, "the battle starts one reveal step after full cover")
+      -- Scene entry stays covered until its first native battle frame is
+      -- ready, then releases the cover atomically on that accepted tick.
+      Assert.equal(envelope:cover().coefficient, 0, "the first native frame releases the entry cover")
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
       -- Follower clocks freeze under the hold.
       local heldFollower, heldTransition = followerSteps, transitionSteps
@@ -4601,7 +4603,11 @@ function T.delayed_readiness_holds_the_task_until_an_atomic_release_with_safe_te
       )
       local rows = trace:rows()
       Assert.equal(rows[releasedAt - 1].cover, 16, "the delayed entry releases 16->0 in one accepted tick")
-      Assert.equal(startedVoices(), 1, "the opening voice sounds exactly once on the first visual")
+      Assert.equal(
+        startedVoices(),
+        1,
+        "the opening voice sounds exactly once on the first visual: " .. tostring(startedVoices())
+      )
       -- The first battle settles its win so a second launch on the same
       -- envelope proves clean reuse with no dangling leases across
       -- battles.
@@ -4727,7 +4733,7 @@ function T.trainer_cut_in_receives_the_native_battle_introduction()
           started = started + 1
         end
       end
-      Assert.equal(started, 1, "the cut-in voices the opening cue exactly once")
+      Assert.equal(started, 1, "the cut-in voices the opening cue exactly once: " .. tostring(started))
       settle(runtime, envelope, function(request)
         return sparringChoose(runtime, request)
       end, 15000)

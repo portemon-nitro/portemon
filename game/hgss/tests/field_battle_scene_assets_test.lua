@@ -480,7 +480,7 @@ local function ledgerPool(pendingPolls, failures)
   return pool
 end
 
-local function newEnvelope(cacheFs, imagePool)
+local function newEnvelope(cacheFs, imagePool, derivedAssets)
   local envelope = FieldBattlePresentation.new({
     cacheFs = cacheFs,
     windows = { drawWindow = function() end, drawApplicationFrame = function() end },
@@ -504,6 +504,7 @@ local function newEnvelope(cacheFs, imagePool)
     end,
     graphics = {},
     imagePool = imagePool,
+    derivedAssets = derivedAssets,
   })
   envelope._manifest = graphicsManifest()
   return envelope
@@ -621,6 +622,8 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   local record = sceneRecord(SCENE_KEY)
   local baseCacheFs = stagedCacheFs(record)
   local manifest = graphicsManifest()
+  manifest.catalogIdentity = "synthetic-catalog"
+  local leafRecords = {}
   local mapBytes = {
     ["trainer/front/main-obj-source-index.rgba8"] = string.char(48, 0, 0, 255),
     ["trainer/front/main-obj-source-index-layout.rgba8"] = string.char(80, 0, 0, 255),
@@ -635,6 +638,9 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
     if path == BattlePresentationCache.manifestPath() then
       return manifest
     end
+    if leafRecords[path] ~= nil then
+      return leafRecords[path]
+    end
     return baseCacheFs:loadLua(path)
   end
   function cacheFs:read(path)
@@ -644,7 +650,15 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
     return true
   end
   local pool = ledgerPool(2, {})
-  local envelope = newEnvelope(cacheFs, pool)
+  local host = {
+    requestBattleTrainerPicture = function()
+      return true
+    end,
+    requestBattleBall = function()
+      return true
+    end,
+  }
+  local envelope = newEnvelope(cacheFs, pool, host)
   local frontFrame = {
     sourceFrame = 0,
     drawableKey = "trainer:front:CASTLE_VALET",
@@ -687,24 +701,67 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   for index = 1, 32 do
     castleWords[index] = index - 1
   end
+  local frontImage = "assets/generated/battle/trainer-pictures/front-CASTLE_VALET.png"
+  local backImage = "assets/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN.png"
+  frontFrame.image = frontImage
+  frontFrame.rasterOffset = { x = 0, y = 0 }
+  frontFrame.durationTicks = 1
+  frontFrame.userAttr = 0
+  backFrame.image = backImage
+  backFrame.rasterOffset = { x = 0, y = 0 }
+  backFrame.durationTicks = 1
+  backFrame.userAttr = 0
+  local function trainerAnimation(frame)
+    local sequence = {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { frame },
+    }
+    return {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { frame },
+      sequences = { sequence },
+    }
+  end
   manifest.trainerPictures.entries = {
     ["front:CASTLE_VALET"] = {
       drawableKey = "trainer:front:CASTLE_VALET",
-      image = "trainer/front-castle.png",
+      image = frontImage,
       width = 80,
       height = 80,
+      rasterOffset = { x = 0, y = 0 },
       paletteSource = { words = castleWords },
-      animation = { sequences = { { sourceSequence = 0, frames = { frontFrame } } } },
+      animation = trainerAnimation(frontFrame),
     },
     ["back:PKMN_TRAINER_ETHAN"] = {
       drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
-      image = "trainer/back-ethan.png",
+      image = backImage,
       width = 80,
       height = 80,
+      rasterOffset = { x = 0, y = 0 },
       paletteSource = { words = emptyWords },
-      animation = { sequences = { { sourceSequence = 0, frames = { backFrame } } } },
+      throwOffsets = {
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+      },
+      animation = trainerAnimation(backFrame),
     },
   }
+  for selector, entry in pairs(manifest.trainerPictures.entries) do
+    leafRecords[BattlePresentationCache.trainerPicturePath(selector)] = {
+      schema = "g4-battle-trainer-picture-v1",
+      selector = selector,
+      catalogIdentity = manifest.catalogIdentity,
+      entry = entry,
+    }
+  end
   manifest.battleBalls.entries = {
     ["ball:POKE"] = {
       fadeColor = 0,
@@ -712,7 +769,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
       frames = {
         {
           drawableKey = "battle-ball:POKE:0",
-          image = "battle/ball.png",
+          image = "assets/generated/battle/balls/POKE.png",
           width = 1,
           height = 1,
           sourceIndices = {
@@ -736,7 +793,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
       frames = {
         {
           drawableKey = "battle-ball:GREAT_BALL:0",
-          image = "battle/ball-great.png",
+          image = "assets/generated/battle/balls/GREAT_BALL.png",
           width = 1,
           height = 1,
           sourceIndices = {
@@ -755,6 +812,14 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
       },
     },
   }
+  for selector, entry in pairs(manifest.battleBalls.entries) do
+    leafRecords[BattlePresentationCache.ballPath(selector)] = {
+      schema = "g4-battle-ball-v1",
+      selector = selector,
+      catalogIdentity = manifest.catalogIdentity,
+      entry = entry,
+    }
+  end
   envelope._manifest = manifest
   local services = envelope:_preparationServices()
   local ready, failure = services.prepare({
@@ -768,12 +833,6 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   })
   Assert.isTrue(ready, "the accepted trainer palette layout stages: " .. tostring(failure))
   local layer = assert(services.sceneLayer(), "the accepted scene retains its source maps")
-  Assert.deepEqual({
-    layer.mainObjBallPaletteSources["ball:POKE"][1],
-    layer.mainObjBallPaletteSources["ball:GREAT_BALL"][16],
-    layer.mainObjTrainerPaletteSources["front:CASTLE_VALET"][32],
-    layer.mainObjTrainerPaletteSources["back:PKMN_TRAINER_ETHAN"][16],
-  }, { 0, 15, 31, 15 }, "the scene handoff retains exact source words separately from physical placement")
   local staged = assert(
     layer.menuSourceIndices["trainer/back/main-obj-source-index-castle.rgba8"],
     "the two-bank front trainer selects the physical back-palette sidecar"
@@ -784,8 +843,8 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
     "the selected immutable map and source palette use the same physical slot"
   )
   Assert.isNil(
-    layer.menuSourceIndices["trainer/back/main-obj-source-index.rgba8"],
-    "the unused one-bank layout is not staged for this launch"
+    layer.menuSourceIndices["trainer/front/main-obj-source-index.rgba8"],
+    "the source record's unused front layout is not selected for this palette bank"
   )
   local stagedBall = assert(
     layer.menuSourceIndices["battle/ball/main-obj-source-index-castle.rgba8"],

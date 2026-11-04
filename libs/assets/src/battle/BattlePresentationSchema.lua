@@ -16,7 +16,7 @@ BattlePresentationSchema.MANIFEST_SCHEMA = Contract.battlePresentation.schema
 BattlePresentationSchema.TRAINER_PICTURE_SCHEMA = Contract.battlePresentation.trainerPictureSchema
 BattlePresentationSchema.BALL_SCHEMA = Contract.battlePresentation.ballSchema
 BattlePresentationSchema.EVOLUTION_SCHEMA = Contract.battlePresentation.evolutionSchema
-BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v4"
+BattlePresentationSchema.SCENE_SCHEMA = Contract.battlePresentation.sceneSchema
 
 local fail = SchemaCheck.fail
 
@@ -3866,6 +3866,44 @@ local function checkLeafImage(path, prefix, context, field)
   end
 end
 
+local function checkPhysicalSourceIndices(sourceIndices, paletteWords, context, field)
+  SchemaCheck.checkRecord(
+    sourceIndices,
+    { format = true, plane = true, width = true, height = true, variants = true },
+    context,
+    CODE_MANIFEST,
+    field
+  )
+  if sourceIndices.format ~= "source-index-rgba8" or sourceIndices.plane ~= "mainObj" then
+    fail(CODE_MANIFEST, field .. " must describe a MAIN_OBJ source-index map", context)
+  end
+  checkInt(sourceIndices.width, 1, 128, context, CODE_MANIFEST, field .. ".width")
+  checkInt(sourceIndices.height, 1, 128, context, CODE_MANIFEST, field .. ".height")
+  local variants = sourceIndices.variants
+  SchemaCheck.checkRecord(variants, nil, context, CODE_MANIFEST, field .. ".variants")
+  if next(variants) == nil then
+    fail(CODE_MANIFEST, field .. ".variants must carry a physical layout", context)
+  end
+  for selector, variant in pairs(variants) do
+    local variantField = field .. ".variants[" .. tostring(selector) .. "]"
+    if type(selector) ~= "string" or selector:match("^slot:%d+$") == nil then
+      fail(CODE_MANIFEST, variantField .. " must name a physical palette slot", context)
+    end
+    SchemaCheck.checkRecord(variant, { path = true, firstSlot = true }, context, CODE_MANIFEST, variantField)
+    checkImagePath(variant.path, context, CODE_MANIFEST, variantField .. ".path")
+    if variant.path:find("..", 1, true) ~= nil or variant.path:sub(-6) ~= ".rgba8" then
+      fail(CODE_MANIFEST, variantField .. ".path must reference a raw source-index map", context)
+    end
+    checkInt(variant.firstSlot, 0, 223, context, CODE_MANIFEST, variantField .. ".firstSlot")
+    if variant.firstSlot % 16 ~= 0 or variant.firstSlot + #paletteWords > 224 then
+      fail(CODE_MANIFEST, variantField .. " palette banks must fit the native MAIN_OBJ slots", context)
+    end
+    if selector ~= "slot:" .. tostring(variant.firstSlot) then
+      fail(CODE_MANIFEST, variantField .. " selector must match its first palette slot", context)
+    end
+  end
+end
+
 -- One trainer picture entry: semantic selector identity, source frame data,
 -- and raster origins. The caller proves image staging: the former global
 -- manifest proved membership in its shared image index, while a standalone
@@ -3886,6 +3924,7 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
     rasterOffset = true,
     animation = true,
     throwOffsets = true,
+    paletteSource = true,
   }, context, CODE_MANIFEST, field)
   if record.drawableKey ~= "trainer:" .. selector then
     fail(CODE_MANIFEST, field .. ".drawableKey must match its role selector", context)
@@ -3899,6 +3938,18 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
   checkImage(record.image, field .. ".image")
   if record.animation == nil then
     fail(CODE_MANIFEST, field .. ".animation must carry every source trainer sequence", context)
+  end
+  local paletteField = field .. ".paletteSource"
+  SchemaCheck.checkRecord(record.paletteSource, { words = true }, context, CODE_MANIFEST, paletteField)
+  if
+    not Validate.isArray(record.paletteSource.words)
+    or #record.paletteSource.words < 16
+    or #record.paletteSource.words % 16 ~= 0
+  then
+    fail(CODE_MANIFEST, paletteField .. ".words must carry whole source OBJ palette banks", context)
+  end
+  for index, word in ipairs(record.paletteSource.words) do
+    checkInt(word, 0, 0x7FFF, context, CODE_MANIFEST, paletteField .. ".words[" .. index .. "]")
   end
   if record.animation ~= nil then
     SchemaCheck.checkRecord(
@@ -3963,6 +4014,7 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
           durationTicks = true,
           sourceFrame = true,
           userAttr = true,
+          sourceIndices = true,
         }, context, CODE_MANIFEST, frameField)
         local sourceFrame = frameIndex - 1
         if frame.sourceFrame ~= sourceFrame then
@@ -3983,6 +4035,12 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
           fail(CODE_MANIFEST, frameField .. ".drawableKey must match its source sequence and frame", context)
         end
         checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
+        checkPhysicalSourceIndices(
+          frame.sourceIndices,
+          record.paletteSource.words,
+          context,
+          frameField .. ".sourceIndices"
+        )
         checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, frameField .. ".durationTicks")
         checkInt(frame.userAttr, 0, 0xFFFFFFFF, context, CODE_MANIFEST, frameField .. ".userAttr")
         SchemaCheck.checkRecord(
@@ -4111,8 +4169,26 @@ local function checkBallEntry(selector, record, checkImage, context, field)
   if type(record) ~= "table" then
     fail(CODE_MANIFEST, field .. " must carry its ball entry", context)
   end
-  SchemaCheck.checkRecord(record, { frames = true, fadeColor = true, particles = true }, context, CODE_MANIFEST, field)
+  SchemaCheck.checkRecord(
+    record,
+    { frames = true, fadeColor = true, particles = true, paletteSource = true },
+    context,
+    CODE_MANIFEST,
+    field
+  )
   checkInt(record.fadeColor, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".fadeColor")
+  local paletteField = field .. ".paletteSource"
+  SchemaCheck.checkRecord(record.paletteSource, { words = true }, context, CODE_MANIFEST, paletteField)
+  if
+    not Validate.isArray(record.paletteSource.words)
+    or #record.paletteSource.words < 16
+    or #record.paletteSource.words % 16 ~= 0
+  then
+    fail(CODE_MANIFEST, paletteField .. ".words must carry whole source OBJ palette banks", context)
+  end
+  for index, word in ipairs(record.paletteSource.words) do
+    checkInt(word, 0, 0x7FFF, context, CODE_MANIFEST, paletteField .. ".words[" .. index .. "]")
+  end
   local particles = record.particles
   if particles ~= nil then
     local particleField = field .. ".particles"
@@ -4143,7 +4219,7 @@ local function checkBallEntry(selector, record, checkImage, context, field)
     local frameField = field .. ".frames[" .. frameIndex .. "]"
     SchemaCheck.checkRecord(
       frame,
-      { drawableKey = true, image = true, width = true, height = true },
+      { drawableKey = true, image = true, width = true, height = true, sourceIndices = true },
       context,
       CODE_MANIFEST,
       frameField
@@ -4155,6 +4231,10 @@ local function checkBallEntry(selector, record, checkImage, context, field)
     checkImage(frame.image, frameField .. ".image")
     checkInt(frame.width, 1, 128, context, CODE_MANIFEST, frameField .. ".width")
     checkInt(frame.height, 1, 128, context, CODE_MANIFEST, frameField .. ".height")
+    if frame.sourceIndices.width ~= frame.width or frame.sourceIndices.height ~= frame.height then
+      fail(CODE_MANIFEST, frameField .. ".sourceIndices dimensions must match its image", context)
+    end
+    checkPhysicalSourceIndices(frame.sourceIndices, record.paletteSource.words, context, frameField .. ".sourceIndices")
   end
 end
 
@@ -4781,25 +4861,25 @@ function BattlePresentationSchema.isValidScene(scene)
   return pcall(BattlePresentationSchema.assertScene, scene)
 end
 
-local function checkStringList(values, context, code, field, allowEmpty)
-  if not Validate.isArray(values) or (#values == 0 and not allowEmpty) then
-    fail(code, field .. " must carry its members", context)
-  end
-  local seen = {}
-  for _, value in ipairs(values) do
-    checkString(value, context, code, field)
-    if seen[value] then
-      fail(code, field .. " carries a duplicate member " .. value, context)
-    end
-    seen[value] = true
-  end
-end
-
 -- One exact launch demand: a single scene, deduplicated portrait page
 -- selectors, and the audio roles/banks/cries the launch reaches. Empty and
 -- duplicated demands never validate.
 function BattlePresentationSchema.assertDemand(demand)
   local context = {}
+  local function checkStringList(values, code, field, allowEmpty)
+    if not Validate.isArray(values) or (#values == 0 and not allowEmpty) then
+      fail(code, field .. " must carry its members", context)
+    end
+    local seen = {}
+    for _, value in ipairs(values) do
+      checkString(value, context, code, field)
+      if seen[value] then
+        fail(code, field .. " carries a duplicate member " .. value, context)
+      end
+      seen[value] = true
+    end
+  end
+
   SchemaCheck.checkRecord(
     demand,
     { scenes = true, pages = true, audio = true, trainerPictures = true, battleBalls = true, iconKeys = true },
@@ -4807,27 +4887,27 @@ function BattlePresentationSchema.assertDemand(demand)
     CODE_DEMAND,
     "demand"
   )
-  checkStringList(demand.scenes, context, CODE_DEMAND, "demand scenes", false)
+  checkStringList(demand.scenes, CODE_DEMAND, "demand scenes", false)
   for _, key in ipairs(demand.scenes) do
     local background, terrain, time = key:match("^([^/]+)/([^/]+)/([^/]+)$")
     if background == nil or BACKGROUNDS[background] == nil or TERRAINS[terrain] == nil or TIMES[time] == nil then
       fail(CODE_DEMAND, "demand carries an unknown scene key: " .. key, context)
     end
   end
-  checkStringList(demand.pages, context, CODE_DEMAND, "demand pages", true)
-  checkStringList(demand.trainerPictures, context, CODE_DEMAND, "demand trainerPictures", true)
+  checkStringList(demand.pages, CODE_DEMAND, "demand pages", true)
+  checkStringList(demand.trainerPictures, CODE_DEMAND, "demand trainerPictures", true)
   for _, selector in ipairs(demand.trainerPictures) do
     if not isTrainerPictureSelector(selector) then
       fail(CODE_DEMAND, "demand trainer picture selector is not semantic: " .. selector, context)
     end
   end
-  checkStringList(demand.battleBalls, context, CODE_DEMAND, "demand battleBalls", true)
+  checkStringList(demand.battleBalls, CODE_DEMAND, "demand battleBalls", true)
   for _, selector in ipairs(demand.battleBalls) do
     if not isBallSelector(selector) then
       fail(CODE_DEMAND, "demand battle ball selector is not semantic", context)
     end
   end
-  checkStringList(demand.iconKeys, context, CODE_DEMAND, "demand iconKeys", true)
+  checkStringList(demand.iconKeys, CODE_DEMAND, "demand iconKeys", true)
   SchemaCheck.checkRecord(
     demand.audio,
     { roles = true, banks = true, cries = true },
@@ -4835,14 +4915,14 @@ function BattlePresentationSchema.assertDemand(demand)
     CODE_DEMAND,
     "demand audio"
   )
-  checkStringList(demand.audio.roles, context, CODE_DEMAND, "demand audio roles", true)
+  checkStringList(demand.audio.roles, CODE_DEMAND, "demand audio roles", true)
   if not Validate.isArray(demand.audio.banks) then
     fail(CODE_DEMAND, "demand audio banks must be an array", context)
   end
   for _, bank in ipairs(demand.audio.banks) do
     checkInt(bank, 0, nil, context, CODE_DEMAND, "demand audio bank")
   end
-  checkStringList(demand.audio.cries, context, CODE_DEMAND, "demand audio cries", true)
+  checkStringList(demand.audio.cries, CODE_DEMAND, "demand audio cries", true)
   return true
 end
 

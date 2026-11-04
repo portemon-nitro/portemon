@@ -2961,7 +2961,7 @@ end
 ---@param romFs RomFs
 ---@param opts { versionId: string }? compiler options
 ---@param selector string `front:CLASS` or `back:CLASS`
----@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, provenance: table<string, unknown>, catalogIdentity: string }
+---@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
 function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts, selector)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -2969,11 +2969,19 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
   local source = Sources.TRAINER_PICTURES
   local resolved = trainerSourceFor(selector)
   local archive = openArchive(romFs, resolved.archiveSymbol, "trainer portraits")
-  local sourceSequences = compileTrainerPicture(archive, resolved.memberBase, resolved.label)
+  local paletteBanks = resolved.backpicId == nil and (source.frontPaletteBanks[selector:sub(7)] or 1) or 1
+  local sourceSequences, palette = compileTrainerPicture(
+    archive,
+    resolved.memberBase,
+    resolved.label,
+    Sources.MAIN_OBJ_PALETTE_BASE.trainerSourceIndex,
+    paletteBanks
+  )
   local drawableKey = source.outputPrefix .. selector
   local imageBase = "trainer-pictures/" .. selector:gsub(":", "-")
   local imageByRaster = {}
   local images = {}
+  local rawFiles = {}
   local publishedSequences = {}
   for _, sequence in ipairs(sourceSequences) do
     local publishedFrames = {}
@@ -3010,6 +3018,20 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
           .. ":frame:"
           .. tostring(frame.sourceFrame)
       end
+      local sourceIndexName = "trainer-"
+        .. selector:gsub(":", "-")
+        .. "-source-sequence-"
+        .. tostring(sequence.sourceSequence)
+        .. "-frame-"
+        .. tostring(frame.sourceFrame)
+      local firstSlots = resolved.backpicId ~= nil and { 48, 64, 80, 96, 112 } or { 80, 96, 112, 128, 144, 160, 176 }
+      local variants = sourceIndexSlotVariants(
+        sourceIndexName,
+        frame.sourceIndices.pixels,
+        Sources.MAIN_OBJ_PALETTE_BASE.trainerSourceIndex,
+        firstSlots,
+        rawFiles
+      )
       publishedFrames[#publishedFrames + 1] = {
         drawableKey = frameDrawableKey,
         image = imagePath,
@@ -3017,6 +3039,13 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
         durationTicks = frame.durationTicks,
         sourceFrame = frame.sourceFrame,
         userAttr = frame.userAttr,
+        sourceIndices = {
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = frame.sourceIndices.width,
+          height = frame.sourceIndices.height,
+          variants = variants,
+        },
       }
     end
     publishedSequences[#publishedSequences + 1] = {
@@ -3041,6 +3070,7 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
       frames = publishedFrames,
       sequences = publishedSequences,
     },
+    paletteSource = { words = palette },
   }
   if resolved.backpicId ~= nil then
     local sourceThrowOffsets =
@@ -3056,6 +3086,7 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
     selector = selector,
     entry = entry,
     images = images,
+    rawFiles = rawFiles,
     provenance = {
       archiveSymbol = resolved.archiveSymbol,
       memberBase = resolved.memberBase,
@@ -3068,7 +3099,7 @@ end
 -- schema-valid record, exactly its owned frame images, and the completion
 -- marker. Returns the marker.
 ---@param artifact PreparedArtifact
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, catalogIdentity: string } compiled trainer picture leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, catalogIdentity: string } compiled trainer picture leaf
 ---@param marker string completion marker
 ---@return string marker
 function BattlePresentationCompiler.stageTrainerPicture(artifact, leaf, marker)
@@ -3093,22 +3124,35 @@ function BattlePresentationCompiler.stageTrainerPicture(artifact, leaf, marker)
     artifact:addOwnedRoot(path)
     stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
   end
+  for path, bytes in pairs(leaf.rawFiles) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, bytes)
+  end
   stage:write(BattlePresentationCache.trainerPictureMarkerPath(leaf.selector), marker)
   return marker
 end
 
 -- The content identity behind one trainer picture completion marker.
 ---@param romSha1 string
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }> } compiled trainer picture leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string> } compiled trainer picture leaf
 ---@return string marker
 function BattlePresentationCompiler.trainerPictureMarker(romSha1, leaf)
   local imageHashes = {}
   for path, raster in pairs(leaf.images) do
     imageHashes[path] = Hashing.sha1hex(raster.pixels)
   end
+  local sourceIndexHashes = {}
+  for path, bytes in pairs(leaf.rawFiles) do
+    sourceIndexHashes[path] = Hashing.sha1hex(bytes)
+  end
   return BattlePresentationCache.marker(
     romSha1,
-    Hashing.hashLua({ selector = leaf.selector, entry = leaf.entry, images = imageHashes })
+    Hashing.hashLua({
+      selector = leaf.selector,
+      entry = leaf.entry,
+      images = imageHashes,
+      sourceIndices = sourceIndexHashes,
+    })
   )
 end
 
@@ -3184,7 +3228,7 @@ end
 ---@param romFs RomFs
 ---@param opts { versionId: string }? compiler options
 ---@param selector string `ball:ITEM` semantic ball selector
----@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
+---@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
 function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -3208,6 +3252,15 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
   local label = "battle ball " .. itemKey
   local charData = decodeChars(archive, resource.characterMember, label .. " characters")
   local paletteData = decodePalette(archive, resource.paletteMember, label .. " palette")
+  checkColorCount(paletteData, 16, label .. " palette")
+  local sourceIndexPalette = { colors = {} }
+  for colorIndex = 1, #paletteData.colors do
+    sourceIndexPalette.colors[colorIndex] = {
+      r = Sources.MAIN_OBJ_PALETTE_BASE.contextualBall + colorIndex - 1,
+      g = 0,
+      b = 0,
+    }
+  end
   local cellBytes = decodeMember(archive, resource.cellMember, label .. " cells")
   local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
   cellData = mustDecode(cellData, cellErr, label .. " cells", resource.cellMember)
@@ -3216,6 +3269,7 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
   local animationData = decodeAnimation(archive, resource.animationMember, label .. " animation")
   local animation = assert(animationData.anims[1], label .. " has its source animation")
   local images = {}
+  local rawFiles = {}
   local frames = {}
   for sourceFrameIndex = 1, #animation.frames do
     local raster = G2dRasterizer.renderAnimationFrame(
@@ -3228,19 +3282,45 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
       nil,
       mapping
     )
+    local sourceIndexRaster =
+      G2dRasterizer.renderAnimationFrame(charData, sourceIndexPalette, cellData, animation, sourceFrameIndex, {
+        asset = "battle-balls",
+        member = resource.animationMember,
+        role = label .. " source indices",
+        frame = sourceFrameIndex - 1,
+      }, nil, mapping)
+    assert(
+      sourceIndexRaster.width == raster.width and sourceIndexRaster.height == raster.height,
+      label .. " source-index raster matches its color raster"
+    )
     local frameIndex = sourceFrameIndex - 1
     local imagePath = BattlePresentationCache.assetDir() .. "/balls/" .. itemKey .. "-" .. frameIndex .. ".png"
     local drawableKey = "battle-ball:" .. itemKey .. ":" .. frameIndex
+    local variants = sourceIndexSlotVariants(
+      "battle-ball-" .. itemKey .. "-" .. frameIndex,
+      sourceIndexRaster.pixels,
+      Sources.MAIN_OBJ_PALETTE_BASE.contextualBall,
+      { 48, 64, 80, 96 },
+      rawFiles
+    )
     images[imagePath] = raster
     frames[#frames + 1] = {
       drawableKey = drawableKey,
       image = imagePath,
       width = raster.width,
       height = raster.height,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = sourceIndexRaster.width,
+        height = sourceIndexRaster.height,
+        variants = variants,
+      },
     }
   end
   assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
-  local entry = { frames = frames, fadeColor = fadeColors[ballId] }
+  local entry =
+    { frames = frames, fadeColor = fadeColors[ballId], paletteSource = { words = paletteWords(paletteData) } }
   local particlePngs = {}
   local particleSource = assert(particleSources.entries[itemKey], "every ball sprite has its particle sources")
   if particleSources.unrepresented[itemKey] == nil then
@@ -3275,6 +3355,7 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
     selector = selector,
     entry = entry,
     images = images,
+    rawFiles = rawFiles,
     pngImages = particlePngs,
     provenance = {
       spriteMembers = {
@@ -3293,7 +3374,7 @@ end
 -- schema-valid record, exactly its owned frame and particle images, and
 -- the completion marker. Returns the marker.
 ---@param artifact PreparedArtifact
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, catalogIdentity: string } compiled ball leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string>, catalogIdentity: string } compiled ball leaf
 ---@param marker string completion marker
 ---@return string marker
 function BattlePresentationCompiler.stageBall(artifact, leaf, marker)
@@ -3318,6 +3399,10 @@ function BattlePresentationCompiler.stageBall(artifact, leaf, marker)
     artifact:addOwnedRoot(path)
     stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
   end
+  for path, bytes in pairs(leaf.rawFiles) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, bytes)
+  end
   local pngPaths = {}
   for path in pairs(leaf.pngImages) do
     pngPaths[#pngPaths + 1] = path
@@ -3333,7 +3418,7 @@ end
 
 -- The content identity behind one ball completion marker.
 ---@param romSha1 string
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string> } compiled ball leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string> } compiled ball leaf
 ---@return string marker
 function BattlePresentationCompiler.ballMarker(romSha1, leaf)
   local imageHashes = {}
@@ -3344,9 +3429,19 @@ function BattlePresentationCompiler.ballMarker(romSha1, leaf)
   for path, png in pairs(leaf.pngImages) do
     pngHashes[path] = Hashing.sha1hex(png)
   end
+  local sourceIndexHashes = {}
+  for path, bytes in pairs(leaf.rawFiles) do
+    sourceIndexHashes[path] = Hashing.sha1hex(bytes)
+  end
   return BattlePresentationCache.marker(
     romSha1,
-    Hashing.hashLua({ selector = leaf.selector, entry = leaf.entry, images = imageHashes, pngImages = pngHashes })
+    Hashing.hashLua({
+      selector = leaf.selector,
+      entry = leaf.entry,
+      images = imageHashes,
+      pngImages = pngHashes,
+      sourceIndices = sourceIndexHashes,
+    })
   )
 end
 
@@ -4619,6 +4714,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     return {
       manifest = partialManifest,
       images = images,
+      rawFiles = rawFiles,
       pngImages = {},
       resourcePayloads = resourcePayloads,
       provenance = provenance,

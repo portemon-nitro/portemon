@@ -1,5 +1,6 @@
 -- Screen tests use semantic trainer and ball facts in their detached packets.
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local BattleScreenFixture = {}
 setmetatable(BattleScreenFixture, { __index = BattleScreenState })
@@ -58,6 +59,37 @@ local function completeView(view, battleKind)
 end
 
 function BattleScreenFixture.new(options)
+  local defaults = BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER", "front:LEADER_FALKNER" },
+    { "ball:POKE_BALL" }
+  )
+  local manifest = options.manifest
+  if type(manifest) == "table" then
+    manifest = setmetatable({}, { __index = manifest })
+  else
+    manifest = defaults
+  end
+  local trainers = type(manifest.trainerPictures) == "table" and manifest.trainerPictures.entries or nil
+  if type(trainers) ~= "table" then
+    trainers = {}
+    manifest.trainerPictures = { entries = trainers }
+  end
+  for selector, entry in pairs(defaults.trainerPictures.entries) do
+    if trainers[selector] == nil then
+      trainers[selector] = entry
+    end
+  end
+  local balls = type(manifest.battleBalls) == "table" and manifest.battleBalls.entries or nil
+  if type(balls) ~= "table" then
+    balls = {}
+    manifest.battleBalls = { entries = balls }
+  end
+  for selector, entry in pairs(defaults.battleBalls.entries) do
+    if balls[selector] == nil then
+      balls[selector] = entry
+    end
+  end
+  options.manifest = manifest
   local screen = BattleScreenState.new(options)
   local present = screen._portPresent
   function screen:_portPresent(packet)

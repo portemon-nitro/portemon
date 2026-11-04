@@ -131,6 +131,20 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
   local image0 = leafPrefix .. "-0.png"
   local image1 = leafPrefix .. "-1.png"
   local sequenceImage = leafPrefix .. "-sequence-1-frame-0.png"
+  local function frameSourceIndices(image)
+    return {
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = 8,
+      height = 8,
+      variants = {
+        ["slot:48"] = {
+          path = image:gsub("%.png$", "-slot48.rgba8"),
+          firstSlot = 48,
+        },
+      },
+    }
+  end
   local function leafRecord(entry)
     return {
       schema = Schema.TRAINER_PICTURE_SCHEMA,
@@ -904,47 +918,49 @@ function T.consumed_lower_obj_sprites_require_source_index_descriptors()
 end
 
 function T.trainer_source_index_variants_bind_context_to_physical_slots()
-  local valid = manifest()
-  local sourceIndices = valid.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"].animation.frames[1].sourceIndices
+  local valid = ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local sourceIndices = valid.entry.animation.sequences[1].frames[1].sourceIndices
   sourceIndices.variants = {
     ["slot:96"] = {
       path = "assets/generated/battle/trainer-index-slot96.rgba8",
       firstSlot = 96,
     },
   }
-  local result, failure = Schema.isValidManifest(valid)
+  local result, failure = pcall(Schema.assertTrainerPicture, valid)
   Assert.isTrue(result, "a context-selected immutable physical-slot map validates: " .. tostring(failure))
 
-  local invalidSelector = manifest()
-  local invalidIndices =
-    invalidSelector.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"].animation.frames[1].sourceIndices
+  local invalidSelector = ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local invalidIndices = invalidSelector.entry.animation.sequences[1].frames[1].sourceIndices
   invalidIndices.variants = {
     ["arbitrary-layout"] = {
       path = "assets/generated/battle/trainer-index-arbitrary.rgba8",
       firstSlot = 80,
     },
   }
-  Assert.isFalse(Schema.isValidManifest(invalidSelector), "layout variants use semantic selectors")
+  Assert.isFalse(pcall(Schema.assertTrainerPicture, invalidSelector), "layout variants use semantic selectors")
 
-  local invalidRange = manifest()
-  local outOfRange = invalidRange.trainerPictures.entries["back:PKMN_TRAINER_ETHAN"].animation.frames[1].sourceIndices
+  local invalidRange = ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local outOfRange = invalidRange.entry.animation.sequences[1].frames[1].sourceIndices
   outOfRange.variants = {
     ["slot:216"] = {
       path = "assets/generated/battle/trainer-index-slot216.rgba8",
       firstSlot = 216,
     },
   }
-  Assert.isFalse(Schema.isValidManifest(invalidRange), "layout palette banks stay inside MAIN_OBJ capacity")
+  Assert.isFalse(pcall(Schema.assertTrainerPicture, invalidRange), "layout palette banks stay inside MAIN_OBJ capacity")
 
-  local ballVariant = manifest()
-  local ballIndices = ballVariant.battleBalls.entries["ball:POKE_BALL"].frames[1].sourceIndices
+  local ballVariant = ManifestFixture.ballRecord("ball:POKE_BALL")
+  local ballIndices = ballVariant.entry.frames[1].sourceIndices
   ballIndices.variants = {
     ["slot:96"] = {
       path = "assets/generated/battle/ball-index-slot96.rgba8",
       firstSlot = 96,
     },
   }
-  Assert.isTrue(Schema.isValidManifest(ballVariant), "a ball palette layout variant follows the accepted physical slot")
+  Assert.isTrue(
+    pcall(Schema.assertBall, ballVariant),
+    "a ball palette layout variant follows the accepted physical slot"
+  )
 end
 
 function T.health_box_patch_spans_are_complete_and_stay_in_character_tile_units()

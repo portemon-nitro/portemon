@@ -83,6 +83,7 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field plane "mainObj"|"subBg"|"subObj" native palette plane
 ---@field width integer
 ---@field height integer
+---@field variants table<string, { path: string }> physical source-index layouts by palette variant
 
 ---@class BattlePresentationCache.MenuPatchSourceIndices
 ---@field path string cache-relative raw RGBA8 source-index map
@@ -146,7 +147,7 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field burstStartTick integer ticks after the ball starts opening until the burst emits
 
 ---@class BattlePresentationCache.BallEntry
----@field frames { drawableKey: string, image: string, width: integer, height: integer }[]
+---@field frames { drawableKey: string, image: string, width: integer, height: integer, sourceIndices: BattlePresentationCache.SourceIndices }[]
 ---@field fadeColor integer
 ---@field particles BattlePresentationCache.BallParticles|nil
 
@@ -811,6 +812,15 @@ end
 ---@param record BattlePresentationCache.TrainerPictureRecord validated trainer picture leaf record
 ---@return boolean true only when every staged frame image parses with its staged size
 local function hasTrainerPictureImageClosure(cacheFs, record)
+  local function hasSourceIndexClosure(sourceIndices)
+    for _, variant in pairs(sourceIndices.variants) do
+      local pixels = cacheFs:read(variant.path)
+      if type(pixels) ~= "string" or #pixels ~= sourceIndices.width * sourceIndices.height * 4 then
+        return false
+      end
+    end
+    return true
+  end
   local entry = record.entry
   local seen = {}
   local firstImage = nil
@@ -818,6 +828,9 @@ local function hasTrainerPictureImageClosure(cacheFs, record)
   local sequences = animation.sequences
   for _, sequence in ipairs(sequences) do
     for frameIndex, frame in ipairs(sequence.frames) do
+      if not hasSourceIndexClosure(frame.sourceIndices) then
+        return false
+      end
       if seen[frame.image] == nil then
         seen[frame.image] = true
         local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
@@ -842,6 +855,12 @@ end
 local function hasBallImageClosure(cacheFs, record)
   local entry = record.entry
   for _, frame in ipairs(entry.frames) do
+    for _, variant in pairs(frame.sourceIndices.variants) do
+      local pixels = cacheFs:read(variant.path)
+      if type(pixels) ~= "string" or #pixels ~= frame.width * frame.height * 4 then
+        return false
+      end
+    end
     local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
     if width ~= frame.width or height ~= frame.height then
       return false

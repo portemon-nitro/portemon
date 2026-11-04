@@ -289,13 +289,22 @@ local function stageMonPage(cache, selector)
   cache:write(MonCache.pageImagePath("portraits", 0), envelopePng())
 end
 
+local function stageSourceIndices(cache, sourceIndices)
+  for _, variant in pairs(sourceIndices.variants) do
+    cache:write(
+      variant.path,
+      string.rep(string.char(0, 0, 0, 0), sourceIndices.width * sourceIndices.height)
+    )
+  end
+end
+
 local function stageBattle(cache, manifest, sceneKey)
   cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
   cache:write(BattlePresentationCache.markerPath(), "marker")
   for path, geometry in pairs(manifest.menus.images) do
     stagePng(cache, path, geometry.width, geometry.height)
   end
-  local function stageSourceIndices(source)
+  local function stageGlobalSourceIndices(source)
     if type(source) ~= "table" then
       return
     end
@@ -313,36 +322,42 @@ local function stageBattle(cache, manifest, sceneKey)
   end
   for _, sectionName in ipairs({ "command", "moves", "target", "twoOption" }) do
     for _, screen in ipairs(manifest.menus[sectionName].screens) do
-      stageSourceIndices(screen.sourceIndices)
+      stageGlobalSourceIndices(screen.sourceIndices)
       if screen.feedback ~= nil then
         for _, states in pairs(screen.feedback) do
           for _, patch in pairs(states) do
-            stageSourceIndices(patch.sourceIndices)
+            stageGlobalSourceIndices(patch.sourceIndices)
           end
         end
       end
       if screen.moveButtons ~= nil then
         for _, button in ipairs(screen.moveButtons) do
-          stageSourceIndices(button.sourceIndices.empty)
+          stageGlobalSourceIndices(button.sourceIndices.empty)
           for _, typeStates in pairs(button.sourceIndices.types) do
             for _, source in pairs(typeStates) do
-              stageSourceIndices(source)
+              stageGlobalSourceIndices(source)
             end
           end
         end
       end
     end
   end
-  for _, entry in pairs(manifest.trainerPictures.entries) do
-    for _, sequence in ipairs(entry.animation.sequences) do
-      for _, frame in ipairs(sequence.frames) do
-        stageSourceIndices(frame.sourceIndices)
+  local trainerPictures = type(manifest.trainerPictures) == "table" and manifest.trainerPictures.entries or nil
+  if type(trainerPictures) == "table" then
+    for _, entry in pairs(trainerPictures) do
+      for _, sequence in ipairs(entry.animation.sequences) do
+        for _, frame in ipairs(sequence.frames) do
+          stageGlobalSourceIndices(frame.sourceIndices)
+        end
       end
     end
   end
-  for _, entry in pairs(manifest.battleBalls.entries) do
-    for _, frame in ipairs(entry.frames) do
-      stageSourceIndices(frame.sourceIndices)
+  local battleBalls = type(manifest.battleBalls) == "table" and manifest.battleBalls.entries or nil
+  if type(battleBalls) == "table" then
+    for _, entry in pairs(battleBalls) do
+      for _, frame in ipairs(entry.frames) do
+        stageGlobalSourceIndices(frame.sourceIndices)
+      end
     end
   end
   local record = {
@@ -610,6 +625,7 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
   stageMonPage(cache, portraitSelector)
   cache:writeLua(BattlePresentationCache.ballPath(selector), leaf)
   stagePng(cache, leaf.entry.frames[1].image, 16, 16)
+  stageSourceIndices(cache, leaf.entry.frames[1].sourceIndices)
   cache:write(BattlePresentationCache.ballMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "every requested frame is staged")
   cache:write(leaf.entry.frames[1].image, "truncated")
@@ -675,6 +691,7 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
       width = 8,
       height = 8,
       rasterOffset = { x = -40, y = -40 },
+      paletteSource = { words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
       animation = {
         sourceSequence = 0,
         playMode = "forward_loop",
@@ -690,6 +707,18 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
               {
                 drawableKey = "trainer:" .. selector .. ":sequence:1:frame:0",
                 image = sequenceImage,
+                sourceIndices = {
+                  format = "source-index-rgba8",
+                  plane = "mainObj",
+                  width = 8,
+                  height = 8,
+                  variants = {
+                    ["slot:80"] = {
+                      path = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-sequence-1-slot-80.rgba8",
+                      firstSlot = 80,
+                    },
+                  },
+                },
                 rasterOffset = { x = -40, y = -40 },
                 durationTicks = 3,
                 sourceFrame = 0,
@@ -727,6 +756,11 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
   stagePng(cache, image0, 8, 8)
   stagePng(cache, image1, 8, 8)
   stagePng(cache, sequenceImage, 8, 8)
+  for _, sequence in ipairs(leaf.entry.animation.sequences) do
+    for _, frame in ipairs(sequence.frames) do
+      stageSourceIndices(cache, frame.sourceIndices)
+    end
+  end
   cache:write(BattlePresentationCache.trainerPictureMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "both source frames are staged for the requested class")
   local stagedEntry = assert(BattlePresentationCache.loadTrainerPicture(cache, selector))
@@ -983,10 +1017,12 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   leafTrainerImage(trainerEntry.image)
   for _, frame in ipairs(trainerEntry.animation.frames) do
     leafTrainerImage(frame.image)
+    stageSourceIndices(cache, frame.sourceIndices)
   end
   for _, sequence in ipairs(trainerEntry.animation.sequences) do
     for _, frame in ipairs(sequence.frames) do
       leafTrainerImage(frame.image)
+      stageSourceIndices(cache, frame.sourceIndices)
     end
   end
   for _, image in pairs(trainerImages) do
@@ -1044,6 +1080,7 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   local ballImage = ballEntry.frames[1].image
   cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), ballRecord)
   stagePng(cache, ballImage, ballEntry.frames[1].width, ballEntry.frames[1].height)
+  stageSourceIndices(cache, ballEntry.frames[1].sourceIndices)
   cache:write(BattlePresentationCache.ballMarkerPath("ball:POKE_BALL"), "leaf-marker")
   Assert.isTrue(
     BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
@@ -1059,12 +1096,14 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
     catalogIdentity = core.catalogIdentity,
     entry = {
       fadeColor = ballEntry.fadeColor,
+      paletteSource = ballEntry.paletteSource,
       frames = {
         {
           drawableKey = ballEntry.frames[1].drawableKey,
           image = replacementImage,
           width = ballEntry.frames[1].width,
           height = ballEntry.frames[1].height,
+          sourceIndices = ballEntry.frames[1].sourceIndices,
         },
       },
     },

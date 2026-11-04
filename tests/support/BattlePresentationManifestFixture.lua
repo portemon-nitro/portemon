@@ -1677,6 +1677,11 @@ local function trainerPictureRecord(selector)
     return seen[path]
   end
   local function copyFrame(frame)
+    local sourceIndices = frame.sourceIndices
+    local variants = {}
+    for selector, variant in pairs(sourceIndices.variants) do
+      variants[selector] = { path = variant.path, firstSlot = variant.firstSlot }
+    end
     return {
       drawableKey = frame.drawableKey,
       image = leafImage(frame.image),
@@ -1684,6 +1689,13 @@ local function trainerPictureRecord(selector)
       durationTicks = frame.durationTicks,
       sourceFrame = frame.sourceFrame,
       userAttr = frame.userAttr,
+      sourceIndices = {
+        format = sourceIndices.format,
+        plane = sourceIndices.plane,
+        width = sourceIndices.width,
+        height = sourceIndices.height,
+        variants = variants,
+      },
     }
   end
   local function copyFrames(frames)
@@ -1714,6 +1726,7 @@ local function trainerPictureRecord(selector)
     width = source.width,
     height = source.height,
     rasterOffset = { x = source.rasterOffset.x, y = source.rasterOffset.y },
+    paletteSource = { words = source.paletteSource.words },
     animation = animation,
   }
   if source.throwOffsets ~= nil then
@@ -1744,13 +1757,25 @@ local function ballRecord(selector)
       image = prefix .. "-" .. (index - 1) .. ".png",
       width = frame.width,
       height = frame.height,
+      sourceIndices = {
+        format = frame.sourceIndices.format,
+        plane = frame.sourceIndices.plane,
+        width = frame.sourceIndices.width,
+        height = frame.sourceIndices.height,
+        variants = frame.sourceIndices.variants,
+      },
     }
   end
   return {
     schema = "g4-battle-ball-v1",
     selector = selector,
     catalogIdentity = "synthetic-catalog",
-    entry = { fadeColor = source.fadeColor, frames = frames, particles = source.particles },
+    entry = {
+      fadeColor = source.fadeColor,
+      paletteSource = { words = source.paletteSource.words },
+      frames = frames,
+      particles = source.particles,
+    },
   }
 end
 

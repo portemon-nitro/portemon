@@ -717,6 +717,21 @@ function T.native_palette_layout_rebuilds_for_a_replaced_scene_layer()
   rig.screen:dispose()
 end
 
+function T.native_palette_layout_waits_for_the_pending_ball_leaf()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  local entries = rig.screen._manifest.battleBalls.entries
+  Assert.isTrue(entries["ball:POKE_BALL"] ~= nil, "the encounter fixture stages its selected ball")
+  entries["ball:POKE_BALL"] = nil
+  presentOpening(rig)
+
+  rig.pump(1)
+  Assert.isFalse(rig.screen._nativePaletteLayoutReady, "native palette layout waits while the ball leaf is pending")
+
+  rig.screen:dispose()
+end
+
 local function nativePaletteSource()
   local Rgb555 = require("libs.codec.src.Rgb555")
   local function planeWords(length, first, second)
