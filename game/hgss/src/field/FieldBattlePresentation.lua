@@ -39,10 +39,11 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _enrolledUploads table<string, boolean> staged image paths already enrolled this launch
 ---@field _warmPinned table<string, FieldBattlePresentation.PooledHandle> scene-independent borrows kept across launches
 ---@field _warmPaths table<string, string> staged image path behind each warm pin, for exact reuse matching
----@field _warmTickets { key: string, path: string, token: integer }[] pending speculative pool tickets in enrollment order
+---@field _warmSamplers table<string, table<string, string>> pool sampler behind each warm pin, for exact reuse matching
+---@field _warmTickets { key: string, path: string, sampler: table<string, string>?, token: integer }[] pending speculative pool tickets in enrollment order
 ---@field _warmDesired string? predicted scene key the speculative ledger currently serves
 ---@field _warmFailed table<string, string> latched speculative failures by staged image path for the desired scene
----@field _warmPlan { sceneKey: string, record: BattlePresentationCache.SceneRecord, ordered: { key: string, path: string }[] }? validated one-prediction scene plan behind pending image tickets
+---@field _warmPlan { sceneKey: string, record: BattlePresentationCache.SceneRecord, ordered: { key: string, path: string, sampler: table<string, string>? }[] }? validated one-prediction scene plan behind pending image tickets
 ---@field _warmPlanFailure string? terminal speculative planning failure behind the desired scene
 ---@field _warmBg3Key string? scene key behind the staged speculative BG3 source values
 ---@field _warmBg3 table<string, unknown>? staged speculative BG3 characters/map/palette source values by exact scene
@@ -50,6 +51,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
 ---@field _launchManifest table<string, unknown>? shallow per-launch battle view over the verified core
 ---@field _launchLeafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries, released with the launch
+---@field _stagedSourceSelectors { trainerPictures: table<string, boolean>, battleBalls: table<string, boolean> } selectors whose staged source-index maps passed membership validation
 ---@field _stagedMembersOk boolean true once the staged menu, HUD, font, and audio membership validated
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -69,6 +71,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _cover integer current opaque-black cover coefficient on the 0..16 scale
 ---@field _accumulator number source-frame time held toward the next cover step
 ---@field _revealingBattle boolean true once the constructed battle starts its reveal
+---@field _entrySourceVisible boolean true once the accepted tick published the first native battle visual
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start note, set once the staged track voices
 ---@field _musicBankIds integer[]? admission snapshot behind the gated music start, refreshed while empty
@@ -137,13 +140,17 @@ end
 
 ---@class FieldBattlePresentation.StagedImage
 ---@field image string cache-relative staged image path
+---@field sourceIndices BattlePresentationCache.SourceIndices? source-index map metadata for palette-composed art
+---@field paletteSource { firstSlot: integer, words: integer[] }? source palette words and physical base for palette-composed art
 
 ---@class FieldBattlePresentation.MoveButton
 ---@field empty string blank-slot image path
 ---@field types table<string, table<string, string>> image paths by move type, then by normal/pressed state
+---@field sourceIndices { empty: BattlePresentationCache.MenuPatchSourceIndices, types: table<string, { normal: BattlePresentationCache.MenuPatchSourceIndices, pressed: BattlePresentationCache.MenuPatchSourceIndices }> } source maps paired with each cropped image
 
 ---@class FieldBattlePresentation.MenuScreen
 ---@field image string base screen image path
+---@field sourceIndices BattlePresentationCache.SourceIndices raw source palette slots for encounter fade pixels
 ---@field backgrounds table<string, string>? image paths by scene background that changes the screen pixels
 ---@field touchBackgrounds table<string, string>? touch-feedback image paths by scene background
 ---@field feedback table<string, table<string, FieldBattlePresentation.StagedImage>>? patches by control id, then state
@@ -162,6 +169,8 @@ end
 ---@field evolutionGraphics? BattlePresentationCache.EvolutionGraphics
 ---@field pictures { shadow: FieldBattlePresentation.StagedImage }
 ---@field hud { player: FieldBattlePresentation.StagedImage, enemy: FieldBattlePresentation.StagedImage, doubles: table<"playerLeft"|"playerRight"|"enemyLeft"|"enemyRight", FieldBattlePresentation.StagedImage>, arrow: FieldBattlePresentation.StagedImage, cursor: FieldBattlePresentation.StagedImage, partyGauges: FieldBattlePresentation.StagedImage[] }
+---@field trainerPictures { entries: table<string, table<string, unknown>> }
+---@field battleBalls { entries: table<string, table<string, unknown>> }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
 ---@field messages { roles: table<string, { font: string }> }
 ---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
@@ -183,6 +192,25 @@ end
 -- Battle visuals sample point-filtered and clamped, matching the direct
 -- construction below, so pooled borrows draw identically.
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Encounter particle textures whose compiled records repeat sample wrapped
+-- on both axes. One physical borrow serves every viewport of its file, and
+-- wrapping is harmless for its non-repeating viewports.
+local REPEAT_SAMPLER = { wrapX = "repeat", wrapY = "repeat", minFilter = "nearest", magFilter = "nearest" }
+
+-- Whether a stored warm sampler already satisfies a required one: samplers
+-- compare by wrap state, so a repeating demand never shares a clamped
+-- borrow under one logical key. An unknown stored sampler is the shared
+-- clamped default.
+---@param stored table<string, string>? sampler behind the live pin
+---@param required table<string, string> sampler behind the current demand
+---@return boolean matching
+local function sameSampler(stored, required)
+  if stored == nil then
+    return required.wrapX == "clamp" and required.wrapY == "clamp"
+  end
+  return stored.wrapX == required.wrapX and stored.wrapY == required.wrapY
+end
 
 -- Fixed drawables every graphical launch reaches for, pinned at the
 -- envelope lifetime: HUD composites, command surfaces, and the shadow
@@ -232,21 +260,95 @@ end
 ---@field path string cache-relative staged texture image
 ---@field set integer 1-based encounter emitter set
 ---@field texture table<string, unknown> staged texture record
+---@field sampler table<string, string> pool sampler behind the staged borrow
 
 -- The encounter particle textures of one staged scene record in set, then
--- texture order. Their drawable keys belong to the scene group.
+-- texture order. Their drawable keys belong to the scene group. Each entry
+-- carries the pool sampler its compiled records need: any parent, child,
+-- or texture-animation repeat over its file unions to a wrapping borrow,
+-- so one physical handle stays valid for every viewport of the file.
+-- Textures no record repeats keep the shared clamped sampler.
 ---@param sceneKey string validated scene key
 ---@param record table<string, unknown> validated scene record
 ---@return FieldBattlePresentation.ParticleEntry[]
 local function particleEntries(sceneKey, record)
+  local sets = record.encounterParticles --[[@as table<integer, table<string, unknown>>]]
+  local repeats = {} ---@type table<integer, table<integer, { s: boolean, t: boolean }>>
+  for setIndex, set in ipairs(sets) do
+    local byTexture = {} ---@type table<integer, { s: boolean, t: boolean }>
+    repeats[setIndex] = byTexture
+    local textures = set.textures --[[@as table<integer, table<string, unknown>>]]
+    local images = {} ---@type table<integer, string>
+    for id, texture in pairs(textures) do
+      if type(id) == "number" and type(texture) == "table" and type(texture.image) == "string" then
+        images[id] = texture.image --[[@as string]]
+      end
+    end
+    local function mark(textureId, repeatPowers)
+      if type(textureId) ~= "number" then
+        return
+      end
+      local repS = type(repeatPowers) == "table" and repeatPowers.s or 0
+      local repT = type(repeatPowers) == "table" and repeatPowers.t or 0
+      if repS == 0 and repT == 0 then
+        return
+      end
+      local slot = byTexture[textureId]
+      if slot == nil then
+        slot = { s = false, t = false }
+        byTexture[textureId] = slot
+      end
+      if repS ~= 0 then
+        slot.s = true
+      end
+      if repT ~= 0 then
+        slot.t = true
+      end
+    end
+    local function markImage(image, repeatPowers)
+      if type(image) ~= "string" then
+        return
+      end
+      for id, path in pairs(images) do
+        if path == image then
+          mark(id, repeatPowers)
+        end
+      end
+    end
+    for _, emitter in
+      ipairs(set.emitters --[[@as table<integer, table<string, unknown>>]])
+    do
+      mark(emitter.texture, emitter.texRepeat)
+      markImage(emitter.textureImage, emitter.texRepeat)
+      local child = emitter.child --[[@as table<string, unknown>?]]
+      if type(child) == "table" then
+        mark(child.texNo, child.texRepeat)
+        markImage(child.textureImage, child.texRepeat)
+      end
+      local anim = emitter.textureAnim --[[@as table<string, unknown>?]]
+      if type(anim) == "table" and type(anim.textures) == "table" then
+        for _, textureId in
+          ipairs(anim.textures --[[@as table<integer, integer>]])
+        do
+          mark(textureId, emitter.texRepeat)
+        end
+      end
+    end
+  end
   local entries = {}
-  for setIndex, set in ipairs(record.encounterParticles) do
-    for _, texture in ipairs(set.textures) do
+  for setIndex, set in ipairs(sets) do
+    for _, texture in
+      ipairs(set.textures --[[@as table<integer, table<string, unknown>>]])
+    do
+      local slot = (repeats[setIndex] or {})[
+        texture.id --[[@as integer]]
+      ]
       entries[#entries + 1] = {
         key = "scene-particle:" .. sceneKey .. ":" .. setIndex .. ":" .. texture.id,
         path = texture.image,
         set = setIndex,
         texture = texture,
+        sampler = (slot ~= nil and (slot.s or slot.t)) and REPEAT_SAMPLER or POOLED_SAMPLER,
       }
     end
   end
@@ -359,6 +461,9 @@ local function retireWarmGroups(envelope, keepScene)
       if envelope._warmPaths ~= nil then
         envelope._warmPaths[key] = nil
       end
+      if envelope._warmSamplers ~= nil then
+        envelope._warmSamplers[key] = nil
+      end
       if pool ~= nil and record ~= nil then
         pcall(pool.release, pool, record.lease)
       end
@@ -397,20 +502,26 @@ end
 -- ticket instead of stacking a second enrollment behind it.
 ---@param envelope FieldBattlePresentation
 ---@param pool table<string, unknown> borrowed shared generated-image owner
----@param entries { key: string, path: string }[] key/path pairs in adoption order
+---@param entries { key: string, path: string, sampler: table<string, string>? }[] key/path/sampler triples in adoption order
 ---@param ticketed table<string, boolean> keys already holding a live ticket
 local function enrollWarmEntries(envelope, pool, entries, ticketed)
   for _, entry in ipairs(entries) do
+    local sampler = entry.sampler or POOLED_SAMPLER
     local pinned = envelope._warmPinned[entry.key] ---@type FieldBattlePresentation.PooledHandle?
-    if pinned ~= nil and envelope._warmPaths[entry.key] ~= entry.path then
+    if
+      pinned ~= nil
+      and (envelope._warmPaths[entry.key] ~= entry.path or not sameSampler(envelope._warmSamplers[entry.key], sampler))
+    then
       envelope._warmPinned[entry.key] = nil
       envelope._warmPaths[entry.key] = nil
+      envelope._warmSamplers[entry.key] = nil
       pcall(pool.release, pool, pinned.lease)
       pinned = nil
     end
     if pinned == nil and ticketed[entry.key] ~= true and envelope._warmFailed[entry.path] == nil then
-      local token = pool:request(entry.path, POOLED_SAMPLER, "prefetch")
-      envelope._warmTickets[#envelope._warmTickets + 1] = { key = entry.key, path = entry.path, token = token }
+      local token = pool:request(entry.path, sampler, "prefetch")
+      envelope._warmTickets[#envelope._warmTickets + 1] =
+        { key = entry.key, path = entry.path, sampler = sampler, token = token }
       ticketed[entry.key] = true
       envelope._enrolledUploads[entry.path] = true
     end
@@ -500,6 +611,9 @@ local function retireIncompleteWarmGroups(envelope)
         envelope._warmPinned[key] = nil
         if envelope._warmPaths ~= nil then
           envelope._warmPaths[key] = nil
+        end
+        if envelope._warmSamplers ~= nil then
+          envelope._warmSamplers[key] = nil
         end
         if pool ~= nil then
           pcall(pool.release, pool, record.lease)
@@ -896,6 +1010,7 @@ function FieldBattlePresentation.new(opts)
     _cover = 0,
     _accumulator = 0,
     _revealingBattle = false,
+    _entrySourceVisible = false,
     _musicStarted = false,
     _musicNote = nil,
     _musicBankIds = nil,
@@ -916,6 +1031,7 @@ function FieldBattlePresentation.new(opts)
     _enrolledUploads = {},
     _warmPinned = {},
     _warmPaths = {},
+    _warmSamplers = {},
     _warmTickets = {},
     _warmPlan = nil,
     _warmPlanFailure = nil,
@@ -923,6 +1039,7 @@ function FieldBattlePresentation.new(opts)
     _launchManifest = nil,
     _launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil },
     _stagedMembersOk = false,
+    _stagedSourceSelectors = { trainerPictures = {}, battleBalls = {} },
     _pool = opts.imagePool,
     _leases = {},
     _warmParticles = {},
@@ -949,12 +1066,13 @@ end
 ---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged page path behind diagnostics
 ---@param token integer? already-enrolled pool ticket to await instead of requesting again
+---@param sampler table<string, string>? pool sampler behind a fresh request, clamped by default
 ---@return table<string, unknown>? resolved page lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function borrowPage(envelope, key, path, token)
+local function borrowPage(envelope, key, path, token, sampler)
   local pool = assert(envelope._pool, "pooled battle uploads borrow the shared image owner")
   if token == nil then
-    token = pool:request(path, POOLED_SAMPLER, "demand")
+    token = pool:request(path, sampler or POOLED_SAMPLER, "demand")
   end
   local stalled = 0
   while true do
@@ -993,23 +1111,38 @@ end
 ---@param key string drawable key behind diagnostics
 ---@param path string cache-relative staged image path behind diagnostics
 ---@param token integer? already-enrolled pool ticket to await instead of requesting again
+---@param sampler table<string, string>? pool sampler behind a fresh request, clamped by default
 ---@return table<string, unknown>? resolved drawable lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function acquirePooled(envelope, key, path, token)
+local function acquirePooled(envelope, key, path, token, sampler)
   -- A matching warm pin answers with no new borrow: the envelope owns
   -- the borrow across launches, and the scene staging closure calls
   -- here directly instead of through the drawable fast path. An
   -- orphaned launch ticket behind the hit is cancelled instead of
-  -- retained unclaimed.
+  -- retained unclaimed. A pin behind a changed path or sampler is stale:
+  -- it returns once so a repeating demand never shares a clamped handle.
+  local wanted = sampler or POOLED_SAMPLER
   local pinned = envelope._warmPinned[key]
   if pinned ~= nil and envelope._warmPaths ~= nil and envelope._warmPaths[key] == path then
-    if token ~= nil then
-      local pool = envelope._pool
-      if pool ~= nil then
-        pcall(pool.cancel, pool, token)
+    if sameSampler(envelope._warmSamplers[key], wanted) then
+      if token ~= nil then
+        local pool = envelope._pool
+        if pool ~= nil then
+          pcall(pool.cancel, pool, token)
+        end
       end
+      return pinned.handle
     end
-    return pinned.handle
+    envelope._warmPinned[key] = nil
+    envelope._warmPaths[key] = nil
+    envelope._warmSamplers[key] = nil
+    local stalePool = envelope._pool
+    if stalePool ~= nil then
+      pcall(stalePool.release, stalePool, pinned.lease)
+    end
+    if envelope._leases[key] ~= nil and envelope._leases[key].handle == pinned.handle then
+      envelope._leases[key] = nil
+    end
   end
   -- A pre-enrolled ticket from preparation rides instead of a fresh
   -- request so the drawable awaits the shared decode instead of
@@ -1017,7 +1150,7 @@ local function acquirePooled(envelope, key, path, token)
   if token == nil then
     token = takePendingUpload(envelope, path)
   end
-  local lease, failure = borrowPage(envelope, key, path, token)
+  local lease, failure = borrowPage(envelope, key, path, token, wanted)
   if lease == nil then
     return nil, failure
   end
@@ -1027,6 +1160,8 @@ local function acquirePooled(envelope, key, path, token)
   if envelope._warmPinned[key] ~= nil then
     envelope._warmPaths = envelope._warmPaths or {}
     envelope._warmPaths[key] = path
+    envelope._warmSamplers = envelope._warmSamplers or {}
+    envelope._warmSamplers[key] = wanted
   end
   return lease
 end
@@ -1741,8 +1876,11 @@ end
 -- staged definitions the roles reference.
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param manifest FieldBattlePresentation.StagedManifest
+---@param demand table<string, unknown> selected launch context
+---@param leafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries
 ---@return string? reason, nil when the staged members validate
-local function checkStagedMembers(cacheFs, manifest)
+---@return table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>? maps
+local function checkStagedMembers(cacheFs, manifest, demand, leafRecords)
   local moveIcons = cacheFs:loadLua(MoveIconCache.manifestPath())
   if type(moveIcons) ~= "table" or moveIcons.schema ~= MoveIconCache.SCHEMA then
     return "battle move type icons are not staged"
@@ -1758,8 +1896,60 @@ local function checkStagedMembers(cacheFs, manifest)
     end
   end
   local required = {} ---@type { key: string, path: string? }[]
+  local menuSourceIndices = {} ---@type table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>
   local function need(key, path)
     required[#required + 1] = { key = key, path = path }
+  end
+  local function stageSourceIndices(source, label, paletteSource, requireVariants)
+    if requireVariants and (type(source.variants) ~= "table" or next(source.variants) == nil) then
+      return nil, label .. " lacks its physical MAIN_OBJ source-index layouts"
+    end
+    local function stagePath(path, selectedPaletteSource)
+      local bytes = cacheFs:read(path)
+      if type(bytes) ~= "string" or #bytes ~= source.width * source.height * 4 then
+        return nil, label .. " source-index map is not staged: " .. path
+      end
+      for offset = 1, #bytes, 4 do
+        local index = string.byte(bytes, offset)
+        local green = string.byte(bytes, offset + 1)
+        local blue = string.byte(bytes, offset + 2)
+        local alpha = string.byte(bytes, offset + 3)
+        if index == nil or green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) then
+          return nil, label .. " source-index map has invalid pixel data: " .. path
+        end
+        if alpha == 255 and source.plane == "mainObj" then
+          local firstSlot = type(selectedPaletteSource) == "table" and selectedPaletteSource.firstSlot or nil
+          local words = type(selectedPaletteSource) == "table" and selectedPaletteSource.words or nil
+          if
+            type(firstSlot) ~= "number"
+            or type(words) ~= "table"
+            or index < firstSlot
+            or index >= firstSlot + #words
+          then
+            return nil, label .. " source-index map references an undefined MAIN_OBJ palette slot: " .. tostring(index)
+          end
+        end
+      end
+      menuSourceIndices[path] = {
+        plane = source.plane,
+        width = source.width,
+        height = source.height,
+        pixels = bytes,
+        paletteSource = selectedPaletteSource,
+      }
+      return true
+    end
+    if requireVariants then
+      for _, variant in pairs(source.variants) do
+        local selectedPaletteSource = { firstSlot = variant.firstSlot, words = paletteSource.words }
+        local staged, failure = stagePath(variant.path, selectedPaletteSource)
+        if staged == nil then
+          return nil, failure
+        end
+      end
+      return true
+    end
+    return stagePath(source.path, paletteSource)
   end
   for _, key in ipairs(REQUIRED_FIXED_ART) do
     need(key, fixedArt(manifest, FIXED_ART[key]))
@@ -1770,13 +1960,29 @@ local function checkStagedMembers(cacheFs, manifest)
     for index, screen in ipairs(section.screens) do
       local screenKey = prefix .. ":screen:" .. tostring(index)
       need(screenKey, screen.image)
+      local _, sourceFailure = stageSourceIndices(screen.sourceIndices, "battle menu " .. screenKey)
+      if sourceFailure ~= nil then
+        return sourceFailure
+      end
       if screen.moveButtons ~= nil then
         for slotIndex, button in ipairs(screen.moveButtons) do
           local buttonKey = "menu:moves:move-button:" .. tostring(slotIndex - 1) .. ":"
           need(buttonKey .. "empty", button.empty)
+          local _, emptyMapFailure =
+            stageSourceIndices(button.sourceIndices.empty, "battle menu " .. buttonKey .. "empty")
+          if emptyMapFailure ~= nil then
+            return emptyMapFailure
+          end
           for typeKey, states in pairs(button.types) do
             for state, image in pairs(states) do
               need(buttonKey .. typeKey .. ":" .. state, image)
+              local _, buttonMapFailure = stageSourceIndices(
+                button.sourceIndices.types[typeKey][state],
+                "battle menu " .. buttonKey .. typeKey .. ":" .. state
+              )
+              if buttonMapFailure ~= nil then
+                return buttonMapFailure
+              end
             end
           end
         end
@@ -1795,11 +2001,70 @@ local function checkStagedMembers(cacheFs, manifest)
       -- renderers draw with.
       if screen.feedback ~= nil then
         for controlId, states in pairs(screen.feedback) do
-          for state in pairs(states) do
+          for state, patch in pairs(states) do
             local feedbackKey = prefix .. ":feedback:" .. controlId .. ":" .. state
             need(feedbackKey, stagedArtPath(manifest, feedbackKey))
+            local _, feedbackMapFailure = stageSourceIndices(patch.sourceIndices, "battle menu " .. feedbackKey)
+            if feedbackMapFailure ~= nil then
+              return feedbackMapFailure
+            end
           end
         end
+      end
+    end
+  end
+  for _, sprite in ipairs({
+    manifest.hud.player,
+    manifest.hud.enemy,
+    manifest.hud.doubles.playerLeft,
+    manifest.hud.doubles.playerRight,
+    manifest.hud.doubles.enemyLeft,
+    manifest.hud.doubles.enemyRight,
+  }) do
+    local paletteSource = assert(sprite.paletteSource, "visible MAIN_OBJ health boxes carry source palette words")
+    local _, sourceFailure = stageSourceIndices(
+      assert(sprite.sourceIndices, "visible battle health boxes carry source indices"),
+      "battle HUD sprite " .. sprite.image,
+      paletteSource
+    )
+    if sourceFailure ~= nil then
+      return sourceFailure
+    end
+  end
+  for _, sprite in ipairs({ manifest.hud.cursor, manifest.hud.partyGauges[1], manifest.hud.partyGauges[2] }) do
+    local _, sourceFailure = stageSourceIndices(
+      assert(sprite.sourceIndices, "visible battle HUD sprites carry source indices"),
+      "battle HUD sprite " .. sprite.image
+    )
+    if sourceFailure ~= nil then
+      return sourceFailure
+    end
+  end
+  for _, selector in ipairs(demand ~= nil and demand.trainerPictures or {}) do
+    local entry = leafRecords.trainerPictures[selector]
+    if type(entry) ~= "table" then
+      return "battle trainer source map is not staged: " .. selector
+    end
+    for _, sequence in ipairs(entry.animation.sequences) do
+      for _, frame in ipairs(sequence.frames) do
+        local _, sourceFailure =
+          stageSourceIndices(frame.sourceIndices, "battle trainer frame " .. selector, entry.paletteSource, true)
+        if sourceFailure ~= nil then
+          return sourceFailure
+        end
+      end
+    end
+  end
+  for _, selector in ipairs(demand ~= nil and demand.battleBalls or {}) do
+    local entry = leafRecords.battleBalls[selector]
+    if type(entry) ~= "table" then
+      return "battle ball source map is not staged: " .. selector
+    end
+    for _, frame in ipairs(entry.frames) do
+      local _, sourceFailure =
+        stageSourceIndices(frame.sourceIndices, "battle ball frame " .. selector, entry.paletteSource, true)
+      if sourceFailure ~= nil then
+        return sourceFailure
       end
     end
   end
@@ -1816,7 +2081,7 @@ local function checkStagedMembers(cacheFs, manifest)
       return "battle font is not staged: " .. role
     end
   end
-  return nil
+  return nil, menuSourceIndices
 end
 
 -- The single verified global core for this field envelope's selected
@@ -1893,10 +2158,14 @@ function FieldBattlePresentation:_preparationServices()
   local stagedSceneKey = nil
   local stagedSceneParticleKeys = {} ---@type string[]
   local stagedSceneLayer = nil
+  local stagedMenuSourceIndices = nil
   local backgroundPixels = nil
   local backgroundImage = nil
+  local fadedIntroPixels = nil
+  local fadedIntroImage = nil
+  local palettePixels = {} ---@type table<string, { width: integer, height: integer, pixels: string }>
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
-  local services = {}
+  local services = { headless = graphics == nil }
   -- Whether every encounter particle texture of the staged scene still
   -- answers through its live warm pin, matching the staged drawables.
   ---@param layer table<string, unknown>?
@@ -1932,6 +2201,17 @@ function FieldBattlePresentation:_preparationServices()
     end
     if core == nil then
       return false, nil
+    end
+    if graphics ~= nil and not envelope._stagedMembersOk then
+      local stagedErr, sourceIndices = checkStagedMembers(cacheFs, core, {
+        trainerPictures = {},
+        battleBalls = {},
+      }, envelope._launchLeafRecords)
+      if stagedErr ~= nil then
+        return nil, stagedErr
+      end
+      stagedMenuSourceIndices = assert(sourceIndices, "validated menu maps have a staged record")
+      envelope._stagedMembersOk = true
     end
     for _, sceneKey in ipairs(demand.scenes or {}) do
       if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
@@ -2030,6 +2310,14 @@ function FieldBattlePresentation:_preparationServices()
             return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
           end
           assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
+          local baseCharacters = cacheFs:read(layer.baseCharacters.path)
+          if type(baseCharacters) ~= "string" then
+            return nil, "battle scene intro characters are not staged: " .. tostring(sceneKey)
+          end
+          assert(
+            layer.baseCharacters.format == "indexed8",
+            "unbaked intro characters use the staged 8bpp character format"
+          )
           local intro = record.introLayer
           local sprites = record.terrainSprites
           local imagePaths = { intro.image, sprites.player.image, sprites.foe.image }
@@ -2070,6 +2358,9 @@ function FieldBattlePresentation:_preparationServices()
                 if envelope._warmPaths ~= nil then
                   envelope._warmPaths[key] = nil
                 end
+                if envelope._warmSamplers ~= nil then
+                  envelope._warmSamplers[key] = nil
+                end
                 local attemptPool = envelope._pool
                 if attemptPool ~= nil then
                   pcall(attemptPool.release, attemptPool, attemptPin.lease)
@@ -2095,13 +2386,102 @@ function FieldBattlePresentation:_preparationServices()
             return failAttempt(assert(foeFailure, "foe terrain lease failures carry a reason"))
           end
           acquiredKeys[#acquiredKeys + 1] = foeKey
+          local paletteSource = cacheFs:loadLua(record.paletteSource.path)
+          if type(paletteSource) ~= "table" then
+            return failAttempt(
+              "battle scene " .. tostring(sceneKey) .. " palette source is not staged: " .. record.paletteSource.path
+            )
+          end
+          local subObjOpaque = paletteSource.subObjOpaque
+          local initialDisplayedSubObj = type(paletteSource.initialDisplayed) == "table"
+              and paletteSource.initialDisplayed.subObj
+            or nil
+          if type(subObjOpaque) ~= "table" or type(initialDisplayedSubObj) ~= "table" then
+            return failAttempt(
+              "battle scene "
+                .. tostring(sceneKey)
+                .. " native palette source lacks sparse SUB_OBJ slots: "
+                .. record.paletteSource.path
+            )
+          end
+          for path, source in pairs(assert(stagedMenuSourceIndices, "menu indices are staged before scene entry")) do
+            if source.plane == "mainObj" then
+              local sourcePalette = source.paletteSource
+              if type(sourcePalette) ~= "table" or type(sourcePalette.words) ~= "table" then
+                return failAttempt("battle MAIN_OBJ source-index map has no source palette: " .. path)
+              end
+              for offset = 1, #source.pixels, 4 do
+                if string.byte(source.pixels, offset + 3) == 255 then
+                  local slot = string.byte(source.pixels, offset)
+                  if slot < sourcePalette.firstSlot or slot >= sourcePalette.firstSlot + #sourcePalette.words then
+                    return failAttempt(
+                      "battle scene "
+                        .. tostring(sceneKey)
+                        .. " MAIN_OBJ source slot "
+                        .. tostring(slot)
+                        .. " is undefined in "
+                        .. path
+                    )
+                  end
+                end
+              end
+            end
+            if source.plane == "subObj" then
+              for offset = 1, #source.pixels, 4 do
+                if string.byte(source.pixels, offset + 3) == 255 then
+                  local slot = string.byte(source.pixels, offset)
+                  if subObjOpaque[slot + 1] == nil or initialDisplayedSubObj[slot + 1] == nil then
+                    return failAttempt(
+                      "battle scene "
+                        .. tostring(sceneKey)
+                        .. " SUB_OBJ source slot "
+                        .. tostring(slot)
+                        .. " is undefined in "
+                        .. path
+                    )
+                  end
+                end
+              end
+            end
+          end
+          local sourceIndices = {}
+          for _, side in ipairs({ "player", "foe" }) do
+            local descriptor = sprites[side].sourceIndices
+            local bytes = cacheFs:read(descriptor.path)
+            local expectedSize = descriptor.width * descriptor.height * 4
+            if type(bytes) ~= "string" or #bytes ~= expectedSize then
+              return failAttempt(
+                "battle scene " .. tostring(sceneKey) .. " source-index payload has invalid size: " .. descriptor.path
+              )
+            end
+            for offset = 1, #bytes, 4 do
+              local green = string.byte(bytes, offset + 1)
+              local blue = string.byte(bytes, offset + 2)
+              local alpha = string.byte(bytes, offset + 3)
+              local index = string.byte(bytes, offset)
+              if green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) or (alpha == 255 and index >= 224) then
+                return failAttempt(
+                  "battle scene "
+                    .. tostring(sceneKey)
+                    .. " source-index payload has invalid pixel data: "
+                    .. descriptor.path
+                )
+              end
+            end
+            sourceIndices[side] = {
+              plane = descriptor.plane,
+              width = descriptor.width,
+              height = descriptor.height,
+              pixels = bytes,
+            }
+          end
           local particleSets = {}
           for setIndex, set in ipairs(record.encounterParticles) do
             particleSets[setIndex] =
               { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = {} }
           end
           for _, entry in ipairs(particles) do
-            local drawable, failure = acquirePooled(envelope, entry.key, entry.path)
+            local drawable, failure = acquirePooled(envelope, entry.key, entry.path, nil, entry.sampler)
             if drawable == nil then
               return failAttempt(assert(failure, "encounter particle lease failures carry a reason"))
             end
@@ -2121,8 +2501,13 @@ function FieldBattlePresentation:_preparationServices()
           end
           stagedSceneLayer = {
             characters = characters,
+            baseCharacters = baseCharacters,
             map = map,
             palette = palette,
+            paletteSource = paletteSource,
+            mainObjBallPaletteSources = {},
+            mainObjTrainerPaletteSources = {},
+            menuSourceIndices = stagedMenuSourceIndices,
             colorMode = "8bpp",
             introLayer = {
               drawable = introDrawable,
@@ -2135,12 +2520,14 @@ function FieldBattlePresentation:_preparationServices()
                 width = sprites.player.width,
                 height = sprites.player.height,
                 origin = { x = sprites.player.origin.x, y = sprites.player.origin.y },
+                sourceIndices = sourceIndices.player,
               },
               foe = {
                 drawable = foeDrawable,
                 width = sprites.foe.width,
                 height = sprites.foe.height,
                 origin = { x = sprites.foe.origin.x, y = sprites.foe.origin.y },
+                sourceIndices = sourceIndices.foe,
               },
             },
             encounterParticles = particleSets,
@@ -2216,16 +2603,37 @@ function FieldBattlePresentation:_preparationServices()
       if staged == nil then
         return nil, NOT_STAGED
       end
+      local newSourceSelector = false
+      for _, selector in ipairs(demand.trainerPictures or {}) do
+        if not envelope._stagedSourceSelectors.trainerPictures[selector] then
+          newSourceSelector = true
+        end
+      end
+      for _, selector in ipairs(demand.battleBalls or {}) do
+        if not envelope._stagedSourceSelectors.battleBalls[selector] then
+          newSourceSelector = true
+        end
+      end
       -- Membership validates once per envelope: staged files never
       -- un-stage under a live envelope, so repeat launches skip the
       -- full manifest and art reads the first launch already proved.
       -- A failure always re-checks instead of pinning a stale answer.
-      if not envelope._stagedMembersOk then
-        local stagedErr = checkStagedMembers(cacheFs, staged)
+      if not envelope._stagedMembersOk or newSourceSelector then
+        local stagedErr, sourceIndices = checkStagedMembers(cacheFs, staged, demand, envelope._launchLeafRecords)
         if stagedErr ~= nil then
           return nil, stagedErr
         end
+        stagedMenuSourceIndices = assert(sourceIndices, "validated menu maps have a staged record")
+        if stagedSceneLayer ~= nil then
+          stagedSceneLayer.menuSourceIndices = stagedMenuSourceIndices
+        end
         envelope._stagedMembersOk = true
+        for _, selector in ipairs(demand.trainerPictures or {}) do
+          envelope._stagedSourceSelectors.trainerPictures[selector] = true
+        end
+        for _, selector in ipairs(demand.battleBalls or {}) do
+          envelope._stagedSourceSelectors.battleBalls[selector] = true
+        end
       end
       local audioErr = checkAudioMembers(staged, envelope._musicRole, demand)
       if audioErr ~= nil then
@@ -2289,6 +2697,88 @@ function FieldBattlePresentation:_preparationServices()
     backgroundImage = uploadedOrError
     images["battle-background"] = backgroundImage
     return backgroundImage
+  end
+  -- Uploads one composed faded intro raster through the bulk pixel path:
+  -- the raster already carries packed RGBA8 pixels, so no per-pixel Lua
+  -- runs on the frame loop. Ownership mirrors the background upload: an
+  -- unchanged raster reuses its image, a changed raster releases its
+  -- predecessor exactly once, and failures adopt nothing.
+  function services.fadedIntro(raster)
+    assert(graphics ~= nil, "faded intro upload requires host graphics")
+    assert(type(raster) == "table" and type(raster.pixels) == "string", "faded intro upload takes a composed raster")
+    if raster == fadedIntroPixels then
+      return fadedIntroImage
+    end
+    local ok, uploadedOrError = pcall(function()
+      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
+      local uploaded = graphics.newImage(imageData)
+      assert(uploaded ~= nil, "the graphics driver handed out no faded intro image")
+      uploaded:setFilter("nearest", "nearest")
+      return uploaded
+    end)
+    if not ok or uploadedOrError == nil then
+      local cause = ok and "empty faded intro image handle" or tostring(uploadedOrError)
+      return nil, "battle scene faded intro upload failed for " .. tostring(stagedSceneKey) .. ": " .. cause
+    end
+    if fadedIntroImage ~= nil and type(fadedIntroImage.release) == "function" then
+      fadedIntroImage:release()
+    end
+    fadedIntroPixels = raster
+    fadedIntroImage = uploadedOrError
+    images["battle-faded-intro"] = fadedIntroImage
+    return fadedIntroImage
+  end
+  -- Uploads one battle-private sampled palette image. The source image pool
+  -- never sees these keys; replacement adopts only a fully created image.
+  function services.paletteImage(key, raster)
+    assert(graphics ~= nil, "battle palette upload requires host graphics")
+    assert(type(key) == "string" and key:match("^battle%-palette:") ~= nil, "palette images use battle-scoped keys")
+    assert(type(raster) == "table" and type(raster.pixels) == "string", "palette upload takes packed RGBA8 pixels")
+    assert(
+      type(raster.width) == "number"
+        and raster.width % 1 == 0
+        and raster.width > 0
+        and type(raster.height) == "number"
+        and raster.height % 1 == 0
+        and raster.height > 0
+        and #raster.pixels == raster.width * raster.height * 4,
+      "palette image pixels match their raster dimensions"
+    )
+    local existingPixels = palettePixels[key]
+    local existingImage = images[key]
+    if
+      existingPixels ~= nil
+      and existingPixels.width == raster.width
+      and existingPixels.height == raster.height
+      and existingPixels.pixels == raster.pixels
+      and existingImage ~= nil
+    then
+      return existingImage
+    end
+    local uploaded = nil
+    local ok, uploadedOrError = pcall(function()
+      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
+      uploaded = graphics.newImage(imageData)
+      assert(uploaded ~= nil, "the graphics driver handed out no palette image")
+      uploaded:setFilter("nearest", "nearest")
+      return uploaded
+    end)
+    if not ok or uploadedOrError == nil then
+      if uploaded ~= nil and type(uploaded.release) == "function" then
+        pcall(function()
+          uploaded:release()
+        end)
+      end
+      local cause = ok and "empty palette image handle" or tostring(uploadedOrError)
+      return nil,
+        "battle palette image upload failed for " .. key .. " in " .. tostring(stagedSceneKey) .. ": " .. cause
+    end
+    if existingImage ~= nil and type(existingImage.release) == "function" then
+      existingImage:release()
+    end
+    palettePixels[key] = { width = raster.width, height = raster.height, pixels = raster.pixels }
+    images[key] = uploadedOrError
+    return uploadedOrError
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
@@ -2676,6 +3166,19 @@ function FieldBattlePresentation:_preparationServices()
       backgroundImage = nil
       backgroundPixels = nil
     end
+    if key == "battle-faded-intro" and fadedIntroImage ~= nil and type(fadedIntroImage.release) == "function" then
+      fadedIntroImage:release()
+      fadedIntroImage = nil
+      fadedIntroPixels = nil
+    end
+    local palette = palettePixels[key]
+    if palette ~= nil then
+      local image = images[key]
+      if image ~= nil and type(image.release) == "function" then
+        image:release()
+      end
+      palettePixels[key] = nil
+    end
     images[key] = nil
   end
   -- Demands one lazily staged battle effect through the borrowed
@@ -2946,6 +3449,9 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   if self._warmPaths == nil then
     self._warmPaths = {}
   end
+  if self._warmSamplers == nil then
+    self._warmSamplers = {}
+  end
   if self._warmDesired ~= sceneKey then
     cancelWarmTickets(self)
     retireIncompleteWarmGroups(self)
@@ -3072,7 +3578,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       self._warmPlanFailure = cause
       return false, cause
     end
-    local grouped = {} ---@type { key: string, path: string }[]
+    local grouped = {} ---@type { key: string, path: string, sampler: table<string, string>? }[]
     local particles = registerParticleEntries(self, sceneKey, stagedRecord)
     local groupKeys = warmSceneKeys(self, sceneKey)
     grouped[#grouped + 1] = { key = groupKeys[1], path = BattlePresentationCache.sceneImagePath(sceneKey) }
@@ -3080,9 +3586,9 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     grouped[#grouped + 1] = { key = groupKeys[3], path = terrainSprites.player.image }
     grouped[#grouped + 1] = { key = groupKeys[4], path = terrainSprites.foe.image }
     for _, entry in ipairs(particles) do
-      grouped[#grouped + 1] = { key = entry.key, path = entry.path }
+      grouped[#grouped + 1] = { key = entry.key, path = entry.path, sampler = entry.sampler }
     end
-    local planned = {} ---@type { key: string, path: string }[]
+    local planned = {} ---@type { key: string, path: string, sampler: table<string, string>? }[]
     for _, entry in ipairs(grouped) do
       planned[#planned + 1] = entry
     end
@@ -3154,7 +3660,11 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   local settled = self._warmBg3Key == sceneKey
   if settled then
     for _, entry in ipairs(ordered) do
-      if self._warmPinned[entry.key] == nil or self._warmPaths[entry.key] ~= entry.path then
+      if
+        self._warmPinned[entry.key] == nil
+        or self._warmPaths[entry.key] ~= entry.path
+        or not sameSampler(self._warmSamplers[entry.key], entry.sampler or POOLED_SAMPLER)
+      then
         settled = false
         break
       end
@@ -3165,7 +3675,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   end
   -- Poll every ticket without blocking; the first failure names its
   -- scene, key, and path while the remaining tickets stay pending.
-  local readyTicket = nil ---@type { key: string, path: string, token: integer }?
+  local readyTicket = nil ---@type { key: string, path: string, sampler: table<string, string>?, token: integer }?
   local index = 1
   while index <= #self._warmTickets do
     local ticket = self._warmTickets[index]
@@ -3214,6 +3724,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   end
   self._warmPinned[ticketKey] = { lease = lease, handle = lease }
   self._warmPaths[ticketKey] = ticketPath
+  self._warmSamplers[ticketKey] = readyTicket.sampler or POOLED_SAMPLER
   if warmGroupComplete(self, sceneKey) then
     retireWarmGroups(self, sceneKey)
   end
@@ -3271,6 +3782,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._cover = 0
   self._accumulator = 0
   self._revealingBattle = false
+  self._entrySourceVisible = false
   self._musicStarted = false
   self._musicNote = nil
   self._musicBankIds = nil
@@ -4207,6 +4719,7 @@ function FieldBattlePresentation:updateFixed(dt)
       screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
       self:_observeScreenFailure()
     end
+    self:_releaseEntryCover()
   end
   if self._accumulator + FieldBattlePresentation.SOURCE_EPSILON >= FieldBattlePresentation.SOURCE_FRAME then
     local discarded =
@@ -4307,8 +4820,24 @@ function FieldBattlePresentation:_stepCover()
     self:_stepCoverUp()
     return
   end
-  -- Leaving and active hold full cover until the constructed battle
-  -- proves exact-asset readiness; the reveal then runs beside the intro.
+  -- Battle entry holds full opaque cover while no native battle visual
+  -- exists: the accepted tick that publishes the first source frame
+  -- releases the blanket atomically below, never as an eight-tick alpha
+  -- blend over live source frames.
+  if phase == "leaving" or phase == "active" then
+    if not self._entrySourceVisible and not self._pendingFailed then
+      if self._cover < FieldBattlePresentation.COVER_MAX then
+        self:_stepCoverUp()
+      end
+      return
+    end
+    -- A failed launch holds its cover where the failure left it:
+    -- opaque when the field already hid, untouched while the live
+    -- field still stands, so input still releases behind it.
+    if self._pendingFailed then
+      return
+    end
+  end
   if self._revealingBattle then
     self:_stepCoverDown()
     return
@@ -4329,6 +4858,37 @@ function FieldBattlePresentation:_stepCoverDown()
   if self._cover > 0 then
     self._cover = math.max(0, self._cover - FieldBattlePresentation.COVER_STEP)
   end
+end
+
+-- Releases the entry blanket atomically once the accepted tick publishes
+-- the first native-renderable battle visual: after the host and screen
+-- advanced, a ready first frame drops the opaque cover to zero in the
+-- same tick instead of blending over live source frames. Runs inside the
+-- fixed update only; draws never release. Sends no host notification:
+-- the covering handshake already completed before the field left, and
+-- later terminal/return phases keep their own notifications.
+function FieldBattlePresentation:_releaseEntryCover()
+  if self._entrySourceVisible then
+    return
+  end
+  if self._launchId == nil then
+    return
+  end
+  local status = self._lastStatus
+  local phase = status ~= nil and status.phase or nil
+  if phase ~= "leaving" and phase ~= "active" then
+    return
+  end
+  local screen = self._screen
+  if screen == nil then
+    return
+  end
+  local ok, ready = pcall(screen.firstNativeBattleFrameReady, screen)
+  if not ok or ready ~= true then
+    return
+  end
+  self._cover = 0
+  self._entrySourceVisible = true
 end
 
 -- Polls exact-asset readiness through the port's idempotent entry: true
@@ -4511,6 +5071,18 @@ function FieldBattlePresentation:_observeScreenFailure()
       self._screen = nil
     end
     self._innerPort = nil
+    -- A dropped screen owns no visual. When entry never confirmed
+    -- readiness (unacknowledged port entry), the live field still
+    -- stands: release the cover so input releases behind it. When a
+    -- battle visual released, the reveal ran, or entry confirmed, hold
+    -- opaque black instead of exposing a half-revealed battle or a
+    -- stale field frame. A missing asset after confirmed readiness
+    -- therefore keeps black while a pre-entry failure keeps the field.
+    if self._entrySourceVisible or self._revealingBattle or self:_portEnterReady() then
+      self._cover = FieldBattlePresentation.COVER_MAX
+    else
+      self._cover = 0
+    end
   end
 end
 
@@ -4551,6 +5123,7 @@ function FieldBattlePresentation:_dropLaunch()
   self._innerPort = nil
   self._lastStatus = nil
   self._revealingBattle = false
+  self._entrySourceVisible = false
   self._musicStarted = false
   self._musicNote = nil
   self._musicBankIds = nil
@@ -4607,6 +5180,9 @@ function FieldBattlePresentation:dispose()
     self._warmPinned[key] = nil
     if self._warmPaths ~= nil then
       self._warmPaths[key] = nil
+    end
+    if self._warmSamplers ~= nil then
+      self._warmSamplers[key] = nil
     end
     if pool ~= nil then
       pool:release(pinned.lease)

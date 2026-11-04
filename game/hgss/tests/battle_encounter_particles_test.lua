@@ -1,7 +1,9 @@
 -- The battle encounter particle owner: two retail emitter sets start on
 -- their own encounter-animation frames (Task_PlayEncounterAnimation), each in
 -- its own particle system, and keep simulating after the animation ends
--- until their emitters retire.
+-- until their emitters retire. A set starts exactly on its own start tick:
+-- staged art that arrives after the tick never starts the set late.
+-- Rendering reads the live systems; nothing here draws.
 
 local Assert = require("tests.support.Assert")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
@@ -62,12 +64,41 @@ function T.sets_keep_running_after_the_animation_and_retire_without_restarting()
   Assert.equal(#owner:systems(), 0, "a finished set never restarts")
 end
 
-function T.a_late_scene_layer_starts_the_sets_late()
+function T.sets_with_missed_start_ticks_never_start_late()
   local owner = BattleEncounterParticles.new()
   owner:step(5, nil)
-  Assert.equal(#owner:systems(), 0, "no staged sets means nothing to run")
-  owner:step(6, stagedSets())
-  Assert.equal(#owner:systems(), 1, "the first set starts once its art is available")
+  Assert.equal(#owner:systems(), 0, "nothing starts without staged art")
+  owner:step(18, stagedSets())
+  Assert.equal(#owner:systems(), 0, "the first set never starts after its frame-1 tick")
+  local late = BattleEncounterParticles.new()
+  late:step(49, stagedSets())
+  Assert.equal(#late:systems(), 0, "sets whose start ticks already passed never start")
+  local exact = BattleEncounterParticles.new()
+  local sets = stagedSets()
+  exact:step(20, sets)
+  Assert.equal(#exact:systems(), 1, "frame 20 starts exactly one set")
+  Assert.equal(
+    exact:systems()[1].textures[3],
+    sets[2].textures[2].drawable,
+    "frame 20 starts the second set, never the missed first"
+  )
+end
+
+function T.a_retired_first_system_leaves_the_second_running()
+  local sets = Fixture.sizedSets("grass/day/forest", 1, 1, 10, 43)
+  local owner = BattleEncounterParticles.new()
+  for frame = 1, 30 do
+    owner:step(frame, sets)
+  end
+  Assert.equal(#owner:systems(), 1, "the retired first system leaves the second running")
+  local frame = 31
+  while #owner:systems() > 0 and frame < 500 do
+    owner:step(nil, sets)
+    frame = frame + 1
+  end
+  Assert.equal(#owner:systems(), 0, "the second system retires on its own emitter lifespan")
+  owner:step(1, sets)
+  Assert.equal(#owner:systems(), 0, "a finished set never restarts")
 end
 
 function T.clear_drops_every_system_and_allows_a_fresh_run()
@@ -78,6 +109,10 @@ function T.clear_drops_every_system_and_allows_a_fresh_run()
   Assert.equal(#owner:systems(), 0, "clear drops live systems")
   owner:step(1, sets)
   Assert.equal(#owner:systems(), 1, "a fresh run starts again")
+  for frame = 2, 20 do
+    owner:step(frame, sets)
+  end
+  Assert.equal(#owner:systems(), 2, "a fresh run restarts both sets on their own ticks")
 end
 
 return { tests = T }

@@ -1,6 +1,6 @@
--- The encounter terrain particles draw over the main screen after the fade
--- overlay, and the move particle systems draw in the detail pane, from the
--- live systems the screen publishes in its view.
+-- The encounter terrain particles draw over the palette-faded main scene,
+-- untinted by its per-plane fades, and the move particle systems draw in
+-- the detail pane, from the live systems the screen publishes in its view.
 
 local Assert = require("tests.support.Assert")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
@@ -25,16 +25,22 @@ local function recordingGraphics(log)
   function graphics.newQuad()
     return {}
   end
-  function graphics.rectangle(mode)
-    log[#log + 1] = { kind = "rectangle", mode = mode }
+  function graphics.rectangle(mode, x, y, w, h)
+    log[#log + 1] = { kind = "rectangle", mode = mode, x = x, y = y, w = w, h = h }
   end
-  function graphics.draw(image)
-    log[#log + 1] = { kind = "draw", image = image }
+  function graphics.draw(image, quad, x, y)
+    if type(quad) == "number" then
+      quad, x, y = nil, quad, x
+    end
+    log[#log + 1] = { kind = "draw", image = image, quad = quad, x = x, y = y }
   end
   return graphics
 end
 
-local function drawDetail(graphics, view)
+---@param graphics table<string, unknown> injected host graphics
+---@param view table<string, unknown> internal semantic snapshot
+---@param scene table<string, unknown>? staged scene drawable, nil while unavailable
+local function drawDetail(graphics, view, scene)
   local palette = {}
   for index = 0, 15 do
     palette[index + 1] = { r = index, g = index, b = index }
@@ -49,8 +55,8 @@ local function drawDetail(graphics, view)
     text = { drawTextForRole = function() end },
     windows = { drawWindow = function() end },
     assets = {
-      drawable = function()
-        return nil
+      drawable = function(_, key)
+        return (view.drawables ~= nil and view.drawables[key]) or scene
       end,
     },
     frameKey = "default",
@@ -81,33 +87,37 @@ local function runningSystems()
   return owner:systems(), images
 end
 
-function T.live_particles_draw_after_the_encounter_fade_overlay()
+function T.live_particles_draw_over_the_palette_faded_scene()
   local idle = {}
   drawDetail(recordingGraphics(idle), { encounterParticleSystems = {} })
   for _, entry in ipairs(idle) do
     Assert.isTrue(entry.kind ~= "draw", "an idle encounter draws no particle quads")
   end
   local systems, images = runningSystems()
+  local scene = {}
   local log = {}
   drawDetail(recordingGraphics(log), {
     encounterParticleSystems = systems,
     openingPresentation = {
       playerTrainerVisible = false,
       foeTrainerVisible = false,
-      encounterFlash = { color = "white", coefficient = 8 },
+      encounterFlash = { color = "white", coefficient = 8, mainBgMask = 0xF3FF, mainObjMask = 0x3FFF },
     },
-  })
-  local overlayIndex, firstParticle = nil, nil
+  }, scene)
+  local sceneDraw, firstParticle = nil, nil
   for index, entry in ipairs(log) do
-    if entry.kind == "rectangle" then
-      overlayIndex = overlayIndex or index
+    if entry.kind == "draw" and entry.image == scene then
+      sceneDraw = index
     elseif entry.kind == "draw" and entry.image == images[1] and firstParticle == nil then
       firstParticle = index
     end
   end
-  Assert.notNil(overlayIndex, "the fade overlay draws")
+  Assert.notNil(sceneDraw, "the palette-faded scene stages under the encounter fade")
   Assert.notNil(firstParticle, "live particles draw their staged texture")
-  Assert.isTrue(firstParticle > overlayIndex, "particles draw over the fade, untinted by it")
+  Assert.isTrue(firstParticle > (sceneDraw or 0), "particles draw over the faded scene, untinted by it")
+  for _, entry in ipairs(log) do
+    Assert.isTrue(entry.kind ~= "rectangle", "no fullscreen wash covers the palette-faded scene")
+  end
 end
 
 function T.move_particle_systems_draw_their_textures_in_the_detail_pane()
@@ -354,6 +364,319 @@ function T.evolution_panes_draw_staged_layers_pictures_window_and_live_particles
     { "main", "sub" },
     "mode-2 move replacement renders the native Summary panes"
   )
+end
+
+function T.encounter_particles_draw_pooled_leases_without_raw_draws()
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local sets = Fixture.sets("grass/day/forest")
+  local sources, leases = {}, {}
+  for _, set in ipairs(sets) do
+    for _, texture in ipairs(set.textures) do
+      local source = {}
+      function source.setFilter() end
+      local palette = {}
+      function palette.setFilter() end
+      function palette.getWidth()
+        return 4
+      end
+      -- Production leases expose only width/height/drawQuad: no raw
+      -- getWidth/getHeight/setWrap for shared drawing to misuse.
+      local lease = setmetatable({
+        image = source,
+        palette = palette,
+        kind = "r8",
+        width = texture.width,
+        height = texture.height,
+      }, ImageAssetPool.Lease)
+      texture.drawable = lease
+      sources[#sources + 1] = source
+      leases[#leases + 1] = lease
+    end
+  end
+  local owner = BattleEncounterParticles.new()
+  for frame = 1, 8 do
+    owner:step(frame, sets)
+  end
+  local graphics = FakeGraphics.new()
+  drawDetail(graphics, {
+    encounterParticleSystems = owner:systems(),
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      encounterFlash = { color = "white", coefficient = 8 },
+    },
+  })
+  Assert.isTrue(#graphics.draws >= 1, "live pooled particles draw")
+  for _, draw in ipairs(graphics.draws) do
+    for _, lease in ipairs(leases) do
+      Assert.isTrue(draw.image ~= lease, "shared drawing never draws a lease as a raw image")
+    end
+  end
+  local pooled = 0
+  for _, draw in ipairs(graphics.draws) do
+    for _, source in ipairs(sources) do
+      if draw.image == source then
+        pooled = pooled + 1
+        Assert.equal(draw.quad.w, 32, "the pooled quad spans its lease width")
+        Assert.equal(draw.quad.imgW, 32, "the pooled quad keeps its source reference width")
+      end
+    end
+  end
+  Assert.isTrue(pooled >= 1, "pooled index images draw through their palette shader")
+  local paletteBound = false
+  for _, shader in ipairs(graphics.shaders) do
+    for _, send in ipairs(shader.sends) do
+      if send.name == "u_usePalette" and send.value == true then
+        paletteBound = true
+      end
+    end
+  end
+  Assert.isTrue(paletteBound, "an indexed lease enables palette sampling")
+  Assert.isTrue(graphics.getShader() == nil, "particle drawing restores the caller shader")
+end
+
+---@param graphics table<string, unknown> injected host graphics
+---@param view table<string, unknown> internal semantic snapshot
+---@param scene table<string, unknown>? staged scene drawable, nil while unavailable
+---@param Content table<string, unknown>? compact viewport content carrying the scene clip
+local function drawCompactPane(graphics, view, scene, content)
+  local palette = {}
+  for index = 0, 15 do
+    palette[index + 1] = { r = index, g = index, b = index }
+  end
+  view.battlers = {}
+  view.effectInstances = {}
+  view.hudPatchSpans = {}
+  view.message = ""
+  view.textPalettes = { narration = { colors = palette } }
+  BattleRenderer.drawPane({
+    graphics = graphics,
+    text = { drawTextForRole = function() end },
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function(_, key)
+        return (view.drawables ~= nil and view.drawables[key]) or scene
+      end,
+    },
+    frameKey = "default",
+  }, view, "compact", content or {})
+end
+
+---@param log table[] recorded draw log under inspection
+---@param images table<string, unknown>[] staged images under inspection
+---@return table[] draws carrying one of the staged images
+local function drawsOfImages(log, images)
+  local wanted = {}
+  for _, image in ipairs(images) do
+    wanted[image] = true
+  end
+  local found = {}
+  for _, entry in ipairs(log) do
+    if entry.kind == "draw" and wanted[entry.image] == true then
+      found[#found + 1] = entry
+    end
+  end
+  return found
+end
+
+-- The compact single-pane viewport presents the same source intro layers
+-- as the detail battlefield: terrain slides, trainer pictures and the
+-- live encounter particle systems draw from the same staged snapshot at
+-- the native main-screen origin, subject only to the compact clip.
+function T.compact_pane_presents_live_grass_burst_over_its_clipped_scene()
+  local systems, images = runningSystems()
+  local moveSystems, moveImages = runningSystems()
+  local ballSystems, ballImages = runningSystems()
+  local sceneImage = {}
+  local trainerImage = {}
+  local playerTerrain = {}
+  local foeTerrain = {}
+  local view = {
+    encounterParticleSystems = systems,
+    moveParticleSystems = moveSystems,
+    ballParticleSystems = ballSystems,
+    introScene = sceneImage,
+    terrainSprites = {
+      player = { drawable = playerTerrain, origin = { x = 0, y = 0 } },
+      foe = { drawable = foeTerrain, origin = { x = 0, y = 0 } },
+    },
+    drawables = {
+      ["trainer:back:PKMN_TRAINER_ETHAN"] = trainerImage,
+    },
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
+    openingPresentation = {
+      playerTrainerVisible = true,
+      foeTrainerVisible = false,
+      terrainSlides = {
+        { role = "player", visible = true, x = 10, y = 100 },
+        { role = "foe", visible = true, x = 200, y = 40 },
+      },
+      encounterFlash = { color = "white", coefficient = 8, mainBgMask = 0xF3FF, mainObjMask = 0x3FFF },
+    },
+  }
+  local detailGraphics = FakeGraphics.new()
+  drawDetail(detailGraphics, view, sceneImage)
+  Assert.isTrue(#drawsOfImages(detailGraphics.draws, { sceneImage }) >= 1, "the detail baseline stages the intro scene")
+  Assert.isTrue(
+    #drawsOfImages(detailGraphics.draws, { playerTerrain, foeTerrain }) >= 2,
+    "the detail baseline stages both terrain sprites"
+  )
+  Assert.isTrue(
+    #drawsOfImages(detailGraphics.draws, { trainerImage }) >= 1,
+    "the detail baseline stages the trainer back picture"
+  )
+  local detailParticles = drawsOfImages(detailGraphics.draws, images)
+  Assert.isTrue(#detailParticles >= 1, "the detail baseline stages live encounter particles")
+  Assert.isTrue(#drawsOfImages(detailGraphics.draws, moveImages) >= 1, "the detail baseline stages live move particles")
+  Assert.isTrue(#drawsOfImages(detailGraphics.draws, ballImages) >= 1, "the detail baseline stages live ball particles")
+  local compactGraphics = FakeGraphics.new()
+  drawCompactPane(compactGraphics, view, sceneImage, {
+    scene = { x = 0, y = 0, width = 256, height = 136 },
+  })
+  Assert.isTrue(
+    #drawsOfImages(compactGraphics.draws, { sceneImage }) >= 1,
+    "the compact viewport stages the same intro scene"
+  )
+  Assert.isTrue(
+    #drawsOfImages(compactGraphics.draws, { playerTerrain, foeTerrain }) >= 2,
+    "the compact viewport stages both terrain sprites"
+  )
+  Assert.isTrue(
+    #drawsOfImages(compactGraphics.draws, { trainerImage }) >= 1,
+    "the compact viewport stages the trainer back picture"
+  )
+  local compactParticles = drawsOfImages(compactGraphics.draws, images)
+  Assert.isTrue(#compactParticles >= 1, "the compact viewport stages the live encounter particles")
+  Assert.isTrue(
+    #drawsOfImages(compactGraphics.draws, moveImages) >= 1,
+    "the compact viewport stages the live move particles"
+  )
+  Assert.isTrue(
+    #drawsOfImages(compactGraphics.draws, ballImages) >= 1,
+    "the compact viewport stages the live ball particles"
+  )
+  local function positions(draws)
+    local points = {}
+    for _, entry in ipairs(draws) do
+      points[#points + 1] = tostring(entry.x) .. "," .. tostring(entry.y)
+    end
+    table.sort(points)
+    return table.concat(points, ";")
+  end
+  Assert.equal(
+    positions(compactParticles),
+    positions(detailParticles),
+    "compact particles keep the native 24px/unit main-screen origin under the clip"
+  )
+end
+
+-- The detail main screen draws its scene sampler with plain placement
+-- even while a staged encounter palette snapshot is present: pool leases
+-- forward extras to the host draw, where a snapshot table raises bad
+-- argument #4, so the snapshot never rides the sampler draw. The 3D
+-- particle draws stay exact with or without it, and no fullscreen wash
+-- covers the composed scene.
+function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_exact()
+  local BattleEncounterPalette = require("game.hgss.src.battle.BattleEncounterPalette")
+  local words = {}
+  for index = 0, 255 do
+    local bank = math.floor(index / 16)
+    local red = bank % 32
+    local green = (bank * 2) % 32
+    local blue = (bank * 3) % 32
+    words[#words + 1] = red + green * 32 + blue * 1024
+  end
+  local mainObjectWords = {}
+  for index = 1, 224 do
+    mainObjectWords[index] = words[index]
+  end
+  local palette = BattleEncounterPalette.new({
+    battleType = "wild",
+    source = {
+      mainBg = words,
+      mainObj = mainObjectWords,
+      mainObjPostFill = {},
+      subBgOpaque = words,
+      subObjOpaque = words,
+      initialDisplayed = { subBg = words, subObj = words },
+      fill = 0,
+    },
+  })
+  palette:tick(20)
+  local snapshot = palette:snapshot()
+  Assert.isTrue(
+    snapshot.mainBg[2 * 16 + 1] ~= words[2 * 16 + 1],
+    "the staged snapshot fades the selected main background bank at the task fade"
+  )
+  Assert.equal(
+    snapshot.mainBg[10 * 16 + 1],
+    0,
+    "the staged snapshot preserves the unselected transparent main background bank"
+  )
+  -- Lease-shaped sampler: forwards placement straight to the host draw
+  -- and rejects non-numeric extras exactly like love.graphics.draw, so
+  -- a leaked snapshot table fails here instead of only in production.
+  local sceneImage = {}
+  local sampled = {}
+  local sceneSampler = {
+    draw = function(_, graphics, x, y, seen, ...)
+      Assert.isTrue(type(x) == "number", "the scene sampler draws at a numeric x")
+      Assert.isTrue(type(y) == "number", "the scene sampler draws at a numeric y")
+      Assert.isTrue(seen == nil and select("#", ...) == 0, "no palette state rides the scene sampler draw")
+      sampled[#sampled + 1] = { graphics = graphics, x = x, y = y }
+      graphics.draw(sceneImage, x, y)
+    end,
+    drawQuad = function(_, graphics, quad, x, y, seen, ...)
+      Assert.isTrue(type(x) == "number", "the scene sampler draws its quad at a numeric x")
+      Assert.isTrue(type(y) == "number", "the scene sampler draws its quad at a numeric y")
+      Assert.isTrue(seen == nil and select("#", ...) == 0, "no palette state rides the scene sampler quad draw")
+      sampled[#sampled + 1] = { graphics = graphics, x = x, y = y }
+      graphics.draw(sceneImage, quad, x, y)
+    end,
+  }
+  local systems, images = runningSystems()
+  local view = {
+    encounterParticleSystems = systems,
+    backgroundRaster = nil,
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      encounterFlash = { color = "white", coefficient = 8, mainBgMask = 0xF3FF, mainObjMask = 0x3FFF },
+      encounterPalette = snapshot,
+    },
+  }
+  local graphics = FakeGraphics.new()
+  drawDetail(graphics, view, sceneSampler)
+  Assert.isTrue(#sampled >= 1, "the main scene sampler draws with the palette snapshot present")
+  local function particleDraws()
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      for _, image in ipairs(images) do
+        if draw.image == image then
+          found[#found + 1] = { image = draw.image, x = draw.x, y = draw.y }
+        end
+      end
+    end
+    return found
+  end
+  local withSnapshot = particleDraws()
+  Assert.isTrue(#withSnapshot >= 1, "live particles draw over the sampled scene")
+  view.openingPresentation.encounterPalette = nil
+  local plainGraphics = FakeGraphics.new()
+  drawDetail(plainGraphics, view, sceneSampler)
+  local withoutSnapshot = {}
+  for _, draw in ipairs(plainGraphics.draws) do
+    for _, image in ipairs(images) do
+      if draw.image == image then
+        withoutSnapshot[#withoutSnapshot + 1] = { image = draw.image, x = draw.x, y = draw.y }
+      end
+    end
+  end
+  Assert.deepEqual(withSnapshot, withoutSnapshot, "the plane snapshot never recolors the 3D particle draws")
+  Assert.equal(#graphics.rectangles, 0, "no fullscreen wash covers the composed main scene")
+  Assert.equal(graphics.pushDepth(), 0, "main drawing restores its borrowed graphics depth")
+  Assert.isTrue(graphics.getShader() == nil, "main drawing restores the caller shader")
 end
 
 return { tests = T }

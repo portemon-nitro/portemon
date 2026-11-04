@@ -6,6 +6,30 @@ local NitroBg3 = require("libs.nds.src.nitro.NitroBg3")
 
 local T = {}
 
+-- Hardware 4bpp tiles pack eight rows of four bytes: byte four holds row
+-- one, so each source row reads its own bytes instead of its even
+-- neighbor. This vector pins rows the row-zero-only coverage missed.
+function T.renders_packed_tile_rows_with_hardware_byte_layout()
+  local tile = string.char(0x21) .. string.rep("\0", 3) .. string.char(0x43) .. string.rep("\0", 27)
+  local colors = {}
+  for index = 0, 31 do
+    colors[index + 1] = { r = index, g = index + 1, b = index + 2 }
+  end
+  local bg = NitroBg3.new({
+    characters = tile,
+    map = { width = 8, height = 8, entries = {
+      { tile = 0, flipH = false, flipV = false, palette = 0 },
+    } },
+    palette = { colors = colors },
+    colorMode = "4bpp",
+    transparentZero = false,
+  })
+  local raster = bg:render()
+  Assert.deepEqual({ raster:pixel(0, 0) }, { 1, 2, 3, 255 }, "row zero reads byte zero")
+  Assert.deepEqual({ raster:pixel(0, 1) }, { 3, 4, 5, 255 }, "row one reads byte four")
+  Assert.deepEqual({ raster:pixel(1, 1) }, { 4, 5, 6, 255 }, "row one advances nibbles within its own byte")
+end
+
 function T.renders_packed_tiles_with_map_flips_palette_banks_and_patches()
   local tile = string.char(0x21) .. string.rep("\0", 31)
   local chars = tile .. string.rep("\0", 32)

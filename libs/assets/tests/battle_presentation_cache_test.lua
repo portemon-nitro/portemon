@@ -51,6 +51,11 @@ function T.canonical_paths_keep_global_and_scene_roots_apart()
     "terrain OBJ images have side-specific scene paths"
   )
   Assert.equal(
+    BattlePresentationCache.sceneIntroCharactersPath("general/grass/day"),
+    "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+    "unbaked intro characters have a dedicated scene path"
+  )
+  Assert.equal(
     BattlePresentationCache.sceneMarkerPath("general/grass/day"),
     "data/generated/battle/scenes/general-grass-day.complete",
     "scene markers live beside the scene record"
@@ -284,14 +289,79 @@ local function stageMonPage(cache, selector)
   cache:write(MonCache.pageImagePath("portraits", 0), envelopePng())
 end
 
+local function stageSourceIndices(cache, sourceIndices)
+  for _, variant in pairs(sourceIndices.variants) do
+    cache:write(
+      variant.path,
+      string.rep(string.char(0, 0, 0, 0), sourceIndices.width * sourceIndices.height)
+    )
+  end
+end
+
 local function stageBattle(cache, manifest, sceneKey)
   cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
   cache:write(BattlePresentationCache.markerPath(), "marker")
   for path, geometry in pairs(manifest.menus.images) do
     stagePng(cache, path, geometry.width, geometry.height)
   end
+  local function stageGlobalSourceIndices(source)
+    if type(source) ~= "table" then
+      return
+    end
+    local function writePath(path)
+      cache:write(path, string.rep(string.char(0, 0, 0, 0), source.width * source.height))
+    end
+    if type(source.path) == "string" then
+      writePath(source.path)
+    end
+    if type(source.variants) == "table" then
+      for _, variant in pairs(source.variants) do
+        writePath(variant.path)
+      end
+    end
+  end
+  for _, sectionName in ipairs({ "command", "moves", "target", "twoOption" }) do
+    for _, screen in ipairs(manifest.menus[sectionName].screens) do
+      stageGlobalSourceIndices(screen.sourceIndices)
+      if screen.feedback ~= nil then
+        for _, states in pairs(screen.feedback) do
+          for _, patch in pairs(states) do
+            stageGlobalSourceIndices(patch.sourceIndices)
+          end
+        end
+      end
+      if screen.moveButtons ~= nil then
+        for _, button in ipairs(screen.moveButtons) do
+          stageGlobalSourceIndices(button.sourceIndices.empty)
+          for _, typeStates in pairs(button.sourceIndices.types) do
+            for _, source in pairs(typeStates) do
+              stageGlobalSourceIndices(source)
+            end
+          end
+        end
+      end
+    end
+  end
+  local trainerPictures = type(manifest.trainerPictures) == "table" and manifest.trainerPictures.entries or nil
+  if type(trainerPictures) == "table" then
+    for _, entry in pairs(trainerPictures) do
+      for _, sequence in ipairs(entry.animation.sequences) do
+        for _, frame in ipairs(sequence.frames) do
+          stageGlobalSourceIndices(frame.sourceIndices)
+        end
+      end
+    end
+  end
+  local battleBalls = type(manifest.battleBalls) == "table" and manifest.battleBalls.entries or nil
+  if type(battleBalls) == "table" then
+    for _, entry in pairs(battleBalls) do
+      for _, frame in ipairs(entry.frames) do
+        stageGlobalSourceIndices(frame.sourceIndices)
+      end
+    end
+  end
   local record = {
-    schema = "g4-battle-scene-v4",
+    schema = "g4-battle-scene-v5",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -308,6 +378,11 @@ local function stageBattle(cache, manifest, sceneKey)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
+          format = "indexed8",
+        },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
           format = "indexed8",
         },
         map = {
@@ -328,18 +403,37 @@ local function stageBattle(cache, manifest, sceneKey)
       width = 512,
       height = 256,
     },
+    paletteSource = {
+      key = "battle-scene/" .. sceneKey:gsub("/", "-") .. "/native-palettes",
+      path = BattlePresentationCache.scenePaletteSourcePath(sceneKey),
+      format = "native-encounter-palettes-v1",
+    },
     terrainSprites = {
       player = {
         image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "player"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
       foe = {
         image = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "foe"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
     },
     encounterParticles = ParticlesFixture.sets(sceneKey),
@@ -347,6 +441,7 @@ local function stageBattle(cache, manifest, sceneKey)
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), record)
   cache:write(BattlePresentationCache.sceneMarkerPath(sceneKey), "marker")
   cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), string.rep("\0", 65536))
   local entries = {}
   for index = 1, 2048 do
     entries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -357,15 +452,124 @@ local function stageBattle(cache, manifest, sceneKey)
     colors[index] = { r = 0, g = 0, b = 0 }
   end
   cache:writeLua(BattlePresentationCache.scenePalettePath(sceneKey), { colors = colors })
+  local function paletteWords()
+    local words = {}
+    for index = 1, 16 do
+      words[index] = 0
+    end
+    return words
+  end
+  cache:writeLua(BattlePresentationCache.scenePaletteSourcePath(sceneKey), {
+    mainObjSources = {
+      hud = { firstSlot = 0, words = paletteWords() },
+      hudAuxiliary = { firstSlot = 16, words = paletteWords() },
+      terrain = { firstSlot = 32, words = paletteWords() },
+    },
+  })
   stagePng(cache, BattlePresentationCache.sceneImagePath(sceneKey), 512, 256)
   stagePng(cache, BattlePresentationCache.sceneIntroImagePath(sceneKey), 512, 256)
   stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player"), 80, 80)
   stagePng(cache, BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe"), 80, 80)
+  for _, side in ipairs({ "player", "foe" }) do
+    cache:write(
+      BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side),
+      string.rep(string.char(32, 0, 0, 255), 80 * 80)
+    )
+  end
   for _, set in ipairs(record.encounterParticles) do
     for _, texture in ipairs(set.textures) do
       stagePng(cache, texture.image, texture.width, texture.height)
     end
   end
+end
+
+function T.separate_menu_patch_source_maps_are_part_of_global_readiness()
+  local manifest = ManifestFixture.manifest()
+  local function sourceIndices(name)
+    return {
+      path = "assets/generated/battle/" .. name .. ".source-index.rgba8",
+      format = "source-index-rgba8",
+      plane = "subBg",
+      width = 8,
+      height = 8,
+    }
+  end
+  local command = manifest.menus.command.screens[1]
+  command.feedback = {
+    fight = {
+      pressed = {
+        image = command.image,
+        x = 0,
+        y = 0,
+        width = 8,
+        height = 8,
+        sourceIndices = sourceIndices("feedback-pressed"),
+      },
+    },
+  }
+  local moves = manifest.menus.moves.screens[1]
+  moves.moveButtons = {}
+  for slot = 1, 4 do
+    moves.moveButtons[slot] = {
+      x = 0,
+      y = 0,
+      width = 8,
+      height = 8,
+      empty = moves.image,
+      types = { NORMAL = { normal = moves.image, pressed = moves.image } },
+      sourceIndices = {
+        empty = sourceIndices("move-" .. slot .. "-empty"),
+        types = {
+          NORMAL = {
+            normal = sourceIndices("move-" .. slot .. "-normal"),
+            pressed = sourceIndices("move-" .. slot .. "-pressed"),
+          },
+        },
+      },
+    }
+  end
+  local cache = staging()
+  stageBattle(cache, manifest, "general/grass/day")
+  Assert.isTrue(BattlePresentationCache.isGlobalReady(cache, "marker"), "all patch maps complete the global closure")
+
+  local missingFeedback = command.feedback.fight.pressed.sourceIndices.path
+  cache:remove(missingFeedback)
+  Assert.isFalse(
+    BattlePresentationCache.isGlobalReady(cache, "marker"),
+    "missing feedback map rejects global readiness"
+  )
+  cache:write(missingFeedback, string.rep(string.char(0, 0, 0, 0), 64))
+
+  local missingMoveButton = moves.moveButtons[1].sourceIndices.types.NORMAL.pressed.path
+  cache:remove(missingMoveButton)
+  Assert.isFalse(
+    BattlePresentationCache.isGlobalReady(cache, "marker"),
+    "missing move-button map rejects global readiness"
+  )
+end
+
+function T.unbaked_intro_characters_are_part_of_the_scene_readiness_closure()
+  local sceneKey = "general/grass/day"
+  local cache = staging()
+  stageBattle(cache, validManifest(), sceneKey)
+  Assert.isTrue(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "a complete scene reads ready")
+  local staged = assert(
+    cache:read(BattlePresentationCache.sceneIntroCharactersPath(sceneKey)),
+    "the unbaked intro characters are staged"
+  )
+  Assert.equal(#staged, 65536, "the unbaked intro characters carry complete 8bpp tiles")
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), "truncated")
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "truncated intro characters never read as ready"
+  )
+  cache:remove(BattlePresentationCache.sceneIntroCharactersPath(sceneKey))
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "missing intro characters never read as ready"
+  )
+  cache:write(BattlePresentationCache.sceneIntroCharactersPath(sceneKey), staged)
+  Assert.isTrue(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "restored intro characters read ready")
 end
 
 function T.encounter_particle_textures_are_part_of_the_scene_readiness_closure()
@@ -421,6 +625,7 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
   stageMonPage(cache, portraitSelector)
   cache:writeLua(BattlePresentationCache.ballPath(selector), leaf)
   stagePng(cache, leaf.entry.frames[1].image, 16, 16)
+  stageSourceIndices(cache, leaf.entry.frames[1].sourceIndices)
   cache:write(BattlePresentationCache.ballMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "every requested frame is staged")
   cache:write(leaf.entry.frames[1].image, "truncated")
@@ -438,6 +643,18 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
     {
       drawableKey = "trainer:" .. selector,
       image = image0,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = 8,
+        height = 8,
+        variants = {
+          ["slot:80"] = {
+            path = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-source-frame-0-slot-80.rgba8",
+            firstSlot = 80,
+          },
+        },
+      },
       rasterOffset = { x = -40, y = -40 },
       durationTicks = 2,
       sourceFrame = 0,
@@ -446,6 +663,18 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
     {
       drawableKey = "trainer:" .. selector .. ":frame:1",
       image = image1,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = 8,
+        height = 8,
+        variants = {
+          ["slot:80"] = {
+            path = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-source-frame-1-slot-80.rgba8",
+            firstSlot = 80,
+          },
+        },
+      },
       rasterOffset = { x = -24, y = -40 },
       durationTicks = 5,
       sourceFrame = 1,
@@ -462,6 +691,7 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
       width = 8,
       height = 8,
       rasterOffset = { x = -40, y = -40 },
+      paletteSource = { words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
       animation = {
         sourceSequence = 0,
         playMode = "forward_loop",
@@ -477,6 +707,18 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
               {
                 drawableKey = "trainer:" .. selector .. ":sequence:1:frame:0",
                 image = sequenceImage,
+                sourceIndices = {
+                  format = "source-index-rgba8",
+                  plane = "mainObj",
+                  width = 8,
+                  height = 8,
+                  variants = {
+                    ["slot:80"] = {
+                      path = "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN-sequence-1-slot-80.rgba8",
+                      firstSlot = 80,
+                    },
+                  },
+                },
                 rasterOffset = { x = -40, y = -40 },
                 durationTicks = 3,
                 sourceFrame = 0,
@@ -514,6 +756,11 @@ function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
   stagePng(cache, image0, 8, 8)
   stagePng(cache, image1, 8, 8)
   stagePng(cache, sequenceImage, 8, 8)
+  for _, sequence in ipairs(leaf.entry.animation.sequences) do
+    for _, frame in ipairs(sequence.frames) do
+      stageSourceIndices(cache, frame.sourceIndices)
+    end
+  end
   cache:write(BattlePresentationCache.trainerPictureMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "both source frames are staged for the requested class")
   local stagedEntry = assert(BattlePresentationCache.loadTrainerPicture(cache, selector))
@@ -770,10 +1017,12 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   leafTrainerImage(trainerEntry.image)
   for _, frame in ipairs(trainerEntry.animation.frames) do
     leafTrainerImage(frame.image)
+    stageSourceIndices(cache, frame.sourceIndices)
   end
   for _, sequence in ipairs(trainerEntry.animation.sequences) do
     for _, frame in ipairs(sequence.frames) do
       leafTrainerImage(frame.image)
+      stageSourceIndices(cache, frame.sourceIndices)
     end
   end
   for _, image in pairs(trainerImages) do
@@ -831,6 +1080,7 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   local ballImage = ballEntry.frames[1].image
   cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), ballRecord)
   stagePng(cache, ballImage, ballEntry.frames[1].width, ballEntry.frames[1].height)
+  stageSourceIndices(cache, ballEntry.frames[1].sourceIndices)
   cache:write(BattlePresentationCache.ballMarkerPath("ball:POKE_BALL"), "leaf-marker")
   Assert.isTrue(
     BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
@@ -846,12 +1096,14 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
     catalogIdentity = core.catalogIdentity,
     entry = {
       fadeColor = ballEntry.fadeColor,
+      paletteSource = ballEntry.paletteSource,
       frames = {
         {
           drawableKey = ballEntry.frames[1].drawableKey,
           image = replacementImage,
           width = ballEntry.frames[1].width,
           height = ballEntry.frames[1].height,
+          sourceIndices = ballEntry.frames[1].sourceIndices,
         },
       },
     },

@@ -859,8 +859,6 @@ local SYNCHRONOUS_MARKER_KINDS = {
   ["battle-palette-fade"] = true,
   ["battle-presentation-state-reset"] = true,
   ["battle-background-position-transition"] = true,
-  ["battle-background-resource-load"] = true,
-  ["battle-presentation-resource-cleanup"] = true,
   -- Sprite-effect spawns carry a mode and selector values, never timing
   -- operands: the managed draw loop stages its sprite behind the
   -- manager preset, so the typed task owns no interpolation lifetime
@@ -2588,14 +2586,334 @@ function BattleBlendCoefficientTask:dispose()
   teardownCoefficientBlend(self)
 end
 
+-- Effect backdrop plane behind battle-background-resource-load and its
+-- cleanup: the producer stages one BG3 tile plane per selected effect
+-- background (BattleAnimationSources BACKGROUND_MEMBER_ROWS), and the
+-- runtime swaps the live scene through BattleScene:installBackgroundLayer.
+-- The load installs on its first tick and retires synchronously; the layer
+-- persists past the owning task's disposal until the matching cleanup
+-- removes it, mirroring the native SwitchBackground/RestoreBackground
+-- pairing (battle_anim_system.c). Double-install and unknown-remove keep
+-- the scene ownership errors.
+local EFFECT_BACKGROUND_LAYER_KEY = "battle-background-layer-3"
+
+local BACKGROUND_EFFECT_SLOTS = { "character", "palette", "screenDefault", "screenAlternate" }
+
+---@class BattleEffectBackgroundLoad
+---@field _scene table<string, unknown> scene behind the owned BG3 layer
+---@field _kind string task kind behind the run
+---@field _staged table<integer, BattleEffectLeaseRecord> staged occurrence leases
+---@field _resourceKeys table<string, string> staged resource keys by slot
+---@field _screenKey string selected staged screen slot
+---@field _installed boolean the staged layer is live in the scene
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _cancelReason string? last cancellation cause under diagnosis
+---@field _disposed boolean release has run
+local BattleEffectBackgroundLoad = {}
+BattleEffectBackgroundLoad.__index = BattleEffectBackgroundLoad
+
+---@param lease unknown staged lease under validation
+---@param slot string staged slot under diagnosis
+---@param kind string task kind under diagnosis
+---@return table<string, unknown> decoded payload behind the lease
+local function backgroundPayload(lease, slot, kind)
+  if type(lease) ~= "table" or type(lease.data) ~= "table" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " stages decoded records for slot " .. slot, 0)
+  end
+  return lease.data --[[@as table<string, unknown>]]
+end
+
+-- Names the staged lease behind one owned background slot: leases are
+-- occurrence journals in acquisition order, so the slot key selects
+-- deterministically.
+---@param staged table<integer, BattleEffectLeaseRecord> staged occurrence leases
+---@param key string owned resource key behind lookup
+---@param kind string task kind under diagnosis
+---@return table<string, unknown> staged lease behind the slot
+local function backgroundLease(staged, key, kind)
+  for _, record in ipairs(staged) do
+    local lease = record.lease
+    if type(lease) == "table" and lease.key == key then
+      return lease --[[@as table<string, unknown>]]
+    end
+  end
+  error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " stages no lease for resource " .. key, 0)
+end
+
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param kind string task kind under construction
+---@return table<string, string> staged resource keys by slot
+local function backgroundResourceKeys(args, kind)
+  local resourceKeys = args.resourceKeys
+  if type(resourceKeys) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged background slots", 0)
+  end
+  for _, slot in ipairs(BACKGROUND_EFFECT_SLOTS) do
+    if type(resourceKeys[slot]) ~= "string" or resourceKeys[slot] == "" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged slot " .. slot, 0)
+    end
+  end
+  return resourceKeys --[[@as table<string, string>]]
+end
+
+---@param value unknown candidate source side type under validation
+---@param kind string task kind under diagnosis
+---@param role string topology role under diagnosis
+---@return boolean isPlayer
+local function backgroundSideIsPlayer(value, kind, role)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 5 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires a valid " .. role .. " background side", 0)
+  end
+  return value % 2 == 0
+end
+
+---@param arg integer source background screen selector
+---@param attackerIsPlayer boolean whether the source attacker is on the player side
+---@param defenderIsPlayer boolean whether the first source target is on the player side
+---@return boolean flip whether the alternate staged screen is selected
+local function shouldFlipBackground(arg, attackerIsPlayer, defenderIsPlayer)
+  if arg == 2 then
+    if attackerIsPlayer == defenderIsPlayer then
+      return not defenderIsPlayer
+    end
+    return defenderIsPlayer
+  end
+  return arg ~= 0 and defenderIsPlayer
+end
+
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable background load task
+local function newBackgroundResourceLoadTask(kind, args, context, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  if type(scene.installBackgroundLayer) ~= "function" or type(scene.removeBackgroundLayer) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " swaps through the scene background layer seam", 0)
+  end
+  local values = args.values
+  if type(values) ~= "table" or type(values[1]) ~= "number" or values[1] % 1 ~= 0 or values[1] < 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " loads its selected background by selector", 0)
+  end
+  if type(values[2]) ~= "number" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its packed effect flags numerically", 0)
+  end
+  if args.runtimeSelection ~= "battle-background-screen-selection" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects its screen through the source selection", 0)
+  end
+  local screenFlipArg = args.screenFlipArg
+  if type(screenFlipArg) ~= "number" or screenFlipArg % 1 ~= 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires source background parameter 7", 0)
+  end
+  local topology = type(context) == "table" and context.topology or nil
+  local attacker = type(topology) == "table" and topology.attacker or nil
+  local targets = type(topology) == "table" and topology.targets or nil
+  local defender = type(targets) == "table" and targets[1] or nil
+  if type(attacker) ~= "table" or type(defender) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires attacker and first target background context", 0)
+  end
+  local attackerIsPlayer = backgroundSideIsPlayer(attacker.sideType, kind, "attacker")
+  local defenderIsPlayer = backgroundSideIsPlayer(defender.sideType, kind, "defender")
+  local screenKey = shouldFlipBackground(screenFlipArg, attackerIsPlayer, defenderIsPlayer) and "screenAlternate"
+    or "screenDefault"
+  local resourceKeys = backgroundResourceKeys(args, kind)
+  local staged = {}
+  for _, slot in ipairs(BACKGROUND_EFFECT_SLOTS) do
+    stageLease(kind, resourceKeys[slot], services, staged)
+  end
+  local character = backgroundPayload(backgroundLease(staged, resourceKeys.character, kind), "character", kind)
+  if character.depth ~= 3 or type(character.tiles) ~= "string" then
+    releaseStaged(staged)
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs 4bpp tiled background characters", 0)
+  end
+  local palette = backgroundPayload(backgroundLease(staged, resourceKeys.palette, kind), "palette", kind)
+  if type(palette.colors) ~= "table" or #palette.colors < 1 then
+    releaseStaged(staged)
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged background palette", 0)
+  end
+  local screen = backgroundPayload(backgroundLease(staged, resourceKeys[screenKey], kind), screenKey, kind)
+  if type(screen.width) ~= "number" or type(screen.height) ~= "number" or type(screen.entries) ~= "table" then
+    releaseStaged(staged)
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " installs its staged " .. screenKey .. " background screen",
+      0
+    )
+  end
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _staged = staged,
+    _resourceKeys = resourceKeys,
+    _screenKey = screenKey,
+    _installed = false,
+    _ticks = 0,
+    _state = "pending",
+    _cancelReason = nil,
+    _disposed = false,
+  }, BattleEffectBackgroundLoad)
+end
+
+-- Composes the selected staged screen with shared characters and palette.
+---@param self BattleEffectBackgroundLoad load task under advancement
+local function installEffectBackground(self)
+  local character =
+    backgroundPayload(backgroundLease(self._staged, self._resourceKeys.character, self._kind), "character", self._kind)
+  local palette =
+    backgroundPayload(backgroundLease(self._staged, self._resourceKeys.palette, self._kind), "palette", self._kind)
+  local screen = backgroundPayload(
+    backgroundLease(self._staged, self._resourceKeys[self._screenKey], self._kind),
+    self._screenKey,
+    self._kind
+  )
+  self._scene.installBackgroundLayer(self._scene, EFFECT_BACKGROUND_LAYER_KEY, {
+    character = { depth = character.depth, tiles = character.tiles },
+    screen = { width = screen.width, height = screen.height, entries = screen.entries },
+    palette = { colors = palette.colors },
+  })
+end
+
+---@param self BattleEffectBackgroundLoad load task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattleEffectBackgroundLoad:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  if not self._installed then
+    local ok, err = pcall(installEffectBackground, self)
+    if not ok then
+      releaseStaged(self._staged)
+      error(err, 0)
+    end
+    self._installed = true
+  end
+  self._state = "complete"
+end
+
+---@param self BattleEffectBackgroundLoad
+---@return string
+function BattleEffectBackgroundLoad:status()
+  assert(VALID_TASK_STATES[self._state] == true, "background loads report a known run state")
+  return self._state
+end
+
+-- Cancels the load; completion and cancellation stay separate, and the
+-- installed layer persists until the matching cleanup: cancellation only
+-- reaches loads that never installed.
+---@param self BattleEffectBackgroundLoad
+---@param reason string cancellation cause under diagnosis
+function BattleEffectBackgroundLoad:cancel(reason)
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  self._cancelReason = reason
+  releaseStaged(self._staged)
+end
+
+-- Releases the staged leases exactly once; the installed layer persists
+-- until cleanup or scene release, so disposal never removes it.
+---@param self BattleEffectBackgroundLoad
+function BattleEffectBackgroundLoad:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  releaseStaged(self._staged)
+end
+
+---@class BattleEffectBackgroundCleanup
+---@field _scene table<string, unknown> scene behind the owned BG3 layer
+---@field _kind string task kind behind the run
+---@field _removed boolean the layer left the scene through this task
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _cancelReason string? last cancellation cause under diagnosis
+---@field _disposed boolean release has run
+local BattleEffectBackgroundCleanup = {}
+BattleEffectBackgroundCleanup.__index = BattleEffectBackgroundCleanup
+
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene collaborator
+---@return table<string, unknown> runnable background cleanup task
+local function newBackgroundResourceCleanupTask(kind, args, context, services)
+  local _ = context
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  if type(scene.removeBackgroundLayer) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " removes through the scene background layer seam", 0)
+  end
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _removed = false,
+    _ticks = 0,
+    _state = "pending",
+    _cancelReason = nil,
+    _disposed = false,
+  }, BattleEffectBackgroundCleanup)
+end
+
+---@param self BattleEffectBackgroundCleanup cleanup task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattleEffectBackgroundCleanup:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  if not self._removed then
+    local ok, err = pcall(self._scene.removeBackgroundLayer, self._scene, EFFECT_BACKGROUND_LAYER_KEY)
+    if not ok then
+      error(err, 0)
+    end
+    self._removed = true
+  end
+  self._state = "complete"
+end
+
+---@param self BattleEffectBackgroundCleanup
+---@return string
+function BattleEffectBackgroundCleanup:status()
+  assert(VALID_TASK_STATES[self._state] == true, "background cleanups report a known run state")
+  return self._state
+end
+
+---@param self BattleEffectBackgroundCleanup
+---@param reason string cancellation cause under diagnosis
+function BattleEffectBackgroundCleanup:cancel(reason)
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  self._cancelReason = reason
+end
+
+---@param self BattleEffectBackgroundCleanup
+function BattleEffectBackgroundCleanup:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+end
+
 -- Dedicated background bodies by emitted kind. Every other admitted
 -- kind keeps its established picture/sprite body below; the generic native
--- visual task never sees these four spellings again.
+-- visual task never sees these six spellings again.
 local BACKGROUND_TASK_CONSTRUCTORS = {
   ["battle-background-four-picture-move-power-transition"] = newMovePowerProfileTask,
   ["battle-background-alternating-scroll-transition"] = newAlternatingScrollTask,
   ["battle-background-scanline-sine-wave-transition"] = newSineScrollTask,
   ["battle-sprite-blend-alpha-transition"] = newBlendCoefficientTask,
+  ["battle-background-resource-load"] = newBackgroundResourceLoadTask,
+  ["battle-presentation-resource-cleanup"] = newBackgroundResourceCleanupTask,
 }
 
 ---@param kind string task kind under construction

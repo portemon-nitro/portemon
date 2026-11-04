@@ -16,7 +16,7 @@ BattlePresentationSchema.MANIFEST_SCHEMA = Contract.battlePresentation.schema
 BattlePresentationSchema.TRAINER_PICTURE_SCHEMA = Contract.battlePresentation.trainerPictureSchema
 BattlePresentationSchema.BALL_SCHEMA = Contract.battlePresentation.ballSchema
 BattlePresentationSchema.EVOLUTION_SCHEMA = Contract.battlePresentation.evolutionSchema
-BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v4"
+BattlePresentationSchema.SCENE_SCHEMA = Contract.battlePresentation.sceneSchema
 
 local fail = SchemaCheck.fail
 
@@ -429,13 +429,16 @@ local function checkSceneResource(resource, context, field)
 end
 
 local function checkSceneLayer(layer, context, field)
-  SchemaCheck.checkRecord(
-    layer,
-    { key = true, backing = true, viewport = true, scroll = true, characters = true, map = true, palette = true },
-    context,
-    CODE_SCENE,
-    field
-  )
+  SchemaCheck.checkRecord(layer, {
+    key = true,
+    backing = true,
+    viewport = true,
+    scroll = true,
+    characters = true,
+    baseCharacters = true,
+    map = true,
+    palette = true,
+  }, context, CODE_SCENE, field)
   if layer.key ~= "background" then
     fail(CODE_SCENE, field .. " must identify the semantic battle background layer", context)
   end
@@ -481,10 +484,17 @@ local function checkSceneLayer(layer, context, field)
     fail(CODE_SCENE, field .. ".scroll must preserve the source initial BG3 position", context)
   end
   checkSceneResource(layer.characters, context, field .. ".characters")
+  if layer.baseCharacters == nil then
+    fail(CODE_SCENE, field .. " stages its unbaked intro characters for palette fades", context)
+  end
+  checkSceneResource(layer.baseCharacters, context, field .. ".baseCharacters")
   checkSceneResource(layer.map, context, field .. ".map")
   checkSceneResource(layer.palette, context, field .. ".palette")
   if layer.characters.format ~= "indexed8" or layer.map.format ~= "tilemap" or layer.palette.format ~= "rgb888" then
     fail(CODE_SCENE, field .. " resources must use normalized indexed8, tilemap, and rgb888 formats", context)
+  end
+  if layer.baseCharacters.format ~= "indexed8" then
+    fail(CODE_SCENE, field .. ".baseCharacters must use the 8bpp indexed8 format", context)
   end
 end
 
@@ -508,12 +518,38 @@ end
 
 local function checkTerrainSprites(sprites, context)
   SchemaCheck.checkRecord(sprites, { player = true, foe = true }, context, CODE_SCENE, "scene terrainSprites")
+  local function checkSourceIndices(sourceIndices, sprite, field)
+    SchemaCheck.checkRecord(
+      sourceIndices,
+      { path = true, format = true, plane = true, width = true, height = true },
+      context,
+      CODE_SCENE,
+      field
+    )
+    local path = sourceIndices.path
+    checkString(path, context, CODE_SCENE, field .. ".path")
+    local prefix = "assets/generated/battle/scenes/"
+    if path:sub(1, #prefix) ~= prefix or path:find("..", 1, true) ~= nil or path:sub(-6) ~= ".rgba8" then
+      fail(CODE_SCENE, field .. ".path must reference a staged source-index map", context)
+    end
+    if sourceIndices.format ~= "source-index-rgba8" then
+      fail(CODE_SCENE, field .. ".format must be source-index-rgba8", context)
+    end
+    if sourceIndices.plane ~= "mainObj" then
+      fail(CODE_SCENE, field .. ".plane must identify the terrain MAIN_OBJ palette", context)
+    end
+    checkInt(sourceIndices.width, 1, 512, context, CODE_SCENE, field .. ".width")
+    checkInt(sourceIndices.height, 1, 256, context, CODE_SCENE, field .. ".height")
+    if sourceIndices.width ~= sprite.width or sourceIndices.height ~= sprite.height then
+      fail(CODE_SCENE, field .. " dimensions must match its artwork", context)
+    end
+  end
   for _, side in ipairs({ "player", "foe" }) do
     local field = "scene terrainSprites." .. side
     local sprite = sprites[side]
     SchemaCheck.checkRecord(
       sprite,
-      { image = true, width = true, height = true, origin = true },
+      { image = true, width = true, height = true, origin = true, sourceIndices = true },
       context,
       CODE_SCENE,
       field
@@ -522,6 +558,7 @@ local function checkTerrainSprites(sprites, context)
     SchemaCheck.checkRecord(sprite.origin, { x = true, y = true }, context, CODE_SCENE, field .. ".origin")
     checkInt(sprite.origin.x, -256, 255, context, CODE_SCENE, field .. ".origin.x")
     checkInt(sprite.origin.y, -256, 255, context, CODE_SCENE, field .. ".origin.y")
+    checkSourceIndices(sprite.sourceIndices, sprite, field .. ".sourceIndices")
   end
 end
 
@@ -1408,6 +1445,29 @@ end
 -- The fight menu's move buttons by slot: per-type normal and pressed
 -- renders plus the blank button an empty slot shows.
 local function checkMoveButtons(screen, context, code, entry)
+  local function checkSourceIndices(indices, width, height, field)
+    SchemaCheck.checkRecord(
+      indices,
+      { path = true, format = true, plane = true, width = true, height = true },
+      context,
+      code,
+      field
+    )
+    checkImagePath(indices.path, context, code, field .. ".path")
+    if
+      indices.path:find("..", 1, true) ~= nil
+      or indices.path:sub(-6) ~= ".rgba8"
+      or indices.format ~= "source-index-rgba8"
+      or indices.plane ~= "subBg"
+    then
+      fail(code, field .. " must be a raw SUB_BG source-index map", context)
+    end
+    checkInt(indices.width, 1, nil, context, code, field .. ".width")
+    checkInt(indices.height, 1, nil, context, code, field .. ".height")
+    if indices.width ~= width or indices.height ~= height then
+      fail(code, field .. " dimensions must match its cropped drawable", context)
+    end
+  end
   if not Validate.isArray(screen.moveButtons) or #screen.moveButtons ~= 4 then
     fail(code, entry .. ".moveButtons must carry the four move slots", context)
   end
@@ -1415,16 +1475,31 @@ local function checkMoveButtons(screen, context, code, entry)
     local buttonField = entry .. ".moveButtons[" .. slot .. "]"
     SchemaCheck.checkRecord(
       button,
-      { x = true, y = true, width = true, height = true, types = true, empty = true },
+      { x = true, y = true, width = true, height = true, types = true, empty = true, sourceIndices = true },
       context,
       code,
       buttonField
     )
     checkScreenRect(button, screen, context, code, buttonField)
     checkImagePath(button.empty, context, code, buttonField .. ".empty")
+    local sourceIndices = button.sourceIndices
+    SchemaCheck.checkRecord(
+      sourceIndices,
+      { empty = true, types = true },
+      context,
+      code,
+      buttonField .. ".sourceIndices"
+    )
+    checkSourceIndices(sourceIndices.empty, button.width, button.height, buttonField .. ".sourceIndices.empty")
     SchemaCheck.checkRecord(button.types, nil, context, code, buttonField .. ".types")
+    SchemaCheck.checkRecord(sourceIndices.types, nil, context, code, buttonField .. ".sourceIndices.types")
     if next(button.types) == nil then
       fail(code, buttonField .. ".types must carry the move type renders", context)
+    end
+    for typeKey in pairs(sourceIndices.types) do
+      if button.types[typeKey] == nil then
+        fail(code, buttonField .. ".sourceIndices.types must match every move type render", context)
+      end
     end
     for typeKey, states in pairs(button.types) do
       local typeField = buttonField .. ".types[" .. tostring(typeKey) .. "]"
@@ -1432,11 +1507,45 @@ local function checkMoveButtons(screen, context, code, entry)
       SchemaCheck.checkRecord(states, { normal = true, pressed = true }, context, code, typeField)
       checkImagePath(states.normal, context, code, typeField .. ".normal")
       checkImagePath(states.pressed, context, code, typeField .. ".pressed")
+      local indexStates = sourceIndices.types[typeKey]
+      SchemaCheck.checkRecord(
+        indexStates,
+        { normal = true, pressed = true },
+        context,
+        code,
+        typeField .. ".sourceIndices"
+      )
+      for _, state in ipairs({ "normal", "pressed" }) do
+        checkSourceIndices(indexStates[state], button.width, button.height, typeField .. ".sourceIndices." .. state)
+      end
     end
   end
 end
 
 local function checkScreenFeedback(screen, context, code, entry)
+  local function checkSourceIndices(indices, width, height, field)
+    SchemaCheck.checkRecord(
+      indices,
+      { path = true, format = true, plane = true, width = true, height = true },
+      context,
+      code,
+      field
+    )
+    checkImagePath(indices.path, context, code, field .. ".path")
+    if
+      indices.path:find("..", 1, true) ~= nil
+      or indices.path:sub(-6) ~= ".rgba8"
+      or indices.format ~= "source-index-rgba8"
+      or indices.plane ~= "subBg"
+    then
+      fail(code, field .. " must be a raw SUB_BG source-index map", context)
+    end
+    checkInt(indices.width, 1, nil, context, code, field .. ".width")
+    checkInt(indices.height, 1, nil, context, code, field .. ".height")
+    if indices.width ~= width or indices.height ~= height then
+      fail(code, field .. " dimensions must match its cropped drawable", context)
+    end
+  end
   SchemaCheck.checkRecord(screen.feedback, nil, context, code, entry .. ".feedback")
   for controlId, states in pairs(screen.feedback) do
     local controlField = entry .. ".feedback[" .. tostring(controlId) .. "]"
@@ -1449,19 +1558,21 @@ local function checkScreenFeedback(screen, context, code, entry)
       local patchField = controlField .. "." .. tostring(state)
       SchemaCheck.checkRecord(
         patch,
-        { image = true, x = true, y = true, width = true, height = true },
+        { image = true, x = true, y = true, width = true, height = true, sourceIndices = true },
         context,
         code,
         patchField
       )
       checkImagePath(patch.image, context, code, patchField .. ".image")
       checkScreenRect(patch, screen, context, code, patchField)
+      checkSourceIndices(patch.sourceIndices, patch.width, patch.height, patchField .. ".sourceIndices")
     end
   end
 end
 
 local MENU_SCREEN_FIELDS = {
   image = true,
+  sourceIndices = true,
   width = true,
   height = true,
   tilemapKey = true,
@@ -1478,6 +1589,28 @@ local MENU_SCREEN_FIELDS = {
 local function checkMenuScreen(screen, planes, context, code, field, entry)
   SchemaCheck.checkRecord(screen, MENU_SCREEN_FIELDS, context, code, entry)
   checkImagePath(screen.image, context, code, entry .. ".image")
+  local indices = screen.sourceIndices
+  SchemaCheck.checkRecord(
+    indices,
+    { path = true, format = true, plane = true, width = true, height = true },
+    context,
+    code,
+    entry .. ".sourceIndices"
+  )
+  checkImagePath(indices.path, context, code, entry .. ".sourceIndices.path")
+  if
+    indices.path:find("..", 1, true) ~= nil
+    or indices.path:sub(-6) ~= ".rgba8"
+    or indices.format ~= "source-index-rgba8"
+    or indices.plane ~= "subBg"
+  then
+    fail(code, entry .. ".sourceIndices must be a raw SUB_BG index map", context)
+  end
+  checkInt(indices.width, 8, nil, context, code, entry .. ".sourceIndices.width")
+  checkInt(indices.height, 8, nil, context, code, entry .. ".sourceIndices.height")
+  if indices.width ~= screen.width or indices.height ~= screen.height then
+    fail(code, entry .. ".sourceIndices dimensions must match its image", context)
+  end
   if screen.pulse ~= nil and type(screen.pulse) ~= "boolean" then
     fail(code, entry .. ".pulse must be a boolean", context)
   end
@@ -1609,9 +1742,10 @@ local function checkCells(cells, context, code, field)
   end
 end
 
-local function checkSpriteSection(section, context, code, field)
+local function checkSpriteSection(section, context, code, field, images, requireSourceIndices, sourcePlane)
   SchemaCheck.checkRecord(section, {
     image = true,
+    sourceIndices = true,
     cells = true,
     animation = true,
     animations = true,
@@ -1619,6 +1753,7 @@ local function checkSpriteSection(section, context, code, field)
     componentBase = true,
     componentCount = true,
     digitBase = true,
+    paletteSource = true,
   }, context, code, field)
   checkImagePath(section.image, context, code, field .. ".image")
   checkCells(section.cells, context, code, field)
@@ -1648,6 +1783,53 @@ local function checkSpriteSection(section, context, code, field)
     end
   end
   checkPalette(section.palette, context, code, field .. ".palette")
+  if requireSourceIndices or section.sourceIndices ~= nil then
+    local indices = section.sourceIndices
+    SchemaCheck.checkRecord(
+      indices,
+      { path = true, format = true, plane = true, width = true, height = true },
+      context,
+      CODE_MANIFEST,
+      field .. ".sourceIndices"
+    )
+    checkImagePath(indices.path, context, CODE_MANIFEST, field .. ".sourceIndices.path")
+    if
+      indices.path:find("..", 1, true) ~= nil
+      or indices.path:sub(-6) ~= ".rgba8"
+      or indices.format ~= "source-index-rgba8"
+      or (sourcePlane ~= nil and indices.plane ~= sourcePlane)
+      or (sourcePlane == nil and indices.plane ~= "subObj" and indices.plane ~= "mainObj")
+    then
+      fail(CODE_MANIFEST, field .. ".sourceIndices must match its native OBJ plane", context)
+    end
+    checkInt(indices.width, 1, nil, context, CODE_MANIFEST, field .. ".sourceIndices.width")
+    checkInt(indices.height, 1, nil, context, field .. ".sourceIndices.height")
+    if images ~= nil then
+      local image = assert(images[section.image], "source-indexed sprite images are in the manifest inventory")
+      if indices.width ~= image.width or indices.height ~= image.height then
+        fail(CODE_MANIFEST, field .. ".sourceIndices dimensions must match its image", context)
+      end
+    end
+  end
+  if section.paletteSource ~= nil then
+    local paletteSource = section.paletteSource
+    SchemaCheck.checkRecord(
+      paletteSource,
+      { firstSlot = true, words = true },
+      context,
+      CODE_MANIFEST,
+      field .. ".paletteSource"
+    )
+    checkInt(paletteSource.firstSlot, 0, 223, context, CODE_MANIFEST, field .. ".paletteSource.firstSlot")
+    if not Validate.isArray(paletteSource.words) or #paletteSource.words ~= 16 then
+      fail(CODE_MANIFEST, field .. ".paletteSource.words must carry one source OBJ palette bank", context)
+    end
+    for index, word in ipairs(paletteSource.words) do
+      checkInt(word, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".paletteSource.words[" .. index .. "]")
+    end
+  elseif sourcePlane == "mainObj" then
+    fail(CODE_MANIFEST, field .. ".paletteSource is required for its MAIN_OBJ source indices", context)
+  end
 end
 
 ---@param section { cells: table<integer, table<string, unknown>>, animation: table<string, unknown> } shared per-type terrain bake metadata
@@ -3500,7 +3682,7 @@ local function checkMenus(manifest, context)
 end
 
 local function checkHealthBox(section, context, field)
-  checkSpriteSection(section, context, CODE_MANIFEST, field)
+  checkSpriteSection(section, context, CODE_MANIFEST, field, nil, true, "mainObj")
   if section.componentBase == nil or section.componentCount ~= 78 then
     fail(CODE_MANIFEST, field .. " must append the 78 source health-box components", context)
   end
@@ -3533,8 +3715,8 @@ local function checkHud(manifest, context)
   for _, slot in ipairs(HUD_DOUBLES_SLOTS) do
     checkHealthBox(hud.doubles[slot], context, "manifest hud.doubles " .. slot)
   end
-  checkSpriteSection(hud.arrow, context, CODE_MANIFEST, "manifest hud.arrow")
-  checkSpriteSection(hud.cursor, context, CODE_MANIFEST, "manifest hud.cursor")
+  checkSpriteSection(hud.arrow, context, CODE_MANIFEST, "manifest hud.arrow", manifest.menus.images)
+  checkSpriteSection(hud.cursor, context, CODE_MANIFEST, "manifest hud.cursor", manifest.menus.images, true, "subObj")
   if #hud.cursor.animations < 4 then
     fail(CODE_MANIFEST, "manifest hud.cursor carries four corner animations", context)
   end
@@ -3543,7 +3725,15 @@ local function checkHud(manifest, context)
     fail(CODE_MANIFEST, "manifest must carry both party gauge families", context)
   end
   for index, family in ipairs(hud.partyGauges) do
-    checkSpriteSection(family, context, CODE_MANIFEST, "manifest hud.partyGauges[" .. index .. "]")
+    checkSpriteSection(
+      family,
+      context,
+      CODE_MANIFEST,
+      "manifest hud.partyGauges[" .. index .. "]",
+      manifest.menus.images,
+      true,
+      "subObj"
+    )
   end
   -- Terrain bake inputs are producer metadata, not staged sprites: the
   -- shared per-type cells and animation without an image or palette.
@@ -3676,6 +3866,44 @@ local function checkLeafImage(path, prefix, context, field)
   end
 end
 
+local function checkPhysicalSourceIndices(sourceIndices, paletteWords, context, field)
+  SchemaCheck.checkRecord(
+    sourceIndices,
+    { format = true, plane = true, width = true, height = true, variants = true },
+    context,
+    CODE_MANIFEST,
+    field
+  )
+  if sourceIndices.format ~= "source-index-rgba8" or sourceIndices.plane ~= "mainObj" then
+    fail(CODE_MANIFEST, field .. " must describe a MAIN_OBJ source-index map", context)
+  end
+  checkInt(sourceIndices.width, 1, 128, context, CODE_MANIFEST, field .. ".width")
+  checkInt(sourceIndices.height, 1, 128, context, CODE_MANIFEST, field .. ".height")
+  local variants = sourceIndices.variants
+  SchemaCheck.checkRecord(variants, nil, context, CODE_MANIFEST, field .. ".variants")
+  if next(variants) == nil then
+    fail(CODE_MANIFEST, field .. ".variants must carry a physical layout", context)
+  end
+  for selector, variant in pairs(variants) do
+    local variantField = field .. ".variants[" .. tostring(selector) .. "]"
+    if type(selector) ~= "string" or selector:match("^slot:%d+$") == nil then
+      fail(CODE_MANIFEST, variantField .. " must name a physical palette slot", context)
+    end
+    SchemaCheck.checkRecord(variant, { path = true, firstSlot = true }, context, CODE_MANIFEST, variantField)
+    checkImagePath(variant.path, context, CODE_MANIFEST, variantField .. ".path")
+    if variant.path:find("..", 1, true) ~= nil or variant.path:sub(-6) ~= ".rgba8" then
+      fail(CODE_MANIFEST, variantField .. ".path must reference a raw source-index map", context)
+    end
+    checkInt(variant.firstSlot, 0, 223, context, CODE_MANIFEST, variantField .. ".firstSlot")
+    if variant.firstSlot % 16 ~= 0 or variant.firstSlot + #paletteWords > 224 then
+      fail(CODE_MANIFEST, variantField .. " palette banks must fit the native MAIN_OBJ slots", context)
+    end
+    if selector ~= "slot:" .. tostring(variant.firstSlot) then
+      fail(CODE_MANIFEST, variantField .. " selector must match its first palette slot", context)
+    end
+  end
+end
+
 -- One trainer picture entry: semantic selector identity, source frame data,
 -- and raster origins. The caller proves image staging: the former global
 -- manifest proved membership in its shared image index, while a standalone
@@ -3696,6 +3924,7 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
     rasterOffset = true,
     animation = true,
     throwOffsets = true,
+    paletteSource = true,
   }, context, CODE_MANIFEST, field)
   if record.drawableKey ~= "trainer:" .. selector then
     fail(CODE_MANIFEST, field .. ".drawableKey must match its role selector", context)
@@ -3709,6 +3938,18 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
   checkImage(record.image, field .. ".image")
   if record.animation == nil then
     fail(CODE_MANIFEST, field .. ".animation must carry every source trainer sequence", context)
+  end
+  local paletteField = field .. ".paletteSource"
+  SchemaCheck.checkRecord(record.paletteSource, { words = true }, context, CODE_MANIFEST, paletteField)
+  if
+    not Validate.isArray(record.paletteSource.words)
+    or #record.paletteSource.words < 16
+    or #record.paletteSource.words % 16 ~= 0
+  then
+    fail(CODE_MANIFEST, paletteField .. ".words must carry whole source OBJ palette banks", context)
+  end
+  for index, word in ipairs(record.paletteSource.words) do
+    checkInt(word, 0, 0x7FFF, context, CODE_MANIFEST, paletteField .. ".words[" .. index .. "]")
   end
   if record.animation ~= nil then
     SchemaCheck.checkRecord(
@@ -3773,6 +4014,7 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
           durationTicks = true,
           sourceFrame = true,
           userAttr = true,
+          sourceIndices = true,
         }, context, CODE_MANIFEST, frameField)
         local sourceFrame = frameIndex - 1
         if frame.sourceFrame ~= sourceFrame then
@@ -3793,6 +4035,12 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
           fail(CODE_MANIFEST, frameField .. ".drawableKey must match its source sequence and frame", context)
         end
         checkImagePath(frame.image, context, CODE_MANIFEST, frameField .. ".image")
+        checkPhysicalSourceIndices(
+          frame.sourceIndices,
+          record.paletteSource.words,
+          context,
+          frameField .. ".sourceIndices"
+        )
         checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, frameField .. ".durationTicks")
         checkInt(frame.userAttr, 0, 0xFFFFFFFF, context, CODE_MANIFEST, frameField .. ".userAttr")
         SchemaCheck.checkRecord(
@@ -3921,8 +4169,26 @@ local function checkBallEntry(selector, record, checkImage, context, field)
   if type(record) ~= "table" then
     fail(CODE_MANIFEST, field .. " must carry its ball entry", context)
   end
-  SchemaCheck.checkRecord(record, { frames = true, fadeColor = true, particles = true }, context, CODE_MANIFEST, field)
+  SchemaCheck.checkRecord(
+    record,
+    { frames = true, fadeColor = true, particles = true, paletteSource = true },
+    context,
+    CODE_MANIFEST,
+    field
+  )
   checkInt(record.fadeColor, 0, 0x7FFF, context, CODE_MANIFEST, field .. ".fadeColor")
+  local paletteField = field .. ".paletteSource"
+  SchemaCheck.checkRecord(record.paletteSource, { words = true }, context, CODE_MANIFEST, paletteField)
+  if
+    not Validate.isArray(record.paletteSource.words)
+    or #record.paletteSource.words < 16
+    or #record.paletteSource.words % 16 ~= 0
+  then
+    fail(CODE_MANIFEST, paletteField .. ".words must carry whole source OBJ palette banks", context)
+  end
+  for index, word in ipairs(record.paletteSource.words) do
+    checkInt(word, 0, 0x7FFF, context, CODE_MANIFEST, paletteField .. ".words[" .. index .. "]")
+  end
   local particles = record.particles
   if particles ~= nil then
     local particleField = field .. ".particles"
@@ -3953,7 +4219,7 @@ local function checkBallEntry(selector, record, checkImage, context, field)
     local frameField = field .. ".frames[" .. frameIndex .. "]"
     SchemaCheck.checkRecord(
       frame,
-      { drawableKey = true, image = true, width = true, height = true },
+      { drawableKey = true, image = true, width = true, height = true, sourceIndices = true },
       context,
       CODE_MANIFEST,
       frameField
@@ -3965,6 +4231,10 @@ local function checkBallEntry(selector, record, checkImage, context, field)
     checkImage(frame.image, frameField .. ".image")
     checkInt(frame.width, 1, 128, context, CODE_MANIFEST, frameField .. ".width")
     checkInt(frame.height, 1, 128, context, CODE_MANIFEST, frameField .. ".height")
+    if frame.sourceIndices.width ~= frame.width or frame.sourceIndices.height ~= frame.height then
+      fail(CODE_MANIFEST, frameField .. ".sourceIndices dimensions must match its image", context)
+    end
+    checkPhysicalSourceIndices(frame.sourceIndices, record.paletteSource.words, context, frameField .. ".sourceIndices")
   end
 end
 
@@ -4522,6 +4792,7 @@ function BattlePresentationSchema.assertScene(scene)
     imagePath = true,
     introLayer = true,
     terrainSprites = true,
+    paletteSource = true,
     encounterParticles = true,
   }, context, CODE_SCENE, "scene")
   if scene.schema ~= BattlePresentationSchema.SCENE_SCHEMA then
@@ -4577,6 +4848,10 @@ function BattlePresentationSchema.assertScene(scene)
   checkImagePath(scene.imagePath, context, CODE_SCENE, "scene imagePath")
   checkIntroLayer(scene.introLayer, context)
   checkTerrainSprites(scene.terrainSprites, context)
+  checkSceneResource(scene.paletteSource, context, "scene paletteSource")
+  if scene.paletteSource.format ~= "native-encounter-palettes-v1" then
+    fail(CODE_SCENE, "scene paletteSource must use native-encounter-palettes-v1", context)
+  end
   checkEncounterParticles(scene.encounterParticles, scene.key, context)
   checkNoNativeKeys(scene, context, CODE_SCENE, "scene")
   return true
@@ -4586,25 +4861,25 @@ function BattlePresentationSchema.isValidScene(scene)
   return pcall(BattlePresentationSchema.assertScene, scene)
 end
 
-local function checkStringList(values, context, code, field, allowEmpty)
-  if not Validate.isArray(values) or (#values == 0 and not allowEmpty) then
-    fail(code, field .. " must carry its members", context)
-  end
-  local seen = {}
-  for _, value in ipairs(values) do
-    checkString(value, context, code, field)
-    if seen[value] then
-      fail(code, field .. " carries a duplicate member " .. value, context)
-    end
-    seen[value] = true
-  end
-end
-
 -- One exact launch demand: a single scene, deduplicated portrait page
 -- selectors, and the audio roles/banks/cries the launch reaches. Empty and
 -- duplicated demands never validate.
 function BattlePresentationSchema.assertDemand(demand)
   local context = {}
+  local function checkStringList(values, code, field, allowEmpty)
+    if not Validate.isArray(values) or (#values == 0 and not allowEmpty) then
+      fail(code, field .. " must carry its members", context)
+    end
+    local seen = {}
+    for _, value in ipairs(values) do
+      checkString(value, context, code, field)
+      if seen[value] then
+        fail(code, field .. " carries a duplicate member " .. value, context)
+      end
+      seen[value] = true
+    end
+  end
+
   SchemaCheck.checkRecord(
     demand,
     { scenes = true, pages = true, audio = true, trainerPictures = true, battleBalls = true, iconKeys = true },
@@ -4612,27 +4887,27 @@ function BattlePresentationSchema.assertDemand(demand)
     CODE_DEMAND,
     "demand"
   )
-  checkStringList(demand.scenes, context, CODE_DEMAND, "demand scenes", false)
+  checkStringList(demand.scenes, CODE_DEMAND, "demand scenes", false)
   for _, key in ipairs(demand.scenes) do
     local background, terrain, time = key:match("^([^/]+)/([^/]+)/([^/]+)$")
     if background == nil or BACKGROUNDS[background] == nil or TERRAINS[terrain] == nil or TIMES[time] == nil then
       fail(CODE_DEMAND, "demand carries an unknown scene key: " .. key, context)
     end
   end
-  checkStringList(demand.pages, context, CODE_DEMAND, "demand pages", true)
-  checkStringList(demand.trainerPictures, context, CODE_DEMAND, "demand trainerPictures", true)
+  checkStringList(demand.pages, CODE_DEMAND, "demand pages", true)
+  checkStringList(demand.trainerPictures, CODE_DEMAND, "demand trainerPictures", true)
   for _, selector in ipairs(demand.trainerPictures) do
     if not isTrainerPictureSelector(selector) then
       fail(CODE_DEMAND, "demand trainer picture selector is not semantic: " .. selector, context)
     end
   end
-  checkStringList(demand.battleBalls, context, CODE_DEMAND, "demand battleBalls", true)
+  checkStringList(demand.battleBalls, CODE_DEMAND, "demand battleBalls", true)
   for _, selector in ipairs(demand.battleBalls) do
     if not isBallSelector(selector) then
       fail(CODE_DEMAND, "demand battle ball selector is not semantic", context)
     end
   end
-  checkStringList(demand.iconKeys, context, CODE_DEMAND, "demand iconKeys", true)
+  checkStringList(demand.iconKeys, CODE_DEMAND, "demand iconKeys", true)
   SchemaCheck.checkRecord(
     demand.audio,
     { roles = true, banks = true, cries = true },
@@ -4640,14 +4915,14 @@ function BattlePresentationSchema.assertDemand(demand)
     CODE_DEMAND,
     "demand audio"
   )
-  checkStringList(demand.audio.roles, context, CODE_DEMAND, "demand audio roles", true)
+  checkStringList(demand.audio.roles, CODE_DEMAND, "demand audio roles", true)
   if not Validate.isArray(demand.audio.banks) then
     fail(CODE_DEMAND, "demand audio banks must be an array", context)
   end
   for _, bank in ipairs(demand.audio.banks) do
     checkInt(bank, 0, nil, context, CODE_DEMAND, "demand audio bank")
   end
-  checkStringList(demand.audio.cries, context, CODE_DEMAND, "demand audio cries", true)
+  checkStringList(demand.audio.cries, CODE_DEMAND, "demand audio cries", true)
   return true
 end
 

@@ -18,9 +18,23 @@ local ART = "assets/generated/battle/"
 
 ---@param manifest table<string, unknown>
 ---@param path string
-local function stageImage(manifest, path)
-  manifest.menus.images[path] = { width = 256, height = 256 }
+local function stageImage(manifest, path, width, height)
+  manifest.menus.images[path] = { width = width or 256, height = height or 256 }
   return path
+end
+
+---@param name string stable synthetic asset stem
+---@param width integer pixel width
+---@param height integer pixel height
+---@return table<string, unknown> source-index descriptor
+local function sourceIndices(name, width, height)
+  return {
+    path = ART .. name .. ".source-index.rgba8",
+    format = "source-index-rgba8",
+    plane = "subBg",
+    width = width,
+    height = height,
+  }
 end
 
 -- The shared fixture extended with every per-screen art family the
@@ -42,20 +56,39 @@ local function stagedManifest()
   }
   command.touchBackgrounds = { general = ART .. "command-screen-1-touch-general.png" }
   command.feedback = {
-    fight = { pressed = { image = ART .. "command-fight-pressed.png", x = 0, y = 0, width = 8, height = 8 } },
+    fight = {
+      pressed = {
+        image = stageImage(manifest, ART .. "command-fight-pressed.png", 8, 8),
+        x = 0,
+        y = 0,
+        width = 8,
+        height = 8,
+        sourceIndices = sourceIndices("command-fight-pressed", 8, 8),
+      },
+    },
   }
   local buttons = {}
   for slot = 1, 4 do
+    local stem = "move-button-" .. slot
     buttons[slot] = {
       x = 0,
       y = 0,
       width = 8,
       height = 8,
-      empty = ART .. "move-button-" .. slot .. "-empty.png",
+      empty = stageImage(manifest, ART .. stem .. "-empty.png", 8, 8),
       types = {
         fire = {
-          normal = ART .. "move-button-" .. slot .. "-fire-normal.png",
-          pressed = ART .. "move-button-" .. slot .. "-fire-pressed.png",
+          normal = stageImage(manifest, ART .. stem .. "-fire-normal.png", 8, 8),
+          pressed = stageImage(manifest, ART .. stem .. "-fire-pressed.png", 8, 8),
+        },
+      },
+      sourceIndices = {
+        empty = sourceIndices(stem .. "-empty", 8, 8),
+        types = {
+          fire = {
+            normal = sourceIndices(stem .. "-fire-normal", 8, 8),
+            pressed = sourceIndices(stem .. "-fire-pressed", 8, 8),
+          },
         },
       },
     }
@@ -63,6 +96,32 @@ local function stagedManifest()
   manifest.menus.moves.screens[1].moveButtons = buttons
   BattlePresentationSchema.assertManifest(manifest)
   return manifest
+end
+
+---@param value unknown table to inspect
+---@param path string staged source-index path to find
+---@return table<string, unknown>? descriptor matching the path
+local function findSourceIndices(value, path)
+  if type(value) ~= "table" then
+    return nil
+  end
+  if value.path == path and value.format == "source-index-rgba8" then
+    return value
+  end
+  if value.format == "source-index-rgba8" and type(value.variants) == "table" then
+    for _, variant in pairs(value.variants) do
+      if type(variant) == "table" and variant.path == path then
+        return { width = value.width, height = value.height }
+      end
+    end
+  end
+  for _, child in pairs(value) do
+    local found = findSourceIndices(child, path)
+    if found ~= nil then
+      return found
+    end
+  end
+  return nil
 end
 
 ---@return table<string, unknown> shared image owner double recording requested paths by key
@@ -97,7 +156,11 @@ local function envelopeFor(staged, headless)
     end
     return nil
   end
-  function cacheFs:read(_)
+  function cacheFs:read(path)
+    local source = staged ~= nil and findSourceIndices(staged, path) or nil
+    if source ~= nil then
+      return string.rep("\0", source.width * source.height * 4)
+    end
     return "staged"
   end
   function cacheFs:exists(_, _)

@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
 
 local T = {}
 
@@ -1459,6 +1460,452 @@ function T.overlapping_background_sweeps_restore_only_owned_viewport()
   second:dispose()
   Assert.equal(#firstJournal.released, #firstJournal.acquired, "the cancelled sweep stages no leases")
   Assert.equal(#secondJournal.released, #secondJournal.acquired, "the surviving sweep stages no leases")
+end
+
+local BACKGROUND_RESOURCE_KEYS = {
+  character = "battle/background/test/character",
+  palette = "battle/background/test/palette",
+  screenDefault = "battle/background/test/screen-default",
+  screenAlternate = "battle/background/test/screen-alternate",
+}
+
+local function sceneWithEffectBackground()
+  local scene = sceneWithPair()
+  local colors = {}
+  for _ = 1, 16 do
+    colors[#colors + 1] = { r = 0, g = 0, b = 0 }
+  end
+  colors[2] = { r = 200, g = 0, b = 0 }
+  scene:installBackground({
+    characters = string.char(0x11) .. string.rep("\0", 31),
+    colorMode = "4bpp",
+    map = { width = 8, height = 8, entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } } },
+    palette = { colors = colors },
+  })
+  return scene
+end
+
+local function backgroundServices(scene, journal, overrides)
+  local payloads = {
+    [BACKGROUND_RESOURCE_KEYS.character] = { depth = 3, tiles = string.char(0x10) .. string.rep("\0", 31) },
+    [BACKGROUND_RESOURCE_KEYS.palette] = {
+      colors = (function()
+        local colors = {}
+        for _ = 1, 16 do
+          colors[#colors + 1] = { r = 0, g = 0, b = 0 }
+        end
+        colors[2] = { r = 0, g = 180, b = 0 }
+        return colors
+      end)(),
+    },
+    [BACKGROUND_RESOURCE_KEYS.screenDefault] = {
+      width = 8,
+      height = 8,
+      entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } },
+    },
+    [BACKGROUND_RESOURCE_KEYS.screenAlternate] = {
+      width = 8,
+      height = 8,
+      entries = { { tile = 0, flipH = true, flipV = false, palette = 0 } },
+    },
+  }
+  if type(overrides) == "table" then
+    for key, payload in pairs(overrides) do
+      payloads[key] = payload
+    end
+  end
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    local data = payloads[key]
+    if data == nil then
+      error("unknown battle background resource " .. tostring(key), 0)
+    end
+    return { key = key, data = data }
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  return { scene = scene, audio = {}, resources = resources }
+end
+
+local function backgroundLoadArgs(values)
+  return {
+    values = values or { 9, 0x1234 },
+    screenFlipArg = 0,
+    resourceKeys = BACKGROUND_RESOURCE_KEYS,
+    runtimeSelection = "battle-background-screen-selection",
+  }
+end
+
+local function backgroundPlayback(scene, journal, attackerSide, defenderSide, arg, cleanup)
+  local services = backgroundServices(scene, journal)
+  services.audio = {
+    play = function(_name) end,
+    stop = function(_name) end,
+    isFinished = function(_name)
+      return true
+    end,
+  }
+  local instruction = {
+    op = "start-visual-task",
+    taskKind = cleanup and "battle-presentation-resource-cleanup" or "battle-background-resource-load",
+    values = { 9, 0x1234 },
+  }
+  if not cleanup then
+    instruction.resourceKeys = BACKGROUND_RESOURCE_KEYS
+    instruction.runtimeSelection = "battle-background-screen-selection"
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = scene,
+    audio = services.audio,
+    resources = services.resources,
+    tasks = {
+      create = function(kind, args, context, collaborators)
+        return BattleEffectTasks.create(kind, args, context, collaborators)
+      end,
+    },
+  }))
+  local program = {
+    entry = "main",
+    instructions = {
+      { op = "set-parameter", values = { 7, arg } },
+      instruction,
+      { op = "set-parameter", values = { 7, 0 } },
+    },
+    subprograms = {},
+    taskKinds = {},
+  }
+  local handle = assert(player:start({
+    launchId = "background-playback",
+    packetId = 1,
+    topology = {
+      attacker = { combatant = 1, activation = 1, sideType = attackerSide },
+      targets = { { combatant = 2, activation = 2, sideType = defenderSide } },
+    },
+  }, program))
+  player:stepSourceTick({ tick = 1 })
+  player:stepSourceTick({ tick = 2 })
+  return player, handle
+end
+
+function T.native_background_selection_uses_event_sides_and_spawn_time_parameter()
+  local cases = {
+    { arg = 0, attacker = 0, defender = 0, alternate = false },
+    { arg = 0, attacker = 1, defender = 0, alternate = false },
+    { arg = 1, attacker = 0, defender = 4, alternate = true },
+    { arg = 1, attacker = 1, defender = 1, alternate = false },
+    { arg = 2, attacker = 4, defender = 2, alternate = false },
+    { arg = 2, attacker = 3, defender = 5, alternate = true },
+    { arg = 2, attacker = 2, defender = 1, alternate = false },
+    { arg = 2, attacker = 5, defender = 0, alternate = true },
+  }
+  local failures = {}
+  for _, case in ipairs(cases) do
+    local scene = sceneWithEffectBackground()
+    local journal = { acquired = {}, released = {} }
+    local player, handle = backgroundPlayback(scene, journal, case.attacker, case.defender, case.arg)
+    Assert.equal(player:status(handle), "complete", "the staged background task completes")
+    local pixel = { scene:backgroundRaster():pixel(1, 0) }
+    local expected
+    if case.alternate then
+      expected = { 0, 0, 0, 0 }
+    else
+      expected = { 0, 180, 0, 255 }
+    end
+    local matches = pcall(Assert.deepEqual, pixel, expected, "the selected map is visible at its native tile position")
+    if not matches then
+      failures[#failures + 1] = string.format(
+        "arg=%d attacker=%d defender=%d selected %s map produced %s",
+        case.arg,
+        case.attacker,
+        case.defender,
+        case.alternate and "alternate" or "default",
+        table.concat(pixel, ",")
+      )
+    end
+    Assert.equal(#journal.acquired, 4, "both variants and shared background resources are staged")
+    Assert.equal(#journal.released, 4, "the completed occurrence releases every staged lease")
+    player:dispose()
+  end
+  Assert.equal(#failures, 0, table.concat(failures, "\n"))
+end
+
+function T.native_background_selection_persists_until_cleanup_and_rejects_missing_sides()
+  local failures = {}
+  local function recordEqual(actual, expected, label)
+    local matches = pcall(Assert.deepEqual, actual, expected, label)
+    if not matches then
+      failures[#failures + 1] = label
+    end
+  end
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local player, handle = backgroundPlayback(scene, journal, 3, 5, 2)
+  if player:status(handle) ~= "complete" then
+    failures[#failures + 1] = "the alternate load completes"
+  end
+  recordEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 0, 0, 0, 0 },
+    "the selected alternate remains installed after task completion and disposal"
+  )
+  player:dispose()
+  local cleanupPlayer, cleanupHandle = backgroundPlayback(scene, { acquired = {}, released = {} }, 0, 1, 0, true)
+  if cleanupPlayer:status(cleanupHandle) ~= "complete" then
+    failures[#failures + 1] = "the source cleanup task completes"
+  end
+  recordEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "cleanup restores the original scene background"
+  )
+  cleanupPlayer:dispose()
+
+  local malformedScene = sceneWithEffectBackground()
+  local malformedJournal = { acquired = {}, released = {} }
+  local services = backgroundServices(malformedScene, malformedJournal)
+  services.audio = {
+    play = function(_name) end,
+    stop = function(_name) end,
+    isFinished = function(_name)
+      return true
+    end,
+  }
+  local malformedPlayer = assert(BattleAnimationPlayer.new({
+    scene = malformedScene,
+    audio = services.audio,
+    resources = services.resources,
+    tasks = {
+      create = function(kind, args, context, collaborators)
+        return BattleEffectTasks.create(kind, args, context, collaborators)
+      end,
+    },
+  }))
+  local malformedHandle = assert(malformedPlayer:start({
+    launchId = "background-missing-defender",
+    packetId = 2,
+    topology = { attacker = { combatant = 1, activation = 1, sideType = 0 }, targets = {} },
+  }, {
+    entry = "main",
+    instructions = {
+      { op = "set-parameter", values = { 7, 1 } },
+      {
+        op = "start-visual-task",
+        taskKind = "battle-background-resource-load",
+        values = { 9, 0x1234 },
+        resourceKeys = BACKGROUND_RESOURCE_KEYS,
+        runtimeSelection = "battle-background-screen-selection",
+      },
+    },
+    subprograms = {},
+    taskKinds = {},
+  }))
+  malformedPlayer:stepSourceTick({ tick = 1 })
+  malformedPlayer:stepSourceTick({ tick = 2 })
+  local status = malformedPlayer:status(malformedHandle)
+  if status ~= "failed" then
+    failures[#failures + 1] = "a required missing defender fails the occurrence"
+  end
+  local failure = malformedPlayer:failure(malformedHandle)
+  if failure == nil or failure.launchId ~= "background-missing-defender" then
+    failures[#failures + 1] = "the failure keeps launch provenance"
+  end
+  if failure == nil or string.find(failure.reason, "background", 1, true) == nil then
+    failures[#failures + 1] = "the failure explains the missing context"
+  end
+  if #malformedJournal.released ~= #malformedJournal.acquired then
+    failures[#failures + 1] = "failed context releases staged leases exactly once"
+  end
+  malformedPlayer:dispose()
+  Assert.equal(#failures, 0, table.concat(failures, "\n"))
+end
+
+function T.background_resource_load_installs_the_staged_layer_and_holds_it_past_disposal()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  Assert.deepEqual({ scene:backgroundRaster():pixel(0, 0) }, { 200, 0, 0, 255 }, "the base plane shows first")
+  local task = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  Assert.equal(task:status(), "pending", "the load opens pending")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "construction stages the layer without installing it"
+  )
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the load retires on its first tick")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 0, 180, 0, 255 },
+    "the staged effect pixels replace the ordinary BG3 plane"
+  )
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(0, 0) },
+    { 0, 0, 0, 0 },
+    "transparent palette index does not reveal the replaced BG3"
+  )
+  task:dispose()
+  task:cancel("late")
+  Assert.equal(task:status(), "complete", "completion survives late cancellation")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 0, 180, 0, 255 },
+    "the installed layer survives the owning task's disposal until cleanup"
+  )
+  Assert.equal(#journal.released, #journal.acquired, "every staged lease releases exactly once")
+  Assert.equal(#journal.acquired, 4, "the load stages its four declared slots")
+end
+
+function T.background_resource_cleanup_removes_the_layer_exactly_once()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  local load = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  load:stepSourceTick({ tick = 1 })
+  load:dispose()
+  local cleanupServices, cleanupJournal = journalServices(scene)
+  local cleanup = assert(
+    BattleEffectTasks.create(
+      "battle-presentation-resource-cleanup",
+      { values = { 9, 0x1234 } },
+      occurrenceContext(),
+      cleanupServices
+    )
+  )
+  Assert.equal(cleanup:status(), "pending", "cleanup opens pending")
+  cleanup:stepSourceTick({ tick = 1 })
+  Assert.equal(cleanup:status(), "complete", "cleanup retires on its first tick")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "removal restores the persistent BG3 plane"
+  )
+  cleanup:dispose()
+  cleanup:cancel("late")
+  Assert.equal(cleanup:status(), "complete", "cleanup completion survives late cancellation")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "repeated teardown never reinstalls or disturbs the restored plane"
+  )
+  Assert.equal(#cleanupJournal.released, #cleanupJournal.acquired, "cleanup stages no leases")
+end
+
+function T.background_resource_failures_stay_closed()
+  local scene = sceneWithEffectBackground()
+  local journal = { acquired = {}, released = {} }
+  local services = backgroundServices(scene, journal)
+  local first = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  first:stepSourceTick({ tick = 1 })
+  local second = assert(
+    BattleEffectTasks.create("battle-background-resource-load", backgroundLoadArgs(), occurrenceContext(), services)
+  )
+  local ok, failure = pcall(second.stepSourceTick, second, { tick = 1 })
+  Assert.isTrue(not ok, "a duplicate effect layer never installs twice")
+  Assert.isTrue(
+    string.find(tostring(failure), "effect layer keys are unique", 1, true) ~= nil,
+    "the duplicate rejection names the ownership rule"
+  )
+  second:dispose()
+  first:dispose()
+  local bare = sceneWithEffectBackground()
+  local bareServices, _ = journalServices(bare)
+  local cleanup = assert(
+    BattleEffectTasks.create(
+      "battle-presentation-resource-cleanup",
+      { values = { 9, 0x1234 } },
+      occurrenceContext(),
+      bareServices
+    )
+  )
+  local removed, removeFailure = pcall(cleanup.stepSourceTick, cleanup, { tick = 1 })
+  Assert.isTrue(not removed, "removing an absent layer never succeeds silently")
+  Assert.isTrue(
+    string.find(tostring(removeFailure), "battle-background-layer-3", 1, true) ~= nil,
+    "the unknown-layer rejection names the layer"
+  )
+  cleanup:dispose()
+
+  local malformed = {
+    { values = { 9 }, resourceKeys = BACKGROUND_RESOURCE_KEYS },
+    { values = "nine", resourceKeys = BACKGROUND_RESOURCE_KEYS },
+    { values = { 9, 0x1234 } },
+    { values = { 9, 0x1234 }, resourceKeys = { character = BACKGROUND_RESOURCE_KEYS.character } },
+    {
+      values = { 9, 0x1234 },
+      resourceKeys = BACKGROUND_RESOURCE_KEYS,
+      runtimeSelection = "battle-background-three-way-screen-selection",
+    },
+  }
+  for index, args in ipairs(malformed) do
+    local ok, failure =
+      pcall(BattleEffectTasks.create, "battle-background-resource-load", args, occurrenceContext(), services)
+    if ok then
+      local stepOk, stepFailure = pcall(failure.stepSourceTick, failure, { tick = 1 })
+      failure:dispose()
+      Assert.isTrue(not stepOk, "malformed load " .. index .. " never installs")
+      Assert.isTrue(
+        string.find(tostring(stepFailure), "battle-background-resource-load", 1, true) ~= nil,
+        "malformed load " .. index .. " fails naming its kind"
+      )
+    else
+      Assert.isTrue(
+        string.find(tostring(failure), "battle-background-resource-load", 1, true) ~= nil,
+        "malformed load " .. index .. " fails naming its kind"
+      )
+    end
+  end
+  Assert.equal(#journal.released, #journal.acquired, "failed loads release every staged lease")
+
+  local slotlessScene = sceneWithEffectBackground()
+  local slotlessServices, _ = journalServices(slotlessScene)
+  local slotOk, slotFailure = pcall(
+    BattleEffectTasks.create,
+    "battle-background-resource-load",
+    { values = { 9, 0x1234 } },
+    occurrenceContext(),
+    slotlessServices
+  )
+  if slotOk then
+    local stepOk = pcall(slotFailure.stepSourceTick, slotFailure, { tick = 1 })
+    slotFailure:dispose()
+    Assert.isTrue(not stepOk, "a slotless load never installs")
+  else
+    Assert.isTrue(
+      string.find(tostring(slotFailure), "battle-background-resource-load", 1, true) ~= nil,
+      "a slotless load fails naming its kind"
+    )
+  end
+
+  local cancelScene = sceneWithEffectBackground()
+  local cancelJournal = { acquired = {}, released = {} }
+  local cancelServices = backgroundServices(cancelScene, cancelJournal)
+  local cancelled = assert(
+    BattleEffectTasks.create(
+      "battle-background-resource-load",
+      backgroundLoadArgs(),
+      occurrenceContext(),
+      cancelServices
+    )
+  )
+  cancelled:cancel("withdrawn")
+  Assert.equal(cancelled:status(), "cancelled", "cancellation lands on cancelled")
+  cancelled:stepSourceTick({ tick = 1 })
+  Assert.equal(cancelled:status(), "cancelled", "cancelled loads never install late")
+  Assert.deepEqual(
+    { cancelScene:backgroundRaster():pixel(1, 0) },
+    { 200, 0, 0, 255 },
+    "the persistent plane is untouched"
+  )
+  cancelled:dispose()
+  Assert.equal(#cancelJournal.released, #cancelJournal.acquired, "cancelled loads release every staged lease")
 end
 
 return { tests = T }

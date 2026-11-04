@@ -69,6 +69,94 @@ local function emitter(id, texture, image)
   }
 end
 
+--- Deterministic compiled encounter emitter record with an exact
+--- self-destruction lifespan: no random life extension, so the owning
+--- system retires a known number of advances after its start tick.
+---@param id integer source emitter identity within its set
+---@param emitterLife integer source emitter lifespan in advances
+---@return table<string, unknown> compiled emitter record
+function Fixture.encounterEmitter(id, emitterLife)
+  return {
+    id = id,
+    emitterLife = emitterLife,
+    particleLife = 2,
+    startOffset = 0,
+    generation = { countFx = 4096, interval = 2 },
+    initPosType = 2,
+    circleAxis = 1,
+    drawType = 0,
+    radius = 1.5,
+    length = 0,
+    position = { x = 0, y = 0.25, z = 0 },
+    axis = { x = 0, y = 1, z = 0 },
+    baseColorRgb = { r = 31, g = 31, b = 31 },
+    baseAlpha = 31,
+    baseScaleFx = 4096,
+    velocityFx = { pos = 2048, axis = 0 },
+    velRandom = 10,
+    scaleRandom = 0,
+    lifeRandom = 0,
+    rotation = { min = 0, max = 0 },
+    useRotationAnim = false,
+    useInitRotationRandom = false,
+    initRotation = 0,
+    airResist = 8,
+    aspect = 1,
+    loopFrame = 30,
+    dbbScale = 0,
+    sclAnmDirect = 0,
+    texRepeat = { s = 0, t = 0 },
+    texture = 0,
+    textureImage = "img",
+    animations = {
+      scale = { startFx = 0, normalFx = 4096, finishFx = 0, inTick = 10, outTick = 80 },
+      color = {
+        startRgb = { r = 31, g = 31, b = 31 },
+        endRgb = { r = 0, g = 0, b = 0 },
+        inTick = 0,
+        peakTick = 50,
+        outTick = 100,
+        interpolate = true,
+      },
+      alpha = { start = 0, normal = 31, finish = 0, flick = 0, inTick = 10, outTick = 80 },
+    },
+    fields = {},
+  }
+end
+
+--- Two retail-shaped encounter emitter sets with caller-sized emitter
+--- counts and lifespans, in staged start order (frames 1 and 20).
+---@param sceneKey string scene identity behind staged texture paths
+---@param firstCount integer emitter count for the first set
+---@param secondCount integer emitter count for the second set
+---@param firstLife integer emitter lifespan for the first set
+---@param secondLife integer emitter lifespan for the second set
+---@return table<string, unknown>[] sets
+function Fixture.sizedSets(sceneKey, firstCount, secondCount, firstLife, secondLife)
+  local first = {}
+  for id = 0, firstCount - 1 do
+    first[#first + 1] = Fixture.encounterEmitter(id, firstLife)
+  end
+  local second = {}
+  for id = 0, secondCount - 1 do
+    second[#second + 1] = Fixture.encounterEmitter(id, secondLife)
+  end
+  return {
+    {
+      startTick = 1,
+      seed = 0,
+      emitters = first,
+      textures = { { id = 0, width = 32, height = 32, image = Fixture.texturePath(sceneKey, 1, 0) } },
+    },
+    {
+      startTick = 20,
+      seed = 0,
+      emitters = second,
+      textures = { { id = 0, width = 32, height = 32, image = Fixture.texturePath(sceneKey, 2, 0) } },
+    },
+  }
+end
+
 ---@param sceneKey string
 ---@return table<string, unknown>[] sets
 function Fixture.sets(sceneKey)

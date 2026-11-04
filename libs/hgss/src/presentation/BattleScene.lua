@@ -21,6 +21,7 @@
 ---@field _scrollAccum number accepted seconds banked toward the next source tick
 ---@field _background table<string, unknown>? mutable launch-owned BG3 layer
 ---@field _backgroundRasterizer table<string, unknown>? lazily composed BG3 surface
+---@field _introRasterizer table<string, unknown>? battle-start unbaked intro plane for palette fades, nil without staged base characters
 ---@field _backgroundLayers table<integer, BattleScene.BackgroundLayer> replacement BG3 states, newest active until removed
 ---@field _pictureAnimations table<string, table<string, unknown>> native Pokepic tasks by activation
 ---@field _pictureStates table<string, { base: table<string, unknown>, current: table<string, unknown>, animation?: table<string, unknown> }> activation-scoped appearance, transform and animation snapshot
@@ -78,6 +79,7 @@ function BattleScene.new()
     _scrollAccum = 0,
     _background = nil,
     _backgroundRasterizer = nil,
+    _introRasterizer = nil,
     _backgroundLayers = {},
     _pictureAnimations = {},
     _pictureStates = {},
@@ -1509,7 +1511,7 @@ end
 
 -- Installs the staged BG3 payload without retaining mutable aliases to its
 -- decoded map or palette. Character bytes are immutable and remain shared.
----@param payload { characters: string, map: { width: integer, height: integer, entries: table[] }, palette: { colors: table[] }, colorMode: "4bpp"|"8bpp" } staged BG3 layer
+---@param payload { characters: string, baseCharacters: string?, map: { width: integer, height: integer, entries: table[] }, palette: { colors: table[] }, colorMode: "4bpp"|"8bpp" } staged BG3 layer
 function BattleScene:installBackground(payload)
   assert(not self._released, "released scenes install nothing")
   assert(type(payload) == "table", "background installation takes staged payload")
@@ -1540,6 +1542,22 @@ function BattleScene:installBackground(payload)
     palette = { colors = colors },
   }
   self._backgroundRasterizer = nil
+  -- The unbaked intro plane shares the installed map and palette but
+  -- keeps its own base characters and rasterizer, so per-frame encounter
+  -- fades never disturb the persistent (possibly scrolled) battle layer.
+  -- Absent base characters stage no intro plane: callers fall back to the
+  -- static intro lease exactly as before.
+  if type(payload.baseCharacters) == "string" then
+    self._introRasterizer = NitroBg3.new({
+      characters = payload.baseCharacters,
+      map = payload.map,
+      palette = payload.palette,
+      colorMode = payload.colorMode,
+      transparentZero = false,
+    })
+  else
+    self._introRasterizer = nil
+  end
 end
 
 -- Patches one zero-based row-major SCRN entry.
@@ -1699,6 +1717,29 @@ end
 ---@return boolean true when a staged BG3 layer is installed
 function BattleScene:hasBackground()
   return self._background ~= nil
+end
+
+---@return boolean true when the unbaked intro plane is staged for palette fades
+function BattleScene:hasIntro()
+  return self._introRasterizer ~= nil
+end
+
+-- Composes the unbaked intro plane through 256 staged RGB888 colors:
+-- the installed palette when colors is nil, else a per-frame encounter
+-- fade. Effect layers never apply here: the intro is the battle-start
+-- plane, and the persistent layer keeps its own patched state.
+---@param colors table<integer, { r: integer, g: integer, b: integer }>? 256 staged RGB888 colors
+---@return table<string, unknown> immutable composed RGBA8 intro surface
+function BattleScene:introRaster(colors)
+  local rasterizer = assert(self._introRasterizer, "intro raster requires staged base characters")
+  assert(not self._released, "released scenes compose no intro planes")
+  if colors ~= nil then
+    assert(type(colors) == "table" and #colors == 256, "intro fades carry 256 staged colors")
+    for index = 0, 255 do
+      rasterizer:patchPalette(index, colors[index + 1])
+    end
+  end
+  return rasterizer:render()
 end
 
 -- Installs one activation's visual record explicitly: unseen hidden

@@ -131,6 +131,20 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
   local image0 = leafPrefix .. "-0.png"
   local image1 = leafPrefix .. "-1.png"
   local sequenceImage = leafPrefix .. "-sequence-1-frame-0.png"
+  local function frameSourceIndices(image)
+    return {
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = 8,
+      height = 8,
+      variants = {
+        ["slot:48"] = {
+          path = image:gsub("%.png$", "-slot48.rgba8"),
+          firstSlot = 48,
+        },
+      },
+    }
+  end
   local function leafRecord(entry)
     return {
       schema = Schema.TRAINER_PICTURE_SCHEMA,
@@ -148,6 +162,7 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
         durationTicks = 2,
         sourceFrame = 0,
         userAttr = 0,
+        sourceIndices = frameSourceIndices(image0),
       },
       {
         drawableKey = "trainer:back:PKMN_TRAINER_ETHAN:frame:1",
@@ -156,6 +171,7 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
         durationTicks = 5,
         sourceFrame = 1,
         userAttr = 1,
+        sourceIndices = frameSourceIndices(image1),
       },
     }
     return {
@@ -164,6 +180,9 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
       width = 8,
       height = 8,
       rasterOffset = { x = -40, y = -40 },
+      paletteSource = {
+        words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+      },
       animation = {
         sourceSequence = 0,
         playMode = "forward_loop",
@@ -183,6 +202,7 @@ function T.trainer_picture_sequences_validate_ordered_staged_source_frames()
                 durationTicks = 3,
                 sourceFrame = 0,
                 userAttr = 0xFFF,
+                sourceIndices = frameSourceIndices(sequenceImage),
               },
             },
           },
@@ -863,6 +883,86 @@ function T.manifests_reject_missing_roles_and_bad_geometry()
   Assert.isFalse(Schema.isValidManifest(stale), "an old catalog schema never validates as current")
 end
 
+function T.consumed_lower_obj_sprites_require_source_index_descriptors()
+  local valid = manifest()
+  local cursor = valid.hud.cursor
+  local cursorSource = cursor.sourceIndices
+  local cursorGeometry = valid.menus.images[cursor.image]
+  local gauge = valid.hud.partyGauges[1]
+  local gaugeSource = gauge.sourceIndices
+  local gaugeGeometry = valid.menus.images[gauge.image]
+  local result, failure = Schema.isValidManifest(valid)
+  Assert.isTrue(result, "consumed lower OBJ source indices validate: " .. tostring(failure))
+  Assert.deepEqual(
+    { cursorSource.plane, cursorSource.width, cursorSource.height },
+    { "subObj", cursorGeometry.width, cursorGeometry.height },
+    "the consumed cursor map names its native plane and exact source extent"
+  )
+  Assert.deepEqual(
+    { gaugeSource.plane, gaugeSource.width, gaugeSource.height },
+    { "subObj", gaugeGeometry.width, gaugeGeometry.height },
+    "the consumed gauge map names its native plane and exact source extent"
+  )
+
+  local missing = manifest()
+  missing.hud.cursor.sourceIndices = nil
+  Assert.isFalse(Schema.isValidManifest(missing), "the consumed keypad cursor requires source palette indices")
+
+  local wrongPlane = manifest()
+  wrongPlane.hud.cursor.sourceIndices.plane = "mainObj"
+  Assert.isFalse(Schema.isValidManifest(wrongPlane), "the consumed cursor map identifies SUB_OBJ")
+
+  local mismatchedExtent = manifest()
+  mismatchedExtent.hud.partyGauges[1].sourceIndices.width = gaugeGeometry.width + 1
+  Assert.isFalse(Schema.isValidManifest(mismatchedExtent), "the consumed gauge map matches its source art extent")
+end
+
+function T.trainer_source_index_variants_bind_context_to_physical_slots()
+  local valid = ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local sourceIndices = valid.entry.animation.sequences[1].frames[1].sourceIndices
+  sourceIndices.variants = {
+    ["slot:96"] = {
+      path = "assets/generated/battle/trainer-index-slot96.rgba8",
+      firstSlot = 96,
+    },
+  }
+  local result, failure = pcall(Schema.assertTrainerPicture, valid)
+  Assert.isTrue(result, "a context-selected immutable physical-slot map validates: " .. tostring(failure))
+
+  local invalidSelector = ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local invalidIndices = invalidSelector.entry.animation.sequences[1].frames[1].sourceIndices
+  invalidIndices.variants = {
+    ["arbitrary-layout"] = {
+      path = "assets/generated/battle/trainer-index-arbitrary.rgba8",
+      firstSlot = 80,
+    },
+  }
+  Assert.isFalse(pcall(Schema.assertTrainerPicture, invalidSelector), "layout variants use semantic selectors")
+
+  local invalidRange = ManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local outOfRange = invalidRange.entry.animation.sequences[1].frames[1].sourceIndices
+  outOfRange.variants = {
+    ["slot:216"] = {
+      path = "assets/generated/battle/trainer-index-slot216.rgba8",
+      firstSlot = 216,
+    },
+  }
+  Assert.isFalse(pcall(Schema.assertTrainerPicture, invalidRange), "layout palette banks stay inside MAIN_OBJ capacity")
+
+  local ballVariant = ManifestFixture.ballRecord("ball:POKE_BALL")
+  local ballIndices = ballVariant.entry.frames[1].sourceIndices
+  ballIndices.variants = {
+    ["slot:96"] = {
+      path = "assets/generated/battle/ball-index-slot96.rgba8",
+      firstSlot = 96,
+    },
+  }
+  Assert.isTrue(
+    pcall(Schema.assertBall, ballVariant),
+    "a ball palette layout variant follows the accepted physical slot"
+  )
+end
+
 function T.health_box_patch_spans_are_complete_and_stay_in_character_tile_units()
   local missing = manifest()
   missing.hud.patchSpans = nil
@@ -964,6 +1064,13 @@ function T.menu_feedback_patches_are_normalized_screen_assets()
         y = 32,
         width = 224,
         height = 96,
+        sourceIndices = {
+          path = "assets/generated/battle/command-feedback-selected.source-index.rgba8",
+          format = "source-index-rgba8",
+          plane = "subBg",
+          width = 224,
+          height = 96,
+        },
       },
       pressed = {
         image = screen.image,
@@ -971,6 +1078,13 @@ function T.menu_feedback_patches_are_normalized_screen_assets()
         y = 32,
         width = 224,
         height = 96,
+        sourceIndices = {
+          path = "assets/generated/battle/command-feedback.source-index.rgba8",
+          format = "source-index-rgba8",
+          plane = "subBg",
+          width = 224,
+          height = 96,
+        },
       },
     },
   }
@@ -993,6 +1107,65 @@ function T.menu_feedback_patches_are_normalized_screen_assets()
   unsupportedState.menus.command.screens[1].feedback.fight.disabled =
     unsupportedState.menus.command.screens[1].feedback.fight.selected
   Assert.isFalse(Schema.isValidManifest(unsupportedState), "feedback states are source-selected or pressed only")
+end
+
+function T.separate_menu_patches_require_source_index_maps()
+  local function sourceIndices(name, width, height)
+    return {
+      path = "assets/generated/battle/" .. name .. ".source-index.rgba8",
+      format = "source-index-rgba8",
+      plane = "subBg",
+      width = width,
+      height = height,
+    }
+  end
+  local missingFeedback = manifest()
+  local screen = missingFeedback.menus.command.screens[1]
+  screen.plane = 1
+  screen.feedback = {
+    fight = {
+      pressed = {
+        image = screen.image,
+        x = 0,
+        y = 0,
+        width = 8,
+        height = 8,
+      },
+    },
+  }
+  Assert.isFalse(Schema.isValidManifest(missingFeedback), "separately drawn feedback requires exact source indices")
+  screen.feedback.fight.pressed.sourceIndices = sourceIndices("feedback", 8, 8)
+  Assert.isTrue(Schema.isValidManifest(missingFeedback), "feedback source indices match its cropped drawable")
+
+  local missingButtons = manifest()
+  local moves = missingButtons.menus.moves.screens[1]
+  moves.moveButtons = {}
+  for slot = 1, 4 do
+    moves.moveButtons[slot] = {
+      x = 0,
+      y = 0,
+      width = 8,
+      height = 8,
+      empty = moves.image,
+      types = { NORMAL = { normal = moves.image, pressed = moves.image } },
+    }
+  end
+  Assert.isFalse(Schema.isValidManifest(missingButtons), "separately drawn move buttons require exact source indices")
+  local button = moves.moveButtons[1]
+  button.sourceIndices = {
+    empty = sourceIndices("button-empty", 8, 8),
+    types = {
+      NORMAL = {
+        normal = sourceIndices("button-normal", 8, 8),
+        pressed = sourceIndices("button-pressed", 8, 8),
+      },
+    },
+  }
+  for slot = 2, 4 do
+    moves.moveButtons[slot].sourceIndices = button.sourceIndices
+  end
+  local valid, failure = pcall(Schema.assertManifest, missingButtons)
+  Assert.isTrue(valid, "all move-button images carry matching source maps: " .. tostring(failure))
 end
 
 function T.native_slot_geometry_is_complete_unique_and_semantic()
@@ -1025,7 +1198,7 @@ end
 ---@return table valid composed scene record
 local function scene()
   return {
-    schema = "g4-battle-scene-v4",
+    schema = "g4-battle-scene-v5",
     key = "general/grass/day",
     background = "general",
     terrain = "grass",
@@ -1042,6 +1215,11 @@ local function scene()
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
+          format = "indexed8",
+        },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
           format = "indexed8",
         },
         map = {
@@ -1068,16 +1246,59 @@ local function scene()
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = "assets/generated/battle/scenes/general-grass-day-terrain-player.source-index.rgba8",
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
       foe = {
         image = "assets/generated/battle/scenes/general-grass-day-terrain-foe.png",
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = "assets/generated/battle/scenes/general-grass-day-terrain-foe.source-index.rgba8",
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
+    },
+    paletteSource = {
+      key = "battle-scene/general-grass-day/native-palettes",
+      path = "data/generated/battle/scenes/general-grass-day.native-palettes.lua",
+      format = "native-encounter-palettes-v1",
     },
     encounterParticles = ParticlesFixture.sets("general/grass/day"),
   }
+end
+
+function T.scene_records_require_native_palette_and_source_index_descriptors()
+  Assert.isTrue(Schema.isValidScene(scene()), "native palette and index descriptors validate")
+
+  local missingPaletteSource = scene()
+  missingPaletteSource.paletteSource = nil
+  Assert.isFalse(Schema.isValidScene(missingPaletteSource), "a scene cannot omit its native palette source")
+
+  local wrongPaletteFormat = scene()
+  wrongPaletteFormat.paletteSource.format = "rgb888"
+  Assert.isFalse(Schema.isValidScene(wrongPaletteFormat), "native palette data keeps its strict format")
+
+  local missingIndices = scene()
+  missingIndices.terrainSprites.player.sourceIndices = nil
+  Assert.isFalse(Schema.isValidScene(missingIndices), "both terrain OBJ images require source indices")
+
+  local wrongPlane = scene()
+  wrongPlane.terrainSprites.foe.sourceIndices.plane = "mainBg"
+  Assert.isFalse(Schema.isValidScene(wrongPlane), "terrain indices identify their native main OBJ plane")
+
+  local mismatchedDimensions = scene()
+  mismatchedDimensions.terrainSprites.player.sourceIndices.width = 79
+  Assert.isFalse(Schema.isValidScene(mismatchedDimensions), "source index dimensions match their artwork")
 end
 
 function T.encounter_particle_sets_require_resolvable_textures_and_the_retail_start_order()
@@ -1146,6 +1367,28 @@ function T.encounter_particle_sets_require_resolvable_textures_and_the_retail_st
   local badImageSize = scene()
   badImageSize.encounterParticles[1].textures[1].width = 0
   Assert.isFalse(Schema.isValidScene(badImageSize), "texture images keep positive dimensions")
+end
+
+function T.scene_layers_stage_indexed8_intro_characters_for_palette_fades()
+  local staged = scene()
+  staged.layers[1].baseCharacters = {
+    key = "battle-scene/general-grass-day/intro/characters",
+    path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+    format = "indexed8",
+  }
+  Assert.isTrue(Schema.isValidScene(staged), "unbaked intro characters validate as a scene resource")
+
+  local missing = scene()
+  missing.layers[1].baseCharacters = nil
+  Assert.isFalse(Schema.isValidScene(missing), "a scene stages its unbaked intro characters")
+
+  local badFormat = scene()
+  badFormat.layers[1].baseCharacters = {
+    key = "battle-scene/general-grass-day/intro/characters",
+    path = "data/generated/battle/scenes/general-grass-day-intro.bg3.chars",
+    format = "tilemap",
+  }
+  Assert.isFalse(Schema.isValidScene(badFormat), "intro characters keep their 8bpp indexed8 format")
 end
 
 function T.scene_records_validate_their_key_and_viewport()

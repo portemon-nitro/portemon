@@ -293,6 +293,47 @@ local function openDoubleRig(opts)
 end
 
 local function stageRendererIntro(rig)
+  local function words(count)
+    local values = {}
+    for index = 1, count do
+      values[index] = 0
+    end
+    return values
+  end
+  local function bank(firstSlot)
+    return { firstSlot = firstSlot, words = words(16) }
+  end
+  local sourceMaps = {}
+  local function addSourceMap(descriptor, path)
+    sourceMaps[path] = {
+      plane = descriptor.plane,
+      width = descriptor.width,
+      height = descriptor.height,
+      pixels = string.rep("\0", descriptor.width * descriptor.height * 4),
+    }
+  end
+  local function visit(value)
+    if type(value) ~= "table" then
+      return
+    end
+    local descriptor = value.sourceIndices
+    if type(descriptor) == "table" then
+      if type(descriptor.path) == "string" then
+        addSourceMap(descriptor, descriptor.path)
+      end
+      if type(descriptor.variants) == "table" then
+        for _, variant in pairs(descriptor.variants) do
+          if type(variant) == "table" and type(variant.path) == "string" then
+            addSourceMap(descriptor, variant.path)
+          end
+        end
+      end
+    end
+    for _, child in pairs(value) do
+      visit(child)
+    end
+  end
+  visit(rig.screen._manifest)
   local image = {
     getWidth = function()
       return 512
@@ -306,10 +347,43 @@ local function stageRendererIntro(rig)
   }
   rig.screen._assets._sceneLayer = {
     introLayer = { drawable = image },
-    terrainSprites = {
-      player = { drawable = image, origin = { x = 0, y = 0 } },
-      foe = { drawable = image, origin = { x = 0, y = 0 } },
+    paletteSource = {
+      mainBg = words(256),
+      mainObjSources = {
+        hud = bank(0),
+        hudAuxiliary = bank(16),
+        terrain = bank(32),
+      },
+      subBgOpaque = words(256),
+      subObjOpaque = { [1] = 0 },
+      initialDisplayed = {
+        subBg = words(256),
+        subObj = { [1] = 0 },
+      },
     },
+    terrainSprites = {
+      player = {
+        drawable = image,
+        origin = { x = 0, y = 0 },
+        sourceIndices = {
+          plane = "mainObj",
+          width = 512,
+          height = 256,
+          pixels = string.rep("\0", 512 * 256 * 4),
+        },
+      },
+      foe = {
+        drawable = image,
+        origin = { x = 0, y = 0 },
+        sourceIndices = {
+          plane = "mainObj",
+          width = 512,
+          height = 256,
+          pixels = string.rep("\0", 512 * 256 * 4),
+        },
+      },
+    },
+    menuSourceIndices = sourceMaps,
   }
 end
 

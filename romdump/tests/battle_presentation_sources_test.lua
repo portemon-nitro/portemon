@@ -1453,6 +1453,7 @@ function T.trainer_pictures_follow_native_front_and_player_backpic_selection()
   Assert.equal(trainerPictures.memberOffsets.palette, 1)
   Assert.equal(trainerPictures.memberOffsets.cell, 2)
   Assert.equal(trainerPictures.memberOffsets.animation, 3)
+  Assert.deepEqual(trainerPictures.frontPaletteBanks, { CASTLE_VALET = 2 })
   Assert.deepEqual(trainerPictures.backClasses, { PKMN_TRAINER_ETHAN = 0, PKMN_TRAINER_LYRA = 1 })
 end
 

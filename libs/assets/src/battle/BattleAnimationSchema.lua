@@ -30,6 +30,7 @@ local RESOURCE_KINDS = {
   ["multi-cell"] = true,
   ["multi-cell-animation"] = true,
   message = true,
+  tiles = true,
 }
 
 local REQUIRED_CONTEXT_FIELDS = {
@@ -1384,6 +1385,20 @@ local function checkCallbackInvocation(instruction, context, code, field)
   checkParameters(instruction.parameters, profile.parameters, context, code, field)
 end
 
+local function checkVisualTask(instruction, context, code, field)
+  if instruction.taskKind == "battle-background-resource-load" and instruction.resourceKeys ~= nil then
+    checkSlotClosure(
+      instruction.resourceKeys,
+      { "character", "palette", "screenDefault", "screenAlternate" },
+      nil,
+      "slot",
+      context,
+      code,
+      field .. ".resourceKeys"
+    )
+  end
+end
+
 local function checkBattlerSpriteSlot(instruction, context, code, field)
   if instruction.op == "create-pokemon-sprite" then
     SchemaCheck.checkInteger(instruction.spriteSlot, context, code, field .. ".spriteSlot", 0)
@@ -1596,7 +1611,11 @@ local OPERATIONS = {
   ["return-subprogram"] = { fields = { "cursorRule" } },
   ["branch-on-battle-field"] = { values = true, fields = { "branchTarget" } },
   ["branch-on-parameter"] = { values = true, fields = { "branchTarget" } },
-  ["start-visual-task"] = { values = true, fields = { "taskKind" } },
+  ["start-visual-task"] = {
+    values = true,
+    fields = { "taskKind", "resourceKeys", "runtimeSelection" },
+    check = checkVisualTask,
+  },
   ["wait-for-battle-phase"] = { values = 1, fields = { "cursorRule" } },
   ["load-battle-background"] = {
     fields = { "runtimeSelection" },

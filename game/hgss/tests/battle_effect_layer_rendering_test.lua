@@ -220,6 +220,76 @@ function T.effect_background_layers_install_and_remove_cleanly()
   Assert.isFalse(scene:hasBackground(), "launch release drops the staged background")
 end
 
+function T.effect_background_tasks_install_and_remove_the_staged_layer_through_the_factory()
+  local Factory = effectFactoryModule()
+  local scene = sceneWithPair()
+  scene:installBackground(baseBackground())
+  local characterKey = "battle/background/probe/character"
+  local paletteKey = "battle/background/probe/palette"
+  local screenDefaultKey = "battle/background/probe/screen-default"
+  local screenAlternateKey = "battle/background/probe/screen-alternate"
+  local payloads = {
+    [characterKey] = { depth = 3, tiles = string.char(0x21) .. string.rep("\0", 31) },
+    [paletteKey] = { colors = flatPalette(200, 40, 40) },
+    [screenDefaultKey] = effectLayer().screen,
+    [screenAlternateKey] = effectLayer().screen,
+  }
+  payloads[paletteKey].colors[2] = { r = 0, g = 180, b = 0 }
+  local journal = { acquired = {}, released = {} }
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    local data = payloads[key]
+    if data == nil then
+      error("unknown battle background resource " .. tostring(key), 0)
+    end
+    return { key = key, data = data }
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  local services = { scene = scene, audio = {}, resources = resources }
+  local context = {
+    launchId = "layer-rendering-probe",
+    packetId = 1,
+    topology = {
+      attacker = { sideType = 0 },
+      targets = { { sideType = 1 } },
+    },
+  }
+  local load = assert(Factory.create("battle-background-resource-load", {
+    values = { 9, 0x1234 },
+    screenFlipArg = 0,
+    resourceKeys = {
+      character = characterKey,
+      palette = paletteKey,
+      screenDefault = screenDefaultKey,
+      screenAlternate = screenAlternateKey,
+    },
+    runtimeSelection = "battle-background-screen-selection",
+  }, context, services))
+  load:stepSourceTick({ tick = 1 })
+  Assert.equal(load:status(), "complete", "the staged load retires on its first tick")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(0, 0) },
+    { 0, 180, 0, 255 },
+    "the factory-driven load paints its staged pixels through the 4bpp plane"
+  )
+  load:dispose()
+  local cleanup = assert(
+    Factory.create("battle-presentation-resource-cleanup", { values = { 9, 0x1234 } }, context, services)
+  )
+  cleanup:stepSourceTick({ tick = 1 })
+  Assert.equal(cleanup:status(), "complete", "the staged cleanup retires on its first tick")
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(0, 0) },
+    { 8, 16, 24, 255 },
+    "the factory-driven cleanup restores the persistent plane"
+  )
+  cleanup:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "every staged lease releases exactly once")
+end
+
 function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
   local pristine = sceneWithPair()
   pristine:installBackground(baseBackground())

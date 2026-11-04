@@ -15,6 +15,7 @@ local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
 local BattleBallParticles = require("game.hgss.src.battle.BattleBallParticles")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
+local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -28,6 +29,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Mon = require("libs.mons.src.Mon")
+local Rgb555 = require("libs.codec.src.Rgb555")
 
 ---@class BattleScreenState.GraphicsScope
 ---@field host table<string, unknown> borrowed host graphics namespace
@@ -102,6 +104,10 @@ local Mon = require("libs.mons.src.Mon")
 ---@field _terminalRequest table<string, unknown>? mirrored terminal request identity behind the completion barrier
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
+---@field _sceneKey string staged battle scene identity behind the launch
+---@field _encounterSourceKey string? staged scene identity behind the installed encounter source, nil while unstaged
+---@field _encounterPaletteRestoreType string? accepted native palette restore class for this launch
+---@field _nativePaletteLayoutReady boolean true once the accepted MAIN_OBJ layout is staged
 ---@field _queue table<integer, table<string, unknown>> queued raw input batches
 ---@field _notice string? transient refusal banner
 ---@field _showTimelineMessage boolean whether a source-selected event message temporarily replaces the command prompt
@@ -123,6 +129,15 @@ local Mon = require("libs.mons.src.Mon")
 ---@field _ballParticles BattleBallParticles ball send-out and capture particle systems driven by the cue timeline
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
+---@field _fadedIntroImage table<string, unknown>? live faded intro upload while the encounter fade runs
+---@field _fadedIntroFrame integer? encounter frame behind the live faded upload
+---@field _fadedIntroWidth integer? width of the published faded intro raster
+---@field _fadedIntroHeight integer? height of the published faded intro raster
+---@field _fadedIntroPixels string? pixels of the published faded intro raster
+---@field _fadedIntroPaletteWords integer[]? main BG words sampled by the published intro raster
+---@field _fadedIntroUnavailable boolean true once faded uploads prove unavailable this launch
+---@field _paletteDrawableFrame integer? encounter frame behind the published indexed palette images
+---@field _paletteRasterCache table<string, { sourceMap: table<string, unknown>, paletteWords: table<integer, integer>, raster: table<string, unknown> }> current sampled indexed rasters
 ---@field _outcomeDone boolean terminal narration and timed holds have settled
 ---@field _lastPlayerName string? source player trainer name retained from detached views
 ---@field _error string? failure context
@@ -1070,6 +1085,19 @@ function BattleScreenState.new(opts)
   end
   assert(type(sceneKey) == "string" and sceneKey ~= "", "the battle screen resolves its scene identity")
   local self = setmetatable({
+    _sceneKey = sceneKey,
+    _encounterSourceKey = nil,
+    _encounterPaletteRestoreType = nil,
+    _nativePaletteLayoutReady = false,
+    _fadedIntroImage = nil,
+    _fadedIntroFrame = nil,
+    _fadedIntroWidth = nil,
+    _fadedIntroHeight = nil,
+    _fadedIntroPixels = nil,
+    _fadedIntroPaletteWords = nil,
+    _fadedIntroUnavailable = false,
+    _paletteDrawableFrame = nil,
+    _paletteRasterCache = {},
     _launchId = opts.launchId,
     _manifest = manifest,
     _model = opts.model,
@@ -1848,6 +1876,45 @@ function BattleScreenState:_commandPrompt(names)
   })
 end
 
+---@param entry table<string, unknown> staged battle ball or trainer source record
+---@param firstSlot integer accepted physical MAIN_OBJ bank base
+---@return table<string, string> source drawable key to selected physical map path
+local function sourceIndexPathsAtSlot(entry, firstSlot)
+  local paths = {}
+  local function addFrame(frame)
+    local sourceIndices = assert(frame.sourceIndices, "composed MAIN_OBJ art has source-index metadata")
+    local selector = "slot:" .. tostring(firstSlot)
+    local variant =
+      assert(sourceIndices.variants[selector], "accepted physical layout has a staged source-index variant")
+    assert(variant.firstSlot == firstSlot, "source-index variant names its exact physical palette base")
+    local path = assert(type(variant.path) == "string" and variant.path, "source-index variant names its raw sidecar")
+    local drawableKeyValue = frame.drawableKey
+    assert(type(drawableKeyValue) == "string" and drawableKeyValue, "source frame names its drawable")
+    local drawableKey = drawableKeyValue --[[@as string]]
+    paths[drawableKey] = path
+  end
+  if type(entry.frames) == "table" then
+    for _, frame in ipairs(entry.frames) do
+      addFrame(frame)
+    end
+  else
+    local animation = assert(entry.animation, "trainer source art stages its animation frames")
+    local sequences = animation.sequences
+    if type(sequences) == "table" and #sequences > 0 then
+      for _, sequence in ipairs(sequences) do
+        for _, frame in ipairs(sequence.frames) do
+          addFrame(frame)
+        end
+      end
+    else
+      for _, frame in ipairs(animation.frames) do
+        addFrame(frame)
+      end
+    end
+  end
+  return paths
+end
+
 ---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
 function BattleScreenState:_snapshot()
   local battlers = self._timeline:battlers()
@@ -1896,9 +1963,18 @@ function BattleScreenState:_snapshot()
     self._assets:addBattleBalls(battleBalls)
     local view = self._manifest --[[@as table<string, unknown>]]
     local trainerEntries = view.trainerPictures.entries
-    for _, slide in ipairs(openingPresentation.trainerSlides or {}) do
+    local nativePaletteLayout = type(sceneAssets) == "table" and sceneAssets.nativePaletteLayout or nil
+    local nativeTrainerLayouts = type(nativePaletteLayout) == "table" and nativePaletteLayout.trainers or nil
+    for slideIndex, slide in ipairs(openingPresentation.trainerSlides or {}) do
       local selector =
         assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
+      if type(nativeTrainerLayouts) == "table" then
+        local layout =
+          assert(nativeTrainerLayouts[slideIndex], "visible trainer slides have an ordered physical palette instance")
+        assert(layout.selector == selector, "trainer slides follow their accepted physical palette order")
+        slide.paletteLayoutIndex = slideIndex
+        slide.sourceIndexPaths = layout.sourceIndexPaths
+      end
       local entry = trainerEntries[selector]
       if entry ~= nil then
         local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
@@ -2205,6 +2281,24 @@ function BattleScreenState:_snapshot()
       armed = { scope = feedback.scope, id = feedback.id }
     end
   end
+  local terrainSpritesView = terrainSprites
+  if type(terrainSprites) == "table" then
+    terrainSpritesView = {}
+    for side, sprite in pairs(terrainSprites) do
+      if type(sprite) == "table" then
+        local copy = {}
+        for key, value in pairs(sprite) do
+          copy[key] = value
+        end
+        local drawableKey = "scene-terrain:" .. self._sceneKey .. ":" .. side
+        local drawable = self._assets:drawable(drawableKey)
+        if drawable ~= nil then
+          copy.drawable = drawable
+        end
+        terrainSpritesView[side] = copy
+      end
+    end
+  end
   return {
     battleKind = self._kind,
     menuMode = self:_menuMode(),
@@ -2228,6 +2322,9 @@ function BattleScreenState:_snapshot()
     bgScroll = self._scene:scroll(),
     backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
     effectInstances = self._scene:effectViews(),
+    moveParticleSystems = self._scene:particleSystems(),
+    encounterParticleSystems = self._encounterParticles:systems(),
+    ballParticleSystems = self._ballParticles:systems(),
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
     gaugeFamilies = {
@@ -2235,8 +2332,11 @@ function BattleScreenState:_snapshot()
       enemy = copyValue(self._manifest.hud.partyGauges[1]),
     },
     openingPresentation = openingPresentation,
-    introScene = type(introLayer) == "table" and introLayer.drawable or nil,
-    terrainSprites = terrainSprites,
+    -- While the encounter fade runs, draws sample the faded intro upload
+    -- instead of the static lease; the upload names the same published
+    -- frame as this snapshot, and release falls back to the lease.
+    introScene = self._fadedIntroImage or (type(introLayer) == "table" and introLayer.drawable or nil),
+    terrainSprites = terrainSpritesView,
     playerTrainer = type(latest) == "table" and latest.playerTrainer or nil,
     foeTrainers = type(latest) == "table" and latest.foeTrainers or nil,
     levelUpStats = levelUpStats,
@@ -3762,6 +3862,17 @@ function BattleScreenState:_portEnter(plan)
   end
   if type(plan) == "table" and type(plan.kind) == "string" then
     self._kind = plan.kind --[[@as string]]
+  end
+  if type(plan) == "table" and plan.encounterPaletteRestoreType ~= nil then
+    local restoreType = plan.encounterPaletteRestoreType
+    assert(
+      restoreType == "wild"
+        or restoreType == "trainer"
+        or restoreType == "ordinary-doubles"
+        or restoreType == "special-doubles",
+      "battle entry carries a supported native palette restore class"
+    )
+    self._encounterPaletteRestoreType = restoreType
   end
   return self._assets:state() == "ready"
 end
@@ -6019,17 +6130,817 @@ function BattleScreenState:_reconcile(view)
   apply(view.foes)
 end
 
+---@param values unknown palette words
+---@param count integer native plane size
+---@param plane string native plane name
+---@return integer[] copied RGB555 words
+local function copyEncounterPalette(values, count, plane)
+  assert(type(values) == "table" and #values == count, plane .. " source has its native word count")
+  local words = {}
+  for index = 1, count do
+    local word = values[index]
+    assert(
+      type(word) == "number" and word % 1 == 0 and word >= 0 and word <= 0x7FFF,
+      plane .. " source contains a valid RGB555 word at " .. index
+    )
+    words[index] = word
+  end
+  return words
+end
+
+---@param values unknown sparse native RGB555 palette words keyed by one-based slot
+---@param plane string native plane name
+---@return table<integer, integer> copied defined RGB555 words
+local function copySparseEncounterPalette(values, plane)
+  assert(type(values) == "table", plane .. " source carries its defined native words")
+  local words = {}
+  for index, word in pairs(values) do
+    assert(
+      type(index) == "number" and index % 1 == 0 and index >= 1 and index <= 256,
+      plane .. " source contains an in-range one-based slot"
+    )
+    assert(
+      type(word) == "number" and word % 1 == 0 and word >= 0 and word <= 0x7FFF,
+      plane .. " source contains a valid RGB555 word at " .. index
+    )
+    words[index] = word
+  end
+  return words
+end
+
+---@param sources table<string, { firstSlot: integer, words: integer[] }> static staged banks
+---@param ballSources table<string, integer[]> selected ball palettes by semantic selector
+---@param trainerSources table<string, integer[]> selected trainer palettes by semantic selector
+---@param layout { trainers: { selector: string, role: string, participant: integer?, firstSlot: integer, bankCount: integer, sourceIndexPaths: table<string, string> }[], balls: { selector: string, battlerId: integer, firstSlot: integer, sourceIndexPaths: table<string, string> }[] } accepted native resource order
+---@return table<integer, integer> prefill sparse one-based MAIN_OBJ words
+---@return table<integer, integer> postfill sparse one-based MAIN_OBJ words
+local function mainObjSourcesOf(sources, ballSources, trainerSources, layout)
+  assert(type(sources) == "table", "staged battle palettes carry static MAIN_OBJ source banks")
+  assert(type(ballSources) == "table", "staged battle palettes carry selected ball source words")
+  assert(type(trainerSources) == "table", "staged battle palettes carry selected trainer source words")
+  assert(type(layout) == "table", "the scene handoff carries accepted native resource order")
+  local words = {}
+  local function copyBank(source)
+    assert(type(source) == "table" and type(source.words) == "table", "MAIN_OBJ source bank has words")
+    assert(type(source.firstSlot) == "number", "MAIN_OBJ source bank has a physical slot")
+    for offset, word in ipairs(source.words) do
+      local index = source.firstSlot + offset
+      assert(words[index] == nil, "distinct MAIN_OBJ resources do not alias a physical slot")
+      words[index] = word
+    end
+  end
+  for _, source in pairs(sources) do
+    copyBank(source)
+  end
+  assert(type(layout.balls) == "table", "battle launch carries ordered active ball sources")
+  local expectedBallSlot = 48
+  for _, ball in ipairs(layout.balls) do
+    assert(type(ball) == "table" and type(ball.selector) == "string", "active ball layout names its source")
+    assert(type(ball.battlerId) == "number", "active ball layout preserves its native battler id")
+    assert(ball.firstSlot == expectedBallSlot, "active ball layout carries its native upload slot")
+    local paletteWords = assert(ballSources[ball.selector], "active ball palette is staged for its semantic selector")
+    assert(#paletteWords == 16, "each active ball palette occupies one native bank")
+    copyBank({ firstSlot = ball.firstSlot, words = paletteWords })
+    expectedBallSlot = expectedBallSlot + 16
+  end
+  assert(type(layout.trainers) == "table", "battle launch carries ordered trainer insertions")
+  local postFillWords = {}
+  local nextTrainerSlot = expectedBallSlot
+  for _, trainer in ipairs(layout.trainers) do
+    assert(type(trainer) == "table" and type(trainer.selector) == "string", "trainer layout names its source")
+    assert(trainer.firstSlot == nextTrainerSlot, "trainer layout carries its native upload slot")
+    local paletteWords = assert(trainerSources[trainer.selector], "trainer palette is staged for its semantic selector")
+    assert(#paletteWords % 16 == 0, "trainer palettes contain complete native banks")
+    assert(trainer.bankCount == #paletteWords / 16, "trainer layout preserves its loaded bank count")
+    for offset, word in ipairs(paletteWords) do
+      local index = trainer.firstSlot + offset
+      assert(postFillWords[index] == nil, "trainer insertions occupy distinct post-fill slots")
+      postFillWords[index] = word
+    end
+    nextTrainerSlot = trainer.firstSlot + #paletteWords
+  end
+  return words, postFillWords
+end
+
+-- Copies the strict source buffers staged with the selected scene. The
+-- source-class fact comes from accepted battle admission, never from art.
+---@param layer table<string, unknown> staged battle scene layer
+---@param fadeBlack boolean true while the staged fade targets black
+---@param restoreType string accepted native restore class
+---@return table<string, unknown> detached source buffers, fill, and restore class
+local function encounterSourceOf(layer, fadeBlack, restoreType)
+  local source = assert(layer.paletteSource, "staged battle scene has native palette source data")
+  assert(type(source) == "table", "native palette source data is a record")
+  assert(type(source.initialDisplayed) == "table", "staged native palettes include initial displayed lower planes")
+  local white = 31 + 31 * 32 + 31 * 1024
+  assert(
+    type(restoreType) == "string" and restoreType ~= "",
+    "accepted battle admission supplies a native palette restore class"
+  )
+  local mainObj, mainObjPostFill = mainObjSourcesOf(
+    source.mainObjSources,
+    layer.mainObjBallPaletteSources,
+    layer.mainObjTrainerPaletteSources,
+    assert(layer.nativePaletteLayout, "the scene handoff carries accepted MAIN_OBJ resource order")
+  )
+  return {
+    mainBg = copyEncounterPalette(source.mainBg, 256, "mainBg"),
+    mainObj = mainObj,
+    mainObjPostFill = copySparseEncounterPalette(mainObjPostFill, "mainObjPostFill"),
+    subBgOpaque = copyEncounterPalette(source.subBgOpaque, 256, "subBgOpaque"),
+    subObjOpaque = copySparseEncounterPalette(source.subObjOpaque, "subObjOpaque"),
+    initialDisplayed = {
+      subBg = copyEncounterPalette(source.initialDisplayed.subBg, 256, "initialDisplayed.subBg"),
+      subObj = copySparseEncounterPalette(source.initialDisplayed.subObj, "initialDisplayed.subObj"),
+    },
+    fill = fadeBlack and 0 or white,
+    restoreType = restoreType,
+  }
+end
+
+-- Returns the held faded intro upload without a later disposal
+-- double-release: draws fall back to the static intro lease afterwards.
+function BattleScreenState:_releaseFadedIntro()
+  if self._fadedIntroImage ~= nil then
+    self._assets:releaseFadedIntro()
+    self._fadedIntroImage = nil
+  end
+  self._fadedIntroFrame = nil
+  self._fadedIntroWidth = nil
+  self._fadedIntroHeight = nil
+  self._fadedIntroPixels = nil
+  self._fadedIntroPaletteWords = nil
+end
+
+-- Renders one encounter frame of the unbaked intro plane through the
+-- published main-background palette and uploads changed pixels, holding
+-- the image for draws. A missing adapter is explicit headless mode; a
+-- configured upload failure fails the battle screen.
+---@param snapshot table<string, unknown> staged per-plane palette state under drawing
+---@param frame integer encounter frame under drawing
+function BattleScreenState:_renderFadedIntro(snapshot, frame)
+  local mainBg = assert(snapshot.mainBg, "encounter snapshots carry the main background plane")
+  local colors = {}
+  for index = 1, 256 do
+    colors[index] = Rgb555.decode(mainBg[index])
+  end
+  local raster = self._scene:introRaster(colors)
+  if
+    self._fadedIntroImage ~= nil
+    and self._fadedIntroWidth == raster.width
+    and self._fadedIntroHeight == raster.height
+    and self._fadedIntroPixels == raster.pixels
+  then
+    self._fadedIntroFrame = frame
+    return
+  end
+  local image, failure = self._assets:fadedIntro(raster)
+  if image == nil then
+    if failure ~= nil then
+      self._mode = "failed"
+      self._error = "battle scene " .. self._sceneKey .. " failed: " .. failure
+      return
+    end
+    self._fadedIntroUnavailable = true
+    self:_releaseFadedIntro()
+    return
+  end
+  self._fadedIntroImage = image
+  self._fadedIntroFrame = frame
+  self._fadedIntroWidth = raster.width
+  self._fadedIntroHeight = raster.height
+  self._fadedIntroPixels = raster.pixels
+  self._fadedIntroPaletteWords = {}
+  for index = 1, 256 do
+    self._fadedIntroPaletteWords[index] = mainBg[index]
+  end
+end
+
+-- Tracks the published encounter fade with exactly one intro upload per
+-- changing frame: renders while the fade runs, reuses the settled upload
+-- across the still frames and past the late fade, and releases back to
+-- the static lease once the task ends. Runs on fixed updates only, ahead
+-- of the cue player, so the resolved plan and its intro image name the
+-- same published frame. Never from draws.
+function BattleScreenState:_updateFadedIntro()
+  if self._assets:isHeadless() then
+    self._fadedIntroUnavailable = true
+    self:_releaseFadedIntro()
+    return
+  end
+  if self._timeline == nil then
+    self:_releaseFadedIntro()
+    return
+  end
+  local opening = self._timeline:openingPresentation()
+  local frame = type(opening) == "table" and opening.encounterFrame or nil
+  local snapshot = type(opening) == "table" and opening.encounterPalette or nil
+  if type(frame) ~= "number" or type(snapshot) ~= "table" or not self._scene:hasIntro() then
+    self:_releaseFadedIntro()
+    return
+  end
+  if self._fadedIntroUnavailable or self._mode == "failed" then
+    return
+  end
+  if self._fadedIntroImage ~= nil and self._fadedIntroPaletteWords ~= nil then
+    local mainBg = assert(snapshot.mainBg, "encounter snapshots carry the main background plane")
+    local unchanged = true
+    for index = 1, 256 do
+      if self._fadedIntroPaletteWords[index] ~= mainBg[index] then
+        unchanged = false
+        break
+      end
+    end
+    if unchanged then
+      self._fadedIntroFrame = frame
+      return
+    end
+  end
+  self:_renderFadedIntro(snapshot, frame)
+end
+
+---@param palette table<string, unknown> current native plane palette snapshot
+---@param plane string source-index plane name
+---@return table<integer, integer> displayed RGB555 words for the selected plane
+local function encounterPlaneWords(palette, plane)
+  local words = palette[plane]
+  assert(type(words) == "table", "source-index art names a displayed native palette plane")
+  return words --[[@as table<integer, integer>]]
+end
+
+---@param layer table<string, unknown> staged scene owning validated source maps
+---@param descriptor table<string, unknown> direct source-index pixels or a staged path
+---@return table<string, unknown> staged source-index map
+local function encounterSourceMap(layer, descriptor)
+  if type(descriptor.pixels) == "string" then
+    return descriptor
+  end
+  local path = descriptor.path
+  assert(type(path) == "string" and path ~= "", "source-index descriptor names its map")
+  local maps = assert(layer.menuSourceIndices, "battle scene retains staged source-index maps")
+  return assert(maps[path], "validated source-index map remains in the staged scene: " .. path)
+end
+
+---@param requests table<string, { uploadKey: string, raster: table<string, unknown> }> pending image replacements
+---@param sourceKey string existing renderer drawable key or battle-private frame key
+---@param sourceMap table<string, unknown> validated source-index map
+---@param palette table<string, unknown> current native palette snapshot
+---@param sceneKey string selected scene identity
+---@param rasterCache table<string, { sourceMap: table<string, unknown>, paletteWords: table<integer, integer>, raster: table<string, unknown> }> cached sampled rasters
+local function addEncounterPaletteRequest(requests, sourceKey, sourceMap, palette, sceneKey, rasterCache)
+  local plane = sourceMap.plane
+  assert(type(plane) == "string" and plane ~= "", "source map names its native plane")
+  local pixels = sourceMap.pixels
+  assert(type(pixels) == "string", "source map carries indexed RGBA8 bytes")
+  local width = sourceMap.width
+  assert(type(width) == "number", "source map carries its width")
+  local height = sourceMap.height
+  assert(type(height) == "number", "source map carries its height")
+  local paletteWords = encounterPlaneWords(palette, plane)
+  local cached = rasterCache[sourceKey]
+  local samePalette = cached ~= nil
+  if cached ~= nil then
+    for index, word in pairs(paletteWords) do
+      if cached.paletteWords[index] ~= word then
+        samePalette = false
+        break
+      end
+    end
+    if samePalette then
+      for index, word in pairs(cached.paletteWords) do
+        if paletteWords[index] ~= word then
+          samePalette = false
+          break
+        end
+      end
+    end
+  end
+  local raster = cached ~= nil and cached.sourceMap == sourceMap and samePalette and cached.raster
+    or BattleEncounterIndexedRaster.render(pixels, width, height, paletteWords)
+  local sampledPalette = {}
+  for index, word in pairs(paletteWords) do
+    sampledPalette[index] = word
+  end
+  rasterCache[sourceKey] = { sourceMap = sourceMap, paletteWords = sampledPalette, raster = raster }
+  local uploadKey = "battle-palette:" .. sceneKey .. ":" .. sourceKey
+  requests[sourceKey] = { uploadKey = uploadKey, raster = raster }
+end
+
+-- Samples every source-indexed 2D drawable reachable from the current
+-- battle scene. The upload batch publishes as one holder update; unchanged
+-- palette versions reuse the same field-owned images.
+function BattleScreenState:_updateEncounterPaletteDrawables()
+  local opening = self._timeline ~= nil and self._timeline:openingPresentation() or nil
+  local palette = type(opening) == "table" and opening.encounterPalette or nil
+  local layer = self._assets:sceneLayer()
+  if self._assets:isHeadless() then
+    local cleared, failure = self._assets:updatePaletteDrawables({})
+    if not cleared then
+      self._mode = "failed"
+      self._error = failure
+      self._paletteDrawableFrame = nil
+    else
+      self._paletteDrawableFrame = type(palette) == "table" and type(opening) == "table" and opening.encounterFrame
+        or nil
+    end
+    return
+  end
+  if type(palette) ~= "table" or type(layer) ~= "table" or self._mode == "failed" then
+    if type(opening) == "table" then
+      for _, slide in ipairs(opening.trainerSlides or {}) do
+        slide.paletteDrawableKey = nil
+      end
+      if type(opening.ballThrow) == "table" then
+        opening.ballThrow.paletteDrawableKey = nil
+      end
+    end
+    local cleared, failure = self._assets:updatePaletteDrawables({})
+    if not cleared then
+      self._mode = "failed"
+      self._error = failure
+    end
+    self._paletteDrawableFrame = nil
+    return
+  end
+  local requests = {} ---@type table<string, { uploadKey: string, raster: table<string, unknown> }>
+  local function addDescriptor(sourceKey, descriptor)
+    assert(type(descriptor) == "table", "visible source-index drawable carries a strict descriptor")
+    addEncounterPaletteRequest(
+      requests,
+      sourceKey,
+      encounterSourceMap(layer, descriptor),
+      palette,
+      self._sceneKey,
+      self._paletteRasterCache
+    )
+  end
+  local terrainSprites = layer.terrainSprites --[[@as table<string, table<string, unknown>>]]
+  for _, side in ipairs({ "player", "foe" }) do
+    local sprite = assert(terrainSprites[side], "battle scene carries both terrain sprites")
+    local sourceKey = "scene-terrain:" .. self._sceneKey .. ":" .. side
+    addDescriptor(sourceKey, assert(sprite.sourceIndices, "terrain sprite carries source-index bytes"))
+  end
+  local menuSections = self._manifest.menus --[[@as table<string, unknown>]]
+  local activeLayout = nil
+  if self._mode == "moves" then
+    activeLayout = "moves"
+  elseif self._mode == "target" then
+    activeLayout = "target"
+  elseif self._mode == "child" then
+    local child = self._subflows:status().childView
+    if type(child) == "table" and child.kind == "learn" and type(child.confirmation) == "table" then
+      activeLayout = "two-option"
+    end
+  else
+    activeLayout = "command"
+  end
+  if activeLayout ~= nil then
+    local sectionName = activeLayout == "two-option" and "twoOption" or activeLayout
+    local section = assert(menuSections[sectionName], "active lower menu has a staged source section")
+    local screens = assert(section.screens, "active lower menu carries source screens")
+    local background =
+      assert(BattlePresentationCache.parseSceneKey(self._sceneKey), "scene key is canonical").background
+    local touch = type(self._armed) == "table"
+        and self._armed.id == "dialogue"
+        and self._armed.pointerId ~= nil
+        and ":touch"
+      or ""
+    for index, screen in ipairs(screens) do
+      local key = "menu:" .. activeLayout .. ":screen:" .. tostring(index) .. "@" .. background .. touch
+      addDescriptor(key, assert(screen.sourceIndices, "visible lower menu screen carries source indices"))
+      local armed = self._armed
+      if type(armed) == "table" and armed.scope == activeLayout then
+        local feedback = type(screen.feedback) == "table" and screen.feedback[armed.id] or nil
+        local patch = type(feedback) == "table" and feedback.pressed or nil
+        if type(patch) == "table" then
+          addDescriptor(
+            "menu:" .. activeLayout .. ":feedback:" .. armed.id .. ":pressed",
+            assert(patch.sourceIndices, "visible menu feedback art carries source indices")
+          )
+        end
+      end
+      if activeLayout == "moves" and type(screen.moveButtons) == "table" then
+        local movesBySlot = {}
+        for _, move in ipairs(self:_moves()) do
+          if type(move.slot) == "number" then
+            movesBySlot[move.slot] = move
+          end
+        end
+        for slotIndex, button in ipairs(screen.moveButtons) do
+          local slot = slotIndex - 1
+          local move = movesBySlot[slot]
+          local variant = "empty"
+          local indices = button.sourceIndices
+          local descriptorForButton = type(indices) == "table" and indices.empty or nil
+          if type(move) == "table" and move.name ~= nil then
+            local state = type(armed) == "table" and armed.id == "move:" .. tostring(slot) and "pressed" or "normal"
+            local typeName = move.moveType --[[@as string]]
+            assert(type(typeName) == "string", "visible move has its type")
+            local typeKey = typeName:lower()
+            variant = typeKey .. ":" .. state
+            local states = type(indices) == "table" and type(indices.types) == "table" and indices.types[typeKey] or nil
+            descriptorForButton = type(states) == "table" and states[state] or nil
+          end
+          addDescriptor(
+            "menu:moves:move-button:" .. tostring(slot) .. ":" .. variant,
+            assert(descriptorForButton, "visible move-button art carries source indices")
+          )
+        end
+      end
+    end
+  end
+  local hud = self._manifest.hud --[[@as table<string, unknown>]]
+  local hudSprites = {
+    { key = "hud:player", value = hud.player },
+    { key = "hud:enemy", value = hud.enemy },
+  }
+  local doubles = hud.doubles --[[@as table<string, unknown>]]
+  for _, entry in ipairs({
+    { key = "hud:player-left", field = "playerLeft" },
+    { key = "hud:player-right", field = "playerRight" },
+    { key = "hud:enemy-left", field = "enemyLeft" },
+    { key = "hud:enemy-right", field = "enemyRight" },
+  }) do
+    hudSprites[#hudSprites + 1] = { key = entry.key, value = doubles[entry.field] }
+  end
+  for _, entry in ipairs(hudSprites) do
+    local sprite = assert(entry.value, "battle manifest carries source HUD art")
+    addDescriptor(entry.key, assert(sprite.sourceIndices, "visible HUD art carries source indices"))
+  end
+  local cursor = hud.cursor
+  if self._keyboardFocus then
+    assert(type(cursor) == "table", "keyboard focus carries staged cursor art")
+    addDescriptor("cursor", assert(cursor.sourceIndices, "visible cursor art carries source indices"))
+  end
+  for _, entry in ipairs({
+    { key = "gauges:enemy", index = 1 },
+    { key = "gauges:player", index = 2 },
+  }) do
+    local gauge = assert(hud.partyGauges[entry.index], "battle manifest carries both native party gauges")
+    addDescriptor(entry.key, assert(gauge.sourceIndices, "visible party gauge art carries source indices"))
+  end
+  if type(opening) == "table" then
+    for _, slide in ipairs(opening.trainerSlides or {}) do
+      slide.paletteDrawableKey = nil
+      local drawableKey = slide.drawableKey
+      local selectedPath = type(slide.sourceIndexPaths) == "table" and slide.sourceIndexPaths[drawableKey] or nil
+      if slide.visible == true and type(selectedPath) == "string" then
+        local key = "battle-palette:trainer:" .. tostring(slide.paletteLayoutIndex) .. ":" .. tostring(drawableKey)
+        slide.paletteDrawableKey = key
+        addDescriptor(key, { path = selectedPath })
+      end
+    end
+    local ball = opening.ballThrow
+    if type(ball) == "table" then
+      ball.paletteDrawableKey = nil
+      if ball.visible == true then
+        local selector = ball.selector --[[@as string]]
+        assert(type(selector) == "string", "visible ball throw names its selector")
+        local ballKey = selector:match("^ball:([%w_]+)$")
+        assert(ballKey ~= nil, "visible ball throw uses a staged ball selector")
+        local frame = assert(type(ball.frame) == "number" and ball.frame, "visible ball throw names its frame")
+        local frameKey = "battle-ball:" .. ballKey .. ":" .. tostring(frame)
+        local layout = assert(layer.nativePaletteLayout, "ball throw has its accepted physical palette layout")
+        local selected = nil
+        for _, candidate in ipairs(layout.balls) do
+          if candidate.selector == selector and candidate.group == "own" then
+            selected = candidate
+            break
+          end
+        end
+        assert(selected ~= nil, "visible ball throw resolves to an accepted native palette instance")
+        local selectedPath =
+          assert(selected.sourceIndexPaths[frameKey], "visible ball frame has a selected slot variant")
+        local key = "battle-palette:ball:" .. tostring(selected.firstSlot) .. ":" .. frameKey
+        ball.paletteDrawableKey = key
+        addDescriptor(key, { path = selectedPath })
+      end
+    end
+  end
+  local published, failure = self._assets:updatePaletteDrawables(requests)
+  if not published then
+    self._mode = "failed"
+    self._error = failure
+    self._paletteDrawableFrame = nil
+    return
+  end
+  for sourceKey in pairs(self._paletteRasterCache) do
+    if requests[sourceKey] == nil then
+      self._paletteRasterCache[sourceKey] = nil
+    end
+  end
+  assert(type(opening) == "table", "palette images publish within an active encounter opening")
+  local frame = opening.encounterFrame
+  assert(type(frame) == "number", "palette images publish against their encounter frame")
+  self._paletteDrawableFrame = frame
+end
+
+-- Captures the launch's accepted MAIN_OBJ resource order once at scene handoff.
+-- Render snapshots only borrow this staged layout and never create asset demand.
+function BattleScreenState:_stageNativePaletteLayout()
+  local latestView = self._pendingFinal or self._latestView
+  local sceneAssets = self._assets:sceneLayer()
+  if type(latestView) ~= "table" or type(sceneAssets) ~= "table" then
+    return false
+  end
+  if not self:_launchLeavesStaged({ latestView }) then
+    return false
+  end
+  if self._nativePaletteLayoutReady and type(sceneAssets.nativePaletteLayout) == "table" then
+    return true
+  end
+  local trainerPictures = {} ---@type string[]
+  local nativePaletteLayout = { trainers = {}, balls = {} }
+  if type(latestView) == "table" then
+    local playerTrainer = latestView.playerTrainer
+    if type(playerTrainer) == "table" and type(playerTrainer.classKey) == "string" then
+      local selector = "back:" .. playerTrainer.classKey
+      trainerPictures[#trainerPictures + 1] = selector
+      nativePaletteLayout.trainers[#nativePaletteLayout.trainers + 1] = {
+        selector = selector,
+        role = "player",
+      }
+    end
+    local hasTrainerFoe = false
+    local foeTrainerParticipants = {} ---@type { participant: integer }[]
+    local ownParticipantCount = 0
+    for _, participant in ipairs(latestView.participants or {}) do
+      if type(participant) == "table" and participant.side == 1 then
+        ownParticipantCount = ownParticipantCount + 1
+      elseif
+        type(participant) == "table"
+        and participant.side == 2
+        and type(participant.controller) == "string"
+        and participant.controller:match("^trainer:")
+      then
+        hasTrainerFoe = true
+        foeTrainerParticipants[#foeTrainerParticipants + 1] = {
+          participant = assert(participant.participant, "trainer participant has its accepted identity"),
+        }
+      end
+    end
+    assert(ownParticipantCount <= 1, "multi-side player trainer insertion requires explicit ordered actor records")
+    if hasTrainerFoe then
+      assert(
+        type(playerTrainer) == "table" and type(playerTrainer.classKey) == "string",
+        "trainer battles carry the selected player trainer class"
+      )
+      local foeTrainers = latestView.foeTrainers
+      assert(type(foeTrainers) == "table" and #foeTrainers > 0, "trainer battles carry accepted foe trainer records")
+      assert(
+        #foeTrainerParticipants == #foeTrainers,
+        "accepted foe trainer records map one-to-one to trainer participants"
+      )
+      local backSelector = "back:" .. playerTrainer.classKey
+      assert(nativePaletteLayout.trainers[1].selector == backSelector, "player trainer palette precedes foe insertions")
+      for index, trainer in ipairs(foeTrainers) do
+        assert(
+          type(trainer) == "table" and type(trainer.classKey) == "string",
+          "foe trainer records carry semantic classes"
+        )
+        local selector = "front:" .. trainer.classKey
+        trainerPictures[#trainerPictures + 1] = selector
+        nativePaletteLayout.trainers[#nativePaletteLayout.trainers + 1] = {
+          selector = selector,
+          role = "foe",
+          participant = foeTrainerParticipants[index].participant,
+        }
+      end
+    end
+    local activeBattlers = {} ---@type { battlerId: integer, selector: string, group: string, controller: string? }[]
+    for _, groupName in ipairs({ "own", "foes" }) do
+      local group = latestView[groupName]
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.active ~= false and type(record.ballKey) == "string" then
+            local battlerId = record.combatant
+            assert(
+              type(battlerId) == "number" and battlerId % 1 == 0,
+              "active battler context carries its native battler id"
+            )
+            battlerId = battlerId --[[@as integer]]
+            local selector = "ball:" .. record.ballKey
+            activeBattlers[#activeBattlers + 1] = {
+              battlerId = battlerId,
+              selector = selector,
+              group = groupName,
+              controller = record.controller,
+            }
+          end
+        end
+      end
+    end
+    table.sort(activeBattlers, function(first, second)
+      return first.battlerId < second.battlerId
+    end)
+    local battleBalls = {} ---@type string[]
+    local previousBattlerId = nil
+    for _, battler in ipairs(activeBattlers) do
+      assert(previousBattlerId ~= battler.battlerId, "active native battler ids are unique")
+      previousBattlerId = battler.battlerId
+      battleBalls[#battleBalls + 1] = battler.selector
+      local skipPalettes = self._kind == "safari" or self._kind == "pal-park"
+      local includePalette = battler.group == "own"
+        or (battler.group == "foes" and type(battler.controller) == "string" and battler.controller:match("^trainer:"))
+      if not skipPalettes and includePalette then
+        assert(
+          battler.group ~= "foes" or (type(battler.controller) == "string" and battler.controller:match("^trainer:")),
+          "opponent ball palette insertion is limited to trainer battles"
+        )
+        nativePaletteLayout.balls[#nativePaletteLayout.balls + 1] = {
+          selector = battler.selector,
+          battlerId = battler.battlerId,
+          group = battler.group,
+          firstSlot = 48 + #nativePaletteLayout.balls * 16,
+        }
+      end
+    end
+    self._assets:addTrainerPictures(trainerPictures)
+    self._assets:addBattleBalls(battleBalls)
+    if type(sceneAssets) == "table" then
+      sceneAssets.nativePaletteLayout = nativePaletteLayout
+      sceneAssets.mainObjBallPaletteSources = {}
+      for _, ball in ipairs(nativePaletteLayout.balls) do
+        local entry =
+          assert(self._manifest.battleBalls.entries[ball.selector], "active ball palette is in the manifest")
+        sceneAssets.mainObjBallPaletteSources[ball.selector] = entry.paletteSource.words
+        ball.sourceIndexPaths = sourceIndexPathsAtSlot(entry, ball.firstSlot)
+      end
+      sceneAssets.mainObjTrainerPaletteSources = {}
+      local nextTrainerSlot = 48 + #nativePaletteLayout.balls * 16
+      for index, trainer in ipairs(nativePaletteLayout.trainers) do
+        local selector = trainer.selector
+        local entry =
+          assert(self._manifest.trainerPictures.entries[selector], "visible trainer palette is in the manifest")
+        sceneAssets.mainObjTrainerPaletteSources[selector] = entry.paletteSource.words
+        local bankCount = math.floor(#entry.paletteSource.words / 16) --[[@as integer]]
+        assert(bankCount >= 1 and bankCount % 1 == 0, "trainer palette source contains whole physical banks")
+        nativePaletteLayout.trainers[index] = {
+          selector = selector,
+          role = trainer.role,
+          participant = trainer.participant,
+          firstSlot = nextTrainerSlot,
+          bankCount = bankCount,
+          sourceIndexPaths = sourceIndexPathsAtSlot(entry, nextTrainerSlot),
+        }
+        nextTrainerSlot = nextTrainerSlot + bankCount * 16
+      end
+    end
+  end
+  self._nativePaletteLayoutReady = true
+  return true
+end
+
+-- Stages the encounter palette source once the battle scene layer lands:
+-- the timeline builds its evaluator from these buffers with the opening.
+-- A layer without BG3 provenance leaves the opening palette-less, exactly
+-- as before. Runs on fixed updates only, never from draws.
+function BattleScreenState:_stageEncounterSource()
+  if self._encounterSourceKey ~= nil then
+    return
+  end
+  local layer = self._assets:sceneLayer()
+  if type(layer) ~= "table" then
+    return
+  end
+  if not self:_stageNativePaletteLayout() then
+    return
+  end
+  layer = self._assets:sceneLayer()
+  assert(type(layer) == "table" and layer.nativePaletteLayout ~= nil, "native palette layout stages atomically")
+  -- The covered envelope can land and tick the scene before the battle
+  -- runtime's first update admits its native restore class. Wait for that
+  -- plan before starting the palette timeline.
+  if self._encounterPaletteRestoreType == nil then
+    return
+  end
+  local sets = layer.encounterParticles
+  if type(sets) ~= "table" or #sets == 0 then
+    -- A landed scene without any staged encounter systems runs no
+    -- encounter task at all. Envelope-less direct-driven screens stage
+    -- scene art but never the two SPL systems; cancel before the first
+    -- tick so no source frame, voice, or palette state publishes.
+    -- Corrupt staging (a table missing a required start index) still
+    -- fails loudly in _stepEncounterParticles instead of canceling.
+    self._timeline:cancelEncounterTask()
+    return
+  end
+  local background = BattlePresentationCache.parseSceneKey(self._sceneKey)
+  local fadeBlack = type(background) == "table"
+    and background.background ~= nil
+    and type(background.background) == "string"
+    and background.background:match("^cave_") ~= nil
+  local restoreType =
+    assert(self._encounterPaletteRestoreType, "battle admission records the native encounter palette restore class")
+  local source = encounterSourceOf(layer, fadeBlack == true, restoreType)
+  self._timeline:stageEncounterSource(source)
+  self._encounterSourceKey = type(layer.sceneKey) == "string" and layer.sceneKey or self._sceneKey
+end
+
+-- Reports whether the screen owns its first native-renderable battle
+-- visual: the launch is live, the exact staged scene closure (intro art
+-- with its palette source and the required particle sets) is present,
+-- and the opening task published its first source frame. Read-only:
+-- never advances clocks, voices, particles, or input.
+---@return boolean ready true once the first source battle frame is presentable
+function BattleScreenState:firstNativeBattleFrameReady()
+  if self._disposed or self._mode == "failed" or self._mode == "disposed" then
+    return false
+  end
+  if self._assets:state() ~= "ready" then
+    return false
+  end
+  local layer = self._assets:sceneLayer()
+  if type(layer) ~= "table" then
+    return false
+  end
+  local introLayer = layer.introLayer --[[@as table<string, unknown>?]]
+  if type(introLayer) ~= "table" or introLayer.drawable == nil then
+    return false
+  end
+  if self._encounterSourceKey == nil then
+    return false
+  end
+  -- The first visual needs its first emitter set staged with texture
+  -- handles; a set that arrives without its closure fails the launch
+  -- instead of starting late.
+  local sets = layer.encounterParticles --[[@as table<string, unknown>?]]
+  local first = type(sets) == "table" and sets[1] or nil
+  local textures = type(first) == "table" and first.textures or nil
+  if type(textures) ~= "table" then
+    return false
+  end
+  for _, texture in ipairs(textures) do
+    if type(texture) ~= "table" or texture.drawable == nil then
+      return false
+    end
+  end
+  local opening = self._timeline:openingPresentation()
+  if type(opening) ~= "table" or opening.encounterFrame == nil then
+    return false
+  end
+  if self._paletteDrawableFrame ~= opening.encounterFrame then
+    return false
+  end
+  if self._fadedIntroFrame ~= opening.encounterFrame and not self._fadedIntroUnavailable then
+    return false
+  end
+  return true
+end
+
 -- Steps the encounter terrain particles with the opening timeline: the
--- timeline's animation frame starts each staged set, and a reset opening
--- drops them.
+-- timeline's animation frame starts each staged set exactly on its start
+-- tick, and a reset opening drops them. A set whose start tick arrives
+-- without its staged scene or emitter closure fails the launch with the
+-- scene and frame instead of starting late; the second system's
+-- started/active status feeds back to the timeline before its next task
+-- transition. Reads only; draws never step.
 function BattleScreenState:_stepEncounterParticles()
   local presentation = self._timeline:openingPresentation()
   if presentation == nil then
     self._encounterParticles:clear()
     return
   end
+  local frame = presentation.encounterFrame
   local layer = self._assets:sceneLayer()
-  self._encounterParticles:step(presentation.encounterFrame, layer ~= nil and layer.encounterParticles or nil)
+  local sets = layer ~= nil and layer.encounterParticles or nil
+  local sceneKey = type(layer) == "table" and layer.sceneKey or "unknown scene"
+  -- A staged scene that reaches a start tick without its emitter set fails
+  -- the launch instead of starting late. A holder with no scene status at
+  -- all keeps the legacy clock-only path: its task simply never observes a
+  -- second system and so never completes on emitters alone.
+  if type(sets) == "table" and (frame == 1 or frame == 20) then
+    local required = frame == 1 and 1 or 2
+    if sets[required] == nil then
+      self._mode = "failed"
+      self._error = "battle encounter misses its staged emitter set for launch "
+        .. self._launchId
+        .. ": scene "
+        .. tostring(sceneKey)
+        .. " frame "
+        .. tostring(frame)
+      return
+    end
+  end
+  local stepped, stepError = pcall(function()
+    self._encounterParticles:step(frame, sets)
+  end)
+  if not stepped then
+    self._mode = "failed"
+    self._error = "battle encounter misses its staged emitter closure for launch "
+      .. self._launchId
+      .. ": scene "
+      .. tostring(sceneKey)
+      .. " frame "
+      .. tostring(frame)
+      .. ": "
+      .. tostring(stepError)
+    return
+  end
+  self._timeline:reportEncounterEmitterState(
+    self._encounterParticles:secondStarted(),
+    self._encounterParticles:secondSystemActive()
+  )
 end
 
 -- Steps the ball particles with the cue timeline: effects the timeline
@@ -6050,7 +6961,7 @@ function BattleScreenState:_stepBallParticles()
   ---@param ballKey string
   ---@param kind "seal"|"burst"
   ---@param textureId integer
-  ---@return table<string, unknown>|nil
+  ---@return table<string, unknown>|userdata|nil
   local function textureOf(ballKey, kind, textureId)
     return (self._assets:drawable("battle-ball-particle:" .. ballKey .. ":" .. kind .. ":" .. textureId))
   end
@@ -6090,6 +7001,7 @@ function BattleScreenState:updateFixed(dt)
       self._sceneHasBackground = true
     end
   end
+  self:_stageNativePaletteLayout()
   if self._assets:state() == "failed" then
     self._mode = "failed"
     self._error = self._assets:error()
@@ -6130,6 +7042,10 @@ function BattleScreenState:updateFixed(dt)
       if self._mode == "failed" then
         break
       end
+      -- The encounter palette source stages from the landed scene once
+      -- per accepted tick before the cue player runs, so the task's
+      -- first frame already carries its staged plane snapshot.
+      self:_stageEncounterSource()
       self:_advanceButtonFeedback()
       self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable, function(cue)
         return self:_soundCueComplete(cue)
@@ -6149,6 +7065,10 @@ function BattleScreenState:updateFixed(dt)
       if self._mode == "failed" then
         break
       end
+      -- A launch packet can establish its accepted battler context on
+      -- this cue tick. Stage immediately after that handoff and before
+      -- particle stepping so its first source frame sees the palette.
+      self:_stageEncounterSource()
       self._player:stepSourceTick({ tick = 1 })
       local completion = self._completion
       local child = self._completionChild
@@ -6247,6 +7167,10 @@ function BattleScreenState:updateFixed(dt)
   end
   self._cursorWasVisible = cursorVisible
   self._cursorSelection = cursorVisible and self._selection or nil
+  -- Palette-dependent images materialize once after the fixed tick has
+  -- published its final timeline state and before the next draw plan.
+  self:_updateFadedIntro()
+  self:_updateEncounterPaletteDrawables()
   if self._session ~= nil then
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())

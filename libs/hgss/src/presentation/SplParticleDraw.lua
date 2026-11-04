@@ -13,25 +13,75 @@ local PX_PER_UNIT = 24
 local DEPTH_NEAR, DEPTH_FAR = 1, 900
 local CAMERA_DISTANCE = 4
 
--- Repeat quads keyed by image and repeat powers; they hold no image, so the
--- entries release with the image.
+-- Repeat quads keyed by stable resolved handle, then source dimensions
+-- and repeat powers; they hold no image, so the entries release with
+-- the handle. Dimensions ride the key so a recycled handle never
+-- serves a stale viewport.
 local quadsByImage = setmetatable({}, { __mode = "k" })
 
+-- Measures one resolved texture handle: pool leases carry their source
+-- dimensions directly, raw images answer through their getters. Anything
+-- else fails naming the expected handle shapes instead of drawing garbage.
+---@param drawable table<string, unknown>|userdata resolved texture handle
+---@return number width source width in pixels
+---@return number height source height in pixels
+local function textureDimensions(drawable)
+  local drawableType = type(drawable)
+  assert(
+    drawableType == "table" or drawableType == "userdata",
+    "particle textures resolve to a pool lease or a raw image"
+  )
+  if type(drawable.drawQuad) == "function" then
+    local width, height = drawable.width, drawable.height
+    assert(type(width) == "number" and type(height) == "number", "pooled particle leases carry their source dimensions")
+    return width, --[[@as number]]
+      height --[[@as number]]
+  end
+  local getWidth, getHeight = drawable.getWidth, drawable.getHeight
+  assert(
+    type(getWidth) == "function" and type(getHeight) == "function",
+    "particle textures resolve to a pool lease or a raw image"
+  )
+  return getWidth(drawable), getHeight(drawable)
+end
+
+-- Draws one resolved texture handle with a caller viewport: pool leases
+-- draw through their palette-exact sampler (a raw draw of indexed pixels
+-- would show palette indices as color), raw images draw directly. The
+-- transform arguments are identical on both routes.
 ---@param graphics table<string, function> love-like graphics namespace
----@param image love.Image
+---@param drawable table<string, unknown>|userdata resolved texture handle
+---@param quad love.Quad caller-owned viewport
+---@param x number
+---@param y number
+---@param rotation number|nil
+---@param sx number
+---@param sy number
+---@param ox number
+---@param oy number
+local function drawTextureQuad(graphics, drawable, quad, x, y, rotation, sx, sy, ox, oy)
+  if type(drawable.drawQuad) == "function" then
+    drawable:drawQuad(graphics, quad, x, y, rotation, sx, sy, ox, oy)
+    return
+  end
+  graphics.draw(drawable, quad, x, y, rotation, sx, sy, ox, oy)
+end
+
+---@param graphics table<string, function> love-like graphics namespace
+---@param drawable table<string, unknown>|userdata resolved texture handle
 ---@param repS integer horizontal repeat power
 ---@param repT integer vertical repeat power
 ---@return love.Quad, number, number
-local function repeatQuad(graphics, image, repS, repT)
-  local quads = quadsByImage[image]
+local function repeatQuad(graphics, drawable, repS, repT)
+  local width, height = textureDimensions(drawable)
+  local quads = quadsByImage[drawable]
   if quads == nil then
     quads = {}
-    quadsByImage[image] = quads
+    quadsByImage[drawable] = quads
   end
-  local key = repS * 4 + repT
+  local key = width .. "x" .. height .. ":" .. repS .. ":" .. repT
   local entry = quads[key]
   if entry == nil then
-    local width, height = image:getWidth(), image:getHeight()
     local quadWidth, quadHeight = width * (2 ^ repS), height * (2 ^ repT)
     entry = { graphics.newQuad(0, 0, quadWidth, quadHeight, width, height), quadWidth, quadHeight }
     quads[key] = entry
@@ -124,12 +174,13 @@ end
 ---@class SplParticleDrawOptions
 ---@field centerX number pane pixel x of the world origin
 ---@field centerY number pane pixel y of the world origin
----@field resolveTexture fun(runtime: table<string, unknown>, particle: table<string, unknown>, child: table<string, unknown>|nil): love.Image|nil
----   image the particle shows; child is the emitter's child record for child particles. A nil image skips the particle.
+---@field resolveTexture fun(runtime: table<string, unknown>, particle: table<string, unknown>, child: table<string, unknown>|nil): table<string, unknown>|userdata|nil
+---   texture handle the particle shows: a pool lease or a raw image; child is the emitter's child record for child particles. A nil handle skips the particle.
 
 -- Draws every live particle of the simulation in far-to-near order and
 -- restores the draw color. Texture repeat comes from the emitter (or child)
--- record; the image must already wrap in repeat mode when the record repeats.
+-- record; the handle already carries its repeat sampler from acquisition,
+-- so drawing never mutates it.
 -- A record `textureOffset` shifts the quad center within the particle's local
 -- space by (x, y) half-extents, as the retail quad is drawn around that point.
 ---@param graphics table<string, function> love-like graphics namespace
@@ -161,7 +212,8 @@ function M.draw(graphics, simulation, options)
         end
         local color = particle.colorRgb
         graphics.setColor(color.r / 31, color.g / 31, color.b / 31, alpha / 31)
-        graphics.draw(
+        drawTextureQuad(
+          graphics,
           image,
           quad,
           options.centerX + worldX * PX_PER_UNIT,

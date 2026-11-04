@@ -1,4 +1,6 @@
 local Assert = require("tests.support.Assert")
+local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -14,29 +16,132 @@ local function graphicsManifest()
   local function art(path)
     return { image = path }
   end
-  local function menu(path)
-    return { image = path, screens = { { image = path } } }
+  local function lowerObjArt(path)
+    return {
+      image = path,
+      sourceIndices = {
+        path = path .. ".sub-obj-source-index.rgba8",
+        format = "source-index-rgba8",
+        plane = "subObj",
+        width = 1,
+        height = 1,
+      },
+    }
+  end
+  local function mainObjArt(path)
+    return {
+      image = path,
+      sourceIndices = {
+        path = path .. ".main-obj-source-index.rgba8",
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = 1,
+        height = 1,
+      },
+      paletteSource = {
+        firstSlot = 0,
+        words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+      },
+    }
+  end
+  local function menu(path, hasFeedback, hasMoveButtons)
+    local screen = {
+      image = path,
+      width = 256,
+      height = 256,
+      sourceIndices = {
+        path = path .. ".source-index.rgba8",
+        format = "source-index-rgba8",
+        plane = "subBg",
+        width = 256,
+        height = 256,
+      },
+    }
+    if hasFeedback then
+      screen.feedback = {
+        fight = {
+          pressed = {
+            image = path,
+            x = 0,
+            y = 0,
+            width = 8,
+            height = 8,
+            sourceIndices = {
+              path = path .. ".feedback.source-index.rgba8",
+              format = "source-index-rgba8",
+              plane = "subBg",
+              width = 8,
+              height = 8,
+            },
+          },
+        },
+      }
+    end
+    if hasMoveButtons then
+      screen.moveButtons = {}
+      for slot = 0, 3 do
+        local buttonPath = path .. ".move-" .. tostring(slot)
+        screen.moveButtons[slot + 1] = {
+          x = 0,
+          y = 0,
+          width = 8,
+          height = 8,
+          empty = buttonPath .. ".empty.png",
+          types = { NORMAL = { normal = buttonPath .. ".normal.png", pressed = buttonPath .. ".pressed.png" } },
+          sourceIndices = {
+            empty = {
+              path = buttonPath .. ".empty.source-index.rgba8",
+              format = "source-index-rgba8",
+              plane = "subBg",
+              width = 8,
+              height = 8,
+            },
+            types = {
+              NORMAL = {
+                normal = {
+                  path = buttonPath .. ".normal.source-index.rgba8",
+                  format = "source-index-rgba8",
+                  plane = "subBg",
+                  width = 8,
+                  height = 8,
+                },
+                pressed = {
+                  path = buttonPath .. ".pressed.source-index.rgba8",
+                  format = "source-index-rgba8",
+                  plane = "subBg",
+                  width = 8,
+                  height = 8,
+                },
+              },
+            },
+          },
+        }
+      end
+    end
+    return { image = path, screens = { screen } }
   end
   local path = "assets/generated/battle/synthetic.png"
   return {
     verified = true,
     pictures = { shadow = art(path) },
     hud = {
-      player = art(path),
-      enemy = art(path),
+      player = mainObjArt(path),
+      enemy = mainObjArt(path),
       doubles = {
-        playerLeft = art(path),
-        playerRight = art(path),
-        enemyLeft = art(path),
-        enemyRight = art(path),
+        playerLeft = mainObjArt(path),
+        playerRight = mainObjArt(path),
+        enemyLeft = mainObjArt(path),
+        enemyRight = mainObjArt(path),
       },
-      cursor = art(path),
+      cursor = lowerObjArt(path),
       arrow = art(path),
-      partyGauges = { art(path), art(path) },
+      partyGauges = { lowerObjArt(path), lowerObjArt(path) },
     },
+    trainerPictures = { entries = {} },
+    battleBalls = { entries = {} },
     menus = {
-      command = menu(path),
-      moves = menu(path),
+      command = menu(path, true, false),
+      moves = menu(path, false, true),
       target = menu(path),
       twoOption = menu(path),
       lower = { pulseMask = path },
@@ -52,13 +157,99 @@ local function graphicsManifest()
   }
 end
 
+local function menuSourcePayload(manifest, path)
+  local function sourcePayload(source)
+    if source.path == path then
+      return string.rep(string.char(0, 0, 0, 0), source.width * source.height)
+    end
+    return nil
+  end
+  for _, sectionName in ipairs({ "command", "moves", "target", "twoOption" }) do
+    for _, screen in ipairs(manifest.menus[sectionName].screens) do
+      local bytes = sourcePayload(screen.sourceIndices)
+      if bytes ~= nil then
+        return bytes
+      end
+      if screen.feedback ~= nil then
+        for _, states in pairs(screen.feedback) do
+          for _, patch in pairs(states) do
+            bytes = sourcePayload(patch.sourceIndices)
+            if bytes ~= nil then
+              return bytes
+            end
+          end
+        end
+      end
+      if screen.moveButtons ~= nil then
+        for _, button in ipairs(screen.moveButtons) do
+          local indices = button.sourceIndices
+          bytes = sourcePayload(indices.empty)
+          if bytes ~= nil then
+            return bytes
+          end
+          for _, typeStates in pairs(indices.types) do
+            for _, source in pairs(typeStates) do
+              bytes = sourcePayload(source)
+              if bytes ~= nil then
+                return bytes
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function mainObjSourcePayload(manifest, path)
+  local hud = manifest.hud
+  for _, sprite in ipairs({
+    hud.player,
+    hud.enemy,
+    hud.doubles.playerLeft,
+    hud.doubles.playerRight,
+    hud.doubles.enemyLeft,
+    hud.doubles.enemyRight,
+  }) do
+    local source = sprite.sourceIndices
+    if source.path == path then
+      return string.rep(string.char(0, 0, 0, 255), source.width * source.height)
+    end
+  end
+  return nil
+end
+
+local function subObjSourcePayload(manifest, path)
+  local hud = manifest.hud
+  for _, sprite in ipairs({ hud.cursor, hud.partyGauges[1], hud.partyGauges[2] }) do
+    local source = sprite.sourceIndices
+    if source.path == path then
+      return string.rep(string.char(0, 0, 0, 255), source.width * source.height)
+    end
+  end
+  return nil
+end
+
 local function sceneRecord(sceneKey)
   local introPath = BattlePresentationCache.sceneIntroImagePath(sceneKey)
   local playerPath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "player")
   local foePath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, "foe")
   local charsPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
+  local introCharsPath = BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
+  local sourceIndices = {}
+  for _, side in ipairs({ "player", "foe" }) do
+    local width, height = side == "player" and 48 or 40, side == "player" and 24 or 20
+    sourceIndices[side] = {
+      path = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side),
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = width,
+      height = height,
+    }
+  end
   local axes = assert(BattlePresentationCache.parseSceneKey(sceneKey), "the synthetic scene key stays valid")
   return {
     schema = BattlePresentationCache.SCENE_SCHEMA,
@@ -80,6 +271,11 @@ local function sceneRecord(sceneKey)
           path = charsPath,
           format = "indexed8",
         },
+        baseCharacters = {
+          key = "battle-scene/general-plain-day/intro/characters",
+          path = introCharsPath,
+          format = "indexed8",
+        },
         map = {
           key = "battle-scene/general-plain-day/background/map",
           path = mapPath,
@@ -94,9 +290,26 @@ local function sceneRecord(sceneKey)
     },
     imagePath = BattlePresentationCache.sceneImagePath(sceneKey),
     introLayer = { image = introPath, width = 512, height = 256 },
+    paletteSource = {
+      key = "battle-scene/" .. sceneKey:gsub("/", "-") .. "/native-palettes",
+      path = BattlePresentationCache.scenePaletteSourcePath(sceneKey),
+      format = "native-encounter-palettes-v1",
+    },
     terrainSprites = {
-      player = { image = playerPath, width = 48, height = 24, origin = { x = 24, y = 12 } },
-      foe = { image = foePath, width = 40, height = 20, origin = { x = 20, y = 10 } },
+      player = {
+        image = playerPath,
+        width = 48,
+        height = 24,
+        origin = { x = 24, y = 12 },
+        sourceIndices = sourceIndices.player,
+      },
+      foe = {
+        image = foePath,
+        width = 40,
+        height = 20,
+        origin = { x = 20, y = 10 },
+        sourceIndices = sourceIndices.foe,
+      },
     },
     encounterParticles = ParticlesFixture.sets(sceneKey),
   }
@@ -146,6 +359,32 @@ local function stagedCacheFs(record)
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
   local cacheFs = { versionId = "synthetic" }
+  local menuSourceBytes = {}
+  local function includeMenuSource(source)
+    menuSourceBytes[source.path] = string.rep(string.char(0, 0, 0, 0), source.width * source.height)
+  end
+  for _, sectionName in ipairs({ "command", "moves", "target", "twoOption" }) do
+    for _, screen in ipairs(graphicsManifest().menus[sectionName].screens) do
+      includeMenuSource(screen.sourceIndices)
+      if screen.feedback ~= nil then
+        for _, states in pairs(screen.feedback) do
+          for _, patch in pairs(states) do
+            includeMenuSource(patch.sourceIndices)
+          end
+        end
+      end
+      if screen.moveButtons ~= nil then
+        for _, button in ipairs(screen.moveButtons) do
+          includeMenuSource(button.sourceIndices.empty)
+          for _, typeStates in pairs(button.sourceIndices.types) do
+            for _, source in pairs(typeStates) do
+              includeMenuSource(source)
+            end
+          end
+        end
+      end
+    end
+  end
   function cacheFs:loadLua(path)
     if path == BattlePresentationCache.scenePath(SCENE_KEY) then
       return record
@@ -156,14 +395,54 @@ local function stagedCacheFs(record)
     if path == BattlePresentationCache.scenePalettePath(SCENE_KEY) then
       return { colors = paletteColors }
     end
+    if path == record.paletteSource.path then
+      return {
+        mainObjSources = {
+          hud = { firstSlot = 0, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+          hudAuxiliary = { firstSlot = 16, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+          terrain = { firstSlot = 32, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+        },
+        subObjOpaque = { [1] = 0x001F },
+        initialDisplayed = { subObj = { [1] = 0x001F } },
+      }
+    end
     if path == MoveIconCache.manifestPath() then
       return { schema = MoveIconCache.SCHEMA, types = {}, categories = {} }
     end
     return nil
   end
   function cacheFs:read(path)
+    local menuBytes = menuSourcePayload(graphicsManifest(), path)
+    if menuBytes ~= nil then
+      return menuBytes
+    end
+    if menuSourceBytes[path] ~= nil then
+      return menuSourceBytes[path]
+    end
+    local subObjBytes = subObjSourcePayload(graphicsManifest(), path)
+    if subObjBytes ~= nil then
+      return subObjBytes
+    end
+    local mainObjBytes = mainObjSourcePayload(graphicsManifest(), path)
+    if mainObjBytes ~= nil then
+      return mainObjBytes
+    end
+    if path:match("%.main%-obj%-source%-index%.rgba8$") ~= nil then
+      return string.char(0, 0, 0, 255)
+    end
+    if path:match("%.source%-index%.rgba8$") ~= nil then
+      return string.rep(string.char(32, 0, 0, 255), 256 * 256)
+    end
     if path == record.layers[1].characters.path then
       return string.rep("c", 65536)
+    end
+    if path == record.layers[1].baseCharacters.path then
+      return string.rep("b", 65536)
+    end
+    for _, sprite in pairs(record.terrainSprites) do
+      if path == sprite.sourceIndices.path then
+        return string.rep(string.char(0, 0, 0, 255), sprite.width * sprite.height)
+      end
     end
     return "staged"
   end
@@ -201,7 +480,7 @@ local function ledgerPool(pendingPolls, failures)
   return pool
 end
 
-local function newEnvelope(cacheFs, imagePool)
+local function newEnvelope(cacheFs, imagePool, derivedAssets)
   local envelope = FieldBattlePresentation.new({
     cacheFs = cacheFs,
     windows = { drawWindow = function() end, drawApplicationFrame = function() end },
@@ -225,6 +504,7 @@ local function newEnvelope(cacheFs, imagePool)
     end,
     graphics = {},
     imagePool = imagePool,
+    derivedAssets = derivedAssets,
   })
   envelope._manifest = graphicsManifest()
   return envelope
@@ -254,11 +534,45 @@ end
 function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata()
   local record = sceneRecord(SCENE_KEY)
   local pool = ledgerPool(2, {})
-  local envelope = newEnvelope(stagedCacheFs(record), pool)
+  local stagedCache = stagedCacheFs(record)
+  local feedbackSource = graphicsManifest().menus.command.screens[1].feedback.fight.pressed.sourceIndices
+  Assert.equal(#stagedCache:read(feedbackSource.path), 8 * 8 * 4, "the feedback source map bytes are staged")
+  local envelope = newEnvelope(stagedCache, pool)
   local services = envelope:_preparationServices()
   local ready, failure = prepareScene(services)
   Assert.isTrue(ready, "the staged scene and its intro assets prepare: " .. tostring(failure))
   local layer = assert(services.sceneLayer(), "the prepared scene layer is retained")
+  local cursorSource = graphicsManifest().hud.cursor.sourceIndices
+  local stagedCursor = assert(layer.menuSourceIndices[cursorSource.path], "the keypad cursor SUB_OBJ map is retained")
+  Assert.deepEqual(
+    { stagedCursor.plane, stagedCursor.width, stagedCursor.height, stagedCursor.pixels },
+    { "subObj", 1, 1, string.char(0, 0, 0, 255) },
+    "the cursor map keeps its SUB_OBJ plane, geometry, and raw slot bytes"
+  )
+  local gaugeSource = graphicsManifest().hud.partyGauges[1].sourceIndices
+  local stagedGauge = assert(layer.menuSourceIndices[gaugeSource.path], "the party gauge SUB_OBJ map is retained")
+  Assert.deepEqual(
+    { stagedGauge.plane, stagedGauge.width, stagedGauge.height, stagedGauge.pixels },
+    { "subObj", 1, 1, string.char(0, 0, 0, 255) },
+    "the party gauge map keeps its SUB_OBJ plane, geometry, and raw slot bytes"
+  )
+  local stagedFeedback =
+    assert(layer.menuSourceIndices[feedbackSource.path], "the separate feedback patch retains its source-index map")
+  Assert.deepEqual(
+    { stagedFeedback.plane, stagedFeedback.width, stagedFeedback.height, #stagedFeedback.pixels },
+    { "subBg", 8, 8, 8 * 8 * 4 },
+    "feedback map staging retains the cropped SUB_BG geometry"
+  )
+  local buttonSource = graphicsManifest().menus.moves.screens[1].moveButtons[1].sourceIndices.types.NORMAL.pressed
+  local stagedButton = assert(
+    layer.menuSourceIndices[buttonSource.path],
+    "the separate pressed move-button patch retains its source-index map"
+  )
+  Assert.deepEqual(
+    { stagedButton.plane, stagedButton.width, stagedButton.height, #stagedButton.pixels },
+    { "subBg", 8, 8, 8 * 8 * 4 },
+    "move-button map staging retains the cropped SUB_BG geometry"
+  )
   Assert.equal(
     #pool.acquired,
     3 + #particlePaths(record),
@@ -277,7 +591,10 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
         { texture.id, texture.width, texture.height },
         "set " .. setIndex .. " texture " .. texture.id .. " keeps its identity and size"
       )
-      Assert.isTrue(resolved.drawable ~= nil, "set " .. setIndex .. " texture " .. texture.id .. " is a pooled drawable")
+      Assert.isTrue(
+        resolved.drawable ~= nil,
+        "set " .. setIndex .. " texture " .. texture.id .. " is a pooled drawable"
+      )
     end
   end
   Assert.isTrue(layer.introLayer.drawable ~= nil, "the unbaked intro layer carries its pooled drawable")
@@ -299,6 +616,267 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
     leasePaths(pool.acquired),
     "disposal returns each retained lease exactly once"
   )
+end
+
+function T.trainer_map_uses_context_selected_physical_palette_layout()
+  local record = sceneRecord(SCENE_KEY)
+  local baseCacheFs = stagedCacheFs(record)
+  local manifest = graphicsManifest()
+  manifest.catalogIdentity = "synthetic-catalog"
+  local leafRecords = {}
+  local mapBytes = {
+    ["trainer/front/main-obj-source-index.rgba8"] = string.char(48, 0, 0, 255),
+    ["trainer/front/main-obj-source-index-layout.rgba8"] = string.char(80, 0, 0, 255),
+    ["trainer/back/main-obj-source-index.rgba8"] = string.char(64, 0, 0, 255),
+    ["trainer/back/main-obj-source-index-castle.rgba8"] = string.char(112, 0, 0, 255),
+    ["battle/ball/main-obj-source-index.rgba8"] = string.char(48, 0, 0, 255),
+    ["battle/ball/main-obj-source-index-castle.rgba8"] = string.char(48, 0, 0, 255),
+    ["battle/ball-great/main-obj-source-index-slot64.rgba8"] = string.char(64, 0, 0, 255),
+  }
+  local cacheFs = { versionId = baseCacheFs.versionId }
+  function cacheFs:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return manifest
+    end
+    if leafRecords[path] ~= nil then
+      return leafRecords[path]
+    end
+    return baseCacheFs:loadLua(path)
+  end
+  function cacheFs:read(path)
+    return mapBytes[path] or baseCacheFs:read(path)
+  end
+  function cacheFs:exists(_, _)
+    return true
+  end
+  local pool = ledgerPool(2, {})
+  local host = {
+    requestBattleTrainerPicture = function()
+      return true
+    end,
+    requestBattleBall = function()
+      return true
+    end,
+  }
+  local envelope = newEnvelope(cacheFs, pool, host)
+  local frontFrame = {
+    sourceFrame = 0,
+    drawableKey = "trainer:front:CASTLE_VALET",
+    image = "trainer/front-castle.png",
+    sourceIndices = {
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = 1,
+      height = 1,
+      variants = {
+        ["slot:80"] = {
+          path = "trainer/front/main-obj-source-index-layout.rgba8",
+          firstSlot = 80,
+        },
+      },
+    },
+  }
+  local backFrame = {
+    sourceFrame = 0,
+    drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
+    image = "trainer/back-ethan.png",
+    sourceIndices = {
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = 1,
+      height = 1,
+      variants = {
+        ["slot:112"] = {
+          path = "trainer/back/main-obj-source-index-castle.rgba8",
+          firstSlot = 112,
+        },
+      },
+    },
+  }
+  local emptyWords = {}
+  local castleWords = {}
+  for index = 1, 16 do
+    emptyWords[index] = index - 1
+  end
+  for index = 1, 32 do
+    castleWords[index] = index - 1
+  end
+  local frontImage = "assets/generated/battle/trainer-pictures/front-CASTLE_VALET.png"
+  local backImage = "assets/generated/battle/trainer-pictures/back-PKMN_TRAINER_ETHAN.png"
+  frontFrame.image = frontImage
+  frontFrame.rasterOffset = { x = 0, y = 0 }
+  frontFrame.durationTicks = 1
+  frontFrame.userAttr = 0
+  backFrame.image = backImage
+  backFrame.rasterOffset = { x = 0, y = 0 }
+  backFrame.durationTicks = 1
+  backFrame.userAttr = 0
+  local function trainerAnimation(frame)
+    local sequence = {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { frame },
+    }
+    return {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { frame },
+      sequences = { sequence },
+    }
+  end
+  manifest.trainerPictures.entries = {
+    ["front:CASTLE_VALET"] = {
+      drawableKey = "trainer:front:CASTLE_VALET",
+      image = frontImage,
+      width = 80,
+      height = 80,
+      rasterOffset = { x = 0, y = 0 },
+      paletteSource = { words = castleWords },
+      animation = trainerAnimation(frontFrame),
+    },
+    ["back:PKMN_TRAINER_ETHAN"] = {
+      drawableKey = "trainer:back:PKMN_TRAINER_ETHAN",
+      image = backImage,
+      width = 80,
+      height = 80,
+      rasterOffset = { x = 0, y = 0 },
+      paletteSource = { words = emptyWords },
+      throwOffsets = {
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+        { x = 0, y = 0 },
+      },
+      animation = trainerAnimation(backFrame),
+    },
+  }
+  for selector, entry in pairs(manifest.trainerPictures.entries) do
+    leafRecords[BattlePresentationCache.trainerPicturePath(selector)] = {
+      schema = "g4-battle-trainer-picture-v1",
+      selector = selector,
+      catalogIdentity = manifest.catalogIdentity,
+      entry = entry,
+    }
+  end
+  manifest.battleBalls.entries = {
+    ["ball:POKE"] = {
+      fadeColor = 0,
+      paletteSource = { words = emptyWords },
+      frames = {
+        {
+          drawableKey = "battle-ball:POKE:0",
+          image = "assets/generated/battle/balls/POKE.png",
+          width = 1,
+          height = 1,
+          sourceIndices = {
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 1,
+            height = 1,
+            variants = {
+              ["slot:48"] = {
+                path = "battle/ball/main-obj-source-index-castle.rgba8",
+                firstSlot = 48,
+              },
+            },
+          },
+        },
+      },
+    },
+    ["ball:GREAT_BALL"] = {
+      fadeColor = 0,
+      paletteSource = { words = emptyWords },
+      frames = {
+        {
+          drawableKey = "battle-ball:GREAT_BALL:0",
+          image = "assets/generated/battle/balls/GREAT_BALL.png",
+          width = 1,
+          height = 1,
+          sourceIndices = {
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 1,
+            height = 1,
+            variants = {
+              ["slot:64"] = {
+                path = "battle/ball-great/main-obj-source-index-slot64.rgba8",
+                firstSlot = 64,
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  for selector, entry in pairs(manifest.battleBalls.entries) do
+    leafRecords[BattlePresentationCache.ballPath(selector)] = {
+      schema = "g4-battle-ball-v1",
+      selector = selector,
+      catalogIdentity = manifest.catalogIdentity,
+      entry = entry,
+    }
+  end
+  envelope._manifest = manifest
+  local services = envelope:_preparationServices()
+  local ready, failure = services.prepare({
+    launchId = "castle-trainer-palette-layout",
+    scenes = { SCENE_KEY },
+    pages = {},
+    trainerPictures = { "front:CASTLE_VALET", "back:PKMN_TRAINER_ETHAN" },
+    battleBalls = { "ball:POKE", "ball:GREAT_BALL" },
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isTrue(ready, "the accepted trainer palette layout stages: " .. tostring(failure))
+  local layer = assert(services.sceneLayer(), "the accepted scene retains its source maps")
+  local staged = assert(
+    layer.menuSourceIndices["trainer/back/main-obj-source-index-castle.rgba8"],
+    "the two-bank front trainer selects the physical back-palette sidecar"
+  )
+  Assert.deepEqual(
+    { staged.pixels, staged.paletteSource.firstSlot },
+    { string.char(112, 0, 0, 255), 112 },
+    "the selected immutable map and source palette use the same physical slot"
+  )
+  Assert.isNil(
+    layer.menuSourceIndices["trainer/front/main-obj-source-index.rgba8"],
+    "the source record's unused front layout is not selected for this palette bank"
+  )
+  local stagedBall = assert(
+    layer.menuSourceIndices["battle/ball/main-obj-source-index-castle.rgba8"],
+    "the first active ball uses its native slot"
+  )
+  Assert.deepEqual(
+    { stagedBall.pixels, stagedBall.paletteSource.firstSlot },
+    { string.char(48, 0, 0, 255), 48 },
+    "the first active-ball map and palette use the first ball bank"
+  )
+  local stagedSecondBall = assert(
+    layer.menuSourceIndices["battle/ball-great/main-obj-source-index-slot64.rgba8"],
+    "the second active ball selects the next physical bank"
+  )
+  Assert.deepEqual(
+    { stagedSecondBall.pixels, stagedSecondBall.paletteSource.firstSlot },
+    { string.char(64, 0, 0, 255), 64 },
+    "the second ball map follows the native battler upload order"
+  )
+  envelope:dispose()
+end
+
+function T.preparation_stages_unbaked_intro_characters_for_palette_fades()
+  local record = sceneRecord(SCENE_KEY)
+  local pool = ledgerPool(0, {})
+  local envelope = newEnvelope(stagedCacheFs(record), pool)
+  local services = envelope:_preparationServices()
+  local ready, failure = prepareScene(services)
+  Assert.isTrue(ready, "the staged scene prepares: " .. tostring(failure))
+  local layer = assert(services.sceneLayer(), "the prepared scene layer is retained")
+  Assert.equal(layer.baseCharacters, string.rep("b", 65536), "the scene layer carries its unbaked intro characters")
+  envelope:dispose()
 end
 
 function T.failed_terrain_upload_returns_the_leases_it_already_holds()
@@ -385,6 +963,17 @@ local function dualSceneCacheFs(recordA, recordB, recordC)
         end
         return { colors = colors }
       end
+      if path == record.paletteSource.path then
+        return {
+          mainObjSources = {
+            hud = { firstSlot = 0, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+            hudAuxiliary = { firstSlot = 16, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+            terrain = { firstSlot = 32, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+          },
+          subObjOpaque = { [1] = 0x001F },
+          initialDisplayed = { subObj = { [1] = 0x001F } },
+        }
+      end
     end
     if path == MoveIconCache.manifestPath() then
       return { schema = MoveIconCache.SCHEMA, types = {}, categories = {} }
@@ -393,6 +982,27 @@ local function dualSceneCacheFs(recordA, recordB, recordC)
   end
   function cacheFs:read(path)
     reads[path] = (reads[path] or 0) + 1
+    local menuBytes = menuSourcePayload(graphicsManifest(), path)
+    if menuBytes ~= nil then
+      return menuBytes
+    end
+    local subObjBytes = subObjSourcePayload(graphicsManifest(), path)
+    if subObjBytes ~= nil then
+      return subObjBytes
+    end
+    if path:match("%.main%-obj%-source%-index%.rgba8$") ~= nil then
+      return string.char(0, 0, 0, 255)
+    end
+    if path:match("%.source%-index%.rgba8$") ~= nil then
+      return string.rep(string.char(32, 0, 0, 255), 256 * 256)
+    end
+    for _, record in pairs(records) do
+      for _, sprite in pairs(record.terrainSprites) do
+        if path == sprite.sourceIndices.path then
+          return string.rep(string.char(32, 0, 0, 255), sprite.width * sprite.height)
+        end
+      end
+    end
     return "bytes:" .. path
   end
   function cacheFs:exists(_, _)
@@ -620,16 +1230,8 @@ function T.idle_warmup_adopts_scene_group_and_fixed_art_before_first_launch()
   local usedZero, failureZero = envelope:advanceWarmup(SCENE_KEY, 0)
   Assert.isFalse(usedZero == true, "a settled scene with zero allowance realizes nothing")
   Assert.isNil(failureZero, "a settled scene with zero allowance reports no failure")
-  Assert.equal(
-    totalLoads(cacheFs.loadLuaCounts),
-    settledLoads,
-    "settled idle parses no further Lua documents"
-  )
-  Assert.equal(
-    totalLoads(cacheFs.reads),
-    settledReads,
-    "settled idle rereads no staged bytes"
-  )
+  Assert.equal(totalLoads(cacheFs.loadLuaCounts), settledLoads, "settled idle parses no further Lua documents")
+  Assert.equal(totalLoads(cacheFs.reads), settledReads, "settled idle rereads no staged bytes")
   Assert.equal(#asks, settledAsks, "settled idle places no further derived demand")
   Assert.equal(#pool.requested, settledRequests, "settled idle enrolls no new image tickets")
   Assert.equal(#pool.acquired, settledAcquires, "settled idle constructs no new GPU images")
@@ -641,16 +1243,8 @@ function T.idle_warmup_adopts_scene_group_and_fixed_art_before_first_launch()
   local sceneReadsBefore = cacheFs.reads[record.layers[1].characters.path] or 0
   local ready, failure = prepareScene(services)
   Assert.isTrue(ready, "the warmed scene prepares for its matching launch: " .. tostring(failure))
-  Assert.equal(
-    #pool.requested,
-    requestedBefore,
-    "the matching launch enrolls no new image tickets for warmed art"
-  )
-  Assert.equal(
-    #pool.acquired,
-    acquiredBefore,
-    "the matching launch constructs no new GPU images for warmed art"
-  )
+  Assert.equal(#pool.requested, requestedBefore, "the matching launch enrolls no new image tickets for warmed art")
+  Assert.equal(#pool.acquired, acquiredBefore, "the matching launch constructs no new GPU images for warmed art")
   Assert.equal(
     cacheFs.reads[record.layers[1].characters.path] or 0,
     sceneReadsBefore,
@@ -668,10 +1262,7 @@ function T.idle_warmup_adopts_scene_group_and_fixed_art_before_first_launch()
     audio = { roles = {}, banks = {}, cries = {} },
   })
   Assert.isNil(foeReady, "unknown foe art never reads as warm-ready")
-  Assert.isTrue(
-    type(foeFailure) == "string" and foeFailure ~= "",
-    "the unstaged foe demand still carries its cause"
-  )
+  Assert.isTrue(type(foeFailure) == "string" and foeFailure ~= "", "the unstaged foe demand still carries its cause")
   -- A distinct prediction resumes staging on the same envelope and
   -- eventually completes its own scene group.
   do
@@ -747,10 +1338,7 @@ function T.warmup_keeps_one_scene_group_and_never_publishes_stale_tickets()
     Assert.isNil(failure, "ready warmup records no failure: " .. tostring(failure))
     if used == true then
       spent = spent + 1
-      Assert.isTrue(
-        #pool.acquired - acquiredBefore <= 1,
-        "one idle update realizes at most one image pair"
-      )
+      Assert.isTrue(#pool.acquired - acquiredBefore <= 1, "one idle update realizes at most one image pair")
     else
       break
     end
@@ -760,14 +1348,8 @@ function T.warmup_keeps_one_scene_group_and_never_publishes_stale_tickets()
   -- demand-time borrow finds nothing staged-readable yet, while the
   -- live group answers through its warmed pin.
   local services = envelope:_preparationServices()
-  Assert.isNil(
-    services.drawable("scene:" .. SCENE_KEY),
-    "the replaced scene keeps no drawable behind the live group"
-  )
-  Assert.notNil(
-    services.drawable("scene:" .. SCENE_B_KEY),
-    "the current prediction keeps its warmed scene drawable"
-  )
+  Assert.isNil(services.drawable("scene:" .. SCENE_KEY), "the replaced scene keeps no drawable behind the live group")
+  Assert.notNil(services.drawable("scene:" .. SCENE_B_KEY), "the current prediction keeps its warmed scene drawable")
   pool.readyPaths[recordA.imagePath] = true
   pool.readyPaths[recordA.introLayer.image] = true
   pool.readyPaths[recordA.terrainSprites.player.image] = true
@@ -798,6 +1380,7 @@ function T.actual_scene_wins_over_predicted_warm_group()
   -- The distinguishing marker lives in a valid-range terrain sprite
   -- width: the intro canvas must preserve its native dimensions.
   recordB.terrainSprites.player.width = 111
+  recordB.terrainSprites.player.sourceIndices.width = 111
   local cacheFs = dualSceneCacheFs(recordA, recordB)
   local pool = scriptedPool(0, {})
   local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
@@ -1025,11 +1608,7 @@ function T.speculative_cancellation_and_dispose_keep_foreground_leases_exactly_o
     local _, failure = envelope:advanceWarmup(SCENE_B_KEY, 1)
     Assert.isNil(failure, "late stale completion records no failure: " .. tostring(failure))
   end
-  Assert.equal(
-    #pool.acquired,
-    acquiredBefore,
-    "a late stale result adopts no images behind the live scene"
-  )
+  Assert.equal(#pool.acquired, acquiredBefore, "a late stale result adopts no images behind the live scene")
   local seen = {}
   for _, entry in ipairs(pool.acquired) do
     seen[entry.lease] = (seen[entry.lease] or 0) + 1
@@ -1053,10 +1632,7 @@ function T.speculative_cancellation_and_dispose_keep_foreground_leases_exactly_o
         consumptions = consumptions + 1
       end
     end
-    Assert.isTrue(
-      consumptions == 0,
-      "a cancelled ticket is never consumed afterwards"
-    )
+    Assert.isTrue(consumptions == 0, "a cancelled ticket is never consumed afterwards")
   end
 end
 
@@ -1123,11 +1699,7 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     local pool = scriptedPool(0, {})
     local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
     driveWarmup(envelope, SCENE_KEY, 1, 128)
-    Assert.deepEqual(
-      pinnedSceneKeys(envelope),
-      sorted(groupKeys(SCENE_KEY)),
-      "idle warmup completes scene A's group"
-    )
+    Assert.deepEqual(pinnedSceneKeys(envelope), sorted(groupKeys(SCENE_KEY)), "idle warmup completes scene A's group")
     local priorA = {}
     for _, key in ipairs(groupKeys(SCENE_KEY)) do
       priorA[key] = envelope._warmPinned[key].lease
@@ -1203,11 +1775,7 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     local usedB, failureB = envelope:advanceWarmup(SCENE_B_KEY, 1)
     Assert.isTrue(usedB == true, "the replacement prediction adopts its own ready art")
     Assert.isNil(failureB, "the replacement reports no failure: " .. tostring(failureB))
-    Assert.equal(
-      releaseCount(pool, leaseA),
-      1,
-      "the abandoned partial group returns its lease exactly once"
-    )
+    Assert.equal(releaseCount(pool, leaseA), 1, "the abandoned partial group returns its lease exactly once")
     local usedB2, failureB2 = envelope:advanceWarmup(SCENE_B_KEY, 1)
     Assert.isTrue(usedB2 == true, "the replacement adopts its second ready image")
     Assert.isNil(failureB2, "the partial replacement reports no failure: " .. tostring(failureB2))
@@ -1236,16 +1804,8 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
       sorted({ "scene:" .. SCENE_C_KEY }),
       "only the current prediction keeps pins; abandoned partial groups keep none"
     )
-    Assert.equal(
-      releaseCount(pool, leaseB1),
-      1,
-      "the retired replacement still returns its first lease exactly once"
-    )
-    Assert.equal(
-      releaseCount(pool, leaseB2),
-      1,
-      "the retired replacement still returns its second lease exactly once"
-    )
+    Assert.equal(releaseCount(pool, leaseB1), 1, "the retired replacement still returns its first lease exactly once")
+    Assert.equal(releaseCount(pool, leaseB2), 1, "the retired replacement still returns its second lease exactly once")
     local function retiredSceneImageCount(ledger)
       local count = 0
       for _, entry in ipairs(ledger) do
@@ -1328,11 +1888,7 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     local usedC, failureC = envelope:advanceWarmup(SCENE_C_KEY, 1)
     Assert.isTrue(usedC == true, "the third prediction adopts its own ready art")
     Assert.isNil(failureC, "the third prediction reports no failure: " .. tostring(failureC))
-    Assert.equal(
-      releaseCount(pool, leaseB),
-      1,
-      "the superseded partial group returns its lease exactly once"
-    )
+    Assert.equal(releaseCount(pool, leaseB), 1, "the superseded partial group returns its lease exactly once")
     Assert.notNil(
       envelope:_preparationServices().drawable("scene:" .. SCENE_KEY),
       "the complete predecessor survives a second partial replacement"
@@ -1347,11 +1903,7 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
       sorted(expectedPinned),
       "the complete predecessor keeps its full group while only the current prediction stays partial"
     )
-    Assert.equal(
-      releaseCount(pool, leaseB),
-      1,
-      "the superseded partial group still returns its lease exactly once"
-    )
+    Assert.equal(releaseCount(pool, leaseB), 1, "the superseded partial group still returns its lease exactly once")
     local function retiredBImageCount(ledger)
       local count = 0
       for _, entry in ipairs(ledger) do
@@ -1379,11 +1931,7 @@ function T.launch_and_idle_replacement_keep_a_single_scene_group()
     )
     for _, entry in ipairs(pool.acquired) do
       if entry.path == "assets/generated/battle/synthetic.png" then
-        Assert.equal(
-          releaseCount(pool, entry.lease),
-          0,
-          "fixed art is never retired as scene-specific art"
-        )
+        Assert.equal(releaseCount(pool, entry.lease), 0, "fixed art is never retired as scene-specific art")
       end
     end
     pool.readyPaths[recordC.introLayer.image] = true
@@ -1425,11 +1973,7 @@ function T.pending_warmup_reuses_validated_documents_across_idle_frames()
       Assert.isFalse(usedPending == true, "a pending producer realizes no GPU pair")
       Assert.isNil(failurePending, "a pending producer reports no failure")
     end
-    Assert.equal(
-      totalLoads(pendingFs.loadLuaCounts),
-      pendingLoads,
-      "a pending producer parses no Lua documents"
-    )
+    Assert.equal(totalLoads(pendingFs.loadLuaCounts), pendingLoads, "a pending producer parses no Lua documents")
     Assert.equal(totalLoads(pendingFs.reads), pendingReads, "a pending producer reads no staged bytes")
     Assert.equal(#pendingPool.requested, 0, "a pending producer enrolls no image tickets")
     pendingEnvelope:dispose()
@@ -1514,11 +2058,7 @@ function T.replacement_prediction_validates_once_and_keeps_predecessor_until_com
     Assert.isFalse(used == true, "the pending replacement realizes no GPU pair")
     Assert.isNil(failure, "the pending replacement reports no failure")
   end
-  Assert.equal(
-    cacheFs.loadLuaCounts[scenePathA],
-    1,
-    "the pending replacement reparses no predecessor scene document"
-  )
+  Assert.equal(cacheFs.loadLuaCounts[scenePathA], 1, "the pending replacement reparses no predecessor scene document")
   Assert.equal(
     cacheFs.loadLuaCounts[scenePathB],
     1,
@@ -1551,6 +2091,150 @@ function T.replacement_prediction_validates_once_and_keeps_predecessor_until_com
   envelope:dispose()
 end
 
+function T.scene_source_closure_failure_preserves_ready_predecessor()
+  local recordA = sceneRecord(SCENE_KEY)
+  local recordB = sceneRecord(SCENE_B_KEY)
+  local indexBytes = {}
+  local palettePayloads = {}
+  local function addSourceClosure(record)
+    local stem = record.key:gsub("/", "-")
+    local sceneRoot = "assets/generated/battle/scenes/" .. stem
+    record.paletteSource = {
+      key = "battle-scene/" .. stem .. "/native-palettes",
+      path = BattlePresentationCache.scenePaletteSourcePath(record.key),
+      format = "native-encounter-palettes-v1",
+    }
+    palettePayloads[record.paletteSource.path] = {
+      mainObjSources = {
+        hud = { firstSlot = 0, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+        hudAuxiliary = { firstSlot = 16, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+        terrain = { firstSlot = 32, words = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+      },
+      subObjOpaque = { [1] = 0x001F, [18] = 0x03E0 },
+      initialDisplayed = { subObj = { [1] = 0x001F, [18] = 0x03E0 } },
+    }
+    for _, side in ipairs({ "player", "foe" }) do
+      local sprite = record.terrainSprites[side]
+      local path = sceneRoot .. "-terrain-" .. side .. "-source-index.rgba8"
+      sprite.sourceIndices = {
+        path = path,
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = sprite.width,
+        height = sprite.height,
+      }
+      indexBytes[path] = string.rep(string.char(32, 0, 0, 255), sprite.width * sprite.height)
+    end
+  end
+  addSourceClosure(recordA)
+  addSourceClosure(recordB)
+  palettePayloads[recordB.paletteSource.path].subObjOpaque[18] = nil
+  palettePayloads[recordB.paletteSource.path].initialDisplayed.subObj[18] = nil
+  indexBytes[graphicsManifest().hud.cursor.sourceIndices.path] = string.char(17, 0, 0, 255)
+  local invalidSourceIndexPath = graphicsManifest().hud.cursor.sourceIndices.path
+
+  local cacheFs = dualSceneCacheFs(recordA, recordB)
+  local loadLua = cacheFs.loadLua
+  function cacheFs:loadLua(path)
+    if palettePayloads[path] ~= nil then
+      return palettePayloads[path]
+    end
+    return loadLua(self, path)
+  end
+  local read = cacheFs.read
+  function cacheFs:read(path)
+    if indexBytes[path] ~= nil then
+      return indexBytes[path]
+    end
+    local menuBytes = menuSourcePayload(graphicsManifest(), path)
+    if menuBytes ~= nil then
+      return menuBytes
+    end
+    local subObjBytes = subObjSourcePayload(graphicsManifest(), path)
+    if subObjBytes ~= nil then
+      return subObjBytes
+    end
+    if path:match("%.source%-index%.rgba8$") ~= nil then
+      return string.rep(string.char(0, 0, 0, 255), 256 * 256)
+    end
+    return read(self, path)
+  end
+
+  local pool = scriptedPool(0, {})
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local services = envelope:_preparationServices()
+  local function demand(sceneKey, launchId)
+    return {
+      launchId = launchId,
+      scenes = { sceneKey },
+      pages = {},
+      trainerPictures = {},
+      battleBalls = {},
+      iconKeys = {},
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+  end
+  local function releasedCount(lease)
+    local count = 0
+    for _, released in ipairs(pool.released) do
+      if released == lease then
+        count = count + 1
+      end
+    end
+    return count
+  end
+
+  local readyA, failureA = services.prepare(demand(SCENE_KEY, "source-closure-ready"))
+  Assert.isTrue(readyA, "the complete scene source closure prepares: " .. tostring(failureA))
+  local predecessor = assert(services.sceneLayer(), "the complete predecessor scene is published")
+  local predecessorLeases = {}
+  for _, acquired in ipairs(pool.acquired) do
+    for _, path in ipairs(sceneArtPaths(recordA)) do
+      if acquired.path == path then
+        predecessorLeases[#predecessorLeases + 1] = acquired.lease
+      end
+    end
+  end
+  Assert.isTrue(#predecessorLeases > 0, "the ready predecessor owns its scene image leases")
+
+  local acquiredBeforeReuse = #pool.acquired
+  local reusedA, reuseFailure = services.prepare(demand(SCENE_KEY, "source-closure-warm-reuse"))
+  Assert.isTrue(reusedA, "the complete warm scene prepares again: " .. tostring(reuseFailure))
+  Assert.equal(#pool.acquired, acquiredBeforeReuse, "warm scene reuse acquires no duplicate images")
+  Assert.equal(services.sceneLayer(), predecessor, "warm reuse keeps the same staged scene layer")
+
+  local acquiredBeforeReplacement = #pool.acquired
+  local readyB, failureB = services.prepare(demand(SCENE_B_KEY, "source-closure-undefined-sub-obj-slot"))
+  Assert.isNil(readyB, "an opaque lower OBJ index without a source palette slot rejects the replacement")
+  Assert.isTrue(
+    type(failureB) == "string"
+      and failureB:find(SCENE_B_KEY, 1, true) ~= nil
+      and failureB:find(invalidSourceIndexPath, 1, true) ~= nil
+      and failureB:find("17", 1, true) ~= nil,
+    "the failed scene closure reports its scene, undefined slot, and companion path: " .. tostring(failureB)
+  )
+  Assert.isTrue(
+    #pool.acquired > acquiredBeforeReplacement,
+    "the incomplete replacement acquired scene images before source closure failed"
+  )
+  Assert.equal(services.sceneLayer(), predecessor, "a failed replacement preserves the ready predecessor")
+  for _, lease in ipairs(predecessorLeases) do
+    Assert.equal(releasedCount(lease), 0, "the ready predecessor retains its image leases")
+  end
+  for index = acquiredBeforeReplacement + 1, #pool.acquired do
+    Assert.equal(
+      releasedCount(pool.acquired[index].lease),
+      1,
+      "the failed replacement returns each acquired image lease once"
+    )
+  end
+
+  envelope:dispose()
+  for _, acquired in ipairs(pool.acquired) do
+    Assert.equal(releasedCount(acquired.lease), 1, "disposal and rollback return every lease exactly once")
+  end
+end
+
 -- A terminal speculative image failure stays quiet on later idle frames:
 -- no document rereads, no re-enrollment, no repeated error — while the
 -- required foreground demand still fails aloud and an independent valid
@@ -1579,11 +2263,7 @@ function T.failed_warmup_stays_quiet_without_rereading_documents()
     Assert.isFalse(usedIdle == true, "latched speculation realizes no GPU pair")
     Assert.isNil(failureIdle, "latched speculation reports no further failure")
   end
-  Assert.equal(
-    cacheFs.loadLuaCounts[scenePath],
-    sceneLoads,
-    "latched speculation rereads no scene document"
-  )
+  Assert.equal(cacheFs.loadLuaCounts[scenePath], sceneLoads, "latched speculation rereads no scene document")
   Assert.equal(
     cacheFs.loadLuaCounts[manifestPath] or 0,
     manifestLoads,
@@ -1843,9 +2523,11 @@ function T.admission_preseeds_launch_closure_at_required_urgency()
     kind = "wild",
     environment = { sceneKey = SCENE_KEY },
     textSpeed = "fastest",
-    audio = { playMusic = function()
-      return true
-    end },
+    audio = {
+      playMusic = function()
+        return true
+      end,
+    },
     musicRole = MUSIC_ROLE,
     leadMon = leadMon,
     foeMon = foeMon,
@@ -1900,6 +2582,126 @@ function T.battle_music_waits_for_staged_files_and_suspends_with_the_start()
   Assert.equal(envelope:musicNote(), "started:" .. MUSIC_ROLE, "the staged start records its note")
   envelope:_startBattleMusic()
   Assert.equal(#controller.plays, 1, "the music start latches exactly once")
+  envelope:dispose()
+end
+
+-- Encounter particle textures carrying source repeat flags are admitted
+-- under a repeat sampler on both the idle and foreground routes, and the
+-- particle renderer never mutates the staged sampler at draw time.
+function T.repeating_particle_textures_keep_repeat_samplers_from_warmup_to_draw()
+  local record = sceneRecord(SCENE_KEY)
+  local repeated = record.encounterParticles[1]
+  repeated.emitters[1].texRepeat = { s = 1, t = 0 }
+  -- A schema-valid child generation referencing the same texture file:
+  -- the parent repeats x2 while the child repeats x4 on the other axis.
+  local template = record.encounterParticles[2].emitters[1].child
+  local child = {}
+  for key, value in pairs(template) do
+    child[key] = value
+  end
+  child.texNo = 0
+  child.textureImage = repeated.textures[1].image
+  child.texRepeat = { s = 0, t = 2 }
+  repeated.emitters[1].child = child
+  local repeatedPath = repeated.textures[1].image
+  local pool = scriptedPool(0, {})
+  local admissions = {}
+  local baseRequest = pool.request
+  function pool:request(path, sampler, priority)
+    admissions[#admissions + 1] = { path = path, sampler = sampler, priority = priority }
+    return baseRequest(self, path, sampler, priority)
+  end
+  local envelope = warmEnvelope(dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY)), pool, nearHost({}, true))
+  driveWarmup(envelope, SCENE_KEY, 1, 64)
+  local services = envelope:_preparationServices()
+  local ready, failure = prepareScene(services)
+  Assert.isTrue(ready, "the scene with repeating particles prepares: " .. tostring(failure))
+  local repeatedSamplers = {}
+  for _, admission in ipairs(admissions) do
+    if admission.path == repeatedPath then
+      repeatedSamplers[#repeatedSamplers + 1] = admission.sampler
+    end
+  end
+  Assert.isTrue(#repeatedSamplers >= 1, "the repeating particle texture is admitted through the pool")
+  for _, sampler in ipairs(repeatedSamplers) do
+    Assert.deepEqual(
+      { sampler.wrapX, sampler.wrapY },
+      { "repeat", "repeat" },
+      "parent x2 and child x4 repeats on one file union to a repeat sampler"
+    )
+  end
+  for _, admission in ipairs(admissions) do
+    if admission.path ~= repeatedPath then
+      Assert.deepEqual(
+        { admission.sampler.wrapX, admission.sampler.wrapY },
+        { "clamp", "clamp" },
+        "non-repeating scene art keeps the shared clamp sampler: " .. admission.path
+      )
+    end
+  end
+  local spy = { wraps = 0 }
+  function spy.getWidth()
+    return 32
+  end
+  function spy.getHeight()
+    return 32
+  end
+  function spy.setWrap()
+    spy.wraps = spy.wraps + 1
+  end
+  local function liveParticle(texNo)
+    return {
+      x = 0,
+      y = 0,
+      z = 0,
+      ex = 0,
+      ey = 0,
+      ez = 0,
+      vx = 0,
+      vy = 0,
+      vz = 0,
+      baseAlpha = 31,
+      animAlpha = 31,
+      baseScale = 4096,
+      animScale = 4096,
+      colorRgb = { r = 31, g = 31, b = 31 },
+      rtt = 0,
+      texNo = texNo,
+    }
+  end
+  local simulation = {
+    emitters = {
+      { record = repeated.emitters[1], particles = { liveParticle(0) }, children = { liveParticle(0) } },
+    },
+  }
+  local graphics = FakeGraphics.new()
+  BattleRenderer.drawPane({
+    graphics = graphics,
+    text = { drawTextForRole = function() end },
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function()
+        return nil
+      end,
+    },
+    frameKey = "default",
+  }, {
+    battlers = {},
+    effectInstances = {},
+    hudPatchSpans = {},
+    message = "",
+    textPalettes = { narration = { colors = {} } },
+    encounterParticleSystems = { { simulation = simulation, textures = { [0] = spy } } },
+  }, "detail", {})
+  Assert.equal(spy.wraps, 0, "particle drawing never mutates the staged sampler")
+  local sizes = {}
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image == spy then
+      sizes[#sizes + 1] = draw.quad.w .. "x" .. draw.quad.h
+    end
+  end
+  table.sort(sizes)
+  Assert.deepEqual(sizes, { "32x128", "64x32" }, "repeated viewports sample beyond [0,1] for both generations")
   envelope:dispose()
 end
 

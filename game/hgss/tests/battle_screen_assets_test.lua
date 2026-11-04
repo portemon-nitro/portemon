@@ -42,6 +42,12 @@ local function stubAssets(opts)
   function assets.release(key)
     assets.released[key] = (assets.released[key] or 0) + 1
   end
+  function assets.paletteImage(key, raster)
+    if assets.images[key] == nil then
+      assets.images[key] = { handle = key, raster = raster }
+    end
+    return assets.images[key]
+  end
   return assets
 end
 
@@ -58,6 +64,148 @@ local function holder(overrides, assets)
     frames = overrides and overrides.frames,
     shadowRegions = SHADOW_REGIONS,
   })
+end
+
+-- Faded intro uploads ride the services adapter with exactly-once
+-- ownership: uploads mark the key owned, mid-launch release returns it
+-- once without a later disposal double-release.
+function T.faded_intro_uploads_through_services_and_releases_exactly_once()
+  local assets = stubAssets({})
+  local uploads = 0
+  function assets.fadedIntro(_, _)
+    uploads = uploads + 1
+    return "faded-image"
+  end
+  local battle = holder(nil, assets)
+  local raster = { width = 8, height = 8, pixels = "pixels" }
+  Assert.equal(battle:fadedIntro(raster), "faded-image", "the faded intro uploads through services")
+  Assert.equal(uploads, 1, "the faded intro uploads once")
+  battle:releaseFadedIntro()
+  Assert.equal(assets.released["battle-faded-intro"], 1, "releasing returns the services upload once")
+  battle:releaseFadedIntro()
+  Assert.equal(assets.released["battle-faded-intro"], 1, "releasing twice never double-returns")
+  battle:dispose()
+  Assert.equal(assets.released["battle-faded-intro"], 1, "disposal never re-releases a returned upload")
+end
+
+-- Palette generations publish together: a failed replacement leaves the
+-- old drawable alive, then a successful replacement returns it exactly once.
+function T.palette_drawable_generations_publish_transactionally()
+  local assets = stubAssets({})
+  local uploads = {}
+  local failKey = nil
+  local function uploadCount()
+    local count = 0
+    for _ in pairs(uploads) do
+      count = count + 1
+    end
+    return count
+  end
+  local function paletteImage(key, raster)
+    if failKey ~= nil and key:find(failKey, 1, true) ~= nil then
+      return nil, "probe upload failure"
+    end
+    local image = { handle = key, raster = raster }
+    uploads[key] = image
+    return image
+  end
+  assets.paletteImage = paletteImage
+  local battle = holder(nil, assets)
+  local first = {
+    width = 1,
+    height = 1,
+    pixels = "first",
+  }
+  local second = {
+    width = 1,
+    height = 1,
+    pixels = "second",
+  }
+  local firstKey = nil
+  Assert.isTrue(
+    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:1", raster = first } }),
+    "the initial palette generation publishes"
+  )
+  for key in pairs(uploads) do
+    firstKey = key
+  end
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "the source key resolves its sampled image")
+  local initialUploadCount = uploadCount()
+  local duplicate = { width = first.width, height = first.height, pixels = first.pixels }
+  Assert.isTrue(
+    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:2", raster = duplicate } }),
+    "equal source pixels reuse their published upload"
+  )
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "equal pixels retain the existing image")
+  Assert.equal(uploadCount(), initialUploadCount, "equal pixels acquire no replacement")
+  failKey = "battle-palette:scene:2"
+  local published, failure = battle:updatePaletteDrawables({
+    terrain = { uploadKey = "battle-palette:scene:2", raster = second },
+    hud = { uploadKey = "battle-palette:hud:2", raster = second },
+  })
+  Assert.isFalse(published, "one failed upload rejects the replacement generation")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe upload failure", 1, true) ~= nil,
+    "the failure keeps its upload cause"
+  )
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "failed replacement keeps the prior drawable")
+  for key in pairs(uploads) do
+    if key ~= firstKey then
+      Assert.equal(assets.released[key], 1, "staged replacement image rolls back: " .. key)
+    end
+  end
+  Assert.isNil(assets.released[firstKey], "failed staging never releases the current image")
+  Assert.equal(battle:state(), "failed", "a configured palette upload failure latches the holder")
+  assets.paletteImage = nil
+  Assert.isTrue(battle:updatePaletteDrawables({}), "an empty batch clears without an upload service")
+  Assert.equal(assets.released[firstKey], 1, "empty clearing releases the retained image after failure")
+  Assert.isFalse(battle:drawable("terrain") == uploads[firstKey], "empty clearing withdraws the retained image")
+  battle:dispose()
+  Assert.equal(assets.released[firstKey], 1, "disposal does not re-release the cleared palette image")
+
+  failKey = nil
+  assets.paletteImage = paletteImage
+  local replacement = holder(nil, assets)
+  Assert.isTrue(
+    replacement:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:3", raster = second } }),
+    "a complete palette replacement publishes"
+  )
+  local replacementKey = "battle-palette:scene:3:generation:1"
+  Assert.equal(replacement:drawable("terrain"), uploads[replacementKey], "the new source key resolves the replacement")
+  replacement:dispose()
+  Assert.equal(assets.released[replacementKey], 1, "disposal releases the replacement image")
+end
+
+-- Without a services adapter the faded intro answers nil with no
+-- failure, so adapter-less hosts keep drawing the static intro lease.
+function T.faded_intro_without_a_services_adapter_draws_nothing_and_fails_nothing()
+  local battle = holder()
+  local raster = { width = 8, height = 8, pixels = "pixels" }
+  Assert.isNil(battle:fadedIntro(raster), "no adapter stages no faded intro")
+  Assert.equal(battle:state(), "pending", "a missing adapter never latches a failure")
+  battle:dispose()
+end
+
+-- A configured faded intro upload failure is terminal for the launch.
+function T.faded_intro_upload_failure_latches_the_holder()
+  local assets = stubAssets({})
+  function assets.fadedIntro(_, _)
+    return nil, "probe-failure"
+  end
+  local battle = holder(nil, assets)
+  local raster = { width = 8, height = 8, pixels = "pixels" }
+  local image, failure = battle:fadedIntro(raster)
+  Assert.isNil(image, "a failed faded intro upload answers no image")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe-failure", 1, true) ~= nil,
+    "a failed faded intro upload keeps its cause: " .. tostring(failure)
+  )
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("assets-probe", 1, true) ~= nil,
+    "a failed faded intro upload names its launch: " .. tostring(failure)
+  )
+  Assert.equal(battle:state(), "failed", "a failed faded intro upload latches the holder")
+  battle:dispose()
 end
 
 function T.shadow_size_selects_the_published_source_uv_rectangle()
@@ -492,6 +640,9 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     return stored
   end
   function assets.release(_) end
+  function assets.paletteImage(key, raster)
+    return { handle = key, raster = raster }
+  end
   local launchId = "launch-portrait-rebind"
   local screen = BattleScreenState.new({
     launchId = launchId,
@@ -532,7 +683,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     }
   end
   local port = screen:presentationPort()
-  port.enter({ launchId = launchId, kind = "wild" })
+  port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" })
   local function pagesSoFar()
     local pages = {}
     for _, demand in ipairs(prepared) do
@@ -950,6 +1101,33 @@ end
 -- and the staged battle artwork exist, but the whole-family index and
 -- every portrait page start missing. Portrait pages arrive only through
 -- stagePortraitPage once the page host reports them built.
+local function sourceIndexBytes(width, height, slot)
+  return string.rep(string.char(slot, 0, 0, 255), width * height)
+end
+
+local function stageSourceIndexFiles(cache, value, paletteSource)
+  if type(value) ~= "table" then
+    return
+  end
+  local selectedPaletteSource = type(value.paletteSource) == "table" and value.paletteSource or paletteSource
+  local descriptor = value.sourceIndices
+  if type(descriptor) == "table" then
+    if type(descriptor.variants) == "table" then
+      for _, variant in pairs(descriptor.variants) do
+        cache.files[variant.path] = sourceIndexBytes(descriptor.width, descriptor.height, variant.firstSlot)
+      end
+    else
+      local slot = type(selectedPaletteSource) == "table" and selectedPaletteSource.firstSlot or 0
+      cache.files[descriptor.path] = sourceIndexBytes(descriptor.width, descriptor.height, slot)
+    end
+  end
+  for key, child in pairs(value) do
+    if key ~= "sourceIndices" then
+      stageSourceIndexFiles(cache, child, selectedPaletteSource)
+    end
+  end
+end
+
 ---@param portraitEntries table<string, table<string, unknown>> canonical selector to manifest cell
 ---@return table isolated cache filesystem double recording every manifest read
 local function layoutOnlyCache(portraitEntries)
@@ -959,6 +1137,7 @@ local function layoutOnlyCache(portraitEntries)
   local charactersPath = BattlePresentationCache.sceneCharactersPath(PORTRAIT_SCENE_KEY)
   local mapPath = BattlePresentationCache.sceneMapPath(PORTRAIT_SCENE_KEY)
   local palettePath = BattlePresentationCache.scenePalettePath(PORTRAIT_SCENE_KEY)
+  local paletteSourcePath = BattlePresentationCache.scenePaletteSourcePath(PORTRAIT_SCENE_KEY)
   local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {}, readPaths = {} }
   cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
   cache.files[PORTRAIT_FONT_PATH] = "staged-font"
@@ -966,6 +1145,7 @@ local function layoutOnlyCache(portraitEntries)
   -- Trainer and ball art stage exclusively through their selected leaf
   -- records now: portrait-page demand never touches the old global
   -- inventory, so no leaf pixels are staged in this cache.
+  stageSourceIndexFiles(cache, stagedManifest)
   for _, menu in ipairs({ "command", "moves", "target" }) do
     local image = stagedManifest.menus[menu].image
     cache.files[image] = solidPortraitPng(8, 8)
@@ -1000,12 +1180,17 @@ local function layoutOnlyCache(portraitEntries)
   cache.files[BattlePresentationCache.sceneIntroImagePath(PORTRAIT_SCENE_KEY)] = solidPortraitPng(512, 256)
   cache.files[BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "player")] = solidPortraitPng(80, 80)
   cache.files[BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "foe")] = solidPortraitPng(80, 80)
+  for _, side in ipairs({ "player", "foe" }) do
+    cache.files[BattlePresentationCache.sceneTerrainSourceIndexPath(PORTRAIT_SCENE_KEY, side)] =
+      sourceIndexBytes(80, 80, 32)
+  end
   for _, set in ipairs(ParticlesFixture.sets(PORTRAIT_SCENE_KEY)) do
     for _, texture in ipairs(set.textures) do
       cache.files[texture.image] = solidPortraitPng(texture.width, texture.height)
     end
   end
   cache.files[charactersPath] = string.rep("\0", 65536)
+  cache.files[BattlePresentationCache.sceneIntroCharactersPath(PORTRAIT_SCENE_KEY)] = string.rep("\0", 65536)
   local mapEntries = {}
   for index = 1, 2048 do
     mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -1014,11 +1199,30 @@ local function layoutOnlyCache(portraitEntries)
   for index = 1, 256 do
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
+  local function sourceWords(length)
+    local words = {}
+    for index = 1, length do
+      words[index] = 0x7FFF
+    end
+    return words
+  end
   cache.lua[BattlePresentationCache.manifestPath()] = stagedManifest
   cache.lua[mapPath] = { width = 512, height = 256, entries = mapEntries }
   cache.lua[palettePath] = { colors = paletteColors }
+  cache.lua[paletteSourcePath] = {
+    mainBg = sourceWords(256),
+    mainObjSources = {
+      hud = { firstSlot = 0, words = sourceWords(16) },
+      hudAuxiliary = { firstSlot = 16, words = sourceWords(16) },
+      terrain = { firstSlot = 32, words = sourceWords(16) },
+    },
+    subBgOpaque = sourceWords(256),
+    subObjOpaque = sourceWords(256),
+    initialDisplayed = { subBg = sourceWords(256), subObj = sourceWords(256) },
+    fill = 0x7FFF,
+  }
   cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
-    schema = "g4-battle-scene-v4",
+    schema = BattlePresentationCache.SCENE_SCHEMA,
     key = PORTRAIT_SCENE_KEY,
     background = "general",
     terrain = "grass",
@@ -1035,6 +1239,11 @@ local function layoutOnlyCache(portraitEntries)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = charactersPath,
+          format = "indexed8",
+        },
+        baseCharacters = {
+          key = "battle-scene/general-grass-day/intro/characters",
+          path = BattlePresentationCache.sceneIntroCharactersPath(PORTRAIT_SCENE_KEY),
           format = "indexed8",
         },
         map = {
@@ -1061,13 +1270,32 @@ local function layoutOnlyCache(portraitEntries)
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(PORTRAIT_SCENE_KEY, "player"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
       foe = {
         image = BattlePresentationCache.sceneTerrainSpritePath(PORTRAIT_SCENE_KEY, "foe"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(PORTRAIT_SCENE_KEY, "foe"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
+    },
+    paletteSource = {
+      key = "battle-scene/general-grass-day/native-palettes",
+      path = paletteSourcePath,
+      format = "native-encounter-palettes-v1",
     },
     encounterParticles = ParticlesFixture.sets(PORTRAIT_SCENE_KEY),
   }
@@ -1536,7 +1764,7 @@ function T.opening_demand_names_only_visible_battlers_then_grows_on_switch()
   local launchId = "launch-visible-demand"
   local screen = demandScreen(launchId, services)
   local port = screen:presentationPort()
-  port.enter({ launchId = launchId, kind = "wild" })
+  port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" })
   local function openingAfter()
     return {
       playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },

@@ -86,8 +86,15 @@ local ROLES = Sources.ROLES
 ---@param paletteData { colors: table[] } decoded lower BG palette
 ---@param screenData { width: integer, height: integer, entries: table[] } decoded menu tilemap
 ---@param patch { left: integer, top: integer, right: integer, bottom: integer, offset: integer, crop?: { left: integer, top: integer, right: integer, bottom: integer } } inclusive source tile rectangle, raw map offset, and optional wider tile crop
----@return { width: integer, height: integer, pixels: string } cropped state art for the patched source map region
-function BattlePresentationCompiler.compileMenuFeedbackPatch(charData, paletteData, screenData, patch)
+---@param sourceIndexPalette { colors: table[] }? identity palette mapping palette slot to red channel
+---@return { width: integer, height: integer, pixels: string, sourceIndices: { width: integer, height: integer, pixels: string }? } cropped state art and optional source-index map for the patched source region
+function BattlePresentationCompiler.compileMenuFeedbackPatch(
+  charData,
+  paletteData,
+  screenData,
+  patch,
+  sourceIndexPalette
+)
   assert(patch.left >= 0 and patch.top >= 0, "menu feedback bounds begin inside the source tilemap")
   assert(patch.right >= patch.left and patch.bottom >= patch.top, "menu feedback bounds are ordered")
   assert(
@@ -115,23 +122,46 @@ function BattlePresentationCompiler.compileMenuFeedbackPatch(charData, paletteDa
       }
     end
   end
-  local raster = G2dRasterizer.renderScreen(charData, paletteData, {
+  local patchedScreen = {
     width = screenData.width,
     height = screenData.height,
     entries = entries,
-  })
+  }
+  local raster = G2dRasterizer.renderScreen(charData, paletteData, patchedScreen)
   -- The staged patch covers the offset tiles unless the caller names a
   -- wider tile crop around them.
   local crop = patch.crop or patch
   local patchWidth = (crop.right - crop.left + 1) * 8
   local patchHeight = (crop.bottom - crop.top + 1) * 8
   local rowBytes = patchWidth * 4
-  local rows = {}
-  for y = crop.top * 8, (crop.bottom + 1) * 8 - 1 do
-    local start = (y * screenData.width + crop.left * 8) * 4 + 1
-    rows[#rows + 1] = raster.pixels:sub(start, start + rowBytes - 1)
+  local function cropPixels(pixels)
+    local rows = {}
+    for y = crop.top * 8, (crop.bottom + 1) * 8 - 1 do
+      local start = (y * screenData.width + crop.left * 8) * 4 + 1
+      rows[#rows + 1] = pixels:sub(start, start + rowBytes - 1)
+    end
+    return table.concat(rows)
   end
-  return { width = patchWidth, height = patchHeight, pixels = table.concat(rows) }
+  local result = { width = patchWidth, height = patchHeight, pixels = cropPixels(raster.pixels) }
+  if sourceIndexPalette ~= nil then
+    local indexRaster = G2dRasterizer.renderScreen(charData, sourceIndexPalette, patchedScreen)
+    local sourcePixels = cropPixels(indexRaster.pixels)
+    local indexed = {}
+    for offset = 1, #sourcePixels, 4 do
+      local slot = string.byte(sourcePixels, offset)
+      local green = string.byte(sourcePixels, offset + 1)
+      local blue = string.byte(sourcePixels, offset + 2)
+      local alpha = string.byte(sourcePixels, offset + 3)
+      local outputAlpha = string.byte(result.pixels, offset + 3)
+      assert(
+        slot ~= nil and green == 0 and blue == 0 and alpha == outputAlpha,
+        "menu patch source map preserves the native slot and transparency"
+      )
+      indexed[#indexed + 1] = string.char(alpha == 0 and 0 or slot, 0, 0, alpha)
+    end
+    result.sourceIndices = { width = patchWidth, height = patchHeight, pixels = table.concat(indexed) }
+  end
+  return result
 end
 
 ---@generic T
@@ -268,7 +298,8 @@ local function pictureShadow(animationBytes, speciesId)
 end
 
 ---@class BattlePresentationCompiler.ScenePayloads
----@field characters string normalized packed 4bpp color indices in tile order
+---@field characters string normalized 8bpp color indices in tile order
+---@field baseCharacters string unbaked 8bpp intro color indices in tile order
 ---@field map { width: integer, height: integer, entries: table[] }
 ---@field palette { colors: { r: integer, g: integer, b: integer }[] }
 
@@ -286,6 +317,8 @@ end
 ---@field image string RGBA pixels for the static PNG optimization
 ---@field introImage string RGBA pixels for the unbaked BG3 intro layer
 ---@field terrainSpritePixels table<string, string> RGBA pixels keyed by player/foe
+---@field terrainSpriteSourceIndexPixels table<string, string> RGBA8 source slots keyed by player/foe
+---@field paletteSourcePayload table<string, unknown> staged scene palette inputs
 ---@field encounterParticleImages table<string, string> staged particle texture PNG bytes by cache path
 
 -- Compile the source-selected per-species height and facing animation data
@@ -510,15 +543,87 @@ local function decodeAnimation(archive, memberId, label)
   return mustDecode(decoded, err, label, memberId)
 end
 
+---@param palette { colors: { r: integer, g: integer, b: integer }[] } decoded native palette
+---@return integer[] exact source RGB555 words
+local function paletteWords(palette)
+  local words = {}
+  for index, color in ipairs(palette.colors) do
+    local r = math.floor((color.r * 31 + 127) / 255)
+    local g = math.floor((color.g * 31 + 127) / 255)
+    local b = math.floor((color.b * 31 + 127) / 255)
+    local word = Rgb555.encode(r, g, b)
+    local decoded = Rgb555.decode(word)
+    assert(
+      decoded.r == color.r and decoded.g == color.g and decoded.b == color.b,
+      "decoded palette preserves its source RGB555 word at " .. index
+    )
+    words[index] = word
+  end
+  return words
+end
+
+---@param pixels string source-index RGBA8 raster with physical slots starting at sourceBase
+---@param sourceBase integer current first MAIN_OBJ slot
+---@param targetBase integer selected first MAIN_OBJ slot
+---@return string raster with the same pixels mapped to targetBase
+local function sourceIndexPixelsAtBase(pixels, sourceBase, targetBase)
+  local delta = targetBase - sourceBase
+  if delta == 0 then
+    return pixels
+  end
+  local out = {}
+  for offset = 1, #pixels, 4 do
+    local index = string.byte(pixels, offset)
+    local alpha = string.byte(pixels, offset + 3)
+    if alpha == 255 then
+      index = assert(index, "opaque source-index pixels carry a red slot") + delta
+      assert(index >= 0 and index <= 223, "physical source-index variant fits the MAIN_OBJ upload")
+      out[#out + 1] = string.char(index)
+    else
+      out[#out + 1] = string.char((assert(index, "transparent source-index pixels carry a red channel")))
+    end
+    out[#out + 1] = pixels:sub(offset + 1, offset + 3)
+  end
+  return table.concat(out)
+end
+
+---@param imageName string stable native art identity for sidecar paths
+---@param pixels string source-index RGBA8 raster with physical slots starting at sourceBase
+---@param sourceBase integer current first MAIN_OBJ slot
+---@param firstSlots integer[] supported physical first slots for the source layout
+---@param rawFiles table<string, string> staged raw sidecars
+---@return table<string, { path: string, firstSlot: integer }> immutable physical-slot maps
+local function sourceIndexSlotVariants(imageName, pixels, sourceBase, firstSlots, rawFiles)
+  local variants = {}
+  for _, firstSlot in ipairs(firstSlots) do
+    local selector = "slot:" .. tostring(firstSlot)
+    local path = BattlePresentationCache.globalSourceIndexPath(imageName .. "-slot-" .. tostring(firstSlot))
+    rawFiles[path] = sourceIndexPixelsAtBase(pixels, sourceBase, firstSlot)
+    variants[selector] = { path = path, firstSlot = firstSlot }
+  end
+  return variants
+end
+
 ---@param archive Narc trainer resource archive selected by GetTrainerPicFileIds
 ---@param memberBase integer first of the five source picture members
 ---@param label string semantic producer diagnostic context
----@return { sourceSequence: integer, playMode: string, loopStartFrameIdx: integer, frames: { raster: { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }, durationTicks: integer, sourceFrame: integer, userAttr: integer }[] }[]
-local function compileTrainerPicture(archive, memberBase, label)
+---@param sourcePaletteBase integer physical MAIN_OBJ palette base for the selected trainer role
+---@param sourcePaletteBanks integer loaded native OBJ bank count for the selected trainer
+---@return { sourceSequence: integer, playMode: string, loopStartFrameIdx: integer, frames: { raster: { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }, sourceIndices: { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }, durationTicks: integer, sourceFrame: integer, userAttr: integer }[] }[] compiled trainer animation sequences
+---@return integer[] native source palette words loaded for the selected trainer role
+local function compileTrainerPicture(archive, memberBase, label, sourcePaletteBase, sourcePaletteBanks)
   local sources = Sources.TRAINER_PICTURES
   local offsets = sources.memberOffsets
   local charData = decodeChars(archive, memberBase + offsets.character, label .. " characters")
-  local paletteData = decodePalette(archive, memberBase + offsets.palette, label .. " palette")
+  local sourcePalette = decodePalette(archive, memberBase + offsets.palette, label .. " palette")
+  assert(
+    type(sourcePalette.colors) == "table" and #sourcePalette.colors >= sourcePaletteBanks * 16,
+    label .. " palette contains the native first OBJ bank"
+  )
+  local paletteData = { colors = {} }
+  for index = 1, sourcePaletteBanks * 16 do
+    paletteData.colors[index] = sourcePalette.colors[index]
+  end
   local cellMember = memberBase + offsets.cell
   local cellBytes = decodeMember(archive, cellMember, label .. " cells")
   local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
@@ -554,16 +659,41 @@ local function compileTrainerPicture(archive, memberBase, label)
       end
       local cell = cellData.cells[source.cell + 1]
       local raster
+      local sourceIndices
+      if cell ~= nil then
+        for _, obj in ipairs(cell.objs) do
+          assert(obj.palette < sourcePaletteBanks, label .. " references a loaded native trainer OBJ bank")
+        end
+      end
       if cell ~= nil and type(cell.objs) == "table" and #cell.objs == 0 then
         -- Retail blanking frames reference an objectless cell. Preserve the
         -- frame duration and sequence position with a transparent drawable.
         raster = { width = 1, height = 1, pixels = string.rep("\0", 4), offset = { x = 0, y = 0 } }
+        sourceIndices = { width = 1, height = 1, pixels = string.rep("\0", 4), offset = { x = 0, y = 0 } }
       else
         raster = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, sourceFrame, {
           asset = "trainer-pictures",
           member = memberBase + offsets.animation,
           role = label,
         }, nil, mapping)
+        local identityPalette = { colors = {} }
+        for colorIndex = 1, #paletteData.colors do
+          identityPalette.colors[colorIndex] = {
+            r = sourcePaletteBase + colorIndex - 1,
+            g = 0,
+            b = 0,
+          }
+        end
+        sourceIndices =
+          G2dRasterizer.renderAnimationFrame(charData, identityPalette, cellData, animation, sourceFrame, {
+            asset = "trainer-pictures",
+            member = memberBase + offsets.animation,
+            role = label .. " source indices",
+          }, nil, mapping)
+        assert(
+          sourceIndices.width == raster.width and sourceIndices.height == raster.height,
+          label .. " source-index raster matches its color raster"
+        )
       end
       if raster.width > 128 or raster.height > 128 then
         error(
@@ -580,6 +710,7 @@ local function compileTrainerPicture(archive, memberBase, label)
       end
       frames[#frames + 1] = {
         raster = raster,
+        sourceIndices = sourceIndices,
         durationTicks = source.duration,
         sourceFrame = sourceFrame - 1,
         userAttr = source.userAttr or 0,
@@ -593,7 +724,7 @@ local function compileTrainerPicture(archive, memberBase, label)
     }
   end
   assert(sequences[1] ~= nil, "trainer picture has its legacy source sequence")
-  return sequences
+  return sequences, paletteWords(paletteData)
 end
 
 ---@param decoded { depth: integer, tiles: string }|{ colors: table[] }|{ width: integer, height: integer, entries: table[] }|{ cells: table[] }|{ anims: table[] }
@@ -821,12 +952,13 @@ end
 
 ---@param palette { colors: table[] }
 ---@return table[] color records
+---@return integer[] exact source RGB555 words
 local function paletteRecords(palette)
   local colors = {}
   for _, color in ipairs(palette.colors) do
     colors[#colors + 1] = { r = color.r, g = color.g, b = color.b }
   end
-  return colors
+  return colors, paletteWords(palette)
 end
 
 -- Producer provenance beside the staged global manifest: every selected
@@ -2528,7 +2660,7 @@ local function hudDigitBytes(romFs)
   local digitSource = Sources.HUD_DIGITS
   local digitChars =
     decodeChars(openArchive(romFs, digitSource.narc, "health-box digits"), digitSource.member, "health-box digits")
-  assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 4bpp tiles")
+  assert(digitChars.depth == 3 and #digitChars.tiles >= 10 * 32, "health-box digits are ten 8bpp tiles")
   local slotOf = { [0] = digitSource.background, digitSource.foreground, digitSource.shadow }
   local digitByteParts = {}
   for index = 1, 10 * 32 do
@@ -2829,7 +2961,7 @@ end
 ---@param romFs RomFs
 ---@param opts { versionId: string }? compiler options
 ---@param selector string `front:CLASS` or `back:CLASS`
----@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, provenance: table<string, unknown>, catalogIdentity: string }
+---@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
 function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts, selector)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -2837,11 +2969,19 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
   local source = Sources.TRAINER_PICTURES
   local resolved = trainerSourceFor(selector)
   local archive = openArchive(romFs, resolved.archiveSymbol, "trainer portraits")
-  local sourceSequences = compileTrainerPicture(archive, resolved.memberBase, resolved.label)
+  local paletteBanks = resolved.backpicId == nil and (source.frontPaletteBanks[selector:sub(7)] or 1) or 1
+  local sourceSequences, palette = compileTrainerPicture(
+    archive,
+    resolved.memberBase,
+    resolved.label,
+    Sources.MAIN_OBJ_PALETTE_BASE.trainerSourceIndex,
+    paletteBanks
+  )
   local drawableKey = source.outputPrefix .. selector
   local imageBase = "trainer-pictures/" .. selector:gsub(":", "-")
   local imageByRaster = {}
   local images = {}
+  local rawFiles = {}
   local publishedSequences = {}
   for _, sequence in ipairs(sourceSequences) do
     local publishedFrames = {}
@@ -2878,6 +3018,20 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
           .. ":frame:"
           .. tostring(frame.sourceFrame)
       end
+      local sourceIndexName = "trainer-"
+        .. selector:gsub(":", "-")
+        .. "-source-sequence-"
+        .. tostring(sequence.sourceSequence)
+        .. "-frame-"
+        .. tostring(frame.sourceFrame)
+      local firstSlots = resolved.backpicId ~= nil and { 48, 64, 80, 96, 112 } or { 80, 96, 112, 128, 144, 160, 176 }
+      local variants = sourceIndexSlotVariants(
+        sourceIndexName,
+        frame.sourceIndices.pixels,
+        Sources.MAIN_OBJ_PALETTE_BASE.trainerSourceIndex,
+        firstSlots,
+        rawFiles
+      )
       publishedFrames[#publishedFrames + 1] = {
         drawableKey = frameDrawableKey,
         image = imagePath,
@@ -2885,6 +3039,13 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
         durationTicks = frame.durationTicks,
         sourceFrame = frame.sourceFrame,
         userAttr = frame.userAttr,
+        sourceIndices = {
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = frame.sourceIndices.width,
+          height = frame.sourceIndices.height,
+          variants = variants,
+        },
       }
     end
     publishedSequences[#publishedSequences + 1] = {
@@ -2909,6 +3070,7 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
       frames = publishedFrames,
       sequences = publishedSequences,
     },
+    paletteSource = { words = palette },
   }
   if resolved.backpicId ~= nil then
     local sourceThrowOffsets =
@@ -2924,6 +3086,7 @@ function BattlePresentationCompiler.compileTrainerPictureForSelector(romFs, opts
     selector = selector,
     entry = entry,
     images = images,
+    rawFiles = rawFiles,
     provenance = {
       archiveSymbol = resolved.archiveSymbol,
       memberBase = resolved.memberBase,
@@ -2936,7 +3099,7 @@ end
 -- schema-valid record, exactly its owned frame images, and the completion
 -- marker. Returns the marker.
 ---@param artifact PreparedArtifact
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, catalogIdentity: string } compiled trainer picture leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, catalogIdentity: string } compiled trainer picture leaf
 ---@param marker string completion marker
 ---@return string marker
 function BattlePresentationCompiler.stageTrainerPicture(artifact, leaf, marker)
@@ -2961,22 +3124,35 @@ function BattlePresentationCompiler.stageTrainerPicture(artifact, leaf, marker)
     artifact:addOwnedRoot(path)
     stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
   end
+  for path, bytes in pairs(leaf.rawFiles) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, bytes)
+  end
   stage:write(BattlePresentationCache.trainerPictureMarkerPath(leaf.selector), marker)
   return marker
 end
 
 -- The content identity behind one trainer picture completion marker.
 ---@param romSha1 string
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }> } compiled trainer picture leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string> } compiled trainer picture leaf
 ---@return string marker
 function BattlePresentationCompiler.trainerPictureMarker(romSha1, leaf)
   local imageHashes = {}
   for path, raster in pairs(leaf.images) do
     imageHashes[path] = Hashing.sha1hex(raster.pixels)
   end
+  local sourceIndexHashes = {}
+  for path, bytes in pairs(leaf.rawFiles) do
+    sourceIndexHashes[path] = Hashing.sha1hex(bytes)
+  end
   return BattlePresentationCache.marker(
     romSha1,
-    Hashing.hashLua({ selector = leaf.selector, entry = leaf.entry, images = imageHashes })
+    Hashing.hashLua({
+      selector = leaf.selector,
+      entry = leaf.entry,
+      images = imageHashes,
+      sourceIndices = sourceIndexHashes,
+    })
   )
 end
 
@@ -3052,7 +3228,7 @@ end
 ---@param romFs RomFs
 ---@param opts { versionId: string }? compiler options
 ---@param selector string `ball:ITEM` semantic ball selector
----@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
+---@return { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string>, provenance: table<string, unknown>, catalogIdentity: string }
 function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -3076,6 +3252,15 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
   local label = "battle ball " .. itemKey
   local charData = decodeChars(archive, resource.characterMember, label .. " characters")
   local paletteData = decodePalette(archive, resource.paletteMember, label .. " palette")
+  checkColorCount(paletteData, 16, label .. " palette")
+  local sourceIndexPalette = { colors = {} }
+  for colorIndex = 1, #paletteData.colors do
+    sourceIndexPalette.colors[colorIndex] = {
+      r = Sources.MAIN_OBJ_PALETTE_BASE.contextualBall + colorIndex - 1,
+      g = 0,
+      b = 0,
+    }
+  end
   local cellBytes = decodeMember(archive, resource.cellMember, label .. " cells")
   local cellData, cellErr = G2dDecoder.decodeCell(cellBytes, { label = label .. " cells" })
   cellData = mustDecode(cellData, cellErr, label .. " cells", resource.cellMember)
@@ -3084,6 +3269,7 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
   local animationData = decodeAnimation(archive, resource.animationMember, label .. " animation")
   local animation = assert(animationData.anims[1], label .. " has its source animation")
   local images = {}
+  local rawFiles = {}
   local frames = {}
   for sourceFrameIndex = 1, #animation.frames do
     local raster = G2dRasterizer.renderAnimationFrame(
@@ -3096,19 +3282,45 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
       nil,
       mapping
     )
+    local sourceIndexRaster =
+      G2dRasterizer.renderAnimationFrame(charData, sourceIndexPalette, cellData, animation, sourceFrameIndex, {
+        asset = "battle-balls",
+        member = resource.animationMember,
+        role = label .. " source indices",
+        frame = sourceFrameIndex - 1,
+      }, nil, mapping)
+    assert(
+      sourceIndexRaster.width == raster.width and sourceIndexRaster.height == raster.height,
+      label .. " source-index raster matches its color raster"
+    )
     local frameIndex = sourceFrameIndex - 1
     local imagePath = BattlePresentationCache.assetDir() .. "/balls/" .. itemKey .. "-" .. frameIndex .. ".png"
     local drawableKey = "battle-ball:" .. itemKey .. ":" .. frameIndex
+    local variants = sourceIndexSlotVariants(
+      "battle-ball-" .. itemKey .. "-" .. frameIndex,
+      sourceIndexRaster.pixels,
+      Sources.MAIN_OBJ_PALETTE_BASE.contextualBall,
+      { 48, 64, 80, 96 },
+      rawFiles
+    )
     images[imagePath] = raster
     frames[#frames + 1] = {
       drawableKey = drawableKey,
       image = imagePath,
       width = raster.width,
       height = raster.height,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = sourceIndexRaster.width,
+        height = sourceIndexRaster.height,
+        variants = variants,
+      },
     }
   end
   assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
-  local entry = { frames = frames, fadeColor = fadeColors[ballId] }
+  local entry =
+    { frames = frames, fadeColor = fadeColors[ballId], paletteSource = { words = paletteWords(paletteData) } }
   local particlePngs = {}
   local particleSource = assert(particleSources.entries[itemKey], "every ball sprite has its particle sources")
   if particleSources.unrepresented[itemKey] == nil then
@@ -3143,6 +3355,7 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
     selector = selector,
     entry = entry,
     images = images,
+    rawFiles = rawFiles,
     pngImages = particlePngs,
     provenance = {
       spriteMembers = {
@@ -3161,7 +3374,7 @@ end
 -- schema-valid record, exactly its owned frame and particle images, and
 -- the completion marker. Returns the marker.
 ---@param artifact PreparedArtifact
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, catalogIdentity: string } compiled ball leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string>, catalogIdentity: string } compiled ball leaf
 ---@param marker string completion marker
 ---@return string marker
 function BattlePresentationCompiler.stageBall(artifact, leaf, marker)
@@ -3186,6 +3399,10 @@ function BattlePresentationCompiler.stageBall(artifact, leaf, marker)
     artifact:addOwnedRoot(path)
     stage:write(path, encodeImage(raster.pixels, raster.width, raster.height, path))
   end
+  for path, bytes in pairs(leaf.rawFiles) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, bytes)
+  end
   local pngPaths = {}
   for path in pairs(leaf.pngImages) do
     pngPaths[#pngPaths + 1] = path
@@ -3201,7 +3418,7 @@ end
 
 -- The content identity behind one ball completion marker.
 ---@param romSha1 string
----@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string> } compiled ball leaf
+---@param leaf { selector: string, entry: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string> } compiled ball leaf
 ---@return string marker
 function BattlePresentationCompiler.ballMarker(romSha1, leaf)
   local imageHashes = {}
@@ -3212,9 +3429,19 @@ function BattlePresentationCompiler.ballMarker(romSha1, leaf)
   for path, png in pairs(leaf.pngImages) do
     pngHashes[path] = Hashing.sha1hex(png)
   end
+  local sourceIndexHashes = {}
+  for path, bytes in pairs(leaf.rawFiles) do
+    sourceIndexHashes[path] = Hashing.sha1hex(bytes)
+  end
   return BattlePresentationCache.marker(
     romSha1,
-    Hashing.hashLua({ selector = leaf.selector, entry = leaf.entry, images = imageHashes, pngImages = pngHashes })
+    Hashing.hashLua({
+      selector = leaf.selector,
+      entry = leaf.entry,
+      images = imageHashes,
+      pngImages = pngHashes,
+      sourceIndices = sourceIndexHashes,
+    })
   )
 end
 
@@ -3337,7 +3564,7 @@ function BattlePresentationCompiler.compileEvolutionGraphics(romFs)
   local cursorSource = roles.cursor
   local cursorArchive = openArchive(romFs, cursorSource.archiveSymbol, "evolution cursor")
   local cursorCharacters = decodeChars(cursorArchive, cursorSource.characters, "evolution cursor characters")
-  assert(cursorCharacters.depth == 3, "EvolutionScene cursor characters use 4bpp tiles")
+  assert(cursorCharacters.depth == 3, "EvolutionScene cursor characters use 8bpp tiles")
   local cursorPalette = decodePalette(cursorArchive, cursorSource.palette, "evolution cursor palette")
   local cursorCellBytes = decodeMember(cursorArchive, cursorSource.cell, "evolution cursor cells")
   local cursorCells, cursorCellErr = G2dDecoder.decodeCell(cursorCellBytes, { label = "evolution cursor cells" })
@@ -3575,6 +3802,10 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     end
     local lowerPalette = decodePalette(lower, ROLES.lowerPalette, "base lower palette")
     checkColorCount(lowerPalette, 256, "base lower palette")
+    local lowerIdentityPalette = { colors = {} }
+    for paletteIndex = 1, #lowerPalette.colors do
+      lowerIdentityPalette.colors[paletteIndex] = { r = paletteIndex - 1, g = 0, b = 0 }
+    end
     local hudPalette = decodePalette(sceneArchive, ROLES.hudPalette, "ordinary HUD palette")
     checkColorCount(hudPalette, 16, "ordinary HUD palette")
     local componentBytes = hudComponentBytes()
@@ -3582,6 +3813,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local lowerObjPalette = decodePalette(sceneArchive, ROLES.lowerObjPalette, "lower OBJ palette")
     checkColorCount(lowerObjPalette, 112, "lower OBJ palette")
     local images = {}
+    local rawFiles = {}
     local resourcePayloads = {}
     local resourceCatalog = {}
     ---@type BattleGlobalStaging
@@ -3690,6 +3922,18 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       end
       return backgrounds, touchBackgrounds
     end
+    local function menuPatchSourceIndices(name, patch)
+      local source = assert(patch.sourceIndices, "menu patch carries its source-index raster")
+      local path = BattlePresentationCache.globalSourceIndexPath(name)
+      rawFiles[path] = source.pixels
+      return {
+        path = path,
+        format = "source-index-rgba8",
+        plane = "subBg",
+        width = source.width,
+        height = source.height,
+      }
+    end
     -- One menu descriptor per lower composition: the staged screen slices
     -- with the source template/priority facts where the source pins them.
     local function compileMenu(roleMembers, names, label, templates, priorities, planes, feedbackKey)
@@ -3702,8 +3946,31 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           asset = Sources.LOWER_NARC,
           role = label .. " screen " .. index,
         })
+        local sourceIndexRaster = G2dRasterizer.renderScreen(lowerChars, lowerIdentityPalette, screen, {
+          asset = Sources.LOWER_NARC,
+          role = label .. " screen " .. index .. " source indices",
+        })
+        assert(
+          sourceIndexRaster.width == raster.width and sourceIndexRaster.height == raster.height,
+          label .. " source-index map preserves its screen dimensions"
+        )
+        local sourceIndexPixels = {}
+        for offset = 1, #raster.pixels, 4 do
+          local sourceIndex = string.byte(sourceIndexRaster.pixels, offset)
+          local green = string.byte(sourceIndexRaster.pixels, offset + 1)
+          local blue = string.byte(sourceIndexRaster.pixels, offset + 2)
+          local alpha = string.byte(sourceIndexRaster.pixels, offset + 3)
+          local rasterAlpha = string.byte(raster.pixels, offset + 3)
+          assert(
+            sourceIndex ~= nil and green == 0 and blue == 0 and alpha == rasterAlpha,
+            label .. " source-index map preserves source pixel coverage"
+          )
+          sourceIndexPixels[#sourceIndexPixels + 1] = string.char(alpha == 0 and 0 or sourceIndex, 0, 0, alpha)
+        end
         local name = names[index]
         stageSlice(name, raster.pixels, raster.width, raster.height)
+        local sourceIndexPath = BattlePresentationCache.globalSourceIndexPath(name)
+        rawFiles[sourceIndexPath] = table.concat(sourceIndexPixels)
         local tilemapKey = "menu/tilemap/" .. name:sub(#"menu-" + 1):gsub("-", "/")
         local tilemapBytes = must(lower:readMember(memberId), "menu tilemap source member is absent")
         local format, geometry = describeScreen(screen)
@@ -3717,6 +3984,13 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         local backgrounds, touchBackgrounds = backgroundVariants(name, screen, label .. " screen " .. index, raster)
         local entry = {
           image = BattlePresentationCache.globalImagePath(name),
+          sourceIndices = {
+            path = sourceIndexPath,
+            format = "source-index-rgba8",
+            plane = "subBg",
+            width = raster.width,
+            height = raster.height,
+          },
           width = raster.width,
           height = raster.height,
           tilemapKey = tilemapKey,
@@ -3738,7 +4012,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
                 right = button.right,
                 bottom = button.bottom,
                 offset = offset,
-              })
+              }, lowerIdentityPalette)
               local variantName = name .. "-" .. button.id:gsub("[^%w]+", "-"):gsub("%-+$", "") .. "-" .. state
               stageSlice(variantName, patch.pixels, patch.width, patch.height)
               states[state] = {
@@ -3747,6 +4021,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
                 y = button.top * 8,
                 width = patch.width,
                 height = patch.height,
+                sourceIndices = menuPatchSourceIndices(variantName, patch),
               }
             end
             entry.feedback[button.id] = states
@@ -3796,20 +4071,25 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         assert(button.id == "move:" .. slot, "fight feedback lists the move buttons in slot order")
         local bank = buttonSource.firstBank + slot
         local types = {}
+        local typeSourceIndices = {}
         for typeKey, palette in pairs(typePalettes) do
           local states = {}
+          local indexStates = {}
           for state, offset in pairs({ normal = 0, pressed = feedback.states.pressed }) do
             local patch = BattlePresentationCompiler.compileMenuFeedbackPatch(
               lowerChars,
               paletteWithBank(bank, palette.colors),
               screen,
-              { left = button.left, top = button.top, right = button.right, bottom = button.bottom, offset = offset }
+              { left = button.left, top = button.top, right = button.right, bottom = button.bottom, offset = offset },
+              lowerIdentityPalette
             )
             local name = "menu-fight-move-" .. slot .. "-" .. typeKey .. "-" .. state
             stageSlice(name, patch.pixels, patch.width, patch.height)
             states[state] = BattlePresentationCache.globalImagePath(name)
+            indexStates[state] = menuPatchSourceIndices(name, patch)
           end
           types[typeKey] = states
+          typeSourceIndices[typeKey] = indexStates
         end
         local empty = buttonSource.empty[slot + 1]
         local blankBank = {}
@@ -3824,7 +4104,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
             bottom = empty.bottom,
             offset = empty.offset,
             crop = button,
-          })
+          }, lowerIdentityPalette)
         local emptyName = "menu-fight-move-" .. slot .. "-empty"
         stageSlice(emptyName, blank.pixels, blank.width, blank.height)
         typeButtons[slot + 1] = {
@@ -3834,6 +4114,10 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           height = blank.height,
           types = types,
           empty = BattlePresentationCache.globalImagePath(emptyName),
+          sourceIndices = {
+            empty = menuPatchSourceIndices(emptyName, blank),
+            types = typeSourceIndices,
+          },
         }
       end
       moves.screens[1].moveButtons = typeButtons
@@ -3850,7 +4134,9 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     -- Single-battle sprites: HUD boxes through the HUD palette, the arrow
     -- and party gauges through the lower OBJ palette. Associations are
     -- never swapped.
-    local function compileSprite(triple, name, label, animIndex, includeHudComponents)
+    local subObjLowerPaletteBase = 3 * 16
+    local subObjCursorPaletteBase = subObjLowerPaletteBase + #lowerObjPalette.colors
+    local function compileSprite(triple, name, label, animIndex, includeHudComponents, sourcePaletteBase, sourcePlane)
       local charTiles = triple.chars.tiles
       local componentBase = nil
       local digitBase = nil
@@ -3869,15 +4155,80 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         { asset = Sources.SCENE_NARC, role = label }
       )
       stageSlice(name, strip.pixels, strip.width, strip.height)
-      return {
+      local paletteColorRecords, paletteSourceWords = paletteRecords(triple.palette)
+      local section = {
         image = BattlePresentationCache.globalImagePath(name),
         cells = triple.cells,
         animation = selectAnimation(triple, animIndex),
-        palette = { colors = paletteRecords(triple.palette) },
+        palette = { colors = paletteColorRecords },
         componentBase = componentBase,
         componentCount = includeHudComponents and Sources.HUD_COMPONENTS.tileCount or nil,
         digitBase = digitBase,
       }
+      if sourcePlane == "mainObj" then
+        section.paletteSource = {
+          firstSlot = sourcePaletteBase,
+          words = paletteSourceWords,
+        }
+      end
+      if sourcePaletteBase ~= nil then
+        local identityPalette = { colors = {} }
+        for colorIndex = 1, #triple.palette.colors do
+          identityPalette.colors[colorIndex] = { r = sourcePaletteBase + colorIndex - 1, g = 0, b = 0 }
+        end
+        local tileBanks = {}
+        for _, cell in ipairs(triple.cells) do
+          for _, obj in ipairs(cell.objs) do
+            if not obj.disabled then
+              local tilesWide, tilesHigh = obj.width / 8, obj.height / 8
+              assert(tilesWide % 1 == 0 and tilesHigh % 1 == 0, label .. " OAM sprites use complete tiles")
+              for tileIndex = obj.tile, obj.tile + tilesWide * tilesHigh - 1 do
+                local previousBank = tileBanks[tileIndex]
+                if previousBank ~= nil and previousBank ~= obj.palette then
+                  error(
+                    Errors.new("BATTLE_SOURCE_UNEXPECTED", label .. " reuses a source tile across OBJ palette banks", {
+                      tile = tileIndex,
+                      firstPalette = previousBank,
+                      nextPalette = obj.palette,
+                    }),
+                    0
+                  )
+                end
+                tileBanks[tileIndex] = obj.palette
+              end
+            end
+          end
+        end
+        local indexTiles = {}
+        local indexCharacters = { depth = triple.chars.depth, tiles = charTiles }
+        local tileCount = math.floor(#indexCharacters.tiles / 32)
+        for tileIndex = 0, tileCount - 1 do
+          local tile = G2dRasterizer.renderTileStrip(
+            indexCharacters,
+            identityPalette,
+            tileIndex,
+            1,
+            tileBanks[tileIndex] or 0,
+            { asset = Sources.SCENE_NARC, role = label .. " source indices" }
+          )
+          indexTiles[#indexTiles + 1] = tile.pixels
+        end
+        local sourceIndexPixels = table.concat(indexTiles)
+        assert(
+          #sourceIndexPixels == #strip.pixels and strip.width == tileCount * 8 and strip.height == 8,
+          label .. " source-index atlas preserves the source image extent"
+        )
+        local sourceIndexPath = BattlePresentationCache.globalSourceIndexPath(name)
+        rawFiles[sourceIndexPath] = sourceIndexPixels
+        section.sourceIndices = {
+          path = sourceIndexPath,
+          format = "source-index-rgba8",
+          plane = sourcePlane or "subObj",
+          width = strip.width,
+          height = strip.height,
+        }
+      end
+      return section
     end
     local playerTriple = decodeTriple(sceneArchive, ROLES.playerHud, hudPalette, "player HUD", true)
     local enemyTriple = decodeTriple(sceneArchive, ROLES.enemyHud, hudPalette, "enemy HUD", true)
@@ -3891,8 +4242,24 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       decodeTriple(sceneArchive, ROLES.enemyHudDoubleRight, hudPalette, "enemy right doubled HUD", true)
     local arrowTriple = decodeTriple(sceneArchive, ROLES.arrow, lowerObjPalette, "player arrow", true)
     checkArrow(arrowTriple)
-    local playerHud = compileSprite(playerTriple, "hud-player-chars", "player HUD", nil, true)
-    local enemyHud = compileSprite(enemyTriple, "hud-enemy-chars", "enemy HUD", nil, true)
+    local playerHud = compileSprite(
+      playerTriple,
+      "hud-player-chars",
+      "player HUD",
+      nil,
+      true,
+      Sources.MAIN_OBJ_PALETTE_BASE.hud,
+      "mainObj"
+    )
+    local enemyHud = compileSprite(
+      enemyTriple,
+      "hud-enemy-chars",
+      "enemy HUD",
+      nil,
+      true,
+      Sources.MAIN_OBJ_PALETTE_BASE.hud,
+      "mainObj"
+    )
     -- Doubled health boxes ride the same HUD palette association as the
     -- single-battle boxes, never the lower OBJ palette. Each family
     -- keeps its staged strip, source cells, animation, and palette
@@ -3903,28 +4270,36 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         "hud-doubles-player-left-chars",
         "player left doubled HUD",
         nil,
-        true
+        true,
+        Sources.MAIN_OBJ_PALETTE_BASE.hud,
+        "mainObj"
       ),
       playerRight = compileSprite(
         playerDoubleRightTriple,
         "hud-doubles-player-right-chars",
         "player right doubled HUD",
         nil,
-        true
+        true,
+        Sources.MAIN_OBJ_PALETTE_BASE.hud,
+        "mainObj"
       ),
       enemyLeft = compileSprite(
         enemyDoubleLeftTriple,
         "hud-doubles-enemy-left-chars",
         "enemy left doubled HUD",
         nil,
-        true
+        true,
+        Sources.MAIN_OBJ_PALETTE_BASE.hud,
+        "mainObj"
       ),
       enemyRight = compileSprite(
         enemyDoubleRightTriple,
         "hud-doubles-enemy-right-chars",
         "enemy right doubled HUD",
         nil,
-        true
+        true,
+        Sources.MAIN_OBJ_PALETTE_BASE.hud,
+        "mainObj"
       ),
     }
     local arrow = compileSprite(arrowTriple, "arrow-chars", "player arrow")
@@ -3939,7 +4314,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         0
       )
     end
-    local cursor = compileSprite(cursorTriple, "cursor-chars", "keypad cursor", 1)
+    local cursor = compileSprite(cursorTriple, "cursor-chars", "keypad cursor", 1, nil, subObjCursorPaletteBase)
     cursor.animations = {}
     for index, animation in ipairs(cursorTriple.anims) do
       cursor.animations[index] = summarizeAnimation(animation)
@@ -3947,8 +4322,14 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local partyGauges = {}
     for familyIndex, family in ipairs(ROLES.gauges) do
       local triple = decodeTriple(sceneArchive, family, lowerObjPalette, "party gauges " .. familyIndex)
-      local section =
-        compileSprite(triple, "gauges-" .. (familyIndex - 1) .. "-chars", "party gauges " .. familyIndex, 1)
+      local section = compileSprite(
+        triple,
+        "gauges-" .. (familyIndex - 1) .. "-chars",
+        "party gauges " .. familyIndex,
+        1,
+        nil,
+        subObjLowerPaletteBase
+      )
       local animations = {}
       for _, anim in ipairs(triple.anims) do
         animations[#animations + 1] = summarizeAnimation(anim)
@@ -4333,6 +4714,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     return {
       manifest = partialManifest,
       images = images,
+      rawFiles = rawFiles,
       pngImages = {},
       resourcePayloads = resourcePayloads,
       provenance = provenance,
@@ -4543,6 +4925,14 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
     local basePalette =
       decodePalette(lower, Sources.basePaletteMember(backgroundId, variant), parsed.background .. " base palette")
     checkColorCount(basePalette, 256, parsed.background .. " base palette")
+    local subBgPalette = decodePalette(lower, ROLES.lowerPalette, "base lower SUB_BG palette")
+    checkColorCount(subBgPalette, 256, "base lower SUB_BG palette")
+    local subBgBase =
+      decodePalette(lower, Sources.lowerBasePaletteMember(backgroundId), parsed.background .. " lower SUB_BG base bank")
+    checkColorCount(subBgBase, 16, parsed.background .. " lower SUB_BG base bank")
+    for index = 1, 16 do
+      subBgPalette.colors[index] = subBgBase.colors[index]
+    end
     -- Indoor and special backgrounds keep palette variant zero: the day
     -- terrain member regardless of the requested time.
     local terrainMember = must(terrain[parsed.time], "scene time has no terrain member")
@@ -4551,6 +4941,26 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
     end
     local terrainPalette = decodePalette(sceneArchive, terrainMember, parsed.terrain .. " terrain palette")
     checkColorCount(terrainPalette, 16, parsed.terrain .. " terrain palette")
+    local lowerObjPalette = decodePalette(sceneArchive, ROLES.lowerObjPalette, "lower SUB_OBJ palette")
+    checkColorCount(lowerObjPalette, 112, "lower SUB_OBJ palette")
+    local cursorPalette = decodePalette(sceneArchive, ROLES.cursorPalette, "keypad cursor SUB_OBJ palette")
+    checkColorCount(cursorPalette, 16, "keypad cursor SUB_OBJ palette")
+    local hudPalette = decodePalette(sceneArchive, ROLES.hudPalette, "MAIN_OBJ HUD palette")
+    checkColorCount(hudPalette, 16, "MAIN_OBJ HUD palette")
+    local lowerObjBase = 3 * 16
+    local cursorBase = lowerObjBase + #lowerObjPalette.colors
+    local subObjOpaque = {}
+    local initialDisplayedSubObj = {}
+    for index, word in ipairs(paletteWords(lowerObjPalette)) do
+      local slot = lowerObjBase + index - 1
+      subObjOpaque[slot + 1] = word
+      initialDisplayedSubObj[slot + 1] = word
+    end
+    for index, word in ipairs(paletteWords(cursorPalette)) do
+      local slot = cursorBase + index - 1
+      subObjOpaque[slot + 1] = word
+      initialDisplayedSubObj[slot + 1] = word
+    end
     local type0 = decodeChars(sceneArchive, terrain.type0, parsed.terrain .. " type-0 cells")
     local type1 = decodeChars(sceneArchive, terrain.type1, parsed.terrain .. " type-1 cells")
     for _, sized in ipairs({ { type0, "type-0" }, { type1, "type-1" } }) do
@@ -4594,6 +5004,7 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
     )
     local terrainSprites = {}
     local terrainSpritePixels = {}
+    local terrainSpriteSourceIndexPixels = {}
     ---@type ("player"|"foe")[]
     local terrainSides = { "player", "foe" }
     for _, side in ipairs(terrainSides) do
@@ -4622,14 +5033,55 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
         nil,
         mapping
       )
+      local identityPalette = { colors = {} }
+      for paletteIndex = 1, #terrainPalette.colors do
+        identityPalette.colors[paletteIndex] = {
+          r = Sources.MAIN_OBJ_PALETTE_BASE.terrain + paletteIndex - 1,
+          g = 0,
+          b = 0,
+        }
+      end
+      local sourceIndexRaster = G2dRasterizer.renderAnimationFrame(
+        charData,
+        identityPalette,
+        cellData,
+        animation,
+        1,
+        { asset = Sources.SCENE_NARC, member = animationMember, role = label .. " source indices" },
+        nil,
+        mapping
+      )
+      assert(
+        sourceIndexRaster.width == spriteRaster.width and sourceIndexRaster.height == spriteRaster.height,
+        "source-index terrain raster matches its RGBA composition"
+      )
+      local sourceIndexPixels = {}
+      for offset = 1, #sourceIndexRaster.pixels, 4 do
+        local red = string.byte(sourceIndexRaster.pixels, offset)
+        local green = string.byte(sourceIndexRaster.pixels, offset + 1)
+        local blue = string.byte(sourceIndexRaster.pixels, offset + 2)
+        local alpha = string.byte(sourceIndexRaster.pixels, offset + 3)
+        assert(red ~= nil and green == 0 and blue == 0 and alpha ~= nil, "identity raster emits source indices")
+        local sourceIndex = alpha == 0 and 0 or red
+        sourceIndexPixels[#sourceIndexPixels + 1] = string.char(sourceIndex, 0, 0, alpha)
+      end
+      local sourceIndexPath = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side)
       local spriteImagePath = BattlePresentationCache.sceneTerrainSpritePath(sceneKey, side)
       terrainSprites[side] = {
         image = spriteImagePath,
         width = spriteRaster.width,
         height = spriteRaster.height,
         origin = spriteRaster.offset,
+        sourceIndices = {
+          path = sourceIndexPath,
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = spriteRaster.width,
+          height = spriteRaster.height,
+        },
       }
       terrainSpritePixels[side] = spriteRaster.pixels
+      terrainSpriteSourceIndexPixels[side] = table.concat(sourceIndexPixels)
     end
     local encounterParticles, encounterParticleImages, encounterProvenance =
       compileEncounterParticles(romFs, sceneKey, parsed.terrain)
@@ -4647,6 +5099,11 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       characters = {
         key = "battle-scene/" .. sceneStem .. "/background/characters",
         path = BattlePresentationCache.sceneCharactersPath(sceneKey),
+        format = "indexed8",
+      },
+      baseCharacters = {
+        key = "battle-scene/" .. sceneStem .. "/intro/characters",
+        path = BattlePresentationCache.sceneIntroCharactersPath(sceneKey),
         format = "indexed8",
       },
       map = {
@@ -4676,10 +5133,16 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
         height = introRaster.height,
       },
       terrainSprites = terrainSprites,
+      paletteSource = {
+        key = "battle-scene/" .. sceneStem .. "/native-palettes",
+        path = BattlePresentationCache.scenePaletteSourcePath(sceneKey),
+        format = "native-encounter-palettes-v1",
+      },
       encounterParticles = encounterParticles,
       layerPayloads = {
         {
           characters = concatChars(dest),
+          baseCharacters = baseChars.tiles,
           map = { width = screen.width, height = screen.height, entries = screen.entries },
           palette = { colors = combined },
         },
@@ -4714,6 +5177,25 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       image = raster.pixels,
       introImage = introRaster.pixels,
       terrainSpritePixels = terrainSpritePixels,
+      terrainSpriteSourceIndexPixels = terrainSpriteSourceIndexPixels,
+      paletteSourcePayload = {
+        mainBg = paletteWords({ colors = combined }),
+        mainObjSources = {
+          hud = { firstSlot = Sources.MAIN_OBJ_PALETTE_BASE.hud, words = paletteWords(hudPalette) },
+          hudAuxiliary = {
+            firstSlot = Sources.MAIN_OBJ_PALETTE_BASE.hudAuxiliary,
+            words = paletteWords(hudPalette),
+          },
+          terrain = { firstSlot = Sources.MAIN_OBJ_PALETTE_BASE.terrain, words = paletteWords(terrainPalette) },
+        },
+        subBgOpaque = paletteWords(subBgPalette),
+        subObjOpaque = subObjOpaque,
+        initialDisplayed = {
+          subBg = paletteWords(subBgPalette),
+          subObj = initialDisplayedSubObj,
+        },
+        terrainObj = paletteRecords(terrainPalette),
+      },
       encounterParticleImages = encounterParticleImages,
       imagePath = BattlePresentationCache.sceneImagePath(sceneKey),
     }
@@ -4730,6 +5212,7 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       imagePath = record.imagePath,
       introLayer = record.introLayer,
       terrainSprites = record.terrainSprites,
+      paletteSource = record.paletteSource,
       encounterParticles = record.encounterParticles,
     })
     if not sceneOk then
@@ -4755,7 +5238,7 @@ end
 -- manifest, the producer provenance, every staged slice PNG, and the
 -- completion marker. Returns the marker.
 ---@param artifact PreparedArtifact
----@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
+---@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
 ---@param marker string completion marker
 ---@return string marker
 function BattlePresentationCompiler.stageGlobal(artifact, bundle, marker)
@@ -4786,6 +5269,15 @@ function BattlePresentationCompiler.stageGlobal(artifact, bundle, marker)
     artifact:addOwnedRoot(path)
     stage:write(path, bundle.pngImages[path])
   end
+  local rawPaths = {}
+  for path in pairs(bundle.rawFiles) do
+    rawPaths[#rawPaths + 1] = path
+  end
+  table.sort(rawPaths)
+  for _, path in ipairs(rawPaths) do
+    artifact:addOwnedRoot(path)
+    stage:write(path, bundle.rawFiles[path])
+  end
   local resourcePaths = {}
   for path in pairs(bundle.resourcePayloads) do
     resourcePaths[#resourcePaths + 1] = path
@@ -4800,9 +5292,9 @@ function BattlePresentationCompiler.stageGlobal(artifact, bundle, marker)
 end
 
 -- The content identity behind the global completion marker: the verified
--- manifest plus every staged image and decoded resource payload.
+-- manifest plus every staged image, raw map, and decoded resource payload.
 ---@param romSha1 string
----@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, pngImages: table<string, string>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
+---@param bundle { manifest: table<string, unknown>, images: table<string, { width: integer, height: integer, pixels: string }>, rawFiles: table<string, string>, pngImages: table<string, string>, resourcePayloads: table<string, table<string, unknown>>, provenance: table<string, unknown> } compileGlobal bundle
 ---@return string marker
 function BattlePresentationCompiler.globalMarker(romSha1, bundle)
   local imageHashes = {}
@@ -4812,6 +5304,10 @@ function BattlePresentationCompiler.globalMarker(romSha1, bundle)
   local pngHashes = {}
   for path, png in pairs(bundle.pngImages) do
     pngHashes[path] = Hashing.sha1hex(png)
+  end
+  local rawHashes = {}
+  for path, bytes in pairs(bundle.rawFiles) do
+    rawHashes[path] = Hashing.sha1hex(bytes)
   end
   local resourceHashes = {}
   for path, payload in pairs(bundle.resourcePayloads) do
@@ -4823,6 +5319,7 @@ function BattlePresentationCompiler.globalMarker(romSha1, bundle)
       manifest = bundle.manifest,
       images = imageHashes,
       pngImages = pngHashes,
+      rawFiles = rawHashes,
       resources = resourceHashes,
     })
   )
@@ -4843,7 +5340,9 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
   artifact:addOwnedRoot(scene.introLayer.image)
   for _, sprite in pairs(scene.terrainSprites) do
     artifact:addOwnedRoot(sprite.image)
+    artifact:addOwnedRoot(sprite.sourceIndices.path)
   end
+  artifact:addOwnedRoot(scene.paletteSource.path)
   local particlePaths = {}
   for path in pairs(scene.encounterParticleImages) do
     particlePaths[#particlePaths + 1] = path
@@ -4853,6 +5352,7 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
     artifact:addOwnedRoot(path)
   end
   artifact:addOwnedRoot(scene.layers[1].characters.path)
+  artifact:addOwnedRoot(scene.layers[1].baseCharacters.path)
   artifact:addOwnedRoot(scene.layers[1].map.path)
   artifact:addOwnedRoot(scene.layers[1].palette.path)
   artifact:addOwnedRoot(BattlePresentationCache.sceneProvenancePath(scene.key))
@@ -4870,12 +5370,18 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
     imagePath = scene.imagePath,
     introLayer = scene.introLayer,
     terrainSprites = scene.terrainSprites,
+    paletteSource = scene.paletteSource,
     encounterParticles = scene.encounterParticles,
   })
   local payload = assert(scene.layerPayloads[1], "the scene carries its BG3 payload")
   stage:write(scene.layers[1].characters.path, payload.characters)
+  stage:write(
+    scene.layers[1].baseCharacters.path,
+    assert(payload.baseCharacters, "the scene carries its unbaked intro characters")
+  )
   stage:writeLua(scene.layers[1].map.path, payload.map)
   stage:writeLua(scene.layers[1].palette.path, payload.palette)
+  stage:writeLua(scene.paletteSource.path, scene.paletteSourcePayload)
   stage:writeLua(BattlePresentationCache.sceneProvenancePath(scene.key), scene.buildMetadata)
   stage:write(
     BattlePresentationCache.sceneImagePath(scene.key),
@@ -4890,6 +5396,22 @@ function BattlePresentationCompiler.stageScene(artifact, scene, marker)
       sprite.image,
       encodeImage(scene.terrainSpritePixels[side], sprite.width, sprite.height, scene.key .. " terrain " .. side)
     )
+    local indexPixels = assert(
+      scene.terrainSpriteSourceIndexPixels[side],
+      scene.key .. " terrain " .. side .. " source-index raster exists"
+    )
+    if #indexPixels ~= sprite.width * sprite.height * 4 then
+      error(
+        Errors.new("BATTLE_IMAGE_INVALID", scene.key .. " terrain source-index raster has an invalid extent", {
+          sceneKey = scene.key,
+          path = sprite.sourceIndices.path,
+          bytes = #indexPixels,
+          expected = sprite.width * sprite.height * 4,
+        }),
+        0
+      )
+    end
+    stage:write(sprite.sourceIndices.path, indexPixels)
   end
   for _, path in ipairs(particlePaths) do
     stage:write(path, scene.encounterParticleImages[path])
@@ -4917,6 +5439,7 @@ function BattlePresentationCompiler.sceneMarker(romSha1, scene)
       layers = scene.layers,
       introLayer = scene.introLayer,
       terrainSprites = scene.terrainSprites,
+      paletteSource = scene.paletteSource,
       encounterParticles = scene.encounterParticles,
       encounterParticleImages = particleImageHashes,
       image = Hashing.sha1hex(scene.image),
@@ -4925,9 +5448,15 @@ function BattlePresentationCompiler.sceneMarker(romSha1, scene)
         player = Hashing.sha1hex(scene.terrainSpritePixels.player),
         foe = Hashing.sha1hex(scene.terrainSpritePixels.foe),
       },
+      terrainSpriteSourceIndexPixels = {
+        player = Hashing.sha1hex(scene.terrainSpriteSourceIndexPixels.player),
+        foe = Hashing.sha1hex(scene.terrainSpriteSourceIndexPixels.foe),
+      },
+      paletteSourcePayload = scene.paletteSourcePayload,
       layerPayloads = {
         {
           characters = Hashing.sha1hex(scene.layerPayloads[1].characters),
+          baseCharacters = Hashing.sha1hex(scene.layerPayloads[1].baseCharacters),
           map = scene.layerPayloads[1].map,
           palette = scene.layerPayloads[1].palette,
         },
@@ -5536,17 +6065,24 @@ local function stageSelectedSources(state, role, operands, sourceSelections)
     local resourceSlot = slot:gsub("(%u)", "-%1"):lower()
     local resourceKey = table.concat({ "battle/animation", role, resourceSlot, contentIdentity }, "/")
     local payloadPath = BattlePresentationCache.globalResourcePath(resourceKey)
+    -- Battle effect backdrops install as raw BG3 tile planes
+    -- (BattleScene:installBackgroundLayer), never as uploaded RGBA
+    -- textures: the staged character keeps its decoded tile bytes beside
+    -- the palette and screen records, and skips the sprite raster queue.
+    local kind = source.kind
+    if role == "battle-background" and slot == "character" then
+      kind = "tiles"
+    end
     local previous = state.resolvedResources[resourceKey]
     if previous ~= nil then
       assert(
         previous.contentIdentity == contentIdentity
-          and previous.kind == source.kind
+          and previous.kind == kind
           and Hashing.hashLua(state.resourcePayloads[previous.payload]) == Hashing.hashLua(decoded),
         "content-addressed battle resource keys identify one decoded format"
       )
     else
-      state.resolvedResources[resourceKey] =
-        { kind = source.kind, contentIdentity = contentIdentity, payload = payloadPath }
+      state.resolvedResources[resourceKey] = { kind = kind, contentIdentity = contentIdentity, payload = payloadPath }
       state.resourcePayloads[payloadPath] = decoded
     end
     resourceKeys[slot] = resourceKey

@@ -80,6 +80,67 @@ function T.effect_artifacts_carry_closed_programs_and_typed_context()
   Assert.isFalse(Schema.isValidEffect(unknownKind), "unknown resource kinds never validate")
 end
 
+function T.visual_task_background_load_carries_its_staged_slots()
+  local Schema = animationSchema()
+  assert(Schema ~= nil, "the effect schema is available")
+  local artifact = effectArtifact()
+  artifact.program.instructions[2] = {
+    op = "start-visual-task",
+    taskKind = "battle-background-resource-load",
+    values = { 9, 0x1234 },
+    resourceKeys = {
+      character = "synthetic-bg-character",
+      palette = "synthetic-bg-palette",
+      screenDefault = "synthetic-bg-screen-default",
+      screenAlternate = "synthetic-bg-screen-alternate",
+    },
+    runtimeSelection = "battle-background-screen-selection",
+  }
+  artifact.program.taskKinds = { "battle-background-resource-load" }
+  artifact.dependencies = {
+    "synthetic-bg-character",
+    "synthetic-bg-palette",
+    "synthetic-bg-screen-default",
+    "synthetic-bg-screen-alternate",
+  }
+  artifact.resources = {
+    ["synthetic-bg-character"] = {
+      kind = "tiles",
+      payload = "synthetic-bg-character-path",
+      contentIdentity = string.rep("c", 40),
+    },
+    ["synthetic-bg-palette"] = {
+      kind = "palette",
+      payload = "synthetic-bg-palette-path",
+      contentIdentity = string.rep("d", 40),
+    },
+    ["synthetic-bg-screen-default"] = {
+      kind = "map",
+      payload = "synthetic-bg-screen-default-path",
+      contentIdentity = string.rep("e", 40),
+    },
+    ["synthetic-bg-screen-alternate"] = {
+      kind = "map",
+      payload = "synthetic-bg-screen-alternate-path",
+      contentIdentity = string.rep("f", 40),
+    },
+  }
+  local valid, failure = Schema.isValidEffect(artifact)
+  Assert.isTrue(valid, "a staged background load validates: " .. tostring(failure))
+  local partial = effectArtifact()
+  partial.program.instructions[2] = {
+    op = "start-visual-task",
+    taskKind = "battle-background-resource-load",
+    values = { 9, 0x1234 },
+    resourceKeys = { character = "synthetic-bg-character" },
+    runtimeSelection = "battle-background-screen-selection",
+  }
+  Assert.isFalse(
+    Schema.isValidEffect(partial),
+    "a background load with an incomplete slot closure never validates"
+  )
+end
+
 function T.effect_cache_paths_live_in_the_existing_family()
   local Cache = presentationCache()
   Assert.isTrue(

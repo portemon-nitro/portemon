@@ -492,6 +492,63 @@ function T.persistent_bg3_raster_uses_native_8bpp_character_bytes()
   )
 end
 
+-- The unbaked intro plane rasterizes its own characters through a faded
+-- palette without touching the persistent background: the encounter fade
+-- needs per-frame intro pixels while the scrolled battle layer stays put.
+function T.intro_raster_renders_unbaked_characters_through_faded_palettes()
+  local colors = {}
+  for index = 0, 255 do
+    colors[index + 1] = { r = index, g = 255 - index, b = index % 2 }
+  end
+  local scene = BattleScene.new()
+  Assert.isFalse(scene:hasIntro(), "no intro plane exists before its install")
+  scene:installBackground({
+    characters = string.char(0x07) .. string.rep("\0", 63),
+    baseCharacters = string.char(0x21) .. string.rep("\0", 63),
+    colorMode = "8bpp",
+    map = { width = 8, height = 8, entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } } },
+    palette = { colors = colors },
+  })
+  Assert.isTrue(scene:hasIntro(), "installing base characters stages the intro plane")
+  Assert.deepEqual(
+    { scene:introRaster():pixel(0, 0) },
+    { 33, 222, 1, 255 },
+    "the intro plane reads its unbaked character bytes"
+  )
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(0, 0) },
+    { 7, 248, 1, 255 },
+    "the persistent layer keeps its baked character bytes"
+  )
+  local faded = {}
+  for index = 1, 256 do
+    faded[index] = { r = 8, g = 9, b = 10 }
+  end
+  faded[0x21 + 1] = { r = 11, g = 12, b = 13 }
+  Assert.deepEqual(
+    { scene:introRaster(faded):pixel(0, 0) },
+    { 11, 12, 13, 255 },
+    "a faded palette override reaches the composed intro pixels"
+  )
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(0, 0) },
+    { 7, 248, 1, 255 },
+    "the faded override never leaks into the persistent layer"
+  )
+  local bare = BattleScene.new()
+  bare:installBackground({
+    characters = string.char(0x07) .. string.rep("\0", 63),
+    colorMode = "8bpp",
+    map = { width = 8, height = 8, entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } } },
+    palette = { colors = colors },
+  })
+  Assert.isFalse(bare:hasIntro(), "background installs without base characters stage no intro plane")
+  local ok = pcall(function()
+    return bare:introRaster()
+  end)
+  Assert.isFalse(ok, "intro raster without an intro plane fails loudly")
+end
+
 function T.picture_animation_uses_source_tick_countdown_loop_and_stop_rules()
   local scene = BattleScene.new()
   local battler = { combatant = 1, activation = 4 }

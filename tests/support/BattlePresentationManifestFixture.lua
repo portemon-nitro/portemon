@@ -7,6 +7,13 @@ local function menuSection()
     screens = {
       {
         image = "assets/generated/battle/menu-command-1.png",
+        sourceIndices = {
+          path = "assets/generated/battle/menu-command-1.source-index.rgba8",
+          format = "source-index-rgba8",
+          plane = "subBg",
+          width = 256,
+          height = 256,
+        },
         width = 256,
         height = 256,
         tilemapKey = "menu/tilemap/synthetic",
@@ -601,6 +608,80 @@ local function fullManifest()
   old.images["assets/generated/battle/trainer-front-YOUNGSTER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-front-LEADER_FALKNER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"] = { width = 80, height = 80 }
+  local function addSubObjSourceIndices(section)
+    local image = assert(old.images[section.image], "source-indexed HUD images are inventoried")
+    section.sourceIndices = {
+      path = section.image:gsub("%.png$", "-source-index.rgba8"),
+      format = "source-index-rgba8",
+      plane = "subObj",
+      width = image.width,
+      height = image.height,
+    }
+  end
+  addSubObjSourceIndices(old.arrow)
+  addSubObjSourceIndices(old.cursor)
+  for _, gauge in ipairs(old.partyGauges) do
+    addSubObjSourceIndices(gauge)
+  end
+  local mainObjPaletteWords = {}
+  for index = 1, 16 do
+    mainObjPaletteWords[index] = index - 1
+  end
+  local function addMainObjSourceIndices(section)
+    local image = assert(old.images[section.image], "source-indexed HUD images are inventoried")
+    section.sourceIndices = {
+      path = section.image:gsub("%.png$", "-main-obj-source-index.rgba8"),
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = image.width,
+      height = image.height,
+    }
+    section.paletteSource = { firstSlot = 0, words = mainObjPaletteWords }
+  end
+  addMainObjSourceIndices(old.playerHud)
+  addMainObjSourceIndices(old.enemyHud)
+  for _, section in pairs(old.doublesHud) do
+    addMainObjSourceIndices(section)
+  end
+  local function addTrainerSourceData(entry, selector)
+    local trainerPaletteWords = {}
+    local bankCount = selector == "front:CASTLE_VALET" and 2 or 1
+    for index = 1, bankCount * 16 do
+      trainerPaletteWords[index] = (index - 1) % 16
+    end
+    entry.paletteSource = {
+      words = trainerPaletteWords,
+    }
+    local function addFrameSourceIndices(frame)
+      local image = assert(old.images[frame.image], "trainer frame images are inventoried")
+      local variants = {}
+      local slots = selector:match("^front:")
+        and { 96, 112, 128, 144, 160, 176 }
+        or { 48, 64, 80, 96, 112 }
+      for _, firstSlot in ipairs(slots) do
+        local slotKey = "slot:" .. tostring(firstSlot)
+        variants[slotKey] = {
+          path = frame.image:gsub("%.png$", "-" .. selector:gsub("[^%w]+", "-") .. "-" .. slotKey:gsub(":", "-") .. ".rgba8"),
+          firstSlot = firstSlot,
+        }
+      end
+      frame.sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = image.width,
+        height = image.height,
+        variants = variants,
+      }
+    end
+    for _, frame in ipairs(entry.animation.frames) do
+      addFrameSourceIndices(frame)
+    end
+    for _, sequence in ipairs(entry.animation.sequences) do
+      for _, frame in ipairs(sequence.frames) do
+        addFrameSourceIndices(frame)
+      end
+    end
+  end
   local pictureSelectors = { exemplar = "pokemon/CHIKORITA/form-0/male/back" }
   local pictureAttribute = old.pictureAttributes["pokemon/CHIKORITA/form-0/male/back"]
   for _, species in ipairs({ "EEVEE", "TOTODILE", "PICHU", "NINCADA", "NINJASK", "SHEDINJA", "SENTRET", "FURRET" }) do
@@ -625,7 +706,7 @@ local function fullManifest()
       end
     end
   end
-  return {
+  local manifest = {
     schema = old.schema,
     version = old.version,
     catalogIdentity = "synthetic-catalog",
@@ -1486,6 +1567,30 @@ local function fullManifest()
     resources = old.resources,
     coverage = old.coverage,
   }
+  for selector, entry in pairs(manifest.trainerPictures.entries) do
+    addTrainerSourceData(entry, selector)
+  end
+  for _, entry in pairs(manifest.battleBalls.entries) do
+    entry.paletteSource = { words = mainObjPaletteWords }
+    for _, frame in ipairs(entry.frames) do
+      local variants = {}
+      for _, firstSlot in ipairs({ 48, 64, 80, 96 }) do
+        local slotKey = "slot:" .. tostring(firstSlot)
+        variants[slotKey] = {
+          path = frame.image:gsub("%.png$", "-" .. slotKey:gsub(":", "-") .. ".rgba8"),
+          firstSlot = firstSlot,
+        }
+      end
+      frame.sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = frame.width,
+        height = frame.height,
+        variants = variants,
+      }
+    end
+  end
+  return manifest
 end
 
 makeIntroMusic = function()
@@ -1572,6 +1677,11 @@ local function trainerPictureRecord(selector)
     return seen[path]
   end
   local function copyFrame(frame)
+    local sourceIndices = frame.sourceIndices
+    local variants = {}
+    for selector, variant in pairs(sourceIndices.variants) do
+      variants[selector] = { path = variant.path, firstSlot = variant.firstSlot }
+    end
     return {
       drawableKey = frame.drawableKey,
       image = leafImage(frame.image),
@@ -1579,6 +1689,13 @@ local function trainerPictureRecord(selector)
       durationTicks = frame.durationTicks,
       sourceFrame = frame.sourceFrame,
       userAttr = frame.userAttr,
+      sourceIndices = {
+        format = sourceIndices.format,
+        plane = sourceIndices.plane,
+        width = sourceIndices.width,
+        height = sourceIndices.height,
+        variants = variants,
+      },
     }
   end
   local function copyFrames(frames)
@@ -1609,6 +1726,7 @@ local function trainerPictureRecord(selector)
     width = source.width,
     height = source.height,
     rasterOffset = { x = source.rasterOffset.x, y = source.rasterOffset.y },
+    paletteSource = { words = source.paletteSource.words },
     animation = animation,
   }
   if source.throwOffsets ~= nil then
@@ -1639,13 +1757,25 @@ local function ballRecord(selector)
       image = prefix .. "-" .. (index - 1) .. ".png",
       width = frame.width,
       height = frame.height,
+      sourceIndices = {
+        format = frame.sourceIndices.format,
+        plane = frame.sourceIndices.plane,
+        width = frame.sourceIndices.width,
+        height = frame.sourceIndices.height,
+        variants = frame.sourceIndices.variants,
+      },
     }
   end
   return {
     schema = "g4-battle-ball-v1",
     selector = selector,
     catalogIdentity = "synthetic-catalog",
-    entry = { fadeColor = source.fadeColor, frames = frames, particles = source.particles },
+    entry = {
+      fadeColor = source.fadeColor,
+      paletteSource = { words = source.paletteSource.words },
+      frames = frames,
+      particles = source.particles,
+    },
   }
 end
 

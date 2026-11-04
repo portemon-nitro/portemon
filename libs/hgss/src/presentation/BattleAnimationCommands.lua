@@ -910,14 +910,20 @@ end
 Handlers["play-cry"] = handlePlayCry
 
 local function spawnRaw(exec, instruction, index, group)
-  local record = exec.spawn(instruction.taskKind, group, {
+  local args = {
     values = instruction.values,
     parameters = instruction.parameters,
     taskInputRule = instruction.taskInputRule,
     taskStartRule = instruction.taskStartRule,
     updateKind = instruction.updateKind,
     mode = instruction.mode,
-  })
+    resourceKeys = instruction.resourceKeys,
+    runtimeSelection = instruction.runtimeSelection,
+  }
+  if instruction.taskKind == "battle-background-resource-load" then
+    args.screenFlipArg = exec.getParam(7)
+  end
+  local record = exec.spawn(instruction.taskKind, group, args)
   if record == nil then
     return "done"
   end

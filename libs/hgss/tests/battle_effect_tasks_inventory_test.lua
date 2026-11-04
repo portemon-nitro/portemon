@@ -267,6 +267,17 @@ local function deriveNonparticleInventory()
   return inventory
 end
 
+-- Kinds whose run needs a staged live layer the generic spawn cannot
+-- supply. The background cleanup removes the installed effect plane, so
+-- stepping it on the inventory's bare scene must stay a loud
+-- unknown-layer ownership error (proven with staged fixtures in the task
+-- owner tests); the generic run/cancel loops below cannot stage that
+-- precondition and skip it. The background load keeps its inventory
+-- slot: slotless generic spawns fail closed at construction.
+local LIVE_LAYER_KINDS = {
+  ["battle-presentation-resource-cleanup"] = true,
+}
+
 local function runnableShape(task, kind)
   Assert.equal(type(task), "table", "kind " .. kind .. " constructs a task object")
   for _, method in ipairs({ "stepSourceTick", "status", "cancel", "dispose" }) do
@@ -347,6 +358,7 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
   local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   local inventory = deriveNonparticleInventory()
   for kind, args in pairs(inventory) do
+    if LIVE_LAYER_KINDS[kind] ~= true then
     local scene = sceneWithPair()
     local journal = { acquired = {}, released = {} }
     local audio = controllableAudio()
@@ -413,6 +425,7 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
       task:cancel("late")
       Assert.equal(task:status(), "complete", "completion survives late cancellation: " .. kind)
       Assert.equal(#journal.released, #journal.acquired, "late teardown stays silent: " .. kind)
+      end
     end
   end
 end
@@ -421,6 +434,7 @@ function T.every_derived_nonparticle_kind_cancels_without_touching_other_state()
   local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   local inventory = deriveNonparticleInventory()
   for kind, args in pairs(inventory) do
+    if LIVE_LAYER_KINDS[kind] ~= true then
     local scene = sceneWithPair()
     local journal = { acquired = {}, released = {} }
     local audio = controllableAudio()
@@ -451,6 +465,7 @@ function T.every_derived_nonparticle_kind_cancels_without_touching_other_state()
         scene:pictureState({ combatant = 3, activation = 3 }),
         "cancelling one activation never patches the other: " .. kind
       )
+      end
     end
   end
 end

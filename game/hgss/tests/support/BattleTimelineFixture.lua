@@ -34,6 +34,7 @@ local function completeView(view)
   if type(view) ~= "table" then
     return
   end
+  view.format = view.format or "single"
   view.playerTrainer = view.playerTrainer or { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" }
   view.playerTrainer.classKey = view.playerTrainer.classKey or "PKMN_TRAINER_ETHAN"
   view.playerTrainer.name = view.playerTrainer.name or "ETHAN"
@@ -123,10 +124,57 @@ local function installTrainerPictures(timeline, view)
   end
 end
 
+---@return table staged synthetic source palette buffers and fill for headless encounter tests
+local function syntheticEncounterSource()
+  -- Synthetic 256-entry RGB555 buffers with distinct colors per
+  -- sixteen-color bank. The seeds and overrides mirror the frozen
+  -- encounter palette expectations: banks stay distinguishable, one
+  -- equal-RGB pair spans object banks 2 and 5, and the transparent
+  -- slots carry their native clears.
+  local function stagedBuffer(seed)
+    local buffer = {}
+    for index = 0, 255 do
+      local bank = math.floor(index / 16)
+      buffer[index + 1] = (seed + bank * 173 + index * 7) % 32768
+    end
+    return buffer
+  end
+  local source = {
+    mainBg = stagedBuffer(11),
+    mainObj = {},
+    mainObjPostFill = {},
+    subBg = stagedBuffer(97),
+    subObj = stagedBuffer(501),
+    fill = 24 + 12 * 32 + 3 * 1024,
+  }
+  for index = 1, 224 do
+    source.mainObj[index] = (409 + math.floor((index - 1) / 16) * 173 + (index - 1) * 7) % 32768
+  end
+  local shared = 7 + 13 * 32 + 29 * 1024
+  source.mainObj[41] = shared
+  source.mainObj[89] = shared
+  source.mainBg[1] = 0
+  source.subBg[1] = 0
+  source.subObj[1] = 31 + 31 * 32 + 31 * 1024
+  source.subBgOpaque = source.subBg
+  source.subObjOpaque = source.subObj
+  local initialSubBg = {}
+  local initialSubObj = {}
+  for index = 1, 255 do
+    initialSubBg[index] = 0
+    initialSubObj[index] = 31 + 31 * 32 + 31 * 1024
+  end
+  initialSubBg[256] = source.subBg[256]
+  initialSubObj[256] = source.subObj[256]
+  source.initialDisplayed = { subBg = initialSubBg, subObj = initialSubObj }
+  return source
+end
+
 ---@param opts game.hgss.src.battle.BattleTimeline.Options?
 ---@return game.hgss.src.battle.BattleTimeline
 function BattleTimelineFixture.new(opts)
   opts = opts or {}
+  opts.encounterSource = opts.encounterSource or syntheticEncounterSource()
   opts.messageText = opts.messageText or resolve
   opts.encounterFadeColor = opts.encounterFadeColor or "white"
   opts.moveName = opts.moveName or function(move)
@@ -149,6 +197,15 @@ function BattleTimelineFixture.new(opts)
   function timeline:intro(view, wild)
     completeView(view)
     installTrainerPictures(self, view)
+    local restoreType = view.encounterRestoreType
+    if restoreType == nil then
+      if view.format == "double" or view.format == "wild-double" then
+        restoreType = "ordinary-doubles"
+      else
+        restoreType = wild and "wild" or "trainer"
+      end
+    end
+    self._encounterSource.restoreType = restoreType
     return intro(self, view, wild)
   end
   local present = timeline.present

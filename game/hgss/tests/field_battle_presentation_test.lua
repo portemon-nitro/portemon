@@ -27,6 +27,16 @@ local T = {}
 
 local TICK = 1 / 30
 
+---@param port table admitted presentation port
+---@param launchId string accepted launch identity
+---@param kind string accepted battle kind
+---@return boolean entered true when the presentation accepts its source plan
+local function enterPresentation(port, launchId, kind)
+  local restoreType = kind == "trainer" and "trainer" or kind == "wild" and "wild" or nil
+  assert(restoreType ~= nil, "the fixture maps supported battle kinds to native palette restore classes")
+  return port.enter({ launchId = launchId, kind = kind, encounterPaletteRestoreType = restoreType })
+end
+
 local function dualMeasurement(signature)
   return {
     width = 256,
@@ -80,7 +90,7 @@ end
 
 local function recordingAudio()
   local audio = { plays = {} }
-  function audio.play(name)
+  function audio.play(_, name)
     audio.plays[#audio.plays + 1] = name
     return true
   end
@@ -307,7 +317,7 @@ local function readySelectedLeaves(derived)
   return derived
 end
 
-local function bindEnvelope(runtime, versionId, measurement, graphics, transition)
+local function bindEnvelope(runtime, versionId, measurement, graphics, transition, observeHost)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local transitionAssets = transition ~= nil and transition.derivedAssets or nil
   local envelope = FieldBattlePresentation.new({
@@ -329,6 +339,14 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
   local factory = envelope:factory()
   local function admit(descriptor)
     doubles.descriptors[#doubles.descriptors + 1] = descriptor
+    if type(observeHost) == "function" and type(descriptor.host) == "table" then
+      local host = descriptor.host
+      local notify = assert(host.notify, "the field presentation host accepts failure notifications")
+      host.notify = function(event, reason)
+        observeHost(event, reason)
+        return notify(event, reason)
+      end
+    end
     local port = factory(descriptor)
     ports[#ports + 1] = port
     return port
@@ -1802,8 +1820,18 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     end
   end
   local charactersPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
+  local introCharactersPath = BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
   local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
   local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
+  local nativePalettePath = BattlePresentationCache.scenePaletteSourcePath(sceneKey)
+  local sourceIndexPaths = {
+    player = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "player"),
+    foe = BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, "foe"),
+  }
+  local sourceIndexBytes = {
+    [sourceIndexPaths.player] = string.rep("\0", 96 * 48 * 4),
+    [sourceIndexPaths.foe] = string.rep("\0", 96 * 48 * 4),
+  }
   local mapEntries = {}
   for index = 1, 2048 do
     mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
@@ -1834,6 +1862,11 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
             path = charactersPath,
             format = "indexed8",
           },
+          baseCharacters = {
+            key = "battle-scene/general-plain-day/intro/characters",
+            path = introCharactersPath,
+            format = "indexed8",
+          },
           map = {
             key = "battle-scene/general-plain-day/background/map",
             path = mapPath,
@@ -1848,18 +1881,37 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       },
       imagePath = imagePath,
       introLayer = { image = introImagePath, width = 512, height = 256 },
+      paletteSource = {
+        key = "battle-scene/general-plain-day/native-palettes",
+        path = nativePalettePath,
+        format = "native-encounter-palettes-v1",
+      },
       terrainSprites = {
         player = {
           image = playerTerrainPath,
           width = 96,
           height = 48,
           origin = { x = 48, y = 24 },
+          sourceIndices = {
+            path = sourceIndexPaths.player,
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 96,
+            height = 48,
+          },
         },
         foe = {
           image = foeTerrainPath,
           width = 96,
           height = 48,
           origin = { x = 48, y = 24 },
+          sourceIndices = {
+            path = sourceIndexPaths.foe,
+            format = "source-index-rgba8",
+            plane = "mainObj",
+            width = 96,
+            height = 48,
+          },
         },
       },
       encounterParticles = particleSets,
@@ -1877,6 +1929,9 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       if path == palettePath then
         return revealed and { colors = paletteColors } or nil
       end
+      if path == nativePalettePath then
+        return revealed and cacheFs:loadLua(path) or nil
+      end
       return cacheFs:loadLua(path)
     end
     function view.read(_, path)
@@ -1890,6 +1945,12 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       end
       if path == charactersPath then
         return revealed and string.rep("c", 65536) or nil
+      end
+      if path == introCharactersPath then
+        return revealed and string.rep("b", 65536) or nil
+      end
+      if sourceIndexBytes[path] ~= nil then
+        return revealed and sourceIndexBytes[path] or nil
       end
       return cacheFs:read(path)
     end
@@ -1935,7 +1996,11 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     answer.ready = true
     revealed = true
     imageStaged = true
-    Assert.isTrue(services.prepare(demand()), versionId .. " enters once the staged scene validates")
+    local entered, enterFailure = services.prepare(demand())
+    Assert.isTrue(
+      entered,
+      versionId .. " enters once the staged scene validates: " .. tostring(enterFailure)
+    )
     imageStaged = false
     local missing, missingErr = services.prepare(demand())
     Assert.isNil(missing, versionId .. " never reads ready with its staged pixels absent")
@@ -1961,6 +2026,160 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     hostless:dispose()
     envelope:dispose()
   end
+end
+
+-- Faded intro uploads carry exactly-once ownership: an unchanged raster
+-- reuses its upload, a changed raster releases its predecessor once, and
+-- releasing the key returns the live upload without resurrecting it.
+function T.faded_intro_uploads_once_and_releases_exactly_once()
+  local uploads = {}
+  local graphics = {}
+  function graphics.newImage(_)
+    local image = { released = false }
+    function image:release()
+      self.released = true
+    end
+    function image:setFilter(_, _) end
+    uploads[#uploads + 1] = image
+    return image
+  end
+  local cacheFs = { versionId = "faded-intro-probe" }
+  function cacheFs.loadLua(_)
+    return nil
+  end
+  function cacheFs.read(_)
+    return nil
+  end
+  function cacheFs.exists(_, _)
+    return false
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("faded-intro:dual")
+    end,
+    graphics = graphics,
+    imagePool = scriptedPool(),
+  })
+  local services = envelope:_preparationServices()
+  local function raster(byte)
+    return { width = 8, height = 8, pixels = string.rep(byte, 8 * 8 * 4) }
+  end
+  local first = raster("\1")
+  local firstImage = assert(services.fadedIntro(first), "the faded intro uploads")
+  Assert.equal(#uploads, 1, "the first faded raster uploads once")
+  Assert.isTrue(services.fadedIntro(first) == firstImage, "an unchanged raster reuses its upload")
+  Assert.equal(#uploads, 1, "an unchanged raster uploads nothing new")
+  local secondImage = assert(services.fadedIntro(raster("\2")), "a changed raster re-uploads")
+  Assert.equal(#uploads, 2, "a changed raster uploads once more")
+  Assert.isTrue(firstImage.released, "replacing the upload releases its predecessor exactly once")
+  Assert.isFalse(secondImage.released, "the live upload stays borrowed")
+  services.release("battle-faded-intro")
+  Assert.isTrue(secondImage.released, "releasing the faded intro returns its upload")
+  local thirdImage = assert(services.fadedIntro(raster("\2")), "a released raster uploads again")
+  Assert.isTrue(thirdImage ~= secondImage, "a released upload never resurrects")
+  envelope:dispose()
+end
+
+-- A faded intro the driver cannot upload fails closed naming the scene:
+-- no half-adopted image survives, and a later raster may still upload.
+function T.faded_intro_upload_failure_fails_closed()
+  local cacheFs = { versionId = "faded-intro-failure-probe" }
+  function cacheFs.loadLua(_)
+    return nil
+  end
+  function cacheFs.read(_)
+    return nil
+  end
+  function cacheFs.exists(_, _)
+    return false
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("faded-intro-failure:dual")
+    end,
+    graphics = {},
+    imagePool = scriptedPool(),
+  })
+  local services = envelope:_preparationServices()
+  local image, failure = services.fadedIntro({ width = 8, height = 8, pixels = string.rep("\1", 8 * 8 * 4) })
+  Assert.isNil(image, "a failed faded intro upload answers no image")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("faded intro upload failed", 1, true) ~= nil,
+    "a failed faded intro upload names its cause: " .. tostring(failure)
+  )
+  envelope:dispose()
+end
+
+-- Palette sampled art is retained by the field envelope by its battle key:
+-- identical bytes reuse the upload and replacement releases the old image.
+function T.palette_images_reuse_replace_and_release_exactly_once()
+  local uploads = {}
+  local graphics = {}
+  local failFilter = false
+  function graphics.newImage(_)
+    local image = { released = false, releases = 0 }
+    function image:release()
+      self.released = true
+      self.releases = self.releases + 1
+    end
+    function image:setFilter(_, _)
+      assert(not failFilter, "probe filter setup failure")
+    end
+    uploads[#uploads + 1] = image
+    return image
+  end
+  local cacheFs = { versionId = "palette-image-probe" }
+  function cacheFs.loadLua(_)
+    return nil
+  end
+  function cacheFs.read(_)
+    return nil
+  end
+  function cacheFs.exists(_, _)
+    return false
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    measureDisplay = function()
+      return dualMeasurement("palette-image:dual")
+    end,
+    graphics = graphics,
+    imagePool = scriptedPool(),
+  })
+  local services = envelope:_preparationServices()
+  local raster = { width = 2, height = 2, pixels = string.rep("\1", 2 * 2 * 4) }
+  local first = assert(services.paletteImage("battle-palette:probe:1", raster), "the first palette image uploads")
+  Assert.equal(#uploads, 1, "the first palette raster uploads once")
+  Assert.isTrue(services.paletteImage("battle-palette:probe:1", raster) == first, "matching bytes reuse the image")
+  Assert.equal(#uploads, 1, "matching bytes do not upload twice")
+  local changed = { width = 2, height = 2, pixels = string.rep("\2", 2 * 2 * 4) }
+  local second =
+    assert(services.paletteImage("battle-palette:probe:1", changed), "changed palette bytes replace the image")
+  Assert.equal(#uploads, 2, "changed bytes upload once")
+  Assert.isTrue(first.released, "replacement releases the old image")
+  Assert.isFalse(second.released, "the replacement stays live")
+  services.release("battle-palette:probe:1")
+  Assert.isTrue(second.released, "release returns the live image")
+  services.release("battle-palette:probe:1")
+  Assert.equal(second.releases, 1, "a repeated release returns the image only once")
+  Assert.equal(#uploads, 2, "a repeated release uploads nothing")
+  failFilter = true
+  local failed, failure = services.paletteImage("battle-palette:probe:2", raster)
+  Assert.isNil(failed, "a filter setup failure publishes no partial image")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe filter setup failure", 1, true) ~= nil,
+    "filter failure keeps its cause"
+  )
+  Assert.equal(uploads[3].releases, 1, "a partially acquired image releases exactly once")
+  envelope:dispose()
 end
 
 -- A genuine scene build failure is terminal with its scene named: the
@@ -2120,7 +2339,7 @@ function T.scene_worker_failure_aborts_the_pending_launch_without_a_result()
     for _ = 1, 30 do
       envelope:updateFixed(TICK)
     end
-    Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the pending launch stays unacknowledged")
+    Assert.isFalse(enterPresentation(port, launchId, "wild"), "the pending launch stays unacknowledged")
     Assert.isFalse(port.ready(), "the pending launch never reads interactive")
     Assert.isNil(envelope:liveScreen(), "polling never builds a screen before the scene stages")
     Assert.isTrue(#worker.asks >= 1, "the pending launch demands its scene through the borrowed host")
@@ -2254,7 +2473,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
       Assert.equal(#constructions, 0, "a late answer builds no screen for the disposed launch")
       Assert.isNil(envelope:liveScreen(), "the disposed launch stays screenless")
       Assert.equal(#host1.notifies, 0, "the disposed launch reports nothing late")
-      Assert.isFalse(port1.enter({ launchId = firstId, kind = "wild" }), "the disposed port stays unacknowledged")
+      Assert.isFalse(enterPresentation(port1, firstId, "wild"), "the disposed port stays unacknowledged")
       Assert.isFalse(port1.ready(), "the disposed port never reads interactive")
       host1.phase = "complete"
       for _ = 1, 5 do
@@ -2278,7 +2497,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
       local entered = false
       for _ = 1, 120 do
         envelope:updateFixed(TICK)
-        if port2.enter({ launchId = secondId, kind = "wild" }) then
+        if enterPresentation(port2, secondId, "wild") then
           entered = true
           break
         end
@@ -2287,7 +2506,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
       Assert.equal(#constructions, 1, "the next launch constructs exactly one screen")
       Assert.equal(constructions[1], secondId, "the one screen belongs to the second launch")
       local live = assert(envelope:liveScreen(), "the second launch owns its live screen")
-      Assert.isFalse(port1.enter({ launchId = firstId, kind = "wild" }), "the stale port never reacknowledges")
+      Assert.isFalse(enterPresentation(port1, firstId, "wild"), "the stale port never reacknowledges")
       Assert.isFalse(port1.ready(), "the stale port never reads interactive")
       local presentOk = pcall(port1.present, { launchId = firstId, packetId = 1 })
       Assert.isTrue(presentOk, "a stale delivery never raises")
@@ -2360,7 +2579,7 @@ function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
         envelope:updateFixed(TICK)
         battle:update()
       end
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "entry waits while the scene builds")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "entry waits while the scene builds")
       Assert.isFalse(port.ready(), "readiness waits while the scene builds")
       Assert.equal(battle:status().phase, "preparing", "the runtime holds preparing behind the pending port")
       Assert.isNil(envelope:liveScreen(), "no screen exists before the worker publishes")
@@ -2375,7 +2594,7 @@ function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
         end
       end
       Assert.isTrue(left, "the staged scene lets the runtime leave preparing")
-      Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "entry acknowledges after the build")
+      Assert.isTrue(enterPresentation(port, launchId, "wild"), "entry acknowledges after the build")
       Assert.notNil(envelope:liveScreen(), "the staged scene owns its live screen")
       Assert.equal(#host.notifies, 0, "the staged build reports no failure")
     end, debug.traceback)
@@ -2449,7 +2668,7 @@ function T.scene_failure_reports_once_without_driving_the_host()
       Assert.equal(host.advances, 5, "fixed updates advance the host once each at " .. point)
       Assert.equal(#host.notifies, 0, "pending reports no failure at " .. point)
       local driven = host.advances
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "entry waits at " .. point)
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "entry waits at " .. point)
       Assert.isFalse(port.ready(), "readiness waits at " .. point)
       Assert.isFalse(port.leave({ launchId = launchId }), "leave waits at " .. point)
       local presentOk = pcall(port.present, { launchId = launchId, packetId = 1 })
@@ -2700,7 +2919,8 @@ end
 
 -- One presented wild win carries every phase-shaped assertion of the
 -- shared fixture: cover completes before construction with semantic
--- leave under full cover, follower clocks freeze under the hold, fixed
+-- leave under full cover, entry stays covered until its first native
+-- frame is ready, follower clocks freeze under the hold, fixed
 -- updates paint nothing without an explicit draw at the command root,
 -- menu input reaches the screen without leaking to the field, the
 -- reveal withholds its receipt until the safe field commits, and the
@@ -2729,12 +2949,14 @@ function T.presented_win_carries_every_phase_assertion()
       local before = { fieldX = runtime.player.fieldX, fieldZ = runtime.player.fieldZ }
       local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       -- The claim holds presence while covering: cover completes before
-      -- construction and semantic leave follows under full cover, with
-      -- the battle starting one reveal step after full cover.
+      -- construction and semantic leave follows under full cover.
       Assert.equal(runtime.overworld:phase(), "present", "the claim holds presence while covering")
       local coveredAt, leftAt, coverAtLeave = nil, nil, nil
       local ticks = 0
-      while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
+      while
+        (runtime.battleCoordinator:activeBattle() == nil or envelope:cover().coefficient ~= 0)
+        and ticks < 900
+      do
         runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
@@ -2752,10 +2974,9 @@ function T.presented_win_carries_every_phase_assertion()
       Assert.notNil(leftAt, "semantic leave follows cover")
       Assert.isTrue(coveredAt <= leftAt, "leave never precedes full cover")
       Assert.equal(coverAtLeave, 16, "semantic leave happens under full cover")
-      -- Construction follows the full-cover leave by one accepted tick, and that
-      -- tick performs the reveal's single cover step first, so the battle starts
-      -- one step into the reveal beside its intro instead of under full cover.
-      Assert.equal(envelope:cover().coefficient, 14, "the battle starts one reveal step after full cover")
+      -- Scene entry stays covered until its first native battle frame is
+      -- ready, then releases the cover atomically on that accepted tick.
+      Assert.equal(envelope:cover().coefficient, 0, "the first native frame releases the entry cover")
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
       -- Follower clocks freeze under the hold.
       local heldFollower, heldTransition = followerSteps, transitionSteps
@@ -3103,7 +3324,7 @@ end
 ---@param kind string admitted launch kind under test driving
 local function requirePendingAdmission(envelope, port, launchId, kind)
   Assert.isFalse(
-    port.enter({ launchId = launchId, kind = kind }),
+    enterPresentation(port, launchId, kind),
     "the admitted launch stays unacknowledged while its scene builds"
   )
   Assert.isFalse(port.ready(), "the admitted launch never reads interactive while its scene builds")
@@ -3221,7 +3442,7 @@ function T.scheduled_win_returns_through_cover_and_receipt()
       requirePendingAdmission(envelope, port, launchId, "wild")
       waitConstructed(runtime, envelope)
       Assert.notNil(envelope:liveScreen(), "the staged launch builds its live screen")
-      Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "the staged launch acknowledges its entry")
+      Assert.isTrue(enterPresentation(port, launchId, "wild"), "the staged launch acknowledges its entry")
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
       local turns = settle(runtime, envelope, function(request)
         return sparringChoose(runtime, request)
@@ -3277,7 +3498,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       local firstId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       local firstPort = assert(doubles.ports[#doubles.ports], "the first launch owns its port")
       pump(runtime, envelope, 5)
-      Assert.isFalse(firstPort.enter({ launchId = firstId, kind = "wild" }), "the cold demand stays unacknowledged")
+      Assert.isFalse(enterPresentation(firstPort, firstId, "wild"), "the cold demand stays unacknowledged")
       Assert.isNil(envelope:liveScreen(), "the cold demand builds no screen before its scene stages")
       doubles.worker.ready = true
       waitConstructed(runtime, envelope)
@@ -3296,7 +3517,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       pump(runtime, envelope, 60)
       Assert.equal(runtime:lastBattleResult().result, "win", "the first leg reports its own win")
       Assert.isFalse(firstPort.ready(), "the settled port never reads interactive again")
-      Assert.isFalse(firstPort.enter({ launchId = firstId, kind = "wild" }), "the settled port never reacknowledges")
+      Assert.isFalse(enterPresentation(firstPort, firstId, "wild"), "the settled port never reacknowledges")
       local secondId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       Assert.isTrue(secondId ~= firstId, "the next launch receives a new identity")
       local secondPort = assert(doubles.ports[#doubles.ports], "the second launch owns its port")
@@ -3640,14 +3861,14 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       host = host,
     })
     local ok, failure = xpcall(function()
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the pending operation stays unacknowledged")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "the pending operation stays unacknowledged")
       Assert.isFalse(port.ready(), "the pending operation never reads interactive")
       Assert.isFalse(port.leave({ launchId = launchId }), "the pending return stays unacknowledged")
       worker.ready = true
       local entered = false
       for _ = 1, 120 do
         envelope:updateFixed(TICK)
-        if port.enter({ launchId = launchId, kind = "wild" }) then
+        if enterPresentation(port, launchId, "wild") then
           entered = true
           break
         end
@@ -3658,7 +3879,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       inner.enter = function(_)
         error("probe enter failure at active", 0)
       end
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "a failing entry never acknowledges")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "a failing entry never acknowledges")
       Assert.equal(#host.notifies, 1, "the failing entry reports exactly once")
       Assert.equal(host.notifies[1].event, "screen-failed", "the entry report carries its handoff")
       Assert.isTrue(
@@ -3688,7 +3909,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       port.dispose()
       port.dispose()
       Assert.isNil(envelope:liveScreen(), "the disposed operation owns no screen")
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the disposed entry never reacknowledges")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "the disposed entry never reacknowledges")
       Assert.isFalse(port.ready(), "the disposed operation never reads interactive")
       local staleOk = pcall(port.present, { launchId = launchId, packetId = 2 })
       Assert.isTrue(staleOk, "a stale delivery never raises")
@@ -3750,7 +3971,7 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       local entered = false
       for _ = 1, 120 do
         envelope:updateFixed(TICK)
-        if port.enter({ launchId = launchId, kind = "wild" }) then
+        if enterPresentation(port, launchId, "wild") then
           entered = true
           break
         end
@@ -3768,13 +3989,13 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       Assert.isNil(envelope:liveScreen(), "the disposal releases the live screen")
       Assert.notNil(envelope._descriptor, "the disposal keeps the envelope descriptor")
       Assert.equal(envelope._launchId, launchId, "the disposal keeps the launch identity")
-      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the disposed entry never reacknowledges")
+      Assert.isFalse(enterPresentation(port, launchId, "wild"), "the disposed entry never reacknowledges")
       Assert.isFalse(port.ready(), "the disposed operation never reads interactive")
       Assert.isFalse(port.leave({ launchId = launchId }), "the disposed return never reacknowledges")
       port.dispose()
       Assert.equal(disposals, 1, "a second disposal releases nothing further")
       Assert.equal(#host.notifies, 0, "a clean disposal reports no failure")
-      for _ = 1, 30 do
+      for _ = 1, 900 do
         envelope:updateFixed(TICK)
       end
       Assert.isNil(envelope:liveScreen(), "later polls build no screen for the disposed launch")
@@ -4167,6 +4388,357 @@ function T.dropped_launches_release_leaf_maps_while_the_core_persists()
   end)
   if not ok then
     error(failure, 0)
+  end
+end
+
+-- A delayed scene worker with two display remeasures still holds the
+-- source task, its voices and its particles until the first usable
+-- visual, releases the entry cover atomically on that tick, keeps full
+-- black across a mid-intro failure, and still settles a second battle
+-- cleanly on the same envelope.
+function T.delayed_readiness_holds_the_task_until_an_atomic_release_with_safe_terminal_cover()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  local Trace = require("tests.support.BattleHandoffTrace")
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
+    local measurement = dualMeasurement("delayed-entry-atomic:dual")
+    local envelope, binding, doubles = bindEnvelope(runtime, versionId, measurement, uploadCapableGraphics())
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local context = assert(doubles.descriptors[1].transitionContext)
+      local trace = Trace.new("wild/" .. tostring(context.terrain) .. "/" .. tostring(context.timeOfDay))
+      local startedVoices = function()
+        local count = 0
+        for _, voice in ipairs(doubles.audio.plays) do
+          if voice == BattleAudio.SINK_SOUNDS.encounterStart then
+            count = count + 1
+          end
+        end
+        return count
+      end
+      -- Two display remeasures land early in the staging window while no
+      -- battle visual exists yet. The trace below then proves the task
+      -- starts at frame 1 with its first member and its single opening
+      -- voice on the first visual, with contiguous frames across the
+      -- remeasures.
+      local function observedVisual()
+        local screen = envelope:liveScreen()
+        if screen == nil then
+          return nil, 0
+        end
+        local view = screen:view()
+        local opening = view.openingPresentation
+        local frame = type(opening) == "table" and opening.encounterFrame or nil
+        local staged = view.encounterParticleSystems
+        return frame, type(staged) == "table" and #staged or 0
+      end
+      -- The first usable visual starts the task at frame 1; the cover
+      -- must go 16->0 on that same accepted tick with contiguous frames.
+      local releasedAt, firstFramedAt = nil, nil
+      local lastFrame = nil
+      local ticks = 0
+      while ticks < 1200 do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        if ticks == 20 then
+          measurement.signature = "delayed-entry-atomic:resized-1"
+          measurement.width = 512
+        elseif ticks == 40 then
+          measurement.signature = "delayed-entry-atomic:resized-2"
+          measurement.width = 256
+        end
+        local frame, systems = observedVisual()
+        local launch = runtime.battleCoordinator._battleLaunch
+        trace:observe({
+          hostPhase = launch ~= nil and launch.phase or nil,
+          taskFrame = frame,
+          cover = envelope:cover().coefficient,
+          members = { tostring(systems) .. "systems" },
+        })
+        if frame ~= nil then
+          if firstFramedAt == nil then
+            firstFramedAt = ticks
+          end
+          if lastFrame ~= nil then
+            Assert.equal(frame, lastFrame + 1, "resizes never skip or repeat a source task tick")
+          end
+          lastFrame = frame
+        end
+        if envelope:cover().coefficient == 0 and frame ~= nil then
+          releasedAt = ticks
+          break
+        end
+      end
+      Assert.notNil(firstFramedAt, "the admitted worker publishes its first source battle frame")
+      Assert.notNil(releasedAt, "the admitted worker releases the entry cover")
+      local framed = trace:framedRows()
+      Assert.isTrue(#framed >= 1, "the admitted worker publishes source battle frames")
+      Assert.equal(framed[1].taskFrame, 1, "the task starts at source frame 1 on the first visual")
+      for _, row in ipairs(trace:rows()) do
+        if row.taskFrame == nil then
+          Assert.deepEqual(
+            row.members,
+            { "0systems" },
+            "no particle stages before the first source frame at tick " .. tostring(row.tick)
+          )
+        else
+          break
+        end
+      end
+      local fractional = {}
+      for _, row in ipairs(trace:framedRows()) do
+        if row.cover ~= 0 and row.cover ~= 16 then
+          fractional[#fractional + 1] = "frame=" .. tostring(row.taskFrame) .. " cover=" .. tostring(row.cover)
+        end
+      end
+      Assert.equal(
+        #fractional,
+        0,
+        "no fractional blanket covers a running source battle frame: " .. table.concat(fractional, " ")
+      )
+      local rows = trace:rows()
+      Assert.equal(rows[releasedAt - 1].cover, 16, "the delayed entry releases 16->0 in one accepted tick")
+      Assert.equal(
+        startedVoices(),
+        1,
+        "the opening voice sounds exactly once on the first visual: " .. tostring(startedVoices())
+      )
+      -- The first battle settles its win so a second launch on the same
+      -- envelope proves clean reuse with no dangling leases across
+      -- battles.
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the first battle settles its win")
+      -- A second battle on the same envelope releases atomically onto
+      -- its own first visual; faulting that launch mid-intro keeps full
+      -- black, drops its screen, and faults the runtime with the probe
+      -- cause exactly once instead of quietly returning to the field.
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      local relaunchedAt, relaunchTicks = nil, 0
+      while relaunchTicks < 1200 and relaunchedAt == nil do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        relaunchTicks = relaunchTicks + 1
+        local live = envelope:liveScreen()
+        local frame = nil
+        if live ~= nil then
+          local shown = live:view().openingPresentation
+          if type(shown) == "table" then
+            frame = shown.encounterFrame
+          end
+        end
+        if envelope:cover().coefficient == 0 and frame ~= nil then
+          relaunchedAt = relaunchTicks
+        end
+      end
+      Assert.notNil(relaunchedAt, "the second entry releases onto its running source intro")
+      local live = assert(envelope:liveScreen(), "the second launch owns a live screen before the fault")
+      live._mode = "failed"
+      live._error = "probe delayed-entry failure"
+      runtime:update(SourceTick.DT)
+      envelope:updateFixed(TICK)
+      Assert.equal(envelope:cover().coefficient, 16, "the failure keeps full black")
+      Assert.isNil(envelope:liveScreen(), "the failure drops its screen")
+      local survived, raised = pcall(function()
+        for _ = 1, 10 do
+          runtime:update(SourceTick.DT)
+          envelope:updateFixed(TICK)
+        end
+      end)
+      Assert.isFalse(survived, "a lost renderer faults the runtime with its cause")
+      Assert.isTrue(
+        tostring(raised):find("probe delayed-entry failure", 1, true) ~= nil,
+        "the fault carries the original screen error: " .. tostring(raised)
+      )
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    envelope:dispose()
+  end
+end
+
+-- A trainer cut-in enters the same native battle introduction as a wild
+-- encounter: the foe trainer stages its slide cues, the source task
+-- publishes its frames with the single opening voice, and the launch
+-- settles into command instead of wedging behind the cut-in.
+function T.trainer_cut_in_receives_the_native_battle_introduction()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, doubles =
+      bindEnvelope(runtime, versionId, dualMeasurement("trainer-cut-in-intro:dual"), uploadCapableGraphics())
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "trainer", details = { trainer = 4 } })
+      waitConstructed(runtime, envelope)
+      -- The cut-in delivery follows construction by source ticks: the
+      -- first packet installs the opening before the native task
+      -- publishes frames, so the presentation is awaited, not assumed.
+      local screen = assert(envelope:liveScreen(), "the cut-in constructs its battle")
+      local opening = nil
+      local waited = 0
+      while waited < 900 and opening == nil do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        waited = waited + 1
+        local live = envelope:liveScreen()
+        if live == nil then
+          break
+        end
+        screen = live
+        local shown = live:view().openingPresentation
+        if type(shown) == "table" then
+          opening = shown
+        end
+      end
+      opening = assert(opening, "the cut-in publishes its opening presentation")
+      Assert.isTrue(opening.foeTrainerVisible, "the cut-in stages the foe trainer front picture")
+      Assert.isTrue(
+        type(opening.trainerSlides) == "table" and #opening.trainerSlides > 0,
+        "the cut-in stages trainer slide cues"
+      )
+      local framedAt, ticks = nil, 0
+      while ticks < 900 do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+        local live = envelope:liveScreen()
+        if live == nil then
+          break
+        end
+        local shown = live:view().openingPresentation
+        if type(shown) == "table" and shown.encounterFrame ~= nil then
+          framedAt = ticks
+          break
+        end
+      end
+      Assert.notNil(framedAt, "the cut-in runs the native introduction task")
+      local started = 0
+      for _, voice in ipairs(doubles.audio.plays) do
+        if voice == BattleAudio.SINK_SOUNDS.encounterStart then
+          started = started + 1
+        end
+      end
+      Assert.equal(started, 1, "the cut-in voices the opening cue exactly once: " .. tostring(started))
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 15000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the cut-in battle settles its win")
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    envelope:dispose()
+  end
+end
+
+-- A configured image upload fault during the live native introduction
+-- reaches the real field host once with its launch, scene and cause.
+function T.native_palette_upload_failure_notifies_the_field_host_once()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local graphics = uploadCapableGraphics()
+    local failUpload = false
+    local upload = graphics.newImage
+    function graphics.newImage(imageData)
+      if failUpload then
+        error("GPU upload rejected", 0)
+      end
+      return upload(imageData)
+    end
+    local reports = {}
+    local envelope, binding = bindEnvelope(
+      runtime,
+      versionId,
+      dualMeasurement("native-palette-upload-failure:dual"),
+      graphics,
+      nil,
+      function(event, reason)
+        if event == "screen-failed" then
+          reports[#reports + 1] = reason
+        end
+      end
+    )
+    local ok, failure = xpcall(function()
+      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      local screen = assert(envelope:liveScreen(), "the wild launch owns its live presentation")
+      local sceneKey = screen._sceneKey
+      local visiblePaletteReady = false
+      for _ = 1, 900 do
+        pump(runtime, envelope, 1)
+        local live = envelope:liveScreen()
+        if live == nil then
+          break
+        end
+        screen = live
+        local opening = live:view().openingPresentation
+        if type(opening) == "table" and opening.encounterFrame == 10 then
+          visiblePaletteReady = true
+          break
+        end
+      end
+      Assert.isTrue(visiblePaletteReady, "unchanged native palette frames publish before the changed frame")
+
+      failUpload = true
+      local failureObserved = false
+      for _ = 1, 30 do
+        local updated, updateFailure = pcall(function()
+          pump(runtime, envelope, 1)
+        end)
+        if #reports > 0 then
+          failureObserved = true
+          break
+        end
+        Assert.isTrue(updated, "the image fault is reported through the field host: " .. tostring(updateFailure))
+      end
+      Assert.isTrue(failureObserved, "a configured native palette upload failure reaches the host")
+      Assert.equal(screen:status().mode, "failed", "the live screen enters terminal failure")
+      Assert.equal(#reports, 1, "the host receives one screen-failed notification")
+      local reason = tostring(reports[1])
+      for _, identity in ipairs({ launchId, sceneKey, "GPU upload rejected" }) do
+        Assert.isTrue(reason:find(identity, 1, true) ~= nil, "the host reason names " .. identity .. ": " .. reason)
+      end
+      Assert.isTrue(
+        reason:find("palette", 1, true) ~= nil or reason:find("faded intro", 1, true) ~= nil,
+        "the host reason names the failed native image: " .. reason
+      )
+      for _ = 1, 5 do
+        pcall(function()
+          envelope:updateFixed(TICK)
+        end)
+      end
+      Assert.equal(#reports, 1, "later host ticks do not report the same failure again")
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    pcall(function()
+      envelope:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
   end
 end
 

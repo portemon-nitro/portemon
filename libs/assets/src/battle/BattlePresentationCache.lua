@@ -77,12 +77,28 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field path string generated cache path
 ---@field format string normalized payload format
 
+---@class BattlePresentationCache.SourceIndices
+---@field path string cache-relative raw RGBA8 source-index map
+---@field format "source-index-rgba8"
+---@field plane "mainObj"|"subBg"|"subObj" native palette plane
+---@field width integer
+---@field height integer
+---@field variants table<string, { path: string }> physical source-index layouts by palette variant
+
+---@class BattlePresentationCache.MenuPatchSourceIndices
+---@field path string cache-relative raw RGBA8 source-index map
+---@field format "source-index-rgba8"
+---@field plane "subBg"
+---@field width integer
+---@field height integer
+
 ---@class BattlePresentationCache.SceneLayer
 ---@field key string semantic layer identity
 ---@field backing { width: integer, height: integer, mapWidth: integer, mapHeight: integer }
 ---@field viewport { x: integer, y: integer, width: integer, height: integer }
 ---@field scroll { x: integer, y: integer }
 ---@field characters BattlePresentationCache.SceneResource
+---@field baseCharacters BattlePresentationCache.SceneResource unbaked 8bpp intro characters for palette fades
 ---@field map BattlePresentationCache.SceneResource
 ---@field palette BattlePresentationCache.SceneResource
 
@@ -131,7 +147,7 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field burstStartTick integer ticks after the ball starts opening until the burst emits
 
 ---@class BattlePresentationCache.BallEntry
----@field frames { drawableKey: string, image: string, width: integer, height: integer }[]
+---@field frames { drawableKey: string, image: string, width: integer, height: integer, sourceIndices: BattlePresentationCache.SourceIndices }[]
 ---@field fadeColor integer
 ---@field particles BattlePresentationCache.BallParticles|nil
 
@@ -175,7 +191,8 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field layers BattlePresentationCache.SceneLayer[]
 ---@field imagePath string
 ---@field introLayer { image: string, width: integer, height: integer }
----@field terrainSprites table<string, { image: string, width: integer, height: integer, origin: { x: integer, y: integer } }>
+---@field terrainSprites table<string, { image: string, width: integer, height: integer, origin: { x: integer, y: integer }, sourceIndices: BattlePresentationCache.SourceIndices }>
+---@field paletteSource { key: string, path: string, format: string }
 ---@field encounterParticles BattlePresentationCache.EncounterParticleSet[] the two retail terrain emitter sets in start order
 
 ---@return string
@@ -209,6 +226,14 @@ function BattlePresentationCache.globalImagePath(name)
   assert(type(name) == "string" and name ~= "", "global image name is required")
   assert(name:find("/", 1, true) == nil, "global image names stay flat: " .. name)
   return ASSET_DIR .. "/" .. name .. ".png"
+end
+
+---@param name string staged lower-screen image name without extension
+---@return string cache-relative raw RGBA8 source-index map path
+function BattlePresentationCache.globalSourceIndexPath(name)
+  assert(type(name) == "string" and name ~= "", "global source-index name is required")
+  assert(name:find("/", 1, true) == nil, "global source-index names stay flat: " .. name)
+  return ASSET_DIR .. "/" .. name .. ".source-index.rgba8"
 end
 
 ---@param resourceKey string semantic resource key
@@ -252,6 +277,20 @@ end
 function BattlePresentationCache.sceneTerrainSpritePath(sceneKey, side)
   assert(side == "player" or side == "foe", "terrain sprite side is player or foe")
   return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-terrain-" .. side .. ".png"
+end
+
+---@param sceneKey string semantic scene key
+---@param side "player"|"foe" terrain OBJ side
+---@return string cache-relative raw RGBA8 source-index map path
+function BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side)
+  assert(side == "player" or side == "foe", "terrain source-index side is player or foe")
+  return ASSET_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-terrain-" .. side .. "-source-index.rgba8"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative native encounter palette source path
+function BattlePresentationCache.scenePaletteSourcePath(sceneKey)
+  return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".native-palettes.lua"
 end
 
 ---@param itemKey string semantic ball key
@@ -326,6 +365,12 @@ end
 ---@return string cache-relative normalized BG3 palette path
 function BattlePresentationCache.scenePalettePath(sceneKey)
   return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. ".bg3.palette.lua"
+end
+
+---@param sceneKey string semantic scene key
+---@return string cache-relative unbaked intro BG3 character payload path
+function BattlePresentationCache.sceneIntroCharactersPath(sceneKey)
+  return DATA_DIR .. "/scenes/" .. sceneStem(sceneKey) .. "-intro.bg3.chars"
 end
 
 ---@param sceneKey string semantic scene key
@@ -589,6 +634,10 @@ local function hasSceneLayerClosure(cacheFs, record)
   if type(characters) ~= "string" or #characters ~= 65536 then
     return false
   end
+  local baseCharacters = cacheFs:read(layer.baseCharacters.path)
+  if type(baseCharacters) ~= "string" or #baseCharacters ~= 65536 then
+    return false
+  end
   local map = cacheFs:loadLua(layer.map.path)
   if
     type(map) ~= "table"
@@ -637,6 +686,47 @@ local function hasSceneLayerClosure(cacheFs, record)
       or color.b > 255
     then
       return false
+    end
+  end
+  local paletteSource = cacheFs:loadLua(record.paletteSource.path)
+  if type(paletteSource) ~= "table" then
+    return false
+  end
+  local mainObjSources = paletteSource.mainObjSources
+  if type(mainObjSources) ~= "table" then
+    return false
+  end
+  for key, expectedSlot in pairs({ hud = 0, hudAuxiliary = 16, terrain = 32 }) do
+    local source = mainObjSources[key]
+    if
+      type(source) ~= "table"
+      or source.firstSlot ~= expectedSlot
+      or type(source.words) ~= "table"
+      or #source.words ~= 16
+    then
+      return false
+    end
+  end
+  for _, sprite in pairs(record.terrainSprites) do
+    local sourceIndices = sprite.sourceIndices
+    local bytes = cacheFs:read(sourceIndices.path)
+    if type(bytes) ~= "string" or #bytes ~= sourceIndices.width * sourceIndices.height * 4 then
+      return false
+    end
+    for offset = 1, #bytes, 4 do
+      local index = string.byte(bytes, offset)
+      local green = string.byte(bytes, offset + 1)
+      local blue = string.byte(bytes, offset + 2)
+      local alpha = string.byte(bytes, offset + 3)
+      local terrainSlotStart = mainObjSources.terrain.firstSlot
+      if
+        green ~= 0
+        or blue ~= 0
+        or (alpha ~= 0 and alpha ~= 255)
+        or (alpha == 255 and (index < terrainSlotStart or index >= terrainSlotStart + #mainObjSources.terrain.words))
+      then
+        return false
+      end
     end
   end
   return true
@@ -722,6 +812,15 @@ end
 ---@param record BattlePresentationCache.TrainerPictureRecord validated trainer picture leaf record
 ---@return boolean true only when every staged frame image parses with its staged size
 local function hasTrainerPictureImageClosure(cacheFs, record)
+  local function hasSourceIndexClosure(sourceIndices)
+    for _, variant in pairs(sourceIndices.variants) do
+      local pixels = cacheFs:read(variant.path)
+      if type(pixels) ~= "string" or #pixels ~= sourceIndices.width * sourceIndices.height * 4 then
+        return false
+      end
+    end
+    return true
+  end
   local entry = record.entry
   local seen = {}
   local firstImage = nil
@@ -729,6 +828,9 @@ local function hasTrainerPictureImageClosure(cacheFs, record)
   local sequences = animation.sequences
   for _, sequence in ipairs(sequences) do
     for frameIndex, frame in ipairs(sequence.frames) do
+      if not hasSourceIndexClosure(frame.sourceIndices) then
+        return false
+      end
       if seen[frame.image] == nil then
         seen[frame.image] = true
         local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
@@ -753,6 +855,12 @@ end
 local function hasBallImageClosure(cacheFs, record)
   local entry = record.entry
   for _, frame in ipairs(entry.frames) do
+    for _, variant in pairs(frame.sourceIndices.variants) do
+      local pixels = cacheFs:read(variant.path)
+      if type(pixels) ~= "string" or #pixels ~= frame.width * frame.height * 4 then
+        return false
+      end
+    end
     local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
     if width ~= frame.width or height ~= frame.height then
       return false
@@ -999,7 +1107,59 @@ function BattlePresentationCache.isGlobalReady(cacheFs, expectedMarker)
     return false
   end
   local staged = cacheFs:loadLua(BattlePresentationCache.manifestPath())
-  return type(staged) == "table" and pcall(BattlePresentationSchema.assertManifest, staged)
+  if type(staged) ~= "table" or not pcall(BattlePresentationSchema.assertManifest, staged) then
+    return false
+  end
+  local function sourceMapReady(source)
+    if type(source) ~= "table" then
+      return false
+    end
+    local bytes = cacheFs:read(source.path)
+    if type(bytes) ~= "string" or #bytes ~= source.width * source.height * 4 then
+      return false
+    end
+    for offset = 1, #bytes, 4 do
+      local green = string.byte(bytes, offset + 1)
+      local blue = string.byte(bytes, offset + 2)
+      local alpha = string.byte(bytes, offset + 3)
+      if green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) then
+        return false
+      end
+    end
+    return true
+  end
+  for _, sectionName in ipairs({ "command", "moves", "target", "twoOption" }) do
+    for _, screen in ipairs(staged.menus[sectionName].screens) do
+      if not sourceMapReady(screen.sourceIndices) then
+        return false
+      end
+      if screen.feedback ~= nil then
+        for _, states in pairs(screen.feedback) do
+          for _, patch in pairs(states) do
+            if not sourceMapReady(patch.sourceIndices) then
+              return false
+            end
+          end
+        end
+      end
+      if screen.moveButtons ~= nil then
+        for _, button in ipairs(screen.moveButtons) do
+          local indices = button.sourceIndices
+          if not sourceMapReady(indices.empty) then
+            return false
+          end
+          for _, typeStates in pairs(indices.types) do
+            for _, source in pairs(typeStates) do
+              if not sourceMapReady(source) then
+                return false
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return true
 end
 
 -- True only when the scene marker is exact and the staged scene record

@@ -419,6 +419,47 @@ function T.global_catalog_compiles_without_per_effect_closures(romFs, versionId)
   Assert.notNil(bundle, versionId .. ": the global catalog compiles from the dump (" .. tostring(compileErr) .. ")")
   local valid, schemaErr = Schema.isValidManifest(bundle.manifest)
   Assert.isTrue(valid, versionId .. ": the global manifest validates (" .. tostring(schemaErr) .. ")")
+  local function assertPatchSourceIndices(source, label)
+    Assert.equal(source.format, "source-index-rgba8", versionId .. ": " .. label .. " declares raw indices")
+    Assert.equal(source.plane, "subBg", versionId .. ": " .. label .. " retains its lower BG plane")
+    local bytes = bundle.rawFiles[source.path]
+    Assert.equal(
+      #bytes,
+      source.width * source.height * 4,
+      versionId .. ": " .. label .. " stages a pixel-aligned source map"
+    )
+    for offset = 1, #bytes, 4 do
+      Assert.equal(string.byte(bytes, offset + 1), 0, versionId .. ": " .. label .. " has a zero green channel")
+      Assert.equal(string.byte(bytes, offset + 2), 0, versionId .. ": " .. label .. " has a zero blue channel")
+      local alpha = string.byte(bytes, offset + 3)
+      Assert.isTrue(alpha == 0 or alpha == 255, versionId .. ": " .. label .. " keeps binary source coverage")
+    end
+  end
+  local feedbackPatch
+  for _, screen in ipairs(bundle.manifest.menus.command.screens) do
+    for _, states in pairs(screen.feedback or {}) do
+      for _, patch in pairs(states) do
+        feedbackPatch = patch
+        break
+      end
+      if feedbackPatch ~= nil then
+        break
+      end
+    end
+    if feedbackPatch ~= nil then
+      break
+    end
+  end
+  Assert.notNil(feedbackPatch, versionId .. ": at least one independent menu feedback patch is staged")
+  assertPatchSourceIndices(assert(feedbackPatch).sourceIndices, "feedback patch")
+  for slot, button in ipairs(assert(bundle.manifest.menus.moves.screens[1]).moveButtons) do
+    assertPatchSourceIndices(button.sourceIndices.empty, "empty move button " .. slot)
+    for typeKey, states in pairs(button.sourceIndices.types) do
+      for state, source in pairs(states) do
+        assertPatchSourceIndices(source, typeKey .. " " .. state .. " move button " .. slot)
+      end
+    end
+  end
   local keypadCursor = bundle.manifest.hud.cursor
   local topLeft = keypadCursor.animations[1].frames[2]
   Assert.deepEqual(

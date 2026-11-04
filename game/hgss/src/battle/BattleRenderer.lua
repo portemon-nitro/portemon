@@ -320,7 +320,9 @@ end
 -- Draws one resolved scene layer: palette-sampling handles draw through
 -- the shared sampler (an indexed borrow drawn raw would show its palette
 -- indices as red), while owned, test, and descriptor handles keep the
--- direct host draw.
+-- direct host draw. Sampler draws carry plain placement only: no caller
+-- may forward per-plane palette state as a draw argument, since pool
+-- leases forward extras to the host draw where a table raises.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param scene table<string, unknown> resolved scene drawable under drawing
 ---@param scrollX number background horizontal scroll in native pixels
@@ -1645,7 +1647,8 @@ local function drawTrainerPictures(graphics, assets, view)
       )
       if slide.visible then
         local key = assert(
-          type(slide.drawableKey) == "string" and slide.drawableKey,
+          (type(slide.paletteDrawableKey) == "string" and slide.paletteDrawableKey)
+            or (type(slide.drawableKey) == "string" and slide.drawableKey),
           "trainer slides resolve their selected source frame"
         )
         local image = assets:drawable(key)
@@ -1707,11 +1710,36 @@ local function drawThrownBall(graphics, assets, view)
   assert(type(rotation) == "number" and rotation >= 0 and rotation < 0x10000, "ball rotation is a 16-bit angle")
   assert(type(ball.visible) == "boolean", "ball throw cues state their visibility")
   if ball.visible then
-    local image = assets:drawable("battle-ball:" .. ballKey .. ":" .. tostring(frame))
+    local key = type(ball.paletteDrawableKey) == "string" and ball.paletteDrawableKey
+      or "battle-ball:" .. ballKey .. ":" .. tostring(frame)
+    local image = assets:drawable(key)
     if image ~= nil then
       drawArtwork(graphics, image, nil, x, y, rotation / 0x10000 * 2 * math.pi, 1, 1, 8, 8)
     end
   end
+end
+
+-- Draws the shared source main-screen 2D intro pass in native 256x192
+-- coordinates: the selected background, the terrain base slides and the
+-- trainer pictures. Detail and compact both evaluate this same source state;
+-- callers clip it to their own viewport without moving emitter origins.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot
+local function drawSourceMainScene(resources, view)
+  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+  local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  -- The background layer honors the viewport scroll on its own decoded
+  -- layer; portraits and health boxes stay layer-independent.
+  local scene = sceneLayer(resources, assets, view)
+  if scene ~= nil then
+    local scrollX, scrollY = 0, 0
+    if scene ~= view.introScene then
+      scrollX, scrollY = bgScrollOf(view)
+    end
+    drawSceneLayer(graphics, scene, scrollX, scrollY)
+  end
+  drawTerrainSlides(graphics, view)
+  drawTrainerPictures(graphics, assets, view)
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -1727,18 +1755,9 @@ local function drawDetail(resources, view)
   -- path below.
   local r, g, b, a = saveColor(graphics)
   graphics.setColor(1, 1, 1, 1)
-  -- The background layer honors the viewport scroll on its own decoded
-  -- layer; portraits and health boxes stay layer-independent.
-  local scene = sceneLayer(resources, assets, view)
-  if scene ~= nil then
-    local scrollX, scrollY = 0, 0
-    if scene ~= view.introScene then
-      scrollX, scrollY = bgScrollOf(view)
-    end
-    drawSceneLayer(graphics, scene, scrollX, scrollY)
-  end
-  drawTerrainSlides(graphics, view)
-  drawTrainerPictures(graphics, assets, view)
+  -- The shared source intro pass draws the background, terrain base and
+  -- trainer pictures; portraits and health boxes stay layer-independent.
+  drawSourceMainScene(resources, view)
   local players, enemies = BattleViewRoster.liveSides(view)
   local singles = not doublesFormat(view, players, enemies)
   drawPicturePlanes(graphics, assets, view, players, enemies, singles)
@@ -2404,6 +2423,42 @@ local function drawCompactSingle(graphics, assets, battler, center)
   end
 end
 
+-- Draws live SPL particle systems over the main screen. The 3D layer sits
+-- above the faded BG and OBJ planes, so particles are not tinted by the
+-- encounter fade and draw over the battler pictures.
+---@param graphics table<string, unknown> injected host graphics
+---@param systems table<integer, { simulation: SplParticleSimulation, textures: table<integer, table<string, unknown>> }>|nil live systems in creation order
+local function drawParticleSystems(graphics, systems)
+  if systems == nil then
+    return
+  end
+  for _, system in ipairs(systems) do
+    ---@param _ table<string, unknown>
+    ---@param particle table<string, unknown>
+    ---@param child table<string, unknown>|nil
+    ---@return table<string, unknown>|userdata staged texture handle behind the particle
+    local function resolveTexture(_, particle, child)
+      local texNo = child ~= nil and child.texNo or particle.texNo
+      return assert(system.textures[texNo], "particle texture is staged")
+    end
+    SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
+  end
+end
+
+-- Draws the live main-screen 3D/SPL systems over the faded 2D planes in
+-- native order: move particles, encounter particles, then ball particles.
+-- The encounter snapshot never recolors these draws. Draw never steps.
+---@param graphics table<string, unknown> injected host graphics
+---@param view table<string, unknown> internal semantic snapshot
+local function drawSourceMainParticles(graphics, view)
+  graphics.push("all")
+  graphics.setColor(1, 1, 1, 1)
+  drawParticleSystems(graphics, view.moveParticleSystems)
+  drawParticleSystems(graphics, view.encounterParticleSystems)
+  drawParticleSystems(graphics, view.ballParticleSystems)
+  graphics.pop()
+end
+
 -- Draws one compact scene inside the single-pane viewport: the same
 -- selected source scene with the battler pictures at the plan's compact
 -- image centers, clipped to the compact scene viewport without scaling.
@@ -2424,18 +2479,15 @@ local function drawCompactScene(resources, view, content)
   local enemyCenter = type(content.enemyCenter) == "table" and content.enemyCenter or BattleRenderer.ENEMY_CENTER
   -- Compact images use ordinary alpha composition under an isolated
   -- neutral image tint, then restore the caller's complete graphics state.
+  -- The compact viewport evaluates the same source intro state as detail
+  -- (scene, terrain, trainers, live particles) at native main-screen
+  -- coordinates, clipped to the compact scene viewport without moving
+  -- emitter origins to the crop center.
   graphics.push("all")
   graphics.setBlendMode("alpha", "alphamultiply")
   graphics.setColor(1, 1, 1, 1)
   LogicalSurface.clip(graphics, viewport, function()
-    local scene = sceneLayer(resources, assets, view)
-    if scene ~= nil then
-      local scrollX, scrollY = 0, 0
-      if scene ~= view.introScene then
-        scrollX, scrollY = bgScrollOf(view)
-      end
-      drawSceneLayer(graphics, scene, scrollX, scrollY)
-    end
+    drawSourceMainScene(resources, view)
     local spots = content.spriteCenters
     if type(spots) == "table" then
       drawCompactSlots(graphics, assets, view, spots --[[@as table<integer, table<string, unknown>>]])
@@ -2444,71 +2496,9 @@ local function drawCompactScene(resources, view, content)
       drawCompactSingle(graphics, assets, enemy, enemyCenter)
       drawCompactSingle(graphics, assets, player, playerCenter)
     end
+    drawSourceMainParticles(graphics, view)
   end)
   graphics.pop()
-end
-
--- Task_PlayEncounterAnimation palette work as screen-wide overlays: the
--- main screen blends toward its fade color by coefficient/16, and the lower
--- screen shows the opaque gray ramp, then reveals from white.
----@param graphics table<string, unknown> injected host graphics
----@param view table<string, unknown> internal semantic snapshot
----@param lower boolean true for the lower screen's overlay
-local function drawEncounterOverlay(graphics, view, lower)
-  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
-  if opening == nil then
-    return
-  end
-  local r, g, b, a = saveColor(graphics)
-  if lower then
-    local state = opening.encounterLower --[[@as table<string, unknown>?]]
-    if state ~= nil then
-      if type(state.level) == "number" then
-        local gray = state.level / 16
-        graphics.setColor(gray, gray, gray, 1)
-        graphics.rectangle("fill", 0, 0, 256, 192)
-      elseif type(state.whiteCoefficient) == "number" and state.whiteCoefficient > 0 then
-        graphics.setColor(1, 1, 1, state.whiteCoefficient / 16)
-        graphics.rectangle("fill", 0, 0, 256, 192)
-      end
-    end
-  else
-    local flash = opening.encounterFlash --[[@as table<string, unknown>?]]
-    if flash ~= nil and type(flash.coefficient) == "number" and flash.coefficient > 0 then
-      local channel = flash.color == "white" and 1 or 0
-      graphics.setColor(channel, channel, channel, flash.coefficient / 16)
-      graphics.rectangle("fill", 0, 0, 256, 192)
-    end
-  end
-  restoreColor(graphics, r, g, b, a)
-end
-
--- Draws live SPL particle systems over the main screen. The 3D layer sits
--- above the faded BG and OBJ planes, so particles are not tinted by the
--- encounter fade and draw over the battler pictures.
----@param graphics table<string, unknown> injected host graphics
----@param systems table<integer, { simulation: SplParticleSimulation, textures: table<integer, table<string, unknown>> }>|nil live systems in creation order
-local function drawParticleSystems(graphics, systems)
-  if systems == nil then
-    return
-  end
-  for _, system in ipairs(systems) do
-    ---@param runtime table<string, unknown>
-    ---@param particle table<string, unknown>
-    ---@param child table<string, unknown>|nil
-    ---@return love.Image
-    local function resolveTexture(runtime, particle, child)
-      local record = child or runtime.record --[[@as table<string, unknown>]]
-      local texNo = child ~= nil and child.texNo or particle.texNo
-      local image = assert(system.textures[texNo], "particle texture is staged")
-      local repeating = record.texRepeat --[[@as { s: integer, t: integer }]]
-      if (repeating.s ~= 0 or repeating.t ~= 0) and image.setWrap ~= nil then
-        image:setWrap("repeat", "repeat")
-      end
-      return image
-    end
-    SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
-  end
 end
 
 ---@param assets table<string, unknown> battle image owner
@@ -2803,14 +2793,11 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
     drawCompactScene(resources, view, content or {})
   elseif paneId == "detail" then
     drawDetail(resources, view)
-    local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
-    drawParticleSystems(graphics, view.moveParticleSystems)
-    drawEncounterOverlay(graphics, view, false)
-    drawParticleSystems(graphics, view.encounterParticleSystems)
-    drawParticleSystems(graphics, view.ballParticleSystems)
+    -- No fullscreen wash covers the composed main scene: the 3D systems
+    -- draw above the scene planes untinted.
+    drawSourceMainParticles(assert(resources.graphics, "the battle render borrows its host graphics"), view)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)
-    drawEncounterOverlay(assert(resources.graphics, "the battle render borrows its host graphics"), view, true)
   end
 end
 
