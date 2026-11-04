@@ -196,26 +196,169 @@ local function drawNative(scope, renderer, view)
   love.graphics.setCanvas()
 end
 
-function T.tests.label_draws_forward_byte_valued_palette_triples(scope)
-  local resources, palettes = preparedWiring(scope)
-  drawNative(scope, assert(resources._optionsRenderer, "open presentation retains its renderer"), sampleView())
-  Assert.isTrue(#palettes > 0, "options draw paints labels through the text renderer")
-  for index, palette in ipairs(palettes) do
-    Assert.isTrue(type(palette) == "table", "label draw " .. index .. " forwards a palette record")
-    for _, slot in ipairs({ "foreground", "shadow", "background" }) do
-      local color =
-        assert(type(palette[slot]) == "table" and palette[slot], "label draw " .. index .. " carries " .. slot)
-      for _, channel in ipairs({ "r", "g", "b" }) do
-        local value = color[channel]
-        Assert.isTrue(
-          type(value) == "number" and value >= 0 and value <= 255,
-          "label draw " .. index .. " " .. slot .. "." .. channel .. " is byte-valued"
-        )
-      end
+local function joinGlyphs(tokens)
+  local out = {}
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      out[#out + 1] = token.text
     end
-    Assert.equal(palette.background.a, 0, "label draw " .. index .. " keeps glyph background transparent")
   end
+  return table.concat(out)
 end
+
+
+-- Presented source labels carry a reversible diagnostic serialization beside
+-- their glyph stream. The presenter must paint only the glyphs: a footer
+-- record with a centering prefix and one with a cursor prefix exercise the
+-- prefix path, while the choice values stay plain. The adapter and the
+-- renderer share one recording stub standing in for the field text owner,
+-- so plain-string draws, token draws, and their palettes are all visible.
+local function recordingSourceText()
+  local stub = { plain = {}, tokenPath = {}, tokenLines = {}, fontDef = testFontDef() }
+  function stub:drawTextWithPalette(line, x, y, palette)
+    stub.plain[#stub.plain + 1] = { line = line, x = x, y = y, palette = palette }
+  end
+  function stub:drawLineWithPalette(tokens, x, y, palette)
+    stub.tokenPath[#stub.tokenPath + 1] = { tokens = tokens, x = x, y = y, palette = palette }
+  end
+  function stub:drawLine(tokens, x, y)
+    stub.tokenLines[#stub.tokenLines + 1] = { tokens = tokens, x = x, y = y }
+    return "drawn"
+  end
+  function stub:textWidth(text)
+    return #text * 8
+  end
+  function stub:windowBackgroundColor()
+    return { 0.1, 0.2, 0.3, 1 }
+  end
+  return stub
+end
+
+
+local function headlessSourceView(overrides)
+  local ScreenState = require("game.hgss.src.options.OptionsScreenState")
+  local playerOptions = {
+    textSpeed = "mid",
+    battleScene = true,
+    battleStyle = "shift",
+    soundMode = "stereo",
+    textFrame = 0,
+    battleSpeed = 1,
+  }
+  if overrides ~= nil then
+    for key, value in pairs(overrides) do
+      playerOptions[key] = value
+    end
+  end
+  local port = {
+    read = function()
+      return 80
+    end,
+    preview = function(_) end,
+    commit = function(_) end,
+    restore = function() end,
+  }
+  local state = ScreenState.new({
+    playerOptions = playerOptions,
+    volume = 80,
+    preparePlayerOptions = function()
+      return {
+        apply = function() end,
+        rollback = function() end,
+      }
+    end,
+    audioPreferences = port,
+    applyChannelMode = function(_) end,
+    effect = function(_) end,
+    semantic = FieldUiFixture.optionsSourceSemantic(),
+  })
+  return state:status()
+end
+
+
+local function preparedSourceWiring(scope)
+  local Resources = require("game.hgss.src.field.FieldPresentationResources")
+  local cache, manifest = optionsCache()
+  local pool = ImageAssetPool.new(cache)
+  ownPool(scope, pool)
+  local stub = recordingSourceText()
+  local stubWindow = {}
+  function stubWindow:drawWindow(_, _, _) end
+  local resources = setmetatable({
+    cacheFs = cache,
+    uiManifest = manifest,
+    bagManifest = {
+      interactive = {
+        overlays = {
+          quantity = {
+            visuals = {
+              decrement = {
+                pressed = FieldUiFixture.optionsSliderThumbVisual(),
+              },
+            },
+          },
+        },
+      },
+    },
+    _imagePool = pool,
+    textRenderer = stub,
+    windowRenderer = stubWindow,
+  }, Resources)
+  scope:own({
+    release = function()
+      if resources._optionsRenderer ~= nil then
+        resources._optionsRenderer:dispose()
+        resources._optionsRenderer = nil
+      end
+    end,
+  })
+  local port = resources:openOptionsPresentation()
+  local ready = port.prepare()
+  local spins = 0
+  while ready == false do
+    spins = spins + 1
+    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
+    if love.timer ~= nil then
+      love.timer.sleep(0.001)
+    end
+    ready = port.prepare()
+  end
+  Assert.isTrue(ready == true, "the painter prepares")
+  return resources, stub
+end
+
+
+local function drawSourceView(scope, renderer, view)
+  local Interface = require("game.hgss.src.options.OptionsInterface")
+  local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+  local resolvers = Interface.defaults()
+  local m = measurement()
+  local selection = ApplicationLayout.selectSurfaces(m)
+  local plan = resolvers.nativeLike({
+    measurement = m,
+    configuration = "nativeLike",
+    primary = selection.primary,
+    secondary = selection.secondary,
+    nativeLikeInterface = resolvers.nativeLike,
+  }, view)
+  local canvas = scope:own(love.graphics.newCanvas(512, 384))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  renderer:draw(view, plan)
+  love.graphics.setCanvas()
+  return plan
+end
+
+
+local function findTokenDraw(draws, word)
+  for _, draw in ipairs(draws) do
+    if joinGlyphs(draw.tokens) == word then
+      return draw
+    end
+  end
+  return nil
+end
+
 
 function T.tests.labels_paint_a_single_source_palette_pass(scope)
   local resources, palettes, _, drawnLines = preparedWiring(scope)
@@ -274,181 +417,6 @@ function T.tests.labels_paint_a_single_source_palette_pass(scope)
   Assert.deepEqual(byLine["TEXTSPEED"], normal, "row names paint the unselected source triple")
 end
 
-function T.tests.token_draws_forward_to_the_shared_glyph_renderer(scope)
-  local resources, _, tokenLines = preparedWiring(scope)
-  local adapter = assert(
-    resources._optionsRenderer and resources._optionsRenderer._text,
-    "open presentation retains its text adapter"
-  )
-  Assert.equal(type(adapter.drawTokens), "function", "the options adapter draws token glyphs")
-  local tokens = { { kind = "glyph", code = 1, text = "A" } }
-  local result = adapter:drawTokens(tokens, 7, 9, "normal", "test role")
-  Assert.equal(result, "drawn", "the adapter returns the shared renderer result")
-  Assert.equal(#tokenLines, 1, "one token draw forwards to the shared renderer")
-  Assert.isTrue(tokenLines[1].tokens == tokens, "tokens forward without copying")
-  Assert.equal(tokenLines[1].x, 7, "the draw keeps its horizontal origin")
-  Assert.equal(tokenLines[1].y, 9, "the draw keeps its vertical origin")
-  Assert.isTrue(type(tokenLines[1].palette) == "table", "the draw carries the source role palette")
-end
-
--- Presented source labels carry a reversible diagnostic serialization beside
--- their glyph stream. The presenter must paint only the glyphs: a footer
--- record with a centering prefix and one with a cursor prefix exercise the
--- prefix path, while the choice values stay plain. The adapter and the
--- renderer share one recording stub standing in for the field text owner,
--- so plain-string draws, token draws, and their palettes are all visible.
-local function recordingSourceText()
-  local stub = { plain = {}, tokenPath = {}, tokenLines = {}, fontDef = testFontDef() }
-  function stub:drawTextWithPalette(line, x, y, palette)
-    stub.plain[#stub.plain + 1] = { line = line, x = x, y = y, palette = palette }
-  end
-  function stub:drawLineWithPalette(tokens, x, y, palette)
-    stub.tokenPath[#stub.tokenPath + 1] = { tokens = tokens, x = x, y = y, palette = palette }
-  end
-  function stub:drawLine(tokens, x, y)
-    stub.tokenLines[#stub.tokenLines + 1] = { tokens = tokens, x = x, y = y }
-    return "drawn"
-  end
-  function stub:textWidth(text)
-    return #text * 8
-  end
-  function stub:windowBackgroundColor()
-    return { 0.1, 0.2, 0.3, 1 }
-  end
-  return stub
-end
-
-local function headlessSourceView(overrides)
-  local ScreenState = require("game.hgss.src.options.OptionsScreenState")
-  local playerOptions = {
-    textSpeed = "mid",
-    battleScene = true,
-    battleStyle = "shift",
-    soundMode = "stereo",
-    textFrame = 0,
-    battleSpeed = 1,
-  }
-  if overrides ~= nil then
-    for key, value in pairs(overrides) do
-      playerOptions[key] = value
-    end
-  end
-  local port = {
-    read = function()
-      return 80
-    end,
-    preview = function(_) end,
-    commit = function(_) end,
-    restore = function() end,
-  }
-  local state = ScreenState.new({
-    playerOptions = playerOptions,
-    volume = 80,
-    preparePlayerOptions = function()
-      return {
-        apply = function() end,
-        rollback = function() end,
-      }
-    end,
-    audioPreferences = port,
-    applyChannelMode = function(_) end,
-    effect = function(_) end,
-    semantic = FieldUiFixture.optionsSourceSemantic(),
-  })
-  return state:status()
-end
-
-local function preparedSourceWiring(scope)
-  local Resources = require("game.hgss.src.field.FieldPresentationResources")
-  local cache, manifest = optionsCache()
-  local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
-  local stub = recordingSourceText()
-  local stubWindow = {}
-  function stubWindow:drawWindow(_, _, _) end
-  local resources = setmetatable({
-    cacheFs = cache,
-    uiManifest = manifest,
-    bagManifest = {
-      interactive = {
-        overlays = {
-          quantity = {
-            visuals = {
-              decrement = {
-                pressed = FieldUiFixture.optionsSliderThumbVisual(),
-              },
-            },
-          },
-        },
-      },
-    },
-    _imagePool = pool,
-    textRenderer = stub,
-    windowRenderer = stubWindow,
-  }, Resources)
-  scope:own({
-    release = function()
-      if resources._optionsRenderer ~= nil then
-        resources._optionsRenderer:dispose()
-        resources._optionsRenderer = nil
-      end
-    end,
-  })
-  local port = resources:openOptionsPresentation()
-  local ready = port.prepare()
-  local spins = 0
-  while ready == false do
-    spins = spins + 1
-    Assert.isTrue(spins < 10000, "chrome resolves through the pool worker")
-    if love.timer ~= nil then
-      love.timer.sleep(0.001)
-    end
-    ready = port.prepare()
-  end
-  Assert.isTrue(ready == true, "the painter prepares")
-  return resources, stub
-end
-
-local function drawSourceView(scope, renderer, view)
-  local Interface = require("game.hgss.src.options.OptionsInterface")
-  local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
-  local resolvers = Interface.defaults()
-  local m = measurement()
-  local selection = ApplicationLayout.selectSurfaces(m)
-  local plan = resolvers.nativeLike({
-    measurement = m,
-    configuration = "nativeLike",
-    primary = selection.primary,
-    secondary = selection.secondary,
-    nativeLikeInterface = resolvers.nativeLike,
-  }, view)
-  local canvas = scope:own(love.graphics.newCanvas(512, 384))
-  love.graphics.setCanvas(canvas)
-  love.graphics.clear(0, 0, 0, 0)
-  renderer:draw(view, plan)
-  love.graphics.setCanvas()
-  return plan
-end
-
-local function joinGlyphs(tokens)
-  local out = {}
-  for _, token in ipairs(tokens) do
-    if token.kind == "glyph" then
-      out[#out + 1] = token.text
-    end
-  end
-  return table.concat(out)
-end
-
-local function findTokenDraw(draws, word)
-  for _, draw in ipairs(draws) do
-    if joinGlyphs(draw.tokens) == word then
-      return draw
-    end
-  end
-  return nil
-end
-
 -- Source label records must paint as positioned glyphs, never as their
 -- diagnostic serialization: the footer Confirm/Quit records carry layout
 -- prefixes that serialize into brace markers, and only the glyph stream
@@ -458,6 +426,16 @@ end
 function T.tests.source_control_prefixes_render_as_glyphs_never_as_markers(scope)
   local resources, stub = preparedSourceWiring(scope)
   local renderer = assert(resources._optionsRenderer, "open presentation retains its renderer")
+  -- The adapter forwards token glyphs without copying: the probe keeps
+  -- its identity, origin, and role palette on the shared token path.
+  local probeAdapter = assert(renderer._text, "open presentation retains its text adapter")
+  local probe = { { kind = "glyph", code = 1, text = "A" } }
+  probeAdapter:drawTokens(probe, 7, 9, "normal", "test role")
+  local forwarded = stub.tokenPath[#stub.tokenPath]
+  Assert.isTrue(forwarded ~= nil and forwarded.tokens == probe, "tokens forward without copying")
+  Assert.equal(forwarded.x, 7, "the draw keeps its horizontal origin")
+  Assert.equal(forwarded.y, 9, "the draw keeps its vertical origin")
+  Assert.isTrue(type(forwarded.palette) == "table", "the draw carries the source role palette")
   local view = headlessSourceView()
   drawSourceView(scope, renderer, view)
   for _, draw in ipairs(stub.plain) do

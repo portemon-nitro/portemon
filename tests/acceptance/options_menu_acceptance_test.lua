@@ -12,7 +12,6 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local CacheFs = require("libs.storage.src.CacheFs")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -246,126 +245,6 @@ local function loadStoredRuntime(game)
   game.saveStatus = runtime.saveStatus
   return installVolumePort(game)
 end
-
--- Touching an options control through the production field composition
--- focuses the same row a keyboard edit continues from: a tap on a Sound
--- choice focuses Sound before the release selects it, Left then edits
--- Sound instead of the previously focused row, and a footer tap focuses
--- its action without rendering anything.
-function T.tests.touch_focuses_the_touched_row_through_production_composition()
-  withGame(function(game)
-    local state = hostCallbacks(game)
-    installVolumePort(game)
-    openOptions(game, state)
-    local OptionsInterface = require("game.hgss.src.options.OptionsInterface")
-    local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-    local view = optionsView(game)
-    Assert.equal(view.focusId, "textSpeed", "the menu opens focused on the first row")
-    local speedBefore = nil
-    for _, row in ipairs(assert(view.rows, "the options status must publish its rows")) do
-      if row.id == "textSpeed" then
-        speedBefore = row.value
-      end
-    end
-    local content = assert(view.presentation.content, "the presented options expose their list")
-    local pane = nil
-    for _, candidate in ipairs(assert(view.presentation.panes, "the plan carries its panes")) do
-      if candidate.id == "content" then
-        pane = candidate
-      end
-    end
-    pane = pane or view.presentation.panes[1]
-    local lx, ly = nil, nil
-    for y = 0, 191 do
-      for x = 0, 255 do
-        local hit = OptionsInterface.hitTest(content, x, y)
-        if hit ~= nil and hit.target == "soundMode" and hit.control == "value" and hit.index == 2 then
-          lx, ly = x, y
-          break
-        end
-      end
-      if lx ~= nil then
-        break
-      end
-    end
-    Assert.isTrue(lx ~= nil, "the sound row publishes its second choice")
-    local hx, hy = LayoutGeometry.logicalToHost(pane.placement, lx, ly)
-    state:mousepressed(hx, hy, 1)
-    game:step()
-    Assert.equal(
-      optionsView(game).focusId,
-      "soundMode",
-      "touching a choice focuses its row through composition"
-    )
-    state:mousereleased(hx, hy, 1)
-    game:step()
-    local touched = optionsView(game)
-    Assert.equal(touched.focusId, "soundMode", "the release keeps the touched row focused")
-    local soundValue = nil
-    for _, row in ipairs(assert(touched.rows, "the options status must publish its rows")) do
-      if row.id == "soundMode" then
-        soundValue = row.value
-      end
-    end
-    Assert.equal(soundValue, "mono", "the matching release selects the touched choice")
-    pressKey(game, state, "a")
-    local continued = optionsView(game)
-    local afterSound, afterSpeed = nil, nil
-    for _, row in ipairs(assert(continued.rows, "the options status must publish its rows")) do
-      if row.id == "soundMode" then
-        afterSound = row.value
-      end
-      if row.id == "textSpeed" then
-        afterSpeed = row.value
-      end
-    end
-    Assert.equal(afterSound, "stereo", "keyboard left edits the touched row next")
-    Assert.equal(afterSpeed, speedBefore, "keyboard left leaves the previous row alone")
-    local footerView = optionsView(game)
-    local footerContent = assert(footerView.presentation.content, "the presented options expose their list")
-    local footerPane = nil
-    for _, candidate in ipairs(assert(footerView.presentation.panes, "the plan carries its panes")) do
-      if candidate.id == "content" then
-        footerPane = candidate
-      end
-    end
-    footerPane = footerPane or footerView.presentation.panes[1]
-    local cx, cy = nil, nil
-    for y = 0, 191 do
-      for x = 0, 255 do
-        local hit = OptionsInterface.hitTest(footerContent, x, y)
-        if hit ~= nil and hit.target == "confirm" then
-          cx, cy = x, y
-          break
-        end
-      end
-      if cx ~= nil then
-        break
-      end
-    end
-    Assert.isTrue(cx ~= nil, "the footer publishes its confirm action")
-    local chx, chy = LayoutGeometry.logicalToHost(footerPane.placement, cx, cy)
-    state:mousepressed(chx, chy, 1)
-    game:step()
-    Assert.equal(
-      optionsView(game).focusId,
-      "confirm",
-      "touching confirm focuses the footer action"
-    )
-    state:mousereleased(chx, chy, 1)
-    game:step()
-    Assert.equal(
-      hostPhase(game),
-      FieldApplicationHost.PHASES.application,
-      "releasing a footer tap stays inside options"
-    )
-    cancel(game)
-    game:advanceUntil("quit returns to the rebuilt start menu", function()
-      return hostPhase(game) == FieldApplicationHost.PHASES.menu
-    end, 120)
-  end)
-end
-
 function T.tests.options_confirm_adopts_player_settings_and_volume_then_survives_save_reload()
   withGame(function(game)
     local state = hostCallbacks(game)

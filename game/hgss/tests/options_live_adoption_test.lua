@@ -401,24 +401,27 @@ local function stepsToDone(dialogue, limit)
   local status = dialogue:status()
   return status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED"
 end
-
-function T.tests.next_dialogue_uses_the_committed_speed_without_a_reload()
+-- One adopted preparation reaches every next use: the next dialogue,
+-- signpost, and script request observe the committed speed and frame,
+-- later choice prompts carry the committed frame, and future menu
+-- children capture the current policy at creation. A single harness
+-- boot covers the whole adoption fan-out.
+function T.tests.adopted_values_reach_every_next_use_without_a_reload()
   local harness = openHarness()
   harness.dialogue:open({ id = "baseline", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
   Assert.isFalse(stepsToDone(harness.dialogue, 4), "the mid cadence must still be revealing after four steps")
   harness.dialogue:close()
+  local before = harness.partyMenu
+  Assert.deepEqual(
+    TextSpeedPolicy.forSpeed(harness.playerData.options.textSpeed),
+    TextSpeedPolicy.forSpeed("mid"),
+    "the harness opens on the committed mid policy"
+  )
   local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
   attempt.apply()
   harness.dialogue:open({ id = "adopted", message = dialogueMessage(), allowCancel = false, frameIndex = 1 })
   Assert.isTrue(stepsToDone(harness.dialogue, 4), "the committed fastest cadence finishes the same text quickly")
   harness.dialogue:close()
-  harness.partyMenu.dispose()
-end
-
-function T.tests.next_signpost_and_script_uses_observe_the_committed_values()
-  local harness = openHarness()
-  local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
-  attempt.apply()
   harness.signpost:printTyped(signMessage())
   for _ = 1, 2 do
     harness.signpost:updateFixed({})
@@ -432,23 +435,9 @@ function T.tests.next_signpost_and_script_uses_observe_the_committed_values()
   harness.dialogue:close()
   local options = harness.scripts.dialogueHost:yesNoOptions()
   Assert.equal(options.frameIndex, 1, "later choice prompts carry the committed frame")
-  harness.partyMenu.dispose()
-end
-
-function T.tests.future_menu_children_capture_the_current_policy_at_creation()
-  local harness = openHarness()
-  local BagScreenState = require("game.hgss.src.field.BagScreenState")
-  local before = harness.partyMenu
-  Assert.deepEqual(
-    (function()
-      return TextSpeedPolicy.forSpeed(harness.playerData.options.textSpeed)
-    end)(),
-    TextSpeedPolicy.forSpeed("mid")
-  )
-  local attempt = assert(harness.coordinator:preparePlayerOptions(changedOptions()))
-  attempt.apply()
   local flow = before.makeBagFlow()
   Assert.notNil(flow, "menu flows still construct after adoption")
+  local BagScreenState = require("game.hgss.src.field.BagScreenState")
   local fresh = TextSpeedPolicy.forSpeed(harness.playerData.options.textSpeed)
   Assert.deepEqual(fresh, TextSpeedPolicy.forSpeed("fastest"))
   local child = BagScreenState.new({
@@ -468,6 +457,7 @@ function T.tests.future_menu_children_capture_the_current_policy_at_creation()
   child:dispose()
   before.dispose()
 end
+
 
 function T.tests.preparation_validates_without_mutating_and_applies_exactly_once()
   local harness = openHarness()
@@ -515,7 +505,11 @@ function T.tests.preparation_validates_without_mutating_and_applies_exactly_once
   harness.partyMenu.dispose()
 end
 
-function T.tests.abandoned_preparation_and_stale_application_change_nothing()
+-- Ownership contention refuses without mutation: an abandoned preparation
+-- and a record replacement fault the stale application, busy owners
+-- refuse preparation, and idle setters reject retouching active owners.
+-- One harness (plus the starter probe) covers the contention matrix.
+function T.tests.ownership_contention_refuses_without_mutation()
   local harness = openHarness()
   local snapshot = {
     textSpeed = "mid",
@@ -542,11 +536,7 @@ function T.tests.abandoned_preparation_and_stale_application_change_nothing()
   Assert.throws(function()
     stale.apply()
   end, "an application after a record replacement faults before writing")
-  harness.partyMenu.dispose()
-end
-
-function T.tests.busy_owners_refuse_preparation_without_mutation()
-  local harness = openHarness()
+  -- Busy owners refuse preparation while live.
   harness.dialogue:open({ id = "held", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
   local busy, err = harness.coordinator:preparePlayerOptions(changedOptions())
   Assert.isNil(busy, "an open dialogue refuses preparation")
@@ -565,14 +555,6 @@ function T.tests.busy_owners_refuse_preparation_without_mutation()
   local choiceBusy = harness.coordinator:preparePlayerOptions(changedOptions())
   Assert.isNil(choiceBusy, "an open choice refuses preparation")
   harness.scripts.dialogueHost:closeYesNo()
-  local snapshot = {
-    textSpeed = "mid",
-    textFrame = 0,
-    battleStyle = "shift",
-    battleScene = true,
-    soundMode = "stereo",
-    battleSpeed = 1,
-  }
   Assert.deepEqual(harness.playerData.options, snapshot, "busy refusals mutate nothing")
   local starterBusy = openHarness()
   starterBusy.starterChoice = {
@@ -585,12 +567,7 @@ function T.tests.busy_owners_refuse_preparation_without_mutation()
   }
   starterBusy.coordinator = FieldMenuCompositionCoordinator.new(starterBusy)
   Assert.isNil(starterBusy.coordinator:preparePlayerOptions(changedOptions()), "an active starter refuses preparation")
-  harness.partyMenu.dispose()
-  starterBusy.partyMenu.dispose()
-end
-
-function T.tests.idle_setters_reject_active_owners()
-  local harness = openHarness()
+  -- Idle setters reject retouching active owners.
   harness.dialogue:open({ id = "held", message = dialogueMessage(), allowCancel = false, frameIndex = 0 })
   Assert.throws(function()
     harness.dialogue:setPolicy(TextSpeedPolicy.forSpeed("fastest"))
@@ -616,7 +593,9 @@ function T.tests.idle_setters_reject_active_owners()
   harness.starterChoice:setFrameIndex(2)
   Assert.isFalse(harness.starterChoice:isActive(), "an idle frame change leaves the starter closed")
   harness.partyMenu.dispose()
+  starterBusy.partyMenu.dispose()
 end
+
 
 function T.tests.legacy_save_without_new_options_opens_with_defaults()
   local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")

@@ -1,16 +1,15 @@
--- Battle Style end-to-end: the saved Shift/Set setting governs the real
--- optional replacement decision in a production trainer battle. A Shift
--- knockout freezes the incoming foe, publishes one stay-or-switch action
--- request with a minimal preview, and settles the held arrival after
--- exactly one accepted reply; Set never offers. The screen asks through
--- the native Yes/No prompt and the existing party child, where both
--- cancellations answer stay without a second offer.
+-- Battle Style screen wiring through a production trainer battle: a
+-- malformed style rejects admission, Yes opens the shift party child and
+-- seals the reserve, No answers stay and releases the foe, and both
+-- cancellations (prompt B, party-child B) answer stay without a second
+-- offer. The freeze/publish/settle mechanics and the Set no-offer path
+-- live with the libs/battle shift_set owner; this suite pins only the
+-- screen's questions and replies.
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -425,194 +424,6 @@ local function knockOutLeadingFoe(rig)
   local opening = waitForBattleRequest(rig, "action")
   submitFirstEnabledMove(rig, opening)
   return waitForBattleRequest(rig, "shift")
-end
-
----@param request table open shift request under projection
----@return table detached native decision options for the open request
-local function shiftOptions(rig, request)
-  local options, optionsErr = rig.battle:decisionOptions(request.requestId)
-  Assert.notNil(options, "the shift request projects its options: " .. tostring(optionsErr))
-  return options --[[@as table<string, unknown>]]
-end
-
----@param options table shift decision options under inspection
----@return table the shift actor entry
-local function shiftActor(options)
-  for _, actor in ipairs(options.actors or {}) do
-    if type(actor) == "table" and actor.kind == "shift" then
-      return actor
-    end
-  end
-  error("the shift request addresses its shift actor", 0)
-end
-
----@param actor table shift actor entry under inspection
----@return table the stay fragment answering the offer
----@return table the first legal switch fragment answering the offer
-local function shiftFragments(actor)
-  local stay = nil
-  local switch = nil
-  for _, choice in ipairs(actor.choices or {}) do
-    if choice.id == "shift:stay" then
-      stay = choice.choice
-    elseif type(choice.id) == "string" and choice.id:match("^switch:") ~= nil and choice.enabled == true then
-      if switch == nil then
-        switch = choice.choice
-      end
-    end
-  end
-  Assert.notNil(stay, "the shift offer carries its stay fragment")
-  Assert.notNil(switch, "the shift offer carries a legal switch fragment")
-  return stay, switch
-end
-
----@param rig table live screen rig under test driving
----@param request table open shift request under answering
----@param fragment table kernel choice fragment answering the offer
-local function answerShift(rig, request, fragment)
-  local ok, submitErr = rig.battle:submit({
-    requestId = request.requestId,
-    epoch = request.epoch,
-    controller = request.controller,
-    choices = { fragment },
-  })
-  Assert.isTrue(ok, "the shift answer is accepted: " .. tostring(submitErr))
-end
-
----@param rig table live screen rig under test driving
----@param swaps integer expected foe send-out events under inspection
----@return integer foe send-out events observed so far
-local function countFoeArrivals(rig)
-  local arrivals = 0
-  for _, packet in ipairs(rig.packets) do
-    for _, event in ipairs(packet.events or {}) do
-      if event.kind == "switch" and type(event.payload) == "table" then
-        local payload = event.payload --[[@as table<string, unknown>]]
-        local cause = event.cause --[[@as table<string, unknown>?]]
-        if type(cause) == "table" and cause.kind == "faint" and payload.from ~= nil then
-          local combatant = nil
-          for _, battler in ipairs((packet.after and packet.after.foes) or {}) do
-            if type(battler) == "table" and battler.combatant == payload.to then
-              combatant = battler.combatant
-            end
-          end
-          if combatant ~= nil then
-            arrivals = arrivals + 1
-          end
-        end
-      end
-    end
-  end
-  return arrivals
-end
-
--- The Shift knockout publishes exactly one stay-or-switch decision naming
--- the frozen arrival and nothing else: the incoming name rides the
--- preview while the enemy bench stays undisclosed.
-function T.shift_offer_names_the_frozen_arrival_and_nothing_else()
-  local rig = openRig({ launchId = "launch-style-offer", battleStyle = "shift" })
-  local request = knockOutLeadingFoe(rig)
-  local options = shiftOptions(rig, request)
-  local actor = shiftActor(options)
-  local stay, _ = shiftFragments(actor)
-  Assert.equal(stay.kind, "confirm", "the stay fragment confirms without a switch")
-  Assert.deepEqual(stay.payload, {}, "the stay fragment carries an empty payload")
-  local preview = nil
-  for _, packet in ipairs(rig.packets) do
-    local published = packet.request --[[@as table<string, unknown>?]]
-    if
-      type(published) == "table"
-      and published.requestId == request.requestId
-      and type(published.options) == "table"
-    then
-      for _, entry in ipairs(published.options.actors or {}) do
-        if type(entry) == "table" and entry.kind == "shift" and type(entry.preview) == "table" then
-          preview = entry.preview
-        end
-      end
-    end
-  end
-  Assert.notNil(preview, "the published offer carries its minimal preview")
-  local seen = {}
-  for key in pairs(preview) do
-    seen[key] = true
-  end
-  for _, key in ipairs({ "trainerClassKey", "trainerName", "incomingName", "incomingSpecies", "playerName" }) do
-    Assert.isTrue(seen[key] == true, "the preview carries " .. key)
-    seen[key] = nil
-  end
-  Assert.isTrue(next(seen) == nil, "the preview discloses nothing beyond the offer facts")
-  Assert.equal(preview.incomingName, rig.foeReserveName, "the preview names the frozen arrival")
-  Assert.equal(preview.trainerName, "JOEY", "the preview names the opposing trainer")
-  Assert.equal(preview.trainerClassKey, "YOUNGSTER", "the preview names the opposing trainer class")
-  local callsBefore = rig.battle:status().phase == "running" and 0 or 0
-  Assert.isTrue(callsBefore == 0, "the offer publishes without consuming the battle")
-  local first = shiftOptions(rig, request)
-  local second = shiftOptions(rig, request)
-  Assert.deepEqual(first, second, "redrawing the offer projects the identical decision")
-end
-
--- Answering Yes exchanges the player side before the held foe arrival:
--- one accepted reply settles exactly one player exchange and one foe
--- send-out with no extra turn and no early field mutation.
-function T.shift_yes_exchanges_before_the_frozen_foe_arrives()
-  local rig = openRig({ launchId = "launch-style-yes", battleStyle = "shift" })
-  local leadBefore = rig.party:partyMon(0)
-  local reserveBefore = rig.party:partyMon(1)
-  local request = knockOutLeadingFoe(rig)
-  local actor = shiftActor(shiftOptions(rig, request))
-  local _, switch = shiftFragments(actor)
-  answerShift(rig, request, switch)
-  local stale, staleErr = rig.battle:submit({
-    requestId = request.requestId,
-    epoch = request.epoch,
-    controller = request.controller,
-    choices = { switch },
-  })
-  Assert.isFalse(stale, "the consumed offer answers exactly once: " .. tostring(staleErr and staleErr.message))
-  local next = waitForBattleRequest(rig, "action")
-  Assert.isTrue(next.requestId ~= request.requestId, "the answered offer releases its decision")
-  Assert.isTrue(countFoeArrivals(rig) >= 1, "the held foe arrival reaches the field")
-  Assert.deepEqual(rig.party:partyMon(0), leadBefore, "the exchange never reorders the persistent lead")
-  Assert.deepEqual(rig.party:partyMon(1), reserveBefore, "the exchange never reorders the persistent reserve")
-end
-
--- Answering No keeps the active mon while the frozen foe still arrives:
--- the stay fragment settles the held replacement without an exchange.
-function T.shift_no_stays_and_releases_the_frozen_foe()
-  local rig = openRig({ launchId = "launch-style-no", battleStyle = "shift" })
-  local leadBefore = rig.party:partyMon(0)
-  local request = knockOutLeadingFoe(rig)
-  local actor = shiftActor(shiftOptions(rig, request))
-  local stay, _ = shiftFragments(actor)
-  answerShift(rig, request, stay)
-  local next = waitForBattleRequest(rig, "action")
-  Assert.isTrue(next.requestId ~= request.requestId, "the answered offer releases its decision")
-  Assert.isTrue(countFoeArrivals(rig) >= 1, "staying still releases the frozen arrival")
-  Assert.deepEqual(rig.party:partyMon(0), leadBefore, "staying never touches the persistent party")
-end
-
--- Set never publishes an offer: the foe replacement resolves on its own
--- and the next ordinary turn follows without a stay-or-switch decision.
-function T.set_style_sends_the_foe_without_an_offer()
-  local rig = openRig({ launchId = "launch-style-set", battleStyle = "set" })
-  local opening = waitForBattleRequest(rig, "action")
-  submitFirstEnabledMove(rig, opening)
-  local next = waitForBattleRequest(rig, "action")
-  Assert.isTrue(next.requestId ~= opening.requestId, "the foe replacement settles into the next turn")
-  local options = rig.battle:decisionOptions(next.requestId)
-  Assert.notNil(options, "the next turn projects its options")
-  for _, actor in ipairs(options.actors or {}) do
-    Assert.isTrue(actor.kind ~= "shift", "Set never publishes a shift actor")
-  end
-  for _, packet in ipairs(rig.packets) do
-    local published = packet.request --[[@as table<string, unknown>?]]
-    if type(published) == "table" and type(published.options) == "table" then
-      for _, entry in ipairs(published.options.actors or {}) do
-        Assert.isTrue(entry.kind ~= "shift", "Set never publishes a shift preview")
-      end
-    end
-  end
 end
 
 -- A malformed present style rejects battle admission instead of running

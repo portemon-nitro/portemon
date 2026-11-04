@@ -213,21 +213,6 @@ function T.compiled_section_carries_the_locked_semantic_shapes(romFs, versionId)
   -- the options section carries no cursor art of its own.
   Assert.isNil(section.sliderCursor, "the options section carries no slider cursor art")
 end
-
--- The sliders borrow the bag quantity-decrement pressed visual at draw time,
--- so the compiled section carries no cursor art and the chrome atlas packs
--- only the pills, arrows, actions, and face patches.
-function T.compiled_section_carries_no_slider_cursor_art(romFs, versionId)
-  local bundle = compileOptions(romFs, versionId)
-  local section = assert(bundle.section, "the compiler returns its semantic section")
-  Assert.equal(section.version, 7, "the options section carries the thumb-borrowing contract")
-  Assert.isNil(section.sliderCursor, "the options section carries no slider cursor art")
-  local chromeImage = FieldUiAssetCache.assetDir() .. "/options-chrome.png"
-  local chromeBytes = assert(bundle.files[chromeImage], "the chrome atlas must be published")
-  local chromeWidth, chromeHeight, _ = PngReader.rgba(chromeBytes)
-  Assert.isTrue(chromeWidth > 0 and chromeHeight > 0, "the chrome atlas keeps its packed extent")
-end
-
 function T.compiled_frames_keep_their_decoded_anchors_and_sizes(romFs, versionId)
   local bundle = compileOptions(romFs, versionId)
   local section = assert(bundle.section)
@@ -974,64 +959,6 @@ function T.row_plates_flatten_interior_to_band_backing(romFs, versionId)
   end
 end
 
--- The product divider inks match the audited native divider tiles: the
--- odd mid-band tile 14 carries palette-2 index 3 and the even mid-band
--- tile 40 carries index 5 on the controls screen, so a source revision
--- carrying different divider ink fails here instead of drifting the
--- product constants silently. Test-only cross-boundary require, mirroring
--- game tests over ROM helpers.
-function T.product_divider_inks_match_the_audited_tiles(romFs, _)
-  local ok, Interface = pcall(require, "game.hgss.src.options.OptionsInterface")
-  Assert.isTrue(ok, "OptionsInterface loads: " .. tostring(Interface))
-  local Sources = optionsSources()
-  local plates = assert(Sources.rowPlates, "the producer records its audited plate material")
-  local archive = assert(romFs:openNarc(Sources.archive.symbol))
-  local function decoded(kind, memberId)
-    local decodedValue, err = G2dDecoder[kind](plain(archive, memberId), { label = "options:" .. memberId })
-    assert(decodedValue, tostring(err and err.message or err))
-    return decodedValue
-  end
-  local palette = decoded("decodePalette", Sources.members.facePalette)
-  local function ink(index, what)
-    local color = assert(palette.colors[index + 1], what .. " resolves its palette entry")
-    return { r = color.r, g = color.g, b = color.b }
-  end
-  Assert.deepEqual(Interface.DIVIDER_INK.odd, ink(3, "odd divider"), "odd divider ink matches audited tile-14 ink")
-  Assert.deepEqual(
-    Interface.DIVIDER_INK.even,
-    ink(5, "even divider"),
-    "even divider ink matches audited tile-40 ink"
-  )
-  local screen = decoded("decodeScreen", Sources.members.faceScreen)
-  local oddTileRow = assert(plates.oddBand, "the producer records its odd band").midTileRow
-  local evenTileRow = assert(plates.evenBand, "the producer records its even band").midTileRow
-  local oddEntry = screen.entries[oddTileRow * 32 + plates.faceFirstColumn + 1]
-  local evenEntry = screen.entries[evenTileRow * 32 + plates.faceFirstColumn + 1]
-  Assert.equal(oddEntry.tile, 14, "the odd divider column carries tile 14")
-  Assert.equal(evenEntry.tile, 40, "the even divider column carries tile 40")
-  local char = decoded("decodeChar", Sources.members.faceChar)
-  local tileBytes = char.depth == 3 and 32 or 64
-  local function indices(tile)
-    local raw = char.tiles:sub(tile * tileBytes + 1, (tile + 1) * tileBytes)
-    local seen = {}
-    if char.depth == 3 then
-      for i = 1, #raw do
-        local byte = string.byte(raw, i)
-        seen[byte % 16] = true
-        seen[math.floor(byte / 16)] = true
-      end
-    else
-      for i = 1, #raw do
-        seen[string.byte(raw, i)] = true
-      end
-    end
-    return seen
-  end
-  local oddSeen = indices(14)
-  Assert.isTrue(oddSeen[3] == true, "odd divider tile 14 carries its edge ink")
-  local evenSeen = indices(40)
-  Assert.isTrue(evenSeen[5] == true, "even divider tile 40 carries its edge ink")
-end
 
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }

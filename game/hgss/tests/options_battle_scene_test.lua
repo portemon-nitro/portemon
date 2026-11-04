@@ -459,8 +459,9 @@ function T.scene_off_preserves_faint_and_capture_intake()
   Assert.equal(battler(timeline:battlers(), 2).visible, false, "fainting still hides the battler")
 end
 
--- A launch without a scene snapshot keeps the historical behavior: the
--- optional move program still admits, matching every previous caller.
+-- A launch without a scene snapshot defaults to On: the optional move
+-- program still admits, matching the long-standing default for records
+-- predating the scene field.
 function T.scene_defaults_to_on_without_a_snapshot()
   local started = {}
   local effects = {

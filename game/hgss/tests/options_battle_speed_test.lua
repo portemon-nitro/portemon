@@ -422,9 +422,15 @@ local function coordinatorRuntime(speed)
   }
 end
 
-function T.coordinator_freezes_the_validated_speed_in_the_launch_descriptor()
-  for _, speed in ipairs({ 1, 2, 4 }) do
+-- The coordinator freezes the validated factor into the launch
+-- descriptor: 1/2/4 ride through, a missing factor defaults to single
+-- rate, and malformed factors fail the launch instead of freezing.
+function T.coordinator_freezes_validated_speed_defaults_missing_and_rejects_malformed()
+  local function launchWith(speed)
     local runtime = coordinatorRuntime(speed)
+    if speed == nil then
+      runtime.playerData.options.battleSpeed = nil
+    end
     local coordinator = FieldBattleCoordinator.new(runtime)
     local seen = nil
     coordinator:bindBattlePresentation(function(descriptor)
@@ -442,57 +448,27 @@ function T.coordinator_freezes_the_validated_speed_in_the_launch_descriptor()
         dispose = function(_) end,
       }
     end)
-    coordinator:launchPresentedBattle("speed-launch-" .. speed, { id = "speed-launch-" .. speed, kind = "wild", payload = {} }, nil)
+    local ok, err = pcall(function()
+      coordinator:launchPresentedBattle(
+        "speed-launch-" .. tostring(speed),
+        { id = "speed-launch-" .. tostring(speed), kind = "wild", payload = {} },
+        nil
+      )
+    end)
+    return ok, err, seen
+  end
+  for _, speed in ipairs({ 1, 2, 4 }) do
+    local ok, err, seen = launchWith(speed)
+    Assert.isTrue(ok, "the launch admits factor " .. speed .. ": " .. tostring(err))
     Assert.notNil(seen, "the factory receives the launch descriptor at factor " .. speed)
     Assert.equal(seen.battleSpeed, speed, "the descriptor freezes the validated factor " .. speed)
   end
-end
-
-function T.coordinator_defaults_a_missing_speed_and_rejects_malformed_speeds()
-  do
-    local runtime = coordinatorRuntime(nil)
-    runtime.playerData.options.battleSpeed = nil
-    local coordinator = FieldBattleCoordinator.new(runtime)
-    local seen = nil
-    coordinator:bindBattlePresentation(function(descriptor)
-      seen = descriptor
-      return {
-        enter = function(_)
-          return true
-        end,
-        present = function(_)
-          return true
-        end,
-        leave = function(_)
-          return true
-        end,
-        dispose = function(_) end,
-      }
-    end)
-    coordinator:launchPresentedBattle("speed-launch-default", { id = "speed-launch-default", kind = "wild", payload = {} }, nil)
-    Assert.notNil(seen, "the factory receives the defaulted descriptor")
-    Assert.equal(seen.battleSpeed, 1, "a missing factor defaults to single rate")
-  end
+  local defaultOk, _, defaultSeen = launchWith(nil)
+  Assert.isTrue(defaultOk, "a missing factor still launches")
+  Assert.notNil(defaultSeen, "the factory receives the defaulted descriptor")
+  Assert.equal(defaultSeen.battleSpeed, 1, "a missing factor defaults to single rate")
   for _, bad in ipairs({ 0, 3, 8, "fast" }) do
-    local runtime = coordinatorRuntime(bad)
-    local coordinator = FieldBattleCoordinator.new(runtime)
-    coordinator:bindBattlePresentation(function(_)
-      return {
-        enter = function(_)
-          return true
-        end,
-        present = function(_)
-          return true
-        end,
-        leave = function(_)
-          return true
-        end,
-        dispose = function(_) end,
-      }
-    end)
-    local ok, _ = pcall(function()
-      coordinator:launchPresentedBattle("speed-launch-bad", { id = "speed-launch-bad", kind = "wild", payload = {} }, nil)
-    end)
+    local ok, _ = launchWith(bad)
     Assert.isFalse(ok, "factor " .. tostring(bad) .. " fails the launch instead of freezing")
   end
 end

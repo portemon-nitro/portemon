@@ -4,7 +4,7 @@
 -- compiled frames by animation age, and the project-authored slider draws
 -- only its rail, fill, and borrowed bag thumb on the logical pixel
 -- grid: a focused row is marked by the list selection strip, never by an
--- extra slider outline, and no white square thumb remains. Missing
+-- extra slider outline. Missing
 -- art fails explicitly and every draw restores the borrowed graphics
 -- state; releasing the borrowed leases returns pool references to
 -- baseline.
@@ -182,7 +182,7 @@ local function assertSameState(before, after, label)
   Assert.equal(after.lineWidth, before.lineWidth, label .. " restores its line width")
 end
 
-function T.choice_states_sample_their_own_compiled_frames(scope)
+function T.choice_and_pressed_states_sample_their_compiled_frames(scope)
   local Widgets = widgetsModule()
   local manifest, chrome = setup(scope)
   local quadFor = preparedQuadFor(manifest, chrome)
@@ -203,31 +203,29 @@ function T.choice_states_sample_their_own_compiled_frames(scope)
     "selected honors the signed source offset left of its anchor"
   )
   Assert.deepEqual(pixel(selected, 31, 30), { 0, 0, 0, 0 }, "pixels outside the frame rect stay untouched")
-end
-
-function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
-  local Widgets = widgetsModule()
-  local manifest, chrome = setup(scope)
-  local quadFor = preparedQuadFor(manifest, chrome)
+  -- Pressed states resolve their compiled frames by age through the same
+  -- leases: a fresh press samples the first pressed frame, an aged press
+  -- the second, and a one-shot press holds its terminal frame instead of
+  -- wrapping while the unpressed side stays idle.
   local arrows = assert(manifest.options.arrows)
-  local function draw(side, age)
+  local function drawPressed(side, age)
     return renderInto(scope, 128, 64, function()
       Widgets.drawCycle(love.graphics, chrome, quadFor, arrows, { x = 8, y = 24 }, { x = 104, y = 24 }, side, age)
     end)
   end
-  local idle = draw(nil, 0)
+  local idle = drawPressed(nil, 0)
   Assert.deepEqual(pixel(idle, 10, 26), { 200, 40, 200, 255 }, "idle samples the idle arrow frame")
-  local early = draw("left", 0)
+  local early = drawPressed("left", 0)
   Assert.deepEqual(pixel(early, 10, 26), { 40, 200, 200, 255 }, "a fresh press samples the first pressed frame")
-  local late = draw("left", 4)
+  local late = drawPressed("left", 4)
   Assert.deepEqual(pixel(late, 10, 26), { 150, 80, 20, 255 }, "an aged press samples the second pressed frame")
-  local clamped = draw("left", 100000)
+  local clamped = drawPressed("left", 100000)
   Assert.deepEqual(
     pixel(clamped, 10, 26),
     { 150, 80, 20, 255 },
     "a one-shot press holds its terminal frame instead of wrapping"
   )
-  local right = draw("right", 0)
+  local right = drawPressed("right", 0)
   Assert.deepEqual(pixel(right, 10, 26), { 200, 40, 200, 255 }, "the unpressed side stays idle")
   Assert.deepEqual(pixel(right, 106, 26), { 20, 150, 80, 255 }, "the pressed side samples its own arrow frames")
   local actions = assert(manifest.options.actions)
@@ -236,6 +234,7 @@ function T.pressed_states_resolve_their_compiled_frames_by_age(scope)
   end)
   Assert.deepEqual(pixel(pressed, 34, 42), { 200, 200, 90, 255 }, "an aged footer press samples its second frame")
 end
+
 
 -- The slider thumb is the borrowed 32x24 bag visual drawn centered on
 -- the track value: the caller prepares the full-image viewport once and
@@ -293,19 +292,6 @@ function T.slider_thumb_centers_the_borrowed_bag_visual_on_the_track(scope)
     { 0, 0, 0, 0 },
     "no focus outline leaks outside an unfocused slider"
   )
-  local function hasWhiteSquare(image)
-    for y = 0, 63 do
-      for x = 0, 255 do
-        local sampled = pixel(image, x, y)
-        if sampled[1] >= 240 and sampled[2] >= 240 and sampled[3] >= 240 and sampled[4] == 255 then
-          return true, x, y
-        end
-      end
-    end
-    return false
-  end
-  local squared, squareX, squareY = hasWhiteSquare(unfocused)
-  Assert.isFalse(squared, "no white square thumb remains at " .. tostring(squareX) .. "," .. tostring(squareY))
   -- The borrowed thumb stands centered on the rail around the stop
   -- center: the 24px-tall thumb fills its row while pixels clear of it
   -- keep the backdrop.

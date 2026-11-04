@@ -409,21 +409,20 @@ local function confirmedOptions(soundMode)
   }
 end
 
-function T.confirmed_mono_reaches_the_live_sink_through_the_validated_closure()
+-- The validated closure carries the confirmed channel mode to the live
+-- sink in both directions, while the headless no-sink path stays valid
+-- and still adopts the confirmed options.
+function T.confirmed_channel_mode_reaches_the_live_sink_and_nil_sink_stays_valid()
   local sink = recordingSink()
   local harness = coordinatorHarness(validatedPlayerData("stereo"), sink)
   local attempt = assert(harness.coordinator:preparePlayerOptions(confirmedOptions("mono")))
   attempt.apply()
   Assert.equal(harness.playerData.options.soundMode, "mono", "the closure adopts the confirmed mode")
   Assert.deepEqual(sink.modes, { "mono" }, "the closure updates the live sink scalar exactly once")
-end
-
-function T.confirmed_stereo_reaches_the_live_sink_and_a_nil_sink_stays_valid()
-  local sink = recordingSink()
-  local harness = coordinatorHarness(validatedPlayerData("mono"), sink)
-  local attempt = assert(harness.coordinator:preparePlayerOptions(confirmedOptions("stereo")))
-  attempt.apply()
-  Assert.deepEqual(sink.modes, { "stereo" }, "the closure carries stereo back to a mono sink")
+  local back = coordinatorHarness(validatedPlayerData("mono"), sink)
+  local backAttempt = assert(back.coordinator:preparePlayerOptions(confirmedOptions("stereo")))
+  backAttempt.apply()
+  Assert.deepEqual(sink.modes, { "mono", "stereo" }, "the closure carries stereo back to the live sink")
   local headless = coordinatorHarness(validatedPlayerData("stereo"), nil)
   local headlessAttempt = assert(headless.coordinator:preparePlayerOptions(confirmedOptions("mono")))
   headlessAttempt.apply()
