@@ -82,8 +82,11 @@ local function sortOptions(self)
 end
 
 -- Source context-menu frames in tiles (sContextMenuParam): the list
--- menu sizes to its longest entry, so the window frames two
--- sixteen-pixel text rows per option exactly like the shared list menu.
+-- menu sizes to its longest entry, so width 16 frames the interior
+-- sixteen tiles per option row exactly like the shared list menu
+-- (TouchscreenListMenu_CreateWindows), eighteen tiles across with the
+-- borders. The detached frame stays in tiles end-to-end; the renderer
+-- hands it to the shared list-menu frame with no pixel round-trip.
 local MENU_FRAMES = {
   menu = { x = 13, y = 9, width = 16, options = 3 },
   sort = { x = 13, y = 3, width = 16, options = 5 },
@@ -522,13 +525,14 @@ function PhoneController:_menuKind(contact)
   return "ordinary"
 end
 
--- The detached menu frame in pixels for touch and presentation.
+-- The detached menu frame in tiles for touch and presentation: the
+-- frame spans 3*options+1 rows (one top row, three rows per option,
+-- one bottom row) like the shared list menu.
 ---@param kind string "menu" or "sort"
 ---@return table<string, integer>
 local function menuFrame(kind)
   local spec = assert(MENU_FRAMES[kind], "phone context menus stay known")
-  local height = (2 * spec.options + 3) * 8
-  return { x = spec.x * 8, y = spec.y * 8, width = spec.width * 8, height = height }
+  return { x = spec.x, y = spec.y, width = spec.width, height = 3 * spec.options + 1 }
 end
 
 ---@param self PhoneController
@@ -747,16 +751,17 @@ function PhoneController:_chooseMain(option)
 end
 
 -- The zero-based menu row under a tap release, if the tap lands on one.
----@param frame table<string, integer> the menu window frame
----@param x number
----@param y number
+---@param frame table<string, integer> the menu window frame in tiles
+---@param x number touch x in pixels
+---@param y number touch y in pixels
 ---@return integer? zero-based option row
 local function menuRowAt(frame, x, y)
-  if x < frame.x or x >= frame.x + frame.width then
+  local left, top = frame.x * 8, frame.y * 8
+  if x < left or x >= left + frame.width * 8 then
     return nil
   end
-  local slot = math.floor((y - frame.y - MENU_TEXT_TOP) / MENU_ROW_PITCH)
-  local rowTop = frame.y + MENU_TEXT_TOP + MENU_ROW_PITCH * slot
+  local slot = math.floor((y - top - MENU_TEXT_TOP) / MENU_ROW_PITCH)
+  local rowTop = top + MENU_TEXT_TOP + MENU_ROW_PITCH * slot
   if slot < 0 or y < rowTop or y >= rowTop + MENU_TEXT_HEIGHT then
     return nil
   end
@@ -1282,6 +1287,10 @@ function PhoneController:_planContent(skin)
   local palettes = section.listPalette
   if type(palettes) == "table" then
     content.listPalette = (palettes --[[@as table<integer, table>]])[skin]
+  end
+  local tooltipPalettes = section.tooltipPalette
+  if type(tooltipPalettes) == "table" then
+    content.tooltipPalette = (tooltipPalettes --[[@as table<integer, table>]])[skin]
   end
   -- The context menus frame through the shared touchscreen list-menu
   -- tiles staged beside the Fly card: the same sbox source art every
