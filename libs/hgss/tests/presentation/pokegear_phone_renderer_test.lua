@@ -168,4 +168,73 @@ function T.scroll_flip_flag_inverts_every_band()
   Assert.equal(bandRed(graphics, 1), 14 / 255, "slot 1 paints the set-1 band while flipped")
 end
 
+---@return table recorder logging its palette lines
+local function recordingText()
+  local calls = {}
+  local renderer = {}
+  function renderer.drawTextWithPalette(_, line, x, y, _)
+    calls[#calls + 1] = { line = line, x = x, y = y }
+  end
+  function renderer.drawText(_, line, x, y)
+    calls[#calls + 1] = { line = line, x = x, y = y }
+  end
+  renderer._calls = calls
+  return renderer --[[@as table]]
+end
+
+---@param record table a recorded palette line
+---@return string its printed line
+local function recordedLine(record)
+  return record.line
+end
+
+-- The source prints the contact name with font 4 and the class with
+-- font 0 (PrintNameAndClass): the two cells draw through separate
+-- font-baked text renderers, never one shared path.
+function T.list_name_and_class_print_through_their_source_fonts()
+  local graphics = recordingGraphics()
+  local nameText = recordingText()
+  local classText = recordingText()
+  local list = {
+    rows = { { absolute = 0, slot = 0, contact = "mom", label = "NAME-1", class = "CLASS-1" } },
+    selected = 0,
+    scrollOffset = 0,
+    firstBgColor = 0,
+    manual = false,
+    total = 1,
+    cursorVisible = false,
+  }
+  PokegearPhoneRenderer.draw(
+    { graphics = graphics, images = {}, textRenderer = classText, phoneNameTextRenderer = nameText },
+    { list = list },
+    { skin = 0, sprites = {}, listPalette = distinctPalette() }
+  )
+  Assert.equal(#nameText._calls, 1, "the name cell prints once through the name font")
+  Assert.equal(recordedLine(nameText._calls[1]), "NAME-1", "the name cell prints the contact name")
+  Assert.equal(#classText._calls, 1, "the class cell prints once through the class font")
+  Assert.equal(recordedLine(classText._calls[1]), "CLASS-1", "the class cell prints the contact class")
+end
+
+-- Without a composed name font the list keeps its single-renderer path:
+-- both cells print through the borrowed text renderer.
+function T.list_cells_share_the_borrowed_renderer_without_a_name_font()
+  local graphics = recordingGraphics()
+  local shared = recordingText()
+  local list = {
+    rows = { { absolute = 0, slot = 0, contact = "mom", label = "NAME-1", class = "CLASS-1" } },
+    selected = 0,
+    scrollOffset = 0,
+    firstBgColor = 0,
+    manual = false,
+    total = 1,
+    cursorVisible = false,
+  }
+  PokegearPhoneRenderer.draw(
+    { graphics = graphics, images = {}, textRenderer = shared },
+    { list = list },
+    { skin = 0, sprites = {}, listPalette = distinctPalette() }
+  )
+  Assert.equal(#shared._calls, 2, "both cells print through the borrowed renderer")
+end
+
 return { tests = T }

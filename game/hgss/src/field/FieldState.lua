@@ -1207,6 +1207,7 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
     graphics = graphics,
     images = images,
     textRenderer = resources.textRenderer,
+    phoneNameTextRenderer = resources.phoneNameTextRenderer,
   }, appStatus, plan --[[@as table<string, unknown>]])
 end
 

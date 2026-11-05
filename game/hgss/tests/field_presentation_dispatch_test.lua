@@ -1428,10 +1428,11 @@ function T.dispose_releases_owned_resources_exactly_once()
       Assert.equal(calls.hero, 1, "repeat disposal never releases the hero model renderer twice")
       Assert.equal(calls.dialogue, 1, "repeat disposal never releases the dialogue renderer twice")
       Assert.equal(calls.signpost, 1, "repeat disposal never releases the signpost renderer twice")
-      -- The field owns four text renderers sharing one constructor seam:
-      -- the field text renderer plus the battle narration, menu, and
-      -- health-box renderers. Repeat disposal releases each exactly once.
-      Assert.equal(calls.text, 4, "repeat disposal releases each owned text renderer exactly once")
+      -- The field owns five text renderers sharing one constructor seam:
+      -- the field text renderer, the battle narration, menu, and
+      -- health-box renderers, plus the phone-list name renderer.
+      -- Repeat disposal releases each exactly once.
+      Assert.equal(calls.text, 5, "repeat disposal releases each owned text renderer exactly once")
       Assert.equal(calls.renderer, 1, "repeat disposal never releases the field renderer twice")
       Assert.equal(calls.staticEffect, 2, "repeat disposal releases each static effect renderer once")
       Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
