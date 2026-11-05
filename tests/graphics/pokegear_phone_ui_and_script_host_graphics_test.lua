@@ -54,11 +54,15 @@ local function fixtureManifest(contacts, order)
   -- Sixteen distinct synthetic colors per skin: the renderer indexes them
   -- by source palette slot, so every slot and skin paints differently.
   local phoneListPalette = {}
+  local phoneTooltipPalette = {}
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
+    phoneTooltipPalette[skin] = {}
     for index = 1, 16 do
       phoneListPalette[skin][index] =
         { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+      phoneTooltipPalette[skin][index] =
+        { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
     end
   end
   for skin = 0, 5 do
@@ -108,6 +112,7 @@ local function fixtureManifest(contacts, order)
       upper = phoneUpper,
       panel = phonePanel,
       listPalette = phoneListPalette,
+      tooltipPalette = phoneTooltipPalette,
       sprites = { phone = phoneSprites },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
@@ -927,7 +932,7 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
   Assert.deepEqual(menu.options, fixtureMenuLabelsMain(), "the row menu keeps its source options")
   Assert.deepEqual(
     menu.frame,
-    { x = 104, y = 72, width = 128, height = 72 },
+    { x = 13, y = 9, width = 16, height = 10 },
     "the call menu sits at its source tile frame"
   )
   Assert.equal(controller:status().view.tooltip, fixtureTooltips()[1], "the call menu prints its source tooltip")
@@ -951,7 +956,7 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
   local sortMenu = assert(controller:status().view, "the sort state exports its view").contextMenu
   Assert.deepEqual(
     sortMenu.frame,
-    { x = 104, y = 24, width = 128, height = 104 },
+    { x = 13, y = 3, width = 16, height = 16 },
     "the sort menu sits at its own source frame"
   )
   Assert.equal(controller:status().view.tooltip, fixtureTooltips()[4], "the sort menu tracks its cursor tooltip")

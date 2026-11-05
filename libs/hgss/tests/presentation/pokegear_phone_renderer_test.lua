@@ -49,6 +49,35 @@ local function stubText()
   }
 end
 
+-- windows[3] behind the context tooltip (MAIN_1 tile (0,21), 32x2,
+-- palette 10): the strip fills with palette index 5 behind the prompt
+-- centered in the 3/2/5 combination.
+local TOOLTIP_STRIP = { x = 0, y = 168, width = 256, height = 16 }
+
+---@param width number? measured text width
+---@return table stub text renderer recording palette draws
+local function recordingText(width)
+  local calls = {}
+  return {
+    textWidth = function(_, _)
+      return width or 0
+    end,
+    drawText = function(_, line, x, y)
+      calls[#calls + 1] = { line = line, x = x, y = y }
+    end,
+    drawTextWithPalette = function(_, line, x, y, palette)
+      calls[#calls + 1] = { line = line, x = x, y = y, palette = palette }
+    end,
+    _calls = calls,
+  }
+end
+
+---@param record table a recorded palette line
+---@return string its printed line
+local function recordedLine(record)
+  return record.line
+end
+
 -- Sixteen list colors with distinct red channels so fills map back to indices.
 ---@return table palette
 local function distinctPalette()
@@ -168,24 +197,122 @@ function T.scroll_flip_flag_inverts_every_band()
   Assert.equal(bandRed(graphics, 1), 14 / 255, "slot 1 paints the set-1 band while flipped")
 end
 
----@return table recorder logging its palette lines
-local function recordingText()
-  local calls = {}
-  local renderer = {}
-  function renderer.drawTextWithPalette(_, line, x, y, _)
-    calls[#calls + 1] = { line = line, x = x, y = y }
-  end
-  function renderer.drawText(_, line, x, y)
-    calls[#calls + 1] = { line = line, x = x, y = y }
-  end
-  renderer._calls = calls
-  return renderer --[[@as table]]
+---@param graphics table
+---@param text table
+---@param line string
+local function drawWithTooltip(graphics, text, line)
+  local list = {
+    rows = settledRows(6),
+    selected = 0,
+    scrollOffset = 0,
+    firstBgColor = 0,
+    manual = false,
+    total = 6,
+    cursorVisible = false,
+  }
+  PokegearPhoneRenderer.draw(
+    { graphics = graphics, images = {}, textRenderer = text },
+    { list = list, tooltip = line },
+    { skin = 0, sprites = {}, listPalette = distinctPalette(), tooltipPalette = distinctPalette() }
+  )
 end
 
----@param record table a recorded palette line
----@return string its printed line
-local function recordedLine(record)
-  return record.line
+function T.tooltip_paints_its_strip_behind_centered_text()
+  local graphics = recordingGraphics()
+  local text = recordingText(100)
+  drawWithTooltip(graphics, text, "tip")
+  local strip = nil
+  for _, fill in ipairs(graphics._fills) do
+    if
+      fill.x == TOOLTIP_STRIP.x
+      and fill.y == TOOLTIP_STRIP.y
+      and fill.width == TOOLTIP_STRIP.width
+      and fill.height == TOOLTIP_STRIP.height
+    then
+      strip = fill
+    end
+  end
+  Assert.notNil(strip, "the tooltip paints its windows[3] strip")
+  assert(strip ~= nil, "the tooltip strip painted above")
+  Assert.equal(strip.color.r, 5 / 255, "the strip fills with palette index 5")
+  local prompt = nil
+  for _, call in ipairs(text._calls) do
+    if call.line == "tip" then
+      prompt = call
+    end
+  end
+  Assert.notNil(prompt, "the tooltip prints its prompt")
+  assert(prompt ~= nil, "the tooltip prompt printed above")
+  Assert.equal(prompt.x, 78, "the prompt centers in the surface")
+  Assert.equal(prompt.y, 168, "the prompt prints at the strip top")
+  Assert.equal(prompt.palette.foreground.r, 3, "the prompt foreground is palette index 3")
+  Assert.equal(prompt.palette.shadow.r, 2, "the prompt shadow is palette index 2")
+  Assert.equal(prompt.palette.background.r, 5, "the prompt background is palette index 5")
+end
+
+-- The context menu keeps tile geometry end-to-end: sContextMenuParam
+-- tiles reach the shared list-menu frame with no pixel round-trip, so
+-- width 16 frames the interior sixteen tiles (eighteen total).
+function T.context_menu_frame_stays_in_tiles()
+  local graphics = recordingGraphics()
+  function graphics.newQuad(_, _, _, _, _, _, _)
+    return {}
+  end
+  local tileDraws = {}
+  local lease = {
+    image = {
+      getDimensions = function()
+        return 256, 16
+      end,
+    },
+    drawQuad = function(_, _, _, x, y)
+      tileDraws[#tileDraws + 1] = { x = x, y = y }
+    end,
+  }
+  local text = recordingText(40)
+  local list = {
+    rows = settledRows(6),
+    selected = 0,
+    scrollOffset = 0,
+    firstBgColor = 0,
+    manual = false,
+    total = 6,
+    cursorVisible = false,
+  }
+  PokegearPhoneRenderer.draw(
+    { graphics = graphics, images = { ["menu-tiles"] = lease }, textRenderer = text },
+    {
+      list = list,
+      contextMenu = {
+        options = { "a", "b", "c" },
+        cursor = 0,
+        frame = { x = 13, y = 9, width = 16, height = 10 },
+      },
+    },
+    {
+      skin = 0,
+      sprites = {},
+      listPalette = distinctPalette(),
+      menuTiles = "menu-tiles",
+      menuPalette = distinctPalette(),
+    }
+  )
+  local topLeft = nil
+  for _, tile in ipairs(tileDraws) do
+    if tile.x == 13 * 8 and tile.y == 9 * 8 then
+      topLeft = tile
+    end
+  end
+  Assert.notNil(topLeft, "the frame paints its top-left tile at the tile origin")
+  local entry = nil
+  for _, fill in ipairs(graphics._fills) do
+    if fill.x == 14 * 8 and fill.y == 13 * 8 and fill.width == 128 and fill.height == 16 then
+      entry = fill
+    end
+  end
+  Assert.notNil(entry, "the deselected entry fills inside the tile frame")
+  assert(entry ~= nil, "the deselected entry filled above")
+  Assert.equal(entry.color.r, 3 / 255, "the deselected entry fills with palette index 3")
 end
 
 -- The source prints the contact name with font 4 and the class with
