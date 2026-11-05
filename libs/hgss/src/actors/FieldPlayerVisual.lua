@@ -19,7 +19,6 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 
 local NORMAL_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk", speed = "normal" }, 1)
-local RUN_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk", speed = "run" }, 1)
 
 ---@class FieldPlayerVisual.Source
 ---@field facing string
@@ -122,20 +121,22 @@ function FieldPlayerVisual:updateFixed(locomotionAtTickStart, ordinaryStepSpeedA
   self.lastFacing = self.player.facing
 
   if walking then
-    self.pose = "walk"
     local ordinaryStepSpeed = ordinaryStepSpeedAtTickStart
     if ordinaryStepSpeed == nil then
       ordinaryStepSpeed = snapshot.ordinaryStepSpeed
     end
+    -- Ordinary running plays the compiled run clip at the source one-tick
+    -- cadence (retail Run advances one frame per update on the walk
+    -- sequence); scripted motion keeps its own cadence on the walk clip.
     local poseDelta = NORMAL_POSE_DELTA
+    local running = false
     if snapshot.scriptedPoseDelta ~= nil then
       poseDelta = snapshot.scriptedPoseDelta
     elseif ordinaryStepSpeed ~= nil then
       assert(ordinaryStepSpeed == "normal" or ordinaryStepSpeed == "run", "ordinary step has unsupported speed")
-      if ordinaryStepSpeed == "run" then
-        poseDelta = RUN_POSE_DELTA
-      end
+      running = ordinaryStepSpeed == "run"
     end
+    self.pose = running and "run" or "walk"
     self.poseTick = self.poseTick + poseDelta
   else
     self.pose = "idle"

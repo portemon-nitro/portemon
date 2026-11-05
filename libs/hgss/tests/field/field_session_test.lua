@@ -4030,25 +4030,28 @@ function T.session_passes_committed_step_speed_to_the_player_visual()
 
   session:updateFixed({ heldDirection = "east", pressedDirection = "east", cancelDown = true })
   Assert.equal(player:movementTransaction().speed, "run")
-  Assert.equal(visual.poseTick, 2, "the initial held-button run advances by two")
+  Assert.equal(visual.pose, "run", "the held-button run plays the run clip")
+  Assert.equal(visual.poseTick, 1, "the initial held-button run advances by one")
   for _ = 1, 3 do
     session:updateFixed({ heldDirection = "east" })
   end
   Assert.equal(player.fieldX, 1, "releasing B does not change the active four-tick step")
-  Assert.equal(visual.poseTick, 8, "the run's commit tick retains its speed")
+  Assert.equal(visual.poseTick, 4, "the run's commit tick retains its speed")
 
   for _ = 1, 8 do
     session:updateFixed({ heldDirection = "east" })
   end
   Assert.equal(player.fieldX, 2, "without B or lock, the next step is an eight-tick walk")
-  Assert.equal(visual.poseTick, 16, "walking resumes at one pose tick per update")
+  Assert.equal(visual.pose, "walk", "walking resumes the walk clip")
+  Assert.equal(visual.poseTick, 12, "walking resumes at one pose tick per update")
 
   locked = true
   for _ = 1, 4 do
     session:updateFixed({ heldDirection = "east" })
   end
   Assert.equal(player.fieldX, 3, "the auto-run lock applies to the following step")
-  Assert.equal(visual.poseTick, 24, "the locked run keeps the source gait cadence")
+  Assert.equal(visual.pose, "run", "the locked run keeps the run clip")
+  Assert.equal(visual.poseTick, 16, "the locked run keeps the source gait cadence")
 end
 
 local function ledgeSession(options)

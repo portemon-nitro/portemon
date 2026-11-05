@@ -47,7 +47,7 @@ StartMenuRenderer.__index = StartMenuRenderer
 -- calls; LÖVE itself remains an allowed presentation-layer dependency (the
 -- PNG bytes still enter through love.filesystem.newFileData).
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, graphics?: unknown, imagePool?: table<string, unknown> }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, graphics?: unknown, imagePool?: table<string, unknown>, selectionCursor?: table<string, unknown> }
 ---@return StartMenuRenderer
 function StartMenuRenderer.new(opts)
   assert(
@@ -93,6 +93,11 @@ function StartMenuRenderer.new(opts)
 
   local actionIcons = startMenu.actionIcons
   local pool = opts.imagePool
+  local selectionCursor = opts.selectionCursor
+  if selectionCursor ~= nil then
+    assert(type(selectionCursor) == "table", "the Running Shoes selection cursor must be a record")
+    assert(type(selectionCursor.states) == "table", "the Running Shoes cursor must carry its animation states")
+  end
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
@@ -110,6 +115,7 @@ function StartMenuRenderer.new(opts)
     _ringingImage = nil,
     _ringingQuads = nil,
     _ringingNotification = nil,
+    _selectionCursor = selectionCursor,
     menu = {
       interactive = interactive,
       iconTable = iconTable,
@@ -118,6 +124,7 @@ function StartMenuRenderer.new(opts)
       runningShoes = assert(startMenu.runningShoes, "the field-UI manifest must carry the Running Shoes toggle"),
       phoneNotification = startMenu.phoneNotification,
       pokegearIcon = type(actionIcons) == "table" and actionIcons["vanilla.pokegear"] or nil,
+      selectionCursor = selectionCursor,
     },
   }, StartMenuRenderer)
 
@@ -165,6 +172,54 @@ local function acquirePooledAsset(self, pool, manifest, assetId, code, what)
       image:setFilter("nearest", "nearest")
       self._images[#self._images + 1] = image
       self._imageByAsset[assetId] = image
+      return image
+    end
+    if status == "failed" then
+      if failure == nil then
+        Errors.raise(code, what .. " missing at " .. path, { path = path })
+      end
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "start menu preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+-- Borrows one path-addressed image from the shared image owner, yielding
+-- until it resolves. The Apricorn selection cursor frames live in the
+-- Apricorn Box derived cache by path, not in the field-UI manifest asset
+-- table, so cursor acquisition resolves paths directly.
+---@param self StartMenuRenderer
+---@param pool table<string, unknown>
+---@param path string
+---@param code string
+---@param what string
+---@return love.Image
+local function acquirePooledPath(self, pool, path, code, what)
+  if self._imageByAsset[path] ~= nil then
+    return assert(self._imageByAsset[path])
+  end
+  assert(self._leases ~= nil, "pooled chrome tracks its installed leases")
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      local lease = pool:acquire(token)
+      self._leases[#self._leases + 1] = lease
+      assert(self._leaseByAsset ~= nil, "pooled chrome tracks its leases by asset")
+      self._leaseByAsset[path] = lease
+      local image = assert(lease.image, "shared leases carry their resolved image")
+      image:setFilter("nearest", "nearest")
+      self._images[#self._images + 1] = image
+      self._imageByAsset[path] = image
       return image
     end
     if status == "failed" then
@@ -247,6 +302,50 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
   for _, part in ipairs({ shoes.button, shoes.indicator }) do
     for _, state in ipairs({ part.off, part.on }) do
       quadFor(assert(state.asset, "a Running Shoes visual must name its atlas"), assert(state.rect))
+    end
+  end
+  local selectionCursor = self._selectionCursor
+  if selectionCursor ~= nil then
+    assert(
+      type(selectionCursor.states) == "table",
+      "the Running Shoes selection cursor must carry its animation states"
+    )
+    for _, state in pairs(selectionCursor.states) do
+      assert(
+        type(state) == "table" and type(state.frames) == "table" and #state.frames >= 1,
+        "a cursor state needs frames"
+      )
+      assert(type(state.totalTicks) == "number" and state.totalTicks >= 1, "a cursor state needs its total tick count")
+      for _, frame in ipairs(state.frames) do
+        assert(type(frame.image) == "string", "a cursor frame must name its image path")
+        assert(type(frame.durationTicks) == "number" and frame.durationTicks >= 1, "a cursor frame needs its duration")
+        local path = frame.image
+        if pool ~= nil then
+          acquirePooledPath(
+            self,
+            pool,
+            path,
+            FieldErrors.FIELD_UI_START_MENU_ICONS_MISSING,
+            "the Running Shoes selection cursor"
+          )
+        else
+          if self._imageByAsset[path] == nil then
+            local data = cacheFs:read(path)
+            if not data then
+              Errors.raise(
+                FieldErrors.FIELD_UI_START_MENU_ICONS_MISSING,
+                "the Running Shoes selection cursor missing at " .. path,
+                { path = path }
+              )
+            end
+            data = assert(data)
+            local image = graphics.newImage(love.filesystem.newFileData(data, path))
+            image:setFilter("nearest", "nearest")
+            self._images[#self._images + 1] = image
+            self._imageByAsset[path] = image
+          end
+        end
+      end
     end
   end
   local notification = startMenu.phoneNotification
@@ -459,13 +558,66 @@ function StartMenuRenderer:_drawRunningShoes(locked)
   end
 end
 
----@param hitRect FieldDialogueTheme.Rect
-function StartMenuRenderer:_drawRunningShoesFocus(hitRect)
+--- The Running Shoes focus cursor: the animated Apricorn Box hand (sequence 3)
+-- parked against the button's top edge, nudged right of center like the
+-- retail Box nudges its cursor +4 right of the selected apricorn. Sequence 3
+-- is the only looping idle cursor; 0 is a 64x32 button bar and 4/5 are
+-- single-frame transition poses. The G2D cell offsets are DS sprite-origin
+-- relative and meaningless against a button rect, so placement uses image
+-- bounds only: centered plus a small right nudge, image bottom overlapping
+-- the button top so the hand touches its target instead of floating high.
+---@param animationTick integer? the fixed-tick cursor clock; defaults to the opening frame
+function StartMenuRenderer:_drawRunningShoesFocus(animationTick)
+  local cursor = self._selectionCursor
+  if cursor == nil then
+    return
+  end
+  assert(type(cursor.states) == "table", "the Running Shoes cursor must carry its animation states")
+  local state = cursor.states[3] or cursor.states[0] or cursor.states[4] or cursor.states[5]
+  if state == nil then
+    for _, candidate in pairs(cursor.states) do
+      state = candidate
+      break
+    end
+  end
+  state = assert(state, "the Running Shoes cursor requires a compiled sequence")
+  local totalTicks = assert(state.totalTicks, "a cursor state needs its total tick count")
+  local frames = assert(state.frames, "a cursor state needs frames")
+  local tick = animationTick or 0
+  assert(
+    type(tick) == "number" and tick % 1 == 0 and tick >= 0,
+    "the Running Shoes cursor tick must be a non-negative integer"
+  )
+  local elapsed = tick % totalTicks
+  local frame = nil
+  for _, candidate in ipairs(frames) do
+    if elapsed < assert(candidate.durationTicks, "a cursor frame needs its duration") then
+      frame = candidate
+      break
+    end
+    elapsed = elapsed - candidate.durationTicks
+  end
+  frame = assert(frame or frames[#frames], "a cursor state needs frames")
+  local shoes = assert(self.menu.runningShoes, "the Running Shoes presentation requires its record")
+  local button = assert(shoes.button, "the Running Shoes toggle requires its button record")
+  local anchor = assert(button.anchor, "the Running Shoes button requires its anchor")
+  local off = assert(button.off, "the Running Shoes button requires its off visual")
+  local rect = assert(off.rect, "the Running Shoes button requires its frame rect")
+  local offset = off.offset or { x = 0, y = 0 }
+  local buttonLeft = anchor.x + (offset.x or 0)
+  local buttonTop = anchor.y + (offset.y or 0)
+  local cursorX = buttonLeft + (rect.width - frame.width) / 2 + 8
+  local cursorY = buttonTop - frame.height + 12
   local lg = assert(self._graphics)
-  lg.setColor(0, 0, 0, 1)
-  lg.rectangle("line", hitRect.x - 1, hitRect.y - 1, hitRect.width + 2, hitRect.height + 2)
   lg.setColor(1, 1, 1, 1)
-  lg.rectangle("line", hitRect.x, hitRect.y, hitRect.width, hitRect.height)
+  local image = assert(self._imageByAsset[frame.image], "a cursor frame image must be acquired")
+  local byAsset = self._leaseByAsset
+  local lease = byAsset ~= nil and byAsset[frame.image] or nil
+  if lease ~= nil then
+    ImageSampling.draw(lg, lease, nil, cursorX, cursorY)
+    return
+  end
+  lg.draw(image, cursorX, cursorY)
 end
 
 -- one presented action's resolved label in the action's own source label
@@ -509,7 +661,7 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown> }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>, animationTick?: integer }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
@@ -539,7 +691,7 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>|nil }
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>|nil, animationTick?: integer }
 function StartMenuRenderer:_drawSurface(presentation)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
@@ -585,6 +737,21 @@ function StartMenuRenderer:_drawSurface(presentation)
       self.menu.runningShoes.hitRect ~= nil,
       "the Running Shoes focus outline requires its generated hit rectangle"
     )
+    if presentation.animationTick ~= nil then
+      assert(
+        type(presentation.animationTick) == "number"
+          and presentation.animationTick % 1 == 0
+          and presentation.animationTick >= 0,
+        "the Running Shoes cursor tick must be a non-negative integer"
+      )
+    end
+  elseif presentation.animationTick ~= nil then
+    assert(
+      type(presentation.animationTick) == "number"
+        and presentation.animationTick % 1 == 0
+        and presentation.animationTick >= 0,
+      "the Running Shoes cursor tick must be a non-negative integer"
+    )
   end
   -- The retired cursor record is ignored when a stale presentation still
   -- carries it: no bouncing arrow marks focus anymore.
@@ -629,7 +796,7 @@ function StartMenuRenderer:_drawSurface(presentation)
   if shoes ~= nil then
     self:_drawRunningShoes(shoes.locked)
     if shoes.focused then
-      self:_drawRunningShoesFocus(self.menu.runningShoes.hitRect)
+      self:_drawRunningShoesFocus(presentation.animationTick or 0)
     end
   end
 end
@@ -657,6 +824,7 @@ function StartMenuRenderer:release()
   self._subImage, self._subQuad, self._pokeImage, self._pokeQuad = nil, nil, nil, nil
   self._subAsset, self._pokeAsset, self._ringingAsset = nil, nil, nil
   self._ringingImage, self._ringingQuads, self._ringingOffset, self._ringingNotification = nil, nil, nil, nil
+  self._selectionCursor = nil
 end
 
 -- The resolved manifest surface: the SUB chrome asset, the icon table with
@@ -682,6 +850,7 @@ end
 ---@field runningShoes table<string, unknown> the generated Running Shoes toggle record (button and indicator visuals)
 ---@field phoneNotification table<string, unknown>? the compiled incoming-call projection, when the class carries it
 ---@field pokegearIcon integer? the retail icon index behind the Pokegear action
+---@field selectionCursor table<string, unknown>? the borrowed Apricorn Box cursor states animating above the button
 
 ---@class StartMenuRenderer.ShakeTrack
 ---@field frames { dx: integer, dy: integer, duration: integer }[]

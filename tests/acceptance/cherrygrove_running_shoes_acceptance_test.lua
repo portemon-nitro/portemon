@@ -112,9 +112,22 @@ function T.tests.guide_gent_tour_gives_running_shoes_and_completes()
     Assert.equal(#game:recordsNamed("script.error"), 0, "the guide tour must not fault")
     Assert.isTrue(profile.runningShoes, "the tour persists the Running Shoes in the player profile")
     Assert.isTrue(world:isFlagSet(FLAG_HIDE_GUIDE), "the guide gent leaves the town")
+    -- The partner release resumes the Toggle-1-paused follower trail.
+    local partnerBefore = assert(game:actor("field:partner"), "the partner trails after the tour")
     local direction = walkableDirection(game)
     Assert.equal(ticksPerTile(game, direction, false), 8, "without B the shoes owner still walks")
-    Assert.equal(ticksPerTile(game, walkableDirection(game), true), 4, "holding B with the shoes runs")
+    -- Keep walking the same heading when it stays open so the trailing
+    -- partner has a straight line to follow.
+    local runDirection = direction
+    if game.runtime.player:resolveStep(runDirection) == nil then
+      runDirection = walkableDirection(game)
+    end
+    Assert.equal(ticksPerTile(game, runDirection, true), 4, "holding B with the shoes runs")
+    local partnerAfter = assert(game:actor("field:partner"), "the partner still trails after walking")
+    Assert.isTrue(
+      partnerAfter.fieldX ~= partnerBefore.fieldX or partnerAfter.fieldZ ~= partnerBefore.fieldZ,
+      "the partner trails the walked tiles instead of staying behind"
+    )
     Assert.equal(game:renderAttempts(), 0, "the scene must stop before GPU rendering")
   end, debug.traceback)
   game:close()

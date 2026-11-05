@@ -323,36 +323,194 @@ function T.running_shoes_toggle_draws_button_and_indicator_in_the_lock_state()
   renderer:release()
 end
 
-function T.running_shoes_focus_draws_contrasting_outline_and_deselects_normal_icon()
-  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+function T.running_shoes_focus_draws_the_apricorn_selection_cursor_above_the_button()
+  local manifest = iconManifest()
+  local cursorFrameBase = "assets/generated/apricorn-box/selection-cursor-sequence-3-frame-"
+  -- The retail idle cursor (sequence 3) carries non-zero DS sprite-origin
+  -- offsets; button placement uses image bounds only, so the fixture keeps
+  -- the realistic offsets while expecting the centered-above position.
+  local selectionCursor = {
+    image = "assets/generated/apricorn-box/selection-cursor.png",
+    width = 12,
+    height = 12,
+    offsetX = -16,
+    offsetY = -16,
+    states = {
+      [3] = {
+        playMode = "forward_loop",
+        totalTicks = 2,
+        frames = {
+          {
+            image = cursorFrameBase .. "1.png",
+            width = 12,
+            height = 12,
+            offsetX = -16,
+            offsetY = -16,
+            durationTicks = 1,
+          },
+          {
+            image = cursorFrameBase .. "2.png",
+            width = 12,
+            height = 12,
+            offsetX = -16,
+            offsetY = -16,
+            durationTicks = 1,
+          },
+        },
+      },
+    },
+  }
+  local cache = iconCache(manifest)
+  cache:write(cursorFrameBase .. "1.png", "cursor-frame-1")
+  cache:write(cursorFrameBase .. "2.png", "cursor-frame-2")
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 }, { 12, 12 }, { 12, 12 } } })
   local renderer = StartMenuRenderer.new({
-    cacheFs = iconCache(ICON_MANIFEST),
-    manifest = ICON_MANIFEST,
+    cacheFs = cache,
+    manifest = manifest,
     text = recordingText(),
     graphics = lg,
+    selectionCursor = selectionCursor,
   })
-  local hitRect = ICON_MANIFEST.startMenu.runningShoes.hitRect
+  local button = assert(manifest.startMenu.runningShoes.button, "the fixture carries the shoes button")
+  local frameWidth, frameHeight = 12, 12
+  local expectedX = button.anchor.x + (assert(button.off, "the button carries its off visual").rect.width - frameWidth) / 2 + 8
+  local expectedY = button.anchor.y - frameHeight + 12
+  local firstImages = {}
   for _, locked in ipairs({ false, true }) do
     renderer:draw({
       selectedPosition = 1,
       actions = { { id = "vanilla.pokemon", position = 1, icon = 1 } },
       runningShoes = { locked = locked, focused = true },
+      animationTick = 0,
     }, canonicalPlacement())
+    Assert.equal(#lg.primitives, 0, "the cursor path draws no themed primitives")
+    Assert.equal(lg.draws[2].quad.y, 0, "a normal action is not selected while shoes have focus")
+    local cursorDraw = lg.draws[#lg.draws]
+    Assert.isNil(cursorDraw.quad, "the apricorn cursor draws its own frame image")
+    Assert.deepEqual(
+      { cursorDraw.x, cursorDraw.y },
+      { expectedX, expectedY },
+      "the cursor parks against the button top, nudged right"
+    )
+    firstImages[locked and "locked" or "unlocked"] = cursorDraw.image
   end
-  Assert.equal(lg.draws[2].quad.y, 0, "a normal action is not selected while shoes have focus")
-  Assert.equal(#lg.rectangles, 4, "each lock state draws both focus strokes")
+  Assert.isTrue(firstImages.locked ~= nil and firstImages.unlocked ~= nil, "both lock states draw a cursor")
+  renderer:draw({
+    selectedPosition = 1,
+    actions = { { id = "vanilla.pokemon", position = 1, icon = 1 } },
+    runningShoes = { locked = false, focused = true },
+    animationTick = 1,
+  }, canonicalPlacement())
+  local secondCursor = lg.draws[#lg.draws]
+  Assert.isTrue(secondCursor.image ~= firstImages.unlocked, "the next tick advances the animated cursor")
   Assert.deepEqual(
-    { lg.rectangles[1].x, lg.rectangles[1].y, lg.rectangles[1].w, lg.rectangles[1].h, lg.rectangles[1].color },
-    { hitRect.x - 1, hitRect.y - 1, hitRect.width + 2, hitRect.height + 2, { 0, 0, 0, 1 } },
-    "outer stroke follows the generated bounds in black"
+    { secondCursor.x, secondCursor.y },
+    { expectedX, expectedY },
+    "the cursor anchor stays put while animating"
   )
-  Assert.deepEqual(
-    { lg.rectangles[2].x, lg.rectangles[2].y, lg.rectangles[2].w, lg.rectangles[2].h, lg.rectangles[2].color },
-    { hitRect.x, hitRect.y, hitRect.width, hitRect.height, { 1, 1, 1, 1 } },
-    "inner stroke contrasts with the outer stroke"
-  )
-  Assert.deepEqual({ lg.getColor() }, { 1, 1, 1, 1 }, "renderer restores the caller's color after drawing")
+  Assert.deepEqual({ lg.getColor() }, { 1, 1, 1, 1 }, "renderer restores the caller color after drawing")
   renderer:release()
+end
+
+function T.missing_selection_cursor_frame_is_a_typed_error_and_releases_acquired_images()
+  local manifest = iconManifest()
+  local cursor = {
+    image = "assets/generated/apricorn-box/selection-cursor.png",
+    width = 12,
+    height = 12,
+    offsetX = 0,
+    offsetY = 0,
+    states = {
+      [0] = {
+        playMode = "forward_loop",
+        totalTicks = 1,
+        frames = {
+          {
+            image = "assets/generated/apricorn-box/missing-cursor-frame.png",
+            width = 12,
+            height = 12,
+            offsetX = 0,
+            offsetY = 0,
+            durationTicks = 1,
+          },
+        },
+      },
+    },
+  }
+  local cache = iconCache(manifest)
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local err = Assert.throws(function()
+    StartMenuRenderer.new({
+      cacheFs = cache,
+      manifest = manifest,
+      text = recordingText(),
+      graphics = lg,
+      selectionCursor = cursor,
+    })
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "FIELD_UI_START_MENU_ICONS_MISSING",
+    "raises FIELD_UI_START_MENU_ICONS_MISSING"
+  )
+  Assert.equal(#lg.images, 2, "the sub chrome and icon atlas were acquired before the cursor failed")
+  Assert.equal(lg.images[1].released, true, "the sub chrome was released")
+  Assert.equal(lg.images[2].released, true, "the icon atlas was released")
+end
+
+function T.rejects_a_malformed_animation_tick()
+  local manifest = iconManifest()
+  local base = "assets/generated/apricorn-box/selection-cursor-sequence-0-frame-"
+  local cursor = {
+    image = "assets/generated/apricorn-box/selection-cursor.png",
+    width = 12,
+    height = 12,
+    offsetX = 0,
+    offsetY = 0,
+    states = {
+      [0] = {
+        playMode = "forward_loop",
+        totalTicks = 1,
+        frames = {
+          {
+            image = base .. "1.png",
+            width = 12,
+            height = 12,
+            offsetX = 0,
+            offsetY = 0,
+            durationTicks = 1,
+          },
+        },
+      },
+    },
+  }
+  local cache = iconCache(manifest)
+  cache:write(base .. "1.png", "cursor-frame")
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 }, { 12, 12 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = cache,
+    manifest = manifest,
+    text = recordingText(),
+    graphics = lg,
+    selectionCursor = cursor,
+  })
+  Assert.throws(function()
+    renderer:draw({
+      selectedPosition = 0,
+      actions = {},
+      runningShoes = { locked = false, focused = true },
+      animationTick = -1,
+    }, canonicalPlacement())
+  end, "a negative cursor tick must be rejected")
+  Assert.throws(function()
+    renderer:draw({
+      selectedPosition = 0,
+      actions = {},
+      runningShoes = { locked = false, focused = true },
+      animationTick = 1.5,
+    }, canonicalPlacement())
+  end, "a fractional cursor tick must be rejected")
+  renderer:release()
+  Assert.equal(#lg.draws, 0, "no rejected draw reaches the graphics namespace")
 end
 
 -- The Bag icon is conditional on trainer gender: the female variant is a

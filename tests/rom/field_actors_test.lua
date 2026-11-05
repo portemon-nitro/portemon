@@ -139,6 +139,39 @@ function T.compiled_visuals_cover_the_target_maps(romFs)
     aide.frames[aide.directions.west.walk.frames[1].frameIndex].textureSlot
       ~= aide.frames[aide.directions.east.walk.frames[1].frameIndex].textureSlot
   )
+
+  -- The player descriptors carry a second directional set: the retail walk
+  -- sequences the player run motion samples. It is published as the run
+  -- pose so the runtime can select it by clip instead of speeding up walk.
+  for _, spriteId in ipairs({ 0, 97 }) do
+    local visual = assert(bundle.visuals[spriteId], "player sprite " .. spriteId .. " must be compiled")
+    for _, direction in ipairs(manifest.directionOrder) do
+      local set = assert(visual.directions[direction], spriteId .. " " .. direction .. " pose set is required")
+      local run = assert(set.run, spriteId .. " " .. direction .. " run pose is required")
+      Assert.equal(run.durationTicks, 16, spriteId .. " " .. direction .. " run duration")
+      Assert.isTrue(run.loop, spriteId .. " " .. direction .. " run loops")
+      local walkFrames, runFrames = {}, {}
+      for _, segment in ipairs(assert(set.walk, "walk required").frames) do
+        for _ = 1, segment.ticks do
+          walkFrames[#walkFrames + 1] = segment.frameIndex
+        end
+      end
+      for _, segment in ipairs(run.frames) do
+        for _ = 1, segment.ticks do
+          runFrames[#runFrames + 1] = segment.frameIndex
+        end
+      end
+      Assert.equal(#runFrames, 16, spriteId .. " " .. direction .. " run covers sixteen ticks")
+      Assert.isFalse(
+        table.concat(runFrames, ",") == table.concat(walkFrames, ","),
+        spriteId .. " " .. direction .. " run samples different frames than walk"
+      )
+    end
+    Assert.isTrue(
+      FieldActorCache.isValidVisual(visual, spriteId),
+      "the player visual with run stays a valid generated asset"
+    )
+  end
 end
 
 -- Mon field visuals idle from their own source animation: the compiled

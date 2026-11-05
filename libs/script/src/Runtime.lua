@@ -1493,6 +1493,19 @@ end
 local function handleReleaseActor(node, run)
   local actorId = semanticsFor(run).requireActor(node.actor, run)
   run.environment:releaseLock(ScriptEnvironment.LOCK_ACTOR_PREFIX .. actorId, actorId, run.instance.instanceId)
+  -- Retail Release unpauses any object including the walking partner: the
+  -- guide-gent tour leaves the follower paused (Toggle 1) and only releases
+  -- the partner actor, so the release itself must resume the trail.
+  local followingMon = run.services.followingMon
+  if followingMon ~= nil and type(followingMon.setMovementPaused) == "function" then
+    local partnerId
+    if run.services.actors ~= nil and type(run.services.actors.partnerId) == "function" then
+      partnerId = run.services.actors:partnerId()
+    end
+    if partnerId ~= nil and actorId == partnerId then
+      followingMon:setMovementPaused(false)
+    end
+  end
   return Runtime.OUTCOME_CONTINUE
 end
 

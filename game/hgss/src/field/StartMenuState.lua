@@ -14,6 +14,7 @@ local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 ---@field _controller StartMenuController the existing selection/action/result owner
 ---@field _session ApplicationPresentation the per-open presentation session
 ---@field _measureDisplay fun(): DisplayMeasurement the live display facts
+---@field _animationTick integer the fixed-tick cursor clock driving the Running Shoes cursor
 ---@field _disposed boolean
 local StartMenuState = {}
 StartMenuState.__index = StartMenuState
@@ -54,6 +55,7 @@ function StartMenuState.new(opts)
     _controller = controller,
     _session = ready,
     _measureDisplay = opts.measureDisplay,
+    _animationTick = 0,
     _disposed = false,
   }, StartMenuState)
   local resolveOk, resolveErr = pcall(function()
@@ -75,12 +77,15 @@ end
 
 ---@return table<string, unknown> the controller snapshot for resolvers and renderers
 function StartMenuState:_view()
-  return self._controller:status()
+  local view = self._controller:status() --[[@as table<string, unknown>]]
+  view.animationTick = self._animationTick
+  return view
 end
 
--- One fixed tick: resolve, map once, advance the controller once, resolve
--- again for the resulting snapshot. pointer_cancel flows in batch order;
--- the controller absorbs it without changing selection.
+-- One fixed tick: resolve, map once, advance the controller once, advance
+-- the cursor clock, then resolve again for the resulting snapshot.
+-- pointer_cancel flows in batch order; the controller absorbs it without
+-- changing selection.
 ---@param uiInput table[]
 function StartMenuState:updateFixed(uiInput)
   assert(not self._disposed, "a disposed start menu wrapper steps nothing")
@@ -89,6 +94,7 @@ function StartMenuState:updateFixed(uiInput)
   session:resolve(measurement, self:_view())
   local mapped = session:mapInput(assert(uiInput, "the start menu input must be an event list"), self:_view())
   self._controller:updateFixed(mapped)
+  self._animationTick = self._animationTick + 1
   session:resolve(measurement, self:_view())
 end
 

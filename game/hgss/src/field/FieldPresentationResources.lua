@@ -559,6 +559,7 @@ function FieldPresentationResources.new(runtime)
       manifest = runtime.uiManifest,
       text = textRenderer,
       imagePool = sharedImages,
+      selectionCursor = FieldPresentationResources._apricornSelectionCursor(runtime.cacheFs),
     })
     self.trainerCardRenderer = TrainerCardRenderer.new({
       cacheFs = runtime.cacheFs,
@@ -1725,6 +1726,40 @@ function FieldPresentationResources:getApricornBoxRenderer()
     })
   end
   return self._apricornBoxRenderer
+end
+
+-- The Running Shoes focus borrows the Apricorn Box selection cursor states
+-- so the start menu animates the same source cursor above its button. The
+-- borrow stays optional: when the Apricorn Box derived cache is absent or
+-- incomplete the menu still boots and focused shoes simply draw no cursor.
+---@param cacheFs CacheFs
+---@return table<string, unknown>? the cursor states, or nil when unavailable
+function FieldPresentationResources._apricornSelectionCursor(cacheFs)
+  local ok, manifest = pcall(ApricornBoxAssetCache.loadManifest, cacheFs)
+  if not ok or type(manifest) ~= "table" then
+    return nil
+  end
+  local cursor = manifest.selectionCursor
+  if type(cursor) ~= "table" or type(cursor.states) ~= "table" then
+    return nil
+  end
+  for _, state in pairs(cursor.states) do
+    if type(state) ~= "table" or type(state.frames) ~= "table" then
+      return nil
+    end
+    for _, frame in ipairs(state.frames) do
+      if type(frame) ~= "table" or type(frame.image) ~= "string" then
+        return nil
+      end
+      local existsOk, exists = pcall(function()
+        return cacheFs:exists(frame.image, "file")
+      end)
+      if not existsOk or not exists then
+        return nil
+      end
+    end
+  end
+  return cursor
 end
 
 return FieldPresentationResources

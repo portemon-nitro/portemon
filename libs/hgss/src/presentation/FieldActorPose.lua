@@ -31,11 +31,13 @@ function FieldActorPose.frameIndexAt(pose, tick)
   return FieldActorPose.sampleAt(pose, tick).frameIndex
 end
 
--- Resolve the pose set for a facing. `poseName` is "idle" or "walk"; an actor
--- class whose compiled definition lacks the requested clip falls back to its
--- verified idle pose and reports that it did, so the caller can warn once.
--- Facings resolve through the compiled direction sets directly: a declared
--- extra direction samples, while a missing set raises.
+-- Resolve the pose set for a facing. `poseName` is "idle", "walk", or
+-- "run"; an actor class whose compiled definition lacks the requested clip
+-- falls back to its verified idle pose and reports that it did, so the
+-- caller can warn once. A missing run clip first tries the walk clip -- the
+-- pre-run-cache behavior -- before falling back to idle. Facings resolve
+-- through the compiled direction sets directly: a declared extra direction
+-- samples, while a missing set raises.
 function FieldActorPose.select(visualDef, facing, poseName)
   local set = visualDef.directions[facing]
   if not set then
@@ -48,6 +50,9 @@ function FieldActorPose.select(visualDef, facing, poseName)
   local pose = set[poseName]
   if pose then
     return pose, false
+  end
+  if poseName == "run" and set.walk then
+    return set.walk, true
   end
   if not set.idle then
     Errors.raise(

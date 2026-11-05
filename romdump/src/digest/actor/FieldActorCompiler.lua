@@ -388,9 +388,11 @@ local function buildAnimatedPose(sourcePose, context, looping)
 end
 
 -- Turn per-range displayed frames into the direction-keyed pose sets. Ranges
--- 1-4 are the base directional set in global_fieldmap.h order; additional
--- source ranges have actor-family/state-specific selectors
--- (three separate callbacks) with no single generic runtime meaning, so
+-- 1-4 are the base directional set in global_fieldmap.h order; a descriptor
+-- with exactly eight ranges carries a second directional set -- the retail
+-- walk sequences the player run motion samples -- which is published as the
+-- `run` pose. Additional source ranges beyond eight (cycling and other
+-- state-specific sequences) have no single generic runtime meaning, so
 -- unclaimed ranges remain producer-private and only named semantic poses are
 -- published.
 local function buildPoses(perRange, ranges, idleMode, modelKey, looping)
@@ -446,11 +448,17 @@ local function buildPoses(perRange, ranges, idleMode, modelKey, looping)
         durationTicks = 1,
       }
     end
-    directions[direction] = {
+    local set = {
       idle = idle,
       walk = idleMode == "animated" and buildAnimatedPose(walk, { direction = direction, pose = "walk" }, looping)
         or walk,
     }
+    if #ranges == 8 then
+      local runRange = poseFor(i + #order)
+      set.run = idleMode == "animated" and buildAnimatedPose(runRange, { direction = direction, pose = "run" }, looping)
+        or runRange
+    end
+    directions[direction] = set
   end
   return directions, idlePresentation(idleMode, modelKey, looping)
 end

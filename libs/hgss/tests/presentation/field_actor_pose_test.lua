@@ -64,6 +64,23 @@ function T.a_missing_walk_clip_falls_back_to_idle_and_reports_it()
   Assert.isTrue(fellBack, "the caller must be able to warn once about the substitution")
 end
 
+function T.run_clip_prefers_the_resident_clip_then_falls_back_to_walk()
+  local visual = FieldActorFixture.visual(29)
+  visual.directions.south.run = {
+    frames = { { frameIndex = 5, ticks = 4 } },
+    loop = true,
+    durationTicks = 4,
+    sourceRange = { startFrame = 64, endFrame = 79, endMode = 0 },
+  }
+  local frameIndex, fellBack = FieldActorPose.frameIndex(visual, "south", "run", 0)
+  Assert.equal(frameIndex, 5, "the run clip wins over the walk clip")
+  Assert.isFalse(fellBack, "a resident run clip reports no substitution")
+
+  local walked, walkFellBack = FieldActorPose.frameIndex(visual, "north", "run", 3)
+  Assert.equal(walked, FieldActorPose.frameIndex(visual, "north", "walk", 3))
+  Assert.isTrue(walkFellBack, "a missing run clip reports its walk substitution")
+end
+
 function T.compiled_timelines_pin_boundaries_wrap_and_final_hold_without_mutating_the_pose()
   local pose = unevenPose(true)
   Assert.equal(FieldActorPose.frameIndexAt(pose, 0), 7, "tick zero shows the first frame")

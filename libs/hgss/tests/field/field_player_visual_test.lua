@@ -319,9 +319,13 @@ function T.a_two_tile_walk_carries_the_phase_across_the_tile_commit()
   Assert.equal(presentation.poseTick, 16, "two tiles advance the full 16-tick cycle")
 end
 
-function T.running_advances_the_compiled_walk_frames_twice_per_update()
+-- Running plays the compiled run clip at the source one-tick cadence while
+-- walking keeps the walk clip: the pose name selects the clip and the pose
+-- clock advances one tick per update either way. Frame sampling belongs to
+-- the pose-clock tests; here the frames only need to come from the run clip.
+function T.running_selects_the_run_clip_at_the_source_cadence()
   local subject = movingPlayer()
-  local definition = FieldActorFixture.visual(0, { frameCount = 4 })
+  local definition = FieldActorFixture.visual(0, { frameCount = 8 })
   for _, direction in pairs(definition.directions) do
     direction.walk = {
       frames = {
@@ -334,27 +338,43 @@ function T.running_advances_the_compiled_walk_frames_twice_per_update()
       durationTicks = 16,
       sourceRange = { startFrame = 0, endFrame = 15, endMode = 0 },
     }
+    direction.run = {
+      frames = {
+        { frameIndex = 5, ticks = 4 },
+        { frameIndex = 6, ticks = 4 },
+        { frameIndex = 7, ticks = 4 },
+        { frameIndex = 8, ticks = 4 },
+      },
+      loop = true,
+      durationTicks = 16,
+      sourceRange = { startFrame = 64, endFrame = 79, endMode = 0 },
+    }
   end
   local presentation = visual(subject)
   local sampledFrames = {}
 
   for tick = 1, 8 do
     gaitTick(subject, presentation, "east", false)
+    Assert.equal(presentation.pose, "walk", "walking selects the walk clip")
     Assert.equal(presentation.poseTick, tick, "walking advances one pose tick per update")
   end
   Assert.equal(subject.fieldX, 1, "eight walking updates commit one tile")
 
   for tick = 1, 8 do
     gaitTick(subject, presentation, "east", true)
-    sampledFrames[tick] = FieldActorPose.frameIndex(definition, "east", "walk", presentation.poseTick)
-    Assert.equal(presentation.poseTick, 8 + tick * 2, "running advances two pose ticks per update")
+    Assert.equal(presentation.pose, "run", "running selects the run clip")
+    sampledFrames[tick] = FieldActorPose.frameIndex(definition, "east", "run", presentation.poseTick)
+    Assert.equal(presentation.poseTick, 8 + tick, "running advances one pose tick per update")
     if tick == 4 then
       Assert.equal(subject.fieldX, 2, "four running updates commit one tile")
     end
   end
 
   Assert.equal(subject.fieldX, 3, "eight running updates commit two tiles")
-  Assert.deepEqual(sampledFrames, { 3, 4, 4, 1, 1, 2, 2, 3 })
+  for tick, frameIndex in ipairs(sampledFrames) do
+    Assert.isTrue(frameIndex >= 5, "tick " .. tick .. " samples the run clip, got frame " .. frameIndex)
+  end
+  Assert.isTrue(sampledFrames[1] ~= sampledFrames[#sampledFrames], "the run clip advances across the step")
 end
 
 function T.step_speed_changes_only_at_tile_boundaries_and_keeps_pose_phase()
@@ -363,26 +383,29 @@ function T.step_speed_changes_only_at_tile_boundaries_and_keeps_pose_phase()
 
   for tick = 1, 4 do
     gaitTick(subject, presentation, "east", tick == 1)
-    Assert.equal(presentation.poseTick, tick * 2, "releasing run input cannot retime the active step")
+    Assert.equal(presentation.pose, "run", "the committed run step plays the run clip")
+    Assert.equal(presentation.poseTick, tick, "releasing run input cannot retime the active step")
   end
   Assert.equal(subject.fieldX, 1)
   Assert.equal(subject:movementTransaction().speed, "run")
 
   for tick = 1, 8 do
     gaitTick(subject, presentation, "east", tick == 2)
-    Assert.equal(presentation.poseTick, 8 + tick, "pressing run input cannot retime the active walk")
+    Assert.equal(presentation.pose, "walk", "the committed walk step plays the walk clip")
+    Assert.equal(presentation.poseTick, 4 + tick, "pressing run input cannot retime the active walk")
   end
   Assert.equal(subject.fieldX, 2)
   Assert.equal(subject:movementTransaction().speed, "normal")
-  Assert.equal(presentation.poseTick, 16, "normal-to-run boundary carries the animation phase")
+  Assert.equal(presentation.poseTick, 12, "normal-to-run boundary carries the animation phase")
 
   for tick = 1, 4 do
     gaitTick(subject, presentation, "east", true)
-    Assert.equal(presentation.poseTick, 16 + tick * 2)
+    Assert.equal(presentation.pose, "run", "the next run step returns to the run clip")
+    Assert.equal(presentation.poseTick, 12 + tick)
   end
   Assert.equal(subject.fieldX, 3)
   Assert.equal(subject:movementTransaction().speed, "run")
-  Assert.equal(presentation.poseTick, 24, "walk-to-run boundary also carries phase")
+  Assert.equal(presentation.poseTick, 16, "walk-to-run boundary also carries phase")
 end
 
 function T.presentation_snapshot_clears_stale_ordinary_speed_after_commit_and_scripted_motion()

@@ -85,7 +85,7 @@ local FieldActorCache = {}
 ---@field schema string
 ---@field spriteId integer
 ---@field render FieldActorCache.Render
----@field directions table<string, { idle: FieldActorCache.Pose, walk: FieldActorCache.Pose? }>
+---@field directions table<string, { idle: FieldActorCache.Pose, walk: FieldActorCache.Pose?, run: FieldActorCache.Pose? }>
 ---@field idlePresentation { mode: "static"|"animated", cadence: integer, freeRunning: boolean?, facingOffsets: table<string, { x: number, z: number }>? } animated mon idles also shift their drawn position per facing, in tiles
 ---@field gestures table<string, FieldActorCache.Gesture>
 
@@ -517,6 +517,9 @@ function FieldActorCache.isValidVisual(visual, spriteId)
       return false
     end
     if set.walk ~= nil and not isValidPose(set.walk, render.frameCount, false) then
+      return false
+    end
+    if set.run ~= nil and not isValidPose(set.run, render.frameCount, false) then
       return false
     end
   end

@@ -496,4 +496,51 @@ function T.inactive_source_commands_leave_no_mode_or_pending_effect_for_a_later_
   Assert.isTrue(Errors.is(transitionErr), "a missing follower collaborator faults the transition too")
 end
 
+-- Releasing the walking partner unpauses the follower in the same
+-- synchronous node that frees the actor lock: the retail tour leaves the
+-- follower paused (Toggle 1) and only releases the partner actor, so
+-- without this the follower never trails again. Any other actor leaves
+-- the pause alone.
+function T.release_actor_unpauses_the_follower_only_for_the_partner()
+  local function releaseSetup(actorId)
+    local pausedCalls = {}
+    local followingMon = {
+      setMovementPaused = function(_, paused)
+        pausedCalls[#pausedCalls + 1] = paused
+      end,
+    }
+    local actors = {
+      exists = function(_, id)
+        return id == "field:partner" or id == "guide"
+      end,
+      partnerId = function()
+        return "field:partner"
+      end,
+    }
+    local environment = ScriptEnvironment.new({ environmentId = "env-test", mode = "foreground", createdAtTick = 1 })
+    environment:acquireLock(ScriptEnvironment.LOCK_ACTOR_PREFIX .. actorId, actorId, "inst-1")
+    return lockRun(environment, { followingMon = followingMon, actors = actors }), environment, pausedCalls
+  end
+
+  local partnerRun, partnerEnv, partnerPaused = releaseSetup("field:partner")
+  local outcome = Runtime.executeNode({ op = "release_actor", actor = { ref = "actor", special = "partner" } }, partnerRun)
+  Assert.equal(outcome, Runtime.OUTCOME_CONTINUE, "the partner release continues in the same tick")
+  Assert.deepEqual(partnerPaused, { false }, "releasing the partner unpauses the follower exactly once")
+  Assert.equal(
+    partnerEnv:lockCount(ScriptEnvironment.LOCK_ACTOR_PREFIX .. "field:partner"),
+    0,
+    "the release still frees the partner actor lock"
+  )
+
+  local guideRun, guideEnv, guidePaused = releaseSetup("guide")
+  outcome = Runtime.executeNode({ op = "release_actor", actor = { ref = "actor", id = "guide" } }, guideRun)
+  Assert.equal(outcome, Runtime.OUTCOME_CONTINUE, "the actor release continues in the same tick")
+  Assert.deepEqual(guidePaused, {}, "releasing another actor never touches the follower pause")
+  Assert.equal(
+    guideEnv:lockCount(ScriptEnvironment.LOCK_ACTOR_PREFIX .. "guide"),
+    0,
+    "the release still frees the actor lock"
+  )
+end
+
 return { tests = T }

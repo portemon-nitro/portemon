@@ -180,6 +180,16 @@ function T.tests.cancellation_delegates_to_the_session_and_controller()
   state:dispose()
 end
 
+function T.tests.status_carries_the_fixed_tick_cursor_clock()
+  local state = startMenuState().new(options())
+  Assert.equal(state:status().animationTick, 0, "the freshly opened menu starts its cursor clock at zero")
+  state:updateFixed({})
+  Assert.equal(state:status().animationTick, 1, "fixed updates advance the cursor clock")
+  state:updateFixed({})
+  Assert.equal(state:status().animationTick, 2, "the cursor clock keeps advancing while open")
+  state:dispose()
+end
+
 -- A session-construction failure inside the protected override/session
 -- closure must surface the original diagnostic after controller cleanup:
 -- an invalid override value fails with its own assertion, not nil, and a
