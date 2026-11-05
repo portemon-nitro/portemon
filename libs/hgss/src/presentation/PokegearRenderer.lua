@@ -150,9 +150,10 @@ end
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param text table<string, unknown>?
+---@param nameText table<string, unknown>? the borrowed phone-list name renderer
 ---@param content table<string, unknown>
 ---@param view table<string, unknown>
-local function drawChild(graphics, images, text, content, view)
+local function drawChild(graphics, images, text, nameText, content, view)
   local tab = view.tab
   local child = view.child
   if tab == "configure" and type(child) == "table" and type(child.view) == "table" then
@@ -173,7 +174,7 @@ local function drawChild(graphics, images, text, content, view)
     local published = presentation --[[@as table<string, unknown>]]
     local render = published.render --[[@as fun(resources: table, child: table, plan: table, shell: table)]]
     render(
-      { graphics = graphics, images = images, textRenderer = text },
+      { graphics = graphics, images = images, textRenderer = text, phoneNameTextRenderer = nameText },
       child --[[@as table<string, unknown>]],
       published,
       view
@@ -207,6 +208,10 @@ function PokegearRenderer.draw(resources, view, plan)
   local text = resources.textRenderer
   if text ~= nil then
     assert(type(text) == "table", "the companion render borrows its text primitives")
+  end
+  local phoneNameText = resources.phoneNameTextRenderer
+  if phoneNameText ~= nil then
+    assert(type(phoneNameText) == "table", "the companion render borrows its phone name primitives")
   end
   local panes = assert(plan.panes, "the companion plan carries its panes")
   assert(type(panes) == "table", "the companion plan carries its panes")
@@ -250,6 +255,7 @@ function PokegearRenderer.draw(resources, view, plan)
         graphics,
         images --[[@as table<string, unknown>]],
         text --[[@as table<string, unknown>?]],
+        phoneNameText --[[@as table<string, unknown>?]],
         content --[[@as table<string, unknown>]],
         view
       )

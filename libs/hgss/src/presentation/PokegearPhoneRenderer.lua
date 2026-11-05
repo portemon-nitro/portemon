@@ -5,7 +5,8 @@
 -- conversation view, and the 240x48 panel cells behind the list-to-call
 -- transition. Consumes the controller's detached view and the plan's
 -- resolved image paths only; allocates no images while drawing. Name
--- cells use the list font path, class cells their own palette path, and
+-- cells print through the borrowed name-font renderer, class cells
+-- through the borrowed class renderer, and
 -- every fill stays explicit so a skin, selection, or panel change is a
 -- pixel change. Pure presentation: no love globals, the host graphics
 -- namespace arrives through resources.
@@ -293,7 +294,8 @@ end
 -- window-bitmap shift.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
----@param text table<string, unknown>?
+---@param nameText table<string, unknown>? the borrowed font-4 name renderer
+---@param classText table<string, unknown>? the borrowed font-0 class renderer
 ---@param entry table<string, unknown>
 ---@param absolute integer
 ---@param top number
@@ -302,7 +304,7 @@ end
 ---@param sprites table<string, unknown>
 ---@param palette table<integer, table<string, number>>
 ---@param colorIdx integer zero-based row color set
-local function drawRow(graphics, images, text, entry, absolute, top, selected, manual, sprites, palette, colorIdx)
+local function drawRow(graphics, images, nameText, classText, entry, absolute, top, selected, manual, sprites, palette, colorIdx)
   local colors = ROW_COLORS[colorIdx + 1]
   fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
   fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
@@ -314,7 +316,7 @@ local function drawRow(graphics, images, text, entry, absolute, top, selected, m
   end
   local isSelected = absolute == selected
   drawPaletteText(
-    text,
+    nameText,
     palette,
     tostring(entry.label or entry.contact),
     LIST_X + NAME_TEXT_X,
@@ -326,7 +328,7 @@ local function drawRow(graphics, images, text, entry, absolute, top, selected, m
   local class = entry.class
   if type(class) == "string" and class ~= "" then
     drawPaletteText(
-      text,
+      classText,
       palette,
       class,
       LIST_X + CLASS_TEXT_X,
@@ -369,11 +371,12 @@ end
 -- scroll-start slot so the bands travel with their rows.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
----@param text table<string, unknown>?
+---@param nameText table<string, unknown>? the borrowed font-4 name renderer
+---@param classText table<string, unknown>? the borrowed font-0 class renderer
 ---@param list table<string, unknown>
 ---@param sprites table<string, unknown>
 ---@param palette table<integer, table<string, number>>
-local function drawList(graphics, images, text, list, sprites, palette)
+local function drawList(graphics, images, nameText, classText, list, sprites, palette)
   local rows = list.rows --[[@as table[] ]]
   local selected = list.selected --[[@as integer]]
   local scrollOffset = list.scrollOffset --[[@as integer]]
@@ -403,7 +406,8 @@ local function drawList(graphics, images, text, list, sprites, palette)
         drawRow(
           graphics,
           images,
-          text,
+          nameText,
+          classText,
           entry,
           absolute,
           LIST_Y + slot * ROW_HEIGHT + pixels,
@@ -433,7 +437,7 @@ local function drawList(graphics, images, text, list, sprites, palette)
             "the settled strip carries absolute contact indices"
           ) --[[@as integer]]
           local settled = PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor)
-          drawRow(graphics, images, text, entry, resolved, top, selected, manual, sprites, palette, settled)
+          drawRow(graphics, images, nameText, classText, entry, resolved, top, selected, manual, sprites, palette, settled)
         else
           drawEmptyBand(graphics, top, palette, PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor))
         end
@@ -589,6 +593,13 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   local images = assert(resources.images, "the phone render borrows its prepared images")
   assert(type(images) == "table", "the phone render borrows its prepared images")
   local text = resources.textRenderer
+  -- The source prints the contact name with font 4 and the class with
+  -- font 0: the name renderer arrives beside the borrowed class
+  -- renderer and falls back to it when the host composes no name font.
+  local nameText = resources.phoneNameTextRenderer
+  if nameText == nil then
+    nameText = text
+  end
   assert(type(view) == "table", "the phone render reads its detached view")
   assert(type(content) == "table", "the phone render reads its plan payload")
   local skin = content.skin
@@ -611,6 +622,7 @@ function PokegearPhoneRenderer.draw(resources, view, content)
     drawList(
       graphics --[[@as love.graphics]],
       images --[[@as table<string, unknown>]],
+      nameText --[[@as table<string, unknown>?]],
       text --[[@as table<string, unknown>?]],
       list --[[@as table<string, unknown>]],
       assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
