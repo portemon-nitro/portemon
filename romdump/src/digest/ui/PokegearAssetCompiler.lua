@@ -240,7 +240,7 @@ local function _compile(romFs, versionId)
 
   local shellForeground, shellInformation = {}, {}
   local configureForeground, configurePatch = {}, {}
-  local phoneForeground, phoneUpper, phoneListPalette = {}, {}, {}
+  local phoneForeground, phoneUpper, phoneListPalette, phoneTooltipPalette = {}, {}, {}, {}
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapWorld, mapMarkingPanel, mapMarkingBackdrop, mapUpper, mapPreviews = {}, {}, {}, {}, {}, {}
   local mapTextPalette = {}
@@ -281,6 +281,12 @@ local function _compile(romFs, versionId)
       renderTriple(phoneArchive, phoneFg, "phone.foreground.skin" .. skin, assets, "phone-foreground-skin-" .. skin)
     phoneListPalette[skin] =
       paletteBank(phoneArchive, phoneFg.palette, PokegearSources.phoneListPaletteBank, "phone.listPalette.skin" .. skin)
+    phoneTooltipPalette[skin] = paletteBank(
+      phoneArchive,
+      phoneFg.palette,
+      PokegearSources.phoneTooltipPaletteBank,
+      "phone.tooltipPalette.skin" .. skin
+    )
     local phoneUp = PokegearSources.phoneUpper(skin)
     selections["phone.upper.skin" .. skin] = { path = PokegearSources.archives.phone.path, members = phoneUp }
     phoneUpper[skin] =
@@ -503,6 +509,7 @@ local function _compile(romFs, versionId)
       foreground = phoneForeground,
       upper = phoneUpper,
       listPalette = phoneListPalette,
+      tooltipPalette = phoneTooltipPalette,
       sprites = phoneSprites,
     },
     map = {
