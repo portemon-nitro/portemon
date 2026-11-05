@@ -56,15 +56,21 @@ local function fixtureManifest()
   }
   local order = { "custom.mom", "custom.trainer-plain" }
   local phoneForeground, phoneUpper = {}, {}
-  local phoneListPalette, phoneTooltipPalette = {}, {}
+  local phoneListPalette, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
     phoneTooltipPalette[skin] = {}
+    phoneWindowPalette[skin] = {}
     for index = 1, 16 do
       phoneListPalette[skin][index] =
         { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
       phoneTooltipPalette[skin][index] =
         { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
+      -- The call windows print through their own bank of the foreground
+      -- palette (windows[0,1] palette 1), so the fixture keeps it
+      -- distinct from the list and tooltip banks.
+      phoneWindowPalette[skin][index] =
+        { r = (index * 41 + skin * 7 + 60) % 256, g = (index * 13 + 150) % 256, b = (skin * 53 + 200) % 256 }
     end
   end
   for skin = 0, 5 do
@@ -108,6 +114,7 @@ local function fixtureManifest()
       panel = phonePanel,
       listPalette = phoneListPalette,
       tooltipPalette = phoneTooltipPalette,
+      windowPalette = phoneWindowPalette,
       sprites = { phone = phoneSprites },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
@@ -670,7 +677,7 @@ function T.tests.call_text_renders_from_window_and_palette_refs()
   local status = controller:status()
   local content = assert(status.presentation, "the live call publishes its plan").content
   local palette = {}
-  for _, bank in ipairs({ content.listPalette, content.menuPalette, content.tooltipPalette }) do
+  for _, bank in ipairs({ content.listPalette, content.menuPalette, content.tooltipPalette, content.windowPalette }) do
     if type(bank) == "table" then
       for _, entry in ipairs(bank) do
         palette[#palette + 1] = entry

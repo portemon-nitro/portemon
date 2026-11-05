@@ -81,6 +81,17 @@ local function distinctPalette()
   return palette
 end
 
+-- Prepared plane leases behind the required foreground and upper planes:
+-- the source always loads both before the first paint, so every draw
+-- composes them and never exercises a fallback fill.
+---@return table images
+local function planeImages()
+  local lease = {
+    draw = function(_, _, _, _) end,
+  }
+  return { ["test-foreground"] = lease, ["test-upper"] = lease }
+end
+
 ---@param count integer
 ---@return table rows with settled slots
 local function settledRows(count)
@@ -104,9 +115,9 @@ local function drawList(graphics, firstBg)
     cursorVisible = false,
   }
   PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = {}, textRenderer = stubText() },
+    { graphics = graphics, images = planeImages(), textRenderer = stubText() },
     { list = list },
-    { skin = 0, sprites = {}, listPalette = distinctPalette() }
+    { skin = 0, sprites = {}, foreground = "test-foreground", listPalette = distinctPalette() }
   )
 end
 
@@ -162,9 +173,9 @@ function T.sliding_bands_travel_with_their_rows()
     cursorVisible = false,
   }
   PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = {}, textRenderer = stubText() },
+    { graphics = graphics, images = planeImages(), textRenderer = stubText() },
     { list = list },
-    { skin = 0, sprites = {}, listPalette = distinctPalette() }
+    { skin = 0, sprites = {}, foreground = "test-foreground", listPalette = distinctPalette() }
   )
   Assert.equal(
     bandRedAt(graphics, 16 - 8),
@@ -213,9 +224,9 @@ function T.list_name_and_class_print_through_their_source_fonts()
     cursorVisible = false,
   }
   PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = {}, textRenderer = classText, phoneNameTextRenderer = nameText },
+    { graphics = graphics, images = planeImages(), textRenderer = classText, phoneNameTextRenderer = nameText },
     { list = list },
-    { skin = 0, sprites = {}, listPalette = distinctPalette() }
+    { skin = 0, sprites = {}, foreground = "test-foreground", listPalette = distinctPalette() }
   )
   Assert.equal(#nameText._calls, 1, "the name cell prints once through the name font")
   Assert.equal(recordedLine(nameText._calls[1]), "NAME-1", "the name cell prints the contact name")
@@ -236,6 +247,8 @@ function T.information_list_keeps_the_source_font_split()
   local content = {
     skin = 0,
     sprites = {},
+    foreground = "test-foreground",
+    upper = "test-upper",
     listPalette = distinctPalette(),
     callList = {
       rows = { { absolute = 0, slot = 0, contact = "mom", label = "NAME-1", class = "CLASS-1" } },
@@ -248,7 +261,7 @@ function T.information_list_keeps_the_source_font_split()
     },
   }
   PokegearPhoneRenderer.drawInformation(
-    { graphics = graphics, images = {}, textRenderer = classText, phoneNameTextRenderer = nameText },
+    { graphics = graphics, images = planeImages(), textRenderer = classText, phoneNameTextRenderer = nameText },
     content
   )
   Assert.equal(#nameText._calls, 1, "the information name prints once through the name font")
@@ -269,9 +282,9 @@ function T.list_cells_share_the_borrowed_renderer_without_a_name_font()
     cursorVisible = false,
   }
   PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = {}, textRenderer = shared },
+    { graphics = graphics, images = planeImages(), textRenderer = shared },
     { list = list },
-    { skin = 0, sprites = {}, listPalette = distinctPalette() }
+    { skin = 0, sprites = {}, foreground = "test-foreground", listPalette = distinctPalette() }
   )
   Assert.equal(#shared._calls, 2, "both cells print through the borrowed renderer")
 end
@@ -290,9 +303,9 @@ local function drawWithTooltip(graphics, text, line)
     cursorVisible = false,
   }
   PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = {}, textRenderer = text },
+    { graphics = graphics, images = planeImages(), textRenderer = text },
     { list = list, tooltip = line },
-    { skin = 0, sprites = {}, listPalette = distinctPalette(), tooltipPalette = distinctPalette() }
+    { skin = 0, sprites = {}, foreground = "test-foreground", listPalette = distinctPalette(), tooltipPalette = distinctPalette() }
   )
 end
 
@@ -358,24 +371,25 @@ function T.context_menu_frame_stays_in_tiles()
     total = 6,
     cursorVisible = false,
   }
-  PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = { ["menu-tiles"] = lease }, textRenderer = text },
-    {
-      list = list,
-      contextMenu = {
-        options = { "a", "b", "c" },
-        cursor = 0,
-        frame = { x = 13, y = 9, width = 16, height = 10 },
-      },
+  PokegearPhoneRenderer.draw({
+    graphics = graphics,
+    images = { ["menu-tiles"] = lease, ["test-foreground"] = planeImages()["test-foreground"] },
+    textRenderer = text,
+  }, {
+    list = list,
+    contextMenu = {
+      options = { "a", "b", "c" },
+      cursor = 0,
+      frame = { x = 13, y = 9, width = 16, height = 10 },
     },
-    {
-      skin = 0,
-      sprites = {},
-      listPalette = distinctPalette(),
-      menuTiles = "menu-tiles",
-      menuPalette = distinctPalette(),
-    }
-  )
+  }, {
+    skin = 0,
+    sprites = {},
+    foreground = "test-foreground",
+    listPalette = distinctPalette(),
+    menuTiles = "menu-tiles",
+    menuPalette = distinctPalette(),
+  })
   local topLeft = nil
   for _, tile in ipairs(tileDraws) do
     if tile.x == 13 * 8 and tile.y == 9 * 8 then

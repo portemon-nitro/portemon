@@ -113,6 +113,12 @@ end
 -- phone foreground palette, sixteen colors per skin.
 PokegearSources.phoneListPaletteBank = 2
 
+-- The call speech and name windows (windows[0,1] on SUB_2) print with
+-- background palette bank 1 of the same phone foreground palette: fill
+-- 0 behind both windows, text in colors (1,2,0) (PokegearPhone_AddWindows
+-- and PokegearPhone_SetTouchscreenDimState in pokegear_phone_gfx.c).
+PokegearSources.phoneWindowPaletteBank = 1
+
 -- The context-menu tooltip window (windows[3]) prints with background
 -- palette bank 10 of the same phone foreground palette: fill 5 behind
 -- the prompt in text colors 3/2/5 (PrintContextMenuTooltip). The palette
@@ -221,8 +227,13 @@ PokegearSources.mapSprites = {
 -- sprite resource descriptors of archive a/1/7/5 bind these members:
 -- setup descriptors 40-43 point at setup archive members 3/2/1/0 and
 -- phone descriptors 44-47 at phone archive members 3/2/1/0. Per-sequence
--- palette banks are untranscribed for both cards, so every sequence
--- draws with bank 0 following the unlisted-sequence convention above.
+-- palette banks are untranscribed for the setup card, so every setup
+-- sequence draws with bank 0 following the unlisted-sequence convention
+-- below. The phone card transcribes the sSpriteTemplates palette slots
+-- from pokegear_phone_gfx.c: corners and the move chevron ride OBJ
+-- palette 6 (one-based sequences 3, 4, 5, 6, and 9), the scroll arrows
+-- and plain move chevron ride palette 7 (sequences 1, 2, and 7).
+-- Animation 7 (sequence 8) has no template behind it and keeps bank 0.
 PokegearSources.configureSpritePalette = 0
 PokegearSources.phoneSpritePalette = 0
 
@@ -231,7 +242,7 @@ PokegearSources.configureSprites = {
 }
 
 PokegearSources.phoneSprites = {
-  phone = { char = 1, cell = 2, anim = 3, banks = {} },
+  phone = { char = 1, cell = 2, anim = 3, banks = { [1] = 7, [2] = 7, [3] = 6, [4] = 6, [5] = 6, [6] = 6, [7] = 7, [9] = 6 } },
 }
 
 -- Native radio broadcast programs in source program order with the
