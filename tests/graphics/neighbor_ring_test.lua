@@ -195,7 +195,7 @@ local function translucentDescriptors(firstGeomPath, secondGeomPath, texPath)
   return { cell(firstGeomPath, 32), cell(secondGeomPath, 0) }
 end
 
-function T.sorts_translucent_neighbors_using_one_cell_transform()
+function T.sorts_translucent_neighbors_using_projected_screen_y_extents()
   local cacheFs, geomPath, texPath, elevatedGeomPath = fakeCacheFs()
   local ring = NeighborRing.load(
     cacheFs,
@@ -203,13 +203,39 @@ function T.sorts_translucent_neighbors_using_one_cell_transform()
     { imageAssets = SharedImagePoolFake.new() }
   )
 
-  -- The first mesh center is z=1 and lives in the +32 cell, so its world-space
-  -- sort center is z=33. The second mesh center is z=49 in the origin cell.
-  -- With one transform application, the first draw is submitted first. A
-  -- pre-offset center would be transformed again to z=65 and reverse them.
-  local queue = RenderQueue.buildInto({ ring.draws }, Matrix4.identity(), queueScratch())
-  Assert.isTrue(queue.blended[1].item == ring.draws[1], "the +32 neighbor sorts at z=33")
-  Assert.isTrue(queue.blended[2].item == ring.draws[2], "the origin neighbor sorts at z=49")
+  -- Both draws carry the cached model-space AABB of their geometry path
+  -- (the flat fake triangles span y=0 exactly), while their centers stay
+  -- in model space and the cell offset lives only in the transform.
+  Assert.deepEqual(ring.draws[1].center, { 1, 0, 1 }, "center remains in model space")
+  Assert.deepEqual(
+    ring.draws[1].sortBounds,
+    { minX = 0, maxX = 2, minY = 0, maxY = 0, minZ = 0, maxZ = 2 },
+    "the draw borrows the cached model-space AABB"
+  )
+  Assert.deepEqual(ring.draws[2].center, { 1, 0, 49 }, "center remains in model space")
+  Assert.deepEqual(
+    ring.draws[2].sortBounds,
+    { minX = 0, maxX = 2, minY = 0, maxY = 0, minZ = 48, maxZ = 50 },
+    "the elevated draw borrows its own cached model-space AABB"
+  )
+
+  -- A pitched camera separates the two flat triangles in screen Y: the
+  -- first mesh center is z=1 and lives in the +32 cell, so its world-space
+  -- box is z in [32, 34]; the second mesh box is z in [48, 50] in the
+  -- origin cell. With one transform application the nearer box sorts first.
+  -- A pre-offset center would be transformed again and reverse them, so
+  -- the draw order alone proves the single application: no exact key
+  -- constants are pinned here (the queue's own unit tests own the
+  -- extent math).
+  local view = Matrix4.rotateX(0.5)
+  local projection = Matrix4.orthographic(-10, 10, -10, 10, 0.1, 100)
+  local storage = queueScratch()
+  local queue = RenderQueue.buildInto({ ring.draws }, view, projection, projection, storage)
+  Assert.deepEqual(
+    { queue.blended[1].item, queue.blended[2].item },
+    { ring.draws[1], ring.draws[2] },
+    "the +32 neighbor sorts before the origin neighbor by screen Y"
+  )
 
   ring:release()
 end

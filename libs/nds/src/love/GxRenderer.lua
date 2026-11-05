@@ -12,7 +12,10 @@
 -- fragments stamp the active color and opaque renderState MRT atomically:
 -- ID, DS-quantized depth, and per-polygon fog gate. Exact translucency keeps
 -- its mutable last-ID and fog-gate state in a compact private target pair.
--- Approximate mode changes world color only with host alpha blending. The final
+-- Approximate mode changes world color only with host alpha blending through
+-- the DS-corrected (alpha5 + 1) / 32 coefficient, suppressing repeated
+-- translucent polygon IDs per pixel through the world depth canvas's stencil
+-- attachment. The final
 -- resolve (edge.glsl) samples sceneColor as its own
 -- texture and the same bounded-resolution renderState through explicit
 -- snap/clamp to render-state pixel centers (never texture-clamp reliance),
@@ -31,7 +34,7 @@
 -- canvas allocation, or target configuration releases everything already
 -- created, and a canvas recreation keeps the previous target set usable until
 -- the replacement is complete. It restores the exact caller state it changed
--- (canvas, shader, depth, cull, blend, wireframe, color, scissor) on a
+-- (canvas, shader, depth, stencil, cull, blend, wireframe, color, scissor) on a
 -- successful draw, so the diagnostic UI drawn afterwards is unaffected; a
 -- thrown draw propagates without restoring for continued rendering. It builds no
 -- persistent meshes or textures and reads no ROM/NARC data -- those belong to
@@ -69,6 +72,9 @@ local MAX_STRADDLE_VERTICES = 3
 ---@field setShader fun(shader?: GxRenderer.Shader|love.Shader)
 ---@field setDepthMode fun(mode?: string, write?: boolean)
 ---@field setBlendMode fun(mode?: string, alpha?: string)
+---@field stencil fun(stencilFunction: fun(), action: string?, value: number?, keepvalues: boolean?)
+---@field getStencilTest fun(): string?, number?
+---@field setStencilTest fun(mode: string?, value: number?)
 ---@field setColor fun(red: number, green: number, blue: number, alpha: number)
 ---@field draw fun(drawable: table<string, unknown>, ...)
 ---@field clear fun(...)
@@ -124,6 +130,10 @@ local MAX_STRADDLE_VERTICES = 3
 ---@field _sourceTargets GxRenderer.TargetDescriptor?
 ---@field _spriteTargets GxRenderer.TargetDescriptor?
 ---@field _spriteWorkItems table[]
+---@field _stencilItem table<string, unknown>?
+---@field _stencilProjection number[]?
+---@field _stencilPass integer?
+---@field _stencilFn fun()?
 ---@field _spriteW integer?
 ---@field _spriteH integer?
 ---@field _lightMaterialColorCache { diffuse: number[], ambient: number[], specular: number[], emission: number[] }
@@ -461,6 +471,14 @@ function GxRenderer.new(opts)
     _presentationOffset = { 0, 0 },
     _stateSize = { 1, 1 },
     _spriteWorkItems = {},
+    -- Transient stencil-stamp working state for the approximate translucent
+    -- pass: the stamp callback below reuses these fields through one
+    -- renderer-lifetime closure, so warmed frames allocate nothing per
+    -- blended item. drawFrame is never reentrant, so no save/restore is
+    -- needed around the stamp submissions.
+    _stencilItem = nil,
+    _stencilProjection = nil,
+    _stencilPass = nil,
   }, GxRenderer)
   -- Shader construction is transactional: a failure while creating a later
   -- shader (or reading its source) releases every one already created before
@@ -472,12 +490,16 @@ function GxRenderer.new(opts)
     local mapSource = ImageSampling.withSharedSampling(readSource(SHADER_SOURCE_PATHS.color))
     -- map.glsl needs GLSL 3 (gl_VertexID); LÖVE reads the language pragma only
     -- ahead of the defines each variant prepends.
+    -- The plain color shader is the approximate translucent shader: it
+    -- carries APPROXIMATE_DS_BLEND so its RGB coefficient is the DS
+    -- (alpha5 + 1) / 32 blending weight. Every other variant (world MRT,
+    -- exact source, presentation sprites) keeps the semantic five-bit alpha.
     ---@param defines string
     ---@return string
     local function colorSource(defines)
       return "#pragma language glsl3\n" .. defines .. mapSource
     end
-    renderer.shader = graphics.newShader(colorSource(""))
+    renderer.shader = graphics.newShader(colorSource("#define APPROXIMATE_DS_BLEND\n"))
     renderer._spriteShaderSource = colorSource("#define PRESENTATION_SPRITE\n#define PRESENTATION_SPRITE_LAYER\n")
     local exact = translucencyMode == GxRenderer.TRANSLUCENCY_EXACT
     renderer.edgeShader =
@@ -495,6 +517,13 @@ function GxRenderer.new(opts)
     renderer:release()
     error(err)
   end
+  -- One renderer-lifetime stencil-stamp callback for the approximate
+  -- translucent pass: it reads the transient working state above, so the
+  -- per-item loop performs no per-item closure allocation.
+  local function stampStencil()
+    renderer:_drawItem(renderer._stencilItem, renderer._stencilProjection, renderer._stencilPass)
+  end
+  renderer._stencilFn = stampStencil
   return renderer
 end
 
@@ -1168,9 +1197,12 @@ local function drawFrame(
   local queue = assert(frame.queue, "GxRenderer requires a normalized render queue")
 
   -- ---- world MRT pass: color and polygon state ----
+  -- The stencil ownership record shares the world depth canvas: clearing it
+  -- to zero here (no previously accepted translucent polygon) costs no
+  -- additional fullscreen draw, and the color clear below preserves it.
   local stateClearTargets = assert(self._stateClearTargets)
   lg.setCanvas(stateClearTargets)
-  lg.clear(DS_STATE_CLEAR, false, true)
+  lg.clear(DS_STATE_CLEAR, 0, true)
   stats.worldFullSurfaceClears = stats.worldFullSurfaceClears + 1
   local colorClearTargets = assert(self._colorClearTargets)
   lg.setCanvas(colorClearTargets)
@@ -1218,11 +1250,33 @@ local function drawFrame(
       lg.setDepthMode("less", false)
       lg.setBlendMode("alpha", "alphamultiply")
       self.shader:send("u_view", "column", viewMatrix)
+      -- Per-pixel last-translucent-ID suppression (the DS polygon-ID rule)
+      -- through the world depth canvas's stencil attachment, which the
+      -- frame-start clear above owns at zero (no previously accepted
+      -- translucent polygon). Stencil values 1-64 encode source IDs 0-63.
+      -- Each entry draws twice with identical depth, discard, transform,
+      -- and coverage state: first the visible color where the recorded last
+      -- ID differs, then a color-free stamp of this entry's ID on the same
+      -- accepted coverage. Alpha-zero and depth-rejected fragments discard
+      -- or fail depth in both submissions, so they never update the record;
+      -- a repeated ID at a pixel blends once, while a different ID blends
+      -- and becomes the new last ID. Stencil testing stays disabled across
+      -- the stamp, and across entries nothing clears the record.
       for _, entry in ipairs(queue.blended) do
+        local item = entry.item
         local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
           or FRAGMENT_PASS_TRANSLUCENT
-        self:_drawItem(entry.item, projectionFor(entry.item, frame), fragmentPass)
+        local projection = projectionFor(item, frame)
+        local stencilId = assert(item.polygonId, "translucent draw item requires a polygon ID") + 1
+        lg.setStencilTest("notequal", stencilId)
+        self:_drawItem(item, projection, fragmentPass)
+        lg.setStencilTest()
+        -- The stamp reuses the renderer-lifetime callback through transient
+        -- working state: no per-item closure allocation on warmed frames.
+        self._stencilItem, self._stencilProjection, self._stencilPass = item, projection, fragmentPass
+        lg.stencil(self._stencilFn, "replace", stencilId, true)
       end
+      lg.setStencilTest()
     end
   elseif #queue.blended > 0 then
     local exactSourceShader = assert(self.exactSourceShader)
@@ -1493,6 +1547,7 @@ function GxRenderer:draw(frame)
   local shader = lg.getShader()
   local blendMode, blendAlpha = lg.getBlendMode()
   local depthMode, depthWrite = lg.getDepthMode()
+  local stencilMode, stencilValue = lg.getStencilTest()
   local cullMode = lg.getMeshCullMode()
   local wireframe = lg.isWireframe()
   local colorRed, colorGreen, colorBlue, colorAlpha = lg.getColor()
@@ -1523,6 +1578,11 @@ function GxRenderer:draw(frame)
   lg.setShader(shader)
   lg.setBlendMode(blendMode, blendAlpha)
   lg.setDepthMode(depthMode, depthWrite)
+  if stencilMode == nil then
+    lg.setStencilTest()
+  else
+    lg.setStencilTest(stencilMode, stencilValue)
+  end
   lg.setWireframe(wireframe)
   lg.setMeshCullMode(cullMode)
   lg.setColor(colorRed, colorGreen, colorBlue, colorAlpha)

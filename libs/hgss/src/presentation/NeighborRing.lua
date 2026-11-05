@@ -134,6 +134,10 @@ local function buildRing(pool, descriptors, clip, wait, checkpoint)
       draw.transform = transform
       draw.modelNormal = IDENTITY_MODEL_NORMAL
       draw.center = c
+      -- The cached model-space AABB of this geometry path, shared by every
+      -- cell draw of the same path: the render queue projects it for its
+      -- automatic screen-Y ordering without rescanning vertices per draw.
+      draw.sortBounds = entry.bounds
       draws[#draws + 1] = draw
       checkpoint()
     end

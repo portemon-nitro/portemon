@@ -184,6 +184,8 @@ local function fakeGraphics(opts)
     canvasTransitions = {},
     blend = {},
     depth = {},
+    stencil = {},
+    stencilTest = {},
     wireframe = {},
     clear = {},
     draw = {},
@@ -200,6 +202,8 @@ local function fakeGraphics(opts)
     cullMode = opts.cullMode,
     color = opts.color or { 1, 1, 1, 1 },
     scissor = opts.scissor,
+    stencilTest = opts.stencilTest,
+    inStencil = nil,
   }
   local graphics = {
     shaders = shaders,
@@ -323,6 +327,7 @@ local function fakeGraphics(opts)
         depthWrite = state.depthWrite,
         blendMode = state.blendMode,
         blendAlpha = state.blendAlpha,
+        stencil = state.inStencil or nil,
         scissor = state.scissor and { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] } or nil,
       }
       if opts.failOnDrawCall == drawCalls then
@@ -350,6 +355,25 @@ local function fakeGraphics(opts)
       state.scissor = x and { x, y, w, h } or nil
       calls.scissor[#calls.scissor + 1] = state.scissor
     end,
+    stencil = function(stencilFunction, action, value, keepvalues)
+      calls.stencil[#calls.stencil + 1] = { action = action, value = value, keepvalues = keepvalues }
+      state.inStencil = true
+      stencilFunction()
+      state.inStencil = false
+    end,
+    setStencilTest = function(mode, value)
+      state.stencilTest = mode and { mode, value } or nil
+      -- A disabled test records false (not nil) so the call sequence stays
+      -- a dense array the tests can assert in order.
+      calls.stencilTest[#calls.stencilTest + 1] = mode and { mode, value } or false
+    end,
+    getStencilTest = function()
+      local stencilTest = state.stencilTest
+      if stencilTest == nil then
+        return nil
+      end
+      return stencilTest[1], stencilTest[2]
+    end,
   } --[[@as GxRendererTest.Graphics]]
   return graphics
 end
@@ -371,9 +395,10 @@ local function render(
     lighting =
       FieldLightProfile.select(lighting, sceneRuntime.fieldTimeSeconds or FieldLightProfile.DEFAULT_TIME_SECONDS)
   end
-  local queue = RenderQueue.buildInto(worldParts or {}, viewMatrix, RenderQueue.newScratch())
   local worldProjection = camera:projection()
   local billboardProjection = camera:billboardProjection()
+  local queue =
+    RenderQueue.buildInto(worldParts or {}, viewMatrix, worldProjection, billboardProjection, RenderQueue.newScratch())
   return renderer:draw({
     lighting = lighting,
     edgeColors = sceneRuntime.edgeColors,
@@ -442,6 +467,9 @@ local function assertRestoredState(lg, canvas, shader)
   local depthMode, depthWrite = lg.getDepthMode()
   Assert.equal(depthMode, "lequal")
   Assert.equal(depthWrite, true)
+  local stencilMode, stencilValue = lg.getStencilTest()
+  Assert.equal(stencilMode, "notequal")
+  Assert.equal(stencilValue, 12)
   Assert.equal(lg.isWireframe(), false)
   Assert.equal(lg.getMeshCullMode(), "back")
   local r, g, b, a = lg.getColor()
@@ -780,6 +808,7 @@ function T.draw_restores_exact_caller_state()
     wireframe = false,
     cullMode = "back",
     color = { 0.2, 0.4, 0.6, 0.8 },
+    stencilTest = { "notequal", 12 },
   })
   local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
@@ -805,6 +834,7 @@ function T.invalid_presentation_descriptor_propagates_and_keeps_the_renderer_reu
     wireframe = false,
     cullMode = "back",
     color = { 0.2, 0.4, 0.6, 0.8 },
+    stencilTest = { "notequal", 12 },
   })
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
@@ -837,6 +867,7 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
     wireframe = false,
     cullMode = "back",
     color = { 0.2, 0.4, 0.6, 0.8 },
+    stencilTest = { "notequal", 12 },
   })
   local renderer = GxRenderer.new({ graphics = lg })
   local item = {
@@ -1382,6 +1413,7 @@ function T.logical_sprite_composite_restores_exact_caller_state_and_propagates_a
     wireframe = false,
     cullMode = "back",
     color = { 0.2, 0.4, 0.6, 0.8 },
+    stencilTest = { "notequal", 12 },
     scissor = { 55, 40, 10, 10 },
   })
   local renderer = GxRenderer.new({ graphics = lg })
@@ -3115,7 +3147,100 @@ function T.approximate_full_screen_work_is_constant_as_blended_count_grows()
 
   local one = drawCount(1)
   local many = drawCount(32)
-  Assert.equal(many - one, 31, "additional approximate entries add geometry only")
+  Assert.equal(many - one, 62, "each additional approximate entry adds one color and one stencil-ownership submission")
+end
+
+-- Approximate translucent stencil ownership in one lifecycle: each blended
+-- entry draws twice with identical state -- the visible color under a
+-- notequal test against its own stencil ID, then a color-free stamp of that
+-- ID on the same coverage -- and the frame-start state clear owns the
+-- last-ID reset at zero with no additional fullscreen draw. Stencil values
+-- 1-64 encode source IDs 0-63, including both ends of the valid
+-- polygon-ID domain.
+function T.approximate_translucent_stencil_ownership_lifecycle()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local first = passItem("translucent", 0)
+  first.polygonId = 0
+  local second = passItem("translucent", 0)
+  second.polygonId = 63
+  local third = passItem("mixed", 0)
+  third.polygonId = 5
+  drawTranslucentFrame(renderer, scene, { first, second, third })
+
+  Assert.equal(#lg.calls.clear, 2, "state and color clears only; stencil resets inside the state clear")
+  Assert.equal(lg.calls.clear[1][2], 0, "the state clear resets last-translucent-ID stencil to zero")
+  Assert.equal(lg.calls.clear[1][3], true, "the state clear preserves the existing depth-clear semantics")
+  Assert.equal(lg.calls.clear[2][2], false, "the color clear preserves stencil ownership")
+
+  -- The per-entry pattern is color-under-own-ID then stamp-with-testing-off;
+  -- everything after the last stamp stays disabled, ending with the caller
+  -- state restore. Only the entry pattern is pinned: trailing disables
+  -- collapse if the restore path ever changes, without weakening the
+  -- per-entry contract.
+  local head = {}
+  for index = 1, math.min(6, #lg.calls.stencilTest) do
+    local recorded = lg.calls.stencilTest[index]
+    head[#head + 1] = recorded == false and "disabled" or recorded[1] .. "/" .. tostring(recorded[2])
+  end
+  Assert.deepEqual(head, {
+    "notequal/1",
+    "disabled",
+    "notequal/64",
+    "disabled",
+    "notequal/6",
+    "disabled",
+  }, "each entry tests its own ID, then stamps with testing disabled")
+  Assert.isTrue(#lg.calls.stencilTest >= 7, "testing ends disabled after the last stamp")
+  for index = 7, #lg.calls.stencilTest do
+    Assert.equal(lg.calls.stencilTest[index], false, "trailing stencil state " .. index .. " stays disabled")
+  end
+
+  Assert.equal(#lg.calls.stencil, 3, "each blended entry stamps ownership exactly once")
+  Assert.deepEqual(
+    { lg.calls.stencil[1].action, lg.calls.stencil[1].value, lg.calls.stencil[1].keepvalues },
+    { "replace", 1, true }
+  )
+  Assert.deepEqual(
+    { lg.calls.stencil[2].action, lg.calls.stencil[2].value, lg.calls.stencil[2].keepvalues },
+    { "replace", 64, true }
+  )
+  Assert.deepEqual(
+    { lg.calls.stencil[3].action, lg.calls.stencil[3].value, lg.calls.stencil[3].keepvalues },
+    { "replace", 6, true },
+    "stencil stamps carry replace semantics, the ID-plus-one value, and preserve neighboring pixels"
+  )
+
+  local itemDraws = {}
+  for _, draw in ipairs(lg.calls.draw) do
+    -- Only the approximate translucent pass (the plain color shader) draws
+    -- here: the mixed entry's opaque subpass reaches the same mesh through
+    -- the world MRT shader and is not part of this sequence.
+    if
+      draw.shader == renderer.shader
+      and (draw.mesh == first.mesh or draw.mesh == second.mesh or draw.mesh == third.mesh)
+    then
+      itemDraws[#itemDraws + 1] = draw
+    end
+  end
+  Assert.equal(#itemDraws, 6, "each blended entry submits one color and one ownership draw")
+  Assert.deepEqual(
+    { itemDraws[1].mesh, itemDraws[2].mesh, itemDraws[3].mesh, itemDraws[4].mesh, itemDraws[5].mesh, itemDraws[6].mesh },
+    { first.mesh, first.mesh, second.mesh, second.mesh, third.mesh, third.mesh },
+    "color precedes its own stamp so the notequal test can accept first coverage"
+  )
+  for _, draw in ipairs(itemDraws) do
+    Assert.equal(draw.depthMode, "less")
+    Assert.equal(draw.depthWrite, false, "both submissions keep translucent depth writes disabled")
+  end
+  Assert.isNil(itemDraws[1].stencil)
+  Assert.isTrue(itemDraws[2].stencil ~= nil)
+  Assert.isNil(itemDraws[3].stencil)
+  Assert.isTrue(itemDraws[4].stencil ~= nil)
+  Assert.isNil(itemDraws[5].stencil)
+  Assert.isTrue(itemDraws[6].stencil ~= nil)
+  renderer:release()
 end
 
 function T.explicit_exact_mode_preserves_the_programmable_translucency_path()
@@ -3297,7 +3422,11 @@ function T.integrated_default_cost_shape_stays_bounded_at_1080p()
   Assert.equal(renderer.colorH, 384)
   Assert.isNil(renderer._sourceColor)
   Assert.isNil(renderer._sourceMeta)
-  Assert.equal(renderer.stats.geometrySubmissions, 33, "one opaque and one direct translucent submission per item")
+  Assert.equal(
+    renderer.stats.geometrySubmissions,
+    65,
+    "one opaque, one direct translucent color, and one stencil-ownership submission per blended item"
+  )
   renderer:release()
 end
 

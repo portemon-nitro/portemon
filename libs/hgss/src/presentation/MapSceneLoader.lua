@@ -396,6 +396,10 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       depthEqual = state.depthEqual,
       fogEnabled = state.fogEnabled,
       center = meshResource.center,
+      -- The cached model-space AABB of this geometry path, shared by every
+      -- draw of the same path: the render queue projects it for its
+      -- automatic screen-Y ordering without rescanning vertices per draw.
+      sortBounds = meshResource.bounds,
     }
   end
 
@@ -551,6 +555,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
           local meshResource = acquireMesh(mesh.geometry)
           renderMeshesById[mesh.id] = meshResource.mesh
           mesh.center = meshResource.center
+          mesh.sortBounds = meshResource.bounds
           checkpoint()
         end
         modelResource = { definition = definition, renderMeshesById = renderMeshesById }

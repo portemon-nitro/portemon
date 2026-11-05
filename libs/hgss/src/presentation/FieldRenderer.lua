@@ -144,7 +144,8 @@ function FieldRenderer:draw(
   local viewMatrix = camera:view(alpha)
   local worldProjection = camera:projection()
   local billboardProjection = camera:billboardProjection()
-  local queue = RenderQueue.buildInto(worldParts or {}, viewMatrix, self._queueScratch)
+  local queue =
+    RenderQueue.buildInto(worldParts or {}, viewMatrix, worldProjection, billboardProjection, self._queueScratch)
   -- The retained Gx frame record is overwritten every draw: no per-frame
   -- frame allocation remains on the steady 3D path. Assigning nil clears
   -- the optional presentation scale on sprite-less frames.

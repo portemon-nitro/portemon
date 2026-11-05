@@ -479,6 +479,7 @@ end
 ---@field translucentDepthWrite boolean
 ---@field depthEqual boolean
 ---@field center number[] -- model-space center, transformed by the render queue
+---@field sortBounds { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number }|nil
 ---@field billboardBase number[]|nil
 ---@field billboardCenter number[]|nil
 ---@field billboardScale number[]|nil
@@ -570,8 +571,11 @@ function ModelInstance:drawItems(renderMeshesById)
       item.alphaClass = material.alphaClass
       item.polygonAlpha = material.polygonAlpha
       -- The loader stamps each mesh's model-space center from the decoded
-      -- geometry; a definition mesh without one cannot be sorted.
+      -- geometry; a definition mesh without one cannot be sorted. It also
+      -- stamps the cached model-space AABB when it resolved one; a mesh
+      -- without one falls back to its projected center in the queue.
       item.center = mesh.center
+      item.sortBounds = mesh.sortBounds
       -- The shared draw-state set rides on the item from the backend record
       -- (complete by contract: the descriptor gate requires every field on
       -- every batch, and fromNitroDescriptor copies the batch records).

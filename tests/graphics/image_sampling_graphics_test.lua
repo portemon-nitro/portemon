@@ -274,7 +274,7 @@ end
 
 local function renderScene(renderer, item, fog)
   local camera = fixedCamera()
-  local queue = RenderQueue.buildInto({ { item } }, camera:view(), RenderQueue.newScratch())
+  local queue = RenderQueue.buildInto({ { item } }, camera:view(), camera:projection(), camera:billboardProjection(), RenderQueue.newScratch())
   local runtime = sceneRuntime(fog)
   local lighting = FieldLightProfile.select(runtime.lighting, FieldLightProfile.DEFAULT_TIME_SECONDS)
   renderer:draw({

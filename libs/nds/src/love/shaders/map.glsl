@@ -498,6 +498,17 @@ void effect()
   vec3 outRgb = outRgb6 / 63.0;
   float alpha = float(outputAlpha5) / 31.0;
 
+  // The approximate translucent path blends on the host, so its source
+  // coefficient must be the DS RGB blending weight (alpha5 + 1) / 32 -- not
+  // the semantic five-bit alpha (alpha5 / 31) the exact compositor consumes.
+  // Enabled only for the approximate translucent shader variant; every
+  // other variant keeps the unmodified semantic alpha.
+#ifdef APPROXIMATE_DS_BLEND
+  if (u_fragmentPass == 2 || u_fragmentPass == 4) {
+    alpha = float(outputAlpha5 + 1) / 32.0;
+  }
+#endif
+
 #ifdef PRESENTATION_SPRITE
   if (u_presentationSprite) {
     // Render-state and presentation sprite canvases share the offscreen

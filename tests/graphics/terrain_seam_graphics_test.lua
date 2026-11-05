@@ -266,7 +266,7 @@ local function sweep(scope, batches, scale)
     local eye = { 0 + dx, 9, 13 + dz }
     local target = { 0 + dx, 0, -1 + dz }
     local view = Matrix4.lookAt(eye, target, { 0, 1, 0 })
-    local queue = RenderQueue.buildInto({ items }, view, scratch)
+    local queue = RenderQueue.buildInto({ items }, view, projection, projection, scratch)
     renderer:draw({
       edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
       fog = zeroFog(),

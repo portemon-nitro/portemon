@@ -1,8 +1,9 @@
 -- Tests for RenderQueue: classification, pass-order preservation for
--- opaque/cutout/mixedOpaque/wireframe, translucent back-to-front sorting,
--- MIXED item splitting into opaque and blended passes, and deterministic
--- tie-breaking by traversal position across ordered parts. Queue construction
--- validates its input contract and never mutates the caller's draw records.
+-- opaque/cutout/mixedOpaque/wireframe, translucent screen-Y automatic-sort
+-- ordering, MIXED item splitting into opaque and blended passes, and
+-- deterministic tie-breaking by traversal position across ordered parts.
+-- Queue construction validates its input contract and never mutates the
+-- caller's draw records.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -11,20 +12,40 @@ local Matrix4 = require("libs.math.src.Matrix4")
 
 local T = {}
 
-local function item(id, mode, center, transform)
+local IDENTITY = Matrix4.identity()
+
+-- A linear, fully predictable screen-Y projection for the ordering tests:
+-- identity view plus an orthographic projection maps model Y directly to
+-- top-down screen Y (0 is the top): screenY(y) = 0.5 * (1 - y / 10).
+local function orthoProjection()
+  return Matrix4.orthographic(-10, 10, -10, 10, 0.1, 100)
+end
+
+local function item(id, mode, center, transform, opts)
+  opts = opts or {}
   return {
     id = id,
     alphaClass = mode,
     center = center or { 0, 0, 0 },
     transform = transform or Matrix4.identity(),
+    sortBounds = opts.sortBounds,
+    billboardCenter = opts.billboardCenter,
+    billboardScale = opts.billboardScale,
+    billboardProjection = opts.billboardProjection,
+    fieldEffect = opts.fieldEffect,
   }
+end
+
+-- Model-space AABB helper: the pool mesh-entry bounds shape the queue reads.
+local function bounds(minX, maxX, minY, maxY, minZ, maxZ)
+  return { minX = minX, maxX = maxX, minY = minY, maxY = maxY, minZ = minZ, maxZ = maxZ }
 end
 
 local function ids(queue, key)
   local out = {}
   local entries = queue[key]
   if key == "blended" then
-    -- blended contains {item, fragmentPass, viewZ, position} records
+    -- blended contains {item, fragmentPass} records
     for _, record in ipairs(entries) do
       out[#out + 1] = record.item.id
     end
@@ -50,8 +71,14 @@ local function scratch()
   return RenderQueue.newScratch()
 end
 
-local function build(parts, viewMatrix)
-  return RenderQueue.buildInto(parts, viewMatrix, scratch())
+local function build(parts, viewMatrix, worldProjection, billboardProjection)
+  return RenderQueue.buildInto(
+    parts,
+    viewMatrix or IDENTITY,
+    worldProjection or IDENTITY,
+    billboardProjection or IDENTITY,
+    scratch()
+  )
 end
 
 local function throwsCode(code, fn)
@@ -105,7 +132,7 @@ function T.build_into_reuses_caller_owned_scratch_arrays()
     { item("map", "opaque"), item("glass", "translucent") },
     { item("building", "cutout") },
     { item("actor", "wireframe") },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   Assert.isTrue(queue == storage)
   Assert.isTrue(queue.opaque == opaque)
@@ -125,7 +152,7 @@ function T.build_into_preserves_order_across_parts()
     { item("building", "opaque") },
     { item("neighbor", "cutout") },
     { item("actor", "opaque") },
-  }, Matrix4.identity(), scratch())
+  }, Matrix4.identity(), IDENTITY, IDENTITY, scratch())
 
   Assert.deepEqual(ids(queue, "opaque"), { "map-a", "building", "actor" })
   Assert.deepEqual(ids(queue, "cutout"), { "map-b", "neighbor" })
@@ -142,9 +169,9 @@ function T.build_into_clears_stale_tail_entries()
       item("near", "translucent", { 0, 0, -1 }),
       item("wire", "wireframe"),
     },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
-  RenderQueue.buildInto({ { item("only", "opaque") } }, Matrix4.identity(), storage)
+  RenderQueue.buildInto({ { item("only", "opaque") } }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   Assert.deepEqual(ids(storage, "opaque"), { "only" })
   Assert.equal(#storage.cutout, 0)
@@ -153,55 +180,47 @@ function T.build_into_clears_stale_tail_entries()
   Assert.equal(#storage.blended, 0)
 end
 
-function T.build_into_translucent_ties_preserve_cross_part_order()
-  local queue = RenderQueue.buildInto({
-    { item("map", "translucent", { 0, 0, -5 }) },
-    { item("building", "translucent", { 0, 0, -5 }) },
-    { item("neighbor", "translucent", { 0, 0, -5 }) },
-    { item("actor", "translucent", { 0, 0, -5 }) },
-  }, Matrix4.identity(), scratch())
-
-  Assert.deepEqual(ids(queue, "blended"), { "map", "building", "neighbor", "actor" })
-end
-
-function T.mixed_and_translucent_sort_jointly_by_view_z()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
-  local queue = RenderQueue.buildInto({
+-- Bottom screen Y orders first, mixing ordinary and mixed-translucent
+-- entries jointly: the lower item on screen sorts later even though it is
+-- the nearer one in camera space.
+function T.mixed_and_translucent_sort_jointly_by_screen_y()
+  local ortho = orthoProjection()
+  local queue = build({
     {
-      item("trans-far", "translucent", { 0, 0, -10 }),
-      item("mixed-mid", "mixed", { 0, 0, -5 }),
-      item("trans-near", "translucent", { 0, 0, -1 }),
+      item("low-far", "translucent", { 0, -4, -20 }),
+      item("high-near", "mixed", { 0, 4, -5 }),
     },
-  }, view, scratch())
+  }, IDENTITY, ortho, ortho)
 
-  Assert.deepEqual(ids(queue, "blended"), { "trans-far", "mixed-mid", "trans-near" })
-  Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "translucent", "mixed", "translucent" })
+  Assert.deepEqual(ids(queue, "blended"), { "high-near", "low-far" })
+  Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "mixed", "translucent" })
 end
 
-function T.mixed_and_translucent_equal_depth_tie_by_position()
-  local queue = RenderQueue.buildInto({
+function T.mixed_and_translucent_equal_extent_tie_by_position()
+  local queue = build({
     { item("trans1", "translucent", { 0, 0, -5 }) },
     { item("mixed1", "mixed", { 0, 0, -5 }) },
     { item("trans2", "translucent", { 0, 0, -5 }) },
     { item("mixed2", "mixed", { 0, 0, -5 }) },
-  }, Matrix4.identity(), scratch())
+  }, Matrix4.identity())
 
   Assert.deepEqual(
     ids(queue, "blended"),
     { "trans1", "mixed1", "trans2", "mixed2" },
-    "equal-depth items maintain submission order"
+    "equal-extent items maintain submission order"
   )
 end
 
 function T.mixed_item_in_opaque_and_blended_passes()
+  local ortho = orthoProjection()
   local storage = scratch()
   local queue = RenderQueue.buildInto({
     {
       item("opaque", "opaque"),
-      item("mixed", "mixed"),
-      item("translucent", "translucent"),
+      item("mixed", "mixed", { 0, 2, -5 }),
+      item("translucent", "translucent", { 0, -2, -5 }),
     },
-  }, Matrix4.identity(), storage)
+  }, IDENTITY, ortho, ortho, storage)
 
   -- Mixed appears in mixedOpaque for the opaque subpass
   Assert.deepEqual(ids(queue, "mixedOpaque"), { "mixed" })
@@ -213,58 +232,50 @@ end
 
 -- Queue construction branches once on each item's renderer-facing alpha
 -- class: one build carrying all five valid classes lands every item in
--- its pass, while an unknown class still fails loudly from the final
--- branch.
-function T.build_into_sorts_all_five_alpha_classes_and_rejects_unknown()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+-- its pass.
+function T.build_into_sorts_all_five_alpha_classes()
+  local ortho = orthoProjection()
   local queue = RenderQueue.buildInto({
     { item("wall", "opaque"), item("fence", "cutout") },
     {
-      item("far-glass", "translucent", { 0, 0, -10 }),
-      item("mid-glass", "mixed", { 0, 0, -5 }),
+      item("high-glass", "translucent", { 0, 3, -10 }),
+      item("low-glass", "mixed", { 0, -3, -5 }),
       item("edges", "wireframe"),
     },
-  }, view, scratch())
+  }, IDENTITY, ortho, ortho, scratch())
   Assert.deepEqual(ids(queue, "opaque"), { "wall" })
   Assert.deepEqual(ids(queue, "cutout"), { "fence" })
-  Assert.deepEqual(ids(queue, "mixedOpaque"), { "mid-glass" })
+  Assert.deepEqual(ids(queue, "mixedOpaque"), { "low-glass" })
   Assert.deepEqual(ids(queue, "wireframe"), { "edges" })
-  Assert.deepEqual(ids(queue, "blended"), { "far-glass", "mid-glass" })
+  Assert.deepEqual(ids(queue, "blended"), { "high-glass", "low-glass" })
   Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "translucent", "mixed" })
-  local invalid = throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
+end
+
+-- Queue construction validates its input contract once: an unknown class,
+-- a material-only class, and a missing class all fail loudly with the same
+-- contract code instead of landing in an arbitrary pass.
+function T.rejects_invalid_alpha_classes()
+  local unknown = throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
     build({ { item("ghostly", "ghostly") } }, Matrix4.identity())
   end)
-  Assert.equal(invalid.context.alphaClass, "ghostly")
-end
+  Assert.equal(unknown.context.alphaClass, "ghostly")
 
-function T.rejects_material_only_alpha_class()
-  local matItem = {
-    id = "mat",
-    alphaClass = nil,
-    material = { alphaClass = "cutout" },
-    center = { 0, 0, 0 },
-    transform = Matrix4.identity(),
-  }
-  local err = throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
-    build({ { matItem } }, Matrix4.identity())
+  local materialOnly = throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
+    build({
+      {
+        {
+          id = "mat",
+          material = { alphaClass = "cutout" },
+          center = { 0, 0, 0 },
+          transform = Matrix4.identity(),
+        },
+      },
+    }, Matrix4.identity())
   end)
-  Assert.isNil(err.context.alphaClass)
-end
+  Assert.isNil(materialOnly.context.alphaClass)
 
-function T.rejects_unknown_alpha_class()
-  local err = throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
-    build({ { item("ghostly", "ghostly") } }, Matrix4.identity())
-  end)
-  Assert.equal(err.context.alphaClass, "ghostly")
-end
-
-function T.rejects_missing_alpha_class()
-  local bare = {
-    center = { 0, 0, 0 },
-    transform = Matrix4.identity(),
-  }
   throwsCode("RENDER_QUEUE_UNKNOWN_ALPHA_CLASS", function()
-    build({ { bare } }, Matrix4.identity())
+    build({ { { center = { 0, 0, 0 }, transform = Matrix4.identity() } } }, Matrix4.identity())
   end)
 end
 
@@ -281,57 +292,66 @@ function T.preserves_submission_order_for_cutout_and_wireframe()
   Assert.deepEqual(ids(q, "wireframe"), { "b" })
 end
 
-function T.sorts_translucent_back_to_front()
-  -- Camera at (0,0,5) looking at origin; view matrix maps world +Z to -Z.
+-- The automatic screen-Y rule replaces camera-depth sorting: far-low sits
+-- deeper in camera space (world Z -10 versus -1 under the same view) yet
+-- sorts last, because near-high sits higher on screen.
+function T.sorts_translucent_by_screen_y_where_camera_depth_would_differ()
   local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local projection = Matrix4.perspective(math.rad(60), 1, 0.1, 100)
   local items = {
-    item("nearest", "translucent", { 0, 0, 0 }),
-    item("farthest", "translucent", { 0, 0, -10 }),
-    item("middle", "translucent", { 0, 0, -5 }),
+    item("near-high", "translucent", { 0, 2, -1 }),
+    item("far-low", "translucent", { 0, -3, -10 }),
   }
-  local q = build({ items }, view)
-  Assert.deepEqual(ids(q, "blended"), { "farthest", "middle", "nearest" })
+  local q = build({ items }, view, projection, projection)
+  Assert.deepEqual(ids(q, "blended"), { "near-high", "far-low" })
 end
 
--- Equal-depth blended draws tie-break by traversal position across the
--- ordered parts: the earlier part (map geometry) draws before the later part
+-- Equal screen extents tie-break by traversal position across the ordered
+-- parts: the earlier part (map geometry) draws before the later part
 -- (actors) deterministically.
-function T.equal_depth_ties_break_by_part_position()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+function T.equal_extent_ties_break_by_part_position()
+  local ortho = orthoProjection()
   local parts = {
-    { item("first", "translucent", { 0, 0, -5 }) },
-    { item("second", "translucent", { 0, 0, -5 }) },
-    { item("third", "translucent", { 0, 0, -5 }) },
+    { item("first", "translucent", { 0, 1, -5 }) },
+    { item("second", "translucent", { 0, 1, -5 }) },
+    { item("third", "translucent", { 0, 1, -5 }) },
   }
-  local q = build(parts, view)
+  local q = build(parts, IDENTITY, ortho, ortho)
   Assert.deepEqual(ids(q, "blended"), { "first", "second", "third" })
 end
 
+-- Two items translated vertically: the higher one on screen sorts first,
+-- while the camera-space Z of both stays identical.
 function T.transforms_center_by_item_transform()
-  -- Two items at the same model-space center but translated differently.
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
-  local near = item("near", "translucent", { 0, 0, 0 }, Matrix4.translate(0, 0, 0))
-  local far = item("far", "translucent", { 0, 0, 0 }, Matrix4.translate(0, 0, -10))
-  local q = build({ { near, far } }, view)
-  Assert.deepEqual(ids(q, "blended"), { "far", "near" })
+  local ortho = orthoProjection()
+  local upper = item("upper", "translucent", { 0, 0, 0 }, Matrix4.translate(0, 3, 0))
+  local lower = item("lower", "translucent", { 0, 0, 0 }, Matrix4.translate(0, -3, 0))
+  local q = build({ { lower, upper } }, IDENTITY, ortho, ortho)
+  Assert.deepEqual(ids(q, "blended"), { "upper", "lower" })
 end
 
+-- A nonzero model-space center is transformed exactly once by the item
+-- transform: translating a +1 center by +32 reaches world Y 33, below the
+-- control at 49. A double application (+65) would sort the translated item
+-- first instead.
 function T.transforms_nonzero_model_center_once_before_sorting()
-  local translated = item("translated", "translucent", { 0, 0, 1 }, Matrix4.translate(0, 0, 32))
-  local origin = item("origin", "translucent", { 0, 0, 49 }, Matrix4.identity())
-  local q = build({ { translated, origin } }, Matrix4.identity())
-  Assert.deepEqual(ids(q, "blended"), { "translated", "origin" })
+  local ortho = orthoProjection()
+  local translated = item("translated", "translucent", { 0, 1, 0 }, Matrix4.translate(0, 32, 0))
+  local origin = item("origin", "translucent", { 0, 49, 0 }, Matrix4.identity())
+  local q = build({ { translated, origin } }, IDENTITY, ortho, ortho)
+  Assert.deepEqual(ids(q, "blended"), { "origin", "translated" })
 end
 
--- Sorting must not attach fields (e.g. a cached `_viewZ`) to the persistent
--- draw records, and repeated construction must not change any input item.
--- Blended entries are scratch records, but original items remain untouched.
+-- Sorting leaves the persistent draw records untouched: Blended entries
+-- are scratch records, and repeated construction from the same items is
+-- deterministic. The before/after snapshot below proves non-mutation
+-- generically, without naming the scratch's current sort-key fields.
 function T.build_does_not_mutate_input_items()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local ortho = orthoProjection()
   local items = {
     item("a", "opaque", { 0, 0, 0 }),
-    item("b", "translucent", { 0, 0, -10 }),
-    item("c", "translucent", { 0, 0, -5 }),
+    item("b", "translucent", { 0, 2, -10 }),
+    item("c", "translucent", { 0, -2, -5 }),
     item("d", "cutout"),
     item("e", "wireframe"),
   }
@@ -342,10 +362,9 @@ function T.build_does_not_mutate_input_items()
       before[i][k] = v
     end
   end
-  local first = build({ items }, view)
-  local second = build({ items }, view)
+  local first = build({ items }, IDENTITY, ortho, ortho)
+  local second = build({ items }, IDENTITY, ortho, ortho)
   for i, it in ipairs(items) do
-    Assert.isNil(rawget(it, "_viewZ"), "no sort field is attached to item " .. i)
     Assert.deepEqual(it, before[i], "item " .. i .. " mutated by queue construction")
   end
   Assert.deepEqual(ids(first, "blended"), ids(second, "blended"))
@@ -367,53 +386,185 @@ function T.queue_entries_are_the_original_items()
   Assert.isTrue(q.wireframe[1] == items[4], "wireframe pass returns the original item")
 end
 
--- A rotated+translated item: the model-space center is transformed exactly
--- once by the item transform, so the sort reflects the true world position
--- (the dynamic-instance contract -- never a world-space center that the
--- queue would transform a second time).
+-- A rotated item: the model-space center is transformed exactly once by the
+-- item transform, so the sort reflects the true world position. A 90-degree
+-- Y rotation maps a +X model offset to -Z, and the extra upward translation
+-- then places the rotated item higher on screen.
 function T.transforms_rotated_translated_centers_once()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local ortho = orthoProjection()
   local rotate = Matrix4.rotateY(math.pi / 2)
-  local move = Matrix4.translate(0, 0, -10)
+  local move = Matrix4.translate(0, 4, 0)
   local transform = Matrix4.multiply(move, rotate)
-  -- A model-local center at +X maps, under the 90-degree Y rotation, to -Z:
-  -- the world center is (0, 0, -10). An item at the origin stays nearer.
+  -- A model-local center at +X maps, under the 90-degree Y rotation, to -Z
+  -- with the +4 lift; the unrotated item at the origin stays lower.
   local rotated = item(1, "translucent", { 5, 0, 0 }, transform)
   local origin = item(2, "translucent", { 0, 0, 0 }, Matrix4.identity())
-  local q = build({ { origin, rotated } }, view)
-  Assert.deepEqual(ids(q, "blended"), { 1, 2 }, "far (rotated) first, near origin last")
+  local q = build({ { origin, rotated } }, IDENTITY, ortho, ortho)
+  Assert.deepEqual(ids(q, "blended"), { 1, 2 }, "higher (rotated and lifted) first, origin last")
 end
 
-function T.sorts_billboards_from_their_view_space_center_and_scaled_model_center()
-  local billboard = item("billboard", "translucent", { 0, 0, 1 })
-  billboard.billboardCenter = { 0, 0, -32 }
-  billboard.billboardScale = { 1, 1, 2 }
-  local ordinary = item("ordinary", "translucent", { 0, 0, -29.5 })
+-- A billboard sorts from its camera-facing placement: the billboard center
+-- into view space plus the model-space extents scaled by the billboard
+-- axes. Doubling the vertical scale of a unit box spreads its screen-Y
+-- extents exactly like the shader's view-space placement.
+function T.sorts_billboards_from_their_camera_facing_placement()
+  local ortho = orthoProjection()
+  local billboard = item("billboard", "translucent", { 0, 0, 0 }, nil, {
+    sortBounds = bounds(-1, 1, -1, 1, 0, 0),
+    billboardCenter = { 0, 0, -5 },
+    billboardScale = { 1, 2, 1 },
+  })
+  -- The scaled box spans view Y in [-2, 2]: bottom screen Y 0.6.
+  local ordinary = item("ordinary", "translucent", { 0, 1, -5 })
 
-  local q = build({ { billboard, ordinary } }, Matrix4.identity())
+  local q = build({ { billboard, ordinary } }, IDENTITY, ortho, ortho)
 
   Assert.deepEqual(
     ids(q, "blended"),
-    { "billboard", "ordinary" },
-    "billboard depth includes its view-space center and scaled model center"
+    { "ordinary", "billboard" },
+    "the ordinary center at screen Y 0.45 sorts before the billboard bottom 0.6"
   )
 end
 
--- Blended entries are renderer-owned scratch records with {item, fragmentPass, viewZ, position}.
+-- Projection selection mirrors the renderer: billboard-flagged and
+-- field-effect items project through the billboard projection, ordinary
+-- items through the world projection. A scaled billboard projection moves
+-- the billboard item across an ordinary control item that both projections
+-- would otherwise agree on.
+function T.billboard_and_field_effect_items_use_the_billboard_projection()
+  local worldProjection = Matrix4.identity()
+  local billboardProjection = Matrix4.scale(1, 2, 1)
+  local flagged = item("flagged", "translucent", { 0, 0, 0 }, nil, {
+    sortBounds = bounds(0, 0, 2, 6, 0, 0),
+    billboardCenter = { 0, 0, 0 },
+    billboardScale = { 1, 1, 1 },
+    billboardProjection = true,
+  })
+  local effect = item("effect", "translucent", { 0, 0, 0 }, nil, {
+    sortBounds = bounds(0, 0, 2, 6, 0, 0),
+    fieldEffect = "warp_entrance",
+  })
+  -- Ordinary control: projected center at world screen Y -1.0, between the
+  -- world-projection reading (-0.5) and the billboard-projection reading
+  -- (-1.5) of the same bounds.
+  local control = item("control", "translucent", { 0, 3, 0 })
+
+  local q = build({ { control, flagged, effect } }, IDENTITY, worldProjection, billboardProjection)
+
+  Assert.deepEqual(
+    ids(q, "blended"),
+    { "flagged", "effect", "control" },
+    "billboard and field-effect bounds project through the billboard projection"
+  )
+end
+
+-- Ordinary items always project through the world projection, even when the
+-- billboard projection differs.
+function T.ordinary_items_use_the_world_projection()
+  local worldProjection = Matrix4.identity()
+  local billboardProjection = Matrix4.scale(1, 2, 1)
+  local ordinary = item("ordinary", "translucent", { 0, 3, 0 })
+  local control = item("control", "translucent", { 0, 1, 0 })
+
+  local q = build({ { control, ordinary } }, IDENTITY, worldProjection, billboardProjection)
+
+  -- World screen Y: ordinary -1.0, control 0.0.
+  Assert.deepEqual(ids(q, "blended"), { "ordinary", "control" })
+end
+
+-- World geometry sorts from its transformed AABB, not its center or its
+-- camera depth: two boxes sharing one center order by their vertical
+-- extents, and a translated box moves with its transform.
+function T.world_geometry_sorts_from_the_transformed_aabb()
+  local ortho = orthoProjection()
+  -- Same center, different extents: the taller box reaches lower on screen.
+  local tall = item("tall", "translucent", { 0, 0, -5 }, Matrix4.identity(), {
+    sortBounds = bounds(-1, 1, -4, 1, -1, 1),
+  })
+  local short = item("short", "translucent", { 0, 0, -5 }, Matrix4.identity(), {
+    sortBounds = bounds(-1, 1, -1, 1, -1, 1),
+  })
+  local q = build({ { tall, short } }, IDENTITY, ortho, ortho)
+  Assert.deepEqual(ids(q, "blended"), { "short", "tall" })
+
+  -- A translated box carries its extents with it: +4 lift sorts above an
+  -- untranslated box even though both share the model-space AABB.
+  local lifted = item("lifted", "translucent", { 0, 0, -5 }, Matrix4.translate(0, 4, 0), {
+    sortBounds = bounds(-1, 1, -1, 1, -1, 1),
+  })
+  local grounded = item("grounded", "translucent", { 0, 0, -5 }, Matrix4.identity(), {
+    sortBounds = bounds(-1, 1, -1, 1, -1, 1),
+  })
+  local moved = build({ { grounded, lifted } }, IDENTITY, ortho, ortho)
+  Assert.deepEqual(ids(moved, "blended"), { "lifted", "grounded" })
+end
+
+-- Equal bottom screen Y breaks on ascending top screen Y: two boxes sharing
+-- a bottom edge order by their top edge, not by submission.
+function T.bottom_tie_breaks_on_top_screen_y()
+  local ortho = orthoProjection()
+  local tall = item("tall", "translucent", { 0, 0, -5 }, Matrix4.identity(), {
+    sortBounds = bounds(-1, 1, -5, 5, -1, 1),
+  })
+  local flat = item("flat", "translucent", { 0, 0, -5 }, Matrix4.identity(), {
+    sortBounds = bounds(-1, 1, -5, 0, -1, 1),
+  })
+  -- Tall spans screen Y [0.25, 0.75]; flat spans [0.5, 0.75]: equal bottoms.
+  local q = build({ { flat, tall } }, IDENTITY, ortho, ortho)
+  Assert.deepEqual(ids(q, "blended"), { "tall", "flat" })
+end
+
+-- An item without cached bounds falls back to its projected center with
+-- identical top and bottom keys: deterministic, with no return to the old
+-- view-Z sort.
+function T.missing_bounds_falls_back_to_the_projected_center()
+  local ortho = orthoProjection()
+  local storage = scratch()
+  local upper = item("upper", "translucent", { 0, 4, -5 })
+  local lower = item("lower", "translucent", { 0, -4, -5 })
+  local queue = RenderQueue.buildInto({ { lower, upper } }, IDENTITY, ortho, ortho, storage)
+
+  Assert.deepEqual(ids(queue, "blended"), { "upper", "lower" })
+  Assert.equal(storage._sortKeys[0].bottomY, storage._sortKeys[0].topY)
+  Assert.equal(storage._sortKeys[1].bottomY, storage._sortKeys[1].topY)
+  -- Key slots follow entry (submission) order: slot 0 is the lower item.
+  Assert.isTrue(storage._sortKeys[1].bottomY < storage._sortKeys[0].bottomY)
+end
+
+-- Geometry that cannot project (behind the camera plane) receives a
+-- deterministic top-of-screen constant instead of NaN/Infinity keys, and
+-- rebuilds agree exactly.
+function T.unprojectable_geometry_receives_deterministic_finite_keys()
+  local projection = Matrix4.perspective(math.rad(60), 1, 0.1, 100)
+  local storage = scratch()
+  local behind = item("behind", "translucent", { 0, 0, 5 }, Matrix4.identity(), {
+    sortBounds = bounds(-1, 1, -1, 1, -1, 1),
+  })
+  local first = RenderQueue.buildInto({ { behind } }, IDENTITY, projection, projection, storage)
+  local bottomY, topY = storage._sortKeys[0].bottomY, storage._sortKeys[0].topY
+  Assert.equal(bottomY, 0.0)
+  Assert.equal(topY, 0.0)
+  Assert.isTrue(bottomY == bottomY and topY == topY, "unprojectable keys are never NaN")
+  local second = RenderQueue.buildInto({ { behind } }, IDENTITY, projection, projection, storage)
+  Assert.deepEqual(ids(first, "blended"), ids(second, "blended"))
+  Assert.equal(storage._sortKeys[0].bottomY, bottomY)
+end
+
+-- Blended entries are renderer-owned scratch records with {item, fragmentPass}.
 -- They must be reused across frames so repeated queue construction does not
 -- allocate new entry tables.
 function T.blended_entries_are_reused_scratch_records()
   local storage = scratch()
   local q1 = RenderQueue.buildInto({
     { item("trans1", "translucent"), item("trans2", "translucent") },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   local firstEntry1 = q1.blended[1]
   local firstEntry2 = q1.blended[2]
 
   local q2 = RenderQueue.buildInto({
     { item("trans1", "translucent"), item("trans2", "translucent") },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   -- Same storage object is reused
   Assert.isTrue(q2 == storage)
@@ -422,7 +573,8 @@ function T.blended_entries_are_reused_scratch_records()
   Assert.isTrue(q2.blended[2] == firstEntry2, "blended entry 2 table is reused")
 end
 
--- After a smaller frame, stale blended entries must be truncated.
+-- After a smaller frame, stale blended entries and stale sort-order
+-- indexes are truncated together.
 function T.blended_tail_truncation_after_smaller_frame()
   local storage = scratch()
   RenderQueue.buildInto({
@@ -431,15 +583,19 @@ function T.blended_tail_truncation_after_smaller_frame()
       item("t2", "translucent"),
       item("t3", "translucent"),
     },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   Assert.equal(#storage.blended, 3)
+  Assert.equal(#storage._sortOrder, 3)
 
   RenderQueue.buildInto({
     { item("t1", "translucent") },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   Assert.equal(#storage.blended, 1, "stale blended tail is removed")
+  Assert.isNil(storage.blended[2], "no stale blended reference survives shrinking")
+  Assert.equal(#storage._sortOrder, 1, "shrinking clears stale order indexes")
+  Assert.isNil(storage._sortOrder[2], "no stale order index survives shrinking")
 end
 
 -- Blended records must have fragmentPass field set to the correct pass type.
@@ -450,7 +606,7 @@ function T.blended_records_have_fragment_pass_field()
       item("trans", "translucent"),
       item("mixed", "mixed"),
     },
-  }, Matrix4.identity(), storage)
+  }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   Assert.equal(storage.blended[1].fragmentPass, "translucent")
   Assert.equal(storage.blended[2].fragmentPass, "mixed")
@@ -465,7 +621,7 @@ function T.mixed_does_not_confuse_with_translucent_only()
     item("trans-b", "translucent"),
     item("mixed-b", "mixed"),
   }
-  RenderQueue.buildInto({ items }, Matrix4.identity(), storage)
+  RenderQueue.buildInto({ items }, Matrix4.identity(), IDENTITY, IDENTITY, storage)
 
   -- mixedOpaque contains only mixed items
   Assert.deepEqual(ids(storage, "mixedOpaque"), { "mixed-a", "mixed-b" })
@@ -476,42 +632,38 @@ function T.mixed_does_not_confuse_with_translucent_only()
 end
 
 -- Blended ordering through the queue-owned scratch constructor: every alpha
--- class across multiple parts lands in its pass, blended sorts far-to-near
--- with source-position tie breaks, and mixed items reference the same
--- original record in both passes without mutating caller items.
+-- class across multiple parts lands in its pass, blended sorts by ascending
+-- bottom screen Y with source-position tie breaks, and mixed items reference
+-- the same original record in both passes.
 function T.preserves_exact_pass_membership_and_blended_order_through_owned_scratch()
   local storage = RenderQueue.newScratch()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local ortho = orthoProjection()
   local wall = item("wall", "opaque")
   local fence = item("fence", "cutout")
-  local far = item("far", "translucent", { 0, 0, -10 })
+  local high = item("high", "translucent", { 0, 4, -10 })
   local mixedMid = item("mixed-mid", "mixed", { 0, 0, -5 })
   local tieLate = item("tie-late", "translucent", { 0, 0, -5 })
-  local near = item("near", "translucent", { 0, 0, -1 })
+  local low = item("low", "translucent", { 0, -4, -1 })
   local wire = item("wire", "wireframe")
   local queue = RenderQueue.buildInto({
-    { wall, fence, far, mixedMid },
-    { tieLate, near },
+    { wall, fence, high, mixedMid },
+    { tieLate, low },
     { wire },
-  }, view, storage)
+  }, IDENTITY, ortho, ortho, storage)
 
   Assert.isTrue(queue == storage)
   Assert.deepEqual(ids(queue, "opaque"), { "wall" })
   Assert.deepEqual(ids(queue, "cutout"), { "fence" })
   Assert.deepEqual(ids(queue, "mixedOpaque"), { "mixed-mid" })
   Assert.deepEqual(ids(queue, "wireframe"), { "wire" })
-  Assert.deepEqual(ids(queue, "blended"), { "far", "mixed-mid", "tie-late", "near" })
+  Assert.deepEqual(ids(queue, "blended"), { "high", "mixed-mid", "tie-late", "low" })
   Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "translucent", "mixed", "translucent", "translucent" })
   Assert.isTrue(
     queue.mixedOpaque[1] == mixedMid and queue.blended[2].item == mixedMid,
     "the mixed item reaches both passes by identity"
   )
-  Assert.isTrue(queue.blended[1].item == far, "the first entry is the farthest draw")
-  Assert.isTrue(queue.blended[#queue.blended].item == near, "the last entry is the nearest draw")
-  for _, original in ipairs({ wall, fence, far, mixedMid, tieLate, near, wire }) do
-    Assert.isNil(rawget(original, "viewZ"), "no sort key is written back onto caller items")
-    Assert.isNil(rawget(original, "position"), "no source position is written back onto caller items")
-  end
+  Assert.isTrue(queue.blended[1].item == high, "the first entry is the highest draw")
+  Assert.isTrue(queue.blended[#queue.blended].item == low, "the last entry is the lowest draw")
 end
 
 -- Warmed rebuilds at a stable blended cardinality reuse every piece of sort
@@ -526,10 +678,10 @@ function T.warmed_rebuilds_reuse_sort_storage_and_leave_inputs_untouched()
   Assert.notNil(storage._sortKeys, "the scratch owns reusable key storage")
   Assert.notNil(storage._sortOrder, "the scratch owns a reusable order table")
 
-  local view = Matrix4.identity()
-  local first = item("first", "translucent", { 0, 0, -3 })
-  local second = item("mixed-second", "mixed", { 0, 0, -2 })
-  local third = item("third", "translucent", { 0, 0, -1 })
+  local ortho = orthoProjection()
+  local first = item("first", "translucent", { 0, 3, -5 })
+  local second = item("mixed-second", "mixed", { 0, 0, -5 })
+  local third = item("third", "translucent", { 0, -3, -5 })
   local parts = { { first, second, third } }
   local before = {}
   for index, original in ipairs(parts[1]) do
@@ -539,7 +691,7 @@ function T.warmed_rebuilds_reuse_sort_storage_and_leave_inputs_untouched()
     end
   end
 
-  RenderQueue.buildInto(parts, view, storage)
+  RenderQueue.buildInto(parts, IDENTITY, ortho, ortho, storage)
   local comparator = storage._sortCompare
   local keys = storage._sortKeys
   local order = storage._sortOrder
@@ -550,7 +702,7 @@ function T.warmed_rebuilds_reuse_sort_storage_and_leave_inputs_untouched()
   end
   Assert.equal(#wrappers, 3)
 
-  RenderQueue.buildInto(parts, view, storage)
+  RenderQueue.buildInto(parts, IDENTITY, ortho, ortho, storage)
 
   Assert.isTrue(storage._sortCompare == comparator, "the comparator is reused, not recreated per build")
   Assert.isTrue(storage._sortKeys == keys, "the key buffer is reused across warmed builds")
@@ -575,114 +727,8 @@ function T.warmed_rebuilds_reuse_sort_storage_and_leave_inputs_untouched()
       and renderer._queueScratch._sortOrder ~= nil,
     "the field renderer lifetime scratch carries the queue-owned sort storage"
   )
-  local rendererQueue = RenderQueue.buildInto(parts, view, renderer._queueScratch)
+  local rendererQueue = RenderQueue.buildInto(parts, IDENTITY, ortho, ortho, renderer._queueScratch)
   Assert.deepEqual(ids(rendererQueue, "blended"), { "first", "mixed-second", "third" })
-end
-
--- Sort capacity grows once when blended cardinality exceeds it, then holds
--- steady at or below the warmed maximum; shrinking clears stale references.
--- The warmed timing sample below is measurement only: it reports the current
--- cost so the later comparison can judge the non-regression gate without
--- committing a machine-specific threshold to the suite.
-function T.sort_capacity_grows_once_then_holds_with_reported_warmed_cost()
-  local storage = RenderQueue.newScratch()
-  local view = Matrix4.identity()
-
-  local function partsWith(count)
-    local part = {}
-    for index = 1, count do
-      part[index] = item("glass-" .. index, "translucent", { 0, 0, -index })
-    end
-    return { part }
-  end
-
-  RenderQueue.buildInto(partsWith(1), view, storage)
-  local initialBuffer = storage._sortKeys
-  Assert.notNil(initialBuffer, "the scratch owns key storage from the first build")
-  Assert.equal(#storage.blended, 1)
-
-  local grownAt = nil
-  local grownBuffer = nil
-  local count = 2
-  while count <= 4096 do
-    RenderQueue.buildInto(partsWith(count), view, storage)
-    if storage._sortKeys ~= initialBuffer then
-      grownAt = count
-      grownBuffer = storage._sortKeys
-      break
-    end
-    count = count * 2
-  end
-  Assert.notNil(grownBuffer, "key storage grows once cardinality exceeds its initial capacity")
-  Assert.isTrue(grownBuffer ~= initialBuffer)
-
-  RenderQueue.buildInto(partsWith(grownAt), view, storage)
-  RenderQueue.buildInto(partsWith(grownAt), view, storage)
-  Assert.isTrue(storage._sortKeys == grownBuffer, "no further buffer replacement at the warmed maximum")
-  Assert.equal(#storage.blended, grownAt)
-  Assert.isTrue(storage.blended[1].item.id == "glass-" .. grownAt, "the first entry is still the farthest draw")
-  Assert.isTrue(storage.blended[#storage.blended].item.id == "glass-1", "the last entry is still the nearest draw")
-
-  RenderQueue.buildInto(partsWith(1), view, storage)
-  Assert.equal(#storage.blended, 1, "shrinking clears the visible blended tail")
-  Assert.isNil(storage.blended[2], "no stale blended reference survives shrinking")
-
-  RenderQueue.buildInto(partsWith(grownAt), view, storage)
-  Assert.isTrue(storage._sortKeys == grownBuffer, "capacity is retained after a smaller frame")
-  Assert.equal(#storage.blended, grownAt)
-
-  local benchParts = partsWith(64)
-  for _ = 1, 200 do
-    RenderQueue.buildInto(benchParts, view, storage)
-  end
-  local samples = {}
-  for sample = 1, 7 do
-    local started = os.clock()
-    for _ = 1, 1000 do
-      RenderQueue.buildInto(benchParts, view, storage)
-    end
-    samples[sample] = os.clock() - started
-  end
-  table.sort(samples)
-  local median = samples[4]
-  Assert.isTrue(median > 0, "the warmed benchmark completes and reports positive CPU time")
-  io.stderr:write(
-    string.format(
-      "[render-queue] warmed buildInto x1000 (64 blended): median %.6fs min %.6fs max %.6fs\n",
-      median,
-      samples[1],
-      samples[#samples]
-    )
-  )
-end
-
--- Key storage tracks the first and last blended entries exactly, and the
--- reusable order array sheds stale indexes when a later frame shrinks.
-function T.blended_key_storage_tracks_boundary_entries_and_order_tail_clears()
-  local storage = RenderQueue.newScratch()
-  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
-  local far = item("far", "translucent", { 0, 0, -10 })
-  local near = item("near", "translucent", { 0, 0, -1 })
-  RenderQueue.buildInto({ { far, near } }, view, storage)
-
-  Assert.equal(storage._sortKeys[0].entryIndex, 1, "the first key slot describes the first entry")
-  Assert.equal(storage._sortKeys[1].entryIndex, 2, "the last key slot describes the last entry")
-  Assert.equal(storage._sortKeys[0].position, 1)
-  Assert.equal(storage._sortKeys[1].position, 2)
-  Assert.isTrue(storage._sortKeys[0].viewZ < storage._sortKeys[1].viewZ, "the first key holds the farther depth")
-  Assert.deepEqual(ids(storage, "blended"), { "far", "near" })
-  Assert.equal(#storage._sortOrder, 2)
-
-  local third = item("third", "translucent", { 0, 0, -5 })
-  RenderQueue.buildInto({ { far, near, third } }, view, storage)
-  Assert.equal(#storage._sortOrder, 3)
-
-  RenderQueue.buildInto({ { near } }, view, storage)
-  Assert.equal(#storage.blended, 1, "shrinking clears the visible blended tail")
-  Assert.isNil(storage.blended[2], "no stale blended reference survives shrinking")
-  Assert.equal(#storage._sortOrder, 1, "shrinking clears stale order indexes")
-  Assert.isNil(storage._sortOrder[2], "no stale order index survives shrinking")
-  Assert.deepEqual(ids(storage, "blended"), { "near" })
 end
 
 return { tests = T }
