@@ -55,14 +55,21 @@ local function fixtureManifest(contacts, order)
   -- by source palette slot, so every slot and skin paints differently.
   local phoneListPalette = {}
   local phoneTooltipPalette = {}
+  local phoneWindowPalette = {}
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
     phoneTooltipPalette[skin] = {}
+    phoneWindowPalette[skin] = {}
     for index = 1, 16 do
       phoneListPalette[skin][index] =
         { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
       phoneTooltipPalette[skin][index] =
         { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
+      -- The call windows print through their own bank of the foreground
+      -- palette (windows[0,1] palette 1), kept distinct from the list
+      -- and tooltip banks so the call surface repaints from it alone.
+      phoneWindowPalette[skin][index] =
+        { r = (index * 41 + skin * 7 + 60) % 256, g = (index * 13 + 150) % 256, b = (skin * 53 + 200) % 256 }
     end
   end
   for skin = 0, 5 do
@@ -113,6 +120,7 @@ local function fixtureManifest(contacts, order)
       panel = phonePanel,
       listPalette = phoneListPalette,
       tooltipPalette = phoneTooltipPalette,
+      windowPalette = phoneWindowPalette,
       sprites = { phone = phoneSprites },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },

@@ -115,45 +115,24 @@ local CALL_TEXT_FOREGROUND = 1
 local CALL_TEXT_SHADOW = 2
 local CALL_TEXT_BACKGROUND = 0
 
--- Procedural fallback fills behind the resolved planes: one hue per skin
--- so a skin swap repaints from the plan content alone, plus the call and
--- panel window colors. Real planes arrive as prepared images whenever the
--- plan resolves them.
-local SKIN_FILLS = {
-  { 0.16, 0.16, 0.20 },
-  { 0.14, 0.22, 0.16 },
-  { 0.16, 0.20, 0.30 },
-  { 0.26, 0.22, 0.12 },
-  { 0.24, 0.14, 0.24 },
-  { 0.12, 0.24, 0.26 },
-}
+-- The source always loads both planes before the first paint
+-- (PokegearPhone_LoadBgGraphics and PokegearPhone_AddWindows in
+-- pokegear_phone_gfx.c), so a plan without its resolved plane is a
+-- broken plan, never a fallback fill: the draws below fail loudly
+-- and name the missing plane instead of painting skin fills or
+-- skipping the information pane.
 
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
----@param path string?
----@return boolean drawn
-local function drawPrepared(graphics, images, path)
-  if path == nil then
-    return false
-  end
-  local lease = images[path]
-  if lease == nil then
-    return false
-  end
+---@param path string the resolved plane behind the surface
+---@param plane string the plane role named on failure
+local function drawRequiredPlane(graphics, images, path, plane)
+  local lease = (images --[[@as table<string, unknown>]])[path]
+  assert(lease ~= nil, "the phone render needs its prepared " .. plane .. " image")
   graphics.setColor(1, 1, 1, 1)
-  lease:draw(graphics, 0, 0)
-  return true
-end
-
----@param graphics love.graphics
----@param color number[]
----@param x number
----@param y number
----@param width number
----@param height number
-local function fillRect(graphics, color, x, y, width, height)
-  graphics.setColor(color[1], color[2], color[3], 1)
-  graphics.rectangle("fill", x, y, width, height)
+  local draw = (lease --[[@as table]]).draw
+  assert(type(draw) == "function", "the phone render needs its prepared " .. plane .. " image")
+  draw(lease, graphics, 0, 0)
 end
 
 ---@param palette table<integer, table<string, number>> sixteen list colors, one-based
@@ -588,21 +567,17 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   end
   assert(type(view) == "table", "the phone render reads its detached view")
   assert(type(content) == "table", "the phone render reads its plan payload")
-  local skin = content.skin
-  if type(skin) ~= "number" then
-    skin = 0
-  end
-  local background = SKIN_FILLS[(math.floor(skin) % #SKIN_FILLS) + 1]
-  assert(background ~= nil, "every skin resolves its fallback fill")
-  if
-    not drawPrepared(
-      graphics --[[@as love.graphics]],
-      images --[[@as table<string, unknown>]],
-      content.foreground --[[@as string?]]
-    )
-  then
-    fillRect(graphics --[[@as love.graphics]], background, 0, 0, SURFACE_WIDTH, SURFACE_HEIGHT)
-  end
+  local foreground = assert(content.foreground, "the phone render reads its foreground plane from the plan")
+  assert(
+    type(foreground) == "string",
+    "the phone render reads its foreground plane from the plan, got " .. type(content.foreground)
+  )
+  drawRequiredPlane(
+    graphics --[[@as love.graphics]],
+    images --[[@as table<string, unknown>]],
+    foreground --[[@as string]],
+    "foreground"
+  )
   local list = view.list
   local call = view.call
   if type(call) == "table" then
@@ -611,7 +586,7 @@ function PokegearPhoneRenderer.draw(resources, view, content)
       nameText --[[@as table<string, unknown>?]],
       text --[[@as table<string, unknown>?]],
       call --[[@as table<string, unknown>]],
-      assert(content.listPalette, "the phone plan resolves its window palette") --[[@as table]]
+      assert(content.windowPalette, "the phone plan resolves its window palette") --[[@as table]]
     )
     local callMenu = view.callMenu
     if type(callMenu) == "table" then
@@ -674,11 +649,9 @@ function PokegearPhoneRenderer.drawInformation(resources, content)
   if nameText == nil then
     nameText = text
   end
-  if type(content.upper) == "string" then
-    local lease = assert(images[content.upper], "the phone render needs its prepared upper image")
-    graphics.setColor(1, 1, 1, 1)
-    lease:draw(graphics, 0, 0)
-  end
+  local upper = assert(content.upper, "the phone render reads its upper plane from the plan")
+  assert(type(upper) == "string", "the phone render reads its upper plane from the plan, got " .. type(content.upper))
+  drawRequiredPlane(graphics, images --[[@as table<string, unknown>]], upper --[[@as string]], "upper")
   local callList = content.callList
   if type(callList) == "table" then
     drawList(

@@ -1442,6 +1442,10 @@ function PhoneController:_planContent(skin)
   if type(tooltipPalettes) == "table" then
     content.tooltipPalette = (tooltipPalettes --[[@as table<integer, table>]])[skin]
   end
+  local windowPalettes = section.windowPalette
+  if type(windowPalettes) == "table" then
+    content.windowPalette = (windowPalettes --[[@as table<integer, table>]])[skin]
+  end
   -- The context menus frame through the shared touchscreen list-menu
   -- tiles staged beside the Fly card: the same sbox source art every
   -- framed app menu draws.
