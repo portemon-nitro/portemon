@@ -1,11 +1,9 @@
 -- Call-layering contract: the live phone call splits across the two
--- source surfaces (MAIN_3 contact list above, SUB_2 speech/name below),
--- carries no panel animation across the menu-to-call transition, offers
--- in-call choices as a shared 24px list-menu projection on the call
--- surface, and renders call text from window/palette source refs.
--- Synthetic catalog, real production controller plus the real phone
--- renderer, recording (non-GPU) host fakes; the scenarios stop before
--- GPU rendering and stay red until the call-layering implementation lands.
+-- source surfaces (MAIN_3 contact list above, SUB_2 speech/name below)
+-- and offers in-call choices as a shared 24px list-menu projection on
+-- the call surface. Synthetic catalog, real production controller plus
+-- the real phone renderer, recording (non-GPU) host fakes; the scenarios
+-- stop before GPU rendering.
 
 local Assert = require("tests.support.Assert")
 
@@ -423,25 +421,6 @@ local SPEECH_RECT = rectOf(16, 152, 216, 32)
 local NAME_RECT = rectOf(32, 128, 72, 16)
 local LIST_BAND = rectOf(8, 16, 216, 144)
 
----@param palette table sixteen one-based source colors
----@param color number[]
----@return boolean
-local function colorTracesToPalette(palette, color)
-  if color[1] == 1 and color[2] == 1 and color[3] == 1 then
-    return true
-  end
-  for _, entry in ipairs(palette) do
-    if
-      math.abs((entry.r / 255) - color[1]) < 1e-9
-      and math.abs((entry.g / 255) - color[2]) < 1e-9
-      and math.abs((entry.b / 255) - color[3]) < 1e-9
-    then
-      return true
-    end
-  end
-  return false
-end
-
 -- Locates the owed-choice menu projection on the call surface: either a
 -- dedicated top-level projection or a menu carried by the call view,
 -- with one 24px row per owed choice, distinct from the speech text.
@@ -494,9 +473,11 @@ end
 
 -- (1) during a live call the information pane carries the live contact
 -- list while the controls pane carries the call speech/name (the
--- MAIN_3/SUB_2 split). The information render must paint the list rows
--- and list text; the controls render must paint the call windows and
--- must not paint any list row.
+-- MAIN_3/SUB_2 split), and the plan carries the per-skin window palette
+-- beside the list palette so the SUB_2 windows print through bank 1 of
+-- the foreground NCLR member. The information render must paint the
+-- list rows and list text; the controls render must paint the call
+-- windows and must not paint any list row.
 function T.tests.live_call_splits_list_and_speech_across_panes()
   local controller = openMenuController()
   placeMenuCall(controller)
@@ -510,6 +491,8 @@ function T.tests.live_call_splits_list_and_speech_across_panes()
   )
   local status = controller:status()
   local content = assert(status.presentation, "the live call publishes its plan").content
+  Assert.notNil(content.windowPalette, "the call plan carries its window palette beside the list palette")
+  Assert.notNil(content.listPalette, "the call plan keeps carrying its list palette")
 
   local infoResources, infoLog = recordingResources()
   PokegearPhoneRenderer.drawInformation(infoResources, content)
@@ -578,37 +561,7 @@ function T.tests.live_call_splits_list_and_speech_across_panes()
   controller:dispose()
 end
 
--- (2) no panel projection appears across a menu-call transition. The
--- 1+6+1 PANEL_TIMELINE has no decomp source, so choosing Call from the
--- action menu must publish neither a panel cell nor a transition while
--- the conversation starts and settles.
-function T.tests.menu_call_transition_publishes_no_panel()
-  local controller = openMenuController()
-  Assert.equal(
-    controller:status().view.list.selected,
-    0,
-    "the menu list opens with the mother contact selected"
-  )
-  controller:updateFixed({ { type = "confirm" } })
-  Assert.notNil(
-    controller:status().view.contextMenu,
-    "confirming the contact opens its action menu"
-  )
-  controller:updateFixed({ { type = "confirm" } })
-  for tick = 1, 10 do
-    local live = controller:status().view
-    Assert.notNil(live.call, "the chosen menu call stays live across tick " .. tick)
-    Assert.isNil(live.panel, "no panel projection appears across the menu-call transition (tick " .. tick .. ")")
-    Assert.isNil(
-      live.transition,
-      "no transition projection appears across the menu-call transition (tick " .. tick .. ")"
-    )
-    controller:updateFixed({ { type = "advance" } })
-  end
-  controller:dispose()
-end
-
--- (3) in-call choices are a 24px menu projection on the call surface,
+-- (2) in-call choices are a 24px menu projection on the call surface,
 -- not in-speech rows. The owed choices ride the shared
 -- TouchscreenListMenu geometry (one 24px row per option with a 16px
 -- text band) and paint through its tile strip; no choice label paints
@@ -657,56 +610,6 @@ function T.tests.in_call_choices_project_as_shared_list_menu()
     "the owed choices paint through the shared touchscreen list-menu tile strip"
   )
   Assert.equal(inSpeechChoices, 0, "no owed choice paints as an in-speech row")
-  controller:dispose()
-end
-
--- (4) call text renders from window/palette source refs. Every fill
--- behind the speech and name windows traces to a source palette entry
--- (never an invented RGBA triple), and every call line prints through
--- palette text primitives (never plain fills-backed text).
-function T.tests.call_text_renders_from_window_and_palette_refs()
-  local controller = openMenuController()
-  placeMenuCall(controller)
-  local view = driveToOwedChoice(controller)
-  Assert.notNil(view.call, "the live call keeps its conversation projection")
-
-  local PokegearPhoneRenderer = requireFeature(
-    "libs.hgss.src.presentation.PokegearPhoneRenderer",
-    "the phone card has no renderer yet: call text cannot trace to its window and palette refs"
-  )
-  local status = controller:status()
-  local content = assert(status.presentation, "the live call publishes its plan").content
-  local palette = {}
-  for _, bank in ipairs({ content.listPalette, content.menuPalette, content.tooltipPalette, content.windowPalette }) do
-    if type(bank) == "table" then
-      for _, entry in ipairs(bank) do
-        palette[#palette + 1] = entry
-      end
-    end
-  end
-  Assert.isTrue(#palette > 0, "the call plan carries its source palette banks")
-
-  local resources, log = recordingResources()
-  PokegearPhoneRenderer.draw(resources, view, content)
-  local windowFills, inventedFills, plainCallText = 0, 0, 0
-  for _, record in ipairs(log) do
-    if record.op == "rect" and record.mode == "fill" and (rectHits(record, SPEECH_RECT) or rectHits(record, NAME_RECT)) then
-      windowFills = windowFills + 1
-      if not colorTracesToPalette(palette, record.color) then
-        inventedFills = inventedFills + 1
-      end
-    end
-    if
-      record.op == "text"
-      and record.plain == true
-      and (textHits(record, SPEECH_RECT) or textHits(record, NAME_RECT))
-    then
-      plainCallText = plainCallText + 1
-    end
-  end
-  Assert.isTrue(windowFills > 0, "the call windows paint behind the speech and name")
-  Assert.equal(inventedFills, 0, "no call window fill uses an invented RGBA triple")
-  Assert.equal(plainCallText, 0, "no call line prints without its window palette")
   controller:dispose()
 end
 

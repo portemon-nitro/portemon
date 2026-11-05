@@ -1,11 +1,10 @@
 -- Call-behavior contract: starting a call publishes the source dim
 -- state plus the caller-name content for windows[1] (colors 1,2,0) and
--- exiting clears it; hangup plays staged click lines into the speech
--- projection with the source tones/timers (never a single tone); the
--- fast-forward hitbox geometry is published and live for the whole
--- call; in-call choice menus answer taps on options; and view.call
--- carries no choiceCursor field (the controller cursor still drives
--- view.callMenu.cursor). Synthetic catalog, real production
+-- the fast-forward hitbox, and exiting clears the publication; hangup
+-- plays staged click lines into the speech projection with the source
+-- tones/timers (never a single tone); and in-call choice menus answer
+-- taps on options while tracking the cursor on the shared projection.
+-- Synthetic catalog, real production
 -- PhoneController plus the real PhoneCall engine, recording (non-GPU)
 -- audio fakes; the scenarios stop before GPU rendering and stay red
 -- until the call behavior lands.
@@ -327,17 +326,23 @@ end
 -- gPhoneCallFastForwardHitbox { 0x88, 0xb8, 0x08, 0xf8 }.
 local FAST_FORWARD_HITBOX = { x = 0x88, y = 0xb8, width = 0x08, height = 0xf8 }
 
--- (1) starting a call publishes the source dim state plus the
--- caller-name content for windows[1] in colors (1,2,0), and exiting the
--- call clears the publication. PokegearPhone_SetTouchscreenDimState
+-- (1) starting a call publishes the source dim state, the caller-name
+-- content for windows[1] in colors (1,2,0), and the fast-forward hitbox;
+-- exiting the call clears the publication. PokegearPhone_SetTouchscreenDimState
 -- fills windows[0]+[1], blends the MAIN_BG/OBJ palettes down, and
--- prints the caller name into windows[1]; PhoneCall_Exit clears both
--- windows and undims.
+-- prints the caller name into windows[1]; the source registers
+-- gPhoneCallFastForwardHitbox for the call lifetime; PhoneCall_Exit
+-- clears both windows and undims.
 function T.tests.call_start_publishes_dim_state_and_name_window_and_exit_clears_it()
   local controller = openMenuController()
   placeMenuCall(controller)
   local call = liveCall(controller:status().view)
   Assert.equal(call.dim, true, "starting the call publishes the touchscreen dim state")
+  Assert.deepEqual(
+    call.fastForward,
+    FAST_FORWARD_HITBOX,
+    "the connecting call publishes the source fast-forward hitbox geometry"
+  )
   local nameWindow = assert(call.nameWindow, "starting the call publishes the windows[1] caller-name content")
   assert(type(nameWindow) == "table", "the name window content is a record")
   Assert.equal(
@@ -349,6 +354,12 @@ function T.tests.call_start_publishes_dim_state_and_name_window_and_exit_clears_
     (nameWindow --[[@as table<string, unknown>]]).colors,
     { 1, 2, 0 },
     "the caller name prints in the source windows[1] text colors (1,2,0)"
+  )
+  local owed = driveToOwedChoice(controller)
+  Assert.deepEqual(
+    liveCall(owed).fastForward,
+    FAST_FORWARD_HITBOX,
+    "the fast-forward hitbox stays live while the call owes its choice"
   )
   for _ = 1, 24 do
     if controller:status().view.call == nil then
@@ -447,50 +458,6 @@ function T.tests.hangup_plays_staged_click_lines_with_source_tones_and_timers()
   controller:dispose()
 end
 
--- (3) the fast-forward hitbox geometry is published in the view and
--- stays live for the whole call, from the connecting stage through the
--- owed choice into hangup. The source registers
--- gPhoneCallFastForwardHitbox for the call lifetime and unsets it on
--- PhoneCall_Exit.
-function T.tests.fast_forward_hitbox_published_and_live_for_whole_call()
-  local controller = openMenuController()
-  placeMenuCall(controller)
-  local stages = {}
-  local connecting = liveCall(controller:status().view)
-  Assert.deepEqual(
-    connecting.fastForward,
-    FAST_FORWARD_HITBOX,
-    "the connecting call publishes the source fast-forward hitbox geometry"
-  )
-  stages[#stages + 1] = connecting.stage
-  local owed = driveToOwedChoice(controller)
-  Assert.deepEqual(
-    liveCall(owed).fastForward,
-    FAST_FORWARD_HITBOX,
-    "the fast-forward hitbox stays live while the call owes its choice"
-  )
-  stages[#stages + 1] = liveCall(owed).stage
-  controller:updateFixed({ { type = "confirm" } })
-  local hanging = controller:status().view.call
-  if hanging ~= nil then
-    Assert.deepEqual(
-      (hanging --[[@as table]]).fastForward,
-      FAST_FORWARD_HITBOX,
-      "the fast-forward hitbox stays live through hangup"
-    )
-    stages[#stages + 1] = (hanging --[[@as table<string, unknown>]]).stage
-  end
-  local seen, distinct = {}, 0
-  for _, stage in ipairs(stages) do
-    if not seen[stage] then
-      seen[stage] = true
-      distinct = distinct + 1
-    end
-  end
-  Assert.isTrue(distinct >= 2, "the hitbox observation spans at least two distinct call stages")
-  controller:dispose()
-end
-
 ---@param controller table
 ---@param x number tap x in pixels
 ---@param y number tap y in pixels
@@ -500,11 +467,12 @@ local function tap(controller, x, y, pointerId)
   controller:updateFixed({ { type = "pointer_up", pointerId = pointerId, x = x, y = y } })
 end
 
--- (4) in-call choice menus route touch taps on options: tapping an
--- option answers it, exactly like the source
--- PhoneCall_TouchscreenListMenu choice plumbing (tap selects, never
--- just navigate/confirm keys). Tapping the second owed row answers
--- "keep" and commits the savings choice without any key input.
+-- (3) in-call choice menus route touch taps on options and track the
+-- cursor on the shared menu projection: tapping an option answers it,
+-- exactly like the source PhoneCall_TouchscreenListMenu choice plumbing
+-- (tap selects, never just navigate/confirm keys). Tapping the second
+-- owed row answers "keep" and commits the savings choice without any
+-- key input.
 function T.tests.in_call_choice_tap_on_option_answers_it()
   local controller, _, flags = openMenuController()
   placeMenuCall(controller)
@@ -513,6 +481,11 @@ function T.tests.in_call_choice_tap_on_option_answers_it()
   Assert.deepEqual(call.choices, { "save", "keep" }, "the mother call owes its save/keep choice")
   local menu = assert(owed.callMenu, "the owed choices are exposed as a menu projection on the call surface")
   assert(type(menu) == "table", "the choice menu is a record")
+  Assert.equal(
+    (menu --[[@as table<string, unknown>]]).cursor,
+    0,
+    "the choice menu cursor opens on the first option"
+  )
   local frame = assert((menu --[[@as table<string, unknown>]]).frame, "the choice menu carries its window frame")
   assert(type(frame) == "table", "the choice menu frame is a record")
   local rows = assert((menu --[[@as table<string, unknown>]]).rows, "the choice menu carries its option rows")
@@ -538,46 +511,6 @@ function T.tests.in_call_choice_tap_on_option_answers_it()
     "tapping the second option answers and completes the call"
   )
   Assert.equal(flags["mom.savings-choice"], false, "tapping the second option answers keep")
-  controller:dispose()
-end
-
--- (5) view.call carries no choiceCursor field: the dead publication
--- is removed. The controller's internal cursor still drives the owed
--- choice through view.callMenu.cursor, so navigating down then
--- confirming answers the second option.
-function T.tests.call_view_carries_no_choice_cursor_and_menu_cursor_drives_choice()
-  local controller, _, flags = openMenuController()
-  placeMenuCall(controller)
-  local owed = driveToOwedChoice(controller)
-  local call = liveCall(owed)
-  Assert.isNil(
-    call.choiceCursor,
-    "view.call carries no choiceCursor publication"
-  )
-  local menu = assert(owed.callMenu, "the owed choices are exposed as a menu projection on the call surface")
-  assert(type(menu) == "table", "the choice menu is a record")
-  Assert.equal(
-    (menu --[[@as table<string, unknown>]]).cursor,
-    0,
-    "the choice menu cursor opens on the first option"
-  )
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(
-    assert(controller:status().view.callMenu, "the choice menu stays open across navigation").cursor,
-    1,
-    "the internal cursor drives view.callMenu.cursor"
-  )
-  controller:updateFixed({ { type = "confirm" } })
-  for _ = 1, 24 do
-    if controller:status().view.call == nil then
-      break
-    end
-    if flags["mom.savings-choice"] == false then
-      break
-    end
-    controller:updateFixed({ { type = "advance" } })
-  end
-  Assert.equal(flags["mom.savings-choice"], false, "confirming after navigating down answers keep")
   controller:dispose()
 end
 

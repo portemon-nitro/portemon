@@ -1,14 +1,12 @@
--- ROM conformance for the phone window-palette and OBJ-bank contracts: the producer emits
--- phone.windowPalette per skin from bank 1 of the same NCLR member behind
--- the foreground plane, and every retail-used phone OBJ sequence carries
--- its descriptor-grounded palette bank. Decomp grounding (read-only):
--- PokegearPhone_LoadPalettes loads MAIN_BG from NCLR member skin+10 and
--- SUB_BG from member skin+4, while windows[0,1] (the call speech/name
--- windows on SUB_2) print with palette 1; sSpriteTemplates in the same
--- file drives phone animations {0,1,2,3,4,5,6,8} with non-zero OBJ
--- palette slots 6 and 7. Bank-0-only rendering is therefore unverified,
--- never the default. Both tests fail loudly without a ready dump through
--- the declared rom_dump capability instead of skipping.
+-- ROM conformance for the phone palette contracts: one dump open proves
+-- both the per-skin call-window palette (bank 1 of the foreground NCLR
+-- member behind the SUB_2 windows) and the retail-used OBJ sequence banks.
+-- Decomp grounding (read-only): PokegearPhone_LoadPalettes loads MAIN_BG
+-- from NCLR member skin+10 and SUB_BG from member skin+4, while
+-- windows[0,1] print with palette 1; sSpriteTemplates drives phone
+-- animations {0,1,2,3,4,5,6,8} with non-zero OBJ palette slots 6 and 7.
+-- The single scenario fails loudly without a ready dump through the
+-- declared rom_dump capability instead of skipping.
 
 local Assert = require("tests.support.Assert")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
@@ -19,10 +17,6 @@ local PokegearSources = require("romdump.src.config.PokegearSources")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
-
----@param _ unknown
-local function void(_)
-end
 
 -- Retail-used phone OBJ sequences (one-based compiled ids), transcribed
 -- from the .animation fields of sSpriteTemplates in
@@ -74,10 +68,14 @@ local function bankColors(palette, bank, role)
   return colors
 end
 
--- The call speech/name windows print through palette 1 of the foreground
--- NCLR member: the manifest carries that bank per skin as
--- phone.windowPalette, decoded here straight from the dump.
-function T.phone_window_palette_matches_bank1_of_the_foreground_member(romFs, versionId)
+-- One dump open proves both palette contracts: the compiled manifest
+-- carries bank 1 of each foreground NCLR member as phone.windowPalette,
+-- and every retail-used OBJ sequence names its bank inside the decoded
+-- OBJ palette member. Exact OBJ bank values are transcribed from the
+-- a/1/7/5 descriptors and the retail template slots in the implementation
+-- lane; the bank assertions pin coverage plus range so an untranscribed
+-- table cannot pass.
+function T.phone_palettes_match_retail_members(romFs, versionId)
   local phone = openArchive(romFs, PokegearSources.archives.phone.path)
   local expected = {}
   for _, skin in ipairs(PokegearSources.skins) do
@@ -105,16 +103,7 @@ function T.phone_window_palette_matches_bank1_of_the_foreground_member(romFs, ve
   end
   local record = PokegearAssetSchema.validate(compiled.manifest)
   Assert.notNil(record, versionId .. " manifest still validates with its window palette section")
-end
 
--- Every retail-used phone OBJ sequence names its palette bank within the
--- decoded OBJ palette member instead of silently falling back to bank 0.
--- Exact bank values are transcribed from the a/1/7/5 descriptors and the
--- retail template slots in the implementation lane; this contract pins
--- coverage plus range so an untranscribed table cannot pass.
-function T.phone_obj_sequences_carry_their_retail_palette_banks(romFs, versionId)
-  void(versionId)
-  local phone = openArchive(romFs, PokegearSources.archives.phone.path)
   local animBytes = assert(phone:readMember(3), "the phone NANR member must exist")
   if string.byte(animBytes, 1) == 0x10 then
     animBytes = assert(Lz10.decode(animBytes), "the phone NANR member must decompress")
