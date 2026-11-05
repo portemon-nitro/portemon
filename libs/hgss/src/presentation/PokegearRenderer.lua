@@ -229,12 +229,12 @@ function PokegearRenderer.draw(resources, view, plan)
           and (published --[[@as table<string, unknown>]]).renderInformation
         or nil
       if type(renderInformation) == "function" then
-        (renderInformation --[[@as fun(resources: table, child: table, plan: table, shell: table)]])(
-          { graphics = graphics, images = images, textRenderer = text },
-          child --[[@as table<string, unknown>]],
-          published --[[@as table<string, unknown>]],
-          view
-        )
+        (renderInformation --[[@as fun(resources: table, child: table, plan: table, shell: table)]])({
+          graphics = graphics,
+          images = images,
+          textRenderer = text,
+          phoneNameTextRenderer = phoneNameText,
+        }, child --[[@as table<string, unknown>]], published --[[@as table<string, unknown>]], view)
       end
       local clock = view.clock
       local sprites = content.clockSprites

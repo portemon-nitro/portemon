@@ -197,6 +197,37 @@ function T.scroll_flip_flag_inverts_every_band()
   Assert.equal(bandRed(graphics, 1), 14 / 255, "slot 1 paints the set-1 band while flipped")
 end
 
+-- The information pane prints the live list with the same font split:
+-- names through the borrowed name font, classes through the class
+-- renderer, falling back to the single renderer when no name font
+-- is composed.
+function T.information_list_keeps_the_source_font_split()
+  local graphics = recordingGraphics()
+  local nameText = recordingText()
+  local classText = recordingText()
+  local content = {
+    skin = 0,
+    sprites = {},
+    listPalette = distinctPalette(),
+    callList = {
+      rows = { { absolute = 0, slot = 0, contact = "mom", label = "NAME-1", class = "CLASS-1" } },
+      selected = 0,
+      scrollOffset = 0,
+      firstBgColor = 0,
+      manual = false,
+      total = 1,
+      cursorVisible = false,
+    },
+  }
+  PokegearPhoneRenderer.drawInformation(
+    { graphics = graphics, images = {}, textRenderer = classText, phoneNameTextRenderer = nameText },
+    content
+  )
+  Assert.equal(#nameText._calls, 1, "the information name prints once through the name font")
+  Assert.equal(recordedLine(nameText._calls[1]), "NAME-1", "the information name prints the contact name")
+  Assert.equal(#classText._calls, 1, "the information class prints once through the class font")
+end
+
 ---@param graphics table
 ---@param text table
 ---@param line string
