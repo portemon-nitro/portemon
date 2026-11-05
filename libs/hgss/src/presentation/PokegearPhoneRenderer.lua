@@ -29,6 +29,14 @@ local SCROLL_DOWN_SEQUENCE = 2
 local CORNER_SEQUENCES = { 3, 4, 5, 6 }
 local MOVE_SEQUENCE = 7
 local MOVE_SELECTED_SEQUENCE = 8
+-- The in-call fast-forward sprite (compiled sequence 9, source
+-- animation 8) at its source surface position.
+local FAST_FORWARD_SEQUENCE = 9
+local FAST_FORWARD_X = 128
+local FAST_FORWARD_Y = 160
+-- The static lower phone plane covers the source MAIN_2 copy of 32x20
+-- tiles, so it ends where the shared strip begins.
+local MAIN_PLANE_HEIGHT = 160
 
 local SURFACE_WIDTH = 256
 local SURFACE_HEIGHT = 192
@@ -210,17 +218,19 @@ end
 -- the source sprite positions, and the compiled scroll arrows above and
 -- below the list while paging is available. Corners track the actual
 -- visible transient row; arrows track the visual first row, never the
--- logical destination jump.
+-- logical destination jump. A live call hides the corners with the row
+-- cursor by original source rules.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param list table<string, unknown>
 ---@param sprites table<string, unknown>
-local function drawListChrome(graphics, images, list, sprites)
+---@param cursorAllowed boolean whether the row cursor may show beside the list
+local function drawListChrome(graphics, images, list, sprites, cursorAllowed)
   local selected = list.selected --[[@as integer]]
   local scrollOffset = list.scrollOffset --[[@as integer]]
   local total = list.total --[[@as integer?]]
   graphics.setColor(1, 1, 1, 1)
-  if list.cursorVisible == true then
+  if list.cursorVisible == true and cursorAllowed then
     local rows = list.rows --[[@as table[] ]]
     local pixels = slidePixels(list)
     local found = nil
@@ -269,7 +279,20 @@ end
 ---@param sprites table<string, unknown>
 ---@param palette table<integer, table<string, number>>
 ---@param colorIdx integer zero-based row color set
-local function drawRow(graphics, images, nameText, classText, entry, absolute, top, selected, manual, sprites, palette, colorIdx)
+local function drawRow(
+  graphics,
+  images,
+  nameText,
+  classText,
+  entry,
+  absolute,
+  top,
+  selected,
+  manual,
+  sprites,
+  palette,
+  colorIdx
+)
   local colors = ROW_COLORS[colorIdx + 1]
   fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
   fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
@@ -341,7 +364,8 @@ end
 ---@param list table<string, unknown>
 ---@param sprites table<string, unknown>
 ---@param palette table<integer, table<string, number>>
-local function drawList(graphics, images, nameText, classText, list, sprites, palette)
+---@param cursorAllowed boolean whether the row cursor may show beside the list
+local function drawList(graphics, images, nameText, classText, list, sprites, palette, cursorAllowed)
   local rows = list.rows --[[@as table[] ]]
   local selected = list.selected --[[@as integer]]
   local scrollOffset = list.scrollOffset --[[@as integer]]
@@ -402,7 +426,20 @@ local function drawList(graphics, images, nameText, classText, list, sprites, pa
             "the settled strip carries absolute contact indices"
           ) --[[@as integer]]
           local settled = PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor)
-          drawRow(graphics, images, nameText, classText, entry, resolved, top, selected, manual, sprites, palette, settled)
+          drawRow(
+            graphics,
+            images,
+            nameText,
+            classText,
+            entry,
+            resolved,
+            top,
+            selected,
+            manual,
+            sprites,
+            palette,
+            settled
+          )
         else
           drawEmptyBand(graphics, top, palette, PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor))
         end
@@ -419,7 +456,7 @@ local function drawList(graphics, images, nameText, classText, list, sprites, pa
     paintRows
   )
   graphics.setColor(1, 1, 1, 1)
-  drawListChrome(graphics, images, list, sprites)
+  drawListChrome(graphics, images, list, sprites, cursorAllowed ~= false)
 end
 
 -- Draws the context menu through the shared touchscreen list-menu
@@ -452,21 +489,21 @@ end
 
 -- Draws the call speech/name windows from the conversation projection
 -- through the window palette: the resolved caller name and the current
--- source text page. Owed choices never paint here; they ride the
--- shared list-menu frame beside the windows.
+-- source text page at their window-local origins. The caller name prints
+-- through the class font like every other call line. Owed choices never
+-- paint here; they ride the shared list-menu frame beside the windows.
 ---@param graphics love.graphics
----@param nameText table<string, unknown>? the borrowed font-4 name renderer
----@param text table<string, unknown>? the borrowed message renderer
+---@param text table<string, unknown>? the borrowed font-0 call renderer
 ---@param call table<string, unknown>
 ---@param palette table<integer, table<string, number>> sixteen window colors, one-based
-local function drawCall(graphics, nameText, text, call, palette)
+local function drawCall(graphics, text, call, palette)
   fillPalette(graphics, palette, CALL_WINDOW_FILL, NAME_WINDOW.x, NAME_WINDOW.y, NAME_WINDOW.width, NAME_WINDOW.height)
   drawPaletteText(
-    nameText,
+    text,
     palette,
     tostring(call.name),
-    NAME_WINDOW.x + 4,
-    NAME_WINDOW.y + 2,
+    NAME_WINDOW.x,
+    NAME_WINDOW.y,
     CALL_TEXT_FOREGROUND,
     CALL_TEXT_SHADOW,
     CALL_TEXT_BACKGROUND
@@ -490,8 +527,8 @@ local function drawCall(graphics, nameText, text, call, palette)
     text,
     palette,
     body,
-    SPEECH_WINDOW.x + 4,
-    SPEECH_WINDOW.y + 4,
+    SPEECH_WINDOW.x,
+    SPEECH_WINDOW.y,
     CALL_TEXT_FOREGROUND,
     CALL_TEXT_SHADOW,
     CALL_TEXT_BACKGROUND
@@ -542,13 +579,15 @@ local function drawTooltip(graphics, text, palette, line)
   drawPaletteText(text, palette, line, x, TOOLTIP_STRIP.y, TOOLTIP_FOREGROUND, TOOLTIP_SHADOW, TOOLTIP_FILL)
 end
 
--- Draws the published phone surface with borrowed collaborators: the
--- per-skin background plane with the clipped contact list, its tooltip
--- strip, and the context window while browsing; the conversation
--- windows with the owed-choice list menu while a call is live. The
--- live call never repaints the contact list here: the list rides the
--- information-pane render path. Reads only; draws deterministically
--- with no allocation.
+-- Draws the published phone surface on the lower pane with borrowed
+-- collaborators: the per-skin background plane with the contact list in
+-- every phone state, the tooltip strip, the context window while
+-- browsing, and the owed-choice menu with the fast-forward sprite while
+-- a call is live. The caller windows never paint here; they ride the
+-- information-pane render path. A live call selects the dimmed plane,
+-- palette, and sprite set, and an open choice swaps to the
+-- choice-dimmed plane hiding the sprite. Reads only; draws
+-- deterministically with no allocation.
 ---@param resources table<string, unknown> borrowed host collaborators
 ---@param view table<string, unknown> the detached phone view
 ---@param content table<string, unknown> the plan payload with resolved paths
@@ -567,59 +606,84 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   end
   assert(type(view) == "table", "the phone render reads its detached view")
   assert(type(content) == "table", "the phone render reads its plan payload")
-  local foreground = assert(content.foreground, "the phone render reads its foreground plane from the plan")
+  local list = view.list
+  local call = view.call
+  local callMenu = view.callMenu
+  local dimmed = type(call) == "table" and call.dim == true
+  local foreground = content.foreground
+  local palette = content.listPalette
+  local sprites = content.sprites
+  if dimmed then
+    if type(callMenu) == "table" then
+      foreground = assert(content.foregroundDimChoice, "the phone plan resolves its choice-dimmed plane")
+    else
+      foreground = assert(content.foregroundDim, "the phone plan resolves its dimmed plane")
+    end
+    palette = assert(content.listPaletteDim, "the phone plan resolves its dimmed list palette")
+    sprites = assert(content.spritesDim, "the phone plan resolves its dimmed sprite set")
+  end
   assert(
     type(foreground) == "string",
     "the phone render reads its foreground plane from the plan, got " .. type(content.foreground)
   )
-  drawRequiredPlane(
+  -- The static plane covers the source 20 tile rows only, so the
+  -- reordered child never repaints the shared strip below it; the list
+  -- chrome, menus, sprite, and tooltip stay free to overlap the strip.
+  LogicalSurface.clip(
     graphics --[[@as love.graphics]],
-    images --[[@as table<string, unknown>]],
-    foreground --[[@as string]],
-    "foreground"
+    { x = 0, y = 0, width = SURFACE_WIDTH, height = MAIN_PLANE_HEIGHT },
+    function()
+      drawRequiredPlane(
+        graphics --[[@as love.graphics]],
+        images --[[@as table<string, unknown>]],
+        foreground --[[@as string]],
+        "foreground"
+      )
+    end
   )
-  local list = view.list
-  local call = view.call
-  if type(call) == "table" then
-    drawCall(
+  if type(list) == "table" then
+    drawList(
       graphics --[[@as love.graphics]],
+      images --[[@as table<string, unknown>]],
       nameText --[[@as table<string, unknown>?]],
       text --[[@as table<string, unknown>?]],
-      call --[[@as table<string, unknown>]],
-      assert(content.windowPalette, "the phone plan resolves its window palette") --[[@as table]]
+      list --[[@as table<string, unknown>]],
+      assert(sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
+      assert(palette, "the phone plan resolves its list palette") --[[@as table]],
+      type(call) ~= "table"
     )
-    local callMenu = view.callMenu
-    if type(callMenu) == "table" then
-      drawMenu(
-        graphics --[[@as love.graphics]],
-        images --[[@as table<string, unknown>]],
-        text --[[@as table<string, unknown>?]],
-        callMenu --[[@as table<string, unknown>]],
-        content
-      )
-    end
-  else
-    if type(list) == "table" then
-      drawList(
-        graphics --[[@as love.graphics]],
-        images --[[@as table<string, unknown>]],
-        nameText --[[@as table<string, unknown>?]],
-        text --[[@as table<string, unknown>?]],
-        list --[[@as table<string, unknown>]],
-        assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
-        assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
-      )
-    end
-    local menu = view.contextMenu
-    if type(menu) == "table" then
-      drawMenu(
-        graphics --[[@as love.graphics]],
-        images --[[@as table<string, unknown>]],
-        text --[[@as table<string, unknown>?]],
-        menu --[[@as table<string, unknown>]],
-        content
-      )
-    end
+  end
+  local menu = view.contextMenu
+  if type(menu) == "table" then
+    drawMenu(
+      graphics --[[@as love.graphics]],
+      images --[[@as table<string, unknown>]],
+      text --[[@as table<string, unknown>?]],
+      menu --[[@as table<string, unknown>]],
+      content
+    )
+  end
+  if type(callMenu) == "table" then
+    drawMenu(
+      graphics --[[@as love.graphics]],
+      images --[[@as table<string, unknown>]],
+      text --[[@as table<string, unknown>?]],
+      callMenu --[[@as table<string, unknown>]],
+      content
+    )
+  end
+  if type(call) == "table" and type(callMenu) ~= "table" then
+    graphics --[[@as love.graphics]].setColor(1, 1, 1, 1)
+    drawSprite(
+      graphics --[[@as love.graphics]],
+      images --[[@as table<string, unknown>]],
+      sprites --[[@as table<string, unknown>]],
+      PHONE_SET,
+      FAST_FORWARD_SEQUENCE,
+      1,
+      FAST_FORWARD_X,
+      FAST_FORWARD_Y
+    )
   end
   local tooltip = view.tooltip
   if type(tooltip) == "string" and tooltip ~= "" and type(list) == "table" then
@@ -633,35 +697,30 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   (graphics --[[@as love.graphics]]).setColor(1, 1, 1, 1)
 end
 
--- Draws the phone's information pane: the static upper plane with the
--- live contact list from the plan payload, so the MAIN_3 rows stay
--- visible while the controls pane carries the call speech and name.
--- Names print through the borrowed name-font renderer exactly like the
--- browsing list, falling back to the class renderer when the host
--- composes no name font.
+-- Draws the phone's information pane: the static upper plane, then the
+-- live caller name and speech windows only while a call exists. Never
+-- paints the contact list here. Names and speech print through the
+-- class font at their window-local origins. Reads only; draws
+-- deterministically with no allocation.
 ---@param resources table<string, unknown> borrowed host collaborators
+---@param view table<string, unknown> the detached phone view
 ---@param content table<string, unknown> the plan payload with resolved paths
-function PokegearPhoneRenderer.drawInformation(resources, content)
+function PokegearPhoneRenderer.drawInformation(resources, view, content)
   local graphics = assert(resources.graphics, "the phone render borrows its host graphics") --[[@as love.graphics]]
   local images = assert(resources.images, "the phone render borrows its prepared images") --[[@as table<string, unknown>]]
   local text = resources.textRenderer
-  local nameText = resources.phoneNameTextRenderer
-  if nameText == nil then
-    nameText = text
-  end
+  assert(type(view) == "table", "the phone render reads its detached view")
+  assert(type(content) == "table", "the phone render reads its plan payload")
   local upper = assert(content.upper, "the phone render reads its upper plane from the plan")
   assert(type(upper) == "string", "the phone render reads its upper plane from the plan, got " .. type(content.upper))
   drawRequiredPlane(graphics, images --[[@as table<string, unknown>]], upper --[[@as string]], "upper")
-  local callList = content.callList
-  if type(callList) == "table" then
-    drawList(
+  local call = view.call
+  if type(call) == "table" then
+    drawCall(
       graphics,
-      images,
-      nameText --[[@as table<string, unknown>?]],
       text --[[@as table<string, unknown>?]],
-      callList --[[@as table<string, unknown>]],
-      assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
-      assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
+      call --[[@as table<string, unknown>]],
+      assert(content.windowPalette, "the phone plan resolves its window palette") --[[@as table]]
     )
   end
   graphics.setColor(1, 1, 1, 1)

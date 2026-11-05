@@ -1,9 +1,12 @@
--- Call-layering contract: the live phone call splits across the two
--- source surfaces (MAIN_3 contact list above, SUB_2 speech/name below)
--- and offers in-call choices as a shared 24px list-menu projection on
--- the call surface. Synthetic catalog, real production controller plus
--- the real phone renderer, recording (non-GPU) host fakes; the scenarios
--- stop before GPU rendering.
+-- Call-layering contract: the phone contact list lives on the lower
+-- controls surface in every phone state, while the live call name and
+-- speech live only on the upper information surface. Browsing paints the
+-- list below with the static upper plane above; a live call keeps that
+-- same list below under dim with the native fast-forward sprite, shows
+-- caller windows above, and restores the browse look when the call ends.
+-- Synthetic catalog, real production controller plus the real phone
+-- renderer through the published plan callbacks, recording (non-GPU)
+-- host fakes; the scenarios stop before GPU rendering.
 
 local Assert = require("tests.support.Assert")
 
@@ -35,7 +38,7 @@ local function visualRef(path, width, height)
 end
 
 -- Synthetic companion family with a mother contact (choice-bearing
--- ordinary call) and a service contact, mirroring the published
+-- ordinary call) and two plain contacts, mirroring the published
 -- manifest shape including every presentation plane the call-layering contract
 -- observes: per-skin foreground/upper planes, panel cells, the sixteen
 -- list and tooltip palette colors per skin, the compiled phone OBJ set,
@@ -49,22 +52,28 @@ local function fixtureManifest()
       sortWeight = 10,
       rematchWeekday = 6,
       rematchTime = 0,
+      className = "fixture-class-mom",
     },
-    { key = "custom.trainer-plain", family = "kurt", sortWeight = 20 },
+    { key = "custom.trainer-plain", family = "kurt", sortWeight = 20, className = "fixture-class-kurt" },
+    { key = "custom.professor", family = "elm", sortWeight = 30, className = "fixture-class-elm" },
   }
-  local order = { "custom.mom", "custom.trainer-plain" }
+  local order = { "custom.mom", "custom.trainer-plain", "custom.professor" }
   local phoneForeground, phoneUpper = {}, {}
-  local phoneListPalette, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}
+  local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground = {}, {}, {}
+  local phoneListPalette, phoneListPaletteDim, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}, {}
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
+    phoneListPaletteDim[skin] = {}
     phoneTooltipPalette[skin] = {}
     phoneWindowPalette[skin] = {}
     for index = 1, 16 do
       phoneListPalette[skin][index] =
         { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+      phoneListPaletteDim[skin][index] =
+        { r = (index * 37 + skin * 11 + 90) % 256, g = (index * 19 + 130) % 256, b = (skin * 23 + 40) % 256 }
       phoneTooltipPalette[skin][index] =
         { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
-      -- The call windows print through their own bank of the foreground
+      -- The call windows print through their own bank of the upper
       -- palette (windows[0,1] palette 1), so the fixture keeps it
       -- distinct from the list and tooltip banks.
       phoneWindowPalette[skin][index] =
@@ -73,6 +82,12 @@ local function fixtureManifest()
   end
   for skin = 0, 5 do
     phoneForeground[skin] = visualRef("assets/generated/pokegear/phone-foreground-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDim[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice-skin-" .. skin .. ".png", 256, 192)
+    phoneDimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground-skin-" .. skin .. ".png", 256, 192)
     phoneUpper[skin] = visualRef("assets/generated/pokegear/phone-upper-skin-" .. skin .. ".png", 256, 192)
   end
   local phonePanel = {
@@ -82,38 +97,51 @@ local function fixtureManifest()
   local phoneSpriteCounts = { 2, 2, 2, 2, 2, 2, 1, 1, 3 }
   local phoneSpriteWidths = { 16, 16, 16, 16, 16, 16, 32, 32, 240 }
   local phoneSpriteHeights = { 16, 16, 16, 16, 16, 16, 32, 32, 48 }
-  local phoneSprites = {}
-  for sequence, frames in ipairs(phoneSpriteCounts) do
-    local list = {}
-    for frame = 1, frames do
-      list[frame] = {
-        image = "assets/generated/pokegear/phone-sprite-phone-" .. sequence .. "-" .. frame .. ".png",
-        width = phoneSpriteWidths[sequence],
-        height = phoneSpriteHeights[sequence],
-        anchorX = -math.floor(phoneSpriteWidths[sequence] / 2),
-        anchorY = -math.floor(phoneSpriteHeights[sequence] / 2),
-        duration = 1,
-      }
+  -- Bright and dimmed call art repaint from their own staged images:
+  -- the dim infix sits behind the sequence so both sets keep the
+  -- producer's staged path shape per sequence.
+  local function fixturePhoneSpriteSet(nameInfix)
+    local sets = {}
+    for sequence, frames in ipairs(phoneSpriteCounts) do
+      local list = {}
+      for frame = 1, frames do
+        list[frame] = {
+          image = "assets/generated/pokegear/phone-sprite-phone-" .. sequence .. nameInfix .. "-" .. frame .. ".png",
+          width = phoneSpriteWidths[sequence],
+          height = phoneSpriteHeights[sequence],
+          anchorX = -math.floor(phoneSpriteWidths[sequence] / 2),
+          anchorY = -math.floor(phoneSpriteHeights[sequence] / 2),
+          duration = 1,
+        }
+      end
+      sets[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
     end
-    phoneSprites[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
+    return sets
   end
+  local phoneSprites = fixturePhoneSpriteSet("")
+  local phoneSpritesDim = fixturePhoneSpriteSet("-dim")
   local menuPalette = {}
   for index = 1, 16 do
     menuPalette[index] = { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },
     phone = {
       foreground = phoneForeground,
+      foregroundDim = phoneForegroundDim,
+      foregroundDimChoice = phoneForegroundDimChoice,
+      dimShellForeground = phoneDimShellForeground,
       upper = phoneUpper,
       panel = phonePanel,
       listPalette = phoneListPalette,
+      listPaletteDim = phoneListPaletteDim,
       tooltipPalette = phoneTooltipPalette,
       windowPalette = phoneWindowPalette,
       sprites = { phone = phoneSprites },
+      spritesDim = { phone = phoneSpritesDim },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
     fly = {
@@ -288,28 +316,12 @@ local function placeMenuCall(controller)
   Assert.notNil(controller:status().view.call, "choosing Call starts the live conversation")
 end
 
--- Advances the live conversation through semantic advance input until
--- the mother program owes its save/keep choice. The bound only guards
--- against a stuck call; a healthy call owes its choice within a few
--- fixed steps with no wall-clock waits.
----@param controller table
----@return table the detached view at the owed choice
-local function driveToOwedChoice(controller)
-  for _ = 1, 24 do
-    local view = controller:status().view
-    local call = view.call
-    if type(call) == "table" and call.stage == "choice" then
-      return view
-    end
-    controller:updateFixed({ { type = "advance" } })
-  end
-  error("the mother call never reached its owed save/keep choice", 0)
-end
-
 -- Recording (non-GPU) render collaborators: every graphics call is
 -- captured in the log, every prepared image is a recording stub lease,
--- and text primitives record their lines and palette use. Nothing here
--- touches love or allocates GPU resources.
+-- and text primitives record their lines, palette use, and which font
+-- role drew them (names through the name font, classes and call text
+-- through the class font). Nothing here touches love or allocates GPU
+-- resources.
 ---@return table resources
 ---@return table log
 local function recordingResources()
@@ -367,25 +379,25 @@ local function recordingResources()
       return lease
     end,
   })
-  local function textRenderer()
+  local function textRenderer(role)
     return {
-      drawText = function(_, line, x, y)
-        log[#log + 1] = { op = "text", plain = true, line = tostring(line), x = x, y = y }
+      role = role,
+      drawText = function(self, line, x, y)
+        log[#log + 1] = { op = "text", plain = true, role = self.role, line = tostring(line), x = x, y = y }
       end,
-      drawTextWithPalette = function(_, line, x, y, colors)
-        log[#log + 1] = { op = "text", plain = false, line = tostring(line), x = x, y = y, colors = colors }
+      drawTextWithPalette = function(self, line, x, y, colors)
+        log[#log + 1] = { op = "text", plain = false, role = self.role, line = tostring(line), x = x, y = y, colors = colors }
       end,
       textWidth = function(_, line)
         return #tostring(line) * 8
       end,
     }
   end
-  local text = textRenderer()
   return {
     graphics = graphics,
     images = images,
-    textRenderer = text,
-    phoneNameTextRenderer = textRenderer(),
+    textRenderer = textRenderer("class"),
+    phoneNameTextRenderer = textRenderer("name"),
   },
     log
 end
@@ -402,14 +414,6 @@ end
 ---@param record table
 ---@param area table
 ---@return boolean
-local function rectHits(record, area)
-  return record.x < area.x1 and record.x + record.width > area.x0 and record.y < area.y1
-    and record.y + record.height > area.y0
-end
-
----@param record table
----@param area table
----@return boolean
 local function textHits(record, area)
   return record.x >= area.x0 and record.x < area.x1 and record.y >= area.y0 and record.y < area.y1
 end
@@ -421,195 +425,229 @@ local SPEECH_RECT = rectOf(16, 152, 216, 32)
 local NAME_RECT = rectOf(32, 128, 72, 16)
 local LIST_BAND = rectOf(8, 16, 216, 144)
 
--- Locates the owed-choice menu projection on the call surface: either a
--- dedicated top-level projection or a menu carried by the call view,
--- with one 24px row per owed choice, distinct from the speech text.
----@param view table
----@return table? menu projection
-local function findChoiceMenu(view)
-  local candidates = { view.callMenu }
-  if type(view.call) == "table" then
-    candidates[#candidates + 1] = view.call.menu
-  end
-  for _, candidate in ipairs(candidates) do
-    if type(candidate) == "table" then
-      return candidate
-    end
-  end
-  return nil
-end
-
--- Derives the owed-choice menu exclusion rect in pixels from the
--- published callMenu frame (tiles, the same geometry the renderer
--- draws): the shared list-menu frame spans x..x+width+1 tiles across
--- and y..y+height-1 tiles down. Nil while no choice menu is owed, so
--- non-menu states keep full-strictness counters.
----@param view table
----@return table? pixel rect with x0/y0/x1/y1 fields
-local function choiceMenuRect(view)
-  local menu = findChoiceMenu(view)
-  if type(menu) ~= "table" then
-    return nil
-  end
-  local frame = (menu --[[@as table<string, unknown>]]).frame
-  if type(frame) ~= "table" then
-    return nil
-  end
-  local tile = frame --[[@as table<string, integer>]]
-  assert(
-    type(tile.x) == "number"
-      and type(tile.y) == "number"
-      and type(tile.width) == "number"
-      and type(tile.height) == "number",
-    "the owed-choice menu carries its window frame in tiles"
-  )
-  return {
-    x0 = tile.x * 8,
-    y0 = tile.y * 8,
-    x1 = (tile.x + tile.width + 2) * 8,
-    y1 = (tile.y + tile.height) * 8,
-  }
-end
-
--- (1) during a live call the information pane carries the live contact
--- list while the controls pane carries the call speech/name (the
--- MAIN_3/SUB_2 split), and the plan carries the per-skin window palette
--- beside the list palette so the SUB_2 windows print through bank 1 of
--- the foreground NCLR member. The information render must paint the
--- list rows and list text; the controls render must paint the call
--- windows and must not paint any list row.
-function T.tests.live_call_splits_list_and_speech_across_panes()
-  local controller = openMenuController()
-  placeMenuCall(controller)
-  local view = driveToOwedChoice(controller)
-  Assert.notNil(view.list, "the live call keeps its contact list projection")
-  Assert.notNil(view.call, "the live call keeps its conversation projection")
-
-  local PokegearPhoneRenderer = requireFeature(
-    "libs.hgss.src.presentation.PokegearPhoneRenderer",
-    "the phone card has no renderer yet: the MAIN/SUB pane split cannot paint its live call"
-  )
+-- Paints one pane through the controller's published plan callbacks: the
+-- lower controls surface through render, the upper information surface
+-- through renderInformation, each with the same published status the
+-- shell hands its children.
+---@param controller table
+---@param which string "lower" or "upper"
+---@return table log the recorded paint operations
+local function paintPane(controller, which)
   local status = controller:status()
-  local content = assert(status.presentation, "the live call publishes its plan").content
-  Assert.notNil(content.windowPalette, "the call plan carries its window palette beside the list palette")
-  Assert.notNil(content.listPalette, "the call plan keeps carrying its list palette")
+  local plan = assert(status.presentation, "the phone controller publishes its presentation plan")
+  local resources, log = recordingResources()
+  if which == "lower" then
+    assert(type(plan.render) == "function", "the published plan carries its lower render callback")
+    plan.render(resources, status, plan)
+  else
+    assert(type(plan.renderInformation) == "function", "the published plan carries its upper render callback")
+    plan.renderInformation(resources, status, plan)
+  end
+  return log
+end
 
-  local infoResources, infoLog = recordingResources()
-  PokegearPhoneRenderer.drawInformation(infoResources, content)
-  local infoFills, infoListText = 0, 0
-  for _, record in ipairs(infoLog) do
-    if record.op == "rect" and record.mode == "fill" and rectHits(record, LIST_BAND) then
-      infoFills = infoFills + 1
-    end
-    if record.op == "text" and record.plain == false and textHits(record, LIST_BAND) then
-      infoListText = infoListText + 1
+-- Contact rows paint exact 216x24 band fills at x8 (the call windows use
+-- different geometry), while row text sits inside the rows but outside the
+-- caller windows; both counters stay silent for call-window paints so a
+-- misplaced call surface cannot masquerade as the contact list.
+---@param log table
+---@return integer contact row band fills
+local function listBandFills(log)
+  local count = 0
+  for _, record in ipairs(log) do
+    if record.op == "rect" and record.mode == "fill" and record.x == 8 and record.width == 216 and record.height == 24 then
+      count = count + 1
     end
   end
-  Assert.isTrue(
-    infoFills > 0,
-    "the information pane paints the live contact list rows during the call"
-  )
-  Assert.isTrue(
-    infoListText > 0,
-    "the information pane paints the live contact names and classes during the call"
-  )
+  return count
+end
 
-  local controlsResources, controlsLog = recordingResources()
-  PokegearPhoneRenderer.draw(controlsResources, view, content)
-  -- Call-window fills and the tile-drawn owed-choice menu are the
-  -- call surface's own paints: list-leak detection excludes fills
-  -- and palette text inside the speech/name windows and the
-  -- published choice-menu frame, so a contact-list leak (which
-  -- paints every row and both text columns outside those rects)
-  -- still trips both counters.
-  local menuArea = choiceMenuRect(view)
-  local controlsListRows, controlsListText, controlsCallText = 0, 0, 0
-  for _, record in ipairs(controlsLog) do
-    if
-      record.op == "rect"
-      and record.mode == "fill"
-      and rectHits(record, LIST_BAND)
-      and not rectHits(record, SPEECH_RECT)
-      and not rectHits(record, NAME_RECT)
-      and (menuArea == nil or not rectHits(record, menuArea)) then
-      controlsListRows = controlsListRows + 1
-    end
+---@param log table
+---@return integer palette text draws inside the contact rows
+local function listBandText(log)
+  local count = 0
+  for _, record in ipairs(log) do
     if
       record.op == "text"
       and record.plain == false
+      and textHits(record, LIST_BAND)
       and not textHits(record, SPEECH_RECT)
       and not textHits(record, NAME_RECT)
-      and (menuArea == nil or not textHits(record, menuArea))
     then
-      controlsListText = controlsListText + 1
-    end
-    if record.op == "text" and (textHits(record, SPEECH_RECT) or textHits(record, NAME_RECT)) then
-      controlsCallText = controlsCallText + 1
+      count = count + 1
     end
   end
-  Assert.equal(
-    controlsListRows,
-    0,
-    "the controls pane never repaints the contact list rows during the call"
-  )
-  Assert.equal(
-    controlsListText,
-    0,
-    "the controls pane never repaints list palette text during the call"
-  )
-  Assert.isTrue(controlsCallText > 0, "the controls pane paints the call speech and name")
+  return count
+end
+
+---@param controller table
+---@return table? the compiled phone sprite sequences by id
+local function contentSprites(controller)
+  local status = controller:status()
+  local plan = assert(status.presentation, "the phone controller publishes its presentation plan")
+  local content = assert(plan.content, "the published plan carries its payload")
+  local sprites = content.sprites --[[@as table<string, unknown>?]]
+  if type(sprites) ~= "table" then
+    return nil
+  end
+  return (sprites --[[@as table<string, table>]]).phone
+end
+
+-- Whether a recorded sprite paint lands on the source position through
+-- one of the sequence's compiled frames: draw calls carry the anchor
+-- offset, so each frame admits exactly one expected paint position.
+---@param record table
+---@param spriteSet table
+---@param sourceX number
+---@param sourceY number
+---@return boolean
+local function spriteDrawAtSource(record, spriteSet, sourceX, sourceY)
+  local sequence = spriteSet[9] --[[@as table<string, unknown>?]]
+  if type(sequence) ~= "table" then
+    return false
+  end
+  for _, frame in ipairs((sequence --[[@as table<string, table>]]).frames) do
+    if record.x == sourceX + frame.anchorX and record.y == sourceY + frame.anchorY then
+      return true
+    end
+  end
+  return false
+end
+
+---@param log table
+---@return table<string, boolean> palette text lines by content
+local function paletteLines(log)
+  local lines = {}
+  for _, record in ipairs(log) do
+    if record.op == "text" and record.plain == false then
+      lines[record.line] = true
+    end
+  end
+  return lines
+end
+
+-- (1) an ordinary browse paints its contact list on the lower surface
+-- only: the lower render draws the six-band list with names through the
+-- name font and classes through the class font, while the upper render
+-- draws the static information plane with no list band or contact text.
+-- The plan carries no second list projection beside the view.
+function T.tests.browse_list_occupies_only_the_lower_pane()
+  local controller = openMenuController()
+  local view = assert(controller:status().view, "the browse state exports its view")
+  Assert.notNil(view.list, "the browse state carries its contact list projection")
+  Assert.equal(#assert(view.list.rows, "the browse list carries its rows"), 3, "three contacts show three rows")
+
+  local content = assert(controller:status().presentation, "the browse state publishes its plan").content
+  Assert.isNil(content.callList, "the plan carries no second list projection beside the view")
+
+  local lower = paintPane(controller, "lower")
+  Assert.isTrue(listBandFills(lower) > 0, "the lower surface paints the contact row bands")
+  local lowerNames, lowerClasses = 0, 0
+  for _, record in ipairs(lower) do
+    if record.op == "text" and record.plain == false and textHits(record, LIST_BAND) then
+      if record.role == "name" then
+        lowerNames = lowerNames + 1
+      elseif record.role == "class" then
+        lowerClasses = lowerClasses + 1
+      end
+    end
+  end
+  Assert.equal(lowerNames, 3, "the lower surface prints every contact name through the name font")
+  Assert.equal(lowerClasses, 3, "the lower surface prints every contact class through the class font")
+
+  local upper = paintPane(controller, "upper")
+  Assert.equal(listBandFills(upper), 0, "the upper surface never paints contact row bands")
+  Assert.equal(listBandText(upper), 0, "the upper surface never paints contact palette text")
   controller:dispose()
 end
 
--- (2) in-call choices are a 24px menu projection on the call surface,
--- not in-speech rows. The owed choices ride the shared
--- TouchscreenListMenu geometry (one 24px row per option with a 16px
--- text band) and paint through its tile strip; no choice label paints
--- inside the speech window.
-function T.tests.in_call_choices_project_as_shared_list_menu()
+-- (2) a live call keeps the same contact list on the lower surface and
+-- moves only the conversation above: the lower render still paints the
+-- contact labels and row bands with the dimmed planes and the native
+-- fast-forward sprite, the upper render paints the caller name and
+-- speech with no contacts, and ending the call restores the browse
+-- look on both surfaces.
+function T.tests.live_call_keeps_list_below_and_speech_above()
   local controller = openMenuController()
-  placeMenuCall(controller)
-  local view = driveToOwedChoice(controller)
-  local owed = assert(view.call, "the owed choice keeps its conversation projection").choices
-  Assert.deepEqual(owed, { "save", "keep" }, "the mother call owes its save/keep choice")
-
-  local menu = findChoiceMenu(view)
-  Assert.notNil(menu, "the owed choices are exposed as a menu projection on the call surface")
-  local projection = assert(menu, "owed-choice menu projection present")
-  local labels = assert(projection.options or projection.labels, "the choice menu carries its option labels")
-  Assert.deepEqual(labels, { "save", "keep" }, "the choice menu carries the owed choice labels")
-  local rows = assert(projection.rows or projection.entries, "the choice menu carries its option rows")
-  Assert.equal(#rows, 2, "the choice menu carries one row per owed choice")
-  local pitch = (rows[2].y or rows[2].top) - (rows[1].y or rows[1].top)
-  Assert.equal(pitch, 24, "the choice menu uses the shared 24px list-menu row pitch")
-
-  local PokegearPhoneRenderer = requireFeature(
-    "libs.hgss.src.presentation.PokegearPhoneRenderer",
-    "the phone card has no renderer yet: the owed choices cannot paint through the shared list-menu frame"
-  )
-  local status = controller:status()
-  local content = assert(status.presentation, "the live call publishes its plan").content
-  local menuTiles = assert(content.menuTiles, "the call plan resolves its shared list-menu tile strip")
-  local resources, log = recordingResources()
-  PokegearPhoneRenderer.draw(resources, view, content)
-  local stripPaints, inSpeechChoices = 0, 0
-  for _, record in ipairs(log) do
-    if (record.op == "image" or record.op == "quad") and record.path == menuTiles then
-      stripPaints = stripPaints + 1
-    end
-    if
-      record.op == "text"
-      and textHits(record, SPEECH_RECT)
-      and (record.line == "save" or record.line == "keep")
-    then
-      inSpeechChoices = inSpeechChoices + 1
+  local browseLower = paintPane(controller, "lower")
+  local browseLabels = {}
+  for _, record in ipairs(browseLower) do
+    if record.op == "text" and record.plain == false and textHits(record, LIST_BAND) then
+      browseLabels[record.line] = true
     end
   end
-  Assert.isTrue(
-    stripPaints > 0,
-    "the owed choices paint through the shared touchscreen list-menu tile strip"
-  )
-  Assert.equal(inSpeechChoices, 0, "no owed choice paints as an in-speech row")
+
+  placeMenuCall(controller)
+  local call = assert(controller:status().view.call, "the live call keeps its conversation projection")
+  Assert.isTrue(call.dim == true, "the live call publishes its dimmed-screen state")
+  local lower = paintPane(controller, "lower")
+  Assert.isTrue(listBandFills(lower) > 0, "the lower surface keeps the contact row bands during the call")
+  local lowerLines = paletteLines(lower)
+  for line in pairs(browseLabels) do
+    Assert.isTrue(lowerLines[line] == true, "the lower surface keeps the contact label during the call: " .. line)
+  end
+  -- The sprite set draws at its source position plus the compiled frame
+  -- anchor, so the expected paint position derives from the published
+  -- frames beside the source position they must preserve.
+  local spriteSet = assert(contentSprites(controller), "the call plan resolves its sprite set")
+  local spritePaints = 0
+  for _, record in ipairs(lower) do
+    if
+      (record.op == "image" or record.op == "quad")
+      and type(record.path) == "string"
+      and record.path:find("phone-sprite-phone-9-", 1, true) ~= nil
+    then
+      spritePaints = spritePaints + 1
+      Assert.isTrue(
+        spriteDrawAtSource(record, spriteSet, 128, 160),
+        "the fast-forward sprite paints at its source position with its compiled anchor"
+      )
+    end
+  end
+  Assert.isTrue(spritePaints > 0, "the lower surface paints the native fast-forward sprite during the call")
+
+  local upper = paintPane(controller, "upper")
+  Assert.equal(listBandFills(upper), 0, "the upper surface never paints contact row bands during the call")
+  -- The caller name matches its contact label textually, so the
+  -- no-contacts check is positional: no palette text inside the row
+  -- band outside the caller windows, which the row-text counter
+  -- already excludes.
+  Assert.equal(listBandText(upper), 0, "the upper surface never paints contact row text during the call")
+  local callText = 0
+  for _, record in ipairs(upper) do
+    if record.op == "text" and (textHits(record, SPEECH_RECT) or textHits(record, NAME_RECT)) then
+      callText = callText + 1
+    end
+  end
+  Assert.isTrue(callText > 0, "the upper surface paints the caller name and speech during the call")
+
+  local content = assert(controller:status().presentation, "the live call publishes its plan").content
+  Assert.notNil(content.listPaletteDim, "the call plan carries its dimmed list palette")
+  Assert.notNil(content.foregroundDim, "the call plan carries its dimmed lower plane")
+  Assert.notNil(content.dimShellForeground, "the call plan carries its dimmed strip plane")
+  Assert.notNil(content.spritesDim, "the call plan carries its dimmed sprite set")
+
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.isNil(controller:status().view.call, "hanging up clears the conversation projection")
+  local restoredLower = paintPane(controller, "lower")
+  Assert.isTrue(listBandFills(restoredLower) > 0, "the lower surface keeps the list after the call")
+  local restoredUpper = paintPane(controller, "upper")
+  Assert.equal(listBandFills(restoredUpper), 0, "the upper surface drops the call windows after the call")
+  Assert.equal(listBandText(restoredUpper), 0, "the upper surface paints no row text after the call")
+  local leaked = 0
+  for _, record in ipairs(restoredLower) do
+    if record.op == "text" and record.plain == false and textHits(record, SPEECH_RECT) then
+      leaked = leaked + 1
+    end
+  end
+  Assert.equal(leaked, 0, "no call window leaks onto the lower surface")
+  local restoredText = 0
+  for _, record in ipairs(restoredUpper) do
+    if record.op == "text" then
+      restoredText = restoredText + 1
+    end
+  end
+  Assert.equal(restoredText, 0, "the upper surface returns to its text-free static plane after the call")
   controller:dispose()
 end
 

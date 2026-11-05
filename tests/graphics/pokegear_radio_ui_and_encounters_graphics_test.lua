@@ -44,6 +44,51 @@ local function visualRef(path, width, height)
   return { image = path, width = width, height = height, anchorX = 0, anchorY = 0 }
 end
 
+-- The required phone call-dim roles beside the panel stub: the suites
+-- below never paint the phone, but the generated family identity
+-- requires the dim roles on every validating manifest.
+local function phoneDimSection()
+  local section = {
+    panel = visualRef("assets/generated/pokegear/phone-panel.png", 256, 192),
+    foregroundDim = {},
+    foregroundDimChoice = {},
+    dimShellForeground = {},
+    listPaletteDim = {},
+  }
+  for skin = 0, 5 do
+    local suffix = "-skin-" .. skin .. ".png"
+    section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix, 256, 192)
+    section.foregroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix, 256, 192)
+    section.dimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix, 256, 192)
+    local palette = {}
+    for index = 1, 16 do
+      palette[index] = { r = index, g = index, b = index }
+    end
+    section.listPaletteDim[skin] = palette
+  end
+  local dimSprites = {}
+  for sequence = 1, 9 do
+    dimSprites[sequence] = {
+      frames = {
+        {
+          image = "assets/generated/pokegear/phone-sprite-dim-phone-" .. sequence .. "-1.png",
+          width = 16,
+          height = 16,
+          anchorX = -8,
+          anchorY = -8,
+          duration = 1,
+        },
+      },
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+    }
+  end
+  section.spritesDim = { phone = dimSprites }
+  return section
+end
+
 -- Synthetic companion family mirroring the published manifest shape, with
 -- the radio text panel, two pulse frames, and one focus-corner visual
 -- beside the per-skin planes. Every visual gets a distinct path so the
@@ -62,11 +107,11 @@ local function fixtureManifest()
     radioPanel[skin] = visualRef("assets/generated/pokegear/radio-panel-skin-" .. skin .. ".png", 240, 64)
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 256, 192) },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png", 256, 192) },
+    phone = phoneDimSection(),
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 256, 192) },
     fly = { base = visualRef("assets/generated/pokegear/fly-base.png", 256, 192) },
     radio = {

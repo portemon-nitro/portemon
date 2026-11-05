@@ -105,13 +105,32 @@ local CORNER_OFFSETS = { { -16, -10 }, { -16, 10 }, { 16, -10 }, { 16, 10 } }
 -- The fixed card strip over the lower controls band, drawn from the source
 -- picker atlas: the full picker, the pressed cell of the card being
 -- switched to, the blank block over locked radio/map cards, and the focus
--- corners at the focused card while the strip owns focus.
+-- corners at the focused card while the strip owns focus. While a phone
+-- call dims the touchscreen, the strip repaints from the phone plan's
+-- precompiled dimmed strip atlas instead; a missing dim role during a
+-- dimmed call is a programming error, never a reason to draw bright.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param content table<string, unknown>
 ---@param view table<string, unknown>
 local function drawStrip(graphics, images, content, view)
   local atlasPath = content.shellForeground
+  if view.tab == "phone" then
+    local child = view.child
+    local childView = type(child) == "table" and (child --[[@as table<string, unknown>]]).view or nil
+    local call = type(childView) == "table" and (childView --[[@as table<string, unknown>]]).call or nil
+    if
+      type(call) == "table" and (call --[[@as table<string, unknown>]]).dim == true
+    then
+      local published = type(child) == "table" and (child --[[@as table<string, unknown>]]).presentation or nil
+      local planContent = type(published) == "table" and (published --[[@as table<string, unknown>]]).content or nil
+      local dimAtlas = type(planContent) == "table"
+          and (planContent --[[@as table<string, unknown>]]).dimShellForeground
+        or nil
+      assert(type(dimAtlas) == "string", "the dimmed phone call needs its dimmed strip atlas")
+      atlasPath = dimAtlas
+    end
+  end
   assert(type(atlasPath) == "string", "the companion plan resolves its shell image")
   local atlas = images[atlasPath] --[[@as love.Image]]
   assert(atlas ~= nil, "the companion render needs its prepared shell image")
@@ -251,6 +270,19 @@ function PokegearRenderer.draw(resources, view, plan)
   if controls ~= nil then
     local placement = assert(controls.placement, "the controls pane carries its placement")
     LogicalSurface.draw(graphics, placement --[[@as LayoutGeometry.Placement]], function()
+      local child = view.child
+      local childView = type(child) == "table" and (child --[[@as table<string, unknown>]]).view or nil
+      -- A live phone call without an open choice paints its strip first
+      -- so the fast-forward sprite at y160 overlays the strip; every
+      -- other state keeps the child-then-strip order.
+      local stripFirst = view.tab == "phone"
+        and type(childView) == "table"
+        and type((childView --[[@as table<string, unknown>]]).call) == "table"
+        and (childView --[[@as table<string, unknown>]]).callMenu == nil
+      local stripHidden = type(child) == "table" and (child --[[@as table<string, unknown>]]).stripHidden == true
+      if stripFirst and not stripHidden then
+        drawStrip(graphics, images --[[@as table<string, unknown>]], content --[[@as table<string, unknown>]], view)
+      end
       drawChild(
         graphics,
         images --[[@as table<string, unknown>]],
@@ -259,13 +291,7 @@ function PokegearRenderer.draw(resources, view, plan)
         content --[[@as table<string, unknown>]],
         view
       )
-      local child = view.child
-      local childView = type(child) == "table" and (child --[[@as table<string, unknown>]]).view or nil
-      if
-        not (
-          type(child) == "table" and (child --[[@as table<string, unknown>]]).stripHidden == true
-        )
-      then
+      if not stripFirst and not stripHidden then
         drawStrip(graphics, images --[[@as table<string, unknown>]], content --[[@as table<string, unknown>]], view)
       end
       -- A card fade covers the whole lower screen, strip included.

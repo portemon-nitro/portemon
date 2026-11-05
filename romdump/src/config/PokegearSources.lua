@@ -114,9 +114,13 @@ end
 PokegearSources.phoneListPaletteBank = 2
 
 -- The call speech and name windows (windows[0,1] on SUB_2) print with
--- background palette bank 1 of the same phone foreground palette: fill
--- 0 behind both windows, text in colors (1,2,0) (PokegearPhone_AddWindows
--- and PokegearPhone_SetTouchscreenDimState in pokegear_phone_gfx.c).
+-- background palette bank 1 of the upper SUB palette member selected by
+-- phoneUpper(skin) (member 4+skin, loaded to SUB_BG by
+-- PokegearPhone_LoadPalettes): fill 0 behind both windows, text in
+-- colors (1,2,0) (PokegearPhone_AddWindows and
+-- PokegearPhone_SetTouchscreenDimState in pokegear_phone_gfx.c). This
+-- bank number is NCLR-local to the upper member, never to the
+-- foreground member below.
 PokegearSources.phoneWindowPaletteBank = 1
 
 -- The context-menu tooltip window (windows[3]) prints with background
@@ -230,10 +234,20 @@ PokegearSources.mapSprites = {
 -- palette banks are untranscribed for the setup card, so every setup
 -- sequence draws with bank 0 following the unlisted-sequence convention
 -- below. The phone card transcribes the sSpriteTemplates palette slots
--- from pokegear_phone_gfx.c: corners and the move chevron ride OBJ
--- palette 6 (one-based sequences 3, 4, 5, 6, and 9), the scroll arrows
--- and plain move chevron ride palette 7 (sequences 1, 2, and 7).
+-- from pokegear_phone_gfx.c. The templates name hardware OBJ palette
+-- slots, while the source uploads NCLR member 0 at hardware color entry
+-- 0x40 (slot 4, four banks per sixteen colors), so each template slot
+-- maps to an NCLR-local bank by subtracting the upload base: hardware 6
+-- becomes local 2 and hardware 7 becomes local 3. `banks` therefore
+-- carries NCLR-local banks, never hardware slots: compiled sequences
+-- 1-2 (animations 0-1, scroll arrows) ride local 3, sequences 3-6
+-- (animations 2-5, corners and move chevron) ride local 2, and
+-- sequence 7 (animation 6, plain move chevron) rides local 3.
 -- Animation 7 (sequence 8) has no template behind it and keeps bank 0.
+-- Animation 8 (sequence 9, the fast-forward sprite) runs in paletteMode
+-- 1, which keeps the NCER cell palette attribution instead of forcing
+-- an override: it names no bank here and `paletteMode1` marks it so
+-- the compiler passes no override for it.
 PokegearSources.configureSpritePalette = 0
 PokegearSources.phoneSpritePalette = 0
 
@@ -242,7 +256,13 @@ PokegearSources.configureSprites = {
 }
 
 PokegearSources.phoneSprites = {
-  phone = { char = 1, cell = 2, anim = 3, banks = { [1] = 7, [2] = 7, [3] = 6, [4] = 6, [5] = 6, [6] = 6, [7] = 7, [9] = 6 } },
+  phone = {
+    char = 1,
+    cell = 2,
+    anim = 3,
+    banks = { [1] = 3, [2] = 3, [3] = 2, [4] = 2, [5] = 2, [6] = 2, [7] = 3 },
+    paletteMode1 = { [9] = true },
+  },
 }
 
 -- Native radio broadcast programs in source program order with the

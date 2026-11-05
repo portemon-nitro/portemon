@@ -140,17 +140,62 @@ local function visualRef(path)
   return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
 end
 
+-- The required phone call-dim roles beside the panel stub: the suites
+-- below never paint the phone, but the generated family identity
+-- requires the dim roles on every validating manifest.
+local function phoneDimSection()
+  local section = {
+    panel = visualRef("assets/generated/pokegear/phone-panel.png"),
+    foregroundDim = {},
+    foregroundDimChoice = {},
+    dimShellForeground = {},
+    listPaletteDim = {},
+  }
+  for skin = 0, 5 do
+    local suffix = "-skin-" .. skin .. ".png"
+    section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
+    section.foregroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    local palette = {}
+    for index = 1, 16 do
+      palette[index] = { r = index, g = index, b = index }
+    end
+    section.listPaletteDim[skin] = palette
+  end
+  local dimSprites = {}
+  for sequence = 1, 9 do
+    dimSprites[sequence] = {
+      frames = {
+        {
+          image = "assets/generated/pokegear/phone-sprite-dim-phone-" .. sequence .. "-1.png",
+          width = 16,
+          height = 16,
+          anchorX = -8,
+          anchorY = -8,
+          duration = 1,
+        },
+      },
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+    }
+  end
+  section.spritesDim = { phone = dimSprites }
+  return section
+end
+
 -- Synthetic companion catalog with one contact per exercised family,
 -- validated through the real asset schema so the phone tests borrow only
 -- genuine semantic references.
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
+    phone = phoneDimSection(),
     map = { base = visualRef("assets/generated/pokegear/map-base.png") },
     fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
