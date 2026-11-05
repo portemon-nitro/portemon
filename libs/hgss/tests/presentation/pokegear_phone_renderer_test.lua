@@ -234,12 +234,10 @@ function T.list_name_and_class_print_through_their_source_fonts()
   Assert.equal(recordedLine(classText._calls[1]), "CLASS-1", "the class cell prints the contact class")
 end
 
--- Without a composed name font the list keeps its single-renderer path:
--- both cells print through the borrowed text renderer.
 -- The information pane prints the live list with the same font split:
 -- names through the borrowed name font, classes through the class
--- renderer, falling back to the single renderer when no name font
--- is composed.
+-- renderer. Both renderers arrive composed from the field presentation
+-- owner, so every draw below passes them explicitly.
 function T.information_list_keeps_the_source_font_split()
   local graphics = recordingGraphics()
   local nameText = recordingText()
@@ -269,24 +267,50 @@ function T.information_list_keeps_the_source_font_split()
   Assert.equal(#classText._calls, 1, "the information class prints once through the class font")
 end
 
-function T.list_cells_share_the_borrowed_renderer_without_a_name_font()
+-- The call speech/name windows resolve through the dedicated window
+-- palette (bank 1 of the foreground NCLR member behind the SUB_2
+-- windows[0,1]), never through the list palette behind MAIN_3 windows[2].
+function T.call_windows_print_through_the_window_palette()
   local graphics = recordingGraphics()
-  local shared = recordingText()
-  local list = {
-    rows = { { absolute = 0, slot = 0, contact = "mom", label = "NAME-1", class = "CLASS-1" } },
-    selected = 0,
-    scrollOffset = 0,
-    firstBgColor = 0,
-    manual = false,
-    total = 1,
-    cursorVisible = false,
+  local listPalette = distinctPalette()
+  local windowPalette = {}
+  for index = 0, 15 do
+    windowPalette[index + 1] = { r = 100 + index, g = 0, b = 0 }
+  end
+  local foregroundLease = {
+    draw = function(_, _, _, _)
+    end,
   }
   PokegearPhoneRenderer.draw(
-    { graphics = graphics, images = planeImages(), textRenderer = shared },
-    { list = list },
-    { skin = 0, sprites = {}, foreground = "test-foreground", listPalette = distinctPalette() }
+    { graphics = graphics, images = { ["test-foreground"] = foregroundLease }, textRenderer = stubText() },
+    {
+      call = {
+        name = "MOM",
+        lines = { { text = "hello" } },
+        page = 1,
+      },
+    },
+    {
+      skin = 0,
+      sprites = {},
+      foreground = "test-foreground",
+      listPalette = listPalette,
+      windowPalette = windowPalette,
+    }
   )
-  Assert.equal(#shared._calls, 2, "both cells print through the borrowed renderer")
+  local nameFill = nil
+  for _, fill in ipairs(graphics._fills) do
+    if fill.x == 32 and fill.y == 128 and fill.width == 72 and fill.height == 16 then
+      nameFill = fill
+    end
+  end
+  Assert.notNil(nameFill, "the call name window paints its fill")
+  assert(nameFill ~= nil, "the name fill painted above")
+  Assert.equal(
+    nameFill.color.r,
+    (100 + 0) / 255,
+    "the name window fills with the window palette, never the list palette"
+  )
 end
 
 ---@param graphics table
