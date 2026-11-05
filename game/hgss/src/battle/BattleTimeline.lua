@@ -2069,6 +2069,74 @@ function enqueueSendOut(self, incoming, event, switching)
   end
 end
 
+-- subscript_0000_StartEncounter opening send-out: the ThrowPokeball and
+-- PokemonSlideIn pair with the scripted WaitTime settle and the delayed
+-- health-box slide. Unlike mid-battle switches there is no party gauge
+-- on either side of the line; the reveal holds its box until the slide.
+---@param self BattleTimeline
+---@param incoming integer arriving combatant
+---@param settleTicks integer scripted WaitTime between the slide-in and the box slide
+local function enqueueOpeningSendOut(self, incoming, settleTicks)
+  local ownSide = self._addressing[incoming] == "own"
+  if ownSide then
+    local name = combatName(self, incoming)
+    local key = "battle/narration/player-sent-out"
+    local hp, maxHp = foeHealthAt(self, nil)
+    if not playerDoubles(self) and type(hp) == "number" and type(maxHp) == "number" and maxHp > 0 then
+      local value = hp == 0 and 1000 or math.floor(1000 * hp / maxHp)
+      if value < 100 then
+        key = "battle/narration/player-sent-out/foe-weak"
+      elseif value < 325 then
+        key = "battle/narration/player-sent-out/foe-hurt"
+      elseif value < 550 then
+        key = "battle/narration/player-sent-out/go-for-it"
+      elseif value < 775 then
+        key = "battle/narration/player-sent-out/in-charge"
+      end
+    end
+    enqueueMessage(self, messageText(self, key, { name }), false, 0)
+  else
+    local trainer = firstTrainer(self)
+    if trainer ~= nil then
+      local trainerName = assert(trainer.name, "trainer send-outs carry the opponent name")
+      local monName = combatName(self, incoming)
+      enqueueMessage(
+        self,
+        messageText(
+          self,
+          "battle/narration/trainer-sent-out",
+          { trainerClassText(self, trainer), trainerName, monName }
+        ),
+        false,
+        0
+      )
+    end
+  end
+  enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+  enqueueBallSound(self, incoming)
+  local sendOutBall = ballKeyOf(self, incoming)
+  if sendOutBall ~= nil then
+    enqueue(self, {
+      kind = "ball-particles",
+      effect = "seal",
+      ballKey = sendOutBall,
+      battlerType = battlerTypeOf(self, incoming),
+      duration = 0,
+    })
+  end
+  local species, form = speciesOf(self, incoming)
+  if species ~= nil then
+    enqueue(self, {
+      kind = "sound",
+      cue = cryCue(species, form, not ownSide),
+      duration = 0,
+    })
+  end
+  enqueueReveal(self, incoming, true)
+  enqueue(self, { kind = "wait", duration = settleTicks })
+  enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
+end
+
 ---@param self BattleTimeline
 ---@param combatant integer battler under lookup
 ---@return string? species, integer? form from the newest view naming it
@@ -3390,7 +3458,9 @@ function BattleTimeline:intro(view, wild)
     end
     -- WaitTime 122 runs from the script's first tick; HealthbarSlideInDelay
     -- slides the foe box in and the encounter line prints after that slide.
-    enqueue(self, { kind = "wait", duration = 61 })
+    -- The second half holds 60 ticks: the cry occupies the arrival tick
+    -- itself, so the post-cry pause completes the 122-tick script hold.
+    enqueue(self, { kind = "wait", duration = 60 })
     if type(wildFoe.combatant) == "number" then
       enqueue(self, { kind = "hud-slide", combatant = wildFoe.combatant, direction = "in" })
     end
@@ -3408,39 +3478,33 @@ function BattleTimeline:intro(view, wild)
     local sentOutFoe = false
     for _, foe in ipairs(foes) do
       if foe.active ~= false then
-        enqueueSendOut(self, foe.combatant --[[@as integer]], nil)
-        enqueue(self, { kind = "wait", duration = 112 })
+        enqueueOpeningSendOut(self, foe.combatant --[[@as integer]], 112)
         sentOutFoe = true
       end
     end
     assert(sentOutFoe, "trainer openings send out an active foe")
   end
-  if wild then
-    enqueue(self, { kind = "wait", duration = 96 })
-  else
+  if not wild then
     enqueueOpeningPresentation(self, { playerGaugeVisible = false })
   end
-  enqueueSendOut(self, own.combatant --[[@as integer]], nil)
+  enqueueOpeningSendOut(self, own.combatant --[[@as integer]], 96)
   if type(view.own) == "table" then
     for _, partner in ipairs(view.own) do
       if partner.active ~= false and partner.combatant ~= own.combatant then
-        enqueueSendOut(self, partner.combatant --[[@as integer]], nil)
+        enqueueOpeningSendOut(self, partner.combatant --[[@as integer]], 96)
       end
     end
   end
-  -- subscript_0000_StartEncounter paces the player send-out with
-  -- WaitTime 96 before the hide that releases command input: the wild
-  -- path shows ThrowPokeball, PokemonSlideIn, WaitTime 96,
-  -- HealthbarSlideInDelay, then Wait, and both trainer variants pace
-  -- their player-side throw the same way.
-  if wild then
-    enqueue(self, { kind = "wait", duration = 96 })
-  end
+  -- SetBattleBackground hands the intro terrain to the battle background
+  -- once every send-out settled. The start gauges are freed there, and the
+  -- command input re-enables the ball gauge on arrival, so the handoff
+  -- publishes the command rows directly: the player row always, the enemy
+  -- row only against trainers.
   enqueueOpeningPresentation(self, {
     playerTrainerVisible = false,
     foeTrainerVisible = false,
-    playerGaugeVisible = wild,
-    enemyGaugeVisible = false,
+    playerGaugeVisible = true,
+    enemyGaugeVisible = not wild,
   })
   self._flowIntroDone = true
 end
@@ -3691,13 +3755,8 @@ local function tickWildIntro(self)
       targetColor = 0,
       intensity = 8 - track.fadeElapsed,
     }
-    if track.fadeElapsed == 8 then
-      local presentation = assert(self._openingPresentation, "the wild intro keeps its opening terrain")
-      local slides = presentation.terrainSlides --[[@as table<integer, table<string, unknown>>]]
-      for _, slide in ipairs(slides) do
-        slide.visible = false
-      end
-    end
+    -- The ground stays up through every send-out: SetBattleBackground
+    -- hands it to the battle background with the closing handoff cue.
   end
 end
 
@@ -3892,6 +3951,16 @@ local function startCue(self, cue)
             slide.visible = value
           end
         end
+      end
+    end
+    -- SetBattleBackground hands the intro terrain to the battle
+    -- background once both trainers leave: the ground the encounter
+    -- slid in on stays up through every send-out.
+    if state.playerTrainerVisible == false and state.foeTrainerVisible == false then
+      for _, slide in
+        ipairs(state.terrainSlides --[[@as table<integer, table<string, unknown>>]])
+      do
+        slide.visible = false
       end
     end
   elseif cue.kind == "ball-throw" then

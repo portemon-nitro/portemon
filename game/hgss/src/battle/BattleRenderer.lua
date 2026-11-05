@@ -1889,10 +1889,13 @@ local function drawControls(resources, view, layout, regions)
             local labelLeft = COMMAND_ANCHORS.fight.x - math.floor(labelWidth / 2)
             local dimensions = icon.getDimensions --[[@as fun(self: table<string, unknown>): number, number]]
             local width, height = dimensions(icon)
-            -- BattleInput positions the 32-pixel sprite by its center at
-            -- the fight label's left edge minus sixteen pixels.
+            -- BattleInput centers the 32-pixel sprite on the fight text
+            -- origin: the label's left edge minus sixteen pixels horizontally,
+            -- and the text-object Y minus the subscreen offset, which is
+            -- eight pixels above the anchor. The top-left is sixteen pixels
+            -- above and beside that center, so twenty-four below the anchor.
             local iconX = iconFacts.rightOfLabel == true and labelLeft + labelWidth or labelLeft - 32
-            drawArtwork(graphics, icon, nil, iconX, COMMAND_ANCHORS.fight.y - 32 + offsetY)
+            drawArtwork(graphics, icon, nil, iconX, COMMAND_ANCHORS.fight.y - 24 + offsetY)
             assert(width == 32 and height == 32, "battle command icons use the native 32-pixel extent")
           end
         end
@@ -2339,22 +2342,47 @@ local function drawInteraction(resources, view, content, placement)
   local layers = assert(menuLayers[MENU_SECTIONS[layout]], "the battle view carries layers for its selected menu") --[[@as table[] ]]
   local regions = assert(BattleMenuRegions.forLayout(layout), "the active battle menu has native source regions")
   local menuWindows = type(view.menuWindows) == "table" and view.menuWindows or nil
-  BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows)
-  local function drawOverlay()
-    -- Multi-actor turns name the acting battler above the menu so staged
-    -- choices are never mistaken for the previous entry's selection.
-    local acting = BattleViewRoster.actingName(view)
-    if acting ~= nil then
-      drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
+  -- The menu tilemaps stay up behind the encounter fade (their sampled
+  -- palettes carry the flash), but the controls belong to command input:
+  -- intro, narration, resolution, and outcome panes show gauges alone,
+  -- so the reveal never replays over already-visible controls.
+  local inputMode = view.mode == "command" or view.mode == "moves" or view.mode == "target"
+  -- Retail hides every plane but SUB_2 while no menu is open
+  -- (BattleInput_ShowOnlySubBgLayer2): the plain backdrop without
+  -- the button tilemaps.
+  BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows, not inputMode)
+  if inputMode then
+    local function drawOverlay()
+      -- Multi-actor turns name the acting battler above the menu so staged
+      -- choices are never mistaken for the previous entry's selection.
+      local acting = BattleViewRoster.actingName(view)
+      if acting ~= nil then
+        drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
+      end
+      drawControls(resources, view, layout, regions)
+      drawKeypadCursor(graphics, assets, view, layout, regions)
     end
-    drawControls(resources, view, layout, regions)
-    drawKeypadCursor(graphics, assets, view, layout, regions)
-  end
-  local revealEdge = view.menuRevealEdge
-  if type(revealEdge) == "number" then
-    LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
-  else
-    drawOverlay()
+    -- OBJ controls obey the same slide windows as the BG planes: the top
+    -- controls wipe horizontally with W0 while the strip below the W1 edge
+    -- stays revealed. Clipping to the full reveal height alone would pop
+    -- the top buttons in early, which reads as flicker.
+    local top = type(menuWindows) == "table" and menuWindows.outsideTop or nil
+    local bottom = type(menuWindows) == "table" and menuWindows.outsideBottom or nil
+    if type(top) == "table" and type(bottom) == "table" then
+      if top.width ~= 0 and top.height ~= 0 then
+        LogicalSurface.clip(graphics, top, drawOverlay)
+      end
+      if bottom.width ~= 0 and bottom.height ~= 0 then
+        LogicalSurface.clip(graphics, bottom, drawOverlay)
+      end
+    else
+      local revealEdge = view.menuRevealEdge
+      if type(revealEdge) == "number" then
+        LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
+      else
+        drawOverlay()
+      end
+    end
   end
   drawGauges(resources, view)
 end

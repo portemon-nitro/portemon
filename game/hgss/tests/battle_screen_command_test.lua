@@ -2210,9 +2210,9 @@ end
 ---@param layout string? interaction layout under drawing
 ---@param held string[]? artwork keys reporting unavailable
 ---@return table graphics, text, and window records behind one draw
-local function drawNativePane(paneId, view, layout, held, doublesHud)
+local function drawNativePane(paneId, view, layout, held, doublesHud, graphicsOverride)
   local BattleRenderer = require(RENDERER_MODULE)
-  local graphics = FakeGraphics.new({})
+  local graphics = graphicsOverride or FakeGraphics.new({})
   local text = recordingText()
   local windows = { calls = {} }
   function windows.drawWindow(box, frameKey, background)
@@ -2355,6 +2355,71 @@ function T.target_renderer_uses_icon_clock_and_keeps_empty_source_buttons()
     end
   end
   Assert.isTrue(targetLabel, "the target nickname and gender marker share the native text line")
+end
+
+-- BattleInput centers the 32-pixel mon icon on the fight text origin:
+-- sixteen pixels left of the label edge and eight pixels above the y=83
+-- anchor, so the top-left sits thirty-two left and twenty-four above.
+function T.command_icon_centers_on_the_fight_text_origin()
+  local view = nativeView({
+    commandIcon = { key = "EEVEE/f0", hp = 30, maxHp = 30, animation = 1, frameIndex = 1 },
+  })
+  local drawn = drawNativePane("interaction", view, "command", {})
+  local icon =
+    assert(drawsOf(drawn.graphics, "battle:icon:EEVEE/f0:frame:1")[1], "the command mon icon draws")
+  local fight = nil
+  for _, entry in ipairs(drawn.text.draws) do
+    if entry.content == "FIGHT" then
+      fight = entry
+      break
+    end
+  end
+  Assert.notNil(fight, "the fight label draws beside the icon")
+  Assert.equal(icon.x, fight.x - 32, "the icon centers sixteen pixels left of the fight label edge")
+  Assert.equal(icon.y, 59, "the icon centers eight pixels above the fight anchor")
+end
+
+-- While the slide-in runs, the OBJ controls obey the same native windows
+-- as the BG planes: the top controls wipe horizontally with W0 while the
+-- strip below the W1 edge stays revealed. Clipping the overlay to the
+-- full reveal height instead pops the top buttons in early, which reads
+-- as flicker.
+function T.slide_reveal_clips_top_controls_to_the_native_w0_region()
+  -- Source slide frame zero for a near-side slot: nothing revealed
+  -- horizontally yet, with the W1 edge at y 184.
+  local view = nativeView({
+    commandIcon = { key = "EEVEE/f0", hp = 30, maxHp = 30, animation = 1, frameIndex = 1 },
+    menuRevealEdge = 184,
+    menuWindows = {
+      edge = 184,
+      outsideTop = { x = 1, y = 0, width = 0, height = 144 },
+      outsideBottom = { x = 0, y = 184, width = 256, height = 8 },
+      scroll = {
+        [0] = { x = 1, topY = 0, bottomY = 40 },
+        [1] = { x = 1, topY = 0, bottomY = 40 },
+      },
+    },
+  })
+  local graphics = FakeGraphics.new({})
+  local iconScissors = {}
+  local baseDraw = graphics.draw
+  function graphics.draw(image, quad, x, y, rotation, sx, sy)
+    if type(image) == "table" and image.handle == "battle:icon:EEVEE/f0:frame:1" then
+      iconScissors[#iconScissors + 1] = { graphics.getScissor() }
+    end
+    return baseDraw(image, quad, x, y, rotation, sx, sy)
+  end
+  local drawn = drawNativePane("interaction", view, "command", {}, nil, graphics)
+  local icons = drawsOf(drawn.graphics, "battle:icon:EEVEE/f0:frame:1")
+  Assert.equal(#iconScissors, #icons, "every sliding icon draw carries its window scissor")
+  Assert.isTrue(#icons >= 1, "the sliding icon still draws under its window")
+  for _, scissor in ipairs(iconScissors) do
+    Assert.deepEqual(
+      { scissor[1], scissor[2], scissor[3], scissor[4] },
+      { 0, 184, 256, 8 },
+      "sliding controls stay inside the revealed bottom strip until W0 opens"
+    )
+  end
 end
 
 -- Bar tiles patch the mapped source tile origin of their own strip:
@@ -4281,5 +4346,54 @@ function T.doubles_survivor_keeps_its_row_while_partner_hides()
   Assert.equal(allyLeft[1].centerX, 40, "the undisturbed ally keeps its settled column")
   Assert.equal(allyLeft[1].centerY, 112, "the undisturbed ally keeps its settled row")
 end
+
+-- The wild foe encounter slide rides the snapshot into the renderer:
+-- the scene pose must add to the travel offset, never replace it.
+---@param rig table live screen rig under test driving
+---@param mode string awaited controller mode under test driving
+local function pumpUntil(rig, mode)
+  for _ = 1, 200 do
+    rig.pump(1)
+    if rig.screen:status().mode == mode then
+      return
+    end
+  end
+  error("the battle screen never reached " .. mode, 0)
+end
+
+function T.wild_foe_slide_offset_survives_scene_enrichment()
+  local rig = openRig({})
+  pumpUntil(rig, "intro")
+  local function foeOffset()
+    for _, battler in ipairs(rig.screen:_snapshot().battlers) do
+      if battler.side == 2 then
+        return battler.pictureXOffset
+      end
+    end
+    error("the wild foe stays installed through its slide", 0)
+  end
+  -- The idle animation pose rides on top of travel, so the snapshot
+  -- starts offscreen and moves right instead of matching the raw
+  -- timeline offset exactly.
+  local start = foeOffset()
+  Assert.isTrue(type(start) == "number" and start < -200, "the wild foe starts offscreen")
+  rig.pump(38)
+  local traveled = foeOffset()
+  Assert.isTrue(
+    type(traveled) == "number" and traveled > start + 40,
+    "the wild foe slides right off its start"
+  )
+  Assert.isTrue(
+    type(traveled) == "number" and traveled <= 8,
+    "the wild foe never overshoots its settled position"
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- The lower command menu stays hidden until command input opens: it
+-- must not paint behind the intro and then flicker through its reveal.
+-- Proved at the renderer level in battle_scene_composition_test, which
+-- owns the interaction pane contracts with full manifest views.
 
 return { tests = T }

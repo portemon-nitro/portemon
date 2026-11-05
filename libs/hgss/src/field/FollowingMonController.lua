@@ -549,6 +549,13 @@ function FollowingMonController:_publish(mapId)
     if id ~= nil then
       self._published = self._lead
       self._queue = {}
+      -- A new lead swaps the published visual in place on the same tile:
+      -- the replacement actor is fresh with no in-flight walk, so stale
+      -- trail state from the previous lead must not resume on it. Clearing
+      -- mirrors the map-change reset; only a map switch cleared it before.
+      self._action = nil
+      self._consumedStep = nil
+      self._ledgeLanding = nil
       self._lastFollowerCommand = nil
       self._mapEntry = false
     end

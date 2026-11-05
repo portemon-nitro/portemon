@@ -1069,8 +1069,18 @@ function T.intro_slides_both_terrain_bases_after_the_source_delay()
   Assert.isTrue(terrainSlides[2].visible, "foe terrain stays visible through the palette fade")
   advance(timeline, TICK)
   terrainSlides = assert(timeline:openingPresentation().terrainSlides)
-  Assert.isFalse(terrainSlides[1].visible, "player terrain hides after the foe's palette fade")
-  Assert.isFalse(terrainSlides[2].visible, "foe terrain hides after the foe's palette fade")
+  Assert.isTrue(terrainSlides[1].visible, "player terrain stays up past the foe fade until the handoff")
+  Assert.isTrue(terrainSlides[2].visible, "foe terrain stays up past the foe fade until the handoff")
+  for _ = 1, 3000 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the wild opening drains fully")
+  terrainSlides = assert(timeline:openingPresentation().terrainSlides)
+  Assert.isFalse(terrainSlides[1].visible, "player terrain hands off to the battle background")
+  Assert.isFalse(terrainSlides[2].visible, "foe terrain hands off to the battle background")
 end
 
 function T.opening_presentation_starts_with_the_native_trainer_visibility()

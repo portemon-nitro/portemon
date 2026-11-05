@@ -97,10 +97,15 @@ end
 ---@param layers table[] source screen records with plane and priority
 ---@param view table<string, unknown> semantic render snapshot
 ---@param menuWindows table<string, unknown>? native window and lower BG scroll snapshot
-function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows)
+---@param onlyBackdrop boolean? true while the menu is closed: only the SUB_2 backdrop plane draws, matching the retail disabled composition
+function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows, onlyBackdrop)
   local ordered = {}
   for index, layer in ipairs(layers) do
-    ordered[#ordered + 1] = { index = index, layer = layer, priority = layer.priority or index }
+    -- Screen positions are the staged drawable identity, so a closed menu
+    -- skips its button planes in place instead of renumbering the list.
+    if onlyBackdrop ~= true or layer.plane == 2 then
+      ordered[#ordered + 1] = { index = index, layer = layer, priority = layer.priority or index }
+    end
   end
   table.sort(ordered, function(a, b)
     if a.priority == b.priority then

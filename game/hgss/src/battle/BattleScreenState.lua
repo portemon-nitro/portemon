@@ -119,6 +119,7 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _activeEffectRunning boolean whether the player selection bob is active
 ---@field _sourceAccum number accepted seconds banked toward the next source tick
 ---@field _menuRevealStep integer source menu reveal frame, 0 through 4
+---@field _battleSpeed integer frozen launch presentation speed factor behind voice holds
 ---@field _menuGateTicks integer source ticks until menu input opens
 ---@field _messageScrollY integer source BG1 message-window scroll from -51 to 0
 ---@field _menuPulseBlend integer source palette blend coefficient from 0 through 16
@@ -429,6 +430,7 @@ end
 ---@field battleMenus table<string, unknown>? borrowed field-owned native menu renderers and manifests
 ---@field summary table<string, unknown>? borrowed field Summary application dependencies for evolution learning
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
+---@field battleSpeed integer? frozen launch presentation speed factor, defaulting to single rate
 ---@field battleScene boolean? scene choice for this launch, defaulting to On for previous callers
 ---@field musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
@@ -504,6 +506,12 @@ end
 ---@param name unknown staged voice identity under query
 ---@return boolean complete true once the owned voice needs no further wait
 local function nativeVoiceFinished(screen, name)
+  -- Above single rate native voices never gate source progress either:
+  -- move-animation occurrences retire on their tick-scaled tasks while
+  -- the voice keeps playing in real time.
+  if screen._battleSpeed > 1 then
+    return true
+  end
   local handle = screen._nativeVoices[name]
   if handle == nil then
     return true
@@ -1080,6 +1088,11 @@ function BattleScreenState.new(opts)
   local overrides = opts.overrides or {}
   assert(type(overrides) == "table", "per-instance inputs arrive as a record")
   local manifest = opts.manifest --[[@as table<string, unknown>]]
+  local battleSpeed = opts.battleSpeed
+  if battleSpeed == nil then
+    battleSpeed = 1
+  end
+  assert(battleSpeed == 1 or battleSpeed == 2 or battleSpeed == 4, "battle screens run at 1x, 2x, or 4x")
   local sceneKey = overrides.sceneKey
   if sceneKey == nil and type(manifest.scenes) == "table" and type(manifest.scenes[1]) == "table" then
     sceneKey = manifest.scenes[1].key
@@ -1100,6 +1113,7 @@ function BattleScreenState.new(opts)
     _paletteDrawableFrame = nil,
     _paletteRasterCache = {},
     _launchId = opts.launchId,
+    _battleSpeed = battleSpeed,
     _manifest = manifest,
     _model = opts.model,
     _submit = opts.submit,
@@ -1530,7 +1544,11 @@ local function enrichScene(self, battlers)
           battler.pictureAnimation = pictureAttributes.animation
           local pose = self._scene:picturePose(battler, pictureAttributes.animation)
           battler.pictureFrame = pose.frame
-          battler.pictureXOffset = pose.xOffset
+          -- The idle animation pose rides on top of travel: the foe
+          -- encounter slide (and any reentry displacement) already sits
+          -- in the offset, so the pose adds instead of replacing it.
+          local travel = type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0
+          battler.pictureXOffset = travel + pose.xOffset
           battler.pictureAnimationActive = pose.active
         end
       end
@@ -3300,6 +3318,9 @@ function BattleScreenState:_evolutionPrinterCallback(completion, messageId, call
   assert(completion.printerMessageId == messageId, "evolution callbacks belong to their active message")
   local voices = assert(completion.printerCallbackVoices, "evolution messages own their callback voices") --[[@as table<integer, table<string, unknown>>]]
   if callback == 1 then
+    if self._battleSpeed > 1 then
+      return true
+    end
     for _, voice in pairs(voices) do
       if voice.kind == "effect" and not self._battleAudio:voiceComplete(voice) then
         return false
@@ -3307,6 +3328,9 @@ function BattleScreenState:_evolutionPrinterCallback(completion, messageId, call
     end
     return true
   elseif callback == 2 then
+    if self._battleSpeed > 1 then
+      return true
+    end
     for _, voice in pairs(voices) do
       if voice.kind == "fanfare" and not self._battleAudio:voiceComplete(voice) then
         return false
@@ -3401,6 +3425,11 @@ end
 function BattleScreenState:_evolutionVoiceComplete(completion)
   local handle = completion.waitingVoice
   if handle == nil or self._legacyAudio then
+    return true
+  end
+  if self._battleSpeed > 1 then
+    completion.waitingVoice = nil
+    self._waitingCueVoice = nil
     return true
   end
   local ok, complete = pcall(function()
@@ -4512,6 +4541,13 @@ function BattleScreenState:_soundCueComplete(cue)
   local handle = self._waitingCueVoice
   if handle == nil then
     return false
+  end
+  -- Above single rate the voice never gates source progress: the cry or
+  -- jingle keeps playing in real time while the timeline advances at the
+  -- launch factor, so every wait follows battle speed.
+  if self._battleSpeed > 1 then
+    self._waitingCueVoice = nil
+    return true
   end
   local ok, done = pcall(function()
     return self._battleAudio:voiceComplete(handle)

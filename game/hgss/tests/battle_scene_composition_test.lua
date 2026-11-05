@@ -1094,4 +1094,212 @@ function T.fainting_picture_preserves_source_crop_in_the_paired_view()
   Assert.equal(picture.yOffset, 8, "the picture pass moves the picture down")
 end
 
+---@param view table internal semantic snapshot under drawing
+---@param layout string? active lower menu layout under drawing
+---@return table graphics behind one interaction draw
+local function drawnInteraction(view, layout)
+  local graphics = FakeGraphics.new({})
+  local text = recordingText()
+  local resources = {
+    graphics = graphics,
+    text = text,
+    windows = {
+      background = { 0, 0, 0, 1 },
+      drawWindow = function() end,
+      drawApplicationFrame = function() end,
+    },
+    assets = {
+      drawable = function(_, key)
+        if key:match("^gauges:") ~= nil then
+          return nil
+        end
+        return stagedDrawable(key)
+      end,
+      background = function()
+        return { handle = "composed-bg3" }
+      end,
+      shadowRegion = function(_, size)
+        return { size = size, x = 0, y = size * 16, width = 64, height = 16 }
+      end,
+      release = function(_, _) end,
+    },
+    frameKey = "composition-frame",
+    sceneImageKey = "scene:test",
+  }
+  resources.assets.renderPictures = pictureRenderer(graphics, {})
+  -- Minimal single-plane layers keep the blend path out of the
+  -- fixture: the menu still resolves its staged tilemaps per layout.
+  -- Plane 2 is the retail disabled backdrop, so it stays up while the
+  -- controls wait for input.
+  local onePlane = { { plane = 2 } }
+  view.menuLayers = view.menuLayers or { command = onePlane, moves = onePlane, target = onePlane }
+  view.gaugeFamilies = view.gaugeFamilies
+    or {
+      player = { cells = { { objs = {} }, { objs = {} }, { objs = {} } } },
+      enemy = { cells = { { objs = {} }, { objs = {} }, { objs = {} } } },
+    }
+  BattleRenderer.drawPane(resources, view, "interaction", { layout = layout or "command" }, {})
+  return graphics
+end
+
+---@param graphics table fake drawing API behind inspection
+---@return string[] control image handles drawn to the lower pane, excluding menu tilemaps
+local function controlHandles(graphics)
+  local found = {}
+  for _, entry in ipairs(graphics.draws) do
+    local image = entry.image
+    if
+      type(image) == "table"
+      and type(image.handle) == "string"
+      and image.handle:match("^menu:")
+      and not image.handle:match(":screen:")
+    then
+      found[#found + 1] = image.handle
+    end
+  end
+  return found
+end
+
+---@param graphics table fake drawing API behind inspection
+---@return string[] menu tilemap handles drawn to the lower pane
+local function tilemapHandles(graphics)
+  local found = {}
+  for _, entry in ipairs(graphics.draws) do
+    local image = entry.image
+    if type(image) == "table" and type(image.handle) == "string" and image.handle:match(":screen:") then
+      found[#found + 1] = image.handle
+    end
+  end
+  return found
+end
+
+-- The lower tilemaps stay up behind the encounter fade (their sampled
+-- palettes carry the flash, never a fullscreen wash), but the controls
+-- wait for command input.
+function T.encounter_keeps_the_lower_tilemaps_up_without_a_wash()
+  local running = snapshot({
+    mode = "intro",
+    battleKind = "wild",
+      commands = {
+        { id = "fight", enabled = true, label = "FIGHT" },
+        { id = "bag", enabled = true, label = "BAG" },
+        { id = "pokemon", enabled = true, label = "POKEMON" },
+        { id = "run", enabled = true, label = "RUN" },
+      },
+    openingPresentation = {
+      playerTrainerVisible = true,
+      foeTrainerVisible = false,
+      playerGaugeVisible = false,
+      enemyGaugeVisible = false,
+      trainerSlides = {},
+      terrainSlides = {},
+      encounterFrame = 15,
+      encounterLower = { level = 6 },
+    },
+  })
+  local graphics = drawnInteraction(running)
+  Assert.equal(#graphics.rectangles, 0, "no wash covers the palette-faded tilemaps")
+  Assert.isTrue(#tilemapHandles(graphics) > 0, "the tilemaps stay up behind the encounter fade")
+  Assert.deepEqual(controlHandles(graphics), {}, "no command controls paint under the transition")
+  local revealed = snapshot({
+    mode = "intro",
+    battleKind = "wild",
+      commands = {
+        { id = "fight", enabled = true, label = "FIGHT" },
+        { id = "bag", enabled = true, label = "BAG" },
+        { id = "pokemon", enabled = true, label = "POKEMON" },
+        { id = "run", enabled = true, label = "RUN" },
+      },
+    openingPresentation = {
+      playerTrainerVisible = true,
+      foeTrainerVisible = false,
+      playerGaugeVisible = false,
+      enemyGaugeVisible = false,
+      trainerSlides = {},
+      terrainSlides = {},
+      encounterFrame = 35,
+      encounterLower = { whiteCoefficient = 8 },
+    },
+  })
+  local white = drawnInteraction(revealed)
+  Assert.equal(#white.rectangles, 0, "no wash covers the white reveal either")
+  Assert.isTrue(#tilemapHandles(white) > 0, "the tilemaps stay up through the white reveal")
+  local settled = snapshot({
+    mode = "command",
+    battleKind = "wild",
+      commands = {
+        { id = "fight", enabled = true, label = "FIGHT" },
+        { id = "bag", enabled = true, label = "BAG" },
+        { id = "pokemon", enabled = true, label = "POKEMON" },
+        { id = "run", enabled = true, label = "RUN" },
+      },
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      playerGaugeVisible = true,
+      enemyGaugeVisible = false,
+      trainerSlides = {},
+      terrainSlides = {},
+    },
+  })
+  local open = drawnInteraction(settled)
+  Assert.equal(#open.rectangles, 0, "no wash covers the lower pane once the encounter ends")
+  Assert.isTrue(#controlHandles(open) > 0, "the command controls paint once command input opens")
+end
+
+-- The lower command controls paint only for command input: narration,
+-- resolution, and outcome panes show tilemaps and gauges alone, so the
+-- reveal never replays over already-visible controls.
+function T.command_menu_paints_only_in_command_modes()
+  local layouts = { command = "command", moves = "moves", target = "target" }
+  for mode, layout in pairs(layouts) do
+    local view = snapshot({
+      mode = mode,
+      battleKind = "wild",
+      commands = {
+        { id = "fight", enabled = true, label = "FIGHT" },
+        { id = "bag", enabled = true, label = "BAG" },
+        { id = "pokemon", enabled = true, label = "POKEMON" },
+        { id = "run", enabled = true, label = "RUN" },
+      },
+      openingPresentation = {
+        playerTrainerVisible = false,
+        foeTrainerVisible = false,
+        playerGaugeVisible = true,
+        enemyGaugeVisible = false,
+        trainerSlides = {},
+        terrainSlides = {},
+      },
+    })
+    local graphics = drawnInteraction(view, layout)
+    Assert.isTrue(#controlHandles(graphics) > 0, "the " .. mode .. " controls paint for input")
+    Assert.isTrue(#tilemapHandles(graphics) > 0, "the " .. mode .. " tilemaps paint for input")
+    Assert.equal(#graphics.rectangles, 0, "no wash covers the " .. mode .. " menu")
+  end
+  for _, mode in ipairs({ "intro", "narration", "awaiting_resolution", "outcome" }) do
+    local view = snapshot({
+      mode = mode,
+      battleKind = "wild",
+      commands = {
+        { id = "fight", enabled = true, label = "FIGHT" },
+        { id = "bag", enabled = true, label = "BAG" },
+        { id = "pokemon", enabled = true, label = "POKEMON" },
+        { id = "run", enabled = true, label = "RUN" },
+      },
+      openingPresentation = {
+        playerTrainerVisible = false,
+        foeTrainerVisible = false,
+        playerGaugeVisible = true,
+        enemyGaugeVisible = false,
+        trainerSlides = {},
+        terrainSlides = {},
+      },
+    })
+    local graphics = drawnInteraction(view, "command")
+    Assert.deepEqual(controlHandles(graphics), {}, "no command controls paint in " .. mode)
+    Assert.isTrue(#tilemapHandles(graphics) > 0, "the tilemaps stay up in " .. mode)
+    Assert.equal(#graphics.rectangles, 0, "no wash covers the gauges in " .. mode)
+  end
+end
+
 return { tests = T }
