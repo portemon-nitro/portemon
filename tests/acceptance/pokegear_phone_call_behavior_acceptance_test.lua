@@ -55,19 +55,29 @@ local function fixtureManifest()
   }
   local order = { "custom.mom", "custom.trainer-plain" }
   local phoneForeground, phoneUpper = {}, {}
-  local phoneListPalette, phoneTooltipPalette = {}, {}
+  local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground = {}, {}, {}
+  local phoneListPalette, phoneListPaletteDim, phoneTooltipPalette = {}, {}, {}
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
+    phoneListPaletteDim[skin] = {}
     phoneTooltipPalette[skin] = {}
     for index = 1, 16 do
       phoneListPalette[skin][index] =
         { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+      phoneListPaletteDim[skin][index] =
+        { r = (index * 37 + skin * 11 + 90) % 256, g = (index * 19 + 130) % 256, b = (skin * 23 + 40) % 256 }
       phoneTooltipPalette[skin][index] =
         { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
     end
   end
   for skin = 0, 5 do
     phoneForeground[skin] = visualRef("assets/generated/pokegear/phone-foreground-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDim[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice-skin-" .. skin .. ".png", 256, 192)
+    phoneDimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground-skin-" .. skin .. ".png", 256, 192)
     phoneUpper[skin] = visualRef("assets/generated/pokegear/phone-upper-skin-" .. skin .. ".png", 256, 192)
   end
   local phonePanel = {
@@ -92,22 +102,42 @@ local function fixtureManifest()
     end
     phoneSprites[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
   end
+  local phoneSpritesDim = {}
+  for sequence, frames in ipairs(phoneSpriteCounts) do
+    local list = {}
+    for frame = 1, frames do
+      list[frame] = {
+        image = "assets/generated/pokegear/phone-sprite-phone-" .. sequence .. "-dim-" .. frame .. ".png",
+        width = phoneSpriteWidths[sequence],
+        height = phoneSpriteHeights[sequence],
+        anchorX = -math.floor(phoneSpriteWidths[sequence] / 2),
+        anchorY = -math.floor(phoneSpriteHeights[sequence] / 2),
+        duration = 1,
+      }
+    end
+    phoneSpritesDim[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
+  end
   local menuPalette = {}
   for index = 1, 16 do
     menuPalette[index] = { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },
     phone = {
       foreground = phoneForeground,
+      foregroundDim = phoneForegroundDim,
+      foregroundDimChoice = phoneForegroundDimChoice,
+      dimShellForeground = phoneDimShellForeground,
       upper = phoneUpper,
       panel = phonePanel,
       listPalette = phoneListPalette,
+      listPaletteDim = phoneListPaletteDim,
       tooltipPalette = phoneTooltipPalette,
       sprites = { phone = phoneSprites },
+      spritesDim = { phone = phoneSpritesDim },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
     fly = {

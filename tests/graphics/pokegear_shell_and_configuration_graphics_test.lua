@@ -72,11 +72,40 @@ local function fixtureSprites()
   return { configure = sets }
 end
 
+-- The compiled phone OBJ set in source animation order with distinct
+-- staged paths per set, so bright and dimmed call art repaint from
+-- their own images. Paths mirror the producer's staged sprite names.
+---@param prefix string staged path prefix distinguishing the sprite set
+---@return table sequences by one-based compiled id
+local function fixturePhoneSprites(prefix)
+  local counts = { 2, 2, 2, 2, 2, 2, 1, 1, 3 }
+  local widths = { 16, 16, 16, 16, 16, 16, 32, 32, 240 }
+  local heights = { 16, 16, 16, 16, 16, 16, 32, 32, 48 }
+  local sets = {}
+  for sequence, frames in ipairs(counts) do
+    local list = {}
+    for frame = 1, frames do
+      list[frame] = {
+        image = prefix .. sequence .. "-" .. frame .. ".png",
+        width = widths[sequence],
+        height = heights[sequence],
+        anchorX = -math.floor(widths[sequence] / 2),
+        anchorY = -math.floor(heights[sequence] / 2),
+        duration = 1,
+      }
+    end
+    sets[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
+  end
+  return sets
+end
+
 ---@return table
 local function fixtureManifest()
   local skins, shellForeground, shellInformation = {}, {}, {}
   local configureForeground, configurePatch = {}, {}
   local phoneForeground, phoneUpper = {}, {}
+  local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground = {}, {}, {}
+  local phoneListPalette, phoneListPaletteDim, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}, {}
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapUpper = {}, {}
   for skin = 0, 5 do
@@ -87,6 +116,28 @@ local function fixtureManifest()
       visualRef("assets/generated/pokegear/configure-foreground-skin-" .. skin .. ".png", 256, 192)
     configurePatch[skin] = visualRef("assets/generated/pokegear/configure-patch-skin-" .. skin .. ".png", 48, 40)
     phoneForeground[skin] = visualRef("assets/generated/pokegear/phone-foreground-skin-" .. skin .. ".png", 256, 192)
+    -- Dimmed planes keep skin-keyed records with hash-colored paths so a
+    -- wrong variant choice is a pixel mismatch against the bright planes.
+    phoneForegroundDim[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-shade-" .. skin .. ".png", 256, 192)
+    phoneForegroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-pick-" .. skin .. ".png", 256, 192)
+    phoneDimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-strip-dusk-" .. skin .. ".png", 256, 192)
+    phoneListPalette[skin] = {}
+    phoneListPaletteDim[skin] = {}
+    phoneTooltipPalette[skin] = {}
+    phoneWindowPalette[skin] = {}
+    for index = 1, 16 do
+      phoneListPalette[skin][index] =
+        { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+      phoneListPaletteDim[skin][index] =
+        { r = (index * 37 + skin * 11 + 90) % 256, g = (index * 19 + 130) % 256, b = (skin * 23 + 40) % 256 }
+      phoneTooltipPalette[skin][index] =
+        { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
+      phoneWindowPalette[skin][index] =
+        { r = (index * 41 + skin * 7 + 60) % 256, g = (index * 13 + 150) % 256, b = (skin * 53 + 200) % 256 }
+    end
     phoneUpper[skin] = visualRef("assets/generated/pokegear/phone-upper-skin-" .. skin .. ".png", 256, 192)
     radioMain[skin] = visualRef("assets/generated/pokegear/radio-main-skin-" .. skin .. ".png", 256, 192)
     radioSecond[skin] = visualRef("assets/generated/pokegear/radio-second-skin-" .. skin .. ".png", 256, 192)
@@ -95,11 +146,23 @@ local function fixtureManifest()
     mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png", 256, 192)
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { foreground = configureForeground, patch = configurePatch, sprites = fixtureSprites() },
-    phone = { foreground = phoneForeground, upper = phoneUpper },
+    phone = {
+      foreground = phoneForeground,
+      foregroundDim = phoneForegroundDim,
+      foregroundDimChoice = phoneForegroundDimChoice,
+      dimShellForeground = phoneDimShellForeground,
+      upper = phoneUpper,
+      listPalette = phoneListPalette,
+      listPaletteDim = phoneListPaletteDim,
+      tooltipPalette = phoneTooltipPalette,
+      windowPalette = phoneWindowPalette,
+      sprites = { phone = fixturePhoneSprites("assets/generated/pokegear/phone-shell-sprite-") },
+      spritesDim = { phone = fixturePhoneSprites("assets/generated/pokegear/phone-shell-shade-sprite-") },
+    },
     map = {
       foreground = mapForeground,
       upper = mapUpper,
@@ -346,6 +409,9 @@ local function openShell(params)
   local children = stubSiblings(log.siblings)
   if params.configureFactory ~= nil then
     children.configure = params.configureFactory
+  end
+  if params.phoneFactory ~= nil then
+    children.phone = params.phoneFactory
   end
   local box = { facts = params.facts }
   local shell = PokegearScreenState.new({
@@ -751,6 +817,156 @@ function T.setup_cursor_paints_from_compiled_sprites(scope)
     leaseBytes("assets/generated/pokegear/configure-foreground-skin-0.png"),
     "the vacated cell restores its prepared background"
   )
+  controller:dispose()
+end
+
+-- A live phone call dims the shared strip from its dimmed atlas and
+-- paints the fast-forward sprite over it: the strip band repaints
+-- while the call is live and sprite pixels cover the strip where the
+-- source sprite sits. Real shell composition with the real phone
+-- controller driven into its mother call; solid synthetic images keep
+-- every plane and sprite a distinct color.
+function T.live_phone_call_dims_the_strip_and_overlays_the_sprite(scope)
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: the live call cannot dim its strip or overlay its sprite"
+  )
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local manifest = fixtureManifest()
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local state = fullCardState(manifest)
+  for _, contact in ipairs(record.catalog.contacts) do
+    state:registerContact(contact.key)
+  end
+  state:setContactOrder(record.catalog.contactOrder)
+  local world = {
+    flags = { ["mom.savings-choice"] = false },
+    read = function(self, key)
+      return self.flags[key]
+    end,
+    setMomSavingsChoice = function(self, choice)
+      self.flags["mom.savings-choice"] = choice
+    end,
+    rematchReady = {},
+    rematches = {},
+    queryRematch = function()
+      return nil
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = true, gaveRivalName = false, talkedAfterNamingRival = false, eggCallPending = false }
+    end,
+    storyTier = 2,
+    weekday = 6,
+    timeOfDay = 0,
+    teamsByTier = { [2] = { tier = 2, members = {} } },
+    player = { x = 5, y = 7 },
+  }
+  local completed = true
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    assets = record,
+    messages = {
+      invitation = "custom.invitation",
+      accept = "custom.accept",
+      resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
+    world = world,
+    audio = {
+      playDialing = function()
+        completed = false
+      end,
+      isEffectWaitComplete = function()
+        local done = completed
+        completed = true
+        return done
+      end,
+    },
+    random = PokegearRandom.new(2024),
+    tooltips = { "tip-0", "tip-1", "tip-2", "tip-3", "tip-4", "tip-5", "tip-6", "tip-7" },
+    menuLabels = { "menu-0", "menu-1", "menu-2", "menu-3", "menu-4", "menu-5", "menu-6", "menu-7" },
+  })
+  local host = openShell({
+    state = state,
+    manifest = manifest,
+    facts = singleDisplay(512, 192),
+    phoneFactory = function(_)
+      return controller
+    end,
+  })
+  for slot = 1, 4 do
+    if host.shell:status().tab == "phone" then
+      break
+    end
+    local x, y = slotCenter(host.shell, slot)
+    tap(host.shell, x, y)
+    settle(host.shell)
+  end
+  Assert.equal(host.shell:status().tab, "phone", "the shell reaches the phone card")
+  local resources = renderResources(scope, manifest)
+  local browse = drawShell(scope, host.shell, resources, 512, 192)
+
+  -- The mother contact sits second in the saved order: step down,
+  -- open its action menu, and choose Call.
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(controller:status().view.call, "the chosen menu call stays live")
+  local call = drawShell(scope, host.shell, resources, 512, 192)
+
+  local placement = assert(findPane(host.shell:status(), "controls").placement, "the controls pane is placed")
+  local function hostPixel(data, sourceX, sourceY)
+    local hx, hy = toHost(placement, sourceX, sourceY)
+    local red, green, blue = pixel(data, math.floor(hx + 0.5), math.floor(hy + 0.5))
+    return { math.floor(red * 255 + 0.5), math.floor(green * 255 + 0.5), math.floor(blue * 255 + 0.5) }
+  end
+  local function leaseBytes(path)
+    local lease = assert(resources.images[path], "the prepared image exists: " .. path)
+    local canvas = scope:own(love.graphics.newCanvas(32, 32))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setColor(1, 1, 1, 1)
+    lease:draw(love.graphics, 0, 0)
+    love.graphics.setCanvas()
+    local data = scope:own(canvas:newImageData())
+    local red, green, blue = data:getPixel(8, 8)
+    return { math.floor(red * 255 + 0.5), math.floor(green * 255 + 0.5), math.floor(blue * 255 + 0.5) }
+  end
+  -- The probe sits right of the fast-forward sprite (which spans
+  -- x8..248) and above the tooltip strip, so nothing but the shared
+  -- strip paints it in either state.
+  local probeX, probeY = 250, 164
+  local shellStrip = leaseBytes("assets/generated/pokegear/shell-foreground-skin-0.png")
+  local dimStrip = leaseBytes("assets/generated/pokegear/phone-strip-dusk-0.png")
+  Assert.deepEqual(hostPixel(browse, probeX, probeY), shellStrip, "the browse strip paints its bright atlas")
+  Assert.deepEqual(hostPixel(call, probeX, probeY), dimStrip, "the live call strip repaints from its dimmed atlas")
+  -- The source sprite covers the strip band where it sits: sprite
+  -- pixels appear over the strip only while the call is live.
+  local spriteColor = leaseBytes("assets/generated/pokegear/phone-shell-shade-sprite-9-1.png")
+  local function spriteMatches(data)
+    local matches = 0
+    local sourceY = 160
+    while sourceY <= 188 do
+      local sourceX = 8
+      while sourceX <= 248 do
+        if hostPixel(data, sourceX, sourceY)[1] == spriteColor[1] then
+          local sample = hostPixel(data, sourceX, sourceY)
+          if sample[2] == spriteColor[2] and sample[3] == spriteColor[3] then
+            matches = matches + 1
+          end
+        end
+        sourceX = sourceX + 8
+      end
+      sourceY = sourceY + 4
+    end
+    return matches
+  end
+  Assert.equal(spriteMatches(browse), 0, "the browse strip carries no sprite pixels")
+  Assert.isTrue(spriteMatches(call) > 100, "the live call overlays the sprite over the strip")
   controller:dispose()
 end
 

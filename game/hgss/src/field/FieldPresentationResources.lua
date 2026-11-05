@@ -122,7 +122,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field pokemonCenterHealRenderer PokemonCenterHealRenderer? transient healing-ball presentation
 ---@field textRenderer FieldTextRenderer?
----@field phoneNameTextRenderer FieldTextRenderer? the owned phone-list name renderer at source font 4
+---@field phoneNameTextRenderer FieldTextRenderer? the borrowed phone-list name renderer (the battle menu renderer at source font 4)
 ---@field fieldEntryManifest FieldEntryAssetCache.Manifest? the compiled map-name banner source for the skin lease
 ---@field bannerRenderer FieldMapNameRenderer? the borrowed map-name banner renderer
 ---@field _bannerSkin { image: love.Image, palette: FieldEntryAssetCache.BannerTextPalette }? the one retained banner skin
@@ -530,9 +530,9 @@ function FieldPresentationResources.new(runtime)
     self.battleTextRenderers.menu = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 4 })
     self.battleTextRenderers.hud = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 0 })
     -- The phone contact list prints its names with source font 4 while
-    -- classes keep font 0: one owned renderer beside the shared class
-    -- renderer, following the battle role-renderer precedent.
-    self.phoneNameTextRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, fontId = 4 })
+    -- classes keep font 0: it borrows the battle menu renderer by
+    -- reference instead of owning a second font-4 renderer.
+    self.phoneNameTextRenderer = self.battleTextRenderers.menu
     local playerData = assert(runtime.playerData, "field presentation requires the validated player data")
     local playerOptions = assert(playerData.options, "field presentation requires the player options")
     local textFrame = assert(playerOptions.textFrame, "field presentation requires the player-owned frame index")
@@ -1350,16 +1350,13 @@ function FieldPresentationResources:dispose()
     self.textRenderer:release()
     self.textRenderer = nil
   end
-  if self.phoneNameTextRenderer then
-    self.phoneNameTextRenderer:release()
-    self.phoneNameTextRenderer = nil
-  end
   if self.battleTextRenderers then
     for role, renderer in pairs(self.battleTextRenderers) do
       renderer:release()
       self.battleTextRenderers[role] = nil
     end
     self.battleTextRenderers = nil
+    self.phoneNameTextRenderer = nil
   end
   if self.fieldEntranceIndicatorRenderer then
     self.fieldEntranceIndicatorRenderer:dispose()

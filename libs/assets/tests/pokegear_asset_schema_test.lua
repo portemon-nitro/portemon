@@ -12,13 +12,57 @@ local function visualRef(path)
   return { image = path, width = 64, height = 64, anchorX = 0, anchorY = 0 }
 end
 
+-- The required phone call-dim roles beside the panel stub: the schema
+-- under test rejects any manifest without them.
+local function phoneDimSection()
+  local section = {
+    panel = visualRef("assets/generated/pokegear/phone-panel.png"),
+    foregroundDim = {},
+    foregroundDimChoice = {},
+    dimShellForeground = {},
+    listPaletteDim = {},
+  }
+  for skin = 0, 5 do
+    local suffix = "-skin-" .. skin .. ".png"
+    section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
+    section.foregroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    local palette = {}
+    for index = 1, 16 do
+      palette[index] = { r = index, g = index, b = index }
+    end
+    section.listPaletteDim[skin] = palette
+  end
+  local dimSprites = {}
+  for sequence = 1, 9 do
+    dimSprites[sequence] = {
+      frames = {
+        {
+          image = "assets/generated/pokegear/phone-sprite-dim-phone-" .. sequence .. "-1.png",
+          width = 16,
+          height = 16,
+          anchorX = -8,
+          anchorY = -8,
+          duration = 1,
+        },
+      },
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+    }
+  end
+  section.spritesDim = { phone = dimSprites }
+  return section
+end
+
 local function customManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
+    phone = phoneDimSection(),
     map = { base = visualRef("assets/generated/pokegear/map-base.png") },
     fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
@@ -51,7 +95,22 @@ function T.valid_custom_records_validate_without_source_identities()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record, err = PokegearAssetSchema.validate(customManifest())
   Assert.notNil(record, "valid custom records must validate: " .. tostring(err and err.message or err))
-  Assert.equal(record.schema, "g4-pokegear-assets-v2", "validation preserves the schema identity")
+  Assert.equal(record.schema, "g4-pokegear-assets-v3", "validation preserves the schema identity")
+end
+
+function T.phone_dim_roles_are_required()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  for _, role in ipairs({ "foregroundDim", "foregroundDimChoice", "dimShellForeground", "listPaletteDim", "spritesDim" }) do
+    local manifest = customManifest()
+    manifest.phone[role] = nil
+    Assert.isNil(
+      PokegearAssetSchema.validate(manifest),
+      "a manifest without phone." .. role .. " must not validate"
+    )
+  end
+  local manifest = customManifest()
+  manifest.phone.listPaletteDim[0] = nil
+  Assert.isNil(PokegearAssetSchema.validate(manifest), "a manifest missing a dim skin must not validate")
 end
 
 function T.region_map_is_required_and_strict()

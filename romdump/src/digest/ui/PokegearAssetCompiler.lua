@@ -92,7 +92,56 @@ local function paletteBank(archive, memberId, bank, role)
   return colors
 end
 
-local function renderTriple(archive, selection, role, assets, assetName)
+local function decodePaletteMember(archive, memberId, role)
+  return decode("decodePalette", unpackMember(archive, memberId, role), role)
+end
+
+-- Source palette blend toward black with factor 8 (BlendColor(source, 0,
+-- 8)): source + (((0 - source) * 8) >> 4), per 5-bit channel. Staged
+-- colors expand 5-bit channels with floor((channel * 255 + 15) / 31),
+-- which is injective, so each staged channel inverts to exactly one
+-- source channel.
+local function toSourceChannel(expanded)
+  for channel = 0, 31 do
+    if math.floor((channel * 255 + 15) / 31) == expanded then
+      return channel
+    end
+  end
+  error("pokegear dim blend needs a source 5-bit channel", 0)
+end
+
+local function dimChannel(expanded)
+  local source = toSourceChannel(expanded)
+  local blended = source + math.floor(((0 - source) * 8) / 16)
+  return math.floor((blended * 255 + 15) / 31)
+end
+
+---@param color { r: integer, g: integer, b: integer }
+---@return { r: integer, g: integer, b: integer }
+local function dimColor(color)
+  return { r = dimChannel(color.r), g = dimChannel(color.g), b = dimChannel(color.b) }
+end
+
+-- One decoded palette record with the given zero-based banks blended,
+-- leaving the source record untouched for the bright variants sharing
+-- the same member.
+---@param record { colors: table[] }
+---@param dimBanks table<integer, boolean> zero-based banks to darken
+---@return { colors: table[] }
+local function withDimmedBanks(record, dimBanks)
+  local dimmed = { colors = {} }
+  for index, color in ipairs(record.colors) do
+    local bank = math.floor((index - 1) / 16)
+    if dimBanks[bank] == true then
+      dimmed.colors[index] = dimColor(color)
+    else
+      dimmed.colors[index] = { r = color.r, g = color.g, b = color.b }
+    end
+  end
+  return dimmed
+end
+
+local function renderTriple(archive, selection, role, assets, assetName, paletteRecord)
   local charMembers = selection.chars ~= nil and selection.chars or { selection.char }
   local tiles, depth = {}, nil
   for _, charMember in ipairs(charMembers) do
@@ -106,11 +155,15 @@ local function renderTriple(archive, selection, role, assets, assetName)
     tiles[#tiles + 1] = char.tiles
   end
   local screenBytes = unpackMember(archive, selection.screen, role .. ".screen")
-  local paletteBytes = unpackMember(archive, selection.palette, role .. ".palette")
+  local palette = paletteRecord
+  if palette == nil then
+    local paletteBytes = unpackMember(archive, selection.palette, role .. ".palette")
+    palette = decode("decodePalette", paletteBytes, role .. ".palette")
+  end
   local ok, image = pcall(
     G2dRasterizer.renderScreen,
     { depth = depth, tiles = table.concat(tiles) },
-    decode("decodePalette", paletteBytes, role .. ".palette"),
+    palette,
     decode("decodeScreen", screenBytes, role .. ".screen"),
     { role = role }
   )
@@ -170,17 +223,27 @@ end
 -- with the set's per-sequence palette bank and the cell bank's OBJ mapping
 -- mode. Map sets read the shared map palette member; card sets read their
 -- own card palette member. `filePrefix` names the staged frame images.
+-- `selection.banks` carries NCLR-local banks (hardware template slots
+-- minus the 0x40 upload base); sequences marked in
+-- `selection.paletteMode1` name no override so the NCER cell palette
+-- applies, while every other unlisted sequence draws with bank 0.
+-- `paletteRecord` optionally replaces the member decode so dimmed
+-- variants rasterize from a blended palette without touching the source.
 ---@param archive table<string, unknown> the opened source NARC
 ---@param assets table<string, string> the staged asset bytes by path
 ---@param role string the provenance role behind the set
 ---@param filePrefix string the staged image name prefix
 ---@param selection table<string, unknown> the char/cell/anim/banks member selection
 ---@param paletteMember integer the palette member behind the set
+---@param paletteRecord { colors: table[] }? pre-decoded palette record replacing the member decode
 ---@return table<integer, table<string, unknown>> one-based animation sequences
-local function compileSpriteSet(archive, assets, role, filePrefix, selection, paletteMember)
+local function compileSpriteSet(archive, assets, role, filePrefix, selection, paletteMember, paletteRecord)
   local character =
     decode("decodeChar", unpackMember(archive, selection.char, role .. ".character"), role .. ".character")
-  local palette = decode("decodePalette", unpackMember(archive, paletteMember, role .. ".palette"), role .. ".palette")
+  local palette = paletteRecord
+  if palette == nil then
+    palette = decode("decodePalette", unpackMember(archive, paletteMember, role .. ".palette"), role .. ".palette")
+  end
   local cellBytes = unpackMember(archive, selection.cell, role .. ".cell")
   local cells = decode("decodeCell", cellBytes, role .. ".cell")
   local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = "pokegear:" .. role .. ".cell" })
@@ -193,6 +256,13 @@ local function compileSpriteSet(archive, assets, role, filePrefix, selection, pa
   for sequenceIndex, sourceSequence in ipairs(animation.anims) do
     local frames = {}
     for frameIndex, frame in ipairs(sourceSequence.frames) do
+      local override = selection.banks[sequenceIndex]
+      if override == nil then
+        local mode1 = selection.paletteMode1
+        if not (type(mode1) == "table" and mode1[sequenceIndex] == true) then
+          override = 0
+        end
+      end
       local rendered = G2dRasterizer.renderAnimationFrame(
         character,
         palette,
@@ -200,7 +270,7 @@ local function compileSpriteSet(archive, assets, role, filePrefix, selection, pa
         sourceSequence,
         frameIndex,
         { role = role .. "." .. sequenceIndex, frame = frameIndex - 1 },
-        selection.banks[sequenceIndex] or 0,
+        override,
         mapping
       )
       local path = PokegearCache.assetDir() .. "/" .. filePrefix .. "-" .. sequenceIndex .. "-" .. frameIndex .. ".png"
@@ -241,6 +311,7 @@ local function _compile(romFs, versionId)
   local shellForeground, shellInformation = {}, {}
   local configureForeground, configurePatch = {}, {}
   local phoneForeground, phoneUpper, phoneListPalette, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}, {}, {}
+  local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground, phoneListPaletteDim = {}, {}, {}, {}
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapWorld, mapMarkingPanel, mapMarkingBackdrop, mapUpper, mapPreviews = {}, {}, {}, {}, {}, {}
   local mapTextPalette = {}
@@ -287,16 +358,71 @@ local function _compile(romFs, versionId)
       PokegearSources.phoneTooltipPaletteBank,
       "phone.tooltipPalette.skin" .. skin
     )
-    phoneWindowPalette[skin] = paletteBank(
-      phoneArchive,
-      phoneFg.palette,
-      PokegearSources.phoneWindowPaletteBank,
-      "phone.windowPalette.skin" .. skin
-    )
     local phoneUp = PokegearSources.phoneUpper(skin)
     selections["phone.upper.skin" .. skin] = { path = PokegearSources.archives.phone.path, members = phoneUp }
     phoneUpper[skin] =
       renderTriple(phoneArchive, phoneUp, "phone.upper.skin" .. skin, assets, "phone-upper-skin-" .. skin)
+    -- The call windows print through the upper SUB member, not the
+    -- foreground MAIN member: bank 1 of phoneUpper(skin).palette.
+    phoneWindowPalette[skin] = paletteBank(
+      phoneArchive,
+      phoneUp.palette,
+      PokegearSources.phoneWindowPaletteBank,
+      "phone.windowPalette.skin" .. skin
+    )
+    -- The live call darkens MAIN_BG banks 0..10 (color entries 0..0xB0)
+    -- with factor 8; the in-call choice restores banks 1 and 10 while
+    -- keeping the rest dark. The shared strip lives on the shell
+    -- member, whose MAIN_BG banks 14..15 (entries 0xE0..0x100) darken
+    -- with it. All variants render from nonmutating palette copies so
+    -- the bright planes sharing each member stay exact.
+    local phoneFgPalette = decodePaletteMember(phoneArchive, phoneFg.palette, "phone.foregroundPalette.skin" .. skin)
+    local dimBanks = {}
+    for bank = 0, 10 do
+      dimBanks[bank] = true
+    end
+    phoneForegroundDim[skin] = renderTriple(
+      phoneArchive,
+      phoneFg,
+      "phone.foregroundDim.skin" .. skin,
+      assets,
+      "phone-foreground-dim-skin-" .. skin,
+      withDimmedBanks(phoneFgPalette, dimBanks)
+    )
+    local choiceBanks = {}
+    for bank = 0, 10 do
+      choiceBanks[bank] = true
+    end
+    choiceBanks[1] = nil
+    choiceBanks[10] = nil
+    phoneForegroundDimChoice[skin] = renderTriple(
+      phoneArchive,
+      phoneFg,
+      "phone.foregroundDimChoice.skin" .. skin,
+      assets,
+      "phone-foreground-dim-choice-skin-" .. skin,
+      withDimmedBanks(phoneFgPalette, choiceBanks)
+    )
+    if phoneFgPalette.colors[2 * 16 + 16] == nil then
+      error("pokegear palette bank is out of range: phone.listPaletteDim.skin" .. skin, 0)
+    end
+    local dimList = {}
+    for index = 1, 16 do
+      dimList[index] = dimColor(phoneFgPalette.colors[2 * 16 + index])
+    end
+    phoneListPaletteDim[skin] = dimList
+    local shellFgPalette = decodePaletteMember(shellArchive, shellFg.palette, "shell.foregroundPalette.skin" .. skin)
+    if shellFgPalette.colors[15 * 16 + 16] == nil then
+      error("pokegear palette bank is out of range: phone.dimShellForeground.skin" .. skin, 0)
+    end
+    phoneDimShellForeground[skin] = renderTriple(
+      shellArchive,
+      shellFg,
+      "phone.dimShellForeground.skin" .. skin,
+      assets,
+      "phone-dim-shell-foreground-skin-" .. skin,
+      withDimmedBanks(shellFgPalette, { [14] = true, [15] = true })
+    )
 
     local radioMainSel = PokegearSources.radioMain(skin)
     selections["radio.main.skin" .. skin] = { path = PokegearSources.archives.radio.path, members = radioMainSel }
@@ -470,6 +596,27 @@ local function _compile(romFs, versionId)
     )
   end
 
+  local phoneSpritesDim = {}
+  -- The live call darkens MAIN_OBJ entries 0x60..0x80 and 0..0x40
+  -- with factor 8. The phone OBJ member uploads at entry 0x40, so
+  -- only hardware slots 6..7 land inside this member as NCLR-local
+  -- banks 2..3; the 0..0x40 range falls outside it. Dimmed frames keep
+  -- the corrected bank mapping, geometry, and durations of the bright
+  -- set under distinct staged paths.
+  local phoneObjPalette =
+    decodePaletteMember(phoneArchive, PokegearSources.phoneSpritePalette, "phone.spritesDim.palette")
+  for setName, selection in pairs(PokegearSources.phoneSprites) do
+    phoneSpritesDim[setName] = compileSpriteSet(
+      phoneArchive,
+      assets,
+      "phone.spritesDim." .. setName,
+      "phone-sprite-dim-" .. setName,
+      selection,
+      PokegearSources.phoneSpritePalette,
+      withDimmedBanks(phoneObjPalette, { [2] = true, [3] = true })
+    )
+  end
+
   local sequences = compileCursorAnimation(shellArchive, assets)
 
   local catalogBundle, catalogErr = PokegearCatalogCompiler.compile(romFs, versionId)
@@ -513,11 +660,16 @@ local function _compile(romFs, versionId)
     configure = { foreground = configureForeground, patch = configurePatch, sprites = configureSprites },
     phone = {
       foreground = phoneForeground,
+      foregroundDim = phoneForegroundDim,
+      foregroundDimChoice = phoneForegroundDimChoice,
+      dimShellForeground = phoneDimShellForeground,
       upper = phoneUpper,
       listPalette = phoneListPalette,
+      listPaletteDim = phoneListPaletteDim,
       tooltipPalette = phoneTooltipPalette,
       windowPalette = phoneWindowPalette,
       sprites = phoneSprites,
+      spritesDim = phoneSpritesDim,
     },
     map = {
       foreground = mapForeground,

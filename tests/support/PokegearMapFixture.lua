@@ -117,6 +117,48 @@ function PokegearMapFixture.regionMap()
   }
 end
 
+-- Synthetic phone call-dim roles beside the panel stub: the map and fly
+-- suites never paint the phone, but the generated family identity
+-- requires the dim roles on every validating manifest.
+---@return table phone section with the required dim roles
+local function phoneDimSection()
+  local section = {
+    panel = visualRef("assets/generated/pokegear/phone-panel.png"),
+    foregroundDim = {},
+    foregroundDimChoice = {},
+    dimShellForeground = {},
+    listPaletteDim = {},
+  }
+  for skin = 0, 5 do
+    local suffix = "-skin-" .. skin .. ".png"
+    section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix, 256, 192)
+    section.foregroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix, 256, 192)
+    section.dimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix, 256, 192)
+    section.listPaletteDim[skin] = paletteBank(16)
+  end
+  local dimSprites = {}
+  for sequence = 1, 9 do
+    dimSprites[sequence] = {
+      frames = {
+        {
+          image = "assets/generated/pokegear/phone-sprite-dim-phone-" .. sequence .. "-1.png",
+          width = 16,
+          height = 16,
+          anchorX = -8,
+          anchorY = -8,
+          duration = 1,
+        },
+      },
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+    }
+  end
+  section.spritesDim = { phone = dimSprites }
+  return section
+end
+
 ---@return table manifest a schema-valid synthetic companion family
 function PokegearMapFixture.manifest()
   local foreground, world, markingPanel, markingBackdrop, upper, previews, textPalette = {}, {}, {}, {}, {}, {}, {}
@@ -131,11 +173,11 @@ function PokegearMapFixture.manifest()
     textPalette[skin] = { upper = paletteBank(16), lower = paletteBank(16) }
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
+    phone = phoneDimSection(),
     map = {
       foreground = foreground,
       world = world,

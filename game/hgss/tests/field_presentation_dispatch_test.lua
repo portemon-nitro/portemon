@@ -220,7 +220,9 @@ local function buildDoubles(sink, calls)
       end,
     },
     ["libs.hgss.src.ui.FieldTextRenderer"] = {
-      new = function(_)
+      new = function(opts)
+        calls.textFontIds = calls.textFontIds or {}
+        calls.textFontIds[#calls.textFontIds + 1] = opts and opts.fontId
         local text = releasable(calls, "text")
         text.fontDef = {
           palette = {
@@ -1428,11 +1430,12 @@ function T.dispose_releases_owned_resources_exactly_once()
       Assert.equal(calls.hero, 1, "repeat disposal never releases the hero model renderer twice")
       Assert.equal(calls.dialogue, 1, "repeat disposal never releases the dialogue renderer twice")
       Assert.equal(calls.signpost, 1, "repeat disposal never releases the signpost renderer twice")
-      -- The field owns five text renderers sharing one constructor seam:
-      -- the field text renderer, the battle narration, menu, and
-      -- health-box renderers, plus the phone-list name renderer.
+      -- The field owns four text renderers sharing one constructor seam:
+      -- the field text renderer and the battle narration, menu, and
+      -- health-box renderers. The phone list borrows the battle menu
+      -- renderer for its font-4 names instead of owning a second one.
       -- Repeat disposal releases each exactly once.
-      Assert.equal(calls.text, 5, "repeat disposal releases each owned text renderer exactly once")
+      Assert.equal(calls.text, 4, "repeat disposal releases each owned text renderer exactly once")
       Assert.equal(calls.renderer, 1, "repeat disposal never releases the field renderer twice")
       Assert.equal(calls.staticEffect, 2, "repeat disposal releases each static effect renderer once")
       Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
@@ -1448,6 +1451,31 @@ function T.dispose_releases_owned_resources_exactly_once()
   if not ok then
     error(err, 0)
   end
+end
+
+-- The phone contact names borrow the battle menu renderer (the single
+-- font-4 owner) instead of constructing a second font-4 renderer: one
+-- font-4 construction, the borrowed key pointing at the battle menu
+-- instance, and no extra release beside the battle roles.
+function T.phone_names_borrow_the_battle_menu_renderer()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    local font4 = 0
+    for _, fontId in ipairs(calls.textFontIds or {}) do
+      if fontId == 4 then
+        font4 = font4 + 1
+      end
+    end
+    Assert.equal(font4, 1, "field construction owns exactly one font-4 renderer")
+    local menu = assert(resources.battleTextRenderers, "field resources own the battle text roles").menu
+    Assert.notNil(menu, "the battle menu renderer exists to lend")
+    Assert.isTrue(
+      resources.phoneNameTextRenderer == menu,
+      "the phone name renderer borrows the battle menu instance by reference"
+    )
+    resources:dispose()
+    Assert.equal(calls.text, 4, "disposal releases the four owned text renderers exactly once")
+  end)
 end
 
 function T.pc_renderers_are_owned_prepared_and_drawn_through_field_resources()

@@ -694,6 +694,88 @@ local function checkSequences(value, label)
   return nil
 end
 
+-- The required phone call-dim roles beside the bright originals: the
+-- dimmed lower planes, the dimmed strip plane, the dimmed list palette,
+-- and the dimmed sprite set. Each role resolves per skin (or per set)
+-- exactly like its bright counterpart; a missing role or skin is a
+-- malformed family, never a reason to draw the bright original.
+local function checkPhoneDimRoles(phone)
+  for _, role in ipairs({ "foregroundDim", "foregroundDimChoice", "dimShellForeground" }) do
+    local section = phone[role]
+    if type(section) ~= "table" then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "phone." .. role .. " must carry its per-skin planes", {})
+    end
+    for skin = 0, 5 do
+      local visualError = checkVisual(section[skin], "phone." .. role .. "." .. skin)
+      if visualError then
+        return visualError
+      end
+    end
+    for key in pairs(section) do
+      if key ~= 0 and key ~= 1 and key ~= 2 and key ~= 3 and key ~= 4 and key ~= 5 then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "phone." .. role .. " has unexpected key " .. tostring(key),
+          {}
+        )
+      end
+    end
+  end
+  local dimmed = phone.listPaletteDim
+  if type(dimmed) ~= "table" then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "phone.listPaletteDim must carry its per-skin palettes", {})
+  end
+  for skin = 0, 5 do
+    local palette = dimmed[skin]
+    if type(palette) ~= "table" or #palette ~= 16 then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "phone.listPaletteDim." .. skin .. " must carry sixteen source colors",
+        {}
+      )
+    end
+    for index = 1, 16 do
+      local color = palette[index]
+      if
+        type(color) ~= "table"
+        or type(color.r) ~= "number"
+        or type(color.g) ~= "number"
+        or type(color.b) ~= "number"
+      then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "phone.listPaletteDim." .. skin .. "[" .. index .. "] must be an RGB record",
+          {}
+        )
+      end
+    end
+  end
+  local spritesDim = phone.spritesDim
+  if type(spritesDim) ~= "table" then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "phone.spritesDim must carry its dimmed sprite sets", {})
+  end
+  if next(spritesDim) == nil then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "phone.spritesDim must not be empty", {})
+  end
+  for setName, set in pairs(spritesDim) do
+    if type(set) ~= "table" or next(set) == nil then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "phone.spritesDim." .. tostring(setName) .. " must carry its sequences",
+        {}
+      )
+    end
+    for sequenceIndex, sequence in pairs(set) do
+      local sequenceError =
+        checkAnimation(sequence, "phone.spritesDim." .. tostring(setName) .. "." .. tostring(sequenceIndex))
+      if sequenceError then
+        return sequenceError
+      end
+    end
+  end
+  return nil
+end
+
 ---@param manifest unknown
 ---@return table<string, unknown>|nil record
 ---@return Errors.Error|nil
@@ -729,6 +811,11 @@ function PokegearAssetSchema.validate(manifest)
     if sectionError then
       return nil, sectionError
     end
+  end
+  local phone = manifest.phone --[[@as table<string, unknown>]]
+  local dimError = checkPhoneDimRoles(phone)
+  if dimError then
+    return nil, dimError
   end
   local catalogError = checkCatalog(manifest.catalog)
   if catalogError then

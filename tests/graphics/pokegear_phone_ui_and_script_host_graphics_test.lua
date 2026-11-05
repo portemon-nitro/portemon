@@ -50,18 +50,25 @@ end
 ---@return table
 local function fixtureManifest(contacts, order)
   local phoneForeground, phoneUpper, phonePanel = {}, {}, {}
+  local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground = {}, {}, {}
   -- Sixteen distinct synthetic colors per skin: the renderer indexes them
   -- by source palette slot, so every slot and skin paints differently.
+  -- The dimmed list palette stays distinct per slot so dimmed rows
+  -- repaint from it alone.
   local phoneListPalette = {}
+  local phoneListPaletteDim = {}
   local phoneTooltipPalette = {}
   local phoneWindowPalette = {}
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
+    phoneListPaletteDim[skin] = {}
     phoneTooltipPalette[skin] = {}
     phoneWindowPalette[skin] = {}
     for index = 1, 16 do
       phoneListPalette[skin][index] =
         { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+      phoneListPaletteDim[skin][index] =
+        { r = (index * 37 + skin * 11 + 90) % 256, g = (index * 19 + 130) % 256, b = (skin * 23 + 40) % 256 }
       phoneTooltipPalette[skin][index] =
         { r = (index * 29 + skin * 12) % 256, g = (index * 17 + 90) % 256, b = (skin * 31 + 140) % 256 }
       -- The call windows print through their own bank of the foreground
@@ -73,6 +80,12 @@ local function fixtureManifest(contacts, order)
   end
   for skin = 0, 5 do
     phoneForeground[skin] = visualRef("assets/generated/pokegear/phone-foreground-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDim[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice-skin-" .. skin .. ".png", 256, 192)
+    phoneDimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground-skin-" .. skin .. ".png", 256, 192)
     phoneUpper[skin] = visualRef("assets/generated/pokegear/phone-upper-skin-" .. skin .. ".png", 256, 192)
   end
   phonePanel = {
@@ -100,6 +113,24 @@ local function fixtureManifest(contacts, order)
     end
     phoneSprites[sequence] = { frames = list, playMode = "forward", loopStartFrameIdx = 0 }
   end
+  -- The dimmed sprite set mirrors the bright one frame for frame with
+  -- distinct staged paths so dimmed call art repaints from it alone.
+  local phoneSpritesDim = {}
+  for sequence, clip in ipairs(phoneSprites) do
+    local list = {}
+    for frame = 1, #clip.frames do
+      local bright = clip.frames[frame]
+      list[frame] = {
+        image = "assets/generated/pokegear/phone-sprite-dim-phone-" .. sequence .. "-" .. frame .. ".png",
+        width = bright.width,
+        height = bright.height,
+        anchorX = bright.anchorX,
+        anchorY = bright.anchorY,
+        duration = bright.duration,
+      }
+    end
+    phoneSpritesDim[sequence] = { frames = list, playMode = clip.playMode, loopStartFrameIdx = clip.loopStartFrameIdx }
+  end
   -- The shared touchscreen list-menu tile strip behind framed menus:
   -- the same staged sbox tiles the Fly card frames its menu with, so the
   -- phone context menus paint the regular frame instead of an invented
@@ -109,18 +140,23 @@ local function fixtureManifest(contacts, order)
     menuPalette[index] = { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },
     phone = {
       foreground = phoneForeground,
+      foregroundDim = phoneForegroundDim,
+      foregroundDimChoice = phoneForegroundDimChoice,
+      dimShellForeground = phoneDimShellForeground,
       upper = phoneUpper,
       panel = phonePanel,
       listPalette = phoneListPalette,
+      listPaletteDim = phoneListPaletteDim,
       tooltipPalette = phoneTooltipPalette,
       windowPalette = phoneWindowPalette,
       sprites = { phone = phoneSprites },
+      spritesDim = { phone = phoneSpritesDim },
     },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
     fly = {

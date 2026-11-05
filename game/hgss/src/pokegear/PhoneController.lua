@@ -201,12 +201,19 @@ local function renderPhonePresentation(resources, snapshot, plan)
   PokegearPhoneRenderer.draw(resources, snapshot.view, plan.content)
 end
 
--- The information-pane half: the phone's upper plane.
+-- The information-pane half: the phone's upper plane with the live
+-- caller windows. Receives the already-published detached child
+-- snapshot and hands its view to the upper renderer.
 ---@param resources table<string, unknown> borrowed host collaborators
+---@param snapshot table<string, unknown> the card status carrying the detached view
 ---@param plan table<string, unknown> the published plan carrying the payload
-local function renderPhoneInformation(resources, _, plan)
+local function renderPhoneInformation(resources, snapshot, plan)
   local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
-  PokegearPhoneRenderer.drawInformation(resources, plan.content)
+  local view = assert(
+    (snapshot --[[@as table<string, unknown>]]).view,
+    "the phone information render reads the published child view"
+  )
+  PokegearPhoneRenderer.drawInformation(resources, view --[[@as table<string, unknown>]], plan.content)
 end
 
 ---@class PhoneController.Options
@@ -1432,11 +1439,19 @@ function PhoneController:_planContent(skin)
   end
   local section = phone --[[@as table<string, unknown>]]
   content.foreground = skinImage(section.foreground, skin)
+  content.foregroundDim = skinImage(section.foregroundDim, skin)
+  content.foregroundDimChoice = skinImage(section.foregroundDimChoice, skin)
+  content.dimShellForeground = skinImage(section.dimShellForeground, skin)
   content.upper = skinImage(section.upper, skin)
   content.sprites = section.sprites
+  content.spritesDim = section.spritesDim
   local palettes = section.listPalette
   if type(palettes) == "table" then
     content.listPalette = (palettes --[[@as table<integer, table>]])[skin]
+  end
+  local dimPalettes = section.listPaletteDim
+  if type(dimPalettes) == "table" then
+    content.listPaletteDim = (dimPalettes --[[@as table<integer, table>]])[skin]
   end
   local tooltipPalettes = section.tooltipPalette
   if type(tooltipPalettes) == "table" then
@@ -1457,12 +1472,6 @@ function PhoneController:_planContent(skin)
     end
     content.menuPalette = (fly --[[@as table<string, unknown>]]).menuPalette
   end
-  -- The information pane carries the live contact list beside the
-  -- static upper plane: the source keeps the MAIN_3 rows published
-  -- while windows[0,1] carry the speech and name on SUB_2, so the
-  -- plan embeds the detached list projection for the information
-  -- render path.
-  content.callList = self:_listView()
   return content
 end
 

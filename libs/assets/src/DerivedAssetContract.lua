@@ -580,9 +580,12 @@ DerivedAssetContract.pc = {
 -- Phone, map, standalone Fly, and Radio presentation records plus the
 -- immutable contact/map/radio semantic catalogs (including the region-map
 -- location and flypoint tables) as one independently published family.
+-- v3 publishes the required phone call-dim roles beside the bright
+-- originals (dimmed lower planes, dimmed strip plane, dimmed list
+-- palette, dimmed sprite set); a stale v2 family without them rebuilds.
 DerivedAssetContract.pokegear = {
   cacheFormat = "pokegear-cache-v1",
-  schema = "g4-pokegear-assets-v2",
+  schema = "g4-pokegear-assets-v3",
 }
 
 -- The Pokedex family carries the semantic data catalog (species orders,

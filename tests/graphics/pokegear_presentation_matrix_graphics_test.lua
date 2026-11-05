@@ -47,6 +47,31 @@ local function visualRef(path, width, height)
   return { image = path, width = width, height = height, anchorX = 0, anchorY = 0 }
 end
 
+-- One single-frame dimmed sprite sequence per compiled id: the matrix
+-- never paints phone sprites, but the generated family identity
+-- requires the dimmed set on every validating manifest.
+---@param prefix string staged path prefix distinguishing the sprite set
+local function fixturePhoneSprites(prefix)
+  local sets = {}
+  for sequence = 1, 9 do
+    sets[sequence] = {
+      frames = {
+        {
+          image = prefix .. sequence .. "-1.png",
+          width = 16,
+          height = 16,
+          anchorX = -8,
+          anchorY = -8,
+          duration = 1,
+        },
+      },
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+    }
+  end
+  return sets
+end
+
 -- Synthetic companion family mirroring the published manifest shape:
 -- per-skin shell, setup, phone, map, and radio planes plus the immutable
 -- semantic catalogs. Every visual gets a distinct path so the matrix can
@@ -56,6 +81,8 @@ local function fixtureManifest()
   local skins, shellForeground, shellInformation = {}, {}, {}
   local configureForeground, configurePatch = {}, {}
   local phoneForeground, phoneUpper = {}, {}
+  local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground = {}, {}, {}
+  local phoneListPaletteDim = {}
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapUpper = {}, {}
   for skin = 0, 5 do
@@ -66,6 +93,16 @@ local function fixtureManifest()
       visualRef("assets/generated/pokegear/configure-foreground-skin-" .. skin .. ".png", 256, 192)
     configurePatch[skin] = visualRef("assets/generated/pokegear/configure-patch-skin-" .. skin .. ".png", 48, 40)
     phoneForeground[skin] = visualRef("assets/generated/pokegear/phone-foreground-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDim[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-skin-" .. skin .. ".png", 256, 192)
+    phoneForegroundDimChoice[skin] =
+      visualRef("assets/generated/pokegear/phone-foreground-dim-choice-skin-" .. skin .. ".png", 256, 192)
+    phoneDimShellForeground[skin] =
+      visualRef("assets/generated/pokegear/phone-dim-shell-foreground-skin-" .. skin .. ".png", 256, 192)
+    phoneListPaletteDim[skin] = {}
+    for index = 1, 16 do
+      phoneListPaletteDim[skin][index] = { r = index, g = index, b = index }
+    end
     phoneUpper[skin] = visualRef("assets/generated/pokegear/phone-upper-skin-" .. skin .. ".png", 256, 192)
     radioMain[skin] = visualRef("assets/generated/pokegear/radio-main-skin-" .. skin .. ".png", 256, 192)
     radioSecond[skin] = visualRef("assets/generated/pokegear/radio-second-skin-" .. skin .. ".png", 256, 192)
@@ -74,11 +111,19 @@ local function fixtureManifest()
     mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png", 256, 192)
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { foreground = configureForeground, patch = configurePatch },
-    phone = { foreground = phoneForeground, upper = phoneUpper },
+    phone = {
+      foreground = phoneForeground,
+      foregroundDim = phoneForegroundDim,
+      foregroundDimChoice = phoneForegroundDimChoice,
+      dimShellForeground = phoneDimShellForeground,
+      upper = phoneUpper,
+      listPaletteDim = phoneListPaletteDim,
+      spritesDim = { phone = fixturePhoneSprites("assets/generated/pokegear/phone-shell-shade-sprite-") },
+    },
     map = {
       foreground = mapForeground,
       upper = mapUpper,
