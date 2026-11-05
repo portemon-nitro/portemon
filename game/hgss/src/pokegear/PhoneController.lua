@@ -108,6 +108,18 @@ local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 -- exactly like the context menus (3*options+1 rows).
 local CALL_MENU_GEOMETRY = { x = 7, y = 11, width = 22 }
 
+-- Source fast-forward hitbox in pixels (gPhoneCallFastForwardHitbox
+-- { 0x88, 0xb8, 0x08, 0xf8 }), registered for the whole call and
+-- unset on exit.
+local FAST_FORWARD_HITBOX = { x = 0x88, y = 0xb8, width = 0x08, height = 0xf8 }
+
+-- Shared list-menu tap bands inside an in-call choice frame: one 24px
+-- row per option with a 16px text band, exactly like the context
+-- menus.
+local CALL_MENU_TEXT_TOP = 8
+local CALL_MENU_ROW_PITCH = 24
+local CALL_MENU_TEXT_HEIGHT = 16
+
 ---@param value unknown
 ---@return boolean
 local function isNonEmptyString(value)
@@ -960,10 +972,43 @@ function PhoneController:_handleManual(event)
   end
 end
 
+-- The zero-based in-call choice row under a tap release, if the tap
+-- lands on an owed option row.
+---@param frame table<string, integer> the choice window frame in tiles
+---@param x number touch x in pixels
+---@param y number touch y in pixels
+---@return integer? zero-based option row
+local function callMenuRowAt(frame, x, y)
+  local left, top = frame.x * 8, frame.y * 8
+  if x < left or x >= left + frame.width * 8 then
+    return nil
+  end
+  local slot = math.floor((y - top - CALL_MENU_TEXT_TOP) / CALL_MENU_ROW_PITCH)
+  local rowTop = top + CALL_MENU_TEXT_TOP + CALL_MENU_ROW_PITCH * slot
+  if slot < 0 or y < rowTop or y >= rowTop + CALL_MENU_TEXT_HEIGHT then
+    return nil
+  end
+  return slot
+end
+
+---@param x number touch x in pixels
+---@param y number touch y in pixels
+---@return boolean inside the fast-forward hitbox
+local function fastForwardHit(x, y)
+  return x >= FAST_FORWARD_HITBOX.x
+    and x < FAST_FORWARD_HITBOX.x + FAST_FORWARD_HITBOX.width
+    and y >= FAST_FORWARD_HITBOX.y
+    and y < FAST_FORWARD_HITBOX.y + FAST_FORWARD_HITBOX.height
+end
+
 -- Routes one tick of call input to the owned engine: advancing edges
--- fast-forward the conversation, choice input answers the owed choice,
--- and cancellation hangs up. Navigation, pointer, and move input never
--- reach the list, the tabs, or the field behind the call.
+-- fast-forward the conversation and choice input answers the owed
+-- choice. Touch taps route like the source TouchscreenListMenu choice
+-- plumbing: tapping an owed option answers it, and tapping the
+-- fast-forward hitbox advances; key routing stays. Cancellation drains
+-- through the engine cancel path in _handleCall, never here.
+-- Navigation and unrelated pointer input never reach the list, the
+-- tabs, or the field behind the call.
 ---@param event table<string, unknown>
 ---@return table<string, unknown>? the engine edge, if the event carries one
 function PhoneController:_callEdge(event)
@@ -982,15 +1027,62 @@ function PhoneController:_callEdge(event)
     end
     return { confirm = true }
   end
-  if event.type == "cancel" then
-    return { cancel = true }
-  end
   if event.type == "navigate" and waiting and type(event.direction) == "string" then
     local choices = shown.choices --[[@as string[] ]]
     if event.direction == "up" then
       self._choiceCursor = (self._choiceCursor - 1) % #choices
     elseif event.direction == "down" then
       self._choiceCursor = (self._choiceCursor + 1) % #choices
+    end
+  end
+  if event.type == "pointer_down" then
+    if type(event.x) == "number" and type(event.y) == "number" then
+      self._held = { id = event.pointerId, x = event.x, y = event.y }
+    end
+    return nil
+  end
+  if event.type == "pointer_move" then
+    local held = self._held
+    if
+      held ~= nil
+      and held.id == event.pointerId
+      and type(event.x) == "number"
+      and type(event.y) == "number"
+      and (
+        math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
+      )
+    then
+      self._held = nil
+    end
+    return nil
+  end
+  if event.type == "pointer_up" then
+    local held = self._held
+    self._held = nil
+    if held == nil or held.id ~= event.pointerId then
+      return nil
+    end
+    if type(event.x) ~= "number" or type(event.y) ~= "number" then
+      return nil
+    end
+    if
+      math.abs(event.x - held.x --[[@as number]]) > 8 or math.abs(event.y - held.y --[[@as number]]) > 8
+    then
+      return nil
+    end
+    if waiting then
+      local choices = shown.choices --[[@as string[] ]]
+      local row = callMenuRowAt({
+        x = CALL_MENU_GEOMETRY.x,
+        y = CALL_MENU_GEOMETRY.y,
+        width = CALL_MENU_GEOMETRY.width,
+      }, event.x, event.y)
+      if row ~= nil and row >= 0 and row < #choices then
+        return { choice = choices[row + 1] }
+      end
+    end
+    if fastForwardHit(event.x, event.y) then
+      return { advance = true }
     end
   end
   return nil
@@ -1002,6 +1094,30 @@ function PhoneController:_handleCall(event)
   assert(handle ~= nil, "call input steps a live conversation")
   if event.type == "pointer_cancel" then
     self._held = nil
+    return
+  end
+  -- Cancellation drains the staged hangup at once through the engine
+  -- cancel path, so the call returns to the list with its tones
+  -- unwound exactly once; advancing edges stage the same hangup
+  -- across fixed ticks instead.
+  if event.type == "cancel" then
+    local ok, fault = pcall(function()
+      self._call:cancel(handle --[[@as table<string, unknown>]], "hangup")
+    end)
+    if not ok then
+      if Errors.is(fault) then
+        error(fault, 0)
+      end
+      Errors.raise(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "phone conversation failed: " .. tostring(fault),
+        { stage = "call" }
+      )
+    end
+    local shown = self._call:view(handle --[[@as table<string, unknown>]])
+    if shown.result ~= nil or shown.stage == "completed" then
+      self:_finishCall()
+    end
     return
   end
   local edge = self:_callEdge(event)
@@ -1214,7 +1330,23 @@ function PhoneController:_callView()
   detached.className = self._classes[
     shown.contact --[[@as string]]
   ]
-  detached.choiceCursor = self._choiceCursor
+  -- The live call publishes the source dim state with the caller-name
+  -- content for windows[1] in colors (1,2,0): the host boundary owns
+  -- the palette blend, the view owns the state and content. Exiting
+  -- the call clears the whole projection, dim and name with it.
+  -- The fast-forward hitbox stays registered for the whole call in
+  -- the source and unsets on exit; the view carries its geometry.
+  -- No choiceCursor publication: the internal cursor still drives
+  -- view.callMenu.cursor, and the choice rows answer through the
+  -- shared menu projection.
+  detached.dim = true
+  detached.nameWindow = { text = detached.name, colors = { 1, 2, 0 } }
+  detached.fastForward = {
+    x = FAST_FORWARD_HITBOX.x,
+    y = FAST_FORWARD_HITBOX.y,
+    width = FAST_FORWARD_HITBOX.width,
+    height = FAST_FORWARD_HITBOX.height,
+  }
   return detached
 end
 
