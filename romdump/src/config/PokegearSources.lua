@@ -113,6 +113,13 @@ end
 -- phone foreground palette, sixteen colors per skin.
 PokegearSources.phoneListPaletteBank = 2
 
+-- The context-menu tooltip window (windows[3]) prints with background
+-- palette bank 10 of the same phone foreground palette: fill 5 behind
+-- the prompt in text colors 3/2/5 (PrintContextMenuTooltip). The palette
+-- member loads fourteen banks, so bank 10 rides the same member as the
+-- list palette.
+PokegearSources.phoneTooltipPaletteBank = 10
+
 function PokegearSources.phoneUpper(skin)
   return { char = 16 + skin, screen = 22 + skin, palette = 4 + skin }
 end

@@ -459,7 +459,7 @@ end
 
 -- Draws the context menu through the shared touchscreen list-menu
 -- frame: the same staged tile strip every framed app menu draws. The
--- detached frame arrives in pixels; the frame tiles at eight pixels.
+-- detached frame stays in tiles end-to-end.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param text table<string, unknown>?
@@ -477,9 +477,9 @@ local function drawMenu(graphics, images, text, menu, content)
     PokegearMapLayers.imageAt(images, assert(content.menuTiles, "the phone plan resolves its list-menu tile strip"))
   local palette = assert(content.menuPalette, "the phone plan resolves its list-menu palette")
   PokegearMapLayers.drawListMenuFrame(graphics, tiles, palette --[[@as table<integer, table<string, number>>]], text, {
-    x = math.floor(frame.x / 8),
-    y = math.floor(frame.y / 8),
-    width = math.floor(frame.width / 8),
+    x = frame.x,
+    y = frame.y,
+    width = frame.width,
     labels = options,
     cursor = cursor,
   })
@@ -560,12 +560,36 @@ local function drawPanel(graphics, images, cell, content)
   graphics.setColor(1, 1, 1, 1)
 end
 
--- The bottom tooltip bar: the source centres the menu prompt in the
--- lower window in the list palette's 3/2/5 combination.
+-- Source palette indices of the context tooltip window (windows[3])
+-- in its own palette bank: the strip fill, and the foreground, shadow,
+-- and background of the centered prompt.
+local TOOLTIP_FILL = 5
+local TOOLTIP_FOREGROUND = 3
+local TOOLTIP_SHADOW = 2
+
+-- windows[3] behind the context tooltip (MAIN_1 tile (0,21), 32x2): the
+-- strip the source fills behind the centered prompt.
+local TOOLTIP_STRIP = { x = 0, y = 168, width = 256, height = 16 }
+
+-- The bottom tooltip bar: windows[3] paints its strip in fill 5 behind
+-- the menu prompt centered in the 3/2/5 combination of the window's
+-- own palette bank, never the list palette. The source saves and
+-- restores the covered tilemap rect around the window; the
+-- retained-mode renderer repaints every frame, so it paints only.
+---@param graphics love.graphics
 ---@param text table<string, unknown>?
----@param palette table<integer, table<string, number>>
+---@param palette table<integer, table<string, number>> sixteen tooltip colors, one-based
 ---@param line string
-local function drawTooltip(text, palette, line)
+local function drawTooltip(graphics, text, palette, line)
+  fillPalette(
+    graphics,
+    palette,
+    TOOLTIP_FILL,
+    TOOLTIP_STRIP.x,
+    TOOLTIP_STRIP.y,
+    TOOLTIP_STRIP.width,
+    TOOLTIP_STRIP.height
+  )
   local x = 8
   if
     text ~= nil and type((text --[[@as table<string, unknown>]]).textWidth) == "function"
@@ -576,7 +600,7 @@ local function drawTooltip(text, palette, line)
       x = math.max(0, math.floor((SURFACE_WIDTH - width) / 2))
     end
   end
-  drawPaletteText(text, palette, line, x, 168, 3, 2, 5)
+  drawPaletteText(text, palette, line, x, TOOLTIP_STRIP.y, TOOLTIP_FOREGROUND, TOOLTIP_SHADOW, TOOLTIP_FILL)
 end
 
 -- Draws the published phone surface with borrowed collaborators: the
@@ -658,8 +682,9 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   local tooltip = view.tooltip
   if type(tooltip) == "string" and tooltip ~= "" and type(list) == "table" then
     drawTooltip(
+      graphics --[[@as love.graphics]],
       text --[[@as table<string, unknown>?]],
-      assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]],
+      assert(content.tooltipPalette, "the phone plan resolves its tooltip palette") --[[@as table]],
       tooltip
     )
   end

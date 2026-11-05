@@ -1078,6 +1078,51 @@ function T.tests.context_menus_publish_their_injected_labels()
   controller:dispose()
 end
 
+-- Source context-menu frames stay in tiles end-to-end
+-- (sContextMenuParam): the call menu at (13,9) and the sort menu at
+-- (13,3), both framing an interior width of 16 tiles across
+-- 3*options+1 rows like the shared list menu.
+function T.tests.context_menus_publish_tile_frames()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: context menus cannot publish tile frames"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = { greeting = "custom.greeting" },
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  local menu = assert(controller:status().view.contextMenu, "confirming a row opens its action menu") --[[@as table]]
+  Assert.deepEqual(
+    menu.frame,
+    { x = 13, y = 9, width = 16, height = 10 },
+    "the call menu sits at its source tile frame"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  local submenu = assert(controller:status().view.contextMenu, "choosing Sort opens its submenu") --[[@as table]]
+  Assert.deepEqual(
+    submenu.frame,
+    { x = 13, y = 3, width = 16, height = 16 },
+    "the sort menu sits at its source tile frame"
+  )
+  controller:dispose()
+end
+
 -- Production audio speaks generic sequence identities: dialing plays the
 -- source dial tone twice and waits on that sequence, and hangup plays
 -- the source hangup tone. A strict boundary that rejects a nil
