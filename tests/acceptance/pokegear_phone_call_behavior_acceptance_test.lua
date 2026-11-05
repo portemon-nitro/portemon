@@ -531,12 +531,13 @@ function T.tests.in_call_choice_tap_on_option_answers_it()
     if controller:status().view.call == nil then
       break
     end
-    if flags["mom.savings-choice"] == "keep" then
-      break
-    end
     controller:updateFixed({ { type = "advance" } })
   end
-  Assert.equal(flags["mom.savings-choice"], "keep", "tapping the second option answers keep")
+  Assert.isNil(
+    controller:status().view.call,
+    "tapping the second option answers and completes the call"
+  )
+  Assert.equal(flags["mom.savings-choice"], false, "tapping the second option answers keep")
   controller:dispose()
 end
 
@@ -571,12 +572,12 @@ function T.tests.call_view_carries_no_choice_cursor_and_menu_cursor_drives_choic
     if controller:status().view.call == nil then
       break
     end
-    if flags["mom.savings-choice"] == "keep" then
+    if flags["mom.savings-choice"] == false then
       break
     end
     controller:updateFixed({ { type = "advance" } })
   end
-  Assert.equal(flags["mom.savings-choice"], "keep", "confirming after navigating down answers keep")
+  Assert.equal(flags["mom.savings-choice"], false, "confirming after navigating down answers keep")
   controller:dispose()
 end
 

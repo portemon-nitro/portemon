@@ -1240,7 +1240,16 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   call:step(localHandle, {})
   call:step(localHandle, {})
   call:step(localHandle, { advance = true })
+  -- The staged hangup drains across fixed ticks: the answered program
+  -- holds hangingUp behind the source tones before reporting done.
   local done = call:result(localHandle)
+  for _ = 1, 8 do
+    if done ~= nil then
+      break
+    end
+    call:step(localHandle, { advance = true })
+    done = call:result(localHandle)
+  end
   Assert.notNil(done, "the local branch completes without the owner")
   Assert.isNil((done --[[@as table]]).error, "the local branch carries no failure")
 end
