@@ -1373,6 +1373,13 @@ function FieldSession:updateFixed(inputSnapshot)
   end
 
   self.actors:beginFixedStep()
+  -- The pose clock treats a tick as locomoting when the player was locomoting
+  -- at either end of it, so a scripted walk's gait phase carries across its
+  -- commit tick instead of restarting on every arrival. Capture the state
+  -- before the scheduler advances scripted motion; the visual reads the
+  -- post-tick snapshot itself and takes this as the tick-start half.
+  local scriptedLocomotionAtTickStart =
+    self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
   local playerInputOwnedAtTickStart, modalInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
   if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
     return
@@ -1485,7 +1492,7 @@ function FieldSession:updateFixed(inputSnapshot)
     collapseCameraInterpolation(self.camera)
     if self.playerVisual then
       local suppressedPresentation = self.player:presentationStateInto(self._tickScratch.playerPresentation)
-      self.playerVisual:updateFixed(suppressedPresentation.locomotionActive, suppressedPresentation.ordinaryStepSpeed)
+      self.playerVisual:updateFixed(scriptedLocomotionAtTickStart, suppressedPresentation.ordinaryStepSpeed)
     end
     self.camera:updateFixed(cameraTargetInto(self))
     self:_advanceTick()
