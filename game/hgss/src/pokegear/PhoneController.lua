@@ -102,16 +102,29 @@ local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
 local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
 local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
--- Source in-call choice frame (sContextMenuParam[2], the savings menu
--- behind PhoneCall_TouchscreenListMenu_Create): the shared touchscreen
--- list menu at tiles x7/y11, width 22, sizing to its owed options
--- exactly like the context menus (3*options+1 rows).
-local CALL_MENU_GEOMETRY = { x = 7, y = 11, width = 22 }
+-- In-call choice frames in tiles: one menu identity owns its frame,
+-- option count, and first display label entry together, so geometry,
+-- labels, and touch bands can never drift apart. Only the savings
+-- choice runs today; the other identities keep their frames without
+-- enabling new conversation programs.
+local SOURCE_CALL_MENUS = {
+  [2] = { x = 7, y = 11, width = 22, count = 2, firstMessage = 8 },
+  [3] = { x = 7, y = 11, width = 22, count = 2, firstMessage = 10 },
+  [4] = { x = 7, y = 9, width = 22, count = 3, firstMessage = 12 },
+  [5] = { x = 7, y = 11, width = 22, count = 2, firstMessage = 15 },
+  [6] = { x = 13, y = 11, width = 16, count = 2, firstMessage = 18 },
+}
 
--- Source fast-forward hitbox in pixels (gPhoneCallFastForwardHitbox
--- { 0x88, 0xb8, 0x08, 0xf8 }), registered for the whole call and
--- unset on exit.
-local FAST_FORWARD_HITBOX = { x = 0x88, y = 0xb8, width = 0x08, height = 0xf8 }
+-- Fast-forward hitbox in pixels: the four edges order top, bottom,
+-- left, right, so the normalized rectangle is half-open x in [8,248)
+-- and y in [136,184). The same rectangle feeds hit-testing and the
+-- published call view.
+local FAST_FORWARD_HITBOX = {
+  x = 0x08,
+  y = 0x88,
+  width = 0xF8 - 0x08,
+  height = 0xB8 - 0x88,
+}
 
 -- Shared list-menu tap bands inside an in-call choice frame: one 24px
 -- row per option with a 16px text band, exactly like the context
@@ -998,6 +1011,29 @@ local function callMenuRowAt(frame, x, y)
   return slot
 end
 
+-- Resolves the shared choice projection for one owed choice: the menu
+-- identity owns the tile frame, the semantic answers ride the choices,
+-- and the display labels ride alongside in the same order. Rendered
+-- frames and touch rows consume this one projection, never parallel
+-- geometry. A count mismatch is a programming error, not a default menu.
+---@param shown table<string, unknown> the detached live call view
+---@return table<string, integer> frame, table<integer, string> choices, table<integer, string> labels
+local function choiceProjection(shown)
+  local menuId = shown.menuId
+  local spec = type(menuId) == "number" and SOURCE_CALL_MENUS[
+    menuId --[[@as integer]]
+  ] or nil
+  assert(spec ~= nil, "in-call choices carry a known menu identity")
+  local choices = shown.choices
+  assert(type(choices) == "table" and #choices == spec.count, "in-call choices match their menu identity")
+  local labels = shown.choiceLabels
+  assert(type(labels) == "table" and #labels == spec.count, "in-call choices carry their display labels")
+  local frame = { x = spec.x, y = spec.y, width = spec.width, height = 3 * spec.count + 1 }
+  return frame,
+    choices, --[[@as table<integer, string>]]
+    labels --[[@as table<integer, string>]]
+end
+
 ---@param x number touch x in pixels
 ---@param y number touch y in pixels
 ---@return boolean inside the fast-forward hitbox
@@ -1008,14 +1044,15 @@ local function fastForwardHit(x, y)
     and y < FAST_FORWARD_HITBOX.y + FAST_FORWARD_HITBOX.height
 end
 
--- Routes one tick of call input to the owned engine: advancing edges
--- fast-forward the conversation and choice input answers the owed
--- choice. Touch taps route like the source TouchscreenListMenu choice
--- plumbing: tapping an owed option answers it, and tapping the
--- fast-forward hitbox advances; key routing stays. Cancellation drains
--- through the engine cancel path in _handleCall, never here.
--- Navigation and unrelated pointer input never reach the list, the
--- tabs, or the field behind the call.
+-- Translates one tick of call input into at most one engine edge:
+-- advancing edges fast-forward the conversation and choice input answers
+-- the owed choice. Touch taps route like the choice plumbing: tapping
+-- an owed option answers it, while a new touch inside the fast-forward
+-- hitbox advances at once on press, never again on release. Choice taps
+-- keep the drag-cancel release convention. Cancellation and pointer
+-- capture drain in updateFixed, never here. Navigation and unrelated
+-- pointer input never reach the list, the tabs, or the field behind
+-- the call.
 ---@param event table<string, unknown>
 ---@return table<string, unknown>? the engine edge, if the event carries one
 function PhoneController:_callEdge(event)
@@ -1044,6 +1081,9 @@ function PhoneController:_callEdge(event)
   end
   if event.type == "pointer_down" then
     if type(event.x) == "number" and type(event.y) == "number" then
+      if not waiting and fastForwardHit(event.x, event.y) then
+        return { advance = true }
+      end
       self._held = { id = event.pointerId, x = event.x, y = event.y }
     end
     return nil
@@ -1079,58 +1119,22 @@ function PhoneController:_callEdge(event)
     end
     if waiting then
       local choices = shown.choices --[[@as string[] ]]
-      local row = callMenuRowAt({
-        x = CALL_MENU_GEOMETRY.x,
-        y = CALL_MENU_GEOMETRY.y,
-        width = CALL_MENU_GEOMETRY.width,
-      }, event.x, event.y)
+      local frame = choiceProjection(shown)
+      local row = callMenuRowAt(frame, event.x, event.y)
       if row ~= nil and row >= 0 and row < #choices then
         return { choice = choices[row + 1] }
       end
-    end
-    if fastForwardHit(event.x, event.y) then
-      return { advance = true }
     end
   end
   return nil
 end
 
----@param event table<string, unknown>
-function PhoneController:_handleCall(event)
+-- Steps the live conversation once with its translated edge and hands a
+-- terminal call off exactly once. Failures keep their attribution.
+---@param edge table<string, unknown>
+function PhoneController:_stepCall(edge)
   local handle = self._callHandle
-  assert(handle ~= nil, "call input steps a live conversation")
-  if event.type == "pointer_cancel" then
-    self._held = nil
-    return
-  end
-  -- Cancellation drains the staged hangup at once through the engine
-  -- cancel path, so the call returns to the list with its tones
-  -- unwound exactly once; advancing edges stage the same hangup
-  -- across fixed ticks instead.
-  if event.type == "cancel" then
-    local ok, fault = pcall(function()
-      self._call:cancel(handle --[[@as table<string, unknown>]], "hangup")
-    end)
-    if not ok then
-      if Errors.is(fault) then
-        error(fault, 0)
-      end
-      Errors.raise(
-        ScriptErrors.FEATURE_UNAVAILABLE,
-        "phone conversation failed: " .. tostring(fault),
-        { stage = "call" }
-      )
-    end
-    local shown = self._call:view(handle --[[@as table<string, unknown>]])
-    if shown.result ~= nil or shown.stage == "completed" then
-      self:_finishCall()
-    end
-    return
-  end
-  local edge = self:_callEdge(event)
-  if edge == nil then
-    return
-  end
+  assert(handle ~= nil, "call ticks step a live conversation")
   local ok, fault = pcall(function()
     self._call:step(handle --[[@as table<string, unknown>]], edge)
   end)
@@ -1146,6 +1150,70 @@ function PhoneController:_handleCall(event)
   end
 end
 
+-- One tick behind a live call: the batch normalizes into at most one
+-- engine edge. Empty ticks and real edges step the conversation exactly
+-- once, so timers advance; an action-less batch (a consumed release, a
+-- drag, an idle navigation) takes no step, so a matching release never
+-- issues a second advance. Pointer capture still tracks every raw event
+-- but never causes a second step. A player hangup stages the timed
+-- hangup through the engine; forced host teardown finishes at once so
+-- its terminal result stays available. A call begun from the contact
+-- menu this batch waits for the next tick.
+---@param uiInput table[]
+function PhoneController:_updateCallTick(uiInput)
+  local handle = self._callHandle
+  assert(handle ~= nil, "call ticks step a live conversation")
+  if self._scrollAnim ~= nil then
+    return
+  end
+  local edge = nil
+  local sawCancel = false
+  for _, event in ipairs(uiInput) do
+    if type(event) == "table" and type(event.type) == "string" then
+      local record = event --[[@as table<string, unknown>]]
+      if record.type == "pointer_cancel" then
+        self._held = nil
+      elseif record.type == "cancel" then
+        sawCancel = true
+      else
+        local translated = self:_callEdge(record)
+        if edge == nil then
+          edge = translated
+        end
+      end
+    end
+  end
+  if sawCancel then
+    local shown = self._call:view(handle --[[@as table<string, unknown>]])
+    if self._entryOwner == "host" and shown.stage ~= "hangingUp" then
+      local ok, fault = pcall(function()
+        self._call:cancel(handle --[[@as table<string, unknown>]], "hangup")
+      end)
+      if not ok then
+        if Errors.is(fault) then
+          error(fault, 0)
+        end
+        Errors.raise(
+          ScriptErrors.FEATURE_UNAVAILABLE,
+          "phone conversation failed: " .. tostring(fault),
+          { stage = "call" }
+        )
+      end
+      local done = self._call:view(handle --[[@as table<string, unknown>]])
+      if done.result ~= nil or done.stage == "completed" then
+        self:_finishCall()
+      end
+      return
+    end
+    edge = { cancel = true }
+  end
+  if edge ~= nil then
+    self:_stepCall(edge)
+  elseif #uiInput == 0 then
+    self:_stepCall({})
+  end
+end
+
 -- One fixed tick: exactly one owner consumes the batch. List, menu, sort,
 -- and manual modes own their navigation; the live call owns everything
 -- behind it.
@@ -1153,46 +1221,37 @@ end
 function PhoneController:updateFixed(uiInput)
   assert(not self._disposed, "a disposed phone card steps nothing")
   assert(type(uiInput) == "table", "the phone card input must be an event list")
-  for _, event in ipairs(uiInput) do
-    -- A running viewport slide gates all key and touch input, mirroring
-    -- the fly cursor-tween gate: the slide still settles below.
-    if self._scrollAnim ~= nil then
-      break
-    end
-    if type(event) == "table" and type(event.type) == "string" then
-      local previousMode = self._mode
-      local previousCallId = self._callId
-      local previousCall = nil
-      if previousMode == "call" and self._callHandle ~= nil then
-        previousCall = self._call:view(self._callHandle --[[@as table<string, unknown>]])
-      end
-      local record = event --[[@as table<string, unknown>]]
-      if self._mode == "call" then
-        if self._result ~= nil then
-          break
-        end
-        self:_handleCall(record)
-      elseif self._mode == "menu" then
-        self:_handleMenu(record)
-      elseif self._mode == "sort" then
-        self:_handleSort(record)
-      elseif self._mode == "manual" then
-        self:_handleManual(record)
-      else
-        self:_handleList(record)
-      end
-      if previousMode ~= "call" and self._mode == "call" then
+  if self._mode == "call" and self._callHandle ~= nil and self._result == nil then
+    self:_updateCallTick(uiInput)
+  else
+    for _, event in ipairs(uiInput) do
+      -- A running viewport slide gates all key and touch input, mirroring
+      -- the fly cursor-tween gate: the slide still settles below.
+      if self._scrollAnim ~= nil then
         break
       end
-      if self._callId ~= previousCallId then
-        break
-      end
-      if previousCall ~= nil then
-        if self._callHandle == nil or self._result ~= nil then
+      if type(event) == "table" and type(event.type) == "string" then
+        local previousMode = self._mode
+        local previousCallId = self._callId
+        local record = event --[[@as table<string, unknown>]]
+        if self._mode == "call" then
+          -- No live tick here: an active call steps through its own tick
+          -- above, a retained host result waits for its owner, and a call
+          -- begun from the menu this batch waits for the next tick.
+          break
+        elseif self._mode == "menu" then
+          self:_handleMenu(record)
+        elseif self._mode == "sort" then
+          self:_handleSort(record)
+        elseif self._mode == "manual" then
+          self:_handleManual(record)
+        else
+          self:_handleList(record)
+        end
+        if previousMode ~= "call" and self._mode == "call" then
           break
         end
-        local nextCall = self._call:view(self._callHandle --[[@as table<string, unknown>]])
-        if previousCall.stage ~= nextCall.stage or previousCall.page ~= nextCall.page then
+        if self._callId ~= previousCallId then
           break
         end
       end
@@ -1373,30 +1432,17 @@ function PhoneController:_callMenuView()
   if type(choices) ~= "table" or #choices == 0 then
     return nil
   end
+  local frame, _, labels = choiceProjection(shown)
   local options = {}
-  for index, choice in
-    ipairs(choices --[[@as string[] ]])
+  for index, label in
+    ipairs(labels --[[@as string[] ]])
   do
-    options[index] = tostring(choice)
-  end
-  local rows = {}
-  for index, label in ipairs(options) do
-    rows[index] = {
-      index = index - 1,
-      y = (CALL_MENU_GEOMETRY.y + 3 * (index - 1) + 1) * 8,
-      label = label,
-    }
+    options[index] = tostring(label)
   end
   return {
     options = options,
     cursor = math.min(math.max(self._choiceCursor, 0), #options - 1),
-    frame = {
-      x = CALL_MENU_GEOMETRY.x,
-      y = CALL_MENU_GEOMETRY.y,
-      width = CALL_MENU_GEOMETRY.width,
-      height = 3 * #options + 1,
-    },
-    rows = rows,
+    frame = frame,
   }
 end
 
@@ -1407,7 +1453,8 @@ end
 function PhoneController:view()
   -- The bottom bar names the open menu's prompt: the first label
   -- behind the Call menu, the cursor-tracking sort label behind the
-  -- sort menu. The bar stays empty everywhere else.
+  -- sort menu, and the localized choice prompt while a call owes a
+  -- choice. The bar stays empty everywhere else.
   local tooltip = nil
   if self._mode == "menu" then
     local labels = assert(self._tooltips, "the menu prompt reads the composed context labels")
@@ -1416,11 +1463,18 @@ function PhoneController:view()
     local labels = assert(self._tooltips, "the sort prompt reads the composed context labels")
     tooltip = labels[4 + self._menuCursor]
   end
+  local call = self:_callView()
+  local callMenu = self:_callMenuView()
+  if callMenu ~= nil then
+    local prompt = call ~= nil and (call --[[@as table<string, unknown>]]).choiceTooltip or nil
+    assert(type(prompt) == "string", "the owed choice prompt rides the detached call view")
+    tooltip = prompt
+  end
   return {
     list = self:_listView(),
     contextMenu = self:_menuView(),
-    call = self:_callView(),
-    callMenu = self:_callMenuView(),
+    call = call,
+    callMenu = callMenu,
     tooltip = tooltip,
   }
 end

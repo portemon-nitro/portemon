@@ -264,6 +264,14 @@ local function phoneMessages()
     resolveLine = function()
       return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
     end,
+    resolvePhoneUiMessage = function(_, entryId)
+      assert(
+        type(entryId) == "number" and entryId % 1 == 0,
+        "phone UI text resolves through its source bank entry"
+      )
+      local text = "suite-ui-271-" .. entryId
+      return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
+    end,
   }
 end
 
@@ -325,6 +333,177 @@ function T.tests.phone_text_wait_precedes_the_program_stage()
   call:cancel(handle, "hangup")
   local terminal = call:result(handle)
   Assert.notNil(terminal, "a closed call still reports its terminal result")
+end
+
+-- The normal hangup runs the source three-message timer without debug
+-- clicks. PhoneCall_HangupTone prints msg_0271 entries 33, 34, 35
+-- across post-increment 11-tick waits behind one PHONE_OFF tone; a
+-- player cancel during message or hangup stages the same path instead
+-- of cutting it, a second cancel restarts nothing, and forced release
+-- settles immediately without replaying the tone.
+function T.tests.normal_hangup_runs_the_source_three_message_timer()
+  local PhoneCall = requireFeature(
+    "game.hgss.src.pokegear.PhoneCall",
+    "phone calls have no foreground session owner yet: the normal hangup cannot stage its source timer"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, catalogRefs(record))
+  state:registerContact("custom.kurt")
+  local world = { flags = {}, rematchReady = {}, nativeSelectorFacts = localPhoneSelectorFacts() }
+  local played, dials, hangups = {}, 0, 0
+  local audio = {
+    play = function(_, sequence)
+      played[#played + 1] = sequence
+    end,
+    playDialing = function()
+      dials = dials + 1
+    end,
+    isEffectWaitComplete = function()
+      return true
+    end,
+  }
+  local messages = phoneMessages()
+  local uiProbe = phoneMessages()
+  local first = uiProbe.resolvePhoneUiMessage(uiProbe, 33).text
+  local second = uiProbe.resolvePhoneUiMessage(uiProbe, 34).text
+  local third = uiProbe.resolvePhoneUiMessage(uiProbe, 35).text
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = audio,
+    random = PokegearRandom.new(4242),
+  })
+  local function speechLine(handle)
+    local view = call:view(handle)
+    local lines = assert(
+      (view --[[@as table<string, unknown>]]).lines,
+      "the staged hangup prints into speech"
+    )
+    local line = assert((lines --[[@as table<integer, unknown>]])[1], "the staged hangup prints its message")
+    if type(line) == "table" then
+      return tostring((line --[[@as table<string, unknown>]]).text)
+    end
+    return tostring(line)
+  end
+  local handle = call:begin({
+    id = "hangup-1",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  Assert.equal(dials, 2, "opening a call dials the source dial tone twice")
+  call:step(handle, { advance = true })
+  Assert.equal(
+    (call:view(handle) --[[@as table<string, unknown>]]).stage,
+    "message",
+    "the first advance reaches native text"
+  )
+  -- A player cancel during the message stages the normal hangup
+  -- instead of cutting the call.
+  call:step(handle, { cancel = true })
+  Assert.equal(
+    (call:view(handle) --[[@as table<string, unknown>]]).stage,
+    "hangingUp",
+    "a message cancel enters the staged normal hangup"
+  )
+  Assert.equal(speechLine(handle), first, "the hangup entry prints the first source message")
+  -- A second player cancel during the hangup restarts nothing and
+  -- replays nothing; the timer keeps running.
+  call:step(handle, { cancel = true })
+  Assert.equal(
+    (call:view(handle) --[[@as table<string, unknown>]]).stage,
+    "hangingUp",
+    "a second hangup cancel keeps the staged hangup"
+  )
+  Assert.isNil(call:result(handle), "a hangup cancel completes nothing at once")
+  Assert.equal(speechLine(handle), first, "a hangup cancel reprints nothing")
+  -- Five empty ticks hold the first message; five more still hold it;
+  -- the eleventh prints the second.
+  local snapshots = { speechLine(handle) }
+  for _ = 1, 5 do
+    call:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine(handle)
+  end
+  Assert.equal(speechLine(handle), first, "the first source message holds across its wait")
+  for _ = 1, 5 do
+    call:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine(handle)
+  end
+  Assert.equal(speechLine(handle), first, "ten empty ticks still hold the first source message")
+  call:step(handle, {})
+  snapshots[#snapshots + 1] = speechLine(handle)
+  Assert.equal(speechLine(handle), second, "the eleventh tick prints the second source message")
+  for _ = 1, 10 do
+    call:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine(handle)
+  end
+  Assert.equal(speechLine(handle), second, "the second source message holds across its wait")
+  call:step(handle, {})
+  snapshots[#snapshots + 1] = speechLine(handle)
+  Assert.equal(speechLine(handle), third, "the wait prints the third source message")
+  for _ = 1, 10 do
+    call:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine(handle)
+  end
+  Assert.equal(speechLine(handle), third, "the third source message holds across the final wait")
+  Assert.isNil(call:result(handle), "the call stays live through the final wait")
+  call:step(handle, {})
+  local terminal = call:result(handle)
+  Assert.notNil(terminal, "the hangup ends only after the final wait")
+  for _, snapshot in ipairs(snapshots) do
+    Assert.isNil(snapshot:find("hangup-click", 1, true), "the normal hangup prints no invented click caption")
+    Assert.isTrue(
+      snapshot == first or snapshot == second or snapshot == third,
+      "every staged line is one of the three source messages"
+    )
+  end
+  local off, debug = 0, 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_GS_PHONE_OFF" then
+      off = off + 1
+    end
+    if sequence == "SEQ_SE_DP_SELECT" or sequence == "SEQ_SE_DP_BOX03" then
+      debug = debug + 1
+    end
+  end
+  Assert.equal(off, 1, "the normal hangup plays the source PHONE_OFF tone exactly once")
+  Assert.equal(debug, 0, "the normal hangup plays no debug click tone behind its staged lines")
+  -- Forced release of a live call settles immediately without
+  -- replaying the tone.
+  local secondHandle = call:begin({
+    id = "hangup-2",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(secondHandle, { advance = true })
+  call:step(secondHandle, { advance = true })
+  Assert.equal(
+    (call:view(secondHandle) --[[@as table<string, unknown>]]).stage,
+    "hangingUp",
+    "the second call reaches its staged hangup"
+  )
+  local releasedBefore = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_GS_PHONE_OFF" then
+      releasedBefore = releasedBefore + 1
+    end
+  end
+  call:release(secondHandle)
+  local released = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_GS_PHONE_OFF" then
+      released = released + 1
+    end
+  end
+  Assert.equal(released, releasedBefore, "forced release settles without replaying the tone")
 end
 
 -- A missing world owner is an attributed dependency failure, never an
@@ -1286,9 +1465,9 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   call:step(localHandle, {})
   call:step(localHandle, { advance = true })
   -- The staged hangup drains across fixed ticks: the answered program
-  -- holds hangingUp behind the source tones before reporting done.
+  -- holds hangingUp behind the staged timer before reporting done.
   local done = call:result(localHandle)
-  for _ = 1, 8 do
+  for _ = 1, 40 do
     if done ~= nil then
       break
     end

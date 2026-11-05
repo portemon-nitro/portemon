@@ -232,6 +232,11 @@ local function messageRefs()
     resolveLine = function()
       return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
     end,
+    resolvePhoneUiMessage = function(_, entryId)
+      assert(type(entryId) == "number", "phone UI text resolves through its source bank entry")
+      local text = "fixture-ui-271-" .. entryId
+      return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
+    end,
   }
 end
 
@@ -627,8 +632,22 @@ function T.tests.live_call_keeps_list_below_and_speech_above()
   Assert.notNil(content.dimShellForeground, "the call plan carries its dimmed strip plane")
   Assert.notNil(content.spritesDim, "the call plan carries its dimmed sprite set")
 
+  -- A menu cancellation stages the normal hangup instead of cutting
+  -- it: the call stays live behind its staged timer, and empty ticks
+  -- settle it back to the browse look on both surfaces.
   controller:updateFixed({ { type = "cancel" } })
-  Assert.isNil(controller:status().view.call, "hanging up clears the conversation projection")
+  Assert.notNil(controller:status().view.call, "hanging up stages through its timer, not at once")
+  for _ = 1, 48 do
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({})
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({ { type = "advance" } })
+  end
+  Assert.isNil(controller:status().view.call, "the settled hangup clears the conversation projection")
   local restoredLower = paintPane(controller, "lower")
   Assert.isTrue(listBandFills(restoredLower) > 0, "the lower surface keeps the list after the call")
   local restoredUpper = paintPane(controller, "upper")

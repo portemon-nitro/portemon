@@ -256,6 +256,17 @@ local function mapControlsInput(event, view, plan)
     -- A card that hides the strip owns every point of the controls pane.
     return event
   end
+  -- A live phone call owns its touches: raw pointer presses, moves, and
+  -- releases travel to the phone untouched, so a valid call touch that
+  -- overlaps the strip band never selects a tab or dismisses the gear.
+  -- The phone still owns its hitbox bounds; idle phone and every other
+  -- card keep the strip mapping below.
+  if view.tab == "phone" then
+    local busy = type(child) == "table" and (child --[[@as table<string, unknown>]]).busy == true
+    if busy and (event.type == "pointer_down" or event.type == "pointer_move" or event.type == "pointer_up") then
+      return event
+    end
+  end
   local content = assert(plan.content, "the companion plan carries its slot geometry")
   assert(type(content) == "table" and type(content.slots) == "table", "the companion plan carries its slots")
   local slots = content.slots --[[@as table]]
