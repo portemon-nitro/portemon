@@ -5,9 +5,11 @@
 -- delegates every call stage to one owned conversation engine. A menu
 -- call names an outgoing request whose kind follows the rematch-capable
 -- contact rule; a direct request entry hides ordinary selection and
--- starts the incoming path at once. Choosing a call plays the 1+6+1
--- panel timeline over the live conversation. Views are detached; status
--- never mutates. Pure module: no love dependency.
+-- starts the incoming path at once. Choosing a call starts the live
+-- conversation over the contact list with no transition: the source
+-- only dims the touchscreen behind the call
+-- (PokegearPhone_DimTouchscreenForCall), with no panel animation.
+-- Views are detached; status never mutates. Pure module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -41,7 +43,6 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _grab integer? the grabbed absolute index while moving
 ---@field _callHandle table<string, unknown>? the live conversation handle
 ---@field _callId integer conversation counter for stable runtime ids
----@field _panelTicks integer? ticks since the menu call started
 ---@field _result table<string, unknown>? the peekable terminal result
 ---@field _choiceCursor integer zero-based call choice cursor
 ---@field _held table<string, unknown>? the captured pointer press, when present
@@ -101,9 +102,11 @@ local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
 local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
 local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
--- The list-to-call panel timeline: closed for one tick, open for six,
--- closed again. Cells are source sprite identities, not generic frames.
-local PANEL_TIMELINE = { 10, 11, 11, 11, 11, 11, 11, 10 }
+-- Source in-call choice frame (sContextMenuParam[2], the savings menu
+-- behind PhoneCall_TouchscreenListMenu_Create): the shared touchscreen
+-- list menu at tiles x7/y11, width 22, sizing to its owed options
+-- exactly like the context menus (3*options+1 rows).
+local CALL_MENU_GEOMETRY = { x = 7, y = 11, width = 22 }
 
 ---@param value unknown
 ---@return boolean
@@ -299,7 +302,6 @@ function PhoneController.new(opts)
     _grab = nil,
     _callHandle = nil,
     _callId = 0,
-    _panelTicks = nil,
     _result = nil,
     _choiceCursor = 0,
     _held = nil,
@@ -315,7 +317,7 @@ function PhoneController.new(opts)
         Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "direct phone entry names its " .. name, { field = name })
       end
     end
-    self:_beginCall(request.contact, request.direction, request.kind, request.id, false)
+    self:_beginCall(request.contact, request.direction, request.kind, request.id)
   end
   return self
 end
@@ -455,8 +457,7 @@ end
 ---@param direction string
 ---@param kind string
 ---@param id string stable runtime id
----@param panel boolean whether the menu panel timeline runs over the start
-function PhoneController:_beginCall(contact, direction, kind, id, panel)
+function PhoneController:_beginCall(contact, direction, kind, id)
   assert(self._callHandle == nil, "one foreground call owns the phone line")
   local ok, handle = pcall(function()
     return self._call:begin({ id = id, contact = contact, direction = direction, kind = kind })
@@ -477,9 +478,6 @@ function PhoneController:_beginCall(contact, direction, kind, id, panel)
   self._choiceCursor = 0
   self._result = nil
   self._held = nil
-  if panel then
-    self._panelTicks = 0
-  end
   if self._call:result(handle) ~= nil then
     self:_finishCall()
   end
@@ -502,7 +500,6 @@ function PhoneController:_finishCall()
     self._call:release(handle)
     self._callHandle = nil
     self._mode = "list"
-    self._panelTicks = nil
     self._held = nil
     self._choiceCursor = 0
   end
@@ -737,7 +734,7 @@ function PhoneController:_chooseMain(option)
     local contact = self._order[self._selected + 1]
     assert(contact ~= nil, "menu calls name the selected contact")
     self._callId = self._callId + 1
-    self:_beginCall(contact, "outgoing", self:_menuKind(contact), "phone-menu-" .. self._callId, true)
+    self:_beginCall(contact, "outgoing", self:_menuKind(contact), "phone-menu-" .. self._callId)
     playEffect(self, DECIDE_SOUND)
   elseif option == 1 then
     self._mode = "sort"
@@ -1028,15 +1025,11 @@ end
 
 -- One fixed tick: exactly one owner consumes the batch. List, menu, sort,
 -- and manual modes own their navigation; the live call owns everything
--- behind it. The panel timeline advances once per tick behind the call.
+-- behind it.
 ---@param uiInput table[]
 function PhoneController:updateFixed(uiInput)
   assert(not self._disposed, "a disposed phone card steps nothing")
   assert(type(uiInput) == "table", "the phone card input must be an event list")
-  -- The panel timeline advances once per completed tick behind the call,
-  -- never on the choosing tick itself: a call chosen in this batch reads
-  -- the closed cell until this tick settles.
-  local panelRunning = self._panelTicks ~= nil
   for _, event in ipairs(uiInput) do
     -- A running viewport slide gates all key and touch input, mirroring
     -- the fly cursor-tween gate: the slide still settles below.
@@ -1081,9 +1074,6 @@ function PhoneController:updateFixed(uiInput)
         end
       end
     end
-  end
-  if panelRunning and self._panelTicks ~= nil then
-    self._panelTicks = self._panelTicks --[[@as integer]] + 1
   end
   local anim = self._scrollAnim
   if anim ~= nil then
@@ -1228,25 +1218,54 @@ function PhoneController:_callView()
   return detached
 end
 
----@return table<string, unknown>? the detached panel projection across the transition
-function PhoneController:_panelView()
-  local ticks = self._panelTicks
-  if ticks == nil or ticks < 1 or ticks > #PANEL_TIMELINE then
+-- The detached owed-choice menu projection, if the live conversation
+-- waits on a choice: the owed option labels with one 24px row per
+-- option and the shared list-menu window frame in tiles, so the
+-- renderer frames in-call choices exactly like the context menus.
+-- Fresh tables per call; never exposes live engine state.
+---@return table<string, unknown>?
+function PhoneController:_callMenuView()
+  local handle = self._callHandle
+  if handle == nil then
     return nil
   end
-  return { cell = PANEL_TIMELINE[ticks] }
+  local shown = self._call:view(handle --[[@as table<string, unknown>]])
+  local choices = shown.choices
+  if type(choices) ~= "table" or #choices == 0 then
+    return nil
+  end
+  local options = {}
+  for index, choice in
+    ipairs(choices --[[@as string[] ]])
+  do
+    options[index] = tostring(choice)
+  end
+  local rows = {}
+  for index, label in ipairs(options) do
+    rows[index] = {
+      index = index - 1,
+      y = (CALL_MENU_GEOMETRY.y + 3 * (index - 1) + 1) * 8,
+      label = label,
+    }
+  end
+  return {
+    options = options,
+    cursor = math.min(math.max(self._choiceCursor, 0), #options - 1),
+    frame = {
+      x = CALL_MENU_GEOMETRY.x,
+      y = CALL_MENU_GEOMETRY.y,
+      width = CALL_MENU_GEOMETRY.width,
+      height = 3 * #options + 1,
+    },
+    rows = rows,
+  }
 end
 
--- The detached source view: list, context menu, call, panel, and
--- transition projections. Fresh tables per call; status performs no
+-- The detached source view: list, context menu, call, and owed-choice
+-- menu projections. Fresh tables per call; status performs no
 -- mutation and never exposes live contact records.
 ---@return table<string, unknown>
 function PhoneController:view()
-  local panel = self:_panelView()
-  local transition = nil
-  if panel ~= nil then
-    transition = { kind = "panel" }
-  end
   -- The bottom bar names the open menu's prompt: the first label
   -- behind the Call menu, the cursor-tracking sort label behind the
   -- sort menu. The bar stays empty everywhere else.
@@ -1262,8 +1281,7 @@ function PhoneController:view()
     list = self:_listView(),
     contextMenu = self:_menuView(),
     call = self:_callView(),
-    panel = panel,
-    transition = transition,
+    callMenu = self:_callMenuView(),
     tooltip = tooltip,
   }
 end
@@ -1303,32 +1321,12 @@ function PhoneController:_planContent(skin)
     end
     content.menuPalette = (fly --[[@as table<string, unknown>]]).menuPalette
   end
-  local panel = section.panel
-  if type(panel) == "table" then
-    local cells = panel --[[@as table<string, unknown>]]
-    local closed = cells.closed or cells[PANEL_TIMELINE[1]]
-    local open = cells.open or cells[PANEL_TIMELINE[2]]
-    if
-      type(closed) == "table" and type((closed --[[@as table<string, unknown>]]).image) == "string"
-    then
-      content.panelClosed = (closed --[[@as table<string, unknown>]]).image
-    elseif type(closed) == "string" then
-      content.panelClosed = closed
-    end
-    if
-      type(open) == "table" and type((open --[[@as table<string, unknown>]]).image) == "string"
-    then
-      content.panelOpen = (open --[[@as table<string, unknown>]]).image
-    elseif type(open) == "string" then
-      content.panelOpen = open
-    end
-    if content.panelClosed == nil then
-      content.panelClosed = firstImage(cells)
-    end
-    if content.panelOpen == nil then
-      content.panelOpen = firstImage(cells)
-    end
-  end
+  -- The information pane carries the live contact list beside the
+  -- static upper plane: the source keeps the MAIN_3 rows published
+  -- while windows[0,1] carry the speech and name on SUB_2, so the
+  -- plan embeds the detached list projection for the information
+  -- render path.
+  content.callList = self:_listView()
   return content
 end
 
@@ -1391,7 +1389,6 @@ function PhoneController:dispose()
   end
   self._disposed = true
   self._held = nil
-  self._panelTicks = nil
   self._scrollAnim = nil
   local handle = self._callHandle
   self._callHandle = nil
