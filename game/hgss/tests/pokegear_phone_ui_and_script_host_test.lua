@@ -63,6 +63,24 @@ local function browseMenuLabelsSort()
   return { labels[4], labels[5], labels[6], labels[7], labels[8] }
 end
 
+-- Source bank271 UI text behind direct and menu calls: every message
+-- facade in this suite carries a provider-style resolver returning one
+-- distinguishable record per entry, so hangup and choice assertions
+-- read localized labels instead of invented literals.
+---@param messages table the borrowed message facade to extend
+---@return table the same facade with its UI resolver attached
+local function withUiMessages(messages)
+  messages.resolvePhoneUiMessage = function(_, entryId)
+    assert(
+      type(entryId) == "number" and entryId % 1 == 0,
+      "phone UI text resolves through its source bank entry"
+    )
+    local text = "suite-ui-271-" .. entryId
+    return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
+  end
+  return messages
+end
+
 -- Loads a phone module that does not exist yet at this baseline. The
 -- failure names the missing behaviour instead of surfacing as a suite
 -- load error, so the pre-implementation red stays attributable.
@@ -260,13 +278,13 @@ local function openHost(record, world, audio)
   return PokegearScriptHost.new({
     state = state,
     catalog = record.catalog,
-    messages = {
+    messages = withUiMessages({
       greeting = "custom.greeting",
       program = "custom.program",
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
-    },
+    }),
     world = world,
     audio = audio,
     random = PokegearRandom.new(4242),
@@ -609,7 +627,7 @@ function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result(
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting" },
+    messages = withUiMessages({ greeting = "custom.greeting" }),
     world = worldFixture(),
     audio = audio,
     random = PokegearRandom.new(77),
@@ -626,7 +644,25 @@ function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result(
   local first = dialSelected()
   Assert.notNil(first, "the first contact starts a menu call")
   local firstId = first.id
-  controller:updateFixed({ { type = "cancel" }, { type = "cancel" } })
+  -- A menu cancellation stages the normal hangup instead of cutting
+  -- it: the call stays live behind its single tone, a second cancel
+  -- restarts nothing, and empty ticks settle it back to the list.
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.isTrue(controller:status().busy, "a menu cancellation stages the hangup instead of cutting it")
+  Assert.notNil(controller:status().view.call, "the staged hangup keeps its conversation projection")
+  Assert.isNil(controller:takeResult(), "a staged menu cancellation publishes no script-host result")
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.notNil(controller:status().view.call, "a second cancel never restarts the staged hangup")
+  for _ = 1, 48 do
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({})
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({ { type = "advance" } })
+  end
   local returned = controller:status()
   Assert.isFalse(returned.busy, "a completed menu call releases the child call owner")
   Assert.isFalse(returned.nestedCancel, "the returned list no longer owns nested cancel")
@@ -677,7 +713,7 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting" },
+    messages = withUiMessages({ greeting = "custom.greeting" }),
     world = world,
     audio = audio,
     random = PokegearRandom.new(99),
@@ -727,15 +763,29 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
   Assert.isFalse(controller:status().view.list.manual, "manual cancellation leaves move mode")
   Assert.deepEqual(state:readPhone().contactOrder, savedBefore, "manual cancellation persists no order")
 
-  -- Call cancellation hangs up exactly once with one terminal result.
+  -- Call cancellation stages the normal hangup exactly once: the call
+  -- stays live behind its single tone, a second cancel restarts
+  -- nothing, and empty ticks settle it back to the list.
   controller:updateFixed({ { type = "confirm" } })
   controller:updateFixed({ { type = "confirm" } })
   Assert.notNil(controller:status().view.call, "choosing Call starts its conversation")
   controller:updateFixed({ { type = "cancel" } })
-  local terminal = controller:takeResult()
-  Assert.isNil(terminal, "a menu cancellation does not publish a script-host result")
-  Assert.isFalse(controller:status().busy, "a menu cancellation returns to list mode")
+  Assert.isTrue(controller:status().busy, "a menu cancellation stages the hangup instead of cutting it")
+  Assert.notNil(controller:status().view.call, "the staged hangup keeps its conversation projection")
+  Assert.isNil(controller:takeResult(), "a staged menu cancellation publishes no script-host result")
   controller:updateFixed({ { type = "cancel" } })
+  Assert.notNil(controller:status().view.call, "a second cancel never restarts the staged hangup")
+  for _ = 1, 48 do
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({})
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({ { type = "advance" } })
+  end
+  Assert.isFalse(controller:status().busy, "the settled hangup returns to list mode")
   Assert.isNil(controller:takeResult(), "repeated cancellation does not publish a result")
   Assert.equal(audio.hangups, 1, "call cancellation unwinds its tones exactly once")
   controller:dispose()
@@ -781,7 +831,7 @@ function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_tempora
     return PhoneController.new({
       state = state,
       catalog = record.catalog,
-      messages = { greeting = "custom.greeting" },
+      messages = withUiMessages({ greeting = "custom.greeting" }),
       world = worldFixture(),
       random = PokegearRandom.new(99),
       tooltips = browseTooltips(),
@@ -1050,7 +1100,7 @@ function T.tests.direct_call_entry_opens_without_context_labels()
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting" },
+    messages = withUiMessages({ greeting = "custom.greeting" }),
     world = worldFixture(),
     audio = countingAudio(),
     random = PokegearRandom.new(4242),
@@ -1086,7 +1136,7 @@ function T.tests.context_menus_publish_their_injected_labels()
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting" },
+    messages = withUiMessages({ greeting = "custom.greeting" }),
     world = worldFixture(),
     audio = countingAudio(),
     random = PokegearRandom.new(4242),
@@ -1189,12 +1239,12 @@ function T.tests.phone_calls_dial_and_hang_up_through_indexed_sequences()
       },
       contactOrder = { "custom.mom" },
     },
-    messages = {
+    messages = withUiMessages({
       greeting = "custom.greeting",
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
-    },
+    }),
     world = worldFixture(),
     audio = audio,
   })
@@ -1241,7 +1291,7 @@ function T.tests.phone_list_background_flag_tracks_scrolled_rows()
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
-    messages = { greeting = "custom.greeting" },
+    messages = withUiMessages({ greeting = "custom.greeting" }),
     world = worldFixture(),
     random = PokegearRandom.new(7),
     tooltips = browseTooltips(),
@@ -1284,6 +1334,462 @@ function T.tests.phone_list_background_flag_tracks_scrolled_rows()
     "two scrolled rows restore the background flag"
   )
   controller:dispose()
+end
+
+-- A source press reaches the live call even where the tab strip
+-- overlaps it. gPhoneCallFastForwardHitbox orders its edges
+-- top,bottom,left,right, so the normalized rectangle is half-open
+-- x in [8,248), y in [136,184): the strip band y160..192 overlaps it,
+-- and point (170,172) sits inside both. While a call holds the input
+-- lease the strip forwards those touches to the phone; idle tabs keep
+-- their press-to-arm, release-to-select behavior.
+function T.tests.busy_phone_keeps_strip_touches_while_idle_tabs_still_select()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: strip touches cannot reach its live call"
+  )
+  local PokegearInterface = requireFeature(
+    "game.hgss.src.pokegear.PokegearInterface",
+    "the companion shell has no input owner yet: strip routing cannot defer to a busy call"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({ greeting = "custom.greeting" }),
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    request = {
+      id = "overlap-1",
+      contact = "custom.mom",
+      direction = "outgoing",
+      kind = "ordinary",
+    },
+  })
+  local call = assert(
+    controller:status().view.call,
+    "direct entry starts its conversation without menu labels"
+  )
+  assert(type(call) == "table", "the live call keeps its conversation projection")
+  local fastForward = assert(
+    (call --[[@as table<string, unknown>]]).fastForward,
+    "the live call publishes the source fast-forward rectangle"
+  )
+  assert(type(fastForward) == "table", "the fast-forward publication is a record")
+  local published = fastForward --[[@as table<string, integer>]]
+  Assert.deepEqual(
+    { x = published.x, y = published.y, width = published.width, height = published.height },
+    { x = 8, y = 136, width = 240, height = 48 },
+    "the live call publishes the normalized source hitbox, not the misread edges"
+  )
+  -- The independent source oracle, kept outside the controller under
+  -- test: inside probes must sit inside the published rectangle and
+  -- edge-negative probes must sit outside it.
+  local function insideSource(x, y)
+    return x >= 8 and x < 248 and y >= 136 and y < 184
+  end
+  local function insidePublished(x, y)
+    return x >= published.x
+      and x < published.x + published.width
+      and y >= published.y
+      and y < published.y + published.height
+  end
+  for _, probe in ipairs({ { 8, 136 }, { 247, 183 }, { 10, 140 }, { 170, 172 } }) do
+    Assert.isTrue(insideSource(probe[1], probe[2]), "the oracle admits its inside probe")
+    Assert.isTrue(
+      insidePublished(probe[1], probe[2]),
+      "the published hitbox admits the source inside probe"
+    )
+  end
+  for _, probe in ipairs({ { 7, 136 }, { 248, 136 }, { 8, 135 }, { 8, 184 } }) do
+    Assert.isFalse(insideSource(probe[1], probe[2]), "the oracle rejects its edge-negative probe")
+    Assert.isFalse(
+      insidePublished(probe[1], probe[2]),
+      "the published hitbox rejects the source edge-negative probe"
+    )
+  end
+  controller:dispose()
+
+  -- The real shell plan maps the real strip slots: the overlap point
+  -- resolves to the phone card, so routing is decided by the busy
+  -- lease rather than invented geometry.
+  local plan = PokegearInterface.nativeLike(
+    { measurement = { pixelRatio = 1 }, primary = { usableBounds = { x = 0, y = 0, width = 256, height = 384 } } },
+    { assets = record, skin = 0 }
+  )
+  local mapInput = assert(plan.mapInput, "the shell plan maps controls input through the strip")
+  assert(type(mapInput) == "function", "the strip mapper is callable")
+  local busyView = { tab = "phone", dismissible = false, child = { busy = true } }
+  local down = { type = "pointer_down", pointerId = "touch:1", x = 170, y = 172 }
+  Assert.deepEqual(
+    mapInput(down, busyView, plan),
+    down,
+    "a strip-overlap press reaches the busy call instead of the tabs"
+  )
+  local up = { type = "pointer_up", pointerId = "touch:1", x = 170, y = 172 }
+  Assert.deepEqual(
+    mapInput(up, busyView, plan),
+    up,
+    "the matching release reaches the busy call instead of switching tabs"
+  )
+  local idleView = { tab = "phone", dismissible = true, child = { busy = false } }
+  Assert.isNil(mapInput(down, idleView, plan), "an idle strip press still arms without selecting")
+  Assert.deepEqual(
+    mapInput(up, idleView, plan),
+    { type = "select_tab", tab = "phone", x = 170, y = 172 },
+    "an idle strip release still selects its card"
+  )
+end
+
+-- The live call owns the fixed tick: an empty batch still steps the
+-- engine once, a batch of several raw events collapses into one engine
+-- action, and a source-valid press acts on touch rather than release.
+-- A recording fake engine observes the step count instead of walking a
+-- whole dialogue for every input shape.
+function T.tests.active_calls_step_once_per_fixed_tick_with_single_press_semantics()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: fixed ticks cannot own the live call"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({ greeting = "custom.greeting" }),
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    request = {
+      id = "tick-1",
+      contact = "custom.trainer-plain",
+      direction = "outgoing",
+      kind = "ordinary",
+    },
+  })
+  Assert.notNil(controller:status().view.call, "direct entry starts its conversation without menu labels")
+  local steps = {}
+  local spy = {
+    view = function()
+      return { stage = "message", page = 1, id = "spy", contact = "custom.trainer-plain" }
+    end,
+    step = function(_, _, edge)
+      steps[#steps + 1] = edge or {}
+    end,
+    cancel = function()
+    end,
+    result = function()
+      return nil
+    end,
+    release = function()
+    end,
+  }
+  controller._call = spy
+  controller:updateFixed({})
+  Assert.equal(#steps, 1, "an empty fixed tick still advances the live call once")
+  controller:updateFixed({ { type = "advance" }, { type = "advance" } })
+  Assert.equal(#steps, 2, "one batch carries at most one engine action")
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 140 } })
+  Assert.equal(#steps, 3, "a source-valid press advances on touch, not on release")
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 140 } })
+  Assert.equal(#steps, 3, "the matching release issues no second advance")
+  controller:dispose()
+end
+
+-- The remaining source menu identities keep their own geometry without
+-- enabling new conversation programs. Synthetic projections for menu
+-- IDs 4 and 6 ride local fake shown objects through the shared framed
+-- painter: the rendered frame and the touch hit test consume the same
+-- projection, a label tap answers its own semantic id, and border or
+-- outside taps answer nothing.
+function T.tests.other_call_menus_keep_their_own_frames_without_new_programs()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: source menu identities cannot frame"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({ greeting = "custom.greeting" }),
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(controller:status().view.call, "choosing Call starts the live conversation")
+  local uiProbe = withUiMessages({})
+  local tip = uiProbe.resolvePhoneUiMessage(uiProbe, 22).text
+  local seen = {}
+  local projection = {
+    stage = "choice",
+    id = "synthetic-4",
+    contact = "custom.trainer-plain",
+    choices = { "syn-a", "syn-b", "syn-c" },
+    menuId = 4,
+    choiceLabels = { "syn-L12", "syn-L13", "syn-L14" },
+    choiceTooltip = "suite-ui-271-22",
+  }
+  controller._call = {
+    view = function()
+      return projection
+    end,
+    step = function(_, _, edge)
+      seen[#seen + 1] = edge
+    end,
+    cancel = function()
+    end,
+    result = function()
+      return nil
+    end,
+    release = function()
+    end,
+  }
+  local menu = assert(
+    controller:status().view.callMenu,
+    "the synthetic choice projects its menu through the shared frame"
+  )
+  assert(type(menu) == "table", "the synthetic menu is a record")
+  local frame = assert((menu --[[@as table<string, unknown>]]).frame, "the menu carries its window frame")
+  assert(type(frame) == "table", "the menu frame is a record")
+  local frameRecord = frame --[[@as table<string, integer>]]
+  Assert.deepEqual(
+    { x = frameRecord.x, y = frameRecord.y, width = frameRecord.width, height = frameRecord.height },
+    { x = 7, y = 9, width = 22, height = 10 },
+    "the three-option menu frames at its own source tiles"
+  )
+  Assert.deepEqual(
+    (menu --[[@as table<string, unknown>]]).options,
+    { "syn-L12", "syn-L13", "syn-L14" },
+    "the menu rows print their own display labels"
+  )
+  Assert.equal(controller:status().view.tooltip, tip, "the owed choice carries the source tooltip")
+  -- The third text band answers its own semantic id through the very
+  -- frame the renderer paints.
+  local thirdY = (frameRecord.y + 3 * 2 + 1) * 8 + 8
+  local thirdX = frameRecord.x * 8 + 16
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:4", x = thirdX, y = thirdY } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:4", x = thirdX, y = thirdY } })
+  Assert.deepEqual(seen[#seen], { choice = "syn-c" }, "a label tap answers its own semantic id")
+  -- The source border and the outside never answer.
+  local before = #seen
+  controller:updateFixed(
+    { { type = "pointer_down", pointerId = "touch:4", x = frameRecord.x * 8 + 2, y = frameRecord.y * 8 + 2 } }
+  )
+  controller:updateFixed(
+    { { type = "pointer_up", pointerId = "touch:4", x = frameRecord.x * 8 + 2, y = frameRecord.y * 8 + 2 } }
+  )
+  Assert.equal(#seen, before, "a border tap answers nothing")
+  -- The two-option identity frames narrower and taller-columner at its
+  -- own tiles while answering through the same projection.
+  projection = {
+    stage = "choice",
+    id = "synthetic-6",
+    contact = "custom.trainer-plain",
+    choices = { "syn-yes", "syn-no" },
+    menuId = 6,
+    choiceLabels = { "syn-L18", "syn-L19" },
+    choiceTooltip = "suite-ui-271-22",
+  }
+  local narrow = assert(
+    controller:status().view.callMenu,
+    "the second synthetic choice projects its own menu"
+  )
+  assert(type(narrow) == "table", "the second synthetic menu is a record")
+  local narrowFrame = assert(
+    (narrow --[[@as table<string, unknown>]]).frame,
+    "the second menu carries its window frame"
+  )
+  assert(type(narrowFrame) == "table", "the second menu frame is a record")
+  local narrowRecord = narrowFrame --[[@as table<string, integer>]]
+  Assert.deepEqual(
+    { x = narrowRecord.x, y = narrowRecord.y, width = narrowRecord.width, height = narrowRecord.height },
+    { x = 13, y = 11, width = 16, height = 7 },
+    "the two-option menu frames at its own source tiles"
+  )
+  Assert.deepEqual(
+    (narrow --[[@as table<string, unknown>]]).options,
+    { "syn-L18", "syn-L19" },
+    "the narrow menu rows print their own display labels"
+  )
+  local secondY = (narrowRecord.y + 3 * 1 + 1) * 8 + 8
+  local secondX = narrowRecord.x * 8 + 16
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:6", x = secondX, y = secondY } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:6", x = secondX, y = secondY } })
+  Assert.deepEqual(seen[#seen], { choice = "syn-no" }, "a narrow label tap answers its own semantic id")
+  controller:dispose()
+end
+
+-- A player cancel stages the normal hangup through the direct host:
+-- the staged call keeps its lease and reports no result, a second
+-- cancel restarts nothing, and empty ticks settle the three source
+-- messages behind one tone with no rollback of the committed savings
+-- write. Forced disposal stays outside this path.
+function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local world = worldFixture()
+  world.flags["mom.savings-choice"] = false
+  local writes = 0
+  local writeChoice = world.setMomSavingsChoice
+  world.setMomSavingsChoice = function(_, choice)
+    writes = writes + 1
+    writeChoice(world, choice)
+  end
+  local played, dials, hangups = {}, 0, 0
+  local audio = {
+    play = function(_, sequence)
+      played[#played + 1] = sequence
+    end,
+    playDialing = function()
+      dials = dials + 1
+    end,
+    playHangup = function()
+      hangups = hangups + 1
+    end,
+    isEffectWaitComplete = function()
+      return true
+    end,
+  }
+  local host, _ = openHost(record, world, audio)
+  local handle = host:open({
+    mode = "call",
+    request = { id = "mom-stage-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
+    parentOwner = "script:stage-parent",
+  })
+  local function speechLine()
+    local active = assert(host._active, "the staged call keeps its lease")
+    local view = (active.controller --[[@as table]]):status().view
+    local call = assert(view.call, "the staged hangup keeps its conversation projection")
+    local lines = assert(
+      (call --[[@as table<string, unknown>]]).lines,
+      "the staged hangup prints into speech"
+    )
+    local firstLine = assert((lines --[[@as table<integer, unknown>]])[1], "the staged hangup prints its message")
+    if type(firstLine) == "table" then
+      return tostring((firstLine --[[@as table<string, unknown>]]).text)
+    end
+    return tostring(firstLine)
+  end
+  local function activeCall()
+    local active = assert(host._active, "the staged call keeps its lease")
+    local view = (active.controller --[[@as table]]):status().view
+    return assert(view.call, "the staged hangup keeps its conversation projection")
+  end
+  for _ = 1, 40 do
+    local call = activeCall()
+    if (call --[[@as table<string, unknown>]]).stage == "choice" then
+      break
+    end
+    host:step(handle, { { type = "advance" } })
+  end
+  Assert.equal(
+    (activeCall() --[[@as table<string, unknown>]]).stage,
+    "choice",
+    "the mother call owes its savings choice"
+  )
+  host:step(handle, { { type = "move", direction = "north" } })
+  Assert.deepEqual(world.player, { x = 5, y = 7 }, "call input never leaks into field movement")
+  host:step(handle, { { type = "confirm" } })
+  Assert.equal(writes, 1, "the answered choice commits its savings write once")
+  local uiProbe = withUiMessages({})
+  local first = uiProbe.resolvePhoneUiMessage(uiProbe, 33).text
+  local second = uiProbe.resolvePhoneUiMessage(uiProbe, 34).text
+  local third = uiProbe.resolvePhoneUiMessage(uiProbe, 35).text
+  Assert.equal(
+    (activeCall() --[[@as table<string, unknown>]]).stage,
+    "hangingUp",
+    "the answered call enters the staged normal hangup"
+  )
+  Assert.equal(speechLine(), first, "the hangup entry prints the first source message")
+  Assert.equal(hangups, 1, "the hangup entry plays the source tone once")
+  -- A player cancel during the hangup restarts nothing and replays
+  -- nothing; the staged call reports no result yet.
+  host:step(handle, { { type = "cancel" } })
+  Assert.isTrue(host:isActive(), "a hangup cancel keeps the staged call on its lease")
+  Assert.isNil(host:result(handle), "a hangup cancel completes nothing at once")
+  Assert.equal(hangups, 1, "a hangup cancel replays no tone")
+  Assert.equal(writes, 1, "a hangup cancel repeats no committed effect")
+  host:step(handle, { { type = "cancel" } })
+  Assert.isTrue(host:isActive(), "a second hangup cancel keeps the staged call on its lease")
+  Assert.equal(hangups, 1, "a second hangup cancel replays no tone")
+  -- Empty ticks settle the three source messages on the source waits.
+  local snapshots = { speechLine() }
+  for _ = 1, 10 do
+    host:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine()
+  end
+  Assert.equal(speechLine(), first, "the first source message holds across its wait")
+  host:step(handle, {})
+  snapshots[#snapshots + 1] = speechLine()
+  Assert.equal(speechLine(), second, "the wait prints the second source message")
+  for _ = 1, 10 do
+    host:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine()
+  end
+  Assert.equal(speechLine(), second, "the second source message holds across its wait")
+  host:step(handle, {})
+  snapshots[#snapshots + 1] = speechLine()
+  Assert.equal(speechLine(), third, "the wait prints the third source message")
+  for _ = 1, 10 do
+    host:step(handle, {})
+    snapshots[#snapshots + 1] = speechLine()
+  end
+  Assert.notNil(host._active, "the call stays live through the final wait")
+  host:step(handle, {})
+  local terminal = host:result(handle)
+  Assert.notNil(terminal, "empty ticks settle the staged hangup")
+  terminal = terminal --[[@as table]]
+  Assert.equal(terminal.contact, "custom.mom", "the terminal result names its contact")
+  Assert.equal(terminal.kind, "ordinary", "the terminal result names its call kind")
+  for _, snapshot in ipairs(snapshots) do
+    Assert.isTrue(
+      snapshot == first or snapshot == second or snapshot == third,
+      "every staged line is one of the three source messages"
+    )
+  end
+  local debug = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_DP_SELECT" or sequence == "SEQ_SE_DP_BOX03" then
+      debug = debug + 1
+    end
+  end
+  Assert.equal(debug, 0, "the staged hangup plays no debug click tone")
+  Assert.equal(hangups, 1, "the settled hangup played its tone exactly once")
+  Assert.equal(writes, 1, "the settled hangup repeats no committed effect")
+  Assert.deepEqual(host:result(handle), terminal, "the terminal result reads back identically until close")
+  host:close(handle)
+  Assert.isFalse(host:isActive(), "closing the handle releases the lease")
+  Assert.isTrue(host:isStableForSave(), "a closed call captures saves again")
+  Assert.throws(function()
+    host:result(handle)
+  end, "a closed host call rejects its stale handle")
 end
 
 return T

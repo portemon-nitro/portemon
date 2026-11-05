@@ -1,13 +1,12 @@
 -- Call-behavior contract: starting a call publishes the source dim
 -- state plus the caller-name content for windows[1] (colors 1,2,0) and
--- the fast-forward hitbox, and exiting clears the publication; hangup
--- plays staged click lines into the speech projection with the source
--- tones/timers (never a single tone); and in-call choice menus answer
--- taps on options while tracking the cursor on the shared projection.
--- Synthetic catalog, real production
--- PhoneController plus the real PhoneCall engine, recording (non-GPU)
--- audio fakes; the scenarios stop before GPU rendering and stay red
--- until the call behavior lands.
+-- the fast-forward hitbox, and exiting clears the publication; the
+-- normal hangup prints the three source messages at staged timer waits
+-- with one hangup tone and no debug clicks; and in-call choice menus
+-- answer taps on options while tracking the cursor on the shared
+-- projection. Synthetic catalog, real production PhoneController plus
+-- the real PhoneCall engine, recording (non-GPU) audio fakes; the
+-- scenarios stop before GPU rendering.
 
 local Assert = require("tests.support.Assert")
 
@@ -207,6 +206,10 @@ local function worldFixture()
   return flags, world
 end
 
+-- The source UI text behind the live call: bank271 entries behind a
+-- provider-style resolver returning one distinguishable record per
+-- entry, so hangup and choice assertions read localized labels instead
+-- of invented literals.
 ---@return table
 local function messageRefs()
   return {
@@ -214,6 +217,11 @@ local function messageRefs()
     accept = "custom.accept",
     resolveLine = function()
       return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+    end,
+    resolvePhoneUiMessage = function(_, entryId)
+      assert(type(entryId) == "number", "phone UI text resolves through its source bank entry")
+      local text = "fixture-ui-271-" .. entryId
+      return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
     end,
   }
 end
@@ -352,9 +360,10 @@ local function liveCall(view)
   return call --[[@as table]]
 end
 
--- Source fast-forward hitbox geometry in pixels, published from
--- gPhoneCallFastForwardHitbox { 0x88, 0xb8, 0x08, 0xf8 }.
-local FAST_FORWARD_HITBOX = { x = 0x88, y = 0xb8, width = 0x08, height = 0xf8 }
+-- Source fast-forward hitbox geometry in pixels, normalized from
+-- gPhoneCallFastForwardHitbox { top 0x88, bottom 0xb8, left 0x08,
+-- right 0xf8 } into half-open { x in [8,248), y in [136,184) }.
+local FAST_FORWARD_HITBOX = { x = 8, y = 136, width = 240, height = 48 }
 
 -- (1) starting a call publishes the source dim state, the caller-name
 -- content for windows[1] in colors (1,2,0), and the fast-forward hitbox;
@@ -391,11 +400,17 @@ function T.tests.call_start_publishes_dim_state_and_name_window_and_exit_clears_
     FAST_FORWARD_HITBOX,
     "the fast-forward hitbox stays live while the call owes its choice"
   )
-  for _ = 1, 24 do
+  -- Answering the choice stages the normal hangup: empty ticks and
+  -- advancing edges alike settle it without further choice input.
+  controller:updateFixed({ { type = "confirm" } })
+  for _ = 1, 48 do
     if controller:status().view.call == nil then
       break
     end
-    controller:updateFixed({ { type = "cancel" } })
+    controller:updateFixed({})
+    if controller:status().view.call == nil then
+      break
+    end
     controller:updateFixed({ { type = "advance" } })
   end
   local exited = controller:status().view
@@ -420,71 +435,101 @@ local function linesSnapshot(lines)
   return table.concat(parts, "\n")
 end
 
--- (2) hangup plays staged click lines into the speech projection
--- with the source tones and timers, never a single tone.
--- PhoneCall_HangupTone/HangupNoTone print staged hangUpMsgs/noSignalMsgs
--- lines behind SEQ_SE_GS_PHONE_OFF across 10-tick timer stages, and
--- PokegearPhone_PrintHangUpClicks stages SELECT into BOX03 clicks; the
--- conversation must stay live across several fixed ticks while its
--- staged lines advance.
-function T.tests.hangup_plays_staged_click_lines_with_source_tones_and_timers()
+-- (2) the normal hangup prints the three source messages on the source
+-- cadence behind a single PHONE_OFF tone. PhoneCall_HangupTone prints
+-- the msg_0271 hangUpMsgs entries 33, 34, 35 across post-increment
+-- 11-tick waits with no debug SELECT/BOX03 clicks; the engine advances
+-- on empty fixed ticks, and the call ends only after the final wait.
+function T.tests.hangup_prints_three_source_messages_on_the_source_cadence()
   local controller, _, _, audioLog = openMenuController()
   assert(audioLog ~= nil, "the hangup scenario records the audio boundary")
   placeMenuCall(controller)
   driveToOwedChoice(controller)
+  local refs = messageRefs()
+  local first = refs.resolvePhoneUiMessage(refs, 33).text
+  local second = refs.resolvePhoneUiMessage(refs, 34).text
+  local third = refs.resolvePhoneUiMessage(refs, 35).text
+  -- Answering the owed choice starts the normal hangup staging. The
+  -- tone window opens before the answering tick because hangup entry
+  -- plays its single tone in that same tick.
   local answered = #audioLog
   controller:updateFixed({ { type = "confirm" } })
-  local hangupStages, lineSnapshots, ticks = {}, {}, 0
-  for _ = 1, 12 do
-    ticks = ticks + 1
-    local view = controller:status().view
-    if view.call == nil then
-      break
-    end
-    local call = liveCall(view)
-    Assert.equal(call.stage, "hangingUp", "the answered call hangs up through staged clicks, not at once")
-    local hangup = assert(
-      call.hangup,
-      "the hanging-up call publishes its staged click progress"
+  local staged = liveCall(controller:status().view)
+  Assert.equal(staged.stage, "hangingUp", "the answered call enters the staged normal hangup, not an instant cut")
+  Assert.equal(linesSnapshot(staged.lines), first, "the hangup entry prints the first source message")
+  -- Repeated status reads change nothing and replay no tone.
+  local quiet = #audioLog
+  Assert.equal(
+    linesSnapshot(liveCall(controller:status().view).lines),
+    first,
+    "repeated status reads never advance the hangup timer"
+  )
+  Assert.equal(#audioLog, quiet, "repeated status reads replay no tone")
+  local snapshots = { linesSnapshot(staged.lines) }
+  -- Ten empty ticks hold the first message; the eleventh prints the second.
+  for _ = 1, 10 do
+    controller:updateFixed({})
+    snapshots[#snapshots + 1] = linesSnapshot(liveCall(controller:status().view).lines)
+  end
+  Assert.equal(
+    linesSnapshot(liveCall(controller:status().view).lines),
+    first,
+    "the first source message holds across its ten-tick wait"
+  )
+  controller:updateFixed({})
+  snapshots[#snapshots + 1] = linesSnapshot(liveCall(controller:status().view).lines)
+  Assert.equal(
+    linesSnapshot(liveCall(controller:status().view).lines),
+    second,
+    "the eleventh tick prints the second source message"
+  )
+  -- Ten more hold the second; the next prints the third.
+  for _ = 1, 10 do
+    controller:updateFixed({})
+    snapshots[#snapshots + 1] = linesSnapshot(liveCall(controller:status().view).lines)
+  end
+  Assert.equal(
+    linesSnapshot(liveCall(controller:status().view).lines),
+    second,
+    "the second source message holds across its ten-tick wait"
+  )
+  controller:updateFixed({})
+  snapshots[#snapshots + 1] = linesSnapshot(liveCall(controller:status().view).lines)
+  Assert.equal(
+    linesSnapshot(liveCall(controller:status().view).lines),
+    third,
+    "the next tick prints the third source message"
+  )
+  -- Ten more hold the third while the call stays live; the next ends it.
+  for _ = 1, 10 do
+    controller:updateFixed({})
+    snapshots[#snapshots + 1] = linesSnapshot(liveCall(controller:status().view).lines)
+  end
+  Assert.notNil(controller:status().view.call, "the call stays live through the final wait")
+  controller:updateFixed({})
+  Assert.isNil(controller:status().view.call, "the hangup ends only after the final wait")
+  for _, snapshot in ipairs(snapshots) do
+    Assert.isNil(
+      snapshot:find("hangup-click", 1, true),
+      "the normal hangup never prints an invented click caption"
     )
-    assert(type(hangup) == "table", "the hangup progress is a record")
-    hangupStages[#hangupStages + 1] = (hangup --[[@as table<string, unknown>]]).index
-    lineSnapshots[#lineSnapshots + 1] = linesSnapshot(call.lines)
-    controller:updateFixed({ { type = "advance" } })
+    Assert.isTrue(
+      snapshot == first or snapshot == second or snapshot == third,
+      "every staged line is one of the three source messages"
+    )
   end
-  Assert.isNil(controller:status().view.call, "the staged hangup completes and clears the call")
-  local distinctStages, distinctLines = {}, {}
-  for _, index in ipairs(hangupStages) do
-    distinctStages[index] = true
-  end
-  for _, snapshot in ipairs(lineSnapshots) do
-    distinctLines[snapshot] = true
-  end
-  local stageCount, lineCount = 0, 0
-  for _ in pairs(distinctStages) do
-    stageCount = stageCount + 1
-  end
-  for _ in pairs(distinctLines) do
-    lineCount = lineCount + 1
-  end
-  Assert.isTrue(stageCount >= 2, "the hangup advances through at least two staged click steps")
-  Assert.isTrue(lineCount >= 2, "the hangup prints at least two distinct staged lines into speech")
-  Assert.isTrue(ticks >= 3, "the staged hangup spans several fixed ticks behind its source timers")
-  local hangupPlays = {}
+  local off, debug = 0, 0
   for index = answered + 1, #audioLog do
-    hangupPlays[#hangupPlays + 1] = audioLog[index]
-  end
-  local sawOff, sawClick = false, false
-  for _, sequence in ipairs(hangupPlays) do
+    local sequence = audioLog[index]
     if sequence == "SEQ_SE_GS_PHONE_OFF" then
-      sawOff = true
+      off = off + 1
     end
     if sequence == "SEQ_SE_DP_SELECT" or sequence == "SEQ_SE_DP_BOX03" then
-      sawClick = true
+      debug = debug + 1
     end
   end
-  Assert.isTrue(sawOff, "the staged hangup plays the source PHONE_OFF tone")
-  Assert.isTrue(sawClick, "the staged hangup plays click tones behind its staged lines, not a single tone")
+  Assert.equal(off, 1, "the normal hangup plays the source PHONE_OFF tone exactly once")
+  Assert.equal(debug, 0, "the normal hangup plays no debug click tone behind its staged lines")
   controller:dispose()
 end
 
@@ -497,40 +542,62 @@ local function tap(controller, x, y, pointerId)
   controller:updateFixed({ { type = "pointer_up", pointerId = pointerId, x = x, y = y } })
 end
 
--- (3) in-call choice menus route touch taps on options and track the
--- cursor on the shared menu projection: tapping an option answers it,
--- exactly like the source PhoneCall_TouchscreenListMenu choice plumbing
--- (tap selects, never just navigate/confirm keys). Tapping the second
--- owed row answers "keep" and commits the savings choice without any
--- key input.
-function T.tests.in_call_choice_tap_on_option_answers_it()
+-- (3) the owed in-call choice renders localized source labels in the
+-- source frame while answering semantic choices. sContextMenuParam[2]
+-- frames the savings menu at tiles x7/y11 width 22; the two display
+-- rows read bank271 entries 8 and 9 behind the entry22 tooltip, and
+-- tapping a visible row answers its semantic save/keep choice without
+-- key input, exactly like the source TouchscreenListMenu choice
+-- plumbing (tap selects, never just navigate/confirm keys). Tapping
+-- the second owed row answers "keep" and commits the savings choice
+-- without any key input.
+function T.tests.in_call_choice_renders_source_labels_and_answers_semantic_choices()
   local controller, _, flags = openMenuController()
   placeMenuCall(controller)
   local owed = driveToOwedChoice(controller)
   local call = liveCall(owed)
   Assert.deepEqual(call.choices, { "save", "keep" }, "the mother call owes its save/keep choice")
+  local refs = messageRefs()
+  local firstLabel = refs.resolvePhoneUiMessage(refs, 8).text
+  local secondLabel = refs.resolvePhoneUiMessage(refs, 9).text
+  local tip = refs.resolvePhoneUiMessage(refs, 22).text
   local menu = assert(owed.callMenu, "the owed choices are exposed as a menu projection on the call surface")
   assert(type(menu) == "table", "the choice menu is a record")
+  Assert.deepEqual(
+    (menu --[[@as table<string, unknown>]]).options,
+    { firstLabel, secondLabel },
+    "the choice rows print the localized source labels, never the semantic ids"
+  )
+  Assert.deepEqual(
+    (menu --[[@as table<string, unknown>]]).frame,
+    { x = 7, y = 11, width = 22, height = 7 },
+    "the savings choice frames at its source tiles"
+  )
   Assert.equal(
     (menu --[[@as table<string, unknown>]]).cursor,
     0,
     "the choice menu cursor opens on the first option"
   )
+  Assert.equal(owed.tooltip, tip, "the owed choice carries the source tooltip")
   local frame = assert((menu --[[@as table<string, unknown>]]).frame, "the choice menu carries its window frame")
   assert(type(frame) == "table", "the choice menu frame is a record")
-  local rows = assert((menu --[[@as table<string, unknown>]]).rows, "the choice menu carries its option rows")
-  assert(type(rows) == "table", "the choice menu rows are a list")
-  local second = assert((rows --[[@as table<integer, unknown>]])[2], "the choice menu owes a second row")
-  assert(type(second) == "table", "the second choice row is a record")
   local frameRecord = frame --[[@as table<string, integer>]]
-  local secondRecord = second --[[@as table<string, unknown>]]
+  -- The second option row starts three tiles below the first text row:
+  -- one tile frame border plus one 24px text row per preceding option.
+  local secondRowY = (frameRecord.y + 3 * (2 - 1) + 1) * 8
   tap(
     controller,
     frameRecord.x * 8 + 16,
-    (secondRecord.y --[[@as integer]]) + 8,
+    secondRowY + 8,
     7
   )
-  for _ = 1, 24 do
+  -- The answered choice stages the normal hangup: empty ticks and
+  -- advancing edges alike settle it without further choice input.
+  for _ = 1, 48 do
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({})
     if controller:status().view.call == nil then
       break
     end

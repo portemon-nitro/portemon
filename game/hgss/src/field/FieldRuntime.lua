@@ -3020,6 +3020,30 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
     return resolve(message.bank, message.entry, contactKey)
   end
   messages.resolveLine = resolveLine
+  -- The narrow bank271 UI text reader behind live calls: choice labels,
+  -- the choice tooltip, and the three hangup messages. Both the menu
+  -- card and direct scripted calls share this facade, so both resolve
+  -- through the same provider acquire/format/release round trip. Only
+  -- the entries the call UI actually reads are admitted; anything else
+  -- is a programming error, never a default label.
+  ---@param _ table<string, unknown>
+  ---@param entryId integer bank271 entry number
+  ---@return table<string, unknown> formatted message text
+  local function resolvePhoneUiMessage(_, entryId)
+    local known = type(entryId) == "number"
+      and entryId % 1 == 0
+      and ((entryId >= 8 and entryId <= 19) or entryId == 22 or (entryId >= 33 and entryId <= 35))
+    if not known then
+      local failure = Errors.new(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "phone UI text names a known bank271 entry, got " .. tostring(entryId),
+        { entry = entryId }
+      )
+      error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+    end
+    return resolve(271, entryId)
+  end
+  messages.resolvePhoneUiMessage = resolvePhoneUiMessage
   return messages
 end
 

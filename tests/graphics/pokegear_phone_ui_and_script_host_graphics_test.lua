@@ -342,6 +342,24 @@ local function fixtureMenuLabelsSort()
   return { labels[4], labels[5], labels[6], labels[7], labels[8] }
 end
 
+-- Source bank271 UI text behind the live call: the message facade
+-- carries a provider-style resolver returning one distinguishable
+-- record per entry, so hangup and choice assertions read localized
+-- labels instead of invented literals.
+---@param messages table the borrowed message facade to extend
+---@return table the same facade with its UI resolver attached
+local function withUiMessages(messages)
+  messages.resolvePhoneUiMessage = function(_, entryId)
+    assert(
+      type(entryId) == "number" and entryId % 1 == 0,
+      "phone UI text resolves through its source bank entry"
+    )
+    local text = "suite-ui-271-" .. entryId
+    return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
+  end
+  return messages
+end
+
 ---@param manifest table
 ---@param skin integer
 ---@param audio table? optional audio boundary, defaulting to the instant fake
@@ -369,7 +387,7 @@ local function openPhone(manifest, skin, audio)
     state = state,
     catalog = record.catalog,
     assets = record,
-    messages = { greeting = "custom.greeting", program = "custom.program" },
+    messages = withUiMessages({ greeting = "custom.greeting", program = "custom.program" }),
     world = { flags = {}, rematchReady = {} },
     audio = audio or instantAudio(),
     random = PokegearRandom.new(2024),
@@ -888,15 +906,14 @@ function T.call_text_colors_follow_source_across_skins(scope)
     "the name cell paints differently from the class cell through its own font and palette"
   )
 
-  -- Choosing Call starts the live conversation, and redrawing a settled
-  -- call without a tick changes no pixel.
+  -- Choosing Call starts the live conversation, and redrawing a live
+  -- call without a tick changes no pixel. The trainer program behind
+  -- this row is unimplemented, so the call is drawn while still
+  -- connecting: ticking it would ask for its unmodeled greeting.
   controller:updateFixed({ { type = "confirm" } })
   chooseMenuOption(controller, 1)
   local view = assert(controller:status().view, "the transition exports its view")
   Assert.notNil(view.call, "the chosen menu call stays live")
-  for _ = 1, 8 do
-    controller:updateFixed({})
-  end
   local settled = drawPhone(scope, controller, resources)
   local repeated = drawPhone(scope, controller, resources)
   Assert.equal(
@@ -1754,6 +1771,85 @@ function T.context_menu_paints_the_shared_tile_frame(scope)
     { leaseBytes(scope, resources.images, "assets/generated/pokegear/fly-menu-tiles.png") },
     "the menu corner paints the shared tile strip"
   )
+  controller:dispose()
+end
+
+-- The live call answers the source fast-forward rectangle even where
+-- the tab strip overlaps it. gPhoneCallFastForwardHitbox orders its
+-- edges top,bottom,left,right, so the normalized rectangle is half-open
+-- x in [8,248), y in [136,184), and point (170,172) sits inside both
+-- the call hitbox and a strip cell. A source-valid press acts on touch
+-- rather than release and issues no second advance, while
+-- edge-negative probes stay silent.
+function T.call_hitbox_matches_the_source_rectangle_and_survives_strip_overlap(_scope)
+  local contacts, order = sortingFixture()
+  local controller = openPhone(fixtureManifest(contacts, order), 0)
+  Assert.equal(listView(controller).selected, 0, "the list opens with its first row selected")
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(listView(controller).selected, 2, "two steps reach the mother row")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(controller:status().view.contextMenu, "confirming the row opens its context menu")
+  controller:updateFixed({ { type = "confirm" } })
+  local call = assert(controller:status().view.call, "choosing Call starts the live conversation")
+  assert(type(call) == "table", "the live call keeps its conversation projection")
+  local fastForward = assert(
+    (call --[[@as table<string, unknown>]]).fastForward,
+    "the live call publishes the source fast-forward rectangle"
+  )
+  assert(type(fastForward) == "table", "the fast-forward publication is a record")
+  local published = fastForward --[[@as table<string, integer>]]
+  Assert.deepEqual(
+    { x = published.x, y = published.y, width = published.width, height = published.height },
+    { x = 8, y = 136, width = 240, height = 48 },
+    "the live call publishes the normalized source hitbox, not the misread edges"
+  )
+  local function insidePublished(x, y)
+    return x >= published.x
+      and x < published.x + published.width
+      and y >= published.y
+      and y < published.y + published.height
+  end
+  for _, probe in ipairs({ { 8, 136 }, { 247, 183 }, { 10, 140 }, { 170, 172 } }) do
+    Assert.isTrue(
+      insidePublished(probe[1], probe[2]),
+      "the published hitbox admits the source inside probe"
+    )
+  end
+  for _, probe in ipairs({ { 7, 136 }, { 248, 136 }, { 8, 135 }, { 8, 184 } }) do
+    Assert.isFalse(
+      insidePublished(probe[1], probe[2]),
+      "the published hitbox rejects the source edge-negative probe"
+    )
+  end
+  -- A recording fake engine observes the step count: the real engine
+  -- never steps in this scenario, so the dialogue stays untouched.
+  local steps = {}
+  controller._call = {
+    view = function()
+      return { stage = "message", page = 1, id = "spy", contact = "custom.mom" }
+    end,
+    step = function(_, _, edge)
+      steps[#steps + 1] = edge or {}
+    end,
+    cancel = function()
+    end,
+    result = function()
+      return nil
+    end,
+    release = function()
+    end,
+  }
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 140 } })
+  Assert.equal(#steps, 1, "a source-valid press advances on touch, not on release")
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 140 } })
+  Assert.equal(#steps, 1, "the matching release issues no second advance")
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 170, y = 172 } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 170, y = 172 } })
+  Assert.equal(#steps, 2, "the strip-overlap press reaches the call exactly once")
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 7, y = 136 } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 7, y = 136 } })
+  Assert.equal(#steps, 2, "the edge-negative probe stays silent")
   controller:dispose()
 end
 

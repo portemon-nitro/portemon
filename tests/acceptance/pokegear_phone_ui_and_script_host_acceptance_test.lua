@@ -311,6 +311,11 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
+      resolvePhoneUiMessage = function(_, entryId)
+        assert(type(entryId) == "number", "phone UI text resolves through its source bank entry")
+        local text = "fixture-ui-271-" .. entryId
+        return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
+      end,
     },
     world = menuWorld,
     audio = instantAudio(),
@@ -394,6 +399,11 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
       accept = "custom.accept",
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+      resolvePhoneUiMessage = function(_, entryId)
+        assert(type(entryId) == "number", "phone UI text resolves through its source bank entry")
+        local text = "fixture-ui-271-" .. entryId
+        return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
       end,
     },
     world = scriptWorld,

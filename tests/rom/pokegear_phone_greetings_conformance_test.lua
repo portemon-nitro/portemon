@@ -85,6 +85,18 @@ local function greetingMessages(catalog, versionId)
   messages.resolveName = resolveName
   messages.resolveClass = resolveClass
   messages.resolveLine = resolveLine
+  -- The live call reads its choice and hangup copy through the same
+  -- bank pipeline: bank271 UI entries behind the shared reader the
+  -- field runtime publishes to both entry paths.
+  messages.resolvePhoneUiMessage = function(_, entryId)
+    assert(
+      type(entryId) == "number"
+        and entryId % 1 == 0
+        and ((entryId >= 8 and entryId <= 19) or entryId == 22 or (entryId >= 33 and entryId <= 35)),
+      "phone UI text names a known bank271 entry"
+    )
+    return resolveMessage(271, entryId)
+  end
   local function dispose()
     provider:dispose()
   end

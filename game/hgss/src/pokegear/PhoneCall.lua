@@ -4,9 +4,9 @@
 -- hangup are separate stages; each source effect runs once when its
 -- original stage is entered, never per poll and never as a blanket
 -- commit at hangup. Dialing plays the source dial tone twice and waits
--- on the effect-player completion boundary; hangup stages PHONE_OFF
--- once and then SELECT into BOX03 clicks with staged lines and
--- post-increments its timers. Views are detached closed
+-- on the effect-player completion boundary; hangup plays PHONE_OFF
+-- once and then prints three localized messages across staged timer
+-- waits. Views are detached closed
 -- unions; stale handles fail without touching a new call. Cancellation
 -- releases the lease but never rolls back committed effects. Pure
 -- session logic over injected owners: no love dependency.
@@ -37,22 +37,17 @@ PhoneCall.DIRECTIONS = { incoming = true, outgoing = true }
 PhoneCall.KINDS = { ordinary = true, rematch = true, predefined = true, incoming = true }
 
 -- Source call tones: the connecting stage dials PHONE0 twice and waits
--- on that sequence; hangup stages PHONE_OFF once and then SELECT into
--- BOX03 clicks behind its staged lines (PhoneCall_HangupTone plus
--- PokegearPhone_PrintHangUpClicks). The generic audio boundary
+-- on that sequence; the staged hangup plays PHONE_OFF once behind its
+-- three localized lines. The generic audio boundary
 -- resolves them by symbol exactly like every other effect;
 -- bespoke playDialing/playHangup fakes keep working where the generic
 -- play entry is absent, and toneless fakes stay silent.
 PhoneCall.DIAL_SEQUENCE = "SEQ_SE_GS_PHONE0"
 PhoneCall.HANGUP_SEQUENCE = "SEQ_SE_GS_PHONE_OFF"
-PhoneCall.HANGUP_CLICK_FIRST_SEQUENCE = "SEQ_SE_DP_SELECT"
-PhoneCall.HANGUP_CLICK_SEQUENCE = "SEQ_SE_DP_BOX03"
--- Staged hangup click count behind the source timers: the PHONE_OFF
--- line plus three click lines (SELECT once, BOX03 twice), matching
--- the source four-line click staging. One staged click advances per
--- fixed step; the host boundary owns frame pacing while the engine
--- owns stage order, tones, and lines.
-PhoneCall.HANGUP_STAGES = 4
+-- The three staged hangup messages, read through the shared UI message
+-- reader: the first prints on hangup entry, the other two each follow
+-- an eleven-tick post-increment wait, and a third wait ends the call.
+PhoneCall.HANGUP_MESSAGE_ENTRIES = { 33, 34, 35 }
 
 -- World facts frozen at the call boundary for program dispatch. Only
 -- these keys are snapshotted; a long call never switches its greeting
@@ -561,12 +556,6 @@ function PhoneCall:_failCall(session, failure)
   error(failure, 0)
 end
 
----@param index integer staged hangup click index
----@return table<string, unknown> the staged hangup speech line
-local function hangupLine(index)
-  return { text = "hangup-click-" .. index }
-end
-
 ---@param sequence string
 function PhoneCall:_playSequence(sequence)
   local audio = self._audio
@@ -584,9 +573,21 @@ function PhoneCall:_playSequence(sequence)
   end
 end
 
+-- Reads one localized hangup message through the shared UI message
+-- reader. No literal text lives in the session.
+---@param entryId integer bank271 hangup entry number
+---@return table<string, unknown> the printable speech line
+function PhoneCall:_hangupText(entryId)
+  local resolveUi = self._messages.resolvePhoneUiMessage
+  assert(type(resolveUi) == "function", "phone hangup text resolves through the shared UI message reader")
+  local record = resolveUi(self._messages, entryId)
+  assert(type(record) == "table" and type(record.text) == "string", "phone hangup entries resolve to printable text")
+  return { text = record.text, tokens = record.tokens }
+end
+
 -- Enters the staged hangup: plays the source PHONE_OFF tone once,
--- publishes the first staged click line, and holds the hangingUp stage
--- across fixed steps until the click staging completes. Exactly-once
+-- publishes the first localized hangup message, and holds the hangingUp
+-- stage across fixed steps until the staged timers complete. Exactly-once
 -- per call: later cancel edges while hanging up never restart it.
 ---@param session table<string, unknown>
 function PhoneCall:_beginHangup(session)
@@ -595,45 +596,48 @@ function PhoneCall:_beginHangup(session)
   end
   session.stage = "hangingUp"
   enterStage(session)
-  session.hangupIndex = 0
-  session.lines = { hangupLine(0) }
+  session.hangupSub = 0
+  session.hangupTimer = 0
+  session.lines = { self:_hangupText(PhoneCall.HANGUP_MESSAGE_ENTRIES[1]) }
   session.textPage = 1
   self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
 end
 
--- Advances one staged hangup click: plays the stage tone once,
--- publishes its staged line, and completes the call once the final
--- stage runs. Repeated advances never duplicate a tone.
+-- Advances the staged hangup timer one tick. Each wait holds its message
+-- across eleven post-increment ticks before printing the next message or
+-- completing the call; waiting ticks never duplicate a tone.
 ---@param session table<string, unknown>
 ---@return boolean completed
 function PhoneCall:_advanceHangup(session)
-  local index = session.hangupIndex --[[@as integer]]
-  if index == nil then
+  if session.hangupSub == nil then
     self:_beginHangup(session)
     return false
   end
-  if
-    index + 1 >= PhoneCall.HANGUP_STAGES --[[@as integer]]
-  then
-    self:_finishHangup(session)
-    return true
+  local timer = session.hangupTimer --[[@as integer]] or 0
+  if timer < 10 then
+    session.hangupTimer = timer + 1
+    return false
   end
-  local nextIndex = index + 1
-  session.hangupIndex = nextIndex
+  session.hangupTimer = 0
+  local sub = session.hangupSub --[[@as integer]] + 1
+  session.hangupSub = sub
   enterStage(session)
-  session.lines = { hangupLine(nextIndex) }
-  session.textPage = 1
-  if nextIndex == 1 then
-    self:_playSequence(PhoneCall.HANGUP_CLICK_FIRST_SEQUENCE)
-  else
-    self:_playSequence(PhoneCall.HANGUP_CLICK_SEQUENCE)
+  if sub == 1 then
+    session.lines = { self:_hangupText(PhoneCall.HANGUP_MESSAGE_ENTRIES[2]) }
+    session.textPage = 1
+    return false
   end
-  return false
+  if sub == 2 then
+    session.lines = { self:_hangupText(PhoneCall.HANGUP_MESSAGE_ENTRIES[3]) }
+    session.textPage = 1
+    return false
+  end
+  self:_finishHangup(session)
+  return true
 end
 
 -- Completes the staged hangup with its terminal result. The hangup
--- tones already played once across the click staging; completion
--- never replays them.
+-- tone already played once at hangup entry; completion never replays it.
 ---@param session table<string, unknown>
 function PhoneCall:_finishHangup(session)
   if session.hangupDone ~= true then
@@ -658,6 +662,26 @@ function PhoneCall:_finishHangup(session)
   if self._active == session.id then
     self._active = nil
   end
+end
+
+-- Snapshots the owed savings choice: the source menu identity with the
+-- two localized display labels in source order, plus the localized
+-- choice prompt. Semantic answers stay with MotherPhoneProgram; the
+-- session only carries display strings. Resolved once at choice entry
+-- so detached views never fetch messages.
+---@param session table<string, unknown>
+function PhoneCall:_resolveChoiceLabels(session)
+  local resolveUi = self._messages.resolvePhoneUiMessage
+  assert(type(resolveUi) == "function", "phone choices resolve through the shared UI message reader")
+  local first = resolveUi(self._messages, 8)
+  local second = resolveUi(self._messages, 9)
+  local prompt = resolveUi(self._messages, 22)
+  assert(type(first) == "table" and type(first.text) == "string", "phone choice entries resolve to printable text")
+  assert(type(second) == "table" and type(second.text) == "string", "phone choice entries resolve to printable text")
+  assert(type(prompt) == "table" and type(prompt.text) == "string", "phone choice prompt resolves to printable text")
+  session.menuId = 2
+  session.choiceLabels = { first.text, second.text }
+  session.choiceTooltip = prompt.text
 end
 
 -- Advances the call one step. Waits hold their stage until the audio or
@@ -747,6 +771,13 @@ function PhoneCall:step(handle, input)
       if outcome == "waiting" then
         session.stage = "choice"
         enterStage(session)
+        local labelsOk, labelsFault = pcall(function()
+          self:_resolveChoiceLabels(session)
+        end)
+        if not labelsOk then
+          self:_failCall(session, labelsFault)
+          return
+        end
         return
       end
       self:_beginHangup(session)
@@ -816,14 +847,19 @@ function PhoneCall:view(handle)
   if stage == "choice" then
     -- Only the savings choice waits for input today; the owed choice
     -- ids stay with the program that defines them so a new waiting
-    -- program cannot silently inherit these.
+    -- program cannot silently inherit these. Display labels and the
+    -- choice prompt ride along in the same order; game effects only
+    -- read the semantic ids.
     assert(session.owner == "mother", "only the savings choice waits for input")
     shown.choices = { MotherPhoneProgram.CHOICES[1], MotherPhoneProgram.CHOICES[2] }
-  end
-  if stage == "hangingUp" then
-    shown.hangup = {
-      index = session.hangupIndex --[[@as integer]] or 0,
-    }
+    assert(session.menuId == 2, "the savings choice carries its menu identity")
+    local labels = session.choiceLabels
+    assert(type(labels) == "table" and #labels == 2, "the savings choice carries its localized display labels")
+    local tooltip = session.choiceTooltip
+    assert(type(tooltip) == "string", "the savings choice carries its localized prompt")
+    shown.menuId = session.menuId
+    shown.choiceLabels = { labels[1], labels[2] }
+    shown.choiceTooltip = tooltip
   end
   if session.result ~= nil then
     local result = session.result --[[@as table<string, unknown>]]
@@ -853,29 +889,19 @@ function PhoneCall:result(handle)
   return detached
 end
 
--- Hangs the call up. A live call completes at once behind the single
--- source hangup tone and reports its terminal result immediately
--- with its committed effects kept; the staged click path belongs to
--- the stepped conversation end, which stays observable across fixed
--- ticks. A terminal call keeps its committed effects and result
--- untouched. A cancelled-then-released handle never replays tones.
+-- Hangs the call up at once behind the single source hangup tone.
+-- Forced teardown never replays the tone: a call already hanging up
+-- finishes silently, any other live call plays it once here, and a
+-- terminal call stays untouched. Committed effects are always kept;
+-- the staged timer path belongs to stepped player hangups.
 ---@param handle { id: string }
 ---@param reason string hangup reason
 function PhoneCall:cancel(handle, reason)
   local session = checkHandle(self, handle)
   assert(type(reason) == "string" and reason ~= "", "phone cancellation names its reason")
   if session.terminal == true then
-    if session.hangupDone ~= true and session.stage ~= "noSignal" then
-      self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
-      session.hangupDone = true
-      local count = self._hangups
-      self._hangups = count + 1
-    end
     return
   end
-  -- A cancel that lands mid-staging never replays the hangup tone:
-  -- the staged begin already played it once.
-  enterStage(session)
   if session.stage ~= "hangingUp" then
     self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
   end
@@ -883,13 +909,12 @@ function PhoneCall:cancel(handle, reason)
 end
 
 -- Releases a call handle. Terminal handles leave their effects in
--- place; a live handle hangs up first through the same no-rollback
--- path as cancel.
+-- place; a live handle finishes at once through the same no-rollback
+-- path as cancel, without staging timers or tones.
 ---@param handle { id: string }
 function PhoneCall:release(handle)
   local session = checkHandle(self, handle)
   if session.terminal ~= true then
-    self:_beginHangup(session)
     self:_finishHangup(session)
   end
   self._calls[
