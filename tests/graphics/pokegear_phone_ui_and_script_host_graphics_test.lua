@@ -1,8 +1,8 @@
--- Foreground phone list, sorting, input, and panel presentation: every
+-- Foreground phone list, sorting, and input presentation: every
 -- contact count from empty to a full book sorts each way with stable
 -- ties, scrolls within a six-row clipped viewport, separates manual
 -- move input from ordinary row taps, restores the saved order on
--- reopen, and animates its source panel cells with per-state text
+-- reopen, and carries per-state text
 -- colors across all six skins. Geometry comes from the controller's
 -- detached view against independent source rectangles; colors and skin
 -- swaps are proven in pixels through the published plan render with
@@ -778,12 +778,12 @@ local function regionsDiffer(data, first, second)
   return changed
 end
 
--- The source panel animates closed-open-closed across its 1+6+1 tick
--- timeline on the list-to-call transition, selected and alternating
--- rows keep their own text colors, and every skin repaints from
--- prepared assets. Redrawing without a tick is pixel-identical, so the
--- logical timeline never depends on the host frame rate.
-function T.call_panel_animation_and_text_colors_follow_source_across_skins(scope)
+-- The menu-to-call transition carries no panel animation, selected
+-- and alternating rows keep their own text colors, and every skin
+-- repaints from prepared assets. Redrawing without a tick is
+-- pixel-identical, so the logical timeline never depends on the host
+-- frame rate.
+function T.call_text_colors_follow_source_across_skins(scope)
   local contacts, order = sortingFixture()
   local manifest = fixtureManifest(contacts, order)
   local resources = renderResources(scope, manifest)
@@ -845,36 +845,28 @@ function T.call_panel_animation_and_text_colors_follow_source_across_skins(scope
     "the name cell paints differently from the class cell through its own font and palette"
   )
 
-  -- The list-to-call transition animates the source panel cells
-  -- closed-open-closed across exactly 1+6+1 logical ticks: the data
-  -- timeline pins the frames while pixels prove the swap paints.
+  -- Choosing Call from the action menu publishes no panel animation:
+  -- the menu-to-call transition carries neither a panel cell nor a
+  -- transition while the conversation starts, and redrawing a settled
+  -- call without a tick changes no pixel.
   controller:updateFixed({ { type = "confirm" } })
   chooseMenuOption(controller, 1)
-  local cells = {}
-  local frames = {}
-  for _ = 1, 8 do
-    controller:updateFixed({})
+  for tick = 1, 8 do
     local view = assert(controller:status().view, "the transition exports its view")
-    cells[#cells + 1] = assert(view.panel, "the transition carries its panel projection").cell
-    frames[#frames + 1] = drawPhone(scope, controller, resources)
+    Assert.notNil(view.call, "the chosen menu call stays live across tick " .. tick)
+    Assert.isNil(view.panel, "no panel projection appears across the menu-call transition (tick " .. tick .. ")")
+    Assert.isNil(
+      view.transition,
+      "no transition projection appears across the menu-call transition (tick " .. tick .. ")"
+    )
+    controller:updateFixed({})
   end
-  Assert.deepEqual(cells, { 10, 11, 11, 11, 11, 11, 11, 10 }, "the panel animates closed-open-closed for 1+6+1 ticks")
-  Assert.isTrue(
-    changedPixels(frames[1], frames[2], { x = 0, y = 0, width = 256, height = 192 }) > 0,
-    "the closed-to-open panel swap paints"
-  )
-  Assert.isTrue(
-    changedPixels(frames[7], frames[8], { x = 0, y = 0, width = 256, height = 192 }) > 0,
-    "the open-to-closed panel swap paints"
-  )
-  -- The logical timeline advances one frame per update no matter how
-  -- often the host redraws between ticks.
-  drawPhone(scope, controller, resources)
+  local settled = drawPhone(scope, controller, resources)
   local repeated = drawPhone(scope, controller, resources)
   Assert.equal(
-    changedPixels(repeated, frames[8], { x = 0, y = 0, width = 256, height = 192 }),
+    changedPixels(repeated, settled, { x = 0, y = 0, width = 256, height = 192 }),
     0,
-    "redrawing a settled transition without a tick changes no pixel"
+    "redrawing a settled call without a tick changes no pixel"
   )
   controller:dispose()
 end

@@ -334,6 +334,9 @@ local function recordingResources()
   function graphics.quad()
     return {}
   end
+  function graphics.newQuad()
+    return {}
+  end
   function graphics.setColor(r, g, b, a)
     current = { r, g, b, a }
   end
@@ -341,7 +344,9 @@ local function recordingResources()
     log[#log + 1] = { op = "rect", mode = mode, color = { current[1], current[2], current[3], current[4] }, x = x, y = y, width = width, height = height }
   end
   local function stubLease(path)
-    local lease = { image = {}, path = path }
+    local lease = { image = { getDimensions = function()
+      return 256, 16
+    end }, path = path }
     function lease:draw(_, x, y)
       log[#log + 1] = { op = "image", path = path, x = x, y = y }
     end
@@ -448,6 +453,38 @@ local function findChoiceMenu(view)
   return nil
 end
 
+-- Derives the owed-choice menu exclusion rect in pixels from the
+-- published callMenu frame (tiles, the same geometry the renderer
+-- draws): the shared list-menu frame spans x..x+width+1 tiles across
+-- and y..y+height-1 tiles down. Nil while no choice menu is owed, so
+-- non-menu states keep full-strictness counters.
+---@param view table
+---@return table? pixel rect with x0/y0/x1/y1 fields
+local function choiceMenuRect(view)
+  local menu = findChoiceMenu(view)
+  if type(menu) ~= "table" then
+    return nil
+  end
+  local frame = (menu --[[@as table<string, unknown>]]).frame
+  if type(frame) ~= "table" then
+    return nil
+  end
+  local tile = frame --[[@as table<string, integer>]]
+  assert(
+    type(tile.x) == "number"
+      and type(tile.y) == "number"
+      and type(tile.width) == "number"
+      and type(tile.height) == "number",
+    "the owed-choice menu carries its window frame in tiles"
+  )
+  return {
+    x0 = tile.x * 8,
+    y0 = tile.y * 8,
+    x1 = (tile.x + tile.width + 2) * 8,
+    y1 = (tile.y + tile.height) * 8,
+  }
+end
+
 -- (1) during a live call the information pane carries the live contact
 -- list while the controls pane carries the call speech/name (the
 -- MAIN_3/SUB_2 split). The information render must paint the list rows
@@ -489,12 +526,31 @@ function T.tests.live_call_splits_list_and_speech_across_panes()
 
   local controlsResources, controlsLog = recordingResources()
   PokegearPhoneRenderer.draw(controlsResources, view, content)
+  -- Call-window fills and the tile-drawn owed-choice menu are the
+  -- call surface's own paints: list-leak detection excludes fills
+  -- and palette text inside the speech/name windows and the
+  -- published choice-menu frame, so a contact-list leak (which
+  -- paints every row and both text columns outside those rects)
+  -- still trips both counters.
+  local menuArea = choiceMenuRect(view)
   local controlsListRows, controlsListText, controlsCallText = 0, 0, 0
   for _, record in ipairs(controlsLog) do
-    if record.op == "rect" and record.mode == "fill" and rectHits(record, LIST_BAND) then
+    if
+      record.op == "rect"
+      and record.mode == "fill"
+      and rectHits(record, LIST_BAND)
+      and not rectHits(record, SPEECH_RECT)
+      and not rectHits(record, NAME_RECT)
+      and (menuArea == nil or not rectHits(record, menuArea)) then
       controlsListRows = controlsListRows + 1
     end
-    if record.op == "text" and record.plain == false then
+    if
+      record.op == "text"
+      and record.plain == false
+      and not textHits(record, SPEECH_RECT)
+      and not textHits(record, NAME_RECT)
+      and (menuArea == nil or not textHits(record, menuArea))
+    then
       controlsListText = controlsListText + 1
     end
     if record.op == "text" and (textHits(record, SPEECH_RECT) or textHits(record, NAME_RECT)) then
