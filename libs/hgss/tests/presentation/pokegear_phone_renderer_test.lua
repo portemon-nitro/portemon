@@ -225,6 +225,37 @@ end
 
 -- Without a composed name font the list keeps its single-renderer path:
 -- both cells print through the borrowed text renderer.
+-- The information pane prints the live list with the same font split:
+-- names through the borrowed name font, classes through the class
+-- renderer, falling back to the single renderer when no name font
+-- is composed.
+function T.information_list_keeps_the_source_font_split()
+  local graphics = recordingGraphics()
+  local nameText = recordingText()
+  local classText = recordingText()
+  local content = {
+    skin = 0,
+    sprites = {},
+    listPalette = distinctPalette(),
+    callList = {
+      rows = { { absolute = 0, slot = 0, contact = "mom", label = "NAME-1", class = "CLASS-1" } },
+      selected = 0,
+      scrollOffset = 0,
+      firstBgColor = 0,
+      manual = false,
+      total = 1,
+      cursorVisible = false,
+    },
+  }
+  PokegearPhoneRenderer.drawInformation(
+    { graphics = graphics, images = {}, textRenderer = classText, phoneNameTextRenderer = nameText },
+    content
+  )
+  Assert.equal(#nameText._calls, 1, "the information name prints once through the name font")
+  Assert.equal(recordedLine(nameText._calls[1]), "NAME-1", "the information name prints the contact name")
+  Assert.equal(#classText._calls, 1, "the information class prints once through the class font")
+end
+
 function T.list_cells_share_the_borrowed_renderer_without_a_name_font()
   local graphics = recordingGraphics()
   local shared = recordingText()

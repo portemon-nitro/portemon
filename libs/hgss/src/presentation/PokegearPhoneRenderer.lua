@@ -661,12 +661,19 @@ end
 -- Draws the phone's information pane: the static upper plane with the
 -- live contact list from the plan payload, so the MAIN_3 rows stay
 -- visible while the controls pane carries the call speech and name.
+-- Names print through the borrowed name-font renderer exactly like the
+-- browsing list, falling back to the class renderer when the host
+-- composes no name font.
 ---@param resources table<string, unknown> borrowed host collaborators
 ---@param content table<string, unknown> the plan payload with resolved paths
 function PokegearPhoneRenderer.drawInformation(resources, content)
   local graphics = assert(resources.graphics, "the phone render borrows its host graphics") --[[@as love.graphics]]
   local images = assert(resources.images, "the phone render borrows its prepared images") --[[@as table<string, unknown>]]
   local text = resources.textRenderer
+  local nameText = resources.phoneNameTextRenderer
+  if nameText == nil then
+    nameText = text
+  end
   if type(content.upper) == "string" then
     local lease = assert(images[content.upper], "the phone render needs its prepared upper image")
     graphics.setColor(1, 1, 1, 1)
@@ -677,7 +684,7 @@ function PokegearPhoneRenderer.drawInformation(resources, content)
     drawList(
       graphics,
       images,
-      text --[[@as table<string, unknown>?]],
+      nameText --[[@as table<string, unknown>?]],
       text --[[@as table<string, unknown>?]],
       callList --[[@as table<string, unknown>]],
       assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
