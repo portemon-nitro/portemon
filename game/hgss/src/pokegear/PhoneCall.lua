@@ -4,8 +4,9 @@
 -- hangup are separate stages; each source effect runs once when its
 -- original stage is entered, never per poll and never as a blanket
 -- commit at hangup. Dialing plays the source dial tone twice and waits
--- on the effect-player completion boundary; hangup plays the source
--- hangup tone and post-increments its timers. Views are detached closed
+-- on the effect-player completion boundary; hangup stages PHONE_OFF
+-- once and then SELECT into BOX03 clicks with staged lines and
+-- post-increments its timers. Views are detached closed
 -- unions; stale handles fail without touching a new call. Cancellation
 -- releases the lease but never rolls back committed effects. Pure
 -- session logic over injected owners: no love dependency.
@@ -36,12 +37,22 @@ PhoneCall.DIRECTIONS = { incoming = true, outgoing = true }
 PhoneCall.KINDS = { ordinary = true, rematch = true, predefined = true, incoming = true }
 
 -- Source call tones: the connecting stage dials PHONE0 twice and waits
--- on that sequence, and hangup plays PHONE_OFF. The generic audio
--- boundary resolves them by symbol exactly like every other effect;
+-- on that sequence; hangup stages PHONE_OFF once and then SELECT into
+-- BOX03 clicks behind its staged lines (PhoneCall_HangupTone plus
+-- PokegearPhone_PrintHangUpClicks). The generic audio boundary
+-- resolves them by symbol exactly like every other effect;
 -- bespoke playDialing/playHangup fakes keep working where the generic
--- play entry is absent.
+-- play entry is absent, and toneless fakes stay silent.
 PhoneCall.DIAL_SEQUENCE = "SEQ_SE_GS_PHONE0"
 PhoneCall.HANGUP_SEQUENCE = "SEQ_SE_GS_PHONE_OFF"
+PhoneCall.HANGUP_CLICK_FIRST_SEQUENCE = "SEQ_SE_DP_SELECT"
+PhoneCall.HANGUP_CLICK_SEQUENCE = "SEQ_SE_DP_BOX03"
+-- Staged hangup click count behind the source timers: the PHONE_OFF
+-- line plus three click lines (SELECT once, BOX03 twice), matching
+-- the source four-line click staging. One staged click advances per
+-- fixed step; the host boundary owns frame pacing while the engine
+-- owns stage order, tones, and lines.
+PhoneCall.HANGUP_STAGES = 4
 
 -- World facts frozen at the call boundary for program dispatch. Only
 -- these keys are snapshotted; a long call never switches its greeting
@@ -550,18 +561,83 @@ function PhoneCall:_failCall(session, failure)
   error(failure, 0)
 end
 
+---@param index integer staged hangup click index
+---@return table<string, unknown> the staged hangup speech line
+local function hangupLine(index)
+  return { text = "hangup-click-" .. index }
+end
+
+---@param sequence string
+function PhoneCall:_playSequence(sequence)
+  local audio = self._audio
+  if type(audio) ~= "table" then
+    return
+  end
+  if sequence == PhoneCall.HANGUP_SEQUENCE and audio.playHangup ~= nil then
+    local hangup = audio.playHangup --[[@as fun(self: table<string, unknown>)]]
+    hangup(audio)
+    return
+  end
+  if type(audio.play) == "function" then
+    local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
+    play(audio, sequence)
+  end
+end
+
+-- Enters the staged hangup: plays the source PHONE_OFF tone once,
+-- publishes the first staged click line, and holds the hangingUp stage
+-- across fixed steps until the click staging completes. Exactly-once
+-- per call: later cancel edges while hanging up never restart it.
+---@param session table<string, unknown>
+function PhoneCall:_beginHangup(session)
+  if session.stage == "hangingUp" then
+    return
+  end
+  session.stage = "hangingUp"
+  enterStage(session)
+  session.hangupIndex = 0
+  session.lines = { hangupLine(0) }
+  session.textPage = 1
+  self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
+end
+
+-- Advances one staged hangup click: plays the stage tone once,
+-- publishes its staged line, and completes the call once the final
+-- stage runs. Repeated advances never duplicate a tone.
+---@param session table<string, unknown>
+---@return boolean completed
+function PhoneCall:_advanceHangup(session)
+  local index = session.hangupIndex --[[@as integer]]
+  if index == nil then
+    self:_beginHangup(session)
+    return false
+  end
+  if
+    index + 1 >= PhoneCall.HANGUP_STAGES --[[@as integer]]
+  then
+    self:_finishHangup(session)
+    return true
+  end
+  local nextIndex = index + 1
+  session.hangupIndex = nextIndex
+  enterStage(session)
+  session.lines = { hangupLine(nextIndex) }
+  session.textPage = 1
+  if nextIndex == 1 then
+    self:_playSequence(PhoneCall.HANGUP_CLICK_FIRST_SEQUENCE)
+  else
+    self:_playSequence(PhoneCall.HANGUP_CLICK_SEQUENCE)
+  end
+  return false
+end
+
+-- Completes the staged hangup with its terminal result. The hangup
+-- tones already played once across the click staging; completion
+-- never replays them.
 ---@param session table<string, unknown>
 function PhoneCall:_finishHangup(session)
   if session.hangupDone ~= true then
     session.hangupDone = true
-    local audio = self._audio
-    if type(audio) == "table" and audio.playHangup ~= nil then
-      local hangup = audio.playHangup --[[@as fun(self: table<string, unknown>)]]
-      hangup(audio)
-    elseif type(audio) == "table" and type(audio.play) == "function" then
-      local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
-      play(audio, PhoneCall.HANGUP_SEQUENCE)
-    end
     local count = self._hangups
     self._hangups = count + 1
   end
@@ -599,8 +675,7 @@ function PhoneCall:step(handle, input)
     return
   end
   if edges.cancel == true then
-    enterStage(session)
-    self:_finishHangup(session)
+    self:_beginHangup(session)
     return
   end
   local forced = edges.confirm == true or edges.advance == true
@@ -674,8 +749,8 @@ function PhoneCall:step(handle, input)
         enterStage(session)
         return
       end
-      session.stage = "hangingUp"
-      enterStage(session)
+      self:_beginHangup(session)
+      return
     elseif stage == "choice" then
       if edges.choice == nil then
         return
@@ -688,10 +763,10 @@ function PhoneCall:step(handle, input)
       if outcome == "waiting" then
         return
       end
-      session.stage = "hangingUp"
-      enterStage(session)
+      self:_beginHangup(session)
+      return
     elseif stage == "hangingUp" then
-      self:_finishHangup(session)
+      self:_advanceHangup(session)
       return
     else
       return
@@ -745,6 +820,11 @@ function PhoneCall:view(handle)
     assert(session.owner == "mother", "only the savings choice waits for input")
     shown.choices = { MotherPhoneProgram.CHOICES[1], MotherPhoneProgram.CHOICES[2] }
   end
+  if stage == "hangingUp" then
+    shown.hangup = {
+      index = session.hangupIndex --[[@as integer]] or 0,
+    }
+  end
   if session.result ~= nil then
     local result = session.result --[[@as table<string, unknown>]]
     local detached = {}
@@ -773,9 +853,12 @@ function PhoneCall:result(handle)
   return detached
 end
 
--- Hangs the call up. A live call plays the hangup tone and completes
--- with its staged result; a terminal call keeps its committed effects
--- and result untouched.
+-- Hangs the call up. A live call completes at once behind the single
+-- source hangup tone and reports its terminal result immediately
+-- with its committed effects kept; the staged click path belongs to
+-- the stepped conversation end, which stays observable across fixed
+-- ticks. A terminal call keeps its committed effects and result
+-- untouched. A cancelled-then-released handle never replays tones.
 ---@param handle { id: string }
 ---@param reason string hangup reason
 function PhoneCall:cancel(handle, reason)
@@ -783,21 +866,19 @@ function PhoneCall:cancel(handle, reason)
   assert(type(reason) == "string" and reason ~= "", "phone cancellation names its reason")
   if session.terminal == true then
     if session.hangupDone ~= true and session.stage ~= "noSignal" then
-      local audio = self._audio
-      if type(audio) == "table" and audio.playHangup ~= nil then
-        local hangup = audio.playHangup --[[@as fun(self: table<string, unknown>)]]
-        hangup(audio)
-      elseif type(audio) == "table" and type(audio.play) == "function" then
-        local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
-        play(audio, PhoneCall.HANGUP_SEQUENCE)
-      end
+      self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
       session.hangupDone = true
       local count = self._hangups
       self._hangups = count + 1
     end
     return
   end
+  -- A cancel that lands mid-staging never replays the hangup tone:
+  -- the staged begin already played it once.
   enterStage(session)
+  if session.stage ~= "hangingUp" then
+    self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
+  end
   self:_finishHangup(session)
 end
 
@@ -808,7 +889,7 @@ end
 function PhoneCall:release(handle)
   local session = checkHandle(self, handle)
   if session.terminal ~= true then
-    enterStage(session)
+    self:_beginHangup(session)
     self:_finishHangup(session)
   end
   self._calls[
