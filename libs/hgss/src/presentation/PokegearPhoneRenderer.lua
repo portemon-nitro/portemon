@@ -1,15 +1,14 @@
 -- The phone card's exact list/call composition: the six-row scroll
 -- viewport with its source slot offsets, the name/class text cells in
 -- their own palette combinations, the selected-row corner frame, the
--- scroll strip and manual-move arrows, the context window, the call speech/name windows driven by the
--- conversation view, and the 240x48 panel cells behind the list-to-call
--- transition. Consumes the controller's detached view and the plan's
--- resolved image paths only; allocates no images while drawing. Name
--- cells print through the borrowed name-font renderer, class cells
--- through the borrowed class renderer, and
--- every fill stays explicit so a skin, selection, or panel change is a
--- pixel change. Pure presentation: no love globals, the host graphics
--- namespace arrives through resources.
+-- scroll strip and manual-move arrows, the context window, and the call
+-- speech/name windows driven by the conversation view. Consumes the
+-- controller's detached view and the plan's resolved image paths only;
+-- allocates no images while drawing. Name cells print through the
+-- borrowed name-font renderer, class cells through the borrowed class
+-- renderer, and every fill stays explicit so a skin or selection change
+-- is a pixel change. Pure presentation: no love globals, the host
+-- graphics namespace arrives through resources.
 
 ---@class PokegearPhoneRenderer
 local PokegearPhoneRenderer = {}
@@ -103,15 +102,18 @@ local ROW_COLORS = {
   },
 }
 
-local PANEL_RECT = { x = 8, y = 0, width = 240, height = 48 }
-local PANEL_CLOSED_CELL = 10
-local PANEL_OPEN_CELL = 11
-
--- Choice row pitch inside the call speech window.
-local MENU_ROW_HEIGHT = 14
-
 local NAME_WINDOW = { x = 32, y = 128, width = 72, height = 16 }
 local SPEECH_WINDOW = { x = 16, y = 152, width = 216, height = 32 }
+
+-- Source call-window colors on SUB_2 (sWindowTemplates windows[0,1],
+-- palette 1): the source clears both pixel buffers to fill 0 and prints
+-- every call line in text color (1,2,0), so both fills and both text
+-- cells resolve through the window palette, never invented triples or
+-- plain text.
+local CALL_WINDOW_FILL = 0
+local CALL_TEXT_FOREGROUND = 1
+local CALL_TEXT_SHADOW = 2
+local CALL_TEXT_BACKGROUND = 0
 
 -- Procedural fallback fills behind the resolved planes: one hue per skin
 -- so a skin swap repaints from the plan content alone, plus the call and
@@ -125,9 +127,6 @@ local SKIN_FILLS = {
   { 0.24, 0.14, 0.24 },
   { 0.12, 0.24, 0.26 },
 }
-local SELECTED_NAME_FILL = { 0.12, 0.28, 0.62 }
-local PANEL_CLOSED_FILL = { 0.30, 0.30, 0.34 }
-local PANEL_OPEN_FILL = { 0.88, 0.88, 0.92 }
 
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
@@ -155,19 +154,6 @@ end
 local function fillRect(graphics, color, x, y, width, height)
   graphics.setColor(color[1], color[2], color[3], 1)
   graphics.rectangle("fill", x, y, width, height)
-end
-
----@param text table<string, unknown>?
----@param line string
----@param x number
----@param y number
-local function drawLine(text, line, x, y)
-  if
-    text ~= nil and type((text --[[@as table<string, unknown>]]).drawText) == "function"
-  then
-    local drawText = (text --[[@as table<string, unknown>]]).drawText --[[@as fun(self: table, line: string, x: number, y: number)]]
-    drawText(text, line, x, y)
-  end
 end
 
 ---@param palette table<integer, table<string, number>> sixteen list colors, one-based
@@ -485,78 +471,52 @@ local function drawMenu(graphics, images, text, menu, content)
   })
 end
 
--- Draws the call speech/name windows from the conversation projection:
--- the resolved caller name and current source text page.
+-- Draws the call speech/name windows from the conversation projection
+-- through the window palette: the resolved caller name and the current
+-- source text page. Owed choices never paint here; they ride the
+-- shared list-menu frame beside the windows.
 ---@param graphics love.graphics
----@param text table<string, unknown>?
+---@param nameText table<string, unknown>? the borrowed font-4 name renderer
+---@param text table<string, unknown>? the borrowed message renderer
 ---@param call table<string, unknown>
-local function drawCall(graphics, text, call)
-  fillRect(graphics, { 0.10, 0.10, 0.14 }, NAME_WINDOW.x, NAME_WINDOW.y, NAME_WINDOW.width, NAME_WINDOW.height)
-  graphics.setColor(1, 1, 1, 1)
-  drawLine(text, tostring(call.name), NAME_WINDOW.x + 4, NAME_WINDOW.y + 2)
-  fillRect(graphics, { 0.94, 0.94, 0.96 }, SPEECH_WINDOW.x, SPEECH_WINDOW.y, SPEECH_WINDOW.width, SPEECH_WINDOW.height)
-  graphics.setColor(0.08, 0.08, 0.10, 1)
-  graphics.rectangle(
-    "line",
-    SPEECH_WINDOW.x + 0.5,
-    SPEECH_WINDOW.y + 0.5,
-    SPEECH_WINDOW.width - 1,
-    SPEECH_WINDOW.height - 1
+---@param palette table<integer, table<string, number>> sixteen window colors, one-based
+local function drawCall(graphics, nameText, text, call, palette)
+  fillPalette(graphics, palette, CALL_WINDOW_FILL, NAME_WINDOW.x, NAME_WINDOW.y, NAME_WINDOW.width, NAME_WINDOW.height)
+  drawPaletteText(
+    nameText,
+    palette,
+    tostring(call.name),
+    NAME_WINDOW.x + 4,
+    NAME_WINDOW.y + 2,
+    CALL_TEXT_FOREGROUND,
+    CALL_TEXT_SHADOW,
+    CALL_TEXT_BACKGROUND
   )
-  graphics.setColor(1, 1, 1, 1)
+  fillPalette(
+    graphics,
+    palette,
+    CALL_WINDOW_FILL,
+    SPEECH_WINDOW.x,
+    SPEECH_WINDOW.y,
+    SPEECH_WINDOW.width,
+    SPEECH_WINDOW.height
+  )
   local pages = call.lines
   local page = call.page
   local body = ""
   if type(pages) == "table" and type(page) == "number" and type(pages[page]) == "table" then
     body = tostring(pages[page].text)
   end
-  drawLine(text, body, SPEECH_WINDOW.x + 4, SPEECH_WINDOW.y + 4)
-  local choices = call.choices
-  if type(choices) == "table" then
-    local cursor = call.choiceCursor
-    if type(cursor) ~= "number" then
-      cursor = 0
-    end
-    local list = choices --[[@as string[] ]]
-    for index, choice in ipairs(list) do
-      local y = SPEECH_WINDOW.y + SPEECH_WINDOW.height - (#list - index + 1) * MENU_ROW_HEIGHT
-      if index - 1 == cursor then
-        fillRect(graphics, SELECTED_NAME_FILL, SPEECH_WINDOW.x + 4, y - 2, 96, MENU_ROW_HEIGHT)
-      end
-      graphics.setColor(1, 1, 1, 1)
-      drawLine(text, tostring(choice), SPEECH_WINDOW.x + 8, y)
-    end
-  end
-  graphics.setColor(1, 1, 1, 1)
-end
-
--- Draws the 240x48 panel cell behind the list-to-call transition: the
--- resolved closed/open plane when prepared, otherwise the matching
--- fallback fill so the 1+6+1 swap always paints.
----@param graphics love.graphics
----@param images table<string, unknown>
----@param cell integer
----@param content table<string, unknown>
-local function drawPanel(graphics, images, cell, content)
-  local path = nil
-  if cell == PANEL_OPEN_CELL then
-    path = content.panelOpen --[[@as string?]]
-  else
-    path = content.panelClosed --[[@as string?]]
-  end
-  local drawn = false
-  if path ~= nil then
-    local lease = images[path]
-    if lease ~= nil then
-      graphics.setColor(1, 1, 1, 1)
-      lease:draw(graphics, PANEL_RECT.x, PANEL_RECT.y)
-      drawn = true
-    end
-  end
-  if not drawn then
-    local fill = cell == PANEL_OPEN_CELL and PANEL_OPEN_FILL or PANEL_CLOSED_FILL
-    fillRect(graphics, fill, PANEL_RECT.x, PANEL_RECT.y, PANEL_RECT.width, PANEL_RECT.height)
-  end
+  drawPaletteText(
+    text,
+    palette,
+    body,
+    SPEECH_WINDOW.x + 4,
+    SPEECH_WINDOW.y + 4,
+    CALL_TEXT_FOREGROUND,
+    CALL_TEXT_SHADOW,
+    CALL_TEXT_BACKGROUND
+  )
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -604,10 +564,12 @@ local function drawTooltip(graphics, text, palette, line)
 end
 
 -- Draws the published phone surface with borrowed collaborators: the
--- per-skin background plane, the clipped contact list with its tooltip
--- strip, the context window while one is open, the conversation windows
--- while a call is live, and the panel cell across the transition. Reads
--- only; draws deterministically with no allocation.
+-- per-skin background plane with the clipped contact list, its tooltip
+-- strip, and the context window while browsing; the conversation
+-- windows with the owed-choice list menu while a call is live. The
+-- live call never repaints the contact list here: the list rides the
+-- information-pane render path. Reads only; draws deterministically
+-- with no allocation.
 ---@param resources table<string, unknown> borrowed host collaborators
 ---@param view table<string, unknown> the detached phone view
 ---@param content table<string, unknown> the plan payload with resolved paths
@@ -642,42 +604,47 @@ function PokegearPhoneRenderer.draw(resources, view, content)
     fillRect(graphics --[[@as love.graphics]], background, 0, 0, SURFACE_WIDTH, SURFACE_HEIGHT)
   end
   local list = view.list
-  if type(list) == "table" then
-    drawList(
-      graphics --[[@as love.graphics]],
-      images --[[@as table<string, unknown>]],
-      nameText --[[@as table<string, unknown>?]],
-      text --[[@as table<string, unknown>?]],
-      list --[[@as table<string, unknown>]],
-      assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
-      assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
-    )
-  end
-  local panel = view.panel
-  if type(panel) == "table" then
-    local cell = (panel --[[@as table<string, unknown>]]).cell
-    if type(cell) ~= "number" then
-      cell = PANEL_CLOSED_CELL
-    end
-    drawPanel(graphics --[[@as love.graphics]], images --[[@as table<string, unknown>]], cell, content)
-  end
-  local menu = view.contextMenu
-  if type(menu) == "table" then
-    drawMenu(
-      graphics --[[@as love.graphics]],
-      images --[[@as table<string, unknown>]],
-      text --[[@as table<string, unknown>?]],
-      menu --[[@as table<string, unknown>]],
-      content
-    )
-  end
   local call = view.call
   if type(call) == "table" then
     drawCall(
       graphics --[[@as love.graphics]],
+      nameText --[[@as table<string, unknown>?]],
       text --[[@as table<string, unknown>?]],
-      call --[[@as table<string, unknown>]]
+      call --[[@as table<string, unknown>]],
+      assert(content.listPalette, "the phone plan resolves its window palette") --[[@as table]]
     )
+    local callMenu = view.callMenu
+    if type(callMenu) == "table" then
+      drawMenu(
+        graphics --[[@as love.graphics]],
+        images --[[@as table<string, unknown>]],
+        text --[[@as table<string, unknown>?]],
+        callMenu --[[@as table<string, unknown>]],
+        content
+      )
+    end
+  else
+    if type(list) == "table" then
+      drawList(
+        graphics --[[@as love.graphics]],
+        images --[[@as table<string, unknown>]],
+        nameText --[[@as table<string, unknown>?]],
+        text --[[@as table<string, unknown>?]],
+        list --[[@as table<string, unknown>]],
+        assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
+        assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
+      )
+    end
+    local menu = view.contextMenu
+    if type(menu) == "table" then
+      drawMenu(
+        graphics --[[@as love.graphics]],
+        images --[[@as table<string, unknown>]],
+        text --[[@as table<string, unknown>?]],
+        menu --[[@as table<string, unknown>]],
+        content
+      )
+    end
   end
   local tooltip = view.tooltip
   if type(tooltip) == "string" and tooltip ~= "" and type(list) == "table" then
@@ -691,17 +658,33 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   (graphics --[[@as love.graphics]]).setColor(1, 1, 1, 1)
 end
 
--- Draws the phone's upper plane into the information pane.
+-- Draws the phone's information pane: the static upper plane with the
+-- live contact list from the plan payload, so the MAIN_3 rows stay
+-- visible while the controls pane carries the call speech and name.
 ---@param resources table<string, unknown> borrowed host collaborators
 ---@param content table<string, unknown> the plan payload with resolved paths
 function PokegearPhoneRenderer.drawInformation(resources, content)
   local graphics = assert(resources.graphics, "the phone render borrows its host graphics") --[[@as love.graphics]]
   local images = assert(resources.images, "the phone render borrows its prepared images") --[[@as table<string, unknown>]]
+  local text = resources.textRenderer
   if type(content.upper) == "string" then
     local lease = assert(images[content.upper], "the phone render needs its prepared upper image")
     graphics.setColor(1, 1, 1, 1)
     lease:draw(graphics, 0, 0)
   end
+  local callList = content.callList
+  if type(callList) == "table" then
+    drawList(
+      graphics,
+      images,
+      text --[[@as table<string, unknown>?]],
+      text --[[@as table<string, unknown>?]],
+      callList --[[@as table<string, unknown>]],
+      assert(content.sprites, "the phone plan resolves its sprite set") --[[@as table<string, unknown>]],
+      assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
+    )
+  end
+  graphics.setColor(1, 1, 1, 1)
 end
 
 return PokegearPhoneRenderer
