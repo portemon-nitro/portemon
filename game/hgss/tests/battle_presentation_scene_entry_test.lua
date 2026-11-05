@@ -805,6 +805,23 @@ function T.interaction_menu_samples_source_bg_and_obj_planes_without_the_lower_w
       objImage.raster.pixels:byte(3),
       objImage.raster.pixels:byte(4),
     }, { objRgb.r, objRgb.g, objRgb.b, 255 }, "menu source pixels sample SUB_OBJ words")
+    -- While the encounter reveal holds the controls disabled, only the
+    -- backdrop plane draws: the button tilemaps stay hidden, matching the
+    -- retail SUB_2-only disabled composition.
+    local disabledGraphics = FakeGraphics.new({})
+    rig.screen:draw({ graphics = disabledGraphics })
+    Assert.isTrue(
+      #drawsOf(disabledGraphics.draws, objImage.handle) >= 1,
+      "the disabled lower menu keeps its backdrop visible"
+    )
+    Assert.equal(
+      #drawsOf(disabledGraphics.draws, bgImage.handle),
+      0,
+      "the disabled lower menu hides its button tilemaps"
+    )
+    -- With the command menu open, both planes pass through the
+    -- production BattleMenuPresenter.
+    rig.screen._mode = "command"
     local graphics = FakeGraphics.new({})
     rig.screen:draw({ graphics = graphics })
     Assert.isTrue(#drawsOf(graphics.draws, bgImage.handle) >= 1, "the real lower menu draws the sampled SUB_BG image")

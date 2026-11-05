@@ -2,10 +2,13 @@
 -- frozen launch factor scales accepted wall time and the catch-up budget
 -- once, while every inner iteration still runs the complete ordered source
 -- quantum. Screens, transitions, children, and delivery drains receive one
--- source quantum per call, never a scaled delta. Real audio completion,
--- asset readiness, and human choices stay truthful barriers; the world
--- clock and play time keep wall time; no credit crosses a launch, failure,
--- disposal, or ownership handoff.
+-- source quantum per call, never a scaled delta. The envelope never invents
+-- poll outcomes: a voice still needs its real start before any completion
+-- answer. Screens collapse voice-completion holds above single rate so every
+-- wait follows the launch factor, while asset readiness and human choices
+-- stay truthful barriers at any speed; the world clock and play time keep
+-- wall time; no credit crosses a launch, failure, disposal, or ownership
+-- handoff.
 
 local Assert = require("tests.support.Assert")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
@@ -90,8 +93,9 @@ end
 ---@param host table recording host double behind the launch
 ---@param speed integer? frozen launch factor, nil for the historical default
 ---@param launchId string? launch identity, defaulting to the probe launch
+---@param extra table<string, unknown>? additional descriptor fields behind the probe launch
 ---@return table pending port behind the admitted launch
-local function admit(envelope, host, speed, launchId)
+local function admit(envelope, host, speed, launchId, extra)
   local descriptor = {
     launchId = launchId or "speed-probe",
     kind = "wild",
@@ -100,6 +104,11 @@ local function admit(envelope, host, speed, launchId)
   }
   if speed ~= nil then
     descriptor.battleSpeed = speed
+  end
+  if type(extra) == "table" then
+    for key, value in pairs(extra) do
+      descriptor[key] = value
+    end
   end
   local port = envelope:factory()(descriptor)
   Assert.notNil(port, "admission hands back its pending port")
@@ -180,6 +189,51 @@ function T.speed_factor_runs_that_many_complete_quanta_per_accepted_tick()
     if not ok then
       error(failure, 0)
     end
+  end
+end
+
+-- The encounter transition always plays at single rate: the speedup begins
+-- once the native transition completes, so the snake effect and its cover
+-- read identically at any launch factor and the battle starts from its
+-- first quantum instead of skipping ahead behind opaque cover.
+function T.speed_runs_the_transition_era_at_single_rate_before_handoff()
+  local envelope = newEnvelope()
+  local host = newHost("covering")
+  local port = admit(envelope, host, 4, "speed-transition-era", {
+    musicRole = "wild-battle",
+    audio = {
+      playMusic = function()
+        return true
+      end,
+    },
+  })
+  local screen = newScreen()
+  envelope._screen = screen
+  local phase = "running"
+  envelope._transition = {
+    status = function()
+      return { phase = phase }
+    end,
+    stepSourceTick = function()
+    end,
+    frame = function()
+      return {}
+    end,
+    dispose = function()
+    end,
+  }
+  local ok, failure = xpcall(function()
+    envelope:updateFixed(FRAME)
+    Assert.equal(host.advances, 1, "the running transition era advances once per accepted tick")
+    Assert.equal(screen.updates, 1, "the screen steps once per accepted tick under the running transition")
+    phase = "complete"
+    envelope:updateFixed(FRAME)
+    Assert.equal(host.advances, 5, "the completed transition hands off to four quanta per tick")
+    Assert.equal(screen.updates, 5, "the screen steps four quanta per tick after the transition")
+  end, debug.traceback)
+  closeRig(port, envelope)
+  if not ok then
+    error(failure, 0)
   end
 end
 

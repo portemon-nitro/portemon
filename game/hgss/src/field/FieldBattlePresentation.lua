@@ -4203,6 +4203,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     musicRole = self._musicRole,
     musicBanks = self:_audioBanks(),
     textSpeed = launchSpeed,
+    battleSpeed = self._battleSpeed or 1,
     battleScene = launchScene,
     submit = submit,
     onResultMusic = onResultMusic,
@@ -4336,6 +4337,12 @@ function FieldBattlePresentation:cancelPointerCapture()
   end
 end
 
+-- Reports whether the accepted tick published the first native battle visual.
+---@return boolean true once the accepted tick published the first native battle visual
+function FieldBattlePresentation:isEntrySourceVisible()
+  return self._entrySourceVisible == true
+end
+
 -- Draws the live battle through its screen owner with outer draw
 -- resources. The sole painting bridge: fixed updates never draw, so
 -- callers pass their own host graphics on every visible frame. Never
@@ -4344,6 +4351,9 @@ end
 ---@param resources table<string, unknown> outer draw resources carrying host graphics
 ---@return boolean drawn true while a live screen drew
 function FieldBattlePresentation:drawBattle(resources)
+  if not self._entrySourceVisible then
+    return false
+  end
   local screen = self:liveScreen()
   if screen == nil then
     return false
@@ -4696,10 +4706,16 @@ function FieldBattlePresentation:updateFixed(dt)
   -- once, to the credit and the catch-up budget together; every inner
   -- iteration still runs the complete ordered quantum at exactly one
   -- source quantum, so children and delivery drains step per call instead
-  -- of receiving one scaled delta.
+  -- of receiving one scaled delta. The encounter transition always plays
+  -- at single rate: the speedup begins once the native transition
+  -- completes, so the effect reads identically at any launch factor.
   local factor = 1
   if self._launchId ~= nil then
     factor = self._battleSpeed or 1
+    local transition = self._transition
+    if transition ~= nil and transition:status().phase ~= "complete" then
+      factor = 1
+    end
   end
   self._accumulator = self._accumulator + dt * factor
   local steps = 0
