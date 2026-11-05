@@ -1158,4 +1158,77 @@ function T.tests.phone_calls_dial_and_hang_up_through_indexed_sequences()
   Assert.equal(played[#played], "SEQ_SE_GS_PHONE_OFF", "hanging up plays the source hangup tone")
 end
 
+-- The list background flag mirrors the source scroll state: it opens
+-- cleared, flips once per scrolled row, and survives view-only sorts,
+-- so the alternating bands follow slots instead of contacts.
+function T.tests.phone_list_background_flag_tracks_scrolled_rows()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: list bands cannot track scrolling"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  for index = 4, 8 do
+    local key = "custom.extra-" .. index
+    manifest.catalog.contacts[#manifest.catalog.contacts + 1] =
+      { key = key, family = "kurt", sortWeight = 30 + index }
+    manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = key
+  end
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the extended companion catalog must validate")
+  assert(record ~= nil, "extended catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 7 }, { catalog = record.catalog })
+  for _, key in ipairs(manifest.catalog.contactOrder) do
+    state:registerContact(key)
+  end
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = { greeting = "custom.greeting" },
+    world = worldFixture(),
+    random = PokegearRandom.new(7),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  local function settle()
+    for _ = 1, 4 do
+      controller:updateFixed({})
+    end
+  end
+  Assert.equal(
+    controller:status().view.list.firstBgColor,
+    0,
+    "the list background flag opens cleared"
+  )
+  for _ = 1, 5 do
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+    settle()
+  end
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  local sliding = controller:status().view.list
+  Assert.equal(sliding.scrollOffset, 1, "six downs scroll one row")
+  Assert.equal(sliding.slide.from, 0, "the sliding strip anchors at its scroll start")
+  Assert.equal(
+    sliding.firstBgColor,
+    0,
+    "the background flag waits while the bitmap shifts"
+  )
+  settle()
+  Assert.equal(
+    controller:status().view.list.firstBgColor,
+    1,
+    "one scrolled row flips the background flag at settle"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  settle()
+  Assert.equal(
+    controller:status().view.list.firstBgColor,
+    0,
+    "two scrolled rows restore the background flag"
+  )
+  controller:dispose()
+end
+
 return T

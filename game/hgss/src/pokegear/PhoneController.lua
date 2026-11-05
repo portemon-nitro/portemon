@@ -31,6 +31,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _records table<string, table<string, unknown>> catalog contact records by key
 ---@field _selected integer zero-based absolute selection
 ---@field _scroll integer zero-based top offset into the order
+---@field _firstBgColor integer the source alternating-row flag, flipped once per scrolled row
 ---@field _scrollAnim { from: integer, to: integer, elapsed: integer }? the running viewport slide
 ---@field _mode string list, menu, sort, manual, or call
 ---@field _tooltips string[]? the owned context labels for normal browse entry
@@ -285,6 +286,7 @@ function PhoneController.new(opts)
     _records = {},
     _selected = 0,
     _scroll = 0,
+    _firstBgColor = 0,
     _scrollAnim = nil,
     _mode = "list",
     _entryOwner = opts.request == nil and "menu" or "host",
@@ -384,6 +386,7 @@ function PhoneController:_readCatalog()
   self._order = order
   self._selected = 0
   self._scroll = 0
+  self._firstBgColor = 0
 end
 
 ---@param contact string
@@ -408,7 +411,12 @@ end
 -- it: scrolling follows the cursor but never exceeds its bound. A
 -- viewport shift starts its source slide right away: three eight-pixel
 -- ticks per row, so a page chains six singles while the end state lands
--- at once and input gates until the slide settles.
+-- at once and input gates until the slide settles. The alternating-row
+-- flag flips once per scrolled row when the slide settles, exactly like
+-- the source single-step chain: a six-row page preserves it while a
+-- single row inverts it. Flipping at settle time keeps the moving
+-- bitmap on its old colors through every transient tick, the way the
+-- source ScrollWindow shift does.
 ---@param selected integer
 function PhoneController:_moveSelection(selected)
   local count = #self._order
@@ -1076,6 +1084,12 @@ function PhoneController:updateFixed(uiInput)
   if anim ~= nil then
     anim.elapsed = anim.elapsed + 1
     if anim.elapsed >= 3 * math.abs(anim.to - anim.from) then
+      -- The scroll-flip lands with the settled viewport: the source
+      -- paints its incoming row before flipping, so every transient tick
+      -- keeps the old colors while the shift runs.
+      if math.abs(anim.to - anim.from) % 2 == 1 then
+        self._firstBgColor = 1 - self._firstBgColor --[[@as integer]]
+      end
       self._scrollAnim = nil
     end
   end
@@ -1105,6 +1119,7 @@ function PhoneController:_listView()
       rows = rows,
       selected = self._selected,
       scrollOffset = self._scroll,
+      firstBgColor = self._firstBgColor,
       manual = self._mode == "manual",
       total = count,
       -- The source frames the selected row with four corner sprites and
@@ -1155,12 +1170,16 @@ function PhoneController:_listView()
   end
   local slide = nil
   if elapsed < 3 * math.abs(to - from) then
-    slide = { first = first, direction = direction, pixels = pixels }
+    -- `from` anchors transient colors: the source shifts its window
+    -- bitmap, so a moving row keeps the colors it had when the scroll
+    -- started instead of repainting under the live slot.
+    slide = { first = first, from = from, direction = direction, pixels = pixels }
   end
   return {
     rows = rows,
     selected = self._selected,
     scrollOffset = self._scroll,
+    firstBgColor = self._firstBgColor,
     slide = slide,
     manual = self._mode == "manual",
     total = count,
