@@ -234,6 +234,9 @@ local function makeComposition(attachMail)
       return true
     end,
     cancelIconPreparation = function() end,
+    textPolicyForOpen = function()
+      return { interGlyphDelay = 1, glyphBudget = 1, abAcceleration = true }
+    end,
     contextSources = function()
       return { badges = BadgeSets.all(), mapSymbol = "MAP_TEST", fieldUse = {}, avatarMode = "walking" }
     end,

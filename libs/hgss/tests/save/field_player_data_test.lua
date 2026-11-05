@@ -53,6 +53,9 @@ local function record(overrides)
       textFrame = 0,
       textSpeed = "mid",
       battleStyle = "shift",
+      battleScene = true,
+      soundMode = "stereo",
+      battleSpeed = 1,
     },
   }
   for key, item in pairs(overrides or {}) do
@@ -121,7 +124,11 @@ function T.unknown_keys_are_discarded_by_canonicalization()
     "badges,gender,money,name,nationalDex,rivalName,runningShoes,runningShoesLock,trainerId",
     "canonicalization must drop profile.transientThing"
   )
-  Assert.keySet(validated.options, "battleStyle,textFrame,textSpeed", "canonicalization must drop options.futureThing")
+  Assert.keySet(
+    validated.options,
+    "battleScene,battleSpeed,battleStyle,soundMode,textFrame,textSpeed",
+    "canonicalization must drop options.futureThing"
+  )
 end
 
 function T.running_shoes_flags_must_be_booleans()

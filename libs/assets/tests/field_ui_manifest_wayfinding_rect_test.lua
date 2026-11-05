@@ -273,7 +273,7 @@ local function baseManifest()
       placement = { x = 0, y = 80, width = 256, height = 112 },
     },
   }
-  return FieldUiFixture.addNamingSemantics(manifest)
+  return FieldUiFixture.addOptionsContract(FieldUiFixture.addNamingSemantics(manifest))
 end
 
 function T.final_surface_48x32_is_accepted_under_the_current_schema()

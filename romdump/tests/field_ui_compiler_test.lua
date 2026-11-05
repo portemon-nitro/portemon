@@ -19,6 +19,7 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local G2dBankFixture = require("tests.support.G2dBankFixture")
 
 local cellBank, animBank = G2dBankFixture.cellBank, G2dBankFixture.animBank
@@ -517,6 +518,189 @@ local function fixture(opts)
     prompt[member + 1] = screenDataWH(48, 32, entries)
   end
 
+  -- The synthetic options archive: the curated member selection the
+  -- producer compiles (palettes 0/1 with the MAIN base palette 2 and the
+  -- SUB base palette 3, chars 4/5/6 with the MAIN base char 7 and the SUB
+  -- base char 8, cells 9/10/11/12, animations 13/14/15/16, the 256x256
+  -- MAIN base screen 17, the 256x56 MAIN selection-layer screen 18, and
+  -- the 256x256 SUB base screen 19). The pill cell
+  -- bank carries both sizes (32x16 small, 64x32 wide); every animation
+  -- bank carries the sequence count its set selects (two pill sizes, idle
+  -- plus pressed arrows, four footer states). Member numbers are the
+  -- producer-side selection (this is the romdump-side test).
+  local options = {}
+  for i = 1, 20 do
+    options[i] = string.rep("\0", 4)
+  end
+  options[1] = palette16()
+  options[2] = palette16()
+  options[3] = palette16()
+  options[4] = palette16()
+  -- Forty tiles per sprite char bank: the 64x32 wide pill spans 32
+  -- consecutive tiles from its base under 1D mapping.
+  options[5] = charData(40)
+  options[6] = charData(40)
+  options[7] = charData(40)
+  -- The MAIN base char carries the audited row-plate backing tiles (the
+  -- mid-band flats and the edge tiles) plus the scrubbed face tile, so
+  -- the plate builder meets observed source material, never padding.
+  options[8] = charData(40)
+  options[9] = charData(8, 5)
+  options[10] = cellBank({
+    { { x = 0, y = 0, tile = 0, pal = 0, shape = 1, size = 2 } },
+    { { x = 0, y = 0, tile = 1, pal = 0, shape = 1, size = 3 } },
+  })
+  options[11] = cellBank({ { { x = 0, y = 0, tile = 0, pal = 0, shape = 0, size = 1 } } })
+  options[12] = cellBank({ { { x = 0, y = 0, tile = 0, pal = 0, shape = 0, size = 1 } } })
+  options[13] = cellBank({ { { x = 0, y = 0, tile = 0, pal = 0, shape = 1, size = 2 } } })
+  options[14] = animBank({ 0, 1 })
+  options[15] = animBank({ 0, { { cell = 0, duration = 8 }, { cell = 0, duration = 4 } } })
+  options[16] = animBank({ 0, { { cell = 0, duration = 8 }, { cell = 0, duration = 4 } } })
+  options[17] = animBank({
+    0,
+    0,
+    { { cell = 0, duration = 8 }, { cell = 0, duration = 4 } },
+    { { cell = 0, duration = 8 }, { cell = 0, duration = 4 } },
+  })
+  do
+    -- Member 17 is the 256x256 MAIN base: tile rows 3..8 carry the two
+    -- native 24px row bands the plate builder scrubs. Interior columns
+    -- 1..11 repeat the audited backing tile of their tile row, columns
+    -- 14..30 carry control-face tiles that differ from it, and the edge
+    -- columns keep their caps, so the filler, uniformity, and scrub gates
+    -- all meet observed source material in the synthetic archive too.
+    local entries = {}
+    for i = 1, 1024 do
+      entries[i] = 1
+    end
+    local fillers = { [3] = 24, [4] = 12, [5] = 24, [6] = 32, [7] = 38, [8] = 32 }
+    for tileRow = 3, 8 do
+      for column = 1, 11 do
+        entries[tileRow * 32 + column + 1] = fillers[tileRow]
+      end
+      for column = 14, 30 do
+        entries[tileRow * 32 + column + 1] = 39
+      end
+    end
+    options[18] = screenDataWH(256, 256, entries)
+  end
+  do
+    -- Member 18 is the separate MAIN selection layer: the audited
+    -- 256x56 tilemap (never an opaque base), so the strip crop has a
+    -- real source map to sample.
+    local entries = {}
+    for i = 1, 224 do
+      entries[i] = 1
+    end
+    options[19] = screenDataWH(256, 56, entries)
+  end
+  do
+    local entries = {}
+    for i = 1, 1024 do
+      entries[i] = 1
+    end
+    options[20] = screenDataWH(256, 256, entries)
+  end
+
+  -- The synthetic resource-list archive: members 20/21/22/23 carry one
+  -- row per curated member naming the options archive, member 77 carries
+  -- the four resource-set rows plus its sentinel. Row and sentinel shapes
+  -- mirror the production list format the compiler cross-checks.
+  local function optionsListRow(member, resourceId)
+    return u32(72) .. u32(member) .. u32(0) .. u32(resourceId) .. u32(0) .. u32(0)
+  end
+  local function optionsResourceList(members)
+    local parts = { u32(0) }
+    for resourceId, member in ipairs(members) do
+      parts[#parts + 1] = optionsListRow(member, resourceId - 1)
+    end
+    for _ = 1, 6 do
+      parts[#parts + 1] = u32(0xFFFFFFFE)
+    end
+    return table.concat(parts)
+  end
+  local function optionsHeaderRow(set)
+    return u32(set[1])
+      .. u32(set[2])
+      .. u32(set[3])
+      .. u32(set[4])
+      .. u32(0xFFFFFFFF)
+      .. u32(0xFFFFFFFF)
+      .. u32(0)
+      .. u32(0)
+  end
+  local resdat = {}
+  for i = 1, 78 do
+    resdat[i] = string.rep("\0", 4)
+  end
+  resdat[21] = optionsResourceList({ 13, 14, 15, 16 })
+  resdat[22] = optionsResourceList({ 9, 10, 11, 12 })
+  resdat[23] = optionsResourceList({ 4, 5, 6 })
+  resdat[24] = optionsResourceList({ 0, 1 })
+  resdat[78] = optionsHeaderRow({ 0, 0, 0, 0 })
+    .. optionsHeaderRow({ 1, 0, 1, 1 })
+    .. optionsHeaderRow({ 1, 0, 2, 2 })
+    .. optionsHeaderRow({ 2, 1, 3, 3 })
+    .. string.rep(u32(0xFFFFFFFE), 8)
+
+  -- The synthetic options message bank: sixty slots spelling the curated
+  -- label roles with mapped glyphs, so the compiler lowers every required
+  -- label without retail message bytes.
+  local messageUnits = { [" "] = 0x01DE }
+  for digit = 0, 9 do
+    messageUnits[tostring(digit)] = 0x0121 + digit
+  end
+  for letter = 0, 25 do
+    messageUnits[string.char(65 + letter)] = 0x012B + letter
+  end
+  local function optionMessage(text)
+    local units = {}
+    for i = 1, #text do
+      local unit = messageUnits[text:sub(i, i)]
+      assert(unit ~= nil, "synthetic option labels stay inside the mapped glyphs")
+      units[#units + 1] = unit
+    end
+    units[#units + 1] = 0xFFFF
+    return units
+  end
+  local namedSlots = {
+    [0] = "OPTIONS",
+    [1] = "TEXT SPEED",
+    [2] = "BATTLE SCENE",
+    [3] = "BATTLE STYLE",
+    [4] = "SOUND MODE",
+    [6] = "FRAME",
+    [7] = "CONFIRM",
+    [8] = "QUIT",
+    [10] = "MID",
+    [11] = "FAST",
+    [12] = "ON",
+    [13] = "OFF",
+    [14] = "SHIFT",
+    [15] = "SET",
+    [16] = "STEREO",
+    [17] = "MONO",
+  }
+  local bankUnits = {}
+  for slot = 0, 59 do
+    local text = namedSlots[slot]
+    if text == nil then
+      if slot >= 20 and slot < 40 then
+        text = "TYPE " .. (slot - 20 + 1)
+      elseif slot >= 40 then
+        text = "PREVIEW " .. (slot - 40 + 1)
+      else
+        text = "UNUSED"
+      end
+    end
+    bankUnits[slot + 1] = optionMessage(text)
+  end
+  local optionMessages = {}
+  for i = 1, 46 do
+    optionMessages[i] = string.rep("\0", 4)
+  end
+  optionMessages[46] = FieldMessageBank.encodeForTests(bankUnits, 0x1234)
+
   local function narcFile(alias)
     local members
     if alias == "start_menu" then
@@ -541,6 +725,12 @@ local function fixture(opts)
       members = namein
     elseif alias == "touch_subwindow" then
       members = prompt
+    elseif alias == "NARC_a_0_7_2" then
+      members = options
+    elseif alias == "NARC_data_resdat" then
+      members = resdat
+    elseif alias == "NARC_msgdata_msg" then
+      members = optionMessages
     else
       members = card
     end
@@ -580,6 +770,27 @@ local function fixture(opts)
       symbol = "NARC_a_9_9_9",
       alias = "touch_subwindow",
     },
+    NARC_a_0_7_2 = {
+      fileId = 16,
+      narcId = 72,
+      path = "a/0/7/2",
+      symbol = "NARC_a_0_7_2",
+      alias = "NARC_a_0_7_2",
+    },
+    NARC_data_resdat = {
+      fileId = 17,
+      narcId = 73,
+      path = "a/1/7/5",
+      symbol = "NARC_data_resdat",
+      alias = "NARC_data_resdat",
+    },
+    NARC_msgdata_msg = {
+      fileId = 18,
+      narcId = 74,
+      path = "a/0/2/7",
+      symbol = "NARC_msgdata_msg",
+      alias = "NARC_msgdata_msg",
+    },
   }
   local romFs = {
     resolvedNarc = function(_, alias)
@@ -603,6 +814,15 @@ local function fixture(opts)
       end
       if fileId == 15 then
         return narcFile("touch_subwindow")
+      end
+      if fileId == 16 then
+        return narcFile("NARC_a_0_7_2")
+      end
+      if fileId == 17 then
+        return narcFile("NARC_data_resdat")
+      end
+      if fileId == 18 then
+        return narcFile("NARC_msgdata_msg")
       end
       Assert.fail("unexpected read " .. tostring(fileId))
     end,

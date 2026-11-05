@@ -49,6 +49,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
+---@field audioPreferences table<string, function>? borrowed app-wide volume port for the Options factory
 ---@field derivedAssets table<string, function>? semantic derived-asset host
 ---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root provider for live script mart stock
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game entry; the runtime claims its loader and queue
@@ -119,6 +120,7 @@ end
 ---@field _battleWindows table<string, unknown>? borrowed battle window services
 ---@field _battlePresentationBinding integer? factory binding identity behind the envelope
 ---@field presentationResources FieldPresentationResources?
+---@field _optionsPresentationFactory (fun(): table<string, unknown>)? installed field-lifetime options factory identity
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
 ---@field _celebiBlur table<string, unknown>? lazy field-scene capture presenter
 ---@field _hoOhAppearanceRenderer table<string, unknown>? lazy Bell Tower cutscene model presenter
@@ -185,6 +187,7 @@ function FieldState.new(game, options)
     preparedEntry = options.preparedEntry,
     saveStore = options.saveStore,
     audioOutput = options.audioOutput,
+    audioPreferences = options.audioPreferences,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
     displayContext = displayContext,
@@ -224,6 +227,18 @@ function FieldState.new(game, options)
   }, FieldState)
   local ok, err = pcall(function()
     self.presentationResources = FieldPresentationResources.new(runtime --[[@as FieldPresentationResourcesRuntime]])
+    -- The concrete field-lifetime options presentation factory: the
+    -- catalogue consumes it per open without holding GPU owners itself.
+    -- The closure owns no resources; a still-open child is disposed by the
+    -- application host before the presentation resources below release.
+    do
+      local resources = assert(self.presentationResources, "the options factory needs its resources")
+      local function factory()
+        return resources:openOptionsPresentation()
+      end
+      runtime.optionsPresentationFactory = factory
+      self._optionsPresentationFactory = factory
+    end
     local width, height = love.graphics.getDimensions()
     -- The initial presentation-geometry sync: pointer input must work
     -- before the user has resized the window, so the runtime computes and
@@ -329,6 +344,17 @@ end
 
 function FieldState:update(dt)
   self.runtime:update(dt)
+  -- Publish committed player-frame changes before presentation: the owned
+  -- resources follow the live options with scalar defaults, so the next
+  -- draw uses the confirmed frame without rebuilding the field.
+  local presentation = self.presentationResources
+  local runtime = self.runtime
+  if presentation ~= nil and runtime ~= nil and runtime.playerData ~= nil then
+    local options = runtime.playerData.options
+    if options ~= nil then
+      presentation:syncPlayerOptions(options)
+    end
+  end
   -- The presented battle envelope runs its fixed cover, screen, and
   -- launch driver on the same accepted time, exactly once. The runtime
   -- never advances presented launches through its own update as well.
@@ -2302,6 +2328,16 @@ function FieldState:dispose()
   if self.actorPresentation then
     self.actorPresentation:dispose()
     self.actorPresentation = nil
+  end
+  -- The options presentation binding clears only while still current:
+  -- a replaced factory belongs to its own owner. The application host
+  -- above already disposed any open child, so no per-open port outlives
+  -- the resources below.
+  if self.runtime ~= nil and self._optionsPresentationFactory ~= nil then
+    if self.runtime.optionsPresentationFactory == self._optionsPresentationFactory then
+      self.runtime.optionsPresentationFactory = nil
+    end
+    self._optionsPresentationFactory = nil
   end
   -- Borrowers release before their owner: pooled renderer and provider
   -- leases return to the session image owner while it is still alive,

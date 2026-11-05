@@ -503,6 +503,102 @@ end
 -- Detached opening record for one launch: the launch identity and kind
 -- beside the current dynamic facts. The frontend opens from this
 -- record, never from the live session.
+---@param snapshot table<string, unknown> detached battle snapshot under projection and preview
+---@param options table<string, unknown> detached decision options carrying the shift actor
+---@param scenario table<string, unknown>? detached scenario carrying the environment and trainer and player facts
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@return table<string, unknown> detached cosmetic preview for the held offer
+function BattlePresentationModel.shiftPreview(snapshot, options, scenario, deps)
+  assert(type(snapshot) == "table", "shift previews read their snapshot")
+  assert(type(options) == "table", "shift previews read their request options")
+  local actors = options.actors --[[@as table<integer, unknown>?]]
+  assert(type(actors) == "table", "shift previews address the shift actor")
+  local incoming = nil
+  for _, actor in
+    ipairs(actors --[[@as table<integer, unknown>]])
+  do
+    if
+      type(actor) == "table" and (actor --[[@as table<string, unknown>]]).kind == "shift"
+    then
+      incoming = (actor --[[@as table<string, unknown>]]).incoming
+    end
+  end
+  if type(incoming) ~= "number" then
+    error("shift previews name their frozen arrival", 0)
+  end
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>?]]
+  assert(type(combatants) == "table", "shift previews read their combatants")
+  local arrival = combatants[
+    incoming --[[@as integer]]
+  ] --[[@as table<string, unknown>?]]
+  if type(arrival) ~= "table" or type(arrival.mon) ~= "table" then
+    error("shift previews never choose a different incoming mon", 0)
+  end
+  local mon = arrival.mon --[[@as table<string, unknown>]]
+  if type(mon.species) ~= "string" then
+    error("shift previews name their frozen arrival", 0)
+  end
+  local species = speciesRecord(deps, mon.species --[[@as string]])
+  local preview = {
+    incomingName = visibleName(deps, mon, species),
+    incomingSpecies = mon.species,
+  } --[[@as table<string, unknown>]]
+  assert(
+    type(preview.incomingName) == "string" and preview.incomingName ~= "",
+    "shift previews name their frozen arrival"
+  )
+  if type(scenario) ~= "table" then
+    error("shift previews never invent trainer metadata", 0)
+  end
+  local foeParticipant = arrival.participant --[[@as integer]]
+  local foes = {} ---@type table<integer, integer>
+  for _, entry in
+    ipairs(scenario.participants --[[@as table<integer, unknown>]])
+  do
+    if
+      type(entry) == "table" and (entry --[[@as table<string, unknown>]]).side == 2
+    then
+      foes[#foes + 1] = (entry --[[@as table<string, unknown>]]).id --[[@as integer]]
+    end
+  end
+  local trainerIndex = nil
+  for index, participantId in ipairs(foes) do
+    if participantId == foeParticipant then
+      trainerIndex = index
+    end
+  end
+  if trainerIndex == nil then
+    error("shift previews never invent trainer metadata", 0)
+  end
+  local trainers = scenario.trainer --[[@as table<integer, unknown>?]]
+  if type(trainers) ~= "table" then
+    error("shift previews never invent trainer metadata", 0)
+  end
+  local trainer = trainers[
+    trainerIndex --[[@as integer]]
+  ] --[[@as table<string, unknown>?]]
+  if type(trainer) ~= "table" then
+    error("shift previews never invent trainer metadata", 0)
+  end
+  local classKey = trainer.class
+  if type(classKey) == "number" then
+    classKey = BattleMusicSelection.trainerClassName(classKey)
+  end
+  if type(classKey) ~= "string" or classKey == "" then
+    error("shift previews never invent trainer metadata", 0)
+  end
+  if type(trainer.name) ~= "string" or trainer.name == "" then
+    error("shift previews never invent trainer metadata", 0)
+  end
+  preview.trainerClassKey = classKey
+  preview.trainerName = trainer.name
+  local playerContext = scenario.playerContext --[[@as table<string, unknown>?]]
+  if type(playerContext) == "table" and type(playerContext.trainerName) == "string" then
+    preview.playerName = playerContext.trainerName
+  end
+  return preview
+end
+
 ---@param snapshot table<string, unknown> detached battle snapshot under projection
 ---@param scenario table<string, unknown>? detached scenario carrying the environment
 ---@param deps table<string, unknown>? model dependencies carrying the mon catalog

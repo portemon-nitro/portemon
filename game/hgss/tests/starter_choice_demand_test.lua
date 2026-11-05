@@ -388,6 +388,7 @@ local function readyHeadlessCache()
   uiManifest.reference = { width = 256, height = 192 }
   FieldUiFixture.addStartMenuIconContract(uiManifest)
   FieldUiFixture.addNamingSemantics(uiManifest)
+  FieldUiFixture.addOptionsContract(uiManifest)
   Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), "the field-UI fixture validates")
   cacheFs:writeLua(FieldUiAssetCache.manifestPath(), uiManifest)
   cacheFs:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())

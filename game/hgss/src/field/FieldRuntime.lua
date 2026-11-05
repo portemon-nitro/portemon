@@ -534,6 +534,7 @@ end
 ---@field scriptHosts table<string, unknown>? deterministic host boundaries for script effects
 ---@field dayNight (fun(): string)? deterministic day/night source for the field-music policy
 ---@field audioOutput table<string, unknown>? { audio: table<string, unknown>, sound: table<string, unknown> } audio-output host namespaces for the LÖVE sink (defaults to love.audio + love.sound)
+---@field audioPreferences table<string, function>? borrowed app-wide volume port (never serialized)
 ---@field derivedAssets table<string, function>? semantic derived-asset host
 ---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field weatherClock table<string, unknown>? injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
@@ -645,6 +646,8 @@ end
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field dayNight fun(): string?
 ---@field audioOutput table<string, unknown>?
+---@field audioPreferences table<string, function>? borrowed app-wide volume port for the Options factory
+---@field optionsPresentationFactory (fun(): FieldPresentationResources.OptionsPresentationPort)? field-lifetime per-open options presentation factory, installed by the presented state and absent in headless runtimes
 ---@field derivedAssets table<string, function>?
 ---@field audio FieldAudioController? production-composed audio service (absent when only a recording script adapter is injected, without an audio-output host)
 ---@field mapMusicDayNight (fun(): string)? production-composed day/night band source for the map-music lookup (present whenever the production composition exists)
@@ -1719,14 +1722,16 @@ function FieldRuntime:_composeMart(boot)
       audio:play(sequence)
     end
   end
-  local textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed)
+  -- Mart children resolve their text cadence per open from the live
+  -- player options, so a confirmed option lands on the next buy/sell
+  -- without recomposing inventory, scripts, or audio.
   local function createBuy(session)
     return MartScreenState.new({
       session = session,
       manifest = MartCache.loadManifest(boot.cacheFs),
       uiManifest = self.uiManifest,
       fontDef = boot.fontDef,
-      textPolicy = textPolicy,
+      textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
       effect = playSequence,
       measureDisplay = measureDisplay,
       frameIndex = self.playerData.options.textFrame,
@@ -1736,7 +1741,7 @@ function FieldRuntime:_composeMart(boot)
   local function createSell(session)
     return BagScreenState.new({
       effect = playSequence,
-      textPolicy = textPolicy,
+      textPolicy = TextSpeedPolicy.forSpeed(self.playerData.options.textSpeed),
       service = self.bagService,
       cursor = self.bagCursor,
       manifest = BagCache.loadManifest(boot.cacheFs),
@@ -1956,6 +1961,7 @@ function FieldRuntime.new(game, options)
     scriptHosts = options.scriptHosts,
     dayNight = options.dayNight,
     audioOutput = options.audioOutput,
+    audioPreferences = options.audioPreferences,
     derivedAssets = options.derivedAssets,
     saveStore = options.saveStore,
     savePublished = false,

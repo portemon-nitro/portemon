@@ -1202,4 +1202,478 @@ function FieldUiFixture.writeNamingSemanticsImages(cache)
   end
 end
 
+-- Synthetic option-control chrome: one single-row atlas whose frames are
+-- flat distinct colors, so a painter that samples the wrong state, rect, or
+-- offset renders a visibly wrong color. Geometry stays small and exercises
+-- signed selected-pill offsets, two-frame pressed sequences, and the union
+-- bounds the runtime contract requires; it is not a copy of retail pixels.
+-- The image lives at a fixture-specific path so the pool worker never
+-- confuses it with the production chrome bytes.
+FieldUiFixture.OPTIONS_CHROME_PATH = "assets/generated/field/ui/test-options-chrome.png"
+
+local OPTIONS_FRAME_COLORS = {
+  smallUnselected = { 200, 40, 40 },
+  smallSelected = { 40, 200, 40 },
+  wideUnselected = { 40, 40, 200 },
+  wideSelected = { 200, 200, 40 },
+  leftIdle = { 200, 40, 200 },
+  leftPressed1 = { 40, 200, 200 },
+  leftPressed2 = { 150, 80, 20 },
+  rightIdle = { 80, 20, 150 },
+  rightPressed1 = { 20, 150, 80 },
+  rightPressed2 = { 150, 20, 80 },
+  actionNormal = { 90, 90, 200 },
+  actionFocused = { 200, 90, 90 },
+  actionPressed1 = { 90, 200, 90 },
+  actionPressed2 = { 200, 200, 90 },
+  actionPressedFocused1 = { 90, 90, 90 },
+  actionPressedFocused2 = { 220, 140, 60 },
+}
+
+-- Fixed single-row frame order: every frame id maps to one flat color
+-- above and one atlas rect below. Sizes mirror the audited source
+-- bounding dims the generated contract locks: small faces 48x32, wide
+-- faces 64x32, arrows 32x32, footer actions 64x24. Fresh tables per call
+-- so tests never share mutable manifest state.
+---@return table frames ordered atlas frames { id, width, height }
+local function optionsFrameOrder()
+  return {
+    { id = "smallUnselected", width = 48, height = 32 },
+    { id = "smallSelected", width = 48, height = 32 },
+    { id = "wideUnselected", width = 64, height = 32 },
+    { id = "wideSelected", width = 64, height = 32 },
+    { id = "leftIdle", width = 32, height = 32 },
+    { id = "leftPressed1", width = 32, height = 32 },
+    { id = "leftPressed2", width = 32, height = 32 },
+    { id = "rightIdle", width = 32, height = 32 },
+    { id = "rightPressed1", width = 32, height = 32 },
+    { id = "rightPressed2", width = 32, height = 32 },
+    { id = "actionNormal", width = 64, height = 24 },
+    { id = "actionFocused", width = 64, height = 24 },
+    { id = "actionPressed1", width = 64, height = 24 },
+    { id = "actionPressed2", width = 64, height = 24 },
+    { id = "actionPressedFocused1", width = 64, height = 24 },
+    { id = "actionPressedFocused2", width = 64, height = 24 },
+  }
+end
+
+---@return table<string, table> atlas rects by frame id
+---@return integer atlasWidth
+---@return integer atlasHeight
+function FieldUiFixture.optionsAtlasLayout()
+  local rects = {}
+  local x = 0
+  local height = 0
+  for _, frame in ipairs(optionsFrameOrder()) do
+    rects[frame.id] = { x = x, y = 0, width = frame.width, height = frame.height }
+    x = x + frame.width
+    height = math.max(height, frame.height)
+  end
+  return rects, x, height
+end
+
+---@return string rgba bytes for the synthetic chrome atlas, row-major
+function FieldUiFixture.optionsChromeBytes()
+  local rects, width, height = FieldUiFixture.optionsAtlasLayout()
+  local rows = {}
+  for _ = 0, height - 1 do
+    for _, frame in ipairs(optionsFrameOrder()) do
+      local color = assert(OPTIONS_FRAME_COLORS[frame.id], "every atlas frame carries its flat color")
+      rows[#rows + 1] = string.rep(string.char(color[1], color[2], color[3], 255), frame.width)
+    end
+  end
+  return PngWriter.encode(width, height, table.concat(rows))
+end
+
+-- The three synthetic option backdrops: one flat distinct opaque color each
+-- (header blue, footer ember, preview amber), so sampling the wrong role is
+-- a pixel mismatch. The header and footer are the 256x24 shell bands; the
+-- preview keeps the full 256x192 field screen.
+FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH = "assets/generated/field/ui/options-header-background.png"
+FieldUiFixture.OPTIONS_FOOTER_BACKGROUND_PATH = "assets/generated/field/ui/options-footer-background.png"
+FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH = "assets/generated/field/ui/options-preview-background.png"
+FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH = "assets/generated/field/ui/options-selection-overlay.png"
+
+-- The generated selected-row strip key. The runtime asset index owns the
+-- canonical constant once the producer publishes the strip; the fixture
+-- falls back to the same literal so synthetic manifests keep validating
+-- through the contract change without repeating the raw string per call.
+---@return string
+function FieldUiFixture.optionsSelectionOverlayKey()
+  return FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY or "hgss.options.selection_overlay"
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsSelectionOverlayBorderColor()
+  return 140, 40, 180
+end
+
+-- The synthetic selected-row indicator: a 256x30 surface with a distinct
+-- opaque border box and a transparent center, so a painter that samples
+-- the wrong role, drops alpha, crops the border edges, or fills
+-- palette-zero opaque is a pixel mismatch. Mirrors the generated
+-- contract dimensions exactly: the full native border box, centered on
+-- the 24px row with a 3px overhang top and bottom and 4px side bars.
+---@return string png
+function FieldUiFixture.optionsSelectionOverlayBytes()
+  local r, g, b = FieldUiFixture.optionsSelectionOverlayBorderColor()
+  local rows = {}
+  for y = 0, 29 do
+    for x = 0, 255 do
+      if x < 4 or x >= 252 or y < 3 or y >= 27 then
+        rows[#rows + 1] = string.char(r, g, b, 255)
+      else
+        rows[#rows + 1] = string.char(0, 0, 0, 0)
+      end
+    end
+  end
+  return PngWriter.encode(256, 30, table.concat(rows))
+end
+
+-- Synthetic slider thumb: the 32x24 bag quantity-decrement pressed visual
+-- the option sliders borrow at draw time. One flat color distinct from
+-- every chrome frame, so a painter sampling the wrong art is a pixel
+-- mismatch. Dimensions match the generated bag asset exactly.
+FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH = "assets/generated/field/ui/test-options-slider-thumb.png"
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsSliderThumbColor()
+  return 20, 170, 190
+end
+
+---@return string png
+function FieldUiFixture.optionsSliderThumbBytes()
+  local r, g, b = FieldUiFixture.optionsSliderThumbColor()
+  return PngWriter.encode(32, 24, string.rep(string.char(r, g, b, 255), 32 * 24))
+end
+
+---@return { image: string, width: integer, height: integer }
+function FieldUiFixture.optionsSliderThumbVisual()
+  return { image = FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH, width = 32, height = 24 }
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsHeaderBackgroundColor()
+  return 24, 110, 190
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsFooterBackgroundColor()
+  return 190, 80, 30
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsPreviewBackgroundColor()
+  return 210, 110, 30
+end
+
+---@return string png
+function FieldUiFixture.optionsHeaderBackgroundBytes()
+  local r, g, b = FieldUiFixture.optionsHeaderBackgroundColor()
+  return PngWriter.encode(256, 24, string.rep(string.char(r, g, b, 255), 256 * 24))
+end
+
+---@return string png
+function FieldUiFixture.optionsFooterBackgroundBytes()
+  local r, g, b = FieldUiFixture.optionsFooterBackgroundColor()
+  return PngWriter.encode(256, 24, string.rep(string.char(r, g, b, 255), 256 * 24))
+end
+
+---@return string png
+function FieldUiFixture.optionsPreviewBackgroundBytes()
+  local r, g, b = FieldUiFixture.optionsPreviewBackgroundColor()
+  return PngWriter.encode(256, 192, string.rep(string.char(r, g, b, 255), 256 * 192))
+end
+
+---@param manifest table
+---@return table manifest
+function FieldUiFixture.addOptionsContract(manifest)
+  local rects, width, height = FieldUiFixture.optionsAtlasLayout()
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] = {
+    image = FieldUiFixture.OPTIONS_CHROME_PATH,
+    width = width,
+    height = height,
+  }
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND] = {
+    image = FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH,
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND] = {
+    image = FieldUiFixture.OPTIONS_FOOTER_BACKGROUND_PATH,
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND] = {
+    image = FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH,
+    width = 256,
+    height = 192,
+  }
+  manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()] = {
+    image = FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH,
+    width = 256,
+    height = 30,
+  }
+  local image = FieldUiFixture.OPTIONS_CHROME_PATH
+  -- Synthetic semantic labels: shape-minimal {text, tokens} records that
+  -- satisfy the generated contract without copying retail message bytes.
+  local function label(text)
+    return { text = text, tokens = { { kind = "glyph", text = text } } }
+  end
+  local labels = {
+    title = label("OPTIONS"),
+    textSpeed = label("TEXT SPEED"),
+    battleScene = label("BATTLE SCENE"),
+    battleStyle = label("BATTLE STYLE"),
+    soundMode = label("SOUND"),
+    textFrame = label("FRAME"),
+    confirm = label("CONFIRM"),
+    quit = label("QUIT"),
+    textSpeedValues = { mid = label("MID"), fast = label("FAST") },
+    battleSceneValues = { on = label("ON"), off = label("OFF") },
+    battleStyleValues = { shift = label("SHIFT"), set = label("SET") },
+    soundModeValues = { stereo = label("STEREO"), mono = label("MONO") },
+    frameValues = {},
+  }
+  for slot = 0, 19 do
+    labels.frameValues[slot] = label("TYPE " .. (slot + 1))
+  end
+  local framePreviewText = {}
+  for slot = 0, 19 do
+    framePreviewText[slot] = label("WINDOW TYPE " .. (slot + 1))
+  end
+  local function frame(id, offset, ticks)
+    return {
+      image = image,
+      atlas = rects[id],
+      offset = offset or { x = 0, y = 0 },
+      ticks = ticks or 1,
+    }
+  end
+  local function sequence(frames, loop, bounds)
+    return { frames = frames, loop = loop, bounds = bounds }
+  end
+  manifest.options = {
+    version = 7,
+    backdrops = {
+      header = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND,
+      footer = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND,
+      preview = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND,
+    },
+    selectionOverlay = FieldUiFixture.optionsSelectionOverlayKey(),
+    labels = labels,
+    animationTickSeconds = 1 / 60,
+    framePreviewText = framePreviewText,
+    choices = {
+      small = {
+        unselected = sequence({ frame("smallUnselected") }, true, { x = 0, y = 0, width = 48, height = 32 }),
+        selected = sequence(
+          { frame("smallSelected", { x = -8, y = 0 }) },
+          true,
+          { x = -8, y = 0, width = 48, height = 32 }
+        ),
+      },
+      wide = {
+        unselected = sequence({ frame("wideUnselected") }, true, { x = 0, y = 0, width = 64, height = 32 }),
+        selected = sequence(
+          { frame("wideSelected", { x = -8, y = 0 }) },
+          true,
+          { x = -8, y = 0, width = 64, height = 32 }
+        ),
+      },
+    },
+    arrows = {
+      left = {
+        idle = sequence({ frame("leftIdle") }, true, { x = 0, y = 0, width = 32, height = 32 }),
+        pressed = sequence(
+          { frame("leftPressed1", nil, 3), frame("leftPressed2", nil, 5) },
+          false,
+          { x = 0, y = 0, width = 32, height = 32 }
+        ),
+      },
+      right = {
+        idle = sequence({ frame("rightIdle") }, true, { x = 0, y = 0, width = 32, height = 32 }),
+        pressed = sequence(
+          { frame("rightPressed1", nil, 3), frame("rightPressed2", nil, 5) },
+          false,
+          { x = 0, y = 0, width = 32, height = 32 }
+        ),
+      },
+    },
+    actions = {
+      normal = sequence({ frame("actionNormal") }, false, { x = 0, y = 0, width = 64, height = 24 }),
+      focused = sequence({ frame("actionFocused") }, false, { x = 0, y = 0, width = 64, height = 24 }),
+      pressed = sequence(
+        { frame("actionPressed1", nil, 2), frame("actionPressed2", nil, 4) },
+        false,
+        { x = 0, y = 0, width = 64, height = 24 }
+      ),
+      pressedFocused = sequence(
+        { frame("actionPressedFocused1", nil, 2), frame("actionPressedFocused2", nil, 4) },
+        false,
+        { x = 0, y = 0, width = 64, height = 24 }
+      ),
+    },
+  }
+  -- The slider thumb is the bag quantity-decrement pressed visual, borrowed
+  -- through the bag manifest at draw time: the synthetic section carries
+  -- no cursor art of its own.
+  FieldUiFixture.addRowBackings(manifest)
+  return manifest
+end
+
+---@param cache CacheFs
+function FieldUiFixture.writeOptionsPngs(cache)
+  cache:write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
+  cache:write(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH, FieldUiFixture.optionsHeaderBackgroundBytes())
+  cache:write(FieldUiFixture.OPTIONS_FOOTER_BACKGROUND_PATH, FieldUiFixture.optionsFooterBackgroundBytes())
+  cache:write(FieldUiFixture.OPTIONS_PREVIEW_BACKGROUND_PATH, FieldUiFixture.optionsPreviewBackgroundBytes())
+  cache:write(FieldUiFixture.OPTIONS_SELECTION_OVERLAY_PATH, FieldUiFixture.optionsSelectionOverlayBytes())
+  cache:write(FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH, FieldUiFixture.optionsSliderThumbBytes())
+  FieldUiFixture.writeRowPlatePngs(cache)
+end
+
+-- Synthetic source-derived row plates for the scrolling list: one fully
+-- opaque 256-wide surface per parity plus the 72px compound frame item.
+-- Flat distinct colors keep a wrong-role or missing-plate sample a pixel
+-- mismatch against the blue header band and the purple strip border.
+FieldUiFixture.OPTIONS_ROW_ODD_PATH = "assets/generated/field/ui/options-row-odd.png"
+FieldUiFixture.OPTIONS_ROW_EVEN_PATH = "assets/generated/field/ui/options-row-even.png"
+FieldUiFixture.OPTIONS_ROW_FRAME_PATH = "assets/generated/field/ui/options-row-frame.png"
+FieldUiFixture.OPTIONS_ROW_ODD_KEY = "hgss.options.row_odd"
+FieldUiFixture.OPTIONS_ROW_EVEN_KEY = "hgss.options.row_even"
+FieldUiFixture.OPTIONS_ROW_FRAME_KEY = "hgss.options.row_frame"
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsRowOddColor()
+  return 250, 230, 180
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsRowEvenColor()
+  return 180, 210, 250
+end
+
+---@return integer, integer, integer
+function FieldUiFixture.optionsRowFrameColor()
+  return 190, 250, 190
+end
+
+---@return string png
+function FieldUiFixture.optionsRowOddBytes()
+  local r, g, b = FieldUiFixture.optionsRowOddColor()
+  return PngWriter.encode(256, 24, string.rep(string.char(r, g, b, 255), 256 * 24))
+end
+
+---@return string png
+function FieldUiFixture.optionsRowEvenBytes()
+  local r, g, b = FieldUiFixture.optionsRowEvenColor()
+  return PngWriter.encode(256, 24, string.rep(string.char(r, g, b, 255), 256 * 24))
+end
+
+---@return string png
+function FieldUiFixture.optionsRowFrameBytes()
+  local r, g, b = FieldUiFixture.optionsRowFrameColor()
+  return PngWriter.encode(256, 72, string.rep(string.char(r, g, b, 255), 256 * 72))
+end
+
+-- Grafts the mandatory scrolled row-plate contract onto a synthetic
+-- options manifest in place: bumps the section version, indexes the
+-- three 256-wide plate assets, and records their semantic roles.
+---@param manifest table
+---@return table manifest
+function FieldUiFixture.addRowBackings(manifest)
+  manifest.assets[FieldUiFixture.OPTIONS_ROW_ODD_KEY] = {
+    image = FieldUiFixture.OPTIONS_ROW_ODD_PATH,
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiFixture.OPTIONS_ROW_EVEN_KEY] = {
+    image = FieldUiFixture.OPTIONS_ROW_EVEN_PATH,
+    width = 256,
+    height = 24,
+  }
+  manifest.assets[FieldUiFixture.OPTIONS_ROW_FRAME_KEY] = {
+    image = FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
+    width = 256,
+    height = 72,
+  }
+  local options = assert(manifest.options, "the fixture manifest carries the options section")
+  options.version = 7
+  options.rowBackings = {
+    odd = FieldUiFixture.OPTIONS_ROW_ODD_KEY,
+    even = FieldUiFixture.OPTIONS_ROW_EVEN_KEY,
+    frame = FieldUiFixture.OPTIONS_ROW_FRAME_KEY,
+  }
+  return manifest
+end
+
+---@param cache CacheFs
+function FieldUiFixture.writeRowPlatePngs(cache)
+  cache:write(FieldUiFixture.OPTIONS_ROW_ODD_PATH, FieldUiFixture.optionsRowOddBytes())
+  cache:write(FieldUiFixture.OPTIONS_ROW_EVEN_PATH, FieldUiFixture.optionsRowEvenBytes())
+  cache:write(FieldUiFixture.OPTIONS_ROW_FRAME_PATH, FieldUiFixture.optionsRowFrameBytes())
+end
+
+-- Synthetic source-shaped options labels for typography tests: every record
+-- carries both the reversible diagnostic text serialization (produced by the
+-- real marker renderer, so control prefixes appear exactly as the generated
+-- contract serializes them) and the glyph token stream a presenter must
+-- draw. The footer records carry explicit layout prefixes (a centering
+-- control on Confirm, a cursor-positioning control on Quit); choice and row
+-- records are plain glyphs. The fastest text-speed stop is deliberately
+-- absent so the authored fallback path stays exercised. No retail message
+-- bytes are copied: all words are synthetic fixtures in the same shape.
+---@return { labels: table, framePreviewText: table<integer, table> }
+function FieldUiFixture.optionsSourceSemantic()
+  local MessageText = require("libs.assets.src.field.FieldMessageText")
+  local function glyphs(word)
+    local tokens = {}
+    for index = 1, #word do
+      tokens[#tokens + 1] = { kind = "glyph", code = 0x200 + index, text = word:sub(index, index) }
+    end
+    return tokens
+  end
+  local function control(code, args)
+    return { kind = MessageText.controlKind(code), control = code, args = args or {} }
+  end
+  local function record(prefix, word)
+    local tokens = {}
+    if prefix ~= nil then
+      tokens[#tokens + 1] = prefix
+    end
+    for _, token in ipairs(glyphs(word)) do
+      tokens[#tokens + 1] = token
+    end
+    tokens[#tokens + 1] = { kind = "eos" }
+    return { text = MessageText.tokensToText(tokens), tokens = tokens }
+  end
+  local function plain(word)
+    return record(nil, word)
+  end
+  local labels = {
+    title = plain("OPTIONS"),
+    textSpeed = plain("TEXT SPEED"),
+    battleScene = plain("BATTLE SCENE"),
+    battleStyle = plain("BATTLE STYLE"),
+    soundMode = plain("SOUND"),
+    textFrame = plain("FRAME"),
+    confirm = record(control(MessageText.ALN_CENTER), "CONFIRM"),
+    quit = record(control(MessageText.CURSOR_X, { 8 }), "QUIT"),
+    textSpeedValues = { mid = plain("MID"), fast = plain("FAST") },
+    battleSceneValues = { on = plain("ON"), off = plain("OFF") },
+    battleStyleValues = { shift = plain("SHIFT"), set = plain("SET") },
+    soundModeValues = { stereo = plain("STEREO"), mono = plain("MONO") },
+    frameValues = {},
+  }
+  for slot = 0, 19 do
+    labels.frameValues[slot] = plain("TYPE " .. (slot + 1))
+  end
+  local framePreviewText = {}
+  for slot = 0, 19 do
+    framePreviewText[slot] = plain("WINDOW TYPE " .. (slot + 1))
+  end
+  return { labels = labels, framePreviewText = framePreviewText }
+end
+
 return FieldUiFixture

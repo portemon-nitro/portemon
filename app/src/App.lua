@@ -5,6 +5,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local CacheService = require("app.src.CacheService")
+local AudioPreferences = require("app.src.AudioPreferences")
 local HgssGame = require("game.hgss.src.HgssGame")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
@@ -17,6 +18,7 @@ local EditionPreference = require("app.src.launcher.EditionPreference")
 local StartupTitleState = require("app.src.launcher.StartupTitleState")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 local CacheFs = require("libs.storage.src.CacheFs")
+local SaveFs = require("libs.storage.src.SaveFs")
 
 ---@class App
 ---@field opts AppOptions
@@ -38,6 +40,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field startupWarmupError string? background first-play diagnostic, never a menu gate
 ---@field startupAudioSession StartupAudioSession?|nil optional selected-version title/menu audio owner
 ---@field startupAudioError string?|nil non-gating audio diagnostic
+---@field audioPreferences table<string, function>?|nil process-owned app-wide volume port, retained across saves and versions
 ---@field _swallowedPointers table<string, boolean> pointer releases owned by startup during a transfer
 ---@field drawableWidth number?
 ---@field drawableHeight number?
@@ -477,6 +480,7 @@ function App._launchGameWithProvisioner(versionId, entry)
     versionId = versionId,
     startupPairIndex = selectedPairIndex(),
     entry = entry,
+    audioPreferences = App.audioPreferences,
     onExit = function(result)
       if result and result.kind == "main_menu" then
         App._restoreMenuWithProvisioner(versionId)
@@ -769,6 +773,19 @@ function App.load(opts)
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
+
+  -- The process-wide master gain applies before any route can play audio
+  -- and is retained across save and version switches. A deliberately
+  -- headless host without an audio module keeps persistence with a silent
+  -- gain adapter.
+  local setGain = function(_) end
+  if love ~= nil and love.audio ~= nil and type(love.audio.setVolume) == "function" then
+    local host = love.audio
+    setGain = function(gain)
+      host.setVolume(gain)
+    end
+  end
+  App.audioPreferences = AudioPreferences.new({ storage = SaveFs.global(), setGain = setGain })
 
   App._bootExisting()
 end

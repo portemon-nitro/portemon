@@ -20,6 +20,7 @@ local function withNaming(manifest)
   manifest.reference = { width = 256, height = 192 }
   FieldUiFixture.addStartMenuIconContract(manifest)
   FieldUiFixture.addNamingSemantics(manifest)
+  FieldUiFixture.addOptionsContract(manifest)
   return manifest
 end
 

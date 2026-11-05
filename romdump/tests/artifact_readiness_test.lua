@@ -1175,6 +1175,7 @@ local function publishUiFamily(cache)
   manifest.reference = { width = 256, height = 192 }
   FieldUiFixture.addStartMenuIconContract(manifest)
   FieldUiFixture.addNamingSemantics(manifest)
+  FieldUiFixture.addOptionsContract(manifest)
   local valid, manifestErr = UiCache.validateManifest(manifest)
   Assert.isTrue(valid, "the current field-UI fixture validates: " .. tostring(manifestErr and manifestErr.message))
   local marker = UiCache.marker("test-rom", "test-dep")

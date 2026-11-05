@@ -1578,6 +1578,11 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/child/move-prompt"] = { bank = "partyResult", messageId = 94 },
   ["battle/child/command-prompt"] = { bank = "scriptController", messageId = 921 },
   ["battle/child/learn-prompt"] = { bank = "scriptController", messageId = 1183 },
+  -- Source ReplaceFainted prompt behind the optional Shift exchange
+  -- (battledata script subscript_0231, bank 197 message 835): the foe
+  -- trainer's incoming mon is named before the Yes/No offer. Runtime
+  -- reaches it only through the semantic shiftPrompt route.
+  ["battle/prompt/shift-offer"] = { bank = "scriptController", messageId = 835 },
   ["battle/narration/trainer-victory"] = { bank = "scriptController", messageId = 839 },
   ["battle/narration/won-money"] = { bank = "scriptController", messageId = 33 },
   ["battle/narration/defeated-last-mon"] = { bank = "scriptController", messageId = 36 },

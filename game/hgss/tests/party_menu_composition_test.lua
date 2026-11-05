@@ -310,7 +310,9 @@ local function dependencies(overrides)
       return true
     end,
     cancelIconPreparation = function() end,
-    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
+    textPolicyForOpen = function()
+      return { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true }
+    end,
     contextSources = function()
       return sources()
     end,

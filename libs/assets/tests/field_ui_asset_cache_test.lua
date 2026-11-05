@@ -310,7 +310,10 @@ local function validManifest()
       }
     end)(),
   }
-  return FieldUiFixture.addNamingSemantics(built)
+  -- The shared fixture builds the current v7 options section directly
+  -- (header/footer shell bands, 256x72 frame plate, borrowed slider
+  -- thumb); no migration scaffolding belongs here.
+  return FieldUiFixture.addOptionsContract(FieldUiFixture.addNamingSemantics(built))
 end
 
 local function publishedCache(manifest)
@@ -1039,6 +1042,122 @@ function T.stale_prompt_less_manifest_schema_is_rejected()
   manifest.schema = "g4-field-ui-v14"
   local ok, _ = FieldUiAssetCache.validateManifest(manifest)
   Assert.isFalse(ok, "a manifest on the previous schema without the prompt section is stale")
+end
+
+-- The option-control section carries exactly the three indexed backdrop
+-- roles (header and footer 256x24 shell bands plus the 256x192 preview)
+-- plus the required transparent 256x30 selected-row indicator and the three
+-- mandatory scrolling row plates (odd/even 256x24, frame 256x72) under
+-- manifest version 7. A missing role, an extra role, a swapped or unindexed
+-- asset id, or a missized indexed asset is stale.
+function T.options_backdrops_require_the_two_indexed_roles()
+  local overlayKey = "hgss.options.selection_overlay"
+  -- Built directly from the shared fixture, which already carries the
+  -- current v7 options section (shell-band backdrops, indexed strip,
+  -- scrolling row plates).
+  local function completeManifest()
+    return validManifest()
+  end
+  local manifest = completeManifest()
+  Assert.equal(manifest.options.version, 7, "the fixture carries the current options section")
+  Assert.equal(manifest.options.selectionOverlay, overlayKey, "the fixture indexes its selected-row strip")
+  Assert.equal(
+    FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY,
+    overlayKey,
+    "the asset index names the selected-row strip"
+  )
+  Assert.equal(manifest.options.backdrops.header, FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND)
+  Assert.equal(manifest.options.backdrops.footer, FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND)
+  Assert.equal(manifest.options.backdrops.preview, FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND)
+  local overlayEntry = assert(manifest.assets[overlayKey], "the selected-row strip asset is indexed")
+  Assert.equal(overlayEntry.width, 256, "the selected-row strip width")
+  Assert.equal(overlayEntry.height, 30, "the selected-row strip height")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the indexed backdrops and strip validate")
+  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v28")
+  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v28")
+  local cases = {
+    ["missing preview role"] = function(o)
+      o.backdrops.preview = nil
+    end,
+    ["missing header role"] = function(o)
+      o.backdrops.header = nil
+    end,
+    ["missing footer role"] = function(o)
+      o.backdrops.footer = nil
+    end,
+    ["missing selection overlay role"] = function(o)
+      o.selectionOverlay = nil
+    end,
+    ["extra role"] = function(o)
+      o.backdrops.overlay = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND
+    end,
+    ["swapped roles"] = function(o)
+      o.backdrops.header, o.backdrops.preview = o.backdrops.preview, o.backdrops.header
+    end,
+    ["unindexed asset id"] = function(o)
+      o.backdrops.preview = "hgss.options.missing"
+    end,
+    ["unindexed overlay asset id"] = function(o)
+      o.selectionOverlay = "hgss.options.missing"
+    end,
+    ["missing section"] = function(o)
+      o.backdrops = nil
+    end,
+    ["missing row plates"] = function(o)
+      o.rowBackings = nil
+    end,
+    ["extra plate role"] = function(o)
+      o.rowBackings.extra = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD
+    end,
+    ["swapped plate roles"] = function(o)
+      o.rowBackings.odd, o.rowBackings.even = o.rowBackings.even, o.rowBackings.odd
+    end,
+    ["unindexed plate id"] = function(o)
+      o.rowBackings.odd = "hgss.options.missing"
+    end,
+  }
+  for name, mutate in pairs(cases) do
+    local broken = completeManifest()
+    mutate(broken.options)
+    local ok, err = FieldUiAssetCache.validateManifest(broken)
+    Assert.isFalse(ok, "the malformed options backdrop contract is rejected (" .. name .. ")")
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  local missized = completeManifest()
+  missized.assets[FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND].width = 128
+  local ok, err = FieldUiAssetCache.validateManifest(missized)
+  Assert.isFalse(ok, "a missized indexed backdrop asset is rejected")
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedHeader = completeManifest()
+  missizedHeader.assets[FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND].height = 32
+  local headerOk, headerErr = FieldUiAssetCache.validateManifest(missizedHeader)
+  Assert.isFalse(headerOk, "a missized header shell band is rejected")
+  Assert.equal(assert(headerErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedFooter = completeManifest()
+  missizedFooter.assets[FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND].width = 128
+  local footerOk, footerErr = FieldUiAssetCache.validateManifest(missizedFooter)
+  Assert.isFalse(footerOk, "a missized footer shell band is rejected")
+  Assert.equal(assert(footerErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedStrip = completeManifest()
+  missizedStrip.assets[overlayKey].height = 32
+  local stripOk, stripErr = FieldUiAssetCache.validateManifest(missizedStrip)
+  Assert.isFalse(stripOk, "a missized selected-row strip is rejected")
+  Assert.equal(assert(stripErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missingImage = completeManifest()
+  missingImage.assets[overlayKey] = nil
+  local imageOk, imageErr = FieldUiAssetCache.validateManifest(missingImage)
+  Assert.isFalse(imageOk, "a missing indexed strip image is rejected")
+  Assert.equal(assert(imageErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missizedPlate = completeManifest()
+  missizedPlate.assets[FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME].height = 32
+  local plateOk, plateErr = FieldUiAssetCache.validateManifest(missizedPlate)
+  Assert.isFalse(plateOk, "a missized row plate asset is rejected")
+  Assert.equal(assert(plateErr).code, "FIELD_UI_MANIFEST_INVALID")
+  local missingPlate = completeManifest()
+  missingPlate.assets[FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD] = nil
+  local plateImageOk, plateImageErr = FieldUiAssetCache.validateManifest(missingPlate)
+  Assert.isFalse(plateImageOk, "a missing indexed row plate image is rejected")
+  Assert.equal(assert(plateImageErr).code, "FIELD_UI_MANIFEST_INVALID")
 end
 
 function T.prompt_section_rejects_wrong_dimensions()

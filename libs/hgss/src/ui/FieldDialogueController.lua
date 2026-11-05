@@ -204,6 +204,34 @@ function FieldDialogueController:isModal()
   return self._state ~= "CLOSED"
 end
 
+-- Replaces the default reveal policy the next open request uses. The
+-- copied table keeps later external edits from retiming this controller.
+-- An open request keeps the policy it opened with; changing defaults
+-- mid-request is an invariant fault with no mutation.
+---@param policy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean }
+function FieldDialogueController:setPolicy(policy)
+  assert(type(policy) == "table", "dialogue policy must be a record")
+  assert(
+    type(policy.interGlyphDelay) == "number"
+      and type(policy.glyphBudget) == "number"
+      and type(policy.abAcceleration) == "boolean",
+    "dialogue policy carries the printer cadence shape"
+  )
+  if self:isModal() then
+    Errors.raise(
+      FieldErrors.DIALOGUE_ALREADY_OPEN,
+      "a dialogue is already open; defaults change only between requests",
+      { requestId = self._request and self._request.id }
+    )
+  end
+  self._policy = {
+    interGlyphDelay = policy.interGlyphDelay,
+    glyphBudget = policy.glyphBudget,
+    abAcceleration = policy.abAcceleration,
+  }
+  self:_invalidatePresentation()
+end
+
 -- True when the open request is owned by the field-script runtime (the
 -- script dialogue host opens requests with `metadata.scriptOwned`). The
 -- session's modal gate skips script-owned boxes: the script scheduler steps

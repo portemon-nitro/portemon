@@ -10,6 +10,7 @@ local GameAudio = {}
 ---@field cacheFs CacheFs
 ---@field outputRate integer
 ---@field outputHost table<string, unknown>?
+---@field channelMode string? "stereo" or "mono"; defaults to stereo where no player save selects a mode
 ---@field assetPreparation table<string, unknown>?
 ---@field field table<string, unknown>?
 
@@ -38,6 +39,7 @@ function GameAudio.compose(opts)
         sound = outputHost.sound,
         renderer = core.renderer,
         sampleRate = opts.outputRate,
+        channelMode = opts.channelMode or "stereo",
       })
     end
 

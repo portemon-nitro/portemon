@@ -7,16 +7,19 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local AuxiliaryFieldUi = require("libs.hgss.src.ui.AuxiliaryFieldUi")
 local ContextChoiceProvider = require("libs.hgss.src.interaction.ContextChoiceProvider")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
+local Errors = require("libs.errors.src.Errors")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationRegistry = require("libs.hgss.src.field.FieldApplicationRegistry")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldMenuHost = require("libs.hgss.src.ui.FieldMenuHost")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
 local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FollowingMonTransitionController = require("libs.hgss.src.field.FollowingMonTransitionController")
@@ -25,11 +28,13 @@ local PcCache = require("libs.assets.src.PcCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
+local OptionsScreenState = require("game.hgss.src.options.OptionsScreenState")
 local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreenState")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 
@@ -154,6 +159,119 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     local composition = assert(runtime.pokegear, "the gear application requires the composed feature")
     return composition.screenFactory({ kind = "browse" })
   end
+  local function optionsFactory()
+    -- The options factory stages one detached draft over the live record:
+    -- validation runs at Confirm through this coordinator, the app-wide
+    -- volume travels through the borrowed port, channel previews reach the
+    -- live sink, and the menu-local sample prints through its own dialogue
+    -- printer. A real volume port is required here; headless runtimes that
+    -- omit it cannot open the menu. The per-open presentation port resolves
+    -- only in presented mode; headless composition stays non-rendering but
+    -- fully semantic.
+    local coordinator = self
+    local playerData = assert(runtime.playerData, "the options application requires the live player data")
+    local liveOptions = assert(playerData.options, "the options application requires the live player options")
+    -- Persisted records predating the scene/sound/speed options carry
+    -- only the original fields: canonicalize through the player-data
+    -- owner so the detached draft starts from the documented defaults
+    -- instead of crashing the strict screen. The live record stays
+    -- untouched until Confirm adopts the six fields at once.
+    local validationContext =
+      assert(runtime.playerDataContext, "the options application requires the generated validation context")
+    local canonicalOptions, invalid = PlayerData.validateOptions(liveOptions, validationContext)
+    assert(canonicalOptions ~= nil, "the options application requires valid live player options: " .. tostring(invalid))
+    assert(type(canonicalOptions) == "table")
+    local audioPreferences =
+      assert(runtime.audioPreferences, "the options application requires the app-wide volume port")
+    local uiManifest = assert(runtime.uiManifest, "the options application requires the field-UI manifest")
+    local function measureDisplay()
+      return runtime.presentationDisplay
+    end
+    local function channelPreview(mode)
+      local sink = runtime.audioSink
+      if sink ~= nil then
+        sink:setChannelMode(mode)
+      end
+    end
+    local function prepare(values)
+      return coordinator:preparePlayerOptions(values)
+    end
+    -- Tentative per-open ownership: the presentation port and the
+    -- menu-local printer belong to this factory until the new screen
+    -- takes over. Any failure before return releases exactly the owned
+    -- leases and rethrows the original cause.
+    local port = nil
+    local previewPrinter = nil
+    local function releaseOwned(ownedPort, ownedPrinter)
+      if ownedPrinter ~= nil then
+        pcall(function()
+          ownedPrinter:dispose()
+        end)
+      end
+      if ownedPort ~= nil then
+        pcall(function()
+          ownedPort.dispose()
+        end)
+      end
+    end
+    local screen = nil
+    local function buildScreen()
+      if runtime.optionsPresentationFactory ~= nil then
+        port = runtime.optionsPresentationFactory()
+      end
+      -- The menu-local sample borrows the same paginated layout, cadence
+      -- shapes, and continue cursor the field dialogue uses, paced by the
+      -- draft policy and never accelerated by gameplay input. The preview
+      -- printer paginates from the Font1 definition, never the menu font.
+      local dialogueFrames = uiManifest.dialogueFrames
+      if dialogueFrames ~= nil and dialogueFrames.continueCursor ~= nil and runtime.fontDef ~= nil then
+        local fontMetrics = FieldDialogueTheme.fontMetrics(FieldFontLoader.load(runtime.cacheFs, 1))
+        local function formatLayout(formatted)
+          return DialogueLayout.layout(
+            formatted.tokens,
+            fontMetrics,
+            { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
+          )
+        end
+        ---@type table<string, unknown>? menu-local sample audio host carrying play
+        local audio = runtime.audio
+        if audio == nil then
+          local function silentPlay() end
+          audio = {
+            play = silentPlay,
+          }
+        end
+        previewPrinter = FieldDialogueController.new({
+          layout = formatLayout,
+          policy = TextSpeedPolicy.forSpeed(
+            assert(canonicalOptions.textSpeed, "the preview needs the live text speed")
+          ),
+          audio = audio,
+          continueCursor = dialogueFrames.continueCursor,
+        })
+      end
+      screen = OptionsScreenState.new({
+        playerOptions = canonicalOptions,
+        volume = audioPreferences.read(),
+        preparePlayerOptions = prepare,
+        audioPreferences = audioPreferences,
+        applyChannelMode = channelPreview,
+        effect = playSequence,
+        semantic = assert(uiManifest.options, "the options application requires the generated options section"),
+        measureDisplay = measureDisplay,
+        presentationPort = port,
+        previewPrinter = previewPrinter,
+      })
+      port = nil
+      previewPrinter = nil
+    end
+    local built, buildErr = pcall(buildScreen)
+    if not built then
+      releaseOwned(port, previewPrinter)
+      error(buildErr, 0)
+    end
+    return screen
+  end
   local function pokedexFactory()
     -- The pokedex factory delegates immediately to the leaf composition:
     -- no browser state lives in this upper module and no graphics load
@@ -181,6 +299,10 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     {
       id = FieldApplicationIds.POKEDEX,
       factory = pokedexFactory,
+    },
+    {
+      id = FieldApplicationIds.OPTIONS,
+      factory = optionsFactory,
     },
   }
 end
@@ -540,9 +662,14 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   local function isFieldCryFinished()
     return runtime.audio == nil or runtime.audio:isCryFinished()
   end
-  local bagTextPolicy = TextSpeedPolicy.forSpeed(
-    assert(runtime.playerData and runtime.playerData.options and runtime.playerData.options.textSpeed)
-  )
+  -- Future menu children resolve their text cadence per open from the
+  -- live player options: a confirmed option lands on the next child
+  -- without rebuilding this composition.
+  local function textPolicyForOpen()
+    local options =
+      assert(runtime.playerData and runtime.playerData.options, "menu children read the live player options")
+    return TextSpeedPolicy.forSpeed(assert(options.textSpeed, "menu children read the live text speed"))
+  end
   local summaryManifest = SummaryCache.loadManifest(cacheFs)
   -- The preparation factory stays late-bound through the runtime
   -- because presentation resources postdate this composition: the
@@ -583,7 +710,7 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     effect = playBagSequence,
     playCry = playSummaryCry,
     isCryFinished = isFieldCryFinished,
-    textPolicy = bagTextPolicy,
+    textPolicyForOpen = textPolicyForOpen,
     summaryManifest = summaryManifest,
     summaryContext = summaryContextProvider(runtime, summaryManifest),
     dexMode = readLiveDexMode,
@@ -825,6 +952,11 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       end
       return mapData
     end
+    -- The sink starts in the selected save's channel mode before its first
+    -- queueing; routes without player options (like Oak) stay stereo.
+    local playerData = runtime.playerData
+    local playerOptions = playerData ~= nil and playerData.options or nil
+    local channelMode = (playerOptions ~= nil and playerOptions.soundMode) or "stereo"
     local audio = FieldAudio.compose({
       cacheFs = cacheFs,
       outputRate = AUDIO_SAMPLE_RATE,
@@ -834,6 +966,7 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       fieldDataForMap = fieldDataForMap,
       traversal = readAvatarTraversal,
       outputHost = runtime.audioOutput,
+      channelMode = channelMode,
       -- The presented field shares its preparation worker with the scene
       -- and image owners; headless runtimes pass no queue and stay on the
       -- synchronous-safe sample path.
@@ -1024,6 +1157,176 @@ function FieldMenuCompositionCoordinator:composeModalHosts(boot, callbacks)
   composeStarterHosts(runtime, boot)
   composeModalKeys(runtime)
   composeApplicationHost(runtime, self:applicationDescriptors(), callbacks)
+end
+
+-- Whether the signpost still owns an unfinished typed print: a presented
+-- window or a live printer keeps its cadence, while a finished or absent
+-- print leaves the defaults free.
+---@param signpost table<string, unknown> FieldSignpostController-shaped
+---@return boolean
+local function signpostHoldsPrint(signpost)
+  if signpost:isModal() then
+    return true
+  end
+  local status = signpost:status()
+  return status.totalGlyphs > 0 and not status.printDone
+end
+
+-- Prepares one validated player-options application against the live
+-- composition. Validation runs once here; preparation never mutates. The
+-- returned per-attempt record carries a one-use application and an
+-- idempotent restoration over the six fields and the affected live
+-- consumers. Abandoning the record changes nothing. No filesystem,
+-- audio-host, GPU, or field rebuild work occurs anywhere on this path.
+---@param values table<string, unknown> the candidate gameplay options
+---@return { apply: fun(), rollback: fun() }? transaction the one-attempt application and restoration, nil on rejection
+---@return Errors.Error? the typed failure when invalid or an owner is busy
+function FieldMenuCompositionCoordinator:preparePlayerOptions(values)
+  local runtime = self.runtime
+  local playerData = assert(runtime.playerData, "player options adoption requires the live player data")
+  local options = assert(playerData.options, "player options adoption requires the live options table")
+  local context = assert(runtime.playerDataContext, "player options adoption requires the generated validation context")
+  local canonical, invalid = PlayerData.validateOptions(values, context)
+  if canonical == nil then
+    return nil, invalid
+  end
+  local dialogue = runtime.dialogue
+  local signpost = runtime.signpost
+  local scripts = runtime.scripts
+  local dialogueHost = scripts ~= nil and scripts.dialogueHost or nil
+  local starter = runtime.starterChoice
+  local sink = runtime.audioSink
+  local function busyOwner()
+    if dialogue ~= nil and dialogue:isModal() then
+      return "dialogue"
+    end
+    if signpost ~= nil and signpostHoldsPrint(signpost) then
+      return "signpost"
+    end
+    if dialogueHost ~= nil and (dialogueHost:isOpen() or dialogueHost:yesNoPresentation() ~= nil) then
+      return "script dialogue"
+    end
+    if starter ~= nil and starter:isActive() then
+      return "starter choice"
+    end
+    return nil
+  end
+  local owner = busyOwner()
+  if owner ~= nil then
+    return nil,
+      Errors.new(
+        FieldErrors.PLAYER_DATA_INVALID,
+        "player options stay unchanged while " .. owner .. " owns the field",
+        { owner = owner }
+      )
+  end
+  -- The exact raw saved slots (absent newer keys stay nil) beside the
+  -- canonical effective baseline the live consumers currently follow.
+  local rawOld = {
+    textSpeed = options.textSpeed,
+    textFrame = options.textFrame,
+    battleStyle = options.battleStyle,
+    battleScene = options.battleScene,
+    soundMode = options.soundMode,
+    battleSpeed = options.battleSpeed,
+  }
+  local effectiveOld = assert(
+    PlayerData.validateOptions(options, context),
+    "player options adoption requires valid live options for restoration"
+  )
+  local oldPolicy = TextSpeedPolicy.forSpeed(effectiveOld.textSpeed)
+  local oldFrame = effectiveOld.textFrame
+  local oldChannel = effectiveOld.soundMode
+  local applied = false
+  local restored = false
+  local function apply()
+    assert(not applied, "a prepared player-options application applies exactly once")
+    applied = true
+    assert(
+      runtime.playerData == playerData and playerData.options == options,
+      "a prepared player-options application ends with its runtime identity"
+    )
+    assert(busyOwner() == nil, "player options apply only while every affected owner stays idle")
+    local policy = TextSpeedPolicy.forSpeed(canonical.textSpeed)
+    if dialogue ~= nil then
+      dialogue:setPolicy(policy)
+    end
+    if signpost ~= nil then
+      signpost:setPolicy(policy)
+    end
+    if dialogueHost ~= nil then
+      dialogueHost:setFrameIndex(canonical.textFrame)
+    end
+    if starter ~= nil then
+      starter:setFrameIndex(canonical.textFrame)
+    end
+    -- The confirmed channel mode reaches the live sink through this same
+    -- closure: the scalar-only update performs no IO and never restarts
+    -- playback. The headless no-sink path stays valid.
+    if sink ~= nil then
+      sink:setChannelMode(canonical.soundMode)
+    end
+    options.textSpeed = canonical.textSpeed
+    options.textFrame = canonical.textFrame
+    options.battleStyle = canonical.battleStyle
+    options.battleScene = canonical.battleScene
+    options.soundMode = canonical.soundMode
+    options.battleSpeed = canonical.battleSpeed
+  end
+  local function rollback()
+    if not applied or restored then
+      return
+    end
+    restored = true
+    local failures = {}
+    local function attempt(label, fn)
+      local ok, err = pcall(fn)
+      if not ok then
+        failures[#failures + 1] = label .. ": " .. tostring(err)
+      end
+    end
+    if dialogue ~= nil then
+      attempt("dialogue policy", function()
+        dialogue:setPolicy(oldPolicy)
+      end)
+    end
+    if signpost ~= nil then
+      attempt("signpost policy", function()
+        signpost:setPolicy(oldPolicy)
+      end)
+    end
+    if dialogueHost ~= nil then
+      attempt("script frame", function()
+        dialogueHost:setFrameIndex(oldFrame)
+      end)
+    end
+    if starter ~= nil then
+      attempt("starter frame", function()
+        starter:setFrameIndex(oldFrame)
+      end)
+    end
+    if sink ~= nil then
+      attempt("channel mode", function()
+        sink:setChannelMode(oldChannel)
+      end)
+    end
+    attempt("saved options", function()
+      assert(
+        runtime.playerData == playerData and playerData.options == options,
+        "the live player record changed during the attempt"
+      )
+      options.textSpeed = rawOld.textSpeed
+      options.textFrame = rawOld.textFrame
+      options.battleStyle = rawOld.battleStyle
+      options.battleScene = rawOld.battleScene
+      options.soundMode = rawOld.soundMode
+      options.battleSpeed = rawOld.battleSpeed
+    end)
+    if #failures > 0 then
+      error("player options restoration failed: " .. table.concat(failures, "; "), 0)
+    end
+  end
+  return { apply = apply, rollback = rollback }
 end
 
 -- Releases the dialogue, signpost, and application modal hosts in the boot

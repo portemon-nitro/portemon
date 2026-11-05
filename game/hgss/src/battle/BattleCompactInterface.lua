@@ -16,6 +16,7 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
@@ -182,6 +183,10 @@ local function scopeFor(mode, view)
     if child.kind == "learn" and type(child.confirmation) == "table" then
       return "two-option"
     end
+  elseif mode == "shift" then
+    -- The held Shift offer answers through the source Yes/No planes
+    -- behind the staged question instead of the command menu.
+    return "two-option"
   end
   return "command"
 end
@@ -759,6 +764,22 @@ local function regionsFor(content, mode)
   end
   if mode == "narration" or mode == "outcome" then
     return { { id = "dialogue", x = 0, y = 0, width = 256, height = 192, scope = mode } }
+  end
+  if mode == "shift" then
+    -- Pointer taps arm the Yes/No cells directly: confirm answers Yes
+    -- and back answers No through the same semantic edges as keypad.
+    local regions = {}
+    for _, region in ipairs(BattleMenuRegions.forLayout("two-option") or {}) do
+      regions[#regions + 1] = {
+        id = region.id,
+        x = region.x,
+        y = region.y,
+        width = region.w,
+        height = region.h,
+        scope = mode,
+      }
+    end
+    return regions
   end
   local regions = {}
   local function add(id, rect)

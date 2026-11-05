@@ -349,9 +349,42 @@ DerivedAssetContract.fieldEmotes = {
 -- notification projection (the source caller-window tile geometry plus the
 -- shared ringing animation frames), so a stale pre-change cache without
 -- that section must fail readiness.
+-- fieldUi schema 23: the manifest carries the required source-derived
+-- option-control section (semantic labels with lowered token streams,
+-- small/wide choice pills with unselected baseline faces, frame arrows,
+-- footer action chrome, frame preview text, and the native tick rate), so
+-- a stale cache without it must fail readiness.
+-- fieldUi schema 24: the option-control section carries the required
+-- opaque 256x192 controls and preview backdrops (the MAIN and SUB base
+-- planes) as indexed assets under semantic role keys, so a stale cache
+-- without them must fail readiness.
+-- fieldUi schema 25: the option-control section carries the required
+-- transparent 256x24 selected-row strip (the separate MAIN selection
+-- layer) as an indexed asset under its semantic section key, so a stale
+-- cache without it must fail readiness.
+-- fieldUi schema 26: the option-control section carries the required
+-- scrolling row plates (opaque 256x24 odd/even bands plus the 256x64
+-- compound frame item scrubbed of preprinted control faces) as indexed
+-- assets under the mandatory rowBackings roles, so a stale cache without
+-- them must fail readiness.
+-- fieldUi schema 27: the option-control section carries the 256x72
+-- compound frame plate (the odd selector band over five mid-band rows
+-- closed by the odd lower edge) and versions the shell-band backdrop
+-- contract at options section v5: the opaque 256x24 header and footer
+-- shell bands (the MAIN title and footer rows) replace the full-screen
+-- controls backdrop, beside the unchanged 256x192 preview. A stale cache
+-- without them must fail readiness.
+-- fieldUi schema 28: the option-control section versions the indicator
+-- contract at options section v6: the transparent selected-row indicator
+-- is the full 256x30 native border box (rows 13..42 of the selection
+-- layer, centered on the 24px row) instead of the cropped 24px side
+-- bars, and the section carries the masked slider cursor (the
+-- left-pointing selection marker extracted from the selected pill
+-- overhang) the authored volume and battle-speed rails point with. A
+-- stale cache without them must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v22",
+  schema = "g4-field-ui-v28",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

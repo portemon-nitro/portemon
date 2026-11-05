@@ -830,6 +830,25 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     type(launchSpeed) == "string" and launchSpeed ~= "",
     "presented battle launches carry the player narration pace"
   )
+  -- The saved scene choice freezes beside the narration pace: validated
+  -- player options always carry the canonical boolean, while an older
+  -- composition fake without one keeps the historical always-on launch.
+  local launchScene = fieldRuntime(self).playerData.options.battleScene
+  if launchScene == nil then
+    launchScene = true
+  end
+  assert(type(launchScene) == "boolean", "presented battle launches carry the player scene choice")
+  -- The saved presentation speed freezes beside the scene choice: an
+  -- absent value keeps the historical single-rate launch, while a
+  -- malformed present value fails the launch instead of guessing.
+  local launchSpeedFactor = fieldRuntime(self).playerData.options.battleSpeed
+  if launchSpeedFactor == nil then
+    launchSpeedFactor = 1
+  end
+  assert(
+    launchSpeedFactor == 1 or launchSpeedFactor == 2 or launchSpeedFactor == 4,
+    "presented battle launches carry their presentation speed"
+  )
   local descriptor = {
     launchId = launchId,
     kind = request.kind,
@@ -837,6 +856,8 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     environment = environment,
     transitionContext = transitionContext,
     textSpeed = launchSpeed,
+    battleScene = launchScene,
+    battleSpeed = launchSpeedFactor,
     audio = fieldRuntime(self).audio,
     musicRole = self:_battleMusicRole(request),
     trainerClass = self:_battleTrainerClass(request),

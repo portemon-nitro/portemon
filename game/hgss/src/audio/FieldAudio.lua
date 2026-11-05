@@ -14,6 +14,7 @@ local FieldAudio = {}
 ---@field fieldDataForMap fun(mapIdOrSymbol: integer|string): unknown
 ---@field traversal (fun(): string)? the avatar's durable traversal mode, read for traversal music
 ---@field outputHost table<string, unknown>|nil
+---@field channelMode string? the selected save's output channel mode, carried to the sink
 ---@field assetPreparation table<string, unknown>? shared background preparation queue for predicted sample payloads
 
 ---@param opts FieldAudioComposeOptions
@@ -34,6 +35,7 @@ function FieldAudio.compose(opts)
     cacheFs = opts.cacheFs,
     outputRate = opts.outputRate,
     outputHost = opts.outputHost,
+    channelMode = opts.channelMode,
     assetPreparation = opts.assetPreparation,
     field = {
       eventState = opts.eventState,

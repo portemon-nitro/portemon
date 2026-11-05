@@ -1061,6 +1061,9 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
         return true
       end,
       cancelIconPreparation = function() end,
+      textPolicyForOpen = function()
+        return { interGlyphDelay = 1, glyphBudget = 1, abAcceleration = true }
+      end,
       contextSources = function()
         return { mapSymbol = "MAP_PHOTO_TEST", mapId = 41 }
       end,

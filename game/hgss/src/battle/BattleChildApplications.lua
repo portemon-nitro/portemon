@@ -1252,7 +1252,10 @@ local function openPartyChild(intent, services)
     return nativePartyLayout or fallbackPartyLayout(intent.cancellable == true)
   end
   local initialFocus = nil
-  if intent.purpose == "replacement" then
+  -- Mandatory replacement and the optional Shift offer both open on
+  -- the first kernel-eligible reserve: confirming the focused row then
+  -- names an authoritative switch fragment instead of a stale slot.
+  if intent.purpose == "replacement" or intent.purpose == "shift" then
     for slot = 0, 5 do
       for _, record in
         ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
@@ -1266,7 +1269,7 @@ local function openPartyChild(intent, services)
         break
       end
     end
-    assert(initialFocus ~= nil, "replacement pickers focus an eligible reserve")
+    assert(initialFocus ~= nil, "reserve pickers focus an eligible reserve")
   end
   local function menuFor(_)
     return {

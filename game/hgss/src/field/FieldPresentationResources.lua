@@ -30,6 +30,7 @@ local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerr
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
@@ -43,6 +44,7 @@ local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local MailboxRenderer = require("libs.hgss.src.ui.MailboxRenderer")
 local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 local FieldMapNameRenderer = require("game.hgss.src.field.FieldMapNameRenderer")
+local OptionsRenderer = require("game.hgss.src.options.OptionsRenderer")
 local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRenderer")
 
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
@@ -85,6 +87,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field renderer FieldRenderer?
 ---@field windowRenderer FieldWindowRenderer? the one shared frame-strip atlas owner lent to dialogue rendering
 ---@field applicationFrameIndex integer? the snapshotted player-owned frame choice for application borders
+---@field _seenFrameIndex integer? the last committed frame observed by option synchronization
 ---@field dialogueRenderer FieldDialogueRenderer?
 ---@field yesNoRenderer FieldYesNoRenderer
 ---@field menuRenderer FieldMenuRenderer
@@ -103,6 +106,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
 ---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
 ---@field summaryManifest table<string, unknown>? validated generated Summary family
+---@field _optionsRenderer OptionsRenderer? the one retained per-open options resource owner
 ---@field _pokedexBinding integer? installed pokedex preparation binding identity
 ---@field pokedexResources PokedexPresentationResources? the one lazily owned field pokedex preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
@@ -444,11 +448,31 @@ local function buildPresenters(owner)
     }, { view = status.view, assets = assets, compact = status.compact }, plan)
     drawApplicationFrames(hostGraphics, owner, plan)
   end
+  -- The options presenter draws the committed per-open renderer through
+  -- the resolved plan: pending preparation keeps the existing host cover
+  -- and the failed state surfaces its cause. Drawing never prepares.
+  ---@param presentation table<string, unknown>?
+  local function drawOptions(presentation, _)
+    local status = assert(presentation, "the options application presents its status")
+    if status.preparing then
+      return
+    end
+    local plan = assert(status.presentation, "the options application presents its plan")
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", "options drawing requires its host graphics namespace")
+    -- The Options backing is already self-framed source art: no generic
+    -- application frame paints over it. Sibling applications keep theirs.
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      optionsRenderer = assert(owner._optionsRenderer, "options renderer is unavailable"),
+    }, status, plan)
+  end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,
     [FieldApplicationIds.TRAINER_CARD] = drawTrainerCard,
     [FieldApplicationIds.BAG] = drawBag,
     [FieldApplicationIds.POKEDEX] = drawPokedex,
+    [FieldApplicationIds.OPTIONS] = drawOptions,
   }
 end
 
@@ -513,6 +537,7 @@ function FieldPresentationResources.new(runtime)
     )
     ---@cast textFrame integer
     self.applicationFrameIndex = textFrame
+    self._seenFrameIndex = textFrame
     self.dialogueRenderer = FieldDialogueRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
@@ -1175,6 +1200,13 @@ end
 
 function FieldPresentationResources:dispose()
   self.presenters = nil
+  -- A still-open options child returns its renderer here: borrowed owners
+  -- are released after this, so the per-open leases return first.
+  if self._optionsRenderer ~= nil then
+    local renderer = assert(self._optionsRenderer, "a retained options renderer disposes before release")
+    self._optionsRenderer = nil
+    renderer:dispose()
+  end
   if self.dialogueRenderer then
     self.dialogueRenderer:release()
     self.dialogueRenderer = nil
@@ -1479,6 +1511,205 @@ function FieldPresentationResources:pokedex()
   })
   self.pokedexResources = created
   return created
+end
+
+-- Adapts the shared field text owners to the Options source token
+-- service: Font0 paints menu glyphs and authored strings in the native
+-- source palette roles, Font1 paints the preview token lines in the
+-- source preview triple. One palette-shader pass per label; the shader
+-- keeps the shared glyph shadow, so no manual double draw exists. The
+-- shared owners are borrowed, never retained.
+---@param fieldText FieldTextRenderer the shared presented Font0 text owner
+---@param previewText FieldTextRenderer? the shared presented Font1 text owner
+---@return OptionsWidgets.TextCollaborator the borrowed Options token text service
+local function adaptOptionsText(fieldText, previewText)
+  local MessageText = require("libs.assets.src.field.FieldMessageText")
+  local menuDef = assert(fieldText.fontDef, "options presentation borrows the field Font0 font definition")
+  -- Source layout controls the Options painter interprets. Anything else
+  -- in a menu label record (substitutions, style, printer, or unknown
+  -- controls) fails explicitly at the label's semantic role instead of
+  -- painting a diagnostic marker.
+  local allowedLayout = {
+    [MessageText.ALN_CENTER] = true,
+    [MessageText.ALN_RIGHT] = true,
+    [MessageText.CURSOR_X] = true,
+    [MessageText.CURSOR_Y] = true,
+  }
+  local function checkTokens(tokens, role)
+    assert(type(tokens) == "table" and #tokens >= 1, "options " .. role .. " carries its glyph tokens")
+    local placed = false
+    for _, token in ipairs(tokens) do
+      assert(type(token) == "table", "options " .. role .. " carries token records")
+      if token.kind == "eos" then
+        break
+      elseif token.kind == "glyph" then
+        placed = true
+      elseif type(token.control) == "number" and allowedLayout[token.control] then
+        if placed then
+          error("options " .. role .. " places a position control after glyph content", 0)
+        end
+        local args = token.args or {}
+        if token.control == MessageText.CURSOR_X or token.control == MessageText.CURSOR_Y then
+          assert(#args == 1 and type(args[1]) == "number", "options " .. role .. " carries one validated cursor step")
+        else
+          assert(#args == 0, "options " .. role .. " carries no alignment step")
+        end
+      else
+        local name = nil
+        if type(token.control) == "number" then
+          name = MessageText.controlName(token.control)
+        end
+        error("options " .. role .. " carries an unsupported " .. (name or (token.kind or "control")), 0)
+      end
+    end
+  end
+  local function slotBytes(fontDef, slot)
+    local palette = assert(fontDef.palette, "options text needs the field font palette")
+    local entry = assert(palette[slot + 1], "field font palette has no slot " .. slot)
+    local function byte(value)
+      local number = assert(tonumber(value), "field font palette slots carry RGB components")
+      if number > 1 then
+        number = number / 255
+      end
+      return number * 255
+    end
+    return { r = byte(entry.r or entry[1]), g = byte(entry.g or entry[2]), b = byte(entry.b or entry[3]) }
+  end
+  local function rolePalette(fontDef, role)
+    assert(role == "normal" or role == "selected" or role == "preview", "options text uses its source roles")
+    local foreground = slotBytes(fontDef, role == "normal" and 15 or 1)
+    local shadow = slotBytes(fontDef, 2)
+    if role == "preview" then
+      local background = slotBytes(fontDef, 15)
+      return { foreground = foreground, shadow = shadow, background = background }
+    end
+    local background = slotBytes(fontDef, 0)
+    background.a = 0
+    return { foreground = foreground, shadow = shadow, background = background }
+  end
+  local text = {}
+  function text:drawTokens(tokens, x, y, role, sourceRole)
+    checkTokens(tokens, sourceRole or "options label")
+    return fieldText:drawLineWithPalette(tokens, x, y, rolePalette(menuDef, role))
+  end
+  function text:drawPlain(line, x, y, role)
+    assert(type(line) == "string", "authored options labels stay strings")
+    fieldText:drawTextWithPalette(line, x, y, rolePalette(menuDef, role))
+  end
+  function text:measureTokens(tokens, sourceRole)
+    checkTokens(tokens, sourceRole or "options label")
+    local width = 0
+    for _, token in ipairs(tokens) do
+      if token.kind == "glyph" then
+        local glyph = menuDef.glyphs[token.code] or menuDef.glyphs[0]
+        width = width + glyph.advance + (menuDef.letterSpacing or 0)
+      end
+    end
+    return width
+  end
+  function text:measurePlain(line)
+    assert(type(line) == "string", "authored options labels measure their string")
+    local width = 0
+    for char in Utf8Glyphs.iter(line) do
+      local code = menuDef.charmap[char]
+      if not code then
+        code = 0
+      end
+      local glyph = menuDef.glyphs[code] or menuDef.glyphs[0]
+      width = width + glyph.advance + (menuDef.letterSpacing or 0)
+    end
+    return width
+  end
+  function text:drawPreviewTokens(tokens, x, y)
+    local preview = assert(previewText, "options preview printing borrows the field Font1 renderer")
+    local previewDef = assert(preview.fontDef, "options preview printing borrows the Font1 font definition")
+    preview:drawLineWithPalette(tokens, x, y, rolePalette(previewDef, "preview"))
+  end
+  function text:windowBackgroundColor()
+    return fieldText:windowBackgroundColor()
+  end
+  return text
+end
+
+-- Creates one per-open options resource owner and returns the narrow
+-- dot-call preparation port the screen steps: prepare advances the pooled
+-- chrome toward readiness without blocking, dispose releases the owned
+-- leases and clears only this same retained renderer, exactly once. A
+-- duplicate open is a composition error; a stale dispose never clears a
+-- newer owner. Field teardown also releases a still-held renderer, so
+-- either disposal order is safe.
+---@class FieldPresentationResources.OptionsPresentationPort narrow per-open dot-call preparation port
+---@field prepare fun(): boolean step pooled chrome toward readiness without blocking
+---@field dispose fun() release owned leases and clear only the same retained renderer, exactly once
+---@return FieldPresentationResources.OptionsPresentationPort
+function FieldPresentationResources:openOptionsPresentation()
+  assert(self._optionsRenderer == nil, "one options presentation owns the presented lifetime")
+  local narration = self.battleTextRenderers ~= nil and self.battleTextRenderers.narration or nil
+  -- The sliders borrow the bag quantity-decrement pressed visual, resolved
+  -- through the validated bag manifest so the bag stays the single owner
+  -- of that art.
+  local bagManifest = assert(self.bagManifest, "options presentation borrows the bag manifest for its slider thumb")
+  local quantity = assert(
+    bagManifest.interactive and bagManifest.interactive.overlays and bagManifest.interactive.overlays.quantity,
+    "the bag manifest carries its quantity overlay for the options slider thumb"
+  )
+  local decrement = assert(
+    quantity.visuals and quantity.visuals.decrement,
+    "the bag manifest carries its quantity decrement visuals for the options slider thumb"
+  )
+  local thumb = assert(
+    decrement.pressed,
+    "the bag manifest carries the quantity-decrement pressed visual for the options slider thumb"
+  )
+  local renderer = OptionsRenderer.new({
+    cacheFs = self.cacheFs,
+    manifest = assert(self.uiManifest, "options presentation requires the field-UI manifest"),
+    imagePool = assert(self._imagePool, "options presentation borrows the shared image owner"),
+    text = adaptOptionsText(
+      assert(self.textRenderer, "options presentation borrows the field text renderer"),
+      narration
+    ),
+    window = assert(self.windowRenderer, "options presentation borrows the field window renderer"),
+    sliderThumb = thumb,
+  })
+  self._optionsRenderer = renderer
+  local port = {}
+  function port.prepare()
+    return renderer:prepare()
+  end
+  function port.dispose()
+    if self._optionsRenderer == renderer then
+      self._optionsRenderer = nil
+    end
+    renderer:dispose()
+  end
+  return port
+end
+
+-- Synchronizes the field-owned cached frame with the committed player
+-- options. When the committed frame changed, the application border index
+-- and the present Bag/Party/Mart renderer defaults follow before the next
+-- draw; unchanged frames cost one comparison. Scalar-only: no image
+-- acquisition, no draw, and no presentation-graph reconstruction.
+---@param options table<string, unknown> the live committed player options
+function FieldPresentationResources:syncPlayerOptions(options)
+  local committed = assert(options, "frame synchronization reads the live player options")
+  local frame = assert(committed.textFrame, "frame synchronization reads the committed frame")
+  assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "frame synchronization reads the committed frame")
+  if frame == self._seenFrameIndex then
+    return
+  end
+  self._seenFrameIndex = frame
+  self.applicationFrameIndex = frame
+  if self.bagRenderer ~= nil then
+    self.bagRenderer:setFrameIndex(frame)
+  end
+  if self.partyScreenRenderer ~= nil then
+    self.partyScreenRenderer:setFrameIndex(frame)
+  end
+  if self.martRenderer ~= nil then
+    self.martRenderer:setFrameIndex(frame)
+  end
 end
 
 ---@return ApricornBoxRenderer renderer owned by this field presentation lifetime

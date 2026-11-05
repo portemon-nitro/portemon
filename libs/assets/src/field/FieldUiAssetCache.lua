@@ -21,6 +21,9 @@ local checkAtlasRect = Checks.checkAtlasRect
 local checkStrip = Checks.checkStrip
 local checkPalette16 = Checks.checkPalette16
 local demandCount = Checks.demandCount
+local demandDenseSequence = Checks.demandDenseSequence
+local checkFrameOffset = Checks.checkFrameOffset
+local checkSignedPoint = Checks.checkSignedPoint
 local RECT_FIELDS = Checks.RECT_FIELDS
 
 local FieldUiAssetCache = {}
@@ -128,6 +131,14 @@ FieldUiAssetCache.ASSET = {
   YES_NO_PROMPT_YES_SELECTED = "hgss.yes_no_prompt.yes_selected",
   YES_NO_PROMPT_NO_NORMAL = "hgss.yes_no_prompt.no_normal",
   YES_NO_PROMPT_NO_SELECTED = "hgss.yes_no_prompt.no_selected",
+  OPTIONS_CHROME = "hgss.options.chrome",
+  OPTIONS_HEADER_BACKGROUND = "hgss.options.header_background",
+  OPTIONS_FOOTER_BACKGROUND = "hgss.options.footer_background",
+  OPTIONS_PREVIEW_BACKGROUND = "hgss.options.preview_background",
+  OPTIONS_SELECTION_OVERLAY = "hgss.options.selection_overlay",
+  OPTIONS_ROW_ODD = "hgss.options.row_odd",
+  OPTIONS_ROW_EVEN = "hgss.options.row_even",
+  OPTIONS_ROW_FRAME = "hgss.options.row_frame",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -454,6 +465,313 @@ local function checkYesNoPrompt(s, atlases)
   end
 end
 
+-- The generated option-control section: the semantic labels with their
+-- lowered token streams, the small/wide choice pills with their
+-- unselected baseline faces, the left/right frame arrows, the footer
+-- action chrome, and the frame preview text. Every visual state is a
+-- sequence with logical union bounds and ordered frames carrying the atlas
+-- image, the packed atlas rectangle, the signed source-cell offset, and
+-- the integer source tick duration; looping versus one-shot termination is
+-- explicit. The tick rate records the native display-frame duration, not
+-- a guessed loop timing. The manifest carries no source archive or member
+-- identities.
+local function checkOptionsLabel(record, what)
+  if type(record) ~= "table" then
+    reject(what .. " must be a table", { what = what })
+  end
+  demandCount(record, 2, what .. " must carry exactly its display text and token stream", { what = what })
+  if type(record.text) ~= "string" or record.text == "" then
+    reject(what .. " must carry non-empty display text", { what = what })
+  end
+  if type(record.tokens) ~= "table" or #record.tokens == 0 then
+    reject(what .. " must carry a non-empty token stream", { what = what })
+  end
+end
+
+-- Option-control frames name their packed atlas by generated image path, not
+-- by asset id, so resolve the path to its indexed asset before the shared
+-- atlas-bound check. The image path stays the draw-time lookup the pooled
+-- lease was acquired with.
+local function optionsAtlasKey(assets, image, frameWhat)
+  if type(image) ~= "string" or image == "" then
+    reject(frameWhat .. " must name its atlas image path", { what = frameWhat })
+  end
+  for key, entry in pairs(assets) do
+    if type(entry) == "table" and entry.image == image then
+      return key
+    end
+  end
+  reject(frameWhat .. " must reference an indexed asset", { what = frameWhat })
+end
+
+local function checkOptionsSequence(sequence, what, atlases, assets)
+  if type(sequence) ~= "table" then
+    reject(what .. " must be a table", { what = what })
+  end
+  demandCount(sequence, 3, what .. " must carry exactly its frames, loop flag, and bounds", { what = what })
+  if type(sequence.loop) ~= "boolean" then
+    reject(what .. " loop must be a boolean", { what = what })
+  end
+  local bounds = sequence.bounds
+  if type(bounds) ~= "table" then
+    reject(what .. " bounds must be a table", { what = what })
+  end
+  demandCount(bounds, 4, what .. " bounds must carry exactly its origin and extent", { what = what })
+  checkSignedPoint({ x = bounds.x, y = bounds.y }, what .. " bounds origin must be a signed integral point")
+  checkInteger(bounds.width, 1, nil, what .. " bounds width must be a positive integer", {})
+  checkInteger(bounds.height, 1, nil, what .. " bounds height must be a positive integer", {})
+  if type(sequence.frames) ~= "table" then
+    reject(what .. " frames must be a table", { what = what })
+  end
+  local count = demandDenseSequence(sequence.frames, what .. " frames must be a dense non-empty array", {})
+  local total = 0
+  for index = 1, count do
+    local frame = sequence.frames[index]
+    local frameWhat = what .. " frame " .. index
+    if type(frame) ~= "table" then
+      reject(frameWhat .. " must be a table", { what = frameWhat })
+    end
+    demandCount(frame, 4, frameWhat .. " must carry exactly its image, atlas, offset, and ticks", {})
+    local atlasKey = optionsAtlasKey(assets, frame.image, frameWhat)
+    checkAtlasRect(frame.atlas, atlases, atlasKey, frameWhat .. " atlas rect")
+    checkFrameOffset(frame.offset, frameWhat .. " must carry an integral frame offset", { what = frameWhat })
+    checkInteger(frame.ticks, 0, nil, frameWhat .. " ticks must be a non-negative integer", {})
+    total = total + frame.ticks
+  end
+  if total == 0 then
+    reject(what .. " animation must advance", { what = what })
+  end
+end
+
+local function checkOptions(s, atlases, assets)
+  if type(s.version) ~= "number" or s.version ~= 7 then
+    reject("options.version must be 7", { version = s.version })
+  end
+  demandCount(
+    s,
+    10,
+    "options must carry exactly its version, backdrops, row plates, selection overlay, labels, choices, arrows, actions, frame previews, and tick rate",
+    {}
+  )
+  local backdrops = s.backdrops
+  if type(backdrops) ~= "table" then
+    reject("options.backdrops must be a table", {})
+  end
+  demandCount(backdrops, 3, "options.backdrops must carry exactly the header, footer, and preview roles", {})
+  local expectedRoles = {
+    header = { key = FieldUiAssetCache.ASSET.OPTIONS_HEADER_BACKGROUND, width = 256, height = 24 },
+    footer = { key = FieldUiAssetCache.ASSET.OPTIONS_FOOTER_BACKGROUND, width = 256, height = 24 },
+    preview = { key = FieldUiAssetCache.ASSET.OPTIONS_PREVIEW_BACKGROUND, width = 256, height = 192 },
+  }
+  for role, spec in pairs(expectedRoles) do
+    if backdrops[role] ~= spec.key then
+      reject("options.backdrops." .. role .. " must reference its indexed shell band asset", {
+        role = role,
+        value = backdrops[role],
+      })
+    end
+    local dims = atlases[spec.key]
+    if type(dims) ~= "table" then
+      reject("options.backdrops." .. role .. " must reference an indexed asset", { role = role })
+    end
+    if dims.width ~= spec.width or dims.height ~= spec.height then
+      if role == "preview" then
+        reject("options.backdrops." .. role .. " must be the 256x192 field screen", {
+          role = role,
+          width = dims.width,
+          height = dims.height,
+        })
+      else
+        reject("options.backdrops." .. role .. " must be the 256x24 shell band", {
+          role = role,
+          width = dims.width,
+          height = dims.height,
+        })
+      end
+    end
+  end
+  for role in pairs(backdrops) do
+    if expectedRoles[role] == nil then
+      reject("options.backdrops carries an unknown role", { role = role })
+    end
+  end
+  local rowBackings = s.rowBackings
+  if type(rowBackings) ~= "table" then
+    reject("options.rowBackings must be a table", {})
+  end
+  demandCount(rowBackings, 3, "options.rowBackings must carry exactly the odd, even, and frame plates", {})
+  local expectedPlates = {
+    odd = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_ODD, height = 24 },
+    even = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_EVEN, height = 24 },
+    frame = { key = FieldUiAssetCache.ASSET.OPTIONS_ROW_FRAME, height = 72 },
+  }
+  for role, plate in pairs(expectedPlates) do
+    if rowBackings[role] ~= plate.key then
+      reject("options.rowBackings." .. role .. " must reference its indexed row plate asset", {
+        role = role,
+        value = rowBackings[role],
+      })
+    end
+    local dims = atlases[plate.key]
+    if type(dims) ~= "table" then
+      reject("options.rowBackings." .. role .. " must reference an indexed asset", { role = role })
+    end
+    if dims.width ~= 256 or dims.height ~= plate.height then
+      reject("options.rowBackings." .. role .. " must be the 256-wide scrolling plate", {
+        role = role,
+        width = dims.width,
+        height = dims.height,
+      })
+    end
+  end
+  for role in pairs(rowBackings) do
+    if expectedPlates[role] == nil then
+      reject("options.rowBackings carries an unknown role", { role = role })
+    end
+  end
+  if s.selectionOverlay ~= FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY then
+    reject("options.selectionOverlay must reference its indexed selected-row strip asset", {
+      value = s.selectionOverlay,
+    })
+  end
+  local strip = atlases[FieldUiAssetCache.ASSET.OPTIONS_SELECTION_OVERLAY]
+  if type(strip) ~= "table" then
+    reject("options.selectionOverlay must reference an indexed asset", {})
+  end
+  if strip.width ~= 256 or strip.height ~= 30 then
+    reject("options.selectionOverlay must be the 256x30 selected-row indicator", {
+      width = strip.width,
+      height = strip.height,
+    })
+  end
+  if
+    type(s.animationTickSeconds) ~= "number"
+    or s.animationTickSeconds ~= s.animationTickSeconds
+    or s.animationTickSeconds <= 0
+    or s.animationTickSeconds >= math.huge
+  then
+    reject("options.animationTickSeconds must be a positive finite duration", {})
+  end
+  local labels = s.labels
+  if type(labels) ~= "table" then
+    reject("options.labels must be a table", {})
+  end
+  demandCount(labels, 13, "options.labels must carry exactly the curated label roles", {})
+  for _, key in ipairs({
+    "title",
+    "textSpeed",
+    "battleScene",
+    "battleStyle",
+    "soundMode",
+    "textFrame",
+    "confirm",
+    "quit",
+  }) do
+    checkOptionsLabel(labels[key], "options.labels." .. key)
+  end
+  local valueKeys = { textSpeedValues = { "mid", "fast" }, battleSceneValues = { "on", "off" } }
+  valueKeys.battleStyleValues = { "shift", "set" }
+  valueKeys.soundModeValues = { "stereo", "mono" }
+  for group, keys in pairs(valueKeys) do
+    local values = labels[group]
+    if type(values) ~= "table" then
+      reject("options.labels." .. group .. " must be a table", {})
+    end
+    demandCount(values, 2, "options.labels." .. group .. " must carry exactly its two offered values", {})
+    for _, key in ipairs(keys) do
+      checkOptionsLabel(values[key], "options.labels." .. group .. "." .. key)
+    end
+  end
+  if type(labels.frameValues) ~= "table" then
+    reject("options.labels.frameValues must be a table", {})
+  end
+  demandCount(labels.frameValues, 20, "options.labels.frameValues must carry all twenty frame values", {})
+  for frame = 0, 19 do
+    checkOptionsLabel(labels.frameValues[frame], "options.labels.frameValues[" .. frame .. "]")
+  end
+  local choices = s.choices
+  if type(choices) ~= "table" then
+    reject("options.choices must be a table", {})
+  end
+  demandCount(choices, 2, "options.choices must carry exactly the small and wide controls", {})
+  for _, size in ipairs({ "small", "wide" }) do
+    local control = choices[size]
+    if type(control) ~= "table" then
+      reject("options.choices." .. size .. " must be a table", {})
+    end
+    demandCount(control, 2, "options.choices." .. size .. " must carry its unselected and selected states", {})
+    checkOptionsSequence(control.unselected, "options.choices." .. size .. ".unselected", atlases, assets)
+    checkOptionsSequence(control.selected, "options.choices." .. size .. ".selected", atlases, assets)
+  end
+  local arrows = s.arrows
+  if type(arrows) ~= "table" then
+    reject("options.arrows must be a table", {})
+  end
+  demandCount(arrows, 2, "options.arrows must carry exactly the left and right arrows", {})
+  for _, side in ipairs({ "left", "right" }) do
+    local arrow = arrows[side]
+    if type(arrow) ~= "table" then
+      reject("options.arrows." .. side .. " must be a table", {})
+    end
+    demandCount(arrow, 2, "options.arrows." .. side .. " must carry its idle and pressed states", {})
+    checkOptionsSequence(arrow.idle, "options.arrows." .. side .. ".idle", atlases, assets)
+    checkOptionsSequence(arrow.pressed, "options.arrows." .. side .. ".pressed", atlases, assets)
+  end
+  local actions = s.actions
+  if type(actions) ~= "table" then
+    reject("options.actions must be a table", {})
+  end
+  demandCount(
+    actions,
+    4,
+    "options.actions must carry exactly the normal, focused, pressed, and pressed-focused states",
+    {}
+  )
+  for _, state in ipairs({ "normal", "focused", "pressed", "pressedFocused" }) do
+    checkOptionsSequence(actions[state], "options.actions." .. state, atlases, assets)
+  end
+  -- The slider thumb is the bag quantity-decrement pressed visual, borrowed
+  -- through the bag manifest at draw time: the options section carries no
+  -- cursor art of its own.
+  if type(s.framePreviewText) ~= "table" then
+    reject("options.framePreviewText must be a table", {})
+  end
+  demandCount(s.framePreviewText, 20, "options.framePreviewText must carry all twenty frame previews", {})
+  for frame = 0, 19 do
+    checkOptionsLabel(s.framePreviewText[frame], "options.framePreviewText[" .. frame .. "]")
+  end
+  local forbidden = {
+    member = true,
+    memberId = true,
+    narc = true,
+    narcId = true,
+    alias = true,
+    fileId = true,
+    bank = true,
+    bankId = true,
+    index = true,
+  }
+  local function scan(value)
+    if type(value) ~= "table" then
+      return nil
+    end
+    for key, nested in pairs(value) do
+      if type(key) == "string" and forbidden[key] then
+        return key
+      end
+      local leaked = scan(nested)
+      if leaked ~= nil then
+        return leaked
+      end
+    end
+    return nil
+  end
+  local leaked = scan(s)
+  if leaked ~= nil then
+    reject("the options section leaks source detail", { field = leaked })
+  end
+end
+
 local function demandSection(manifest, name)
   local sectionData = manifest[name]
   if type(sectionData) ~= "table" then
@@ -520,6 +838,7 @@ local function checkManifest(manifest)
     FieldUiAssetCache.GEOMETRY
   )
   checkYesNoPrompt(demandSection(manifest, "yesNoPrompt"), atlases)
+  checkOptions(demandSection(manifest, "options"), atlases, manifest.assets)
 end
 
 ---@param manifest table<string, unknown>

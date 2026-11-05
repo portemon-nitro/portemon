@@ -167,6 +167,18 @@ function PartyScreenRenderer.new(opts)
   return renderer
 end
 
+-- Replaces the borrowed application frame choice future message windows
+-- draw with. The index arrives already validated through the composed
+-- player options; leases and animation state stay untouched.
+---@param index integer the validated zero-based user-frame index
+function PartyScreenRenderer:setFrameIndex(index)
+  assert(
+    type(index) == "number" and index % 1 == 0 and index >= 0,
+    "party renderer frame index must be a non-negative integer"
+  )
+  self._frameIndex = index
+end
+
 -- Acquires each realized Party asset once; prompt imagery remains owned by
 -- the shared prompt renderer.
 ---@param cacheFs CacheFs

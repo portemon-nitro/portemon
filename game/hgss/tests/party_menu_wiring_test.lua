@@ -264,6 +264,9 @@ local function compositionDeps(overrides)
       return true
     end,
     cancelIconPreparation = function() end,
+    textPolicyForOpen = function()
+      return { interGlyphDelay = 1, glyphBudget = 1, abAcceleration = true }
+    end,
     contextSources = function()
       return sources()
     end,
