@@ -36,6 +36,23 @@ local SURFACE_HEIGHT = 192
 PokegearPhoneRenderer.SURFACE_WIDTH = SURFACE_WIDTH
 PokegearPhoneRenderer.SURFACE_HEIGHT = SURFACE_HEIGHT
 
+-- Ports PhoneContactListUI_GetBackgroundIndex: the alternating row color
+-- follows the visible slot with the controller's scroll-flip flag, never
+-- the absolute contact. The source numbers slots one-based; this port
+-- takes the zero-based viewport slot this renderer already paints.
+---@param slot integer zero-based viewport slot, possibly transient
+---@param firstBgColor integer the source scroll-flip flag, 0 or 1
+---@return integer zero-based row color set
+function PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor)
+  assert(type(slot) == "number", "the slot color reads its viewport slot")
+  assert(firstBgColor == 0 or firstBgColor == 1, "the slot color reads the source flip flag")
+  local bit = (slot + 1) % 2
+  if firstBgColor == 1 then
+    bit = 1 - bit
+  end
+  return bit
+end
+
 -- The list window sits at surface (8, 16); each of its rows is a 216x24
 -- band of the window bitmap, printed at the source window-local offsets
 -- x16 (name) and x94 (class) with y24*slot+2.
@@ -270,8 +287,10 @@ end
 
 -- Draws one contact row at its shifted viewport position: the band
 -- fill, the name and class cells, the marker dots, then the name and
--- class text. Colors follow the absolute contact index so the
--- alternating pattern travels with the contacts, not the destination.
+-- class text. The caller resolves the color set: settled rows follow the
+-- viewport slot with the scroll-flip flag, sliding rows follow the
+-- scroll-start slot so moving bands keep their colors like the source
+-- window-bitmap shift.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param text table<string, unknown>?
@@ -282,8 +301,9 @@ end
 ---@param manual boolean
 ---@param sprites table<string, unknown>
 ---@param palette table<integer, table<string, number>>
-local function drawRow(graphics, images, text, entry, absolute, top, selected, manual, sprites, palette)
-  local colors = ROW_COLORS[(absolute % 2) + 1]
+---@param colorIdx integer zero-based row color set
+local function drawRow(graphics, images, text, entry, absolute, top, selected, manual, sprites, palette, colorIdx)
+  local colors = ROW_COLORS[colorIdx + 1]
   fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
   fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
   fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
@@ -323,14 +343,13 @@ local function drawRow(graphics, images, text, entry, absolute, top, selected, m
   end
 end
 
--- Draws an empty band at a settled slot with the absolute parity the
--- missing contact would carry.
+-- Draws an empty band with the caller's resolved color set.
 ---@param graphics love.graphics
----@param absolute integer
 ---@param top number
 ---@param palette table<integer, table<string, number>>
-local function drawEmptyBand(graphics, absolute, top, palette)
-  local colors = ROW_COLORS[(absolute % 2) + 1]
+---@param colorIdx integer zero-based row color set
+local function drawEmptyBand(graphics, top, palette, colorIdx)
+  local colors = ROW_COLORS[colorIdx + 1]
   fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
   fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
   fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
@@ -346,8 +365,8 @@ end
 -- the name and class text in the selected or deselected palette colors.
 -- Manual move mode swaps the corner frame for per-row move chevrons. A
 -- running slide paints the transient seven-row strip at its per-row
--- displacement under a viewport clip; the alternating colors follow the
--- absolute contact index.
+-- displacement under a viewport clip; sliding colors resolve against the
+-- scroll-start slot so the bands travel with their rows.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param text table<string, unknown>?
@@ -358,12 +377,20 @@ local function drawList(graphics, images, text, list, sprites, palette)
   local rows = list.rows --[[@as table[] ]]
   local selected = list.selected --[[@as integer]]
   local scrollOffset = list.scrollOffset --[[@as integer]]
+  local firstBgColor = list.firstBgColor --[[@as integer]]
   local manual = list.manual == true
   assert(type(rows) == "table", "the list projection carries its rows")
   assert(type(selected) == "number", "the list projection carries its selection")
   assert(type(scrollOffset) == "number", "the list projection carries its scroll offset")
+  assert(firstBgColor == 0 or firstBgColor == 1, "the list projection carries the source scroll-flip flag")
   local pixels = slidePixels(list)
   local slideActive = type(list.slide) == "table"
+  local slideFrom = nil
+  if slideActive then
+    local slide = list.slide --[[@as table<string, unknown>]]
+    slideFrom = slide.from --[[@as integer]]
+    assert(type(slideFrom) == "number", "the sliding strip anchors colors at its scroll start")
+  end
   local function paintRows()
     if slideActive then
       for _, node in ipairs(rows) do
@@ -372,6 +399,7 @@ local function drawList(graphics, images, text, list, sprites, palette)
         local slot = entry.slot --[[@as integer]]
         assert(type(absolute) == "number", "the sliding strip carries absolute contact indices")
         assert(type(slot) == "number", "the sliding strip carries relative slots")
+        local traveling = PokegearPhoneRenderer.slotColorIndex(absolute - slideFrom --[[@as integer]], firstBgColor)
         drawRow(
           graphics,
           images,
@@ -382,7 +410,8 @@ local function drawList(graphics, images, text, list, sprites, palette)
           selected,
           manual,
           sprites,
-          palette
+          palette,
+          traveling
         )
       end
     else
@@ -396,7 +425,6 @@ local function drawList(graphics, images, text, list, sprites, palette)
         end
       end
       for slot = 0, VISIBLE_ROWS - 1 do
-        local absolute = scrollOffset + slot
         local entry = bySlot[slot]
         local top = LIST_Y + slot * ROW_HEIGHT
         if entry ~= nil then
@@ -404,9 +432,10 @@ local function drawList(graphics, images, text, list, sprites, palette)
             (entry --[[@as table<string, unknown>]]).absolute,
             "the settled strip carries absolute contact indices"
           ) --[[@as integer]]
-          drawRow(graphics, images, text, entry, resolved, top, selected, manual, sprites, palette)
+          local settled = PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor)
+          drawRow(graphics, images, text, entry, resolved, top, selected, manual, sprites, palette, settled)
         else
-          drawEmptyBand(graphics, absolute, top, palette)
+          drawEmptyBand(graphics, top, palette, PokegearPhoneRenderer.slotColorIndex(slot, firstBgColor))
         end
       end
     end
