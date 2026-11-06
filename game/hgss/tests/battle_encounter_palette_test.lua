@@ -496,8 +496,7 @@ function T.object_palettes_preserve_undefined_source_slots()
   end)
   Assert.isFalse(lowerOk, "sampling an undefined lower object slot fails")
   Assert.isTrue(
-    string.find(tostring(lowerErr), "subObj", 1, true) ~= nil
-      and string.find(tostring(lowerErr), "16", 1, true) ~= nil,
+    string.find(tostring(lowerErr), "subObj", 1, true) ~= nil and string.find(tostring(lowerErr), "16", 1, true) ~= nil,
     "undefined slot failure identifies its plane and zero-based index"
   )
 end
@@ -978,6 +977,84 @@ function T.encounter_palette_trusts_unread_source_words_until_sampled()
   Assert.equal(displayed.mainBg[1], source.fill, "a fill-covered background word reads the setup fill")
   Assert.equal(displayed.mainObj[1], source.fill, "a fill-covered object word reads the setup fill")
   Assert.equal(displayed.mainBg[113], blendWord(source.mainBg[113], source.fill, 2), "neighboring words still fade")
+end
+
+local function stagedIntroScene()
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local scene = BattleScene.new()
+  local colors = {}
+  for index = 1, 256 do
+    colors[index] = { r = index % 256, g = (index + 10) % 256, b = (index + 20) % 256 }
+  end
+  scene:installBackground({
+    characters = string.char(0x21) .. string.rep("\0", 31),
+    baseCharacters = string.char(0x21) .. string.rep("\0", 31),
+    colorMode = "4bpp",
+    map = {
+      width = 8,
+      height = 8,
+      entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } },
+    },
+    palette = { colors = colors },
+  })
+  return scene, colors
+end
+
+function T.intro_raster_applies_one_atomic_palette_update()
+  local scene, colors = stagedIntroScene()
+  local rasterizer = assert(scene._introRasterizer, "the staged base characters install the intro plane")
+  local patches = 0
+  local originalPatch = rasterizer.patchPalette
+  rasterizer.patchPalette = function(self, index, color)
+    patches = patches + 1
+    return originalPatch(self, index, color)
+  end
+  local faded = {}
+  for index = 1, 256 do
+    faded[index] = { r = (index * 3) % 256, g = (index * 5) % 256, b = (index * 7) % 256 }
+  end
+  local raster = scene:introRaster(faded)
+  Assert.equal(patches, 0, "the intro fade replaces the palette atomically instead of patching per slot")
+  local NitroBg3 = require("libs.nds.src.nitro.NitroBg3")
+  local reference = NitroBg3.new({
+    characters = string.char(0x21) .. string.rep("\0", 31),
+    colorMode = "4bpp",
+    map = {
+      width = 8,
+      height = 8,
+      entries = { { tile = 0, flipH = false, flipV = false, palette = 0 } },
+    },
+    palette = { colors = faded },
+    transparentZero = false,
+  })
+  Assert.equal(raster.pixels, reference:render().pixels, "the atomic update composes byte-exact intro pixels")
+  Assert.equal(scene:introRaster(faded), raster, "identical intro colors reuse the cached raster")
+end
+
+function T.background_raster_reuses_owned_background_without_a_detached_copy()
+  local scene, _ = stagedIntroScene()
+  local copies = 0
+  local originalBackground = scene.background
+  scene.background = function(self)
+    copies = copies + 1
+    return originalBackground(self)
+  end
+  local first = scene:backgroundRaster()
+  Assert.equal(copies, 0, "the rasterizer builds from the owned background without a detached copy")
+  Assert.equal(scene:backgroundRaster(), first, "steady background reads reuse the cached raster")
+  scene:patchBackgroundPalette(2, { r = 200, g = 10, b = 10 })
+  local repainted = scene:backgroundRaster()
+  Assert.isTrue(repainted ~= first, "background palette patches still recompose")
+  Assert.deepEqual({ repainted:pixel(1, 0) }, { 200, 10, 10, 255 }, "background palette patches recolor pixels")
+  local snapshot = originalBackground(scene)
+  snapshot.map.entries[1].tile = 7
+  snapshot.palette.colors[1].r = 1
+  Assert.deepEqual(
+    { scene:backgroundRaster():pixel(1, 0) },
+    { 200, 10, 10, 255 },
+    "mutating a detached snapshot never moves the installed background"
+  )
+  scene.background = originalBackground
 end
 
 return { tests = T }

@@ -34,4 +34,26 @@ function T.rejects_a_visible_index_without_a_displayed_palette_word()
   Assert.isTrue(tostring(failure):find("displayed palette word", 1, true) ~= nil, "the missing slot is diagnosed")
 end
 
+function T.ignores_non_semantic_channels_and_preserves_modded_coverage()
+  local indices = table.concat({
+    string.char(3, 200, 77, 255),
+    string.char(3, 0, 0, 128),
+    string.char(0, 0, 0, 0),
+  })
+  local palette = {
+    [1] = Rgb555.encode(0, 0, 0),
+    [4] = Rgb555.encode(31, 0, 0),
+  }
+  local raster = BattleEncounterIndexedRaster.render(indices, 3, 1, palette)
+  Assert.equal(raster.width, 3, "modded channels keep the raster width")
+  Assert.equal(#raster.pixels, 12, "output length matches the packed source length")
+  Assert.deepEqual({ raster.pixels:byte(1, 4) }, { 255, 0, 0, 255 }, "nonzero garbage channels never tint the sample")
+  Assert.deepEqual(
+    { raster.pixels:byte(5, 8) },
+    { 255, 0, 0, 128 },
+    "modded nonzero coverage is preserved instead of forced to opaque"
+  )
+  Assert.deepEqual({ raster.pixels:byte(9, 12) }, { 0, 0, 0, 0 }, "transparent coverage stays zero")
+end
+
 return { tests = T }

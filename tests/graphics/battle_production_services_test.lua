@@ -266,10 +266,7 @@ local function readyLeafHost()
   function derived.requestBattleTrainerPicture(selector, urgency)
     assert(
       type(selector) == "string"
-        and (
-          selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
-          or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
-        ),
+        and (selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil),
       "battle trainer picture demand carries its front:CLASS or back:CLASS selector"
     )
     host.asks[#host.asks + 1] = { kind = "battle-trainer-picture", selector = selector, urgency = urgency }
@@ -487,8 +484,12 @@ local function driveToCommand(envelope, port, launchId, versionId, portraits)
     local screen = envelope:liveScreen()
     if screen ~= nil then
       local mode = screen:status().mode
-      if mode == "intro" or mode == "narration" or mode == "outcome"
-        or screen._timeline:messageActive() or screen._timeline:levelUpStats() ~= nil
+      if
+        mode == "intro"
+        or mode == "narration"
+        or mode == "outcome"
+        or screen._timeline:messageActive()
+        or screen._timeline:levelUpStats() ~= nil
       then
         screen:input({ { type = "confirm" } })
       end
@@ -1185,6 +1186,75 @@ function T.idle_warmup_reuses_staged_scene_on_first_battle_entry(scope, context)
       warmedPaths[path] and true or nil,
       versionId .. " rebuilds no warmed scene image at entry: " .. tostring(path)
     )
+  end
+end
+
+-- The background upload stages the composed raster through the packed RGBA8
+-- path: one bulk ImageData from the raster bytes, no per-pixel setPixel, one
+-- image per changed raster, and exactly one release on replacement.
+function T.background_upload_uses_packed_pixels_without_per_pixel_setpixel()
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+  local cache = CacheFs.forVersion("probe-background-upload", FakeCache.new())
+  local uploads = {}
+  local graphics = {}
+  function graphics.newImage(data)
+    local image = { data = data, released = false }
+    function image:setFilter() end
+    function image:release()
+      image.released = true
+    end
+    uploads[#uploads + 1] = image
+    return image
+  end
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    graphics = graphics,
+    windows = {},
+    text = text,
+    measureDisplay = compactMeasurement,
+  })
+  local services = envelope:_preparationServices()
+  local realNewImageData = love.image.newImageData
+  local setPixels = 0
+  local bulks = {}
+  love.image.newImageData = function(width, height, format, pixels)
+    if format == nil then
+      local stub = {}
+      function stub:setPixel()
+        setPixels = setPixels + 1
+      end
+      return stub
+    end
+    bulks[#bulks + 1] = { width = width, height = height, format = format, pixels = pixels }
+    return realNewImageData(width, height, format, pixels)
+  end
+  local ok, failure = pcall(function()
+    local first = { width = 4, height = 2, pixels = string.rep(string.char(10, 20, 30, 255), 8) }
+    local image = services.background(first)
+    Assert.equal(setPixels, 0, "the background upload stages no pixel one by one")
+    Assert.equal(#bulks, 1, "the first raster uploads once")
+    Assert.equal(bulks[1].format, "rgba8", "the background upload stages packed RGBA8 bytes")
+    Assert.equal(bulks[1].pixels, first.pixels, "the background upload stages the exact raster bytes")
+    Assert.equal(services.background(first), image, "an unchanged raster reuses its image")
+    Assert.equal(#bulks, 1, "an unchanged raster uploads nothing")
+    local second = { width = 4, height = 2, pixels = string.rep(string.char(40, 50, 60, 255), 8) }
+    local replacement = services.background(second)
+    Assert.isTrue(replacement ~= image, "a changed raster uploads a new image")
+    Assert.equal(setPixels, 0, "the changed raster still stages no pixel one by one")
+    Assert.equal(#bulks, 2, "the changed raster uploads exactly once")
+    Assert.equal(bulks[2].pixels, second.pixels, "the replacement stages the exact new bytes")
+    Assert.isTrue(image.released, "replacement releases its predecessor exactly once")
+  end)
+  love.image.newImageData = realNewImageData
+  envelope:dispose()
+  if not ok then
+    error(failure, 0)
   end
 end
 

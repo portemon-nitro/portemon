@@ -1778,7 +1778,7 @@ function BattleScene:backgroundRaster()
     return active.rasterizer:render()
   end
   if self._backgroundRasterizer == nil then
-    local background = self:background()
+    local background = assert(self._background, "BG3 access requires an installed layer")
     self._backgroundRasterizer = NitroBg3.new({
       characters = background.characters,
       map = background.map,
@@ -1811,9 +1811,7 @@ function BattleScene:introRaster(colors)
   assert(not self._released, "released scenes compose no intro planes")
   if colors ~= nil then
     assert(type(colors) == "table" and #colors == 256, "intro fades carry 256 staged colors")
-    for index = 0, 255 do
-      rasterizer:patchPalette(index, colors[index + 1])
-    end
+    rasterizer:replacePalette(colors)
   end
   return rasterizer:render()
 end

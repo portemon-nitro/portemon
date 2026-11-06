@@ -2470,20 +2470,19 @@ function FieldBattlePresentation:_preparationServices()
   function services.sceneLayer()
     return stagedSceneLayer
   end
+  -- Uploads one composed BG3 raster through the bulk pixel path: the
+  -- raster already carries packed RGBA8 pixels, so no per-pixel Lua
+  -- runs on the frame loop. Ownership mirrors the faded intro upload:
+  -- an unchanged raster reuses its image, a changed raster releases its
+  -- predecessor exactly once, and failures adopt nothing.
   function services.background(raster)
     assert(graphics ~= nil, "BG3 image upload requires host graphics")
-    assert(type(raster) == "table", "BG3 upload takes a composed raster")
+    assert(type(raster) == "table" and type(raster.pixels) == "string", "BG3 upload takes a composed raster")
     if raster == backgroundPixels then
       return backgroundImage
     end
     local ok, uploadedOrError = pcall(function()
-      local imageData = love.image.newImageData(raster.width, raster.height)
-      for y = 0, raster.height - 1 do
-        for x = 0, raster.width - 1 do
-          local r, g, b, a = raster:pixel(x, y)
-          imageData:setPixel(x, y, r / 255, g / 255, b / 255, a / 255)
-        end
-      end
+      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
       local uploaded = graphics.newImage(imageData)
       assert(uploaded ~= nil, "the graphics driver handed out no BG3 image")
       uploaded:setFilter("nearest", "nearest")
