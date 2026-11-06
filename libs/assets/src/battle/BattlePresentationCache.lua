@@ -491,20 +491,103 @@ local function planningManifest(versionId)
   }
 end
 
--- Trusted runtime load: the staged manifest when it validates, else the
--- planning inventory so demands stay constructible before staging. Staged
--- roles never fall back to planning data silently: the verified flag tells
--- them apart.
+-- Strict audit readback behind every explicit readiness check: the staged
+-- record must parse as a table, satisfy its schema, and name the requested
+-- identity. Runtime loads below intentionally skip these checks; an audit
+-- never treats a successful load as proof of validity.
+---@param cacheFs CacheFs
+---@param sceneKey string
+---@return BattlePresentationCache.SceneRecord|nil
+local function strictSceneRecord(cacheFs, sceneKey)
+  if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
+    return nil
+  end
+  local record = cacheFs:loadLua(BattlePresentationCache.scenePath(sceneKey))
+  if type(record) ~= "table" or not pcall(BattlePresentationSchema.assertScene, record) then
+    return nil
+  end
+  if record.key ~= sceneKey then
+    return nil
+  end
+  return record
+end
+
+---@param cacheFs CacheFs
+---@param selector string
+---@return BattlePresentationCache.TrainerPictureRecord|nil
+local function strictTrainerPictureRecord(cacheFs, selector)
+  if
+    type(selector) ~= "string"
+    or (selector:match("^front:[A-Z][A-Z0-9_]*$") == nil and selector:match("^back:[A-Z][A-Z0-9_]*$") == nil)
+  then
+    return nil
+  end
+  local record = cacheFs:loadLua(BattlePresentationCache.trainerPicturePath(selector))
+  if type(record) ~= "table" or not pcall(BattlePresentationSchema.assertTrainerPicture, record) then
+    return nil
+  end
+  if record.selector ~= selector then
+    return nil
+  end
+  return record
+end
+
+---@param cacheFs CacheFs
+---@param selector string
+---@return BattlePresentationCache.BallRecord|nil
+local function strictBallRecord(cacheFs, selector)
+  if type(selector) ~= "string" or selector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+    return nil
+  end
+  local record = cacheFs:loadLua(BattlePresentationCache.ballPath(selector))
+  if type(record) ~= "table" or not pcall(BattlePresentationSchema.assertBall, record) then
+    return nil
+  end
+  if record.selector ~= selector then
+    return nil
+  end
+  return record
+end
+
+---@param cacheFs CacheFs
+---@return BattlePresentationCache.EvolutionRecord|nil
+local function strictEvolutionRecord(cacheFs)
+  local record = cacheFs:loadLua(BattlePresentationCache.evolutionPath())
+  if type(record) ~= "table" or not pcall(BattlePresentationSchema.assertEvolution, record) then
+    return nil
+  end
+  return record
+end
+
+---@param cacheFs CacheFs
+---@param effectKey string
+---@return BattlePresentationEffect|nil
+local function strictEffectRecord(cacheFs, effectKey)
+  if type(effectKey) ~= "string" or effectKey == "" or effectKey:find("/", 1, true) ~= nil then
+    return nil
+  end
+  local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+  local record = cacheFs:loadLua(BattlePresentationCache.effectPath(effectKey))
+  if type(record) ~= "table" or not pcall(BattleAnimationSchema.assertEffect, record) then
+    return nil
+  end
+  if record.key ~= effectKey then
+    return nil
+  end
+  return record
+end
+
+-- Trusted runtime load: a staged manifest table whose verified flag marks
+-- the published family, else the planning inventory so demands stay
+-- constructible before staging. Content edits never redirect the load:
+-- the verified flag tells staged roles apart from planning data.
 ---@param cacheFs CacheFs
 ---@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, cries: string }, evolutionParticles?: BattlePresentationCache.EvolutionParticleSet, evolutionGraphics?: BattlePresentationCache.EvolutionGraphics } global or planning manifest
 function BattlePresentationCache.load(cacheFs)
   assert(cacheFs ~= nil, "presentation loading requires a cache filesystem")
   local staged = cacheFs:loadLua(BattlePresentationCache.manifestPath())
-  if type(staged) == "table" then
-    local ok = pcall(BattlePresentationSchema.assertManifest, staged)
-    if ok then
-      return staged
-    end
+  if type(staged) == "table" and staged.verified == true then
+    return staged
   end
   return planningManifest(assert(cacheFs.versionId, "presentation loading requires a versioned cache"))
 end
@@ -542,7 +625,11 @@ function BattlePresentationCache.isEvolutionParticlesReady(cacheFs, expectedMark
   if cacheFs:read(BattlePresentationCache.evolutionMarkerPath()) ~= expectedMarker then
     return false
   end
-  local particles = BattlePresentationCache.loadEvolutionParticles(cacheFs)
+  local record = strictEvolutionRecord(cacheFs)
+  if record == nil then
+    return false
+  end
+  local particles = record.particles
   if particles == nil then
     return false
   end
@@ -568,7 +655,11 @@ function BattlePresentationCache.isEvolutionGraphicsReady(cacheFs, expectedMarke
   if cacheFs:read(BattlePresentationCache.evolutionMarkerPath()) ~= expectedMarker then
     return false
   end
-  local graphics = BattlePresentationCache.loadEvolutionGraphics(cacheFs)
+  local record = strictEvolutionRecord(cacheFs)
+  if record == nil then
+    return false
+  end
+  local graphics = record.graphics
   if graphics == nil then
     return false
   end
@@ -598,8 +689,10 @@ function BattlePresentationCache.isEvolutionGraphicsReady(cacheFs, expectedMarke
   return true
 end
 
--- Load one staged scene record: the record must validate and name exactly
--- the requested key. A missing record is pending, never a fallback scene.
+-- Trusted runtime load of one staged scene record: any readable table
+-- staged under the requested key is returned unchanged. Schema and key
+-- agreement are explicit audit work, never a load gate. A missing or
+-- unreadable record is pending, never a fallback scene.
 ---@param cacheFs CacheFs
 ---@param sceneKey string
 ---@return BattlePresentationCache.SceneRecord|nil scene record
@@ -610,17 +703,9 @@ function BattlePresentationCache.loadScene(cacheFs, sceneKey)
     return nil, "unknown battle scene key: " .. tostring(sceneKey)
   end
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.scenePath(sceneKey))
-  if record == nil then
-    local reason = loadErr == nil and "no staged battle scene file" or tostring(loadErr)
+  if type(record) ~= "table" then
+    local reason = loadErr == nil and "no staged battle scene table" or tostring(loadErr)
     return nil, "no staged battle scene for " .. tostring(sceneKey) .. ": " .. reason
-  end
-  local ok, schemaErr = pcall(BattlePresentationSchema.assertScene, record)
-  if not ok then
-    return nil, schemaErr
-  end
-  assert(record ~= nil, "the staged scene carries its record")
-  if record.key ~= sceneKey then
-    return nil, "staged battle scene names " .. tostring(record.key) .. ", not " .. sceneKey
   end
   return record
 end
@@ -1047,7 +1132,7 @@ function BattlePresentationCache.isReady(cacheFs, demand)
     end
   end
   for _, sceneKey in ipairs(demand.scenes) do
-    local record, _ = BattlePresentationCache.loadScene(cacheFs, sceneKey)
+    local record = strictSceneRecord(cacheFs, sceneKey)
     if record == nil then
       return false
     end
@@ -1083,13 +1168,13 @@ function BattlePresentationCache.isReady(cacheFs, demand)
     end
   end
   for _, selector in ipairs(demand.trainerPictures) do
-    local record, _ = BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
+    local record = strictTrainerPictureRecord(cacheFs, selector)
     if record == nil or not hasTrainerPictureImageClosure(cacheFs, record) then
       return false
     end
   end
   for _, selector in ipairs(demand.battleBalls) do
-    local record, _ = BattlePresentationCache.loadBall(cacheFs, selector)
+    local record = strictBallRecord(cacheFs, selector)
     if record == nil or not hasBallImageClosure(cacheFs, record) then
       return false
     end
@@ -1172,7 +1257,7 @@ function BattlePresentationCache.isSceneReady(cacheFs, sceneKey, expectedMarker)
   if cacheFs:read(BattlePresentationCache.sceneMarkerPath(sceneKey)) ~= expectedMarker then
     return false
   end
-  local record, _ = BattlePresentationCache.loadScene(cacheFs, sceneKey)
+  local record = strictSceneRecord(cacheFs, sceneKey)
   if record == nil then
     return false
   end
@@ -1247,9 +1332,10 @@ function BattlePresentationCache.evolutionMarkerPath()
   return LEAF_EVOLUTION_DIR .. "/presentation.complete"
 end
 
--- Load one staged trainer picture leaf: the record must validate and name
--- exactly the requested selector. A missing leaf is pending, never a
--- fallback record.
+-- Trusted runtime load of one staged trainer picture leaf: any readable
+-- table staged under the requested selector is returned unchanged. Schema
+-- and selector agreement are explicit audit work, never a load gate. A
+-- missing leaf is pending, never a fallback record.
 ---@param cacheFs CacheFs
 ---@param selector string
 ---@return BattlePresentationCache.TrainerPictureRecord|nil leaf record
@@ -1263,23 +1349,17 @@ function BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
     return nil, "unknown trainer picture selector: " .. tostring(selector)
   end
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.trainerPicturePath(selector))
-  if record == nil then
-    local reason = loadErr == nil and "no staged trainer picture file" or tostring(loadErr)
+  if type(record) ~= "table" then
+    local reason = loadErr == nil and "no staged trainer picture table" or tostring(loadErr)
     return nil, "no staged trainer picture for " .. tostring(selector) .. ": " .. reason
-  end
-  local ok, schemaErr = pcall(BattlePresentationSchema.assertTrainerPicture, record)
-  if not ok then
-    return nil, schemaErr
-  end
-  assert(record ~= nil, "the staged trainer picture carries its record")
-  if record.selector ~= selector then
-    return nil, "staged trainer picture names " .. tostring(record.selector) .. ", not " .. selector
   end
   return record
 end
 
--- Load one staged ball leaf: the record must validate and name exactly
--- the requested selector. A missing leaf is pending, never a fallback.
+-- Trusted runtime load of one staged ball leaf: any readable table staged
+-- under the requested selector is returned unchanged. Schema and selector
+-- agreement are explicit audit work, never a load gate. A missing leaf is
+-- pending, never a fallback.
 ---@param cacheFs CacheFs
 ---@param selector string
 ---@return BattlePresentationCache.BallRecord|nil leaf record
@@ -1290,38 +1370,27 @@ function BattlePresentationCache.loadBall(cacheFs, selector)
     return nil, "unknown battle ball selector: " .. tostring(selector)
   end
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.ballPath(selector))
-  if record == nil then
-    local reason = loadErr == nil and "no staged ball file" or tostring(loadErr)
+  if type(record) ~= "table" then
+    local reason = loadErr == nil and "no staged ball table" or tostring(loadErr)
     return nil, "no staged ball for " .. tostring(selector) .. ": " .. reason
-  end
-  local ok, schemaErr = pcall(BattlePresentationSchema.assertBall, record)
-  if not ok then
-    return nil, schemaErr
-  end
-  assert(record ~= nil, "the staged ball carries its record")
-  if record.selector ~= selector then
-    return nil, "staged ball names " .. tostring(record.selector) .. ", not " .. selector
   end
   return record
 end
 
--- Load the staged evolution bundle leaf. A missing leaf is pending, never
--- a fallback record.
+-- Trusted runtime load of the staged evolution bundle leaf: any readable
+-- table staged under the bundle path is returned unchanged. Schema
+-- agreement is explicit audit work, never a load gate. A missing leaf is
+-- pending, never a fallback record.
 ---@param cacheFs CacheFs
 ---@return BattlePresentationCache.EvolutionRecord|nil leaf record
 ---@return unknown|nil reason
 function BattlePresentationCache.loadEvolution(cacheFs)
   assert(cacheFs ~= nil, "evolution loading requires a cache filesystem")
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.evolutionPath())
-  if record == nil then
-    local reason = loadErr == nil and "no staged evolution file" or tostring(loadErr)
+  if type(record) ~= "table" then
+    local reason = loadErr == nil and "no staged evolution table" or tostring(loadErr)
     return nil, "no staged evolution bundle: " .. reason
   end
-  local ok, schemaErr = pcall(BattlePresentationSchema.assertEvolution, record)
-  if not ok then
-    return nil, schemaErr
-  end
-  assert(record ~= nil, "the staged evolution bundle carries its record")
   return record
 end
 
@@ -1336,7 +1405,7 @@ function BattlePresentationCache.isTrainerPictureReady(cacheFs, selector, expect
   if cacheFs:read(BattlePresentationCache.trainerPictureMarkerPath(selector)) ~= expectedMarker then
     return false
   end
-  local record, _ = BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
+  local record = strictTrainerPictureRecord(cacheFs, selector)
   if record == nil then
     return false
   end
@@ -1353,7 +1422,7 @@ function BattlePresentationCache.isBallReady(cacheFs, selector, expectedMarker)
   if cacheFs:read(BattlePresentationCache.ballMarkerPath(selector)) ~= expectedMarker then
     return false
   end
-  local record, _ = BattlePresentationCache.loadBall(cacheFs, selector)
+  local record = strictBallRecord(cacheFs, selector)
   if record == nil then
     return false
   end
@@ -1369,15 +1438,17 @@ function BattlePresentationCache.isEvolutionReady(cacheFs, expectedMarker)
   if cacheFs:read(BattlePresentationCache.evolutionMarkerPath()) ~= expectedMarker then
     return false
   end
-  local record, _ = BattlePresentationCache.loadEvolution(cacheFs)
+  local record = strictEvolutionRecord(cacheFs)
   if record == nil then
     return false
   end
   return hasEvolutionImageClosure(cacheFs, record)
 end
 
--- Load one staged effect record: the record must validate and name exactly
--- the requested key. A missing record is pending, never a fallback effect.
+-- Trusted runtime load of one staged effect record: any readable table
+-- staged under the requested key is returned unchanged. Schema and key
+-- agreement are explicit audit work, never a load gate. A missing record
+-- is pending, never a fallback effect.
 ---@param cacheFs CacheFs
 ---@param effectKey string
 ---@return BattlePresentationEffect|nil effect record
@@ -1387,18 +1458,9 @@ function BattlePresentationCache.loadEffect(cacheFs, effectKey)
   if type(effectKey) ~= "string" or effectKey == "" or effectKey:find("/", 1, true) ~= nil then
     return nil, "unknown battle effect key: " .. tostring(effectKey)
   end
-  local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.effectPath(effectKey))
-  if record == nil then
+  if type(record) ~= "table" then
     return nil, loadErr or ("no staged battle effect for " .. effectKey)
-  end
-  local ok, schemaErr = pcall(BattleAnimationSchema.assertEffect, record)
-  if not ok then
-    return nil, schemaErr
-  end
-  assert(record ~= nil, "the staged effect carries its record")
-  if record.key ~= effectKey then
-    return nil, "staged battle effect names " .. tostring(record.key) .. ", not " .. effectKey
   end
   return record
 end
@@ -1419,7 +1481,7 @@ function BattlePresentationCache.isEffectReady(cacheFs, demand)
   then
     return false
   end
-  local record, _ = BattlePresentationCache.loadEffect(cacheFs, demand.key)
+  local record = strictEffectRecord(cacheFs, demand.key)
   if record == nil then
     return false
   end

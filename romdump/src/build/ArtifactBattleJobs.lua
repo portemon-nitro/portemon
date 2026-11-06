@@ -235,8 +235,15 @@ end
 ---@return boolean
 local function validateBattleEffect(check)
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local record, _ = BattlePresentationCache.loadEffect(check.cacheFs, check.key)
-  if record == nil then
+  local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+  if type(check.key) ~= "string" or check.key == "" or check.key:find("/", 1, true) ~= nil then
+    return false
+  end
+  local record = check.cacheFs:loadLua(BattlePresentationCache.effectPath(check.key))
+  if type(record) ~= "table" or not pcall(BattleAnimationSchema.assertEffect, record) then
+    return false
+  end
+  if record.key ~= check.key then
     return false
   end
   return check.cacheFs:read(BattlePresentationCache.effectMarkerPath(check.key)) == check.marker

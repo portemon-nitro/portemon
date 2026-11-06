@@ -1165,4 +1165,248 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   )
 end
 
+-- Runtime loads trust any readable staged table under a valid request
+-- path: a modder may edit content fields or internal identities without
+-- the load refusing the record. The explicit audits still reject the
+-- same edits, unsafe request selectors still fail before any read, and
+-- a missing file still fails at use without fabricating a record.
+function T.edited_readable_records_load_while_strict_audits_reject_them()
+  local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+  local sceneKey = "general/grass/day"
+  local cache = staging()
+  local manifest = ManifestFixture.manifest()
+  stageBattle(cache, manifest, sceneKey)
+  Assert.isTrue(
+    BattlePresentationCache.isGlobalReady(cache, "marker"),
+    "the staged global audits ready before edits"
+  )
+  Assert.isTrue(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "the staged scene audits ready before edits"
+  )
+
+  local editedManifest = assert(BattlePresentationCache.load(cache))
+  editedManifest.audioRoles = "edited-by-mod"
+  cache:writeLua(BattlePresentationCache.manifestPath(), editedManifest)
+  local reloadedManifest = assert(BattlePresentationCache.load(cache))
+  Assert.equal(
+    reloadedManifest.audioRoles,
+    "edited-by-mod",
+    "a readable manifest edit loads without repair"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isGlobalReady(cache, "marker"),
+    "the same manifest edit fails the explicit global audit"
+  )
+
+  local scene = assert(BattlePresentationCache.loadScene(cache, sceneKey))
+  scene.key = "general/grass/night"
+  cache:writeLua(BattlePresentationCache.scenePath(sceneKey), scene)
+  local editedScene = assert(BattlePresentationCache.loadScene(cache, sceneKey))
+  Assert.equal(
+    editedScene.key,
+    "general/grass/night",
+    "a renamed scene record still loads under its staged path"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "the renamed scene fails the explicit scene audit"
+  )
+
+  local trainerSelector = "front:YOUNGSTER"
+  local trainerRecord = ManifestFixture.trainerPictureRecord(trainerSelector)
+  cache:writeLua(BattlePresentationCache.trainerPicturePath(trainerSelector), trainerRecord)
+  local stagedTrainerImages = {}
+  local function stageTrainerImage(image)
+    if stagedTrainerImages[image] == nil then
+      stagedTrainerImages[image] = true
+      stagePng(cache, image, trainerRecord.entry.width, trainerRecord.entry.height)
+    end
+  end
+  local function stageTrainerFrames(frames)
+    for _, frame in ipairs(frames) do
+      stageTrainerImage(frame.image)
+      stageSourceIndices(cache, frame.sourceIndices)
+    end
+  end
+  stageTrainerImage(trainerRecord.entry.image)
+  stageTrainerFrames(trainerRecord.entry.animation.frames)
+  for _, sequence in ipairs(trainerRecord.entry.animation.sequences) do
+    stageTrainerFrames(sequence.frames)
+  end
+  cache:write(BattlePresentationCache.trainerPictureMarkerPath(trainerSelector), "leaf-marker")
+  Assert.isTrue(
+    BattlePresentationCache.isTrainerPictureReady(cache, trainerSelector, "leaf-marker"),
+    "the staged trainer picture audits ready before edits"
+  )
+  trainerRecord.selector = "front:OTHER"
+  cache:writeLua(BattlePresentationCache.trainerPicturePath(trainerSelector), trainerRecord)
+  local editedTrainer = assert(BattlePresentationCache.loadTrainerPicture(cache, trainerSelector))
+  Assert.equal(
+    editedTrainer.selector,
+    "front:OTHER",
+    "a renamed trainer leaf still loads under its staged selector"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isTrainerPictureReady(cache, trainerSelector, "leaf-marker"),
+    "the renamed trainer leaf fails the explicit trainer audit"
+  )
+
+  local ballSelector = "ball:POKE_BALL"
+  local ballRecord = ManifestFixture.ballRecord(ballSelector)
+  cache:writeLua(BattlePresentationCache.ballPath(ballSelector), ballRecord)
+  for _, frame in ipairs(ballRecord.entry.frames) do
+    stagePng(cache, frame.image, frame.width, frame.height)
+    stageSourceIndices(cache, frame.sourceIndices)
+  end
+  if ballRecord.entry.particles ~= nil then
+    for _, set in ipairs({ ballRecord.entry.particles.seal, ballRecord.entry.particles.burst }) do
+      for _, texture in ipairs(set.textures) do
+        stagePng(cache, texture.image, texture.width, texture.height)
+      end
+    end
+  end
+  cache:write(BattlePresentationCache.ballMarkerPath(ballSelector), "leaf-marker")
+  Assert.isTrue(
+    BattlePresentationCache.isBallReady(cache, ballSelector, "leaf-marker"),
+    "the staged ball audits ready before edits"
+  )
+  ballRecord.selector = "ball:GREAT_BALL"
+  cache:writeLua(BattlePresentationCache.ballPath(ballSelector), ballRecord)
+  local editedBall = assert(BattlePresentationCache.loadBall(cache, ballSelector))
+  Assert.equal(
+    editedBall.selector,
+    "ball:GREAT_BALL",
+    "a renamed ball leaf still loads under its staged selector"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isBallReady(cache, ballSelector, "leaf-marker"),
+    "the renamed ball leaf fails the explicit ball audit"
+  )
+
+  local stagedEvolution = ManifestFixture.evolutionRecord()
+  cache:writeLua(BattlePresentationCache.evolutionPath(), stagedEvolution)
+  for _, texture in ipairs(stagedEvolution.particles.textures) do
+    stagePng(cache, texture.image, texture.width, texture.height)
+  end
+  for _, layer in ipairs({ "main", "sub", "menu" }) do
+    local image = stagedEvolution.graphics[layer]
+    stagePng(cache, image.image, image.width, image.height)
+  end
+  for _, animationRole in ipairs({ "idle", "select" }) do
+    for _, frame in ipairs(stagedEvolution.graphics.cursor.animations[animationRole].frames) do
+      stagePng(cache, frame.image, frame.width, frame.height)
+    end
+  end
+  cache:write(BattlePresentationCache.evolutionMarkerPath(), "leaf-marker")
+  Assert.isTrue(
+    BattlePresentationCache.isEvolutionReady(cache, "leaf-marker"),
+    "the staged evolution bundle audits ready before edits"
+  )
+  stagedEvolution.kind = "not-evolution"
+  cache:writeLua(BattlePresentationCache.evolutionPath(), stagedEvolution)
+  local editedEvolution = assert(BattlePresentationCache.loadEvolution(cache))
+  Assert.equal(
+    editedEvolution.kind,
+    "not-evolution",
+    "an edited evolution bundle still loads"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isEvolutionReady(cache, "leaf-marker"),
+    "the edited evolution bundle fails the explicit evolution audit"
+  )
+
+  local effectKey = "TACKLE"
+  local effectRecord = {
+    schema = BattleAnimationSchema.EFFECT_SCHEMA,
+    key = effectKey,
+    catalogIdentity = "synthetic-catalog",
+    program = {
+      entry = "main",
+      instructions = { { op = "start-visual-task", taskKind = "positioned-sound-motion", values = {} } },
+      subprograms = {},
+      taskKinds = { "positioned-sound-motion" },
+    },
+    dependencies = { "synthetic-palette", "synthetic-model", "synthetic-texture" },
+    resources = {
+      ["synthetic-palette"] = {
+        kind = "palette",
+        contentIdentity = string.rep("a", 40),
+        payload = "effects/palette.lua",
+      },
+      ["synthetic-model"] = {
+        kind = "model",
+        contentIdentity = string.rep("b", 40),
+        payload = "effects/model.nsbmd",
+      },
+      ["synthetic-texture"] = {
+        kind = "texture",
+        contentIdentity = string.rep("c", 40),
+        payload = "effects/texture.ncgr",
+      },
+    },
+    requiredContext = {},
+  }
+  cache:writeLua(BattlePresentationCache.effectPath(effectKey), effectRecord)
+  cache:write(BattlePresentationCache.effectMarkerPath(effectKey), "complete")
+  for _, descriptor in pairs(effectRecord.resources) do
+    cache:write(descriptor.payload, "staged " .. descriptor.kind)
+  end
+  local effectDemand = {
+    key = effectKey,
+    resources = { "synthetic-palette", "synthetic-model", "synthetic-texture" },
+  }
+  Assert.isTrue(
+    BattlePresentationCache.isEffectReady(cache, effectDemand),
+    "the staged effect audits ready before edits"
+  )
+  effectRecord.key = "SPLASH"
+  cache:writeLua(BattlePresentationCache.effectPath(effectKey), effectRecord)
+  local editedEffect = assert(BattlePresentationCache.loadEffect(cache, effectKey))
+  Assert.equal(editedEffect.key, "SPLASH", "a renamed effect still loads under its staged key")
+  Assert.isFalse(
+    BattlePresentationCache.isEffectReady(cache, effectDemand),
+    "the renamed effect fails the explicit effect audit"
+  )
+
+  local unsafeScene, unsafeSceneErr = BattlePresentationCache.loadScene(cache, "not-a-scene")
+  Assert.isNil(unsafeScene, "an unsafe scene key never loads")
+  Assert.isTrue(
+    type(unsafeSceneErr) == "string" and unsafeSceneErr:find("not-a-scene", 1, true) ~= nil,
+    "the unsafe scene key names itself"
+  )
+  local unsafeTrainer, unsafeTrainerErr = BattlePresentationCache.loadTrainerPicture(cache, "front:lower!")
+  Assert.isNil(unsafeTrainer, "a malformed trainer selector never loads")
+  Assert.isTrue(
+    type(unsafeTrainerErr) == "string" and unsafeTrainerErr:find("front:lower!", 1, true) ~= nil,
+    "the malformed trainer selector names itself"
+  )
+  local unsafeEffect, unsafeEffectErr = BattlePresentationCache.loadEffect(cache, "has/slash")
+  Assert.isNil(unsafeEffect, "a slashed effect key never loads")
+  Assert.isTrue(
+    type(unsafeEffectErr) == "string" and unsafeEffectErr:find("has/slash", 1, true) ~= nil,
+    "the slashed effect key names itself"
+  )
+  Assert.isFalse(
+    pcall(BattlePresentationCache.trainerPicturePath, "front:lower!"),
+    "a malformed trainer selector never reaches a path"
+  )
+
+  cache:remove(BattlePresentationCache.scenePath(sceneKey))
+  local missingScene, missingSceneErr = BattlePresentationCache.loadScene(cache, sceneKey)
+  Assert.isNil(missingScene, "a removed scene file never fabricates a record")
+  Assert.isTrue(
+    type(missingSceneErr) == "string" and missingSceneErr:find(sceneKey, 1, true) ~= nil,
+    "the missing scene names its requested key"
+  )
+  Assert.isNil(
+    cache:read(BattlePresentationCache.scenePath(sceneKey)),
+    "a failed scene load stages no replacement"
+  )
+  Assert.isFalse(
+    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
+    "a removed scene never audits ready"
+  )
+end
+
 return { tests = T }
