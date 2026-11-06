@@ -5083,7 +5083,10 @@ function FieldBattlePresentation:_observeScreenFailure()
   local ok, status = pcall(function()
     return screen:status()
   end)
-  if ok and type(status) == "table" and status.mode == "failed" then
+  if not ok then
+    error("battle status query failed for launch " .. tostring(self._launchId) .. ": " .. tostring(status), 0)
+  end
+  if type(status) == "table" and status.mode == "failed" then
     -- Shares the envelope's first-failure latch with the pending-build
     -- and battle-music reports: a music failure that already went out
     -- for this launch suppresses this second host report, while the

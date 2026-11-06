@@ -830,7 +830,7 @@ function T.negative_offsets_wrap_without_leaking()
   Assert.equal(#journal.released, #journal.acquired, "the offset run releases every holding once")
 end
 
-function T.unreported_sound_voices_retire_on_the_bounded_escape()
+function T.unreported_sound_voices_fail_loudly_on_the_bound()
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
   local voice = { finished = false }
@@ -854,17 +854,14 @@ function T.unreported_sound_voices_retire_on_the_bounded_escape()
     task:stepSourceTick({ tick = 1 })
   end
   Assert.isTrue(task:status() ~= "complete", "an unreported voice never completes early")
-  for _ = 1, 200 do
-    task:stepSourceTick({ tick = 1 })
-    if task:status() == "complete" then
-      break
+  Assert.throws(function()
+    for _ = 1, 200 do
+      task:stepSourceTick({ tick = 1 })
     end
-  end
-  Assert.equal(task:status(), "complete", "the escape retires voices that never report")
+  end, "a voice that never reports fails instead of retiring silently")
   task:cancel("late")
   task:dispose()
-  Assert.equal(task:status(), "complete", "completion survives late cancellation")
-  Assert.equal(#journal.released, #journal.acquired, "the escaped run releases every holding once")
+  Assert.equal(#journal.released, #journal.acquired, "the failed run releases every holding once")
 end
 
 function T.admission_predicate_covers_only_implemented_kinds()

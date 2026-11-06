@@ -415,6 +415,28 @@ BattleAnimationSources.EMITTER_PLACEMENTS = {
   unit = 4096,
 }
 
+-- sBattleAnimEmitterAxes tables (battle_anim_emitter.c) in the overlay 7
+-- data: one fixed-point axis vector per ordered battler-type pair for
+-- each configured axis mode. The runtime indexes mode tables by the
+-- attacker and defender battler types behind configured emitter axes.
+BattleAnimationSources.EMITTER_AXIS_MODE1 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235CE0,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_AXIS_MODE10 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x022357D0,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
 -- Native SPL members with a source-resolved semantic identity.
 BattleAnimationSources.PARTICLE_RESOURCES = {
   [64] = "battle/particle/tackle",

@@ -1679,6 +1679,147 @@ function T.particle_continuation_slot_uses_the_source_allocated_table_bound()
   Assert.equal(err.context.cursorOffset, 8, "failure points to the continuation slot word")
 end
 
+function T.configure_from_script_modes_needing_unstaged_words_fail_loudly()
+  local Sources = require("romdump.src.config.BattleAnimationSources")
+  local function compileWithConfig(positionMode, cameraMode)
+    return pcall(compiler().compile, {
+      key = "configure-from-script-unstaged-probe",
+      stream = table.concat({
+        u32(46),
+        u32(0),
+        u32(1),
+        u32(17),
+        u32(55),
+        u32(6),
+        u32(0),
+        u32(2),
+        u32(positionMode),
+        u32(0),
+        u32(0),
+        u32(cameraMode),
+        u32(4),
+      }),
+      resolveSourceInput = function(role, operands)
+        local action = assert(Sources.resolveSourceSelection(role, operands))
+        action.emitter = 1
+        return action
+      end,
+    })
+  end
+  local ok, err = compileWithConfig(100, 0)
+  Assert.isFalse(ok, "battler-type offset modes never lower without their staged blocks")
+  Assert.isTrue(
+    tostring(err):find("configure-from-script", 1, true) ~= nil,
+    "the failure names the configure-from-script route: " .. tostring(err)
+  )
+  ok, err = compileWithConfig(6, 2)
+  Assert.isFalse(ok, "script-driven camera modes never lower without their staged angles")
+  Assert.isTrue(
+    tostring(err):find("configure-from-script", 1, true) ~= nil,
+    "the failure names the configure-from-script route: " .. tostring(err)
+  )
+end
+
+function T.configure_from_script_position_modes_with_offsets_carry_their_block()
+  local Sources = require("romdump.src.config.BattleAnimationSources")
+  local program = assert(compiler().compile({
+    key = "configure-from-script-offset-probe",
+    stream = table.concat({
+      u32(46),
+      u32(0),
+      u32(1),
+      u32(17),
+      u32(55),
+      u32(6),
+      u32(0),
+      u32(1),
+      u32(5),
+      u32(0),
+      u32(0),
+      u32(0),
+      u32(55),
+      u32(4),
+      u32(0),
+      u32(4294963168),
+      u32(0),
+      u32(0),
+      u32(4),
+    }),
+    resolveSourceInput = function(role, operands)
+      local action = assert(Sources.resolveSourceSelection(role, operands))
+      action.emitter = 1
+      return action
+    end,
+  }))
+  local instruction = program.instructions[1]
+  Assert.deepEqual(instruction.emitterConfig, {
+    zMode = 0,
+    battlerOrder = 1,
+    positionMode = 5,
+    axisMode = 0,
+    flags = 0,
+    cameraMode = 0,
+  }, "the six config words ride the instruction in native field order")
+  Assert.deepEqual(instruction.emitterOffset, {
+    x = 0,
+    y = -4128,
+    z = 0,
+    ignoreSide = 0,
+  }, "position modes with script offsets carry their offset block signed")
+  Assert.equal(#program.instructions, 2, "the offset trailer never decodes as opcodes")
+  Assert.equal(
+    program.instructions[2].op,
+    "reset-battle-presentation",
+    "decoding resumes at the word after the offset trailer"
+  )
+end
+
+function T.configure_from_script_callback_carries_its_six_config_words()
+  local Sources = require("romdump.src.config.BattleAnimationSources")
+  local program = assert(compiler().compile({
+    key = "configure-from-script-probe",
+    stream = table.concat({
+      u32(46),
+      u32(0),
+      u32(1),
+      u32(17),
+      u32(55),
+      u32(6),
+      u32(0),
+      u32(2),
+      u32(6),
+      u32(5),
+      u32(0),
+      u32(0),
+      u32(4),
+    }),
+    resolveSourceInput = function(role, operands)
+      local action = assert(Sources.resolveSourceSelection(role, operands))
+      action.emitter = 1
+      return action
+    end,
+  }))
+  local instruction = program.instructions[1]
+  Assert.equal(
+    instruction.op,
+    "create-parameterized-battler-effect",
+    "the configured emitter lowers to a parameterized creation"
+  )
+  Assert.equal(
+    instruction.actionProfile,
+    "particle-emitter-battler-class-camera-position",
+    "selector 17 keeps its semantic profile"
+  )
+  Assert.deepEqual(instruction.emitterConfig, {
+    zMode = 0,
+    battlerOrder = 2,
+    positionMode = 6,
+    axisMode = 5,
+    flags = 0,
+    cameraMode = 0,
+  }, "the six script config words ride the instruction in native field order")
+end
+
 function T.battler_particle_context_tables_select_by_attacker_and_target_position()
   local Sources = require("romdump.src.config.BattleAnimationSources")
   local positions = {

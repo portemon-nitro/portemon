@@ -229,6 +229,16 @@ end
 
 ---@param value integer
 ---@return integer
+local function signed32(value)
+  value = value % 4294967296
+  if value >= 2147483648 then
+    return value - 4294967296
+  end
+  return value
+end
+
+---@param value integer
+---@return integer
 local function signed16(value)
   value = value % 65536
   if value >= 32768 then
@@ -376,18 +386,57 @@ local function decodeParticleOperands(key, stream, offset, start, opcode, label,
   -- index 17) read a [skip, count, count words] trailer inline during
   -- dispatch (BattleAnimSystem_ReadScriptArgs via
   -- BattleAnimEmitterCb_ConfigureFromScript): consume it for cursor
-  -- framing so its words never decode as opcodes. The count must agree
-  -- with the reader exactly as production asserts it; anything else is
-  -- a malformed source route, never a guessed operation. The trailer
-  -- values never enter the action plan; per-emitter placement
-  -- refinement stays future work.
+  -- framing so its words never decode as opcodes, and carry the six
+  -- config words into the action plan in native struct-field order
+  -- (zMode, battlerOrder, positionMode, axisMode, flags, cameraMode)
+  -- so the runtime can place the emitter instead of leaving it
+  -- unplayed. The count must agree with the reader exactly as
+  -- production asserts it; anything else is a malformed source
+  -- route, never a guessed operation.
   local callbackIndex = operands[definition.callbackOperand]
   if callbackIndex == 17 then
     local configCount = readWord(stream, key, offset + 4)
     if configCount ~= 6 then
       error(decodeError(key, offset, "emitter config count disagrees with the source reader"), 0)
     end
+    instruction.emitterConfig = {
+      zMode = readWord(stream, key, offset + 8),
+      battlerOrder = readWord(stream, key, offset + 12),
+      positionMode = readWord(stream, key, offset + 16),
+      axisMode = readWord(stream, key, offset + 20),
+      flags = readWord(stream, key, offset + 24),
+      cameraMode = readWord(stream, key, offset + 28),
+    }
     offset = offset + 8 + configCount * 4
+    -- Position modes that add a script offset read a second trailer
+    -- inline at dispatch (BattleAnimEmitter_AddOffsetFromScript):
+    -- consume its [skip, count, offset words] for cursor framing and
+    -- carry the signed offset block so the runtime can place the
+    -- emitter instead of decoding trailer words as opcodes.
+    local positionMode = instruction.emitterConfig.positionMode
+    -- Position modes that read battler-type offset blocks (100/101)
+    -- and the script-driven camera mode (2) read more words the
+    -- producer does not stage: fail loudly naming the route instead
+    -- of decoding script words as opcodes.
+    if positionMode == 100 or positionMode == 101 then
+      error(decodeError(key, offset, "configure-from-script battler-type offsets are not staged"), 0)
+    end
+    if instruction.emitterConfig.cameraMode == 2 then
+      error(decodeError(key, offset, "configure-from-script script-driven camera is not staged"), 0)
+    end
+    if positionMode == 3 or positionMode == 4 or positionMode == 5 or positionMode == 12 or positionMode == 13 then
+      local offsetCount = readWord(stream, key, offset + 4)
+      if offsetCount ~= 4 then
+        error(decodeError(key, offset, "emitter offset count disagrees with the source reader"), 0)
+      end
+      instruction.emitterOffset = {
+        x = signed32(readWord(stream, key, offset + 8)),
+        y = signed32(readWord(stream, key, offset + 12)),
+        z = signed32(readWord(stream, key, offset + 16)),
+        ignoreSide = readWord(stream, key, offset + 20),
+      }
+      offset = offset + 8 + offsetCount * 4
+    end
   end
   return instruction, offset
 end

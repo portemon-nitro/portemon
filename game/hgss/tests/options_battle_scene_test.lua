@@ -180,6 +180,18 @@ local function openScreenRig(opts)
   function audio.isFinished(_name)
     return true
   end
+  -- Healthy voices park one query, then complete (BattleVoiceDouble):
+  -- only effect voices gate sound-task arming here.
+  local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+  function audio.isEffectWaitComplete(_, symbol)
+    return completeVoice(symbol)
+  end
+  function audio.isCryFinished()
+    return true
+  end
+  function audio.isFanfarePlaying(_symbol)
+    return false
+  end
   local screenOpts = {
     launchId = launchId,
     manifest = deepCopy(ManifestFixture.manifest()),

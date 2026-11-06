@@ -426,7 +426,7 @@ function T.production_particle_lease_decodes_staged_records_and_completes()
         sawEmitter = true
         Assert.equal(
           emitters[1].x,
-          BattleParticleLeaseFixture.payload().placements["solo-enemy"][1].x,
+          BattleParticleLeaseFixture.payload().placements["solo-enemy"][1][1].x,
           "the emitter takes the defender placement"
         )
         Assert.equal(player:status(handle), "waiting", "the effects wait holds while the emitter lives")

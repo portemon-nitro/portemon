@@ -352,10 +352,8 @@ local function executeSoundWait(exec, instruction, index)
   end
   wait.parked = wait.parked + 1
   if wait.parked > 90 then
-    exec.retireVoiceMonitor(voice)
-    exec.clearWait()
-    exec.advance()
-    return "continue"
+    exec.fail("voice wait for " .. voice .. " never completed")
+    return "done"
   end
   return exec.park(wait)
 end
@@ -391,11 +389,9 @@ local function handleWaitForSound(exec, instruction, index)
 end
 Handlers["wait-for-sound"] = handleWaitForSound
 
--- Bounded backstops behind battler-effects waits: a stuck task can
--- never hang the occurrence, and the release is journaled instead of
--- passing silently. Live particle emitters run their real lifetimes, so
--- their bound is generous; raw visual work that never reports completion
--- releases the wait quickly.
+-- Stuck waits fail loudly instead of hanging the occurrence or releasing
+-- it silently: a task that never completes is a bug, and the failure names
+-- the wait so the stuck kind is debuggable.
 local EFFECTS_ESCAPE_TICKS = 16
 local PARTICLE_ESCAPE_TICKS = 900
 
@@ -422,10 +418,8 @@ local function handleWaitForBattlerEffects(exec, instruction, index)
   end
   wait.parked = wait.parked + 1
   if wait.parked > (exec.count("particle") > 0 and PARTICLE_ESCAPE_TICKS or EFFECTS_ESCAPE_TICKS) then
-    exec.note({ op = "wait-for-battler-effects", index = index, escape = "effects-wait backstop" })
-    exec.clearWait()
-    exec.advance()
-    return "continue"
+    exec.fail("battler-effects wait never drained its tasks")
+    return "done"
   end
   return exec.park(wait)
 end
@@ -466,10 +460,10 @@ local function handleWaitForBattlePhase(exec, instruction, index)
   end
   -- Native op19/20 poll the background-switch task state (bgSwitchState ==
   -- 2 for loaded, == 0 for complete): with no unretired raw work the
-  -- awaited switch phase already passed, so the occurrence advances through
-  -- the same drain a battler-effects wait uses instead of failing on a
-  -- condition the packet never carries. A genuinely pending switch parks
-  -- boundedly instead of hanging.
+  -- awaited switch phase already passed, so the occurrence advances instead
+  -- of failing on a condition the packet never carried. A genuinely
+  -- pending switch parks, then fails loudly once the park outlives the
+  -- source horizon instead of releasing the wait silently.
   if exec.count("raw") == 0 or exec.rawCompleted() then
     released(exec.wait())
     exec.advance()
@@ -483,10 +477,8 @@ local function handleWaitForBattlePhase(exec, instruction, index)
   end
   wait.parked = wait.parked + 1
   if wait.parked > EFFECTS_ESCAPE_TICKS then
-    exec.note({ op = "wait-for-battle-phase", index = index, escape = "background-wait backstop" })
-    exec.clearWait()
-    exec.advance()
-    return "continue"
+    exec.fail("battle-phase wait never observed its switch phase")
+    return "done"
   end
   return exec.park(wait)
 end
@@ -1137,6 +1129,8 @@ local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
     systemIndex = instruction.systemIndex,
     emitter = ordinal,
     continuationSlot = instruction.continuationSlot,
+    emitterConfig = instruction.emitterConfig,
+    emitterOffset = instruction.emitterOffset,
   })
   if record == nil then
     return "done"

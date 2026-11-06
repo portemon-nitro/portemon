@@ -1,5 +1,5 @@
--- Source-compiled Tail Whip and Hypnosis programs must paint changing
--- native effect pixels through the battle picture pass.
+-- Source-compiled Tail Whip and Hypnosis programs must paint
+-- changing native effect pixels through the battle picture pass.
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -90,8 +90,10 @@ local function runVersion(scope, versionId)
       return name
     end
     function audio.stop(_name) end
-    function audio.isFinished(_name)
-      return true
+    -- Healthy voices park one query, then complete (BattleVoiceDouble).
+    local finishVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+    function audio.isFinished(name)
+      return finishVoice(name)
     end
     local scene = BattleScene.new()
     local battlers = {

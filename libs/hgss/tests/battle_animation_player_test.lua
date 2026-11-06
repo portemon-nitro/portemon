@@ -103,6 +103,11 @@ function T.admission_refuses_malformed_programs_without_raising()
     player:start(packet(), { entry = "main", instructions = {}, subprograms = {}, taskKinds = {} }),
     "empty streams never admit"
   )
+  local _, unknownReason = player:start(packet(), programOf({ { op = "no-such-operation" } }))
+  Assert.isTrue(
+    type(unknownReason) == "string" and unknownReason ~= "",
+    "refused admission names its cause instead of returning silence"
+  )
   Assert.isNil(player:start(packet(), programOf({ { op = "no-such-operation" } })), "unknown operations never admit")
   Assert.isNil(
     player:start(packet(), programOf({ { op = "schedule-battle-task" } })),
@@ -336,7 +341,60 @@ function T.battle_phase_waits_release_without_background_work()
   end
 end
 
-function T.stuck_background_work_escapes_bounded_instead_of_hanging()
+function T.stuck_effect_tasks_fail_loudly_instead_of_escaping()
+  local player, handle = startNew(programOf({
+    {
+      op = "schedule-battle-task",
+      taskKind = "battle-background-blend-transition",
+      taskInputRule = "raw-rule",
+      values = { 1 },
+    },
+    { op = "wait-for-battler-effects" },
+    { op = "reset-blend-alpha" },
+  }))
+  for _ = 1, 100 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "failed" then
+      break
+    end
+  end
+  Assert.equal(
+    player:status(handle),
+    "failed",
+    "a battler-effects wait over stuck tasks fails instead of escaping silently"
+  )
+  Assert.notNil(player:failure(handle), "the stuck effects wait carries its failure detail")
+end
+
+function T.stream_end_with_unfinished_voices_fails_loudly()
+  local helpers = collaborators()
+  function helpers.audio.isFinished(_name)
+    return false
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  local handle = assert(player:start(packet(), programOf({
+    { op = "play-sound", sound = "lingering-cue" },
+  })))
+  for _ = 1, 300 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "failed" then
+      break
+    end
+  end
+  Assert.equal(
+    player:status(handle),
+    "failed",
+    "a stream end parked on unfinished voices fails instead of completing silently"
+  )
+  Assert.notNil(player:failure(handle), "the parked stream end carries its failure detail")
+end
+
+function T.stuck_background_work_fails_loudly_instead_of_escaping()
   local player, handle, helpers = startNew(programOf({
     {
       op = "schedule-battle-task",
@@ -349,11 +407,12 @@ function T.stuck_background_work_escapes_bounded_instead_of_hanging()
   }))
   for _ = 1, 1000 do
     player:stepSourceTick({ tick = 1 })
-    if player:status(handle) == "complete" then
+    if player:status(handle) == "failed" then
       break
     end
   end
-  Assert.equal(player:status(handle), "complete", "the background escape bounds stuck switch waits")
+  Assert.equal(player:status(handle), "failed", "a stuck background switch fails instead of escaping silently")
+  Assert.notNil(player:failure(handle), "the stuck wait carries its failure detail")
   Assert.equal(#helpers.log.created, 1, "the stuck switch task still constructs once")
 end
 
@@ -371,6 +430,38 @@ function T.non_background_visual_spawns_keep_their_existing_arguments()
     helpers.log.spawnArgs,
     { { kind = "battle-background-blend-transition", args = { values = { 1 } } } },
     "a non-background task keeps its original args without a scratch-7 field"
+  )
+end
+
+function T.parameterized_emitter_spawns_carry_their_script_config()
+  local config = {
+    zMode = 0,
+    battlerOrder = 2,
+    positionMode = 16,
+    axisMode = 10,
+    flags = 0,
+    cameraMode = 0,
+  }
+  local player, _, helpers = startNew(programOf({
+    {
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 3,
+      emitterConfig = config,
+    },
+  }))
+  player:stepSourceTick({ tick = 1 })
+  Assert.deepEqual(
+    helpers.log.spawnArgs,
+    {
+      {
+        kind = "battler-effect-continuation",
+        args = { actionProfile = "particle-emitter-battler-class-camera-position", systemIndex = 0, emitter = 3, continuationSlot = nil, emitterConfig = config, emitterOffset = nil },
+      },
+    },
+    "configured emitter spawns carry their script config words"
   )
 end
 
@@ -694,7 +785,7 @@ function T.resource_failures_fail_before_side_effects()
   Assert.equal(#helpers.log.created, 0, "failed staging constructs no child")
 end
 
-function T.stuck_voices_escape_bounded_instead_of_hanging()
+function T.stuck_voices_fail_loudly_instead_of_escaping()
   local helpers = collaborators()
   helpers.audio.done = {}
   function helpers.audio.isFinished(_name)
@@ -716,11 +807,12 @@ function T.stuck_voices_escape_bounded_instead_of_hanging()
   ))
   for _ = 1, 200 do
     player:stepSourceTick({ tick = 1 })
-    if player:status(handle) == "complete" then
+    if player:status(handle) == "failed" then
       break
     end
   end
-  Assert.equal(player:status(handle), "complete", "the voice escape bounds stuck waits")
+  Assert.equal(player:status(handle), "failed", "a stuck voice fails instead of escaping silently")
+  Assert.notNil(player:failure(handle), "the stuck voice carries its failure detail")
   Assert.equal(#helpers.log.played, 1, "the wait reuses the already playing voice")
 end
 

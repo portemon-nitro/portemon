@@ -770,6 +770,18 @@ function T.named_status_and_stage_events_start_one_native_screen_task()
     function audio.isFinished(_name)
       return true
     end
+    -- Healthy voices park one query, then complete (BattleVoiceDouble):
+    -- only effect voices gate sound-task arming here.
+    local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+    function audio.isEffectWaitComplete(_, symbol)
+      return completeVoice(symbol)
+    end
+    function audio.isCryFinished()
+      return true
+    end
+    function audio.isFanfarePlaying(_symbol)
+      return false
+    end
     local assets = {}
     function assets.prepare(demand)
       return staging.services.prepare(demand)

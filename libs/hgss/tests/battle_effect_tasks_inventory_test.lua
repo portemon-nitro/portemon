@@ -286,8 +286,16 @@ local function runnableShape(task, kind)
   Assert.equal(task:status(), "pending", "kind " .. kind .. " opens pending")
 end
 
-local function runToCompletion(task, kind)
-  for _ = 1, 600 do
+local function runToCompletion(task, kind, audio)
+  for tick = 1, 600 do
+    -- Sound bodies arm on their first unfinished observation and
+    -- complete on the first finished observation after that: the
+    -- controllable voice reports unfinished once, then finished, so
+    -- the run proves its own completion boundary instead of the
+    -- bounded failure for voices that never report.
+    if tick == 2 then
+      audio.finished = true
+    end
     task:stepSourceTick({ tick = 1 })
     if task:status() == "complete" then
       return true
@@ -414,7 +422,7 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
         Assert.equal(repeatTicks, ticks, "the boundary is deterministic across seeded runs: " .. kind)
         repeatTask:dispose()
       else
-        local completed = runToCompletion(task, kind)
+        local completed = runToCompletion(task, kind, audio)
         Assert.isTrue(completed, "kind reaches its own completion instead of stalling: " .. kind)
       end
       Assert.equal(task:status(), "complete", "kind reports complete: " .. kind)

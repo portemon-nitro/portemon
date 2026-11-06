@@ -114,6 +114,12 @@ local function richCueDouble(log)
   function controller:isFanfarePlaying()
     return false
   end
+  -- Healthy voices park one query, then complete (BattleVoiceDouble):
+  -- only effect voices gate sound-task arming here.
+  local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+  function controller:isEffectWaitComplete(symbol)
+    return completeVoice(symbol)
+  end
   function controller:playCry(species, pattern, form, mode, pan, volume, pitch)
     log[#log + 1] = {
       method = "playCry",

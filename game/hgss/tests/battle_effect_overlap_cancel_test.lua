@@ -410,6 +410,18 @@ local function openOverlapScreen(launchId, staging)
     audio.plays[#audio.plays + 1] = name
     return true
   end
+  -- Healthy voices park one query, then complete (BattleVoiceDouble):
+  -- only effect voices gate sound-task arming here.
+  local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+  function audio.isEffectWaitComplete(_, symbol)
+    return completeVoice(symbol)
+  end
+  function audio.isCryFinished()
+    return true
+  end
+  function audio.isFanfarePlaying(_symbol)
+    return false
+  end
   return BattleScreenState.new({
     launchId = launchId,
     manifest = manifest,

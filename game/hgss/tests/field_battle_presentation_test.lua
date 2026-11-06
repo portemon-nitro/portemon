@@ -111,6 +111,18 @@ local function recordingAudio()
     audio.stops[#audio.stops + 1] = name
     return true
   end
+  -- Healthy voices park one query, then complete (BattleVoiceDouble):
+  -- only effect voices gate sound-task arming here.
+  local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+  function audio.isEffectWaitComplete(_, symbol)
+    return completeVoice(symbol)
+  end
+  function audio.isCryFinished()
+    return true
+  end
+  function audio.isFanfarePlaying(_symbol)
+    return false
+  end
   return audio
 end
 

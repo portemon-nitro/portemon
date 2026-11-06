@@ -1,7 +1,7 @@
 -- Unit coverage for the ordered visible-cue player behind the battle
 -- screen: event order without read-ahead, per-event checkpoints, bounded
 -- clocks, one-shot sound intents, duplicate rejection, held images,
--- multi-segment experience, and explicit diagnostics for unknown effects.
+-- multi-segment experience, and loud failures for unknown effects.
 -- Headless: packets are plain records shaped like the detached delivery
 -- boundary, and sounds drain into a recording sink.
 
@@ -243,6 +243,47 @@ function T.small_hp_updates_finish_the_full_flicker_task()
   Assert.isTrue(
     battler(timeline:battlers(), 3).visible,
     "the short HP bar still runs all six toggles and restores visibility"
+  )
+end
+
+function T.failed_move_announces_without_starting_a_visual()
+  local selected = nil
+  local started = {}
+  local timeline = BattleTimeline.new({
+    textSpeed = "fastest",
+    messageText = function(_, key, substitutions)
+      selected = { key = key, substitutions = substitutions }
+      return "staged move-failed narration"
+    end,
+    effects = {
+      start = function(cue)
+        started[#started + 1] = cue
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+    },
+  })
+  timeline:reset(openingView())
+  local failed = event("move-failed", { target = 3, reason = "failed" }, { [1] = 52, [3] = 57 })
+  failed.actors = { { combatant = 1 } }
+  Assert.isTrue(timeline:present(packet(1, { failed }, openingView())), "the failed-move packet is accepted")
+  advance(timeline, TICK)
+  Assert.notNil(selected, "the failed move selects its staged message")
+  Assert.equal(selected.key, "battle/narration/move-failed", "the failed move selects its staged message")
+  Assert.equal(#started, 0, "the failed move starts no visual")
+  for _ = 1, 200 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the failed-move narration drains")
+  Assert.equal(
+    battler(timeline:battlers(), 3).hp,
+    57,
+    "the failed move changes neither health bar"
   )
 end
 
@@ -537,9 +578,10 @@ function T.experience_animates_each_level_segment()
   Assert.equal(lead.level, 22, "the exact final level applies")
 end
 
--- Unknown required effects remain observable through the diagnostic channel
--- without inventing user-facing narration.
-function T.unknown_effects_produce_a_diagnostic()
+-- Unknown required effects fail loudly instead of inventing user-facing
+-- narration or recording a diagnostic: an unrepresentable kernel kind is a
+-- bug, and the failure names it.
+function T.unknown_effects_fail_loudly()
   local sounds = sink()
   local timeline = BattleTimeline.new({
     sound = function(cue)
@@ -547,14 +589,10 @@ function T.unknown_effects_produce_a_diagnostic()
     end,
   })
   timeline:reset(openingView())
-  timeline:present(packet(1, { event("mystery_surcharge", { target = 3 }, { [1] = 52, [3] = 57 }) }, openingView()))
-  Assert.equal(timeline:message(), "", "unknown effects do not add product narration")
-  advance(timeline, 5)
-  Assert.equal(#timeline:diagnostics(), 1, "the unknown effect is recorded once")
-  Assert.isTrue(
-    (timeline:diagnostics()[1] --[[@as string]]):find("mystery_surcharge", 1) ~= nil,
-    "the diagnostic names its effect"
-  )
+  Assert.throws(function()
+    timeline:present(packet(1, { event("mystery_surcharge", { target = 3 }, { [1] = 52, [3] = 57 }) }, openingView()))
+  end, "an unrepresentable effect fails instead of recording a diagnostic")
+  Assert.equal(timeline:message(), "", "the failed effect adds no product narration")
 end
 
 -- Acknowledgement fast-forwards narration without leaking: completing a
@@ -2736,10 +2774,10 @@ function T.native_effect_starts_once_per_action_across_hits_spread_and_redeliver
   Assert.equal(#fx.starts, 2, "a distinct action identity starts its own occurrence")
 end
 
--- A real source cue with no animation collaborator never counts as shown:
--- without its player the cue must hold or diagnose, never settle as a
--- silent generic success.
-function T.effect_keyed_source_cue_without_a_collaborator_never_settles_silently()
+-- A real source cue with no animation collaborator fails loudly on its
+-- first tick: without its player the cue must crash with provenance, never
+-- hold forever or settle as a silent generic success.
+function T.effect_keyed_source_cue_without_a_collaborator_fails_loudly()
   local sounds = sink()
   local timeline = BattleTimeline.new({
     sound = function(cue)
@@ -2750,11 +2788,11 @@ function T.effect_keyed_source_cue_without_a_collaborator_never_settles_silently
   local after = openingView()
   after.foes[1].hp = 43
   timeline:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after))
-  for _ = 1, 600 do
-    advance(timeline, TICK)
-  end
-  local settledQuietly = timeline:settled() and #timeline:diagnostics() == 0
-  Assert.isFalse(settledQuietly, "a real source cue with no animation collaborator never counts as shown")
+  Assert.throws(function()
+    for _ = 1, 600 do
+      advance(timeline, TICK)
+    end
+  end, "a real source cue with no animation collaborator fails instead of holding silently")
 end
 
 ---@param sequence integer event sequence under test driving

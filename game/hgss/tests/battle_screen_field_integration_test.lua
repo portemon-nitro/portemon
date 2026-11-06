@@ -149,13 +149,11 @@ local function recordingAudio()
     audio.stops = (audio.stops or 0) + 1
     return true
   end
-  -- The recording double carries no playback clock, so effect waits
-  -- complete immediately instead of parking on an unanswerable query
-  -- (mirroring the shared RecordingScriptHosts stub): the play is
-  -- recorded, and completion follows at once because there is no real
-  -- lifecycle to await.
-  function audio:isEffectWaitComplete()
-    return true
+  -- Healthy voices park one query, then complete (BattleVoiceDouble):
+  -- only effect voices gate sound-task arming here.
+  local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+  function audio:isEffectWaitComplete(symbol)
+    return completeVoice(symbol)
   end
   function audio.count(name)
     local total = 0

@@ -977,7 +977,7 @@ function BattlePresentationSchema.assertParticleSystem(system)
   end
   SchemaCheck.checkRecord(
     system,
-    { seed = true, emitters = true, textures = true, placements = true },
+    { seed = true, emitters = true, textures = true, placements = true, axisTables = true },
     context,
     CODE_SCENE,
     field
@@ -1016,12 +1016,29 @@ function BattlePresentationSchema.assertParticleSystem(system)
   SchemaCheck.checkRecord(system.placements, allowed, context, CODE_SCENE, field .. ".placements")
   for _, position in ipairs(PARTICLE_PLACEMENT_POSITIONS) do
     local at = field .. ".placements[" .. position .. "]"
-    local perspectives = system.placements[position]
-    if not Validate.isArray(perspectives) or #perspectives ~= 2 then
-      fail(CODE_SCENE, at .. " must carry one position per particle perspective type", context)
+    local kinds = system.placements[position]
+    if not Validate.isArray(kinds) or #kinds ~= 12 then
+      fail(CODE_SCENE, at .. " must carry all twelve emitter kinds", context)
     end
-    for perspective, vector in ipairs(perspectives) do
-      checkXyz(vector, context, at .. "[" .. perspective .. "]")
+    for kind, perspectives in ipairs(kinds) do
+      local kindAt = at .. "[" .. kind .. "]"
+      if not Validate.isArray(perspectives) or #perspectives ~= 2 then
+        fail(CODE_SCENE, kindAt .. " must carry one vector per particle perspective type", context)
+      end
+      for perspective, vector in ipairs(perspectives) do
+        checkXyz(vector, context, kindAt .. "[" .. perspective .. "]")
+      end
+    end
+  end
+  local axisTables = system.axisTables
+  SchemaCheck.checkRecord(axisTables, { mode1 = true, mode10 = true }, context, CODE_SCENE, field .. ".axisTables")
+  for _, mode in ipairs({ "mode1", "mode10" }) do
+    local entries = axisTables[mode]
+    if not Validate.isArray(entries) or #entries ~= 36 then
+      fail(CODE_SCENE, field .. ".axisTables." .. mode .. " must carry one axis per battler-type pair", context)
+    end
+    for index, vector in ipairs(entries) do
+      checkXyz(vector, context, field .. ".axisTables." .. mode .. "[" .. index .. "]")
     end
   end
 end

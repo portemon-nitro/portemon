@@ -579,14 +579,26 @@ local function splEmitter(flag)
     .. u32le(0)
 end
 
--- The overlay image the producer reads the battler emitter placement table
--- from: zero everywhere but the first retail vector.
-local PLACEMENT_RAM = 0x02236800
+-- The overlay image the producer reads battle emitter tables from:
+-- the mode-10 axis block, then the mode-1 axis block, then the placement
+-- table with its kind-0 retail vector and a kind-1 marker two vectors
+-- later. Everything else is zero.
+local OVERLAY_RAM = 0x022357D0
+local AXIS_MODE10_OFFSET = 0x0
+local AXIS_MODE1_OFFSET = 0x02235CE0 - 0x022357D0
+local PLACEMENT_OFFSET = 0x0223687C - 0x022357D0
 
 local function placementOverlay()
-  local bytes = { string.rep("\0", 0x7C), u32le(0xFFFFDA70), u32le(0xFFFFEAA8), u32le(0x40) }
-  bytes[#bytes + 1] = string.rep("\0", 6 * 288)
-  return table.concat(bytes)
+  local parts = {}
+  parts[#parts + 1] = u32le(1000) .. u32le(2000) .. u32le(3000)
+  parts[#parts + 1] = string.rep("\0", AXIS_MODE1_OFFSET - 12)
+  parts[#parts + 1] = u32le(4000) .. u32le(5000) .. u32le(6000)
+  parts[#parts + 1] = string.rep("\0", PLACEMENT_OFFSET - AXIS_MODE1_OFFSET - 12)
+  parts[#parts + 1] = u32le(0xFFFFDA70) .. u32le(0xFFFFEAA8) .. u32le(0x40)
+  parts[#parts + 1] = string.rep("\0", 12)
+  parts[#parts + 1] = u32le(100) .. u32le(200) .. u32le(300)
+  parts[#parts + 1] = string.rep("\0", 6 * 288)
+  return table.concat(parts)
 end
 
 -- Compiles one effect through the real producer while the inner command
@@ -605,7 +617,7 @@ local function compileParticleEffect(effectKey, particleBlobs, particleInstructi
       return { sha1 = string.rep("a", 40) }
     end,
     readOverlay = function()
-      return placementOverlay(), { ramAddress = PLACEMENT_RAM }
+      return placementOverlay(), { ramAddress = OVERLAY_RAM }
     end,
     openNarc = function(_, archiveSymbol)
       if archiveSymbol == route.archiveSymbol then
@@ -716,10 +728,40 @@ function T.particle_members_stage_as_compiled_emitters_exact_textures_and_placem
     local staged = assertExactDrawable(effect, texture.image, "particle texture " .. texture.image)
     Assert.equal(texture.width, staged.width, "the texture list carries the staged width")
   end
-  local placement = payload.placements["solo-player"][1]
+  local placement = payload.placements["solo-player"][1][1]
   Assert.near(placement.x, -9616 / 4096, 1e-9, "the placement table keeps the retail fixed-point x")
   Assert.near(placement.y, -5464 / 4096, 1e-9, "the placement table keeps the retail fixed-point y")
-  Assert.equal(#payload.placements["enemy-side-slot-2"], 2, "each position carries both perspective vectors")
+  Assert.equal(#payload.placements["enemy-side-slot-2"], 12, "each position carries all twelve emitter kinds")
+end
+
+function T.particle_kind_and_axis_tables_stage_every_configured_column()
+  local tackle = "battle/particle/tackle"
+  local blob = splMember({ splEmitter(SELF_DESTRUCT_FLAG), splEmitter(0) }, 2)
+  local effect = assertProducerEffect(
+    compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
+    "the compiled particle member"
+  )
+  local descriptor = effect.resources[tackle]
+  local payload = effect.resourcePayloads[assert(descriptor, "the compiled effect stages its particle system").payload]
+  Assert.equal(#payload.placements["solo-player"], 12, "each position carries all twelve emitter kinds")
+  local kinded = payload.placements["solo-player"][2][1]
+  Assert.near(kinded.x, 100 / 4096, 1e-9, "kind columns keep their own retail fixed-point x")
+  Assert.near(kinded.y, 200 / 4096, 1e-9, "kind columns keep their own retail fixed-point y")
+  Assert.near(kinded.z, 300 / 4096, 1e-9, "kind columns keep their own retail fixed-point z")
+  Assert.equal(
+    #payload.placements["enemy-side-slot-2"][3],
+    2,
+    "every kind carries both perspective vectors"
+  )
+  local axes = assert(payload.axisTables, "the system stages its configured axis tables")
+  Assert.equal(#axes.mode1, 36, "mode 1 stages one axis per battler-type pair")
+  Assert.equal(#axes.mode10, 36, "mode 10 stages one axis per battler-type pair")
+  Assert.near(axes.mode1[1].x, 4000 / 4096, 1e-9, "mode 1 keeps its retail fixed-point x")
+  Assert.near(axes.mode1[1].y, 5000 / 4096, 1e-9, "mode 1 keeps its retail fixed-point y")
+  Assert.near(axes.mode1[1].z, 6000 / 4096, 1e-9, "mode 1 keeps its retail fixed-point z")
+  Assert.near(axes.mode10[1].x, 1000 / 4096, 1e-9, "mode 10 keeps its retail fixed-point x")
+  Assert.near(axes.mode10[1].y, 2000 / 4096, 1e-9, "mode 10 keeps its retail fixed-point y")
+  Assert.near(axes.mode10[1].z, 3000 / 4096, 1e-9, "mode 10 keeps its retail fixed-point z")
 end
 
 function T.undecodable_or_unreproduced_particle_members_stage_an_explicit_unsupported_marker()

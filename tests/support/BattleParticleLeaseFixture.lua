@@ -66,13 +66,26 @@ function M.payload(emitterCount)
   local placements = {}
   for index, position in ipairs(POSITIONS) do
     local x = -4 + (index - 1) * 1.5
-    placements[position] = { { x = x, y = -1, z = 0 }, { x = x + 0.5, y = -1, z = 0 } }
+    local kinds = {}
+    for _ = 1, 12 do
+      kinds[#kinds + 1] = { { x = x, y = -1, z = 0 }, { x = x + 0.5, y = -1, z = 0 } }
+    end
+    placements[position] = kinds
+  end
+  local axisTables = {}
+  for _, mode in ipairs({ "mode1", "mode10" }) do
+    local entries = {}
+    for _ = 1, 36 do
+      entries[#entries + 1] = { x = 1, y = 0, z = 0 }
+    end
+    axisTables[mode] = entries
   end
   return {
     seed = 0,
     emitters = emitters,
     textures = { { id = 0, width = 8, height = 8, image = M.TEXTURE_KEY } },
     placements = placements,
+    axisTables = axisTables,
   }
 end
 

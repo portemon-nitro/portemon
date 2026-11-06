@@ -1519,6 +1519,71 @@ local function checkParameterizedBattlerEffect(instruction, context, code, field
   if instruction.emitterCases ~= nil then
     checkEmitterCases(instruction.emitterCases, context, code, field)
   end
+  -- The configure-from-script profile reads its six script words at
+  -- dispatch; no other profile carries config words. Position modes
+  -- that add a script offset read a second trailer at dispatch; only
+  -- those modes carry an offset block, and they always do.
+  local offsetModes = { [3] = true, [4] = true, [5] = true, [12] = true, [13] = true }
+  local configuredProfile = "particle-emitter-battler-class-camera-position"
+  if instruction.actionProfile == configuredProfile then
+    local config = instruction.emitterConfig
+    if type(config) ~= "table" then
+      fail(code, field .. " configures its emitter from six script words", context)
+      return
+    end
+    SchemaCheck.checkRecord(config, {
+      zMode = true,
+      battlerOrder = true,
+      positionMode = true,
+      axisMode = true,
+      flags = true,
+      cameraMode = true,
+    }, context, code, field .. ".emitterConfig")
+    for _, name in ipairs({ "zMode", "battlerOrder", "positionMode", "axisMode", "flags", "cameraMode" }) do
+      SchemaCheck.checkInteger(config[name], context, code, field .. ".emitterConfig." .. name, 0, 0xFFFFFFFF)
+    end
+  elseif instruction.emitterConfig ~= nil then
+    fail(code, field .. " carries emitter config only for its configured profile", context)
+  end
+  local needsOffset = type(instruction.emitterConfig) == "table"
+    and offsetModes[instruction.emitterConfig.positionMode] == true
+  if instruction.emitterOffset ~= nil then
+    if instruction.actionProfile ~= configuredProfile then
+      fail(code, field .. " carries an offset block only for its configured profile", context)
+      return
+    end
+    if not needsOffset then
+      fail(code, field .. " carries an offset block only for offset position modes", context)
+      return
+    end
+    SchemaCheck.checkRecord(instruction.emitterOffset, {
+      x = true,
+      y = true,
+      z = true,
+      ignoreSide = true,
+    }, context, code, field .. ".emitterOffset")
+    for _, name in ipairs({ "x", "y", "z" }) do
+      SchemaCheck.checkInteger(
+        instruction.emitterOffset[name],
+        context,
+        code,
+        field .. ".emitterOffset." .. name,
+        -0x80000000,
+        0x7FFFFFFF
+      )
+    end
+    SchemaCheck.checkInteger(
+      instruction.emitterOffset.ignoreSide,
+      context,
+      code,
+      field .. ".emitterOffset.ignoreSide",
+      0,
+      1
+    )
+  elseif needsOffset then
+    fail(code, field .. " carries an offset block for offset position modes", context)
+    return
+  end
 end
 
 local function checkSideMaskBranches(instruction, context, code, field)
@@ -1642,6 +1707,8 @@ local OPERATIONS = {
       "actionProfile",
       "emitter",
       "emitterCases",
+      "emitterConfig",
+      "emitterOffset",
       "runtimeSelection",
       "systemIndex",
       "continuationSlot",
