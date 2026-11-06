@@ -1227,6 +1227,9 @@ function BattleScreenState.new(opts)
     _notice = nil,
     _showTimelineMessage = false,
     _signature = nil,
+    _publishedDrawSnapshot = nil,
+    _publishedSignature = nil,
+    _snapshotDirty = true,
     _cursorTick = 0,
     _cursorWasVisible = false,
     _cursorSelection = nil,
@@ -1672,6 +1675,7 @@ function BattleScreenState:applyPictureState(battler, attributes)
   if type(attributes.portraitSelector) == "string" and attributes.portraitSelector ~= "" then
     self._assets:addSelectors({ attributes.portraitSelector })
   end
+  self:_invalidatePublishedView()
   return self._scene:applyPictureState(battler, attributes)
 end
 
@@ -1679,6 +1683,7 @@ end
 ---@param battler table<string, unknown> activation being restored
 ---@return table<string, unknown>? restored presentation view
 function BattleScreenState:restorePictureState(battler)
+  self:_invalidatePublishedView()
   return self._scene:restorePictureState(battler)
 end
 
@@ -1705,6 +1710,7 @@ function BattleScreenState:startPictureEntry(battler, stepX)
   local row = BattleScene.slotRow(target, order, self._manifest.battlefield.slots)
   self._scene:install(target)
   self._scene:startEntry(target, row, stepX)
+  self:_invalidatePublishedView()
 end
 
 ---@param battler table<string, unknown> activation whose entry phase is queried
@@ -1718,6 +1724,7 @@ end
 ---@param readiness { battlerReady: boolean, pictureAnimationActive: boolean, followupTaskRequired: boolean, followupTaskComplete: boolean } detached controller observations
 ---@return boolean true when the entry task completed
 function BattleScreenState:completePictureEntry(battler, readiness)
+  self:_invalidatePublishedView()
   return self._scene:completeEntry(battler, readiness)
 end
 
@@ -1740,6 +1747,7 @@ function BattleScreenState:startHealthGaugeTask(key, spec)
     amount = spec.amount,
   })
   self._gaugeVisuals[key] = { sideType = spec.sideType, kind = "health" }
+  self:_invalidatePublishedView()
 end
 
 -- Starts one event-owned experience task at its supplied level checkpoint.
@@ -1753,6 +1761,7 @@ function BattleScreenState:startExperienceGaugeTask(key, spec)
   )
   self._scene:startExpGaugeTask(key, spec)
   self._gaugeVisuals[key] = { sideType = spec.sideType, kind = "experience" }
+  self:_invalidatePublishedView()
 end
 
 ---@param key string task identity under reading
@@ -1780,6 +1789,7 @@ end
 function BattleScreenState:completeGaugeTask(key)
   self._scene:completeGaugeTask(key)
   self._gaugeVisuals[key] = nil
+  self:_invalidatePublishedView()
 end
 
 -- Exposes the controller-selected visual state; event timing stays with its owner.
@@ -1788,6 +1798,7 @@ end
 ---@param mode string source health-box mode
 function BattleScreenState:setHealthBoxMode(battler, sideType, mode)
   self._scene:setHealthBoxMode(battler, sideType, mode)
+  self:_invalidatePublishedView()
 end
 
 -- Allocates a screen-lifetime transient visual slot for an animation owner.
@@ -1795,6 +1806,7 @@ end
 ---@return { id: integer, sourceKey: string, age: integer } launch-owned instance identity
 function BattleScreenState:allocateEffect(sourceKey)
   assert(not self._disposed, "disposed screens allocate no effects")
+  self:_invalidatePublishedView()
   return self._scene:allocEffect(sourceKey)
 end
 
@@ -1814,6 +1826,7 @@ function BattleScreenState:setEffectPicture(id, picture)
     return false, failure
   end
   self._scene:setEffectPicture(id, picture)
+  self:_invalidatePublishedView()
   return true
 end
 
@@ -1822,6 +1835,7 @@ end
 function BattleScreenState:releaseEffect(id)
   assert(not self._disposed, "disposed screens release no effects")
   self._scene:releaseEffect(id)
+  self:_invalidatePublishedView()
 end
 
 ---@param tokens table<integer, table<string, unknown>> source menu label token stream
@@ -2399,8 +2413,9 @@ local function snapshotTerrainSprites(self, terrainSprites)
   return terrainSpritesView
 end
 
+---@param borrowStatic boolean? true when the caller retains the view and guarantees no external mutation
 ---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
-function BattleScreenState:_snapshot()
+function BattleScreenState:_snapshot(borrowStatic)
   local battlers = self._timeline:battlers()
   local openingPresentation = self._timeline:openingPresentation()
   local sceneAssets = self._assets:sceneLayer()
@@ -2484,7 +2499,14 @@ function BattleScreenState:_snapshot()
     ballParticleSystems = self._ballParticles:systems(),
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
-    gaugeFamilies = {
+    -- Retained paint views borrow the immutable gauge families: the
+    -- manifest HUD tables never mutate in place, and every retained
+    -- view rebuilds from a fresh detached opening, so internal painters
+    -- share the reference while external views keep detached copies.
+    gaugeFamilies = borrowStatic == true and {
+      player = self._manifest.hud.partyGauges[2],
+      enemy = self._manifest.hud.partyGauges[1],
+    } or {
       player = copyValue(self._manifest.hud.partyGauges[2]),
       enemy = copyValue(self._manifest.hud.partyGauges[1]),
     },
@@ -2527,6 +2549,77 @@ function BattleScreenState:_snapshot()
   }
 end
 
+-- Marks the retained paint view stale: the next resolver, input, or
+-- draw rebuilds it once from current state instead of reusing it.
+function BattleScreenState:_invalidatePublishedView()
+  self._publishedDrawSnapshot = nil
+  self._publishedSignature = nil
+  self._snapshotDirty = true
+end
+
+-- Names the paint-relevant menu and focus state behind the retained
+-- view: a mode or focus update that lands without a fixed tick still
+-- retires the retained view instead of painting the stale menu.
+---@param measurementSignature string? display signature behind the published plan
+---@return string combined paint signature for this draw
+function BattleScreenState:_paintSignature(measurementSignature)
+  local armed = self._armed
+  local armedKey = type(armed) == "table" and (tostring(armed.scope) .. ":" .. tostring(armed.id)) or "-"
+  return table.concat({
+    tostring(measurementSignature),
+    tostring(self._mode),
+    tostring(self._menuGateTicks),
+    tostring(self._keyboardFocus),
+    tostring(self._selection),
+    armedKey,
+  }, "|")
+end
+
+-- Answers the current internal paint view, rebuilding it once per
+-- mutation: every build starts from a fresh detached opening, so
+-- trainer slide offsets never accumulate on the retained table.
+---@return table<string, unknown> current internal paint view
+function BattleScreenState:_publishedView()
+  local snapshot = self._publishedDrawSnapshot
+  if snapshot ~= nil and not self._snapshotDirty then
+    return snapshot
+  end
+  snapshot = self:_snapshot(true)
+  self._publishedDrawSnapshot = snapshot
+  self._snapshotDirty = false
+  self._publishedSignature = self:_paintSignature(self._signature)
+  return snapshot
+end
+
+-- Answers the paint view for this draw: a clean retained view draws
+-- as-is, while a resize that landed after the last fixed tick or
+-- input rebuilds and re-resolves synchronously instead of painting
+-- stale. Never draws stale state.
+---@return table<string, unknown> paint view for this draw
+function BattleScreenState:_paintSnapshot()
+  if self._snapshotDirty or self._publishedDrawSnapshot == nil then
+    return self:_publishedView()
+  end
+  local measuredOk, measurement = pcall(self._measureDisplay)
+  if not measuredOk or type(measurement) ~= "table" or measurement.signature == nil then
+    return self:_publishedView()
+  end
+  if self:_paintSignature(measurement.signature) == self._publishedSignature then
+    return self:_publishedView()
+  end
+  local snapshot = self:_snapshot(true)
+  if self._session ~= nil then
+    pcall(function()
+      self._session:resolve(measurement, snapshot)
+    end)
+  end
+  self._publishedDrawSnapshot = snapshot
+  self._snapshotDirty = false
+  self._publishedSignature = self:_paintSignature(measurement.signature)
+  return snapshot
+end
+
+---@return table<string, unknown>? options entry for the acting request position, nil without an open request
 function BattleScreenState:_actorOptions()
   if self._request == nil or self._options == nil then
     return nil
@@ -2951,6 +3044,7 @@ function BattleScreenState:openCompletion(intent)
   end
   self._completionChild = nil
   self._completionResult = nil
+  self:_invalidatePublishedView()
   return true
 end
 
@@ -2965,6 +3059,7 @@ function BattleScreenState:takeCompletion()
   if result == nil then
     return nil
   end
+  self:_invalidatePublishedView()
   self._completionResult = nil
   if self._completionChild ~= nil then
     self._completionChild:dispose()
@@ -2983,6 +3078,7 @@ function BattleScreenState:_sealCompletion(result)
     return
   end
   self._completionResult = copyValue(result)
+  self:_invalidatePublishedView()
 end
 
 ---@param completion table<string, unknown> answered capture completion
@@ -4030,6 +4126,7 @@ function BattleScreenState:_portEnter(plan)
   if self._disposed or self._mode == "failed" then
     return false
   end
+  self:_invalidatePublishedView()
   if type(plan) == "table" and type(plan.kind) == "string" then
     self._kind = plan.kind --[[@as string]]
   end
@@ -4109,6 +4206,7 @@ function BattleScreenState:_portPresent(packet)
   if type(packet) ~= "table" or packet.launchId ~= self._launchId then
     return
   end
+  self:_invalidatePublishedView()
   if type(packet.packetId) ~= "number" then
     self._mode = "failed"
     self._error = "malformed battle packet for launch " .. self._launchId
@@ -4399,12 +4497,12 @@ function BattleScreenState:input(events)
       return
     end
     pcall(function()
-      self._session:resolve(measurement, self:_snapshot())
+      self._session:resolve(measurement, self:_publishedView())
     end)
     -- Non-pointer semantic edges pass the published plan untouched, so
     -- the completion lane owns its text and naming edges behind the
     -- same contract the action children use.
-    local converted = self._session:mapInput(events, self:_snapshot())
+    local converted = self._session:mapInput(events, self:_publishedView())
     for _, event in ipairs(converted) do
       self:_consume(event)
       -- Constructing the card consumes its creating edge and drops the
@@ -4413,8 +4511,11 @@ function BattleScreenState:input(events)
         break
       end
     end
+    -- Consumed input mutates selection, mode, and pressed art: the
+    -- retained view rebuilds once below so the next draw stays current.
+    self:_invalidatePublishedView()
     pcall(function()
-      self._session:resolve(measurement, self:_snapshot())
+      self._session:resolve(measurement, self:_publishedView())
     end)
   end
 end
@@ -4428,6 +4529,7 @@ function BattleScreenState:cancelPointerCapture()
   end
   self._armed = nil
   self._buttonFeedback = nil
+  self:_invalidatePublishedView()
   if self._registrationChild ~= nil then
     pcall(self._registrationChild.cancelPointerCapture, self._registrationChild)
   end
@@ -6445,6 +6547,7 @@ function BattleScreenState:_drain(settledTick)
   if self._mode == "failed" then
     return
   end
+  self:_invalidatePublishedView()
   if not self._timeline:settled() then
     return
   end
@@ -6718,6 +6821,7 @@ end
 -- of the cue player, so the resolved plan and its intro image name the
 -- same published frame. Never from draws.
 function BattleScreenState:_updateFadedIntro()
+  self:_invalidatePublishedView()
   if self._assets:isHeadless() then
     self._fadedIntroUnavailable = true
     self:_releaseFadedIntro()
@@ -6857,6 +6961,7 @@ end
 -- publishes as one holder update; an unchanged palette version with an
 -- identical visible set only advances the published frame.
 function BattleScreenState:_updateEncounterPaletteDrawables()
+  self:_invalidatePublishedView()
   local opening = self._timeline ~= nil and self._timeline:openingPresentation() or nil
   local palette = type(opening) == "table" and opening.encounterPalette or nil
   local layer = self._assets:sceneLayer()
@@ -7564,7 +7669,7 @@ function BattleScreenState:updateFixed(dt)
     self._signature = signature
   end
   if self._session ~= nil and self._mode ~= "failed" then
-    self._session:resolve(measurement, self:_snapshot())
+    self._session:resolve(measurement, self:_publishedView())
   end
   -- One accepted HGSS source tick advances the cue player, the
   -- native animation player, and the visual scene exactly once,
@@ -7720,9 +7825,20 @@ function BattleScreenState:updateFixed(dt)
   self:_updateFadedIntro()
   self:_updateEncounterPaletteDrawables()
   if self._session ~= nil then
-    pcall(function()
-      self._session:resolve(measurement, self:_snapshot())
+    -- The final view for this tick retains as the published paint
+    -- view, so draws and the next pre-tick resolve reuse it until the
+    -- next mutation. The build stays guarded exactly like the resolve:
+    -- a failed build keeps the existing screen state instead of
+    -- throwing out of the fixed tick.
+    self:_invalidatePublishedView()
+    local publishedOk, published = pcall(function()
+      return self:_publishedView()
     end)
+    if publishedOk then
+      pcall(function()
+        self._session:resolve(measurement, published)
+      end)
+    end
   end
 end
 
@@ -7787,7 +7903,7 @@ function BattleScreenState:draw(resources)
   -- saved here; restoration runs on success and failure alike, then every
   -- outstanding scope drains, so no nested leak survives. Draws never
   -- substitute, never paint a blank success, and never raise.
-  local snapshot = self:_snapshot()
+  local snapshot = self:_paintSnapshot()
   local graphics = scoped
   local depthMode, depthWrite = graphics.getDepthMode()
   local pushed, pushErr = pcall(graphics.push, "all")
@@ -7850,6 +7966,7 @@ function BattleScreenState:dispose()
     return
   end
   self._disposed = true
+  self:_invalidatePublishedView()
   self._deferredPackets = {}
   self._paletteRasterCache = {}
   self._paletteCommitted = nil

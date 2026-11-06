@@ -1512,4 +1512,88 @@ function T.native_battle_party_waits_for_its_icon_pages()
   end
 end
 
+-- Same-frame input and resize stay current on the next draw without
+-- extra steady-state rebuilds: two draws share one paint view, one
+-- navigate rebuilds exactly once with the cursor moved, a resize
+-- before the next draw republishes the compact plan, and mutating a
+-- detached external view cannot change drawn state.
+function T.same_frame_input_and_resize_stay_current()
+  local rig = openChildRig({
+    layout = "paired",
+    launchId = "launch-published-view",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+    },
+  })
+  driveToMode(rig, "command")
+  for _ = 1, 4 do
+    if rig.screen:status().selection == "fight" then
+      break
+    end
+    rig.screen:input({ { type = "navigate", direction = "up" } })
+    rig.pump(1)
+    rig.screen:input({ { type = "navigate", direction = "left" } })
+    rig.pump(1)
+  end
+  Assert.equal(rig.screen:status().selection, "fight", "the prompt starts from the known Fight cell")
+  local builds = 0
+  local original = rig.screen._snapshot
+  rig.screen._snapshot = function(self, borrowStatic)
+    builds = builds + 1
+    return original(self, borrowStatic)
+  end
+  local graphics = FakeGraphics.new({})
+  local function drawNow()
+    for key in pairs(graphics.draws) do
+      graphics.draws[key] = nil
+    end
+    rig.screen:draw({ graphics = graphics })
+    local parts = {}
+    for _, entry in ipairs(graphics.draws) do
+      parts[#parts + 1] = string.format(
+        "%s:%s:%s:%s",
+        tostring(entry.kind),
+        tostring(entry.x),
+        tostring(entry.y),
+        tostring(entry.quad ~= nil)
+      )
+    end
+    return table.concat(parts, "|")
+  end
+  local first = drawNow()
+  Assert.isTrue(#graphics.draws > 0, "the command composition draws through the recording boundary")
+  Assert.equal(drawNow(), first, "a second draw reuses the published pixels")
+  Assert.equal(builds, 0, "two draws without an update build no new paint view")
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  local movedShapes = drawNow()
+  Assert.equal(builds, 1, "one input rebuilds the published view exactly once")
+  local moved = rig.screen:status()
+  Assert.equal(moved.mode, "command", "the navigate keeps the same decision")
+  Assert.isTrue(moved.selection ~= "fight", "the same-frame input moves the cursor before the next draw")
+  Assert.isTrue(movedShapes ~= first, "the moved cursor paints through the next draw")
+  rig.measurement = childMeasurement("compact")
+  drawNow()
+  Assert.equal(builds, 2, "the resize rebuilds the published view exactly once")
+  local resizedPlan = assert(rig.screen:status().presentation, "the resized screen resolves a plan")
+  Assert.isTrue(resizedPlan.content.compact == true, "the resize-before-draw paint uses the compact composition")
+  Assert.equal(#resizedPlan.panes, 1, "the compact paint resolves one pane")
+  local exposed = rig.screen:view()
+  local detachedBuilds = builds
+  exposed.selection = "bogus-command"
+  if type(exposed.openingPresentation) == "table" then
+    exposed.openingPresentation.trainerSlides = {}
+  end
+  exposed.targets = {}
+  local settled = drawNow()
+  Assert.equal(drawNow(), settled, "mutating the detached view leaves the published paint untouched")
+  Assert.equal(builds, detachedBuilds, "the detached mutation spends no rebuild")
+  rig.screen._snapshot = original
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 return { tests = T }

@@ -2332,4 +2332,55 @@ function T.pooled_portrait_cells_submit_their_frame_window()
   Assert.isTrue(picture.palette == pagePalette, "the submitted picture carries the page palette for indexed sampling")
 end
 
+-- Repeated draws without a fixed update reuse one published paint view:
+-- the first draw builds the detached opening and manifest copies once,
+-- later draws reuse them with identical pixels, and trainer slide
+-- offsets never accumulate on the retained view.
+function T.unmodified_redraws_reuse_their_published_view()
+  local modules = battleScreenModules("published battle paint views survive redraw", STATE_MODULE)
+  local rig = openWildRig(
+    modules,
+    "launch-screen-reuse",
+    { species = "EEVEE", level = 20, seed = 0x33333333, ability = "RUN_AWAY" },
+    { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+    foeRecord("EEVEE", 20, 0x5EED0002)
+  )
+  driveToMode(rig, "command", 600)
+  local graphics = FakeGraphics.new({})
+  local function drawNow()
+    for key in pairs(graphics.draws) do
+      graphics.draws[key] = nil
+    end
+    rig.screen:draw({ graphics = graphics })
+    return drawShapes(graphics)
+  end
+  local builds = 0
+  local original = rig.screen._snapshot
+  rig.screen._snapshot = function(self, borrowStatic)
+    builds = builds + 1
+    return original(self, borrowStatic)
+  end
+  local first = drawNow()
+  Assert.isTrue(#graphics.draws > 0, "the command composition draws through the recording boundary")
+  local second = drawNow()
+  local third = drawNow()
+  Assert.equal(builds, 0, "three draws without an update build no new paint view")
+  Assert.equal(first, second, "the second draw reuses the published pixels")
+  Assert.equal(second, third, "the third draw reuses the published pixels")
+  local function slideOffsets()
+    local seen = {}
+    local opening = rig.screen:view().openingPresentation
+    for _, slide in ipairs(type(opening) == "table" and opening.trainerSlides or {}) do
+      seen[#seen + 1] = { x = slide.x, y = slide.y, drawableKey = slide.drawableKey }
+    end
+    return seen
+  end
+  local before = slideOffsets()
+  drawNow()
+  Assert.deepEqual(slideOffsets(), before, "repeated draws keep the same trainer slide offsets")
+  rig.screen._snapshot = original
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 return { tests = T }

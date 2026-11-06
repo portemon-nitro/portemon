@@ -2084,7 +2084,7 @@ end
 local function drawGauges(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
-  local families = assert(view.gaugeFamilies, "the battle view carries detached source gauge families")
+  local families = assert(view.gaugeFamilies, "the battle view carries source gauge families")
   local opening = view.openingPresentation --[[@as table<string, unknown>?]]
   if opening ~= nil then
     assert(type(opening) == "table", "opening presentation visibility arrives as a record")
