@@ -176,6 +176,39 @@ function T.palette_drawable_generations_publish_transactionally()
   Assert.equal(assets.released[replacementKey], 1, "disposal releases the replacement image")
 end
 
+-- An identical palette batch republishes without touching the upload
+-- service or allocating a new generation: the published images and
+-- their ownership stay exactly as staged.
+function T.unchanged_palette_batch_reuses_the_published_generation()
+  local assets = stubAssets({})
+  local uploads = 0
+  local baseUpload = assets.paletteImage
+  function assets.paletteImage(key, raster)
+    uploads = uploads + 1
+    return baseUpload(key, raster)
+  end
+  local battle = holder(nil, assets)
+  local raster = { width = 2, height = 2, pixels = "abcd" }
+  Assert.isTrue(
+    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:1", raster = raster } }),
+    "the initial palette generation publishes"
+  )
+  Assert.equal(uploads, 1, "the initial batch uploads once")
+  local image = battle:drawable("terrain")
+  Assert.notNil(image, "the source key resolves its sampled image")
+  local generation = battle._paletteGeneration
+  Assert.isTrue(
+    battle:updatePaletteDrawables({
+      terrain = { uploadKey = "battle-palette:scene:1", raster = { width = 2, height = 2, pixels = "abcd" } },
+    }),
+    "an identical batch republishes"
+  )
+  Assert.equal(uploads, 1, "an identical batch performs no replacement upload")
+  Assert.equal(battle._paletteGeneration, generation, "an identical batch allocates no new generation")
+  Assert.equal(battle:drawable("terrain"), image, "an identical batch keeps the published image")
+  battle:dispose()
+end
+
 -- Without a services adapter the faded intro answers nil with no
 -- failure, so adapter-less hosts keep drawing the static intro lease.
 function T.faded_intro_without_a_services_adapter_draws_nothing_and_fails_nothing()

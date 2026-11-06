@@ -521,6 +521,45 @@ function BattlePresentationAssets:updatePaletteDrawables(requests)
     self._error = "battle palette image upload service is unavailable for launch " .. self._launchId
     return false, self._error
   end
+  -- A batch that changes no key and no raster reuses the published
+  -- generation without allocating a new one: no upload, no replacement,
+  -- and no release. Obsolete keys still retire only after a successful
+  -- replacement below.
+  local unchanged = true
+  for sourceKey, request in pairs(requests) do
+    assert(type(sourceKey) == "string" and sourceKey ~= "", "palette substitutions name their source drawable")
+    assert(type(request) == "table", "palette substitution carries its upload request")
+    assert(
+      type(request.uploadKey) == "string" and request.uploadKey:match("^battle%-palette:") ~= nil,
+      "palette upload keys are battle-scoped"
+    )
+    local raster = request.raster
+    assert(
+      type(raster) == "table" and type(raster.pixels) == "string",
+      "palette image requests carry RGBA8 raster pixels"
+    )
+    local current = self._paletteDrawables[sourceKey]
+    if
+      current == nil
+      or current.raster.width ~= raster.width
+      or current.raster.height ~= raster.height
+      or current.raster.pixels ~= raster.pixels
+    then
+      unchanged = false
+      break
+    end
+  end
+  if unchanged then
+    for sourceKey in pairs(self._paletteDrawables) do
+      if requests[sourceKey] == nil then
+        unchanged = false
+        break
+      end
+    end
+  end
+  if unchanged then
+    return true
+  end
   self._paletteGeneration = self._paletteGeneration + 1
   local generation = self._paletteGeneration
   local nextDrawables = {}

@@ -1347,6 +1347,338 @@ function T.grass_day_handoff_matches_the_native_task_schedule()
   )
 end
 
+-- The palette upload keys published through the production holder,
+-- stripped of their generation suffix so one source drawable counts
+-- once no matter how many replacements it required.
+---@param rig table live rig under inspection
+---@return table<string, boolean> staged source drawable identities
+local function publishedPaletteSources(rig)
+  local seen = {}
+  for key in pairs(rig.paletteRasters) do
+    seen[key:gsub(":generation:%d+$", "")] = true
+  end
+  return seen
+end
+
+---@param rig table live rig under inspection
+---@return integer total staged palette uploads across every source key
+local function paletteUploadCount(rig)
+  local count = 0
+  for _, rasters in pairs(rig.paletteRasters) do
+    count = count + #rasters
+  end
+  return count
+end
+
+-- The newest uploaded raster behind one published source drawable: the
+-- holder keys every replacement upload by generation, so the latest
+-- generation carries the currently published pixels.
+---@param rig table live rig under inspection
+---@param source string stripped source drawable identity
+---@return table? newest uploaded raster, nil while the source never published
+local function latestPublishedRaster(rig, source)
+  local latest, latestGeneration = nil, -1
+  for key, rasters in pairs(rig.paletteRasters) do
+    if key:gsub(":generation:%d+$", "") == source then
+      local generation = tonumber(key:match(":generation:(%d+)$")) or -1
+      if generation >= latestGeneration and #rasters > 0 then
+        latest, latestGeneration = rasters[#rasters], generation
+      end
+    end
+  end
+  return latest
+end
+
+-- A wild singles opening through the production screen samples only the
+-- drawables the renderer can sample while the health boxes stay hidden:
+-- both terrain slides and the command menu screens. Doubled HUD strips,
+-- both singles HUDs, both party gauges, the other lower menus, trainer
+-- slides, and ball frames never rasterize or upload, while the sampled
+-- terrain and menu pixels match their displayed native words.
+
+function T.wild_singles_palette_requests_cover_only_visible_drawables()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+  for _ = 1, 12 do
+    rig.pump(1)
+    rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  end
+  local seen = publishedPaletteSources(rig)
+  Assert.isTrue(next(seen) ~= nil, "the singles opening publishes palette drawables")
+  for _, forbidden in ipairs({
+    ":hud:player-left",
+    ":hud:player-right",
+    ":hud:enemy-left",
+    ":hud:enemy-right",
+    ":hud:player",
+    ":hud:enemy",
+    ":gauges:player",
+    ":gauges:enemy",
+    ":menu:moves",
+    ":menu:target",
+    ":two-option",
+    ":battle-palette:trainer:",
+    ":battle-palette:ball:",
+  }) do
+    for key in pairs(seen) do
+      Assert.isNil(key:find(forbidden, 1, true), "the wild singles opening never samples " .. forbidden .. ": " .. key)
+    end
+  end
+  local prefix = "battle-palette:" .. ENCOUNTER_SCENE_KEY .. ":"
+  for _, required in ipairs({
+    prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player",
+    prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":foe",
+    prefix .. "menu:command:screen:1@general",
+  }) do
+    Assert.isTrue(seen[required] == true, "the wild singles opening samples its visible art: " .. required)
+  end
+  local palette = rig.screen:view().openingPresentation.encounterPalette
+  Assert.notNil(palette, "the composed frame carries its displayed native planes")
+  local terrainExpected = Rgb555.decode(assert(palette.mainObj[33], "the terrain slot stages its word"))
+  local terrainRaster = latestPublishedRaster(rig, prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player")
+  Assert.notNil(terrainRaster, "the terrain publishes its sampled raster")
+  Assert.equal(terrainRaster.pixels:byte(1), terrainExpected.r, "the sampled terrain red follows its word")
+  Assert.equal(terrainRaster.pixels:byte(2), terrainExpected.g, "the sampled terrain green follows its word")
+  Assert.equal(terrainRaster.pixels:byte(3), terrainExpected.b, "the sampled terrain blue follows its word")
+  Assert.equal(terrainRaster.pixels:byte(4), 255, "opaque terrain coverage stays opaque")
+  local menuExpected = Rgb555.decode(assert(palette.subBg[1], "the menu slot stages its word"))
+  local menuRaster = latestPublishedRaster(rig, prefix .. "menu:command:screen:1@general")
+  Assert.notNil(menuRaster, "the command menu publishes its sampled raster")
+  Assert.equal(menuRaster.pixels:byte(1), menuExpected.r, "the sampled menu red follows its word")
+  Assert.equal(menuRaster.pixels:byte(2), menuExpected.g, "the sampled menu green follows its word")
+  Assert.equal(menuRaster.pixels:byte(3), menuExpected.b, "the sampled menu blue follows its word")
+  rig.screen:dispose()
+end
+
+---@param combatant integer native battler identity
+---@param side integer 1 for the near side, 2 for the far side
+---@param active boolean false while the slot stays benched
+---@param visible boolean false while the slot hides mid-transition
+---@param position integer claimed native slot
+---@param name string displayed nickname
+---@param species string staged species key
+---@return table detached delivery-shaped battler record
+local function trainerDoublesBattler(combatant, side, active, visible, position, name, species)
+  return {
+    combatant = combatant,
+    participant = side == 1 and 1 or 2,
+    side = side,
+    controller = side == 1 and "player" or "trainer:2",
+    active = active,
+    visible = visible,
+    position = position,
+    hp = 20,
+    maxHp = 20,
+    species = species,
+    form = 0,
+    ballKey = "POKE_BALL",
+    name = name,
+    level = 9,
+    selector = side == 1 and "back" or "front",
+    portraitSelector = species .. "/f0/male/plain",
+    moves = {},
+    experience = 100,
+  }
+end
+
+---@return table detached trainer doubles opening with one hidden foe slot
+local function trainerDoublesOpening()
+  return {
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" },
+    foeTrainers = { { classKey = "YOUNGSTER", name = "YOUNGSTER" } },
+    participants = {
+      { participant = 1, side = 1 },
+      { participant = 2, side = 2, controller = "trainer:2" },
+    },
+    own = {
+      trainerDoublesBattler(1, 1, true, true, 1, "LEAD", "CHIKORITA"),
+      trainerDoublesBattler(2, 1, true, true, 2, "PARTNER", "SHINX"),
+    },
+    foes = {
+      trainerDoublesBattler(3, 2, true, true, 3, "FOE", "RATTATA"),
+      trainerDoublesBattler(4, 2, true, false, 4, "HIDDEN", "GEODUDE"),
+    },
+  }
+end
+
+-- A trainer doubles opening binds exactly the occupied slot art. While
+-- every battler hides, only the terrain slides and the command menu
+-- publish: the hidden foe slot, both gauges, and every HUD stay
+-- unpublished. Once the reveal facts the renderer consumes arrive (live
+-- battlers with shown boxes and revealed gauge rows), the same tick
+-- publishes the claimed doubles strips and both gauges with matching
+-- pixels, and never the hidden slot or the singles families. The full
+-- trainer ceremony never runs in this staged rig, so the test stages
+-- the reveal facts directly instead of replaying its slide tracks.
+function T.trainer_doubles_reveal_binds_visible_slots_and_enemy_gauge()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "trainer", encounterPaletteRestoreType = "trainer" }),
+    "entry admits the trainer scene"
+  )
+  local opening = trainerDoublesOpening()
+  rig.port.present({ launchId = rig.launchId, packetId = 1, before = opening, after = opening, events = {} })
+  for _ = 1, 12 do
+    rig.pump(1)
+    rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  end
+  local prefix = "battle-palette:" .. ENCOUNTER_SCENE_KEY .. ":"
+  Assert.deepEqual(publishedPaletteSources(rig), {
+    [prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player"] = true,
+    [prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":foe"] = true,
+    [prefix .. "menu:command:screen:1@general"] = true,
+  }, "hidden slots, gauges, and HUDs publish nothing while every battler hides")
+  -- Stage the reveal facts the renderer consumes: the three shown
+  -- battlers go live with shown boxes, the fourth foe slot stays
+  -- hidden, and both gauge rows reveal. The timeline hands out detached
+  -- copies, so the reveal lands on its live records.
+  local shown = rig.screen._timeline._battlers
+  Assert.notNil(shown, "the timeline keeps its live battler records")
+  for id, battler in pairs(shown) do
+    if type(battler) == "table" and battler.combatant ~= 4 then
+      battler.visible = true
+      battler.hudVisible = true
+    end
+  end
+  local timeline = rig.screen._timeline
+  local realOpening = timeline.openingPresentation
+  function timeline.openingPresentation(self)
+    local presentation = realOpening(self)
+    if type(presentation) == "table" then
+      presentation.playerGaugeVisible = true
+      presentation.enemyGaugeVisible = true
+    end
+    return presentation
+  end
+  rig.pump(1)
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local late = publishedPaletteSources(rig)
+  for _, required in ipairs({
+    prefix .. "hud:player-left",
+    prefix .. "hud:player-right",
+    prefix .. "hud:enemy-left",
+    prefix .. "gauges:player",
+    prefix .. "gauges:enemy",
+  }) do
+    Assert.isTrue(late[required] == true, "the reveal binds its visible art the same tick: " .. required)
+  end
+  for _, forbidden in ipairs({
+    prefix .. "hud:enemy-right",
+    prefix .. "hud:player",
+    prefix .. "hud:enemy",
+  }) do
+    Assert.isNil(late[forbidden], "the reveal never publishes hidden or singles art: " .. forbidden)
+  end
+  local palette = rig.screen:view().openingPresentation.encounterPalette
+  Assert.notNil(palette, "the revealed frame carries its displayed native planes")
+  local expected = Rgb555.decode(assert(palette.subObj[1], "the enemy gauge slot stages its word"))
+  local raster = latestPublishedRaster(rig, prefix .. "gauges:enemy")
+  Assert.notNil(raster, "the revealed gauge publishes its sampled raster")
+  Assert.equal(raster.pixels:byte(1), expected.r, "the revealed gauge red follows its displayed word")
+  Assert.equal(raster.pixels:byte(2), expected.g, "the revealed gauge green follows its displayed word")
+  Assert.equal(raster.pixels:byte(3), expected.b, "the revealed gauge blue follows its displayed word")
+  local hudExpected = Rgb555.decode(assert(palette.mainObj[1], "the doubles HUD slot stages its word"))
+  local hudRaster = latestPublishedRaster(rig, prefix .. "hud:player-left")
+  Assert.notNil(hudRaster, "the revealed doubles strip publishes its sampled raster")
+  Assert.equal(hudRaster.pixels:byte(1), hudExpected.r, "the revealed HUD red follows its displayed word")
+  Assert.equal(hudRaster.pixels:byte(2), hudExpected.g, "the revealed HUD green follows its displayed word")
+  Assert.equal(hudRaster.pixels:byte(3), hudExpected.b, "the revealed HUD blue follows its displayed word")
+  rig.screen:dispose()
+end
+
+-- A palette version bump that touches only banks no visible drawable
+-- uses performs no rasterization and keeps every published image: the
+-- screen reuses its sampled rasters and the holder performs no upload.
+function T.unused_palette_banks_keep_published_drawables()
+  local Raster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
+  local realRender = Raster.render
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+  for _ = 1, 11 do
+    rig.pump(1)
+  end
+  rig.pump(25)
+  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 36, "the main fade settles on frame 36")
+  local before = paletteUploadCount(rig)
+  local terrainKey = "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player"
+  local terrainBefore = rig.screen._assets:drawable(terrainKey)
+  Assert.notNil(terrainBefore, "the settled frame publishes its sampled terrain")
+  local timeline = rig.screen._timeline
+  local realOpening = timeline.openingPresentation
+  function timeline.openingPresentation(self)
+    local presentation = realOpening(self)
+    Assert.notNil(presentation.encounterPalette, "the steady frame carries its palette snapshot")
+    presentation.encounterPalette.version = presentation.encounterPalette.version + 1
+    presentation.encounterPalette.mainObj[6] = 0x7FFF
+    return presentation
+  end
+  local renders = 0
+  Raster.render = function(...)
+    renders = renders + 1
+    return realRender(...)
+  end
+  local ok, err = pcall(function()
+    rig.pump(1)
+  end)
+  Raster.render = realRender
+  Assert.isTrue(ok, "the unused bank change never fails the screen: " .. tostring(err))
+  Assert.equal(renders, 0, "an unused bank change rasterizes no visible drawable")
+  Assert.equal(paletteUploadCount(rig), before, "an unused bank change uploads no replacement")
+  Assert.equal(
+    rig.screen._assets:drawable(terrainKey),
+    terrainBefore,
+    "an unused bank change keeps the published image"
+  )
+  rig.screen:dispose()
+end
+
+-- Settled source frames advance readiness without palette work: the
+-- published frame follows the encounter frame while no source map is
+-- opened, no raster is sampled, and no image uploads.
+function T.settled_palette_frames_publish_readiness_without_new_uploads()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+  for _ = 1, 11 do
+    rig.pump(1)
+  end
+  rig.pump(25)
+  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 36, "the main fade settles on frame 36")
+  local layer = rig.screen._assets:sceneLayer()
+  Assert.notNil(layer, "the settled scene stages its layer")
+  local realSourceMapFor = assert(layer.sourceMapFor, "the staged scene carries its source-map reader")
+  local reads = 0
+  layer.sourceMapFor = function(descriptor)
+    reads = reads + 1
+    return realSourceMapFor(descriptor)
+  end
+  local uploads = paletteUploadCount(rig)
+  for _ = 1, 3 do
+    rig.pump(1)
+  end
+  layer.sourceMapFor = realSourceMapFor
+  Assert.equal(rig.screen:view().openingPresentation.encounterFrame, 39, "the settled frames advance")
+  Assert.equal(reads, 0, "settled frames open no source maps")
+  Assert.equal(paletteUploadCount(rig), uploads, "settled frames upload no replacement")
+  Assert.equal(
+    rig.screen._paletteDrawableFrame,
+    39,
+    "the published frame follows the encounter frame without new images"
+  )
+  Assert.isTrue(rig.screen:firstNativeBattleFrameReady(), "the settled frame stays ready")
+  rig.screen:dispose()
+end
+
 return {
   tests = T,
 }
