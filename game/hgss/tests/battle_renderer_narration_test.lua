@@ -103,4 +103,130 @@ function T.narration_window_uses_its_live_source_scroll()
   Assert.equal(drawnWindow.y, 101, "the retail message window begins 51 pixels below its resting position")
 end
 
+-- Strip quads segregate by graphics namespace and strip dimensions: the same
+-- tile index through another namespace allocates a distinct quad, a modded
+-- wider strip allocates wider geometry, and returning to the original width
+-- reuses the original quad object without reallocation.
+function T.strip_quads_segregate_by_graphics_namespace_and_strip_dimensions()
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local palette = {}
+  for index = 0, 15 do
+    palette[index + 1] = { r = index, g = index, b = index }
+  end
+  local stripWidth = 128
+  local art = {
+    getWidth = function()
+      return stripWidth
+    end,
+    getHeight = function()
+      return 8
+    end,
+  }
+  local assets = {
+    drawable = function()
+      return art
+    end,
+  }
+  local objects = { { tile = 0, width = 256, height = 64, x = 0, y = 0 } }
+  local view = {
+    hudPatchSpans = {
+      nickname = { { sideType = 0, spans = {
+        { tile = 0, count = 8 },
+        { tile = 8, count = 8 },
+        { tile = 16, count = 8 },
+        { tile = 24, count = 8 },
+      } } },
+      level = { { sideType = 0, spans = { { tile = 100, count = 3 }, { tile = 110, count = 3 } } } },
+    },
+    textPalettes = { hud = { colors = palette } },
+  }
+  local section = { digitBase = 200 }
+  local battler = { name = "ABC", level = 5 }
+  local text = { drawTextForRole = function() end }
+  local transform = { x = 0, y = 0, scale = 1 }
+  local function instrumented()
+    local graphics = FakeGraphics.new()
+    local calls = 0
+    local originalNewQuad = graphics.newQuad
+    graphics.newQuad = function(x, y, w, h, imgW, imgH)
+      calls = calls + 1
+      return originalNewQuad(x, y, w, h, imgW, imgH)
+    end
+    return graphics, function()
+      return calls
+    end
+  end
+  local graphicsA, callsA = instrumented()
+  local graphicsB, callsB = instrumented()
+  local function drawWith(graphics)
+    BattleRenderer.drawCompactHudPrinters(
+      graphics,
+      text,
+      assets,
+      view,
+      "hud",
+      section,
+      objects,
+      battler,
+      0,
+      false,
+      transform
+    )
+  end
+  drawWith(graphicsA)
+  Assert.isTrue(callsA() > 0, "the first draw allocates quads for its geometry")
+  local quadsA = {}
+  for _, record in ipairs(graphicsA.draws) do
+    if record.quad ~= nil then
+      quadsA[#quadsA + 1] = record.quad
+    end
+  end
+  drawWith(graphicsB)
+  Assert.equal(callsB(), callsA(), "another namespace allocates its own quads")
+  local quadsB = {}
+  for _, record in ipairs(graphicsB.draws) do
+    if record.quad ~= nil then
+      quadsB[#quadsB + 1] = record.quad
+    end
+  end
+  Assert.equal(#quadsB, #quadsA, "both namespaces draw the same quad sequence")
+  for index, quad in ipairs(quadsA) do
+    Assert.isTrue(quad ~= quadsB[index], "quads never leak across graphics namespaces")
+    Assert.deepEqual(
+      { quadsB[index].x, quadsB[index].y, quadsB[index].w, quadsB[index].h },
+      { quad.x, quad.y, quad.w, quad.h },
+      "the other namespace draws the same quad geometry"
+    )
+  end
+  stripWidth = 256
+  local beforeWide = callsA()
+  drawWith(graphicsA)
+  Assert.isTrue(callsA() > beforeWide, "a modded wider strip allocates new quads")
+  local wideQuad = nil
+  for _, record in ipairs(graphicsA.draws) do
+    if record.quad ~= nil and record.quad.imgW == 256 then
+      wideQuad = record.quad
+    end
+  end
+  Assert.notNil(wideQuad, "the wider strip draws with wider quad geometry")
+  Assert.equal(wideQuad.imgW, 256, "the modded strip width reaches the quad")
+  stripWidth = 128
+  local beforeReuse = callsA()
+  local drawsBefore = #graphicsA.draws
+  drawWith(graphicsA)
+  Assert.equal(callsA(), beforeReuse, "returning to the original width allocates no new quads")
+  local position = 0
+  for index = drawsBefore + 1, #graphicsA.draws do
+    local record = graphicsA.draws[index]
+    if record.quad ~= nil then
+      position = position + 1
+      Assert.isTrue(
+        record.quad == quadsA[position],
+        "the original width reuses its original quad object"
+      )
+    end
+  end
+  Assert.equal(position, #quadsA, "the redraw draws the full original quad sequence")
+end
+
 return { tests = T }

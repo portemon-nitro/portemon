@@ -267,4 +267,93 @@ function T.menu_buttons_reuse_resolved_geometry_across_frames()
   end)
 end
 
+-- Battle strip draws reuse identical quads across frames: drawing the same
+-- HUD printer strip three times through one graphics namespace allocates
+-- quads only for previously unseen geometry, while every frame draws the
+-- exact same quad rectangles.
+function T.battle_strip_draws_reuse_identical_quads_across_frames()
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local palette = {}
+  for index = 0, 15 do
+    palette[index + 1] = { r = index, g = index, b = index }
+  end
+  local art = {
+    getWidth = function()
+      return 128
+    end,
+    getHeight = function()
+      return 8
+    end,
+  }
+  local assets = {
+    drawable = function()
+      return art
+    end,
+  }
+  local objects = { { tile = 0, width = 256, height = 64, x = 0, y = 0 } }
+  local view = {
+    hudPatchSpans = {
+      nickname = { { sideType = 0, spans = {
+        { tile = 0, count = 8 },
+        { tile = 8, count = 8 },
+        { tile = 16, count = 8 },
+        { tile = 24, count = 8 },
+      } } },
+      level = { { sideType = 0, spans = { { tile = 100, count = 3 }, { tile = 110, count = 3 } } } },
+    },
+    textPalettes = { hud = { colors = palette } },
+  }
+  local section = { digitBase = 200 }
+  local battler = { name = "ABC", level = 5 }
+  local text = { drawTextForRole = function() end }
+  local graphics = FakeGraphics.new()
+  local quadCalls = 0
+  local originalNewQuad = graphics.newQuad
+  graphics.newQuad = function(x, y, w, h, imgW, imgH)
+    quadCalls = quadCalls + 1
+    return originalNewQuad(x, y, w, h, imgW, imgH)
+  end
+  local function drawOnce()
+    BattleRenderer.drawCompactHudPrinters(
+      graphics,
+      text,
+      assets,
+      view,
+      "hud",
+      section,
+      objects,
+      battler,
+      0,
+      false,
+      { x = 0, y = 0, scale = 1 }
+    )
+  end
+  drawOnce()
+  local firstCalls = quadCalls
+  Assert.isTrue(firstCalls > 0, "the first strip draw allocates quads for its geometry")
+  local firstQuads = {}
+  for _, record in ipairs(graphics.draws) do
+    if record.quad ~= nil then
+      firstQuads[#firstQuads + 1] = record.quad
+    end
+  end
+  Assert.isTrue(#firstQuads > 0, "the first strip draw records quad draws")
+  drawOnce()
+  drawOnce()
+  Assert.equal(quadCalls, firstCalls, "repeated identical strip draws allocate no new quads")
+  local position = 0
+  for _, record in ipairs(graphics.draws) do
+    if record.quad ~= nil then
+      position = position + 1
+      local first = firstQuads[((position - 1) % #firstQuads) + 1]
+      Assert.deepEqual(
+        { record.quad.x, record.quad.y, record.quad.w, record.quad.h, record.quad.imgW, record.quad.imgH },
+        { first.x, first.y, first.w, first.h, first.imgW, first.imgH },
+        "every frame draws the same quad geometry"
+      )
+      Assert.isTrue(record.quad == first, "repeated draws reuse the identical quad object")
+    end
+  end
+end
+
 return GraphicsSmoke.suite(T)

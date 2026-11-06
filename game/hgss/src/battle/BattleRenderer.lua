@@ -369,6 +369,38 @@ local function stripHeightOf(art)
   return art.height
 end
 
+-- Reused source-strip viewports: one viewport per graphics namespace and
+-- exact source rectangle, so repeated draws of unchanged strips reuse the
+-- same viewport instead of allocating one per draw. The outer table only
+-- weakly keys its graphics namespace, so a disposed scope never stays alive
+-- through its cached viewports; entries stay bounded by the finite strip
+-- rectangles of the running screen.
+---@type table<table<string, unknown>, table<string, table<string, unknown>>>
+local quadCache = setmetatable({}, { __mode = "k" })
+
+---@param graphics table<string, unknown> injected host graphics
+---@param x number source rectangle horizontal origin
+---@param y number source rectangle vertical origin
+---@param width number source rectangle width
+---@param height number source rectangle height
+---@param textureWidth number staged strip width in pixels
+---@param textureHeight number staged strip height in pixels
+---@return table<string, unknown> borrowed viewport for the exact geometry
+local function quadFor(graphics, x, y, width, height, textureWidth, textureHeight)
+  local scoped = quadCache[graphics]
+  if scoped == nil then
+    scoped = {}
+    quadCache[graphics] = scoped
+  end
+  local key = x .. ":" .. y .. ":" .. width .. ":" .. height .. ":" .. textureWidth .. ":" .. textureHeight
+  local quad = scoped[key]
+  if quad == nil then
+    quad = graphics.newQuad(x, y, width, height, textureWidth, textureHeight)
+    scoped[key] = quad
+  end
+  return quad
+end
+
 -- Resolves the drawable sampler behind one handle: the handle itself
 -- Draws one resolved handle with a caller viewport through the shared
 -- sampler when it samples, directly otherwise. Extra placement
@@ -518,7 +550,7 @@ local function drawBarTiles(graphics, assets, artKey, anchor, objects, component
   end
   for _, patch in ipairs(patches) do
     if patch.fill == nil or patch.fill > 0 then
-      local quad = graphics.newQuad((componentBase + patch.sourceTile) * 8, 0, 8, 8, stripWidth, stripHeight)
+      local quad = quadFor(graphics, (componentBase + patch.sourceTile) * 8, 0, 8, 8, stripWidth, stripHeight)
       local found = false
       for _, obj in ipairs(objects) do
         if not obj.disabled then
@@ -904,7 +936,7 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   local scaleX = flipX and -1 or 1
   local scaleY = flipY and -1 or 1
   for row = 0, rows - 1 do
-    local quad = graphics.newQuad((tile + row * tilesPerRow) * 8, 0, width, STRIP_HEIGHT, stripWidth, STRIP_HEIGHT)
+    local quad = quadFor(graphics, (tile + row * tilesPerRow) * 8, 0, width, STRIP_HEIGHT, stripWidth, STRIP_HEIGHT)
     local y = baseY + obj.y --[[@as number]] + (flipY and (rows - row) or row) * 8
     -- Leases draw through the shared sampler so indexed pixels resolve
     -- exactly and records carry staged identity; owned, test, and
@@ -1151,7 +1183,7 @@ local function drawHudPrinters(
     drawArtwork(
       graphics,
       art,
-      graphics.newQuad(index * 8, 0, 8, 8, stripWidth, stripHeight),
+      quadFor(graphics, index * 8, 0, 8, 8, stripWidth, stripHeight),
       drawX,
       drawY,
       0,
