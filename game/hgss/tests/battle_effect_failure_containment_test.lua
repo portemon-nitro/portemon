@@ -15,6 +15,8 @@
 -- the shared program shape; the failing doubles record only.
 
 local Assert = require("tests.support.Assert")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
@@ -1071,6 +1073,68 @@ function T.unknown_player_handle_fails_the_live_screen_with_provenance()
     "the failure names its effect: " .. tostring(screen:status().error)
   )
   screen:dispose()
+end
+
+function T.worker_ready_effect_demands_without_preloading_its_payload()
+  local touched = {}
+  local record = {
+    key = "probe-effect",
+    dependencies = { "probe-tex" },
+    resources = {
+      ["probe-tex"] = { kind = "data", payload = "effects/probe-tex.lua" },
+    },
+  }
+  local cacheFs = { versionId = "effect-demand-probe" }
+  function cacheFs:loadLua(path)
+    touched[#touched + 1] = "lua:" .. path
+    if path == BattlePresentationCache.effectPath("probe-effect") then
+      return record
+    end
+    return nil
+  end
+  function cacheFs:read(path)
+    touched[#touched + 1] = "read:" .. path
+    return nil
+  end
+  function cacheFs:exists(path, _)
+    touched[#touched + 1] = "exists:" .. path
+    return false
+  end
+  local host = {
+    requestBattleEffect = function()
+      return true
+    end,
+  }
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = {},
+    text = {},
+    measureDisplay = function()
+      return {}
+    end,
+    graphics = {},
+    derivedAssets = host,
+  })
+  local ready, failure = envelope._services.requestEffect("probe-effect")
+  Assert.isTrue(ready, "a worker-ready effect is demandable without preloading its payload: " .. tostring(failure))
+  for _, touch in ipairs(touched) do
+    Assert.isNil(
+      touch:find("probe-tex", 1, true),
+      "effect entrance never probes the requested payload: " .. touch
+    )
+  end
+  local loaded, loadFailure = envelope._services.loadEffect("probe-effect")
+  Assert.isNil(loadFailure, "the staged effect record loads on execution")
+  Assert.isTrue(loaded == record, "execution reads the staged effect record")
+  local lease, leaseFailure = envelope._services.resolveEffectResource(loaded, "probe-tex")
+  Assert.isNil(lease, "the missing payload never resolves into a lease")
+  Assert.isTrue(
+    type(leaseFailure) == "string"
+      and leaseFailure:find("probe-tex", 1, true) ~= nil
+      and leaseFailure:find("probe-effect", 1, true) ~= nil,
+    "the on-use failure names its resource and effect: " .. tostring(leaseFailure)
+  )
+  envelope:dispose()
 end
 
 return { tests = T }

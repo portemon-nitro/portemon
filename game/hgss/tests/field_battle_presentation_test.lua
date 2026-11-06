@@ -2013,12 +2013,16 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       entered,
       versionId .. " enters once the staged scene validates: " .. tostring(enterFailure)
     )
+    -- A ready worker answer with an emptied cache fails naming the
+    -- scene instead of polling forever: the trusted record load is the
+    -- attribution point, not a pixel existence census.
     imageStaged = false
+    revealed = false
     local missing, missingErr = services.prepare(demand())
-    Assert.isNil(missing, versionId .. " never reads ready with its staged pixels absent")
+    Assert.isNil(missing, versionId .. " never reads ready with its staged scene absent")
     Assert.isTrue(
       type(missingErr) == "string" and missingErr:find(sceneKey, 1, true) ~= nil,
-      versionId .. " names its absent scene image: " .. tostring(missingErr)
+      versionId .. " names its absent scene: " .. tostring(missingErr)
     )
     local hostless = FieldBattlePresentation.new({
       cacheFs = view,
@@ -4257,11 +4261,11 @@ function T.selected_audio_banks_gate_the_launch_without_unrelated_tracks()
   end
 end
 
--- A leaf from a retired generation never stages: the generation
--- mismatch fails the owning launch naming the selector and both
--- identities, the shared core stays untouched, and a later
--- current-generation leaf still stages cleanly on the same core.
-function T.stale_leaf_generation_fails_its_launch_without_poisoning_the_core()
+-- A readable leaf from a retired generation still stages: the trusted
+-- load publishes the selected entry into the per-launch maps, the
+-- shared core stays untouched, and a later current-generation leaf
+-- still stages cleanly on the same core.
+function T.retired_leaf_generation_stages_without_poisoning_the_core()
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local core = ManifestFixture.coreManifest()
   local stale = ManifestFixture.trainerPictureRecord("front:YOUNGSTER")
@@ -4305,17 +4309,15 @@ function T.stale_leaf_generation_fails_its_launch_without_poisoning_the_core()
       audio = { roles = {}, banks = {}, cries = {} },
     }
     local ready, prepareFailure = services.prepare(demand)
-    Assert.isNil(ready, "the mismatched leaf fails its launch")
+    Assert.isTrue(ready, "the readable retired leaf stages: " .. tostring(prepareFailure))
     Assert.isTrue(
-      type(prepareFailure) == "string"
-        and prepareFailure:find("front:YOUNGSTER", 1, true) ~= nil
-        and prepareFailure:find("retired-catalog", 1, true) ~= nil,
-      "the failure names the selector and its retired generation: " .. tostring(prepareFailure)
+      envelope._launchLeafRecords.trainerPictures["front:YOUNGSTER"] == stale.entry,
+      "the staged entry is the readable retired payload"
     )
-    Assert.isNil(envelope._manifest.trainerPictures, "the failure never mutates the shared core")
-    Assert.isTrue(envelope._manifest == verified, "the verified core survives the failed leaf")
+    Assert.isNil(envelope._manifest.trainerPictures, "staging never mutates the shared core")
+    Assert.isTrue(envelope._manifest == verified, "the verified core survives the staged leaf")
     leaves[leafPath] = current
-    Assert.isTrue(services.prepare(demand), "the current-generation leaf still stages afterwards")
+    Assert.isTrue(services.prepare(demand), "preparation stays staged on the same core afterwards")
   end, debug.traceback)
   pcall(function()
     envelope:dispose()

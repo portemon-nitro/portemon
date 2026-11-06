@@ -388,6 +388,14 @@ local function stageRendererIntro(rig)
       },
     },
     menuSourceIndices = sourceMaps,
+    sourceMapFor = function(descriptor)
+      if type(descriptor) == "table" and type(descriptor.pixels) == "string" then
+        return descriptor
+      end
+      local path = type(descriptor) == "table" and descriptor.path or nil
+      assert(type(path) == "string" and path ~= "", "source-index descriptor names its map")
+      return assert(sourceMaps[path], "staged source-index map remains in the staged scene: " .. path)
+    end,
   }
 end
 

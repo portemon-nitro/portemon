@@ -412,6 +412,199 @@ function T.evolution_particle_drawable_resolves_without_core_sections_and_throug
   leafEnvelope:dispose()
 end
 
+local DEMAND_SCENE_KEY = "general/plain/day"
+
+---@return table<string, unknown> minimal trusted scene record for exact-demand admission
+local function demandSceneRecord()
+  local function terrainSource(side, width, height)
+    return {
+      path = ART .. "terrain-" .. side .. ".source-index.rgba8",
+      format = "source-index-rgba8",
+      plane = "mainObj",
+      width = width,
+      height = height,
+    }
+  end
+  return {
+    key = DEMAND_SCENE_KEY,
+    layers = {
+      {
+        characters = { path = ART .. "scene.characters", format = "indexed8" },
+        baseCharacters = { path = ART .. "scene.base-characters", format = "indexed8" },
+        map = { path = ART .. "scene.map" },
+        palette = { path = ART .. "scene.palette" },
+      },
+    },
+    introLayer = { image = ART .. "scene-intro.png", width = 256, height = 192 },
+    terrainSprites = {
+      player = {
+        image = ART .. "terrain-player.png",
+        width = 48,
+        height = 24,
+        origin = { x = 0, y = 0 },
+        sourceIndices = terrainSource("player", 48, 24),
+      },
+      foe = {
+        image = ART .. "terrain-foe.png",
+        width = 40,
+        height = 20,
+        origin = { x = 0, y = 0 },
+        sourceIndices = terrainSource("foe", 40, 20),
+      },
+    },
+    encounterParticles = {},
+    paletteSource = { path = ART .. "scene.palette-source" },
+  }
+end
+
+---@param manifest table<string, unknown> staged manifest under admission
+---@param record table<string, unknown> staged scene record under admission
+---@param poison table<string, boolean> unreadable paths proving they stay closed
+---@return table<string, unknown> counting cache double
+local function countingCacheFs(manifest, record, poison)
+  local cacheFs = { versionId = "exact-demand-probe", reads = {} }
+  function cacheFs:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return manifest
+    end
+    if path == BattlePresentationCache.scenePath(DEMAND_SCENE_KEY) then
+      return record
+    end
+    if path == record.layers[1].map.path then
+      return { width = 512, height = 256, entries = {} }
+    end
+    if path == record.layers[1].palette.path then
+      return { colors = {} }
+    end
+    if path == record.paletteSource.path then
+      return {
+        mainObjSources = {},
+        subObjOpaque = { [1] = 0x001F },
+        initialDisplayed = { subObj = { [1] = 0x001F } },
+      }
+    end
+    if path == MoveIconCache.manifestPath() then
+      return { schema = MoveIconCache.SCHEMA, types = {}, categories = {} }
+    end
+    return nil
+  end
+  function cacheFs:read(path)
+    self.reads[path] = (self.reads[path] or 0) + 1
+    if poison[path] then
+      error("unreadable unused file: " .. path, 0)
+    end
+    local source = findSourceIndices(manifest, path)
+    if source ~= nil then
+      return string.rep("\0", source.width * source.height * 4)
+    end
+    if path == record.layers[1].characters.path then
+      return string.rep("c", 64)
+    end
+    if path == record.layers[1].baseCharacters.path then
+      return string.rep("b", 64)
+    end
+    if path == record.terrainSprites.player.sourceIndices.path then
+      return string.rep("\0", 48 * 24 * 4)
+    end
+    if path == record.terrainSprites.foe.sourceIndices.path then
+      return string.rep("\0", 40 * 20 * 4)
+    end
+    return "staged"
+  end
+  function cacheFs:exists(_, _)
+    return true
+  end
+  return cacheFs
+end
+
+---@param manifest table<string, unknown> staged manifest under admission
+---@param record table<string, unknown> staged scene record under admission
+---@param poison table<string, boolean> unreadable paths proving they stay closed
+---@return FieldBattlePresentation admitted envelope
+---@return table<string, unknown> counting cache double
+local function demandEnvelope(manifest, record, poison)
+  local cacheFs = countingCacheFs(manifest, record, poison)
+  local pool = recordingPool()
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cacheFs,
+    windows = {},
+    text = {},
+    measureDisplay = function()
+      return {}
+    end,
+    graphics = {},
+    imagePool = pool,
+  })
+  envelope._manifest = manifest
+  return envelope, cacheFs
+end
+
+---@param envelope FieldBattlePresentation admitted envelope under test
+---@return table<string, unknown> admitted scene layer
+local function admitCommandScene(envelope)
+  local ready, failure = envelope._services.prepare({
+    launchId = "command-admission",
+    scenes = { DEMAND_SCENE_KEY },
+    pages = {},
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isTrue(ready, "command admission never opens unused battle art: " .. tostring(failure))
+  return assert(envelope._services.sceneLayer(), "admission stages its scene layer")
+end
+
+function T.command_admission_ignores_unreadable_unused_battle_art()
+  local manifest = stagedManifest()
+  local record = demandSceneRecord()
+  local moves = manifest.menus.moves.screens[1]
+  local unusedButton = moves.moveButtons[4]
+  local poison = {
+    [unusedButton.sourceIndices.types.fire.pressed.path] = true,
+    [unusedButton.types.fire.pressed] = true,
+    [manifest.hud.doubles.playerLeft.sourceIndices.path] = true,
+    [manifest.messages.roles.menu.font] = true,
+  }
+  local envelope, cacheFs = demandEnvelope(manifest, record, poison)
+  admitCommandScene(envelope)
+  for path in pairs(poison) do
+    Assert.equal(cacheFs.reads[path] or 0, 0, "unused battle art stays closed: " .. path)
+  end
+  envelope:dispose()
+end
+
+function T.visible_source_maps_read_once_and_unused_variants_stay_closed()
+  local manifest = stagedManifest()
+  local record = demandSceneRecord()
+  local envelope, cacheFs = demandEnvelope(manifest, record, {})
+  local layer = admitCommandScene(envelope)
+  local commandSource = manifest.menus.command.screens[1].sourceIndices
+  local first = layer.sourceMapFor(commandSource)
+  Assert.deepEqual(
+    { first.plane, first.width, first.height },
+    { commandSource.plane, commandSource.width, commandSource.height },
+    "the visible command map keeps its staged geometry"
+  )
+  Assert.equal(#first.pixels, commandSource.width * commandSource.height * 4, "the visible map reads its bytes")
+  local second = layer.sourceMapFor(commandSource)
+  Assert.isTrue(first == second, "repeated visible requests share one memoized read")
+  Assert.equal(cacheFs.reads[commandSource.path], 1, "selected source bytes load exactly once")
+  local moves = manifest.menus.moves.screens[1]
+  local unusedVariant = moves.moveButtons[2].sourceIndices.types.fire.pressed.path
+  Assert.equal(
+    cacheFs.reads[unusedVariant] or 0,
+    0,
+    "requesting command art opens no unused move-variant file"
+  )
+  Assert.equal(
+    cacheFs.reads[record.terrainSprites.player.sourceIndices.path] or 0,
+    0,
+    "terrain bytes wait for their first palette use"
+  )
+  envelope:dispose()
+end
+
 function T.planning_inventory_resolves_no_staged_art()
   local envelope, pool = envelopeFor(nil)
   for _, key in ipairs({

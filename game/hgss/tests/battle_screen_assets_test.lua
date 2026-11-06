@@ -1608,6 +1608,24 @@ end
 -- while the host works, demand exactly those pages urgently, never read
 -- the whole-family index, hand out no sprite and touch no image driver
 -- early, then resolve both sprites once the pages validate.
+-- A pool double that holds portrait page borrows pending while their
+-- staged bytes are absent, mirroring a production decode that cannot
+-- complete without page pixels; every other staged image borrows ready.
+---@param cache table isolated cache filesystem double under staging
+---@return table scripted pool behind the envelope under test
+local function pageAwarePool(cache)
+  local pool = scriptedPool()
+  local basePoll = pool.poll
+  function pool:poll(token)
+    local path = pool.requestedPaths[token]
+    if type(path) == "string" and path:find("portraits", 1, true) ~= nil and cache.files[path] == nil then
+      return "pending"
+    end
+    return basePoll(self, token)
+  end
+  return pool
+end
+
 function T.cold_layout_cache_demands_only_its_visible_portrait_pages()
   local MonCache = require("libs.assets.src.MonCache")
   local FakeGraphics = require("tests.support.FakeGraphics")
@@ -1619,7 +1637,7 @@ function T.cold_layout_cache_demands_only_its_visible_portrait_pages()
   })
   local host = portraitPageHost()
   local graphics = FakeGraphics.new()
-  local envelope = demandEnvelope(cache, host, graphics)
+  local envelope = demandEnvelope(cache, host, graphics, pageAwarePool(cache))
   local services = envelope:_preparationServices()
   local waiting, waitErr = services.prepare(portraitDemand({ leadBack, foeFront }))
   Assert.isTrue(waiting == false, "the unstaged pages hold the opening pending instead of failing")
@@ -1936,23 +1954,14 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   local host = portraitPageHost()
   host.answers[17] = { ready = true }
   local graphics = FakeGraphics.new()
-  local envelope = demandEnvelope(cache, host, graphics)
+  -- The pool fails the page borrow exactly like a production decode
+  -- without page pixels: admission trusts the ready worker, while the
+  -- missing bytes fail at first drawable use.
+  local pool = scriptedPool("portrait-page-missing", missingImage)
+  local envelope = demandEnvelope(cache, host, graphics, pool)
   local services = envelope:_preparationServices()
-  local missing, missingErr = services.prepare(portraitDemand({ leadBack }))
-  Assert.isNil(missing, "the pixel-less page never reads ready")
-  Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the pixel-less page carries its reason")
-  local missingReason = missingErr --[[@as string]]
-  Assert.isTrue(
-    missingReason:find(leadBack, 1, true) ~= nil,
-    "the missing-pixel failure names the exact selector: " .. missingReason
-  )
-  Assert.isTrue(
-    missingReason:find("17", 1, true) ~= nil,
-    "the missing-pixel failure names the exact page: " .. missingReason
-  )
-  local missingAgain, missingErrAgain = services.prepare(portraitDemand({ leadBack }))
-  Assert.isNil(missingAgain, "the pixel-less page stays failed across polls")
-  Assert.equal(missingErrAgain, missingReason, "the missing-pixel cause replays identically")
+  local admitted, admitErr = services.prepare(portraitDemand({ leadBack }))
+  Assert.isTrue(admitted, "worker-ready admission trusts the page host: " .. tostring(admitErr))
   local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
   local owned = BattlePresentationAssets.new({
     assets = services,
@@ -1962,8 +1971,22 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   })
   owned:addSelectors({ leadBack })
   owned:update()
+  local sprite, spriteErr = owned:drawable("mon:" .. leadBack)
+  Assert.isNil(sprite, "the pixel-less portrait hands out no sprite")
+  Assert.isTrue(type(spriteErr) == "string" and spriteErr ~= "", "the pixel-less portrait carries its reason")
+  local missingReason = spriteErr --[[@as string]]
+  Assert.isTrue(
+    missingReason:find(leadBack, 1, true) ~= nil,
+    "the missing-pixel failure names the exact selector: " .. missingReason
+  )
+  Assert.isTrue(
+    missingReason:find(missingImage, 1, true) ~= nil,
+    "the missing-pixel failure names the exact page path: " .. missingReason
+  )
   Assert.equal(owned:state(), "failed", "the pixel-less demand stops its holder")
-  Assert.isNil(owned:drawable("mon:" .. leadBack), "the pixel-less portrait hands out no sprite")
+  local spriteAgain, spriteErrAgain = owned:drawable("mon:" .. leadBack)
+  Assert.isNil(spriteAgain, "the pixel-less portrait stays failed without a substitute")
+  Assert.equal(spriteErrAgain, missingReason, "the missing-pixel cause replays identically")
   Assert.equal(#graphics.images, 0, "the pixel-less page never reaches the image driver")
   owned:dispose()
   envelope:dispose()
@@ -2013,8 +2036,8 @@ end
 -- Only the selected effect is requested and consumed through the real
 -- preparation services: a recording derived host plus a versioned cache
 -- holding a synthetic schema-valid staged effect. The demand stays pending
--- while the marker or any dependency payload is missing, turns ready only
--- with the complete staged closure, and never enqueues a sibling effect.
+-- while the worker builds, turns ready on the worker answer without
+-- preloading dependency payloads, and never enqueues a sibling effect.
 local function recordingEffectHost()
   local host = { asks = {}, answers = {} }
   local derived = {}
@@ -2088,9 +2111,13 @@ function T.selected_effect_demand_reaches_ready_only_through_staged_closure()
   })
   Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending without failing")
   host.answers["TACKLE"] = "ready"
-  Assert.equal(owned:demandEffect("TACKLE"), false, "a ready worker without marker and payloads stays pending")
+  Assert.equal(
+    owned:demandEffect("TACKLE"),
+    true,
+    "a ready worker reads ready without preloading marker or payloads"
+  )
   cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
-  Assert.equal(owned:demandEffect("TACKLE"), false, "a marker without dependency payloads stays pending")
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the marked effect stays ready")
   cache:writeLua(texturePath, { width = 4, height = 4, rgba8888 = textureBytes })
   Assert.equal(owned:demandEffect("TACKLE"), true, "the closed staged effect reads ready")
   for _, ask in ipairs(host.asks) do

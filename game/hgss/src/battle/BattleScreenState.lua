@@ -6771,17 +6771,12 @@ local function encounterPlaneWords(palette, plane)
   return words --[[@as table<integer, integer>]]
 end
 
----@param layer table<string, unknown> staged scene owning validated source maps
+---@param layer table<string, unknown> staged scene owning its exact-demand source reader
 ---@param descriptor table<string, unknown> direct source-index pixels or a staged path
 ---@return table<string, unknown> staged source-index map
 local function encounterSourceMap(layer, descriptor)
-  if type(descriptor.pixels) == "string" then
-    return descriptor
-  end
-  local path = descriptor.path
-  assert(type(path) == "string" and path ~= "", "source-index descriptor names its map")
-  local maps = assert(layer.menuSourceIndices, "battle scene retains staged source-index maps")
-  return assert(maps[path], "validated source-index map remains in the staged scene: " .. path)
+  local sourceMapFor = assert(layer.sourceMapFor, "battle scene carries its exact source-map reader")
+  return sourceMapFor(descriptor)
 end
 
 ---@param requests table<string, { uploadKey: string, raster: table<string, unknown> }> pending image replacements

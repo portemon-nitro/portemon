@@ -537,41 +537,61 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
   local stagedCache = stagedCacheFs(record)
   local feedbackSource = graphicsManifest().menus.command.screens[1].feedback.fight.pressed.sourceIndices
   Assert.equal(#stagedCache:read(feedbackSource.path), 8 * 8 * 4, "the feedback source map bytes are staged")
-  local envelope = newEnvelope(stagedCache, pool)
+  local reads = {}
+  local countingCache = { versionId = stagedCache.versionId }
+  function countingCache:loadLua(path)
+    return stagedCache:loadLua(path)
+  end
+  function countingCache:read(path)
+    reads[path] = (reads[path] or 0) + 1
+    return stagedCache:read(path)
+  end
+  function countingCache:exists(_, _)
+    return true
+  end
+  local envelope = newEnvelope(countingCache, pool)
   local services = envelope:_preparationServices()
   local ready, failure = prepareScene(services)
   Assert.isTrue(ready, "the staged scene and its intro assets prepare: " .. tostring(failure))
   local layer = assert(services.sceneLayer(), "the prepared scene layer is retained")
+  local sourceMapFor = assert(layer.sourceMapFor, "the prepared scene carries its exact source-map reader")
   local cursorSource = graphicsManifest().hud.cursor.sourceIndices
-  local stagedCursor = assert(layer.menuSourceIndices[cursorSource.path], "the keypad cursor SUB_OBJ map is retained")
+  Assert.equal(reads[cursorSource.path] or 0, 0, "admission stages the cursor map metadata without its bytes")
+  local stagedCursor = sourceMapFor(cursorSource)
   Assert.deepEqual(
     { stagedCursor.plane, stagedCursor.width, stagedCursor.height, stagedCursor.pixels },
     { "subObj", 1, 1, string.char(0, 0, 0, 255) },
     "the cursor map keeps its SUB_OBJ plane, geometry, and raw slot bytes"
   )
+  Assert.equal(reads[cursorSource.path], 1, "first visible use reads the cursor map once")
+  Assert.isTrue(sourceMapFor(cursorSource) == stagedCursor, "repeat use shares the memoized cursor map")
   local gaugeSource = graphicsManifest().hud.partyGauges[1].sourceIndices
-  local stagedGauge = assert(layer.menuSourceIndices[gaugeSource.path], "the party gauge SUB_OBJ map is retained")
+  local stagedGauge = sourceMapFor(gaugeSource)
   Assert.deepEqual(
     { stagedGauge.plane, stagedGauge.width, stagedGauge.height, stagedGauge.pixels },
     { "subObj", 1, 1, string.char(0, 0, 0, 255) },
     "the party gauge map keeps its SUB_OBJ plane, geometry, and raw slot bytes"
   )
-  local stagedFeedback =
-    assert(layer.menuSourceIndices[feedbackSource.path], "the separate feedback patch retains its source-index map")
+  local stagedFeedback = sourceMapFor(feedbackSource)
   Assert.deepEqual(
     { stagedFeedback.plane, stagedFeedback.width, stagedFeedback.height, #stagedFeedback.pixels },
     { "subBg", 8, 8, 8 * 8 * 4 },
     "feedback map staging retains the cropped SUB_BG geometry"
   )
   local buttonSource = graphicsManifest().menus.moves.screens[1].moveButtons[1].sourceIndices.types.NORMAL.pressed
-  local stagedButton = assert(
-    layer.menuSourceIndices[buttonSource.path],
-    "the separate pressed move-button patch retains its source-index map"
-  )
+  local stagedButton = sourceMapFor(buttonSource)
   Assert.deepEqual(
     { stagedButton.plane, stagedButton.width, stagedButton.height, #stagedButton.pixels },
     { "subBg", 8, 8, 8 * 8 * 4 },
     "move-button map staging retains the cropped SUB_BG geometry"
+  )
+  local playerSource = record.terrainSprites.player.sourceIndices
+  Assert.equal(reads[playerSource.path] or 0, 0, "admission stages terrain metadata without its bytes")
+  local stagedPlayer = sourceMapFor(playerSource)
+  Assert.deepEqual(
+    { stagedPlayer.plane, stagedPlayer.width, stagedPlayer.height, #stagedPlayer.pixels },
+    { "mainObj", 48, 24, 48 * 24 * 4 },
+    "terrain maps resolve their staged geometry on first palette use"
   )
   Assert.equal(
     #pool.acquired,
@@ -633,6 +653,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
     ["battle/ball/main-obj-source-index-castle.rgba8"] = string.char(48, 0, 0, 255),
     ["battle/ball-great/main-obj-source-index-slot64.rgba8"] = string.char(64, 0, 0, 255),
   }
+  local reads = {}
   local cacheFs = { versionId = baseCacheFs.versionId }
   function cacheFs:loadLua(path)
     if path == BattlePresentationCache.manifestPath() then
@@ -644,6 +665,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
     return baseCacheFs:loadLua(path)
   end
   function cacheFs:read(path)
+    reads[path] = (reads[path] or 0) + 1
     return mapBytes[path] or baseCacheFs:read(path)
   end
   function cacheFs:exists(_, _)
@@ -833,32 +855,34 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   })
   Assert.isTrue(ready, "the accepted trainer palette layout stages: " .. tostring(failure))
   local layer = assert(services.sceneLayer(), "the accepted scene retains its source maps")
-  local staged = assert(
-    layer.menuSourceIndices["trainer/back/main-obj-source-index-castle.rgba8"],
-    "the two-bank front trainer selects the physical back-palette sidecar"
+  local sourceMapFor = assert(layer.sourceMapFor, "the accepted scene carries its exact source-map reader")
+  Assert.equal(
+    reads["trainer/front/main-obj-source-index.rgba8"] or 0,
+    0,
+    "admission never opens the unselected front layout"
   )
+  local staged = sourceMapFor({ path = "trainer/back/main-obj-source-index-castle.rgba8" })
   Assert.deepEqual(
     { staged.pixels, staged.paletteSource.firstSlot },
     { string.char(112, 0, 0, 255), 112 },
     "the selected immutable map and source palette use the same physical slot"
   )
-  Assert.isNil(
-    layer.menuSourceIndices["trainer/front/main-obj-source-index.rgba8"],
-    "the source record's unused front layout is not selected for this palette bank"
+  Assert.equal(
+    reads["trainer/back/main-obj-source-index-castle.rgba8"],
+    1,
+    "the selected trainer sidecar loads exactly once"
   )
-  local stagedBall = assert(
-    layer.menuSourceIndices["battle/ball/main-obj-source-index-castle.rgba8"],
-    "the first active ball uses its native slot"
+  Assert.isTrue(
+    sourceMapFor({ path = "trainer/back/main-obj-source-index-castle.rgba8" }) == staged,
+    "repeat trainer requests share the memoized sidecar"
   )
+  local stagedBall = sourceMapFor({ path = "battle/ball/main-obj-source-index-castle.rgba8" })
   Assert.deepEqual(
     { stagedBall.pixels, stagedBall.paletteSource.firstSlot },
     { string.char(48, 0, 0, 255), 48 },
     "the first active-ball map and palette use the first ball bank"
   )
-  local stagedSecondBall = assert(
-    layer.menuSourceIndices["battle/ball-great/main-obj-source-index-slot64.rgba8"],
-    "the second active ball selects the next physical bank"
-  )
+  local stagedSecondBall = sourceMapFor({ path = "battle/ball-great/main-obj-source-index-slot64.rgba8" })
   Assert.deepEqual(
     { stagedSecondBall.pixels, stagedSecondBall.paletteSource.firstSlot },
     { string.char(64, 0, 0, 255), 64 },
@@ -2128,14 +2152,17 @@ function T.scene_source_closure_failure_preserves_ready_predecessor()
   end
   addSourceClosure(recordA)
   addSourceClosure(recordB)
-  palettePayloads[recordB.paletteSource.path].subObjOpaque[18] = nil
-  palettePayloads[recordB.paletteSource.path].initialDisplayed.subObj[18] = nil
-  indexBytes[graphicsManifest().hud.cursor.sourceIndices.path] = string.char(17, 0, 0, 255)
-  local invalidSourceIndexPath = graphicsManifest().hud.cursor.sourceIndices.path
+  -- The replacement scene names a palette source the cache never
+  -- staged: genuinely requested but absent, so admission fails naming
+  -- the scene and path instead of auditing unrelated map content.
+  local missingPaletteSourcePath = recordB.paletteSource.path
 
   local cacheFs = dualSceneCacheFs(recordA, recordB)
   local loadLua = cacheFs.loadLua
   function cacheFs:loadLua(path)
+    if path == missingPaletteSourcePath then
+      return nil
+    end
     if palettePayloads[path] ~= nil then
       return palettePayloads[path]
     end
@@ -2204,18 +2231,17 @@ function T.scene_source_closure_failure_preserves_ready_predecessor()
   Assert.equal(services.sceneLayer(), predecessor, "warm reuse keeps the same staged scene layer")
 
   local acquiredBeforeReplacement = #pool.acquired
-  local readyB, failureB = services.prepare(demand(SCENE_B_KEY, "source-closure-undefined-sub-obj-slot"))
-  Assert.isNil(readyB, "an opaque lower OBJ index without a source palette slot rejects the replacement")
+  local readyB, failureB = services.prepare(demand(SCENE_B_KEY, "source-closure-missing-palette-source"))
+  Assert.isNil(readyB, "a replacement with an unstaged palette source rejects the replacement")
   Assert.isTrue(
     type(failureB) == "string"
       and failureB:find(SCENE_B_KEY, 1, true) ~= nil
-      and failureB:find(invalidSourceIndexPath, 1, true) ~= nil
-      and failureB:find("17", 1, true) ~= nil,
-    "the failed scene closure reports its scene, undefined slot, and companion path: " .. tostring(failureB)
+      and failureB:find(missingPaletteSourcePath, 1, true) ~= nil,
+    "the failed scene reports its scene and missing palette path: " .. tostring(failureB)
   )
   Assert.isTrue(
     #pool.acquired > acquiredBeforeReplacement,
-    "the incomplete replacement acquired scene images before source closure failed"
+    "the incomplete replacement acquired scene images before the missing palette source failed"
   )
   Assert.equal(services.sceneLayer(), predecessor, "a failed replacement preserves the ready predecessor")
   for _, lease in ipairs(predecessorLeases) do
@@ -2702,6 +2728,149 @@ function T.repeating_particle_textures_keep_repeat_samplers_from_warmup_to_draw(
   end
   table.sort(sizes)
   Assert.deepEqual(sizes, { "32x128", "64x32" }, "repeated viewports sample beyond [0,1] for both generations")
+  envelope:dispose()
+end
+
+function T.modded_trainer_and_ball_payloads_stage_without_catalog_recheck()
+  local record = sceneRecord(SCENE_KEY)
+  local baseCacheFs = stagedCacheFs(record)
+  local manifest = graphicsManifest()
+  manifest.catalogIdentity = "synthetic-catalog"
+  local trainerEntry = {
+    image = "trainer/modded-front.png",
+    paletteSource = { words = { 0, 1, 2, 3 } },
+    animation = {
+      sourceSequence = 0,
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = {},
+      sequences = {
+        {
+          sourceSequence = 0,
+          frames = {
+            {
+              sourceFrame = 0,
+              drawableKey = "trainer:front:MODDED",
+              image = "trainer/modded-front.png",
+              rasterOffset = { x = 0, y = 0 },
+              durationTicks = 1,
+              userAttr = 0,
+            },
+          },
+        },
+      },
+    },
+  }
+  local ballEntry = {
+    fadeColor = 0,
+    paletteSource = { words = { 0, 1, 2, 3 } },
+    frames = {
+      {
+        drawableKey = "battle-ball:MODDED:0",
+        image = "balls/modded.png",
+      },
+    },
+  }
+  local leafRecords = {
+    [BattlePresentationCache.trainerPicturePath("front:MODDED")] = {
+      schema = "g4-battle-trainer-picture-v1",
+      selector = "front:MODDED",
+      catalogIdentity = "modded-catalog",
+      entry = trainerEntry,
+    },
+    [BattlePresentationCache.ballPath("ball:MODDED")] = {
+      schema = "g4-battle-ball-v1",
+      selector = "ball:MODDED",
+      catalogIdentity = "modded-catalog",
+      entry = ballEntry,
+    },
+  }
+  local cacheFs = { versionId = baseCacheFs.versionId }
+  function cacheFs:loadLua(path)
+    if path == BattlePresentationCache.manifestPath() then
+      return manifest
+    end
+    if leafRecords[path] ~= nil then
+      return leafRecords[path]
+    end
+    return baseCacheFs:loadLua(path)
+  end
+  function cacheFs:read(path)
+    return baseCacheFs:read(path)
+  end
+  function cacheFs:exists(_, _)
+    return true
+  end
+  local pool = ledgerPool(0, {})
+  local host = {
+    requestBattleTrainerPicture = function()
+      return true
+    end,
+    requestBattleBall = function()
+      return true
+    end,
+  }
+  local envelope = newEnvelope(cacheFs, pool, host)
+  envelope._manifest = manifest
+  local services = envelope:_preparationServices()
+  local ready, failure = services.prepare({
+    launchId = "modded-leaves",
+    scenes = {},
+    pages = {},
+    trainerPictures = { "front:MODDED" },
+    battleBalls = { "ball:MODDED" },
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isTrue(ready, "readable modded leaves stage without a catalog recheck: " .. tostring(failure))
+  local leaves = envelope._launchLeafRecords
+  Assert.isTrue(leaves.trainerPictures["front:MODDED"] == trainerEntry, "the modded trainer payload stages")
+  Assert.isTrue(leaves.battleBalls["ball:MODDED"] == ballEntry, "the modded ball payload stages")
+  local drawable, drawableFailure = services.drawable("trainer:front:MODDED")
+  Assert.isNil(drawableFailure, "the modded trainer art resolves without failure")
+  Assert.notNil(drawable, "the modded trainer art hands out its pooled image")
+  envelope:dispose()
+end
+
+function T.worker_ready_portrait_page_needs_no_page_recheck()
+  local record = sceneRecord(SCENE_KEY)
+  local baseCacheFs = stagedCacheFs(record)
+  local markerPath = MonCache.pageMarkerPath("portraits", 7)
+  local imagePath = MonCache.pageImagePath("portraits", 7)
+  local reads = {}
+  local cacheFs = { versionId = baseCacheFs.versionId }
+  function cacheFs:loadLua(path)
+    if path == MonCache.portraitManifestPath() then
+      return { entries = { ["probe-mon"] = { pageId = 7 } } }
+    end
+    return baseCacheFs:loadLua(path)
+  end
+  function cacheFs:read(path)
+    reads[path] = (reads[path] or 0) + 1
+    return baseCacheFs:read(path)
+  end
+  function cacheFs:exists(_, _)
+    return true
+  end
+  local pool = ledgerPool(0, {})
+  local host = {
+    requestMonPortraitPage = function()
+      return true
+    end,
+  }
+  local envelope = newEnvelope(cacheFs, pool, host)
+  local ready, failure = envelope:_preparationServices().prepare({
+    launchId = "worker-ready-portrait",
+    scenes = {},
+    pages = { "probe-mon" },
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.isTrue(ready, "a worker-ready portrait page admits without a staged recheck: " .. tostring(failure))
+  Assert.equal(reads[markerPath] or 0, 0, "admission never reopens the attested page marker")
+  Assert.equal(reads[imagePath] or 0, 0, "admission never rereads the attested page image")
   envelope:dispose()
 end
 

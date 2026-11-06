@@ -51,8 +51,6 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
 ---@field _launchManifest table<string, unknown>? shallow per-launch battle view over the verified core
 ---@field _launchLeafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries, released with the launch
----@field _stagedSourceSelectors { trainerPictures: table<string, boolean>, battleBalls: table<string, boolean> } selectors whose staged source-index maps passed membership validation
----@field _stagedMembersOk boolean true once the staged menu, HUD, font, and audio membership validated
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field _manifest table<string, unknown> staged or planning presentation manifest
@@ -671,31 +669,16 @@ local function inventoriesScene(manifest, sceneKey)
   return false
 end
 
----@param cacheFs table<string, unknown> versioned derived cache behind demand validation
----@param pageId integer zero-based portrait page identity under validation
----@return string? reason, nil when the staged marker and PNG envelope validate
-local function checkStagedPortraitPage(cacheFs, pageId)
-  local marker = cacheFs:read(MonCache.pageMarkerPath("portraits", pageId))
-  if type(marker) ~= "string" or marker == "" then
-    return "missing page marker"
-  end
-  -- The staged marker only reuses the envelope validator here: the
-  -- worker-ready answer (or the accepted already-staged page without a
-  -- host) is the generation authority, never equality with itself.
-  if not MonCache.isPageReady(cacheFs, "portraits", pageId, marker) then
-    return "invalid page image"
-  end
-  return nil
-end
-
 -- Maps demanded canonical portrait selectors to their staged atlas pages
 -- and drives each page through the borrowed selected-game host: unknown
 -- selectors fail terminally naming the selector, worker failures
--- propagate with page and cause, post-ready corrupt pages fail naming
--- selector and page, and still-building pages wait. Every needed page is
--- enqueued before waiting so independent pages build concurrently. The
--- whole-family index is never read: only the exact pages behind the
--- disclosed selectors are demanded, without the full mon summary.
+-- propagate with page and cause, and still-building pages wait. A ready
+-- worker answer is the page authority, never a staged recheck; without a
+-- host only the exact needed page image is read, and an absent page
+-- fails naming selector and page. Every needed page is enqueued before
+-- waiting so independent pages build concurrently. The whole-family
+-- index is never read: only the exact pages behind the disclosed
+-- selectors are demanded, without the full mon summary.
 ---@param envelope FieldBattlePresentation
 ---@param selectors string[] exact canonical portrait selectors under demand
 ---@return boolean? ready true when every demanded page validates, false while building
@@ -746,25 +729,20 @@ local function checkPortraitPages(envelope, selectors)
       end
       if ready ~= true then
         waiting = true
-      else
-        local stagedErr = checkStagedPortraitPage(cacheFs, group.pageId)
-        if stagedErr ~= nil then
-          return nil,
-            "battle portrait page " .. tostring(group.pageId) .. " for " .. names .. " is not staged: " .. stagedErr
-        end
       end
     else
-      -- Without a host nothing can build the page: a graphical launch
-      -- accepts only an already-staged and structurally valid page,
-      -- while headless descriptors validate the same staged identity.
-      local stagedErr = checkStagedPortraitPage(cacheFs, group.pageId)
-      if stagedErr ~= nil then
+      -- Without a host nothing can build the page: only the exact
+      -- needed page image is read, and an absent page fails instead of
+      -- waiting on an idle pending screen.
+      local pagePath = MonCache.pageImagePath("portraits", group.pageId)
+      local pageBytes = cacheFs:read(pagePath)
+      if type(pageBytes) ~= "string" or pageBytes == "" then
         local reason = "battle portrait page "
           .. tostring(group.pageId)
           .. " for "
           .. names
           .. " is not staged: "
-          .. stagedErr
+          .. pagePath
         if graphics ~= nil then
           reason = reason .. ": portrait:" .. tostring(group.pageId)
         end
@@ -810,10 +788,6 @@ local function checkTrainerPictures(envelope, selectors)
   if type(requestPicture) ~= "function" then
     return nil, "battle demand needs its selected trainer picture host: " .. tostring(selectors[1])
   end
-  local core = stagedManifest(envelope._manifest)
-  if core == nil then
-    return false
-  end
   local leaves = envelope._launchLeafRecords.trainerPictures
   local waiting = false
   local cacheFs = envelope._cacheFs
@@ -829,15 +803,12 @@ local function checkTrainerPictures(envelope, selectors)
       if ready ~= true then
         waiting = true
       else
+        -- The trusted load stages the readable selected entry once per
+        -- launch: no catalog recheck, so a modded readable payload
+        -- renders while a missing record still fails naming its selector.
         local record, loadErr = BattlePresentationCache.loadTrainerPicture(cacheFs, selector)
         if record == nil then
           return nil, "trainer picture " .. selector .. ": " .. tostring(loadErr)
-        end
-        if record.catalogIdentity ~= core.catalogIdentity then
-          return nil,
-            "trainer picture " .. selector .. " names " .. tostring(record.catalogIdentity) .. ", not " .. tostring(
-              core.catalogIdentity
-            )
         end
         leaves[selector] = record.entry
       end
@@ -913,10 +884,6 @@ local function checkBattleBalls(envelope, selectors)
   if type(requestBall) ~= "function" then
     return nil, "battle demand needs its selected ball host: " .. tostring(selectors[1])
   end
-  local core = stagedManifest(envelope._manifest)
-  if core == nil then
-    return false
-  end
   local leaves = envelope._launchLeafRecords.battleBalls
   local waiting = false
   local cacheFs = envelope._cacheFs
@@ -932,15 +899,12 @@ local function checkBattleBalls(envelope, selectors)
       if ready ~= true then
         waiting = true
       else
+        -- The trusted load stages the readable selected entry once per
+        -- launch: no catalog recheck, so a modded readable payload
+        -- renders while a missing record still fails naming its selector.
         local record, loadErr = BattlePresentationCache.loadBall(cacheFs, selector)
         if record == nil then
           return nil, "battle ball " .. selector .. ": " .. tostring(loadErr)
-        end
-        if record.catalogIdentity ~= core.catalogIdentity then
-          return nil,
-            "battle ball " .. selector .. " names " .. tostring(record.catalogIdentity) .. ", not " .. tostring(
-              core.catalogIdentity
-            )
         end
         leaves[selector] = record.entry
       end
@@ -1040,8 +1004,6 @@ function FieldBattlePresentation.new(opts)
     _manifestDocs = {},
     _launchManifest = nil,
     _launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil },
-    _stagedMembersOk = false,
-    _stagedSourceSelectors = { trainerPictures = {}, battleBalls = {} },
     _pool = opts.imagePool,
     _leases = {},
     _warmParticles = {},
@@ -1340,21 +1302,14 @@ local function uploadPortraitCell(graphics, envelope, selector)
   local pagePath = nil
   local entry = nil
   do
-    -- Only a worker-attested page decodes: an unstaged page waits for
-    -- preparation instead of decoding missing bytes or standing in
-    -- another image. Structural manifest problems still fail below.
+    -- The staged manifest names the owning page; the shared pool ticket
+    -- below is the readiness gate, so a worker-ready page decodes
+    -- without a second staged audit. Structural manifest problems and
+    -- missing bytes still fail below.
     local portraits = stagedDoc(envelope, MonCache.portraitManifestPath())
     if type(portraits) == "table" and type(portraits.entries) == "table" then
       local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
       entry = entries[selector]
-    end
-    local pageId = type(entry) == "table" and entry.pageId or nil
-    if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
-      if
-        checkStagedPortraitPage(cacheFs, pageId --[[@as integer]]) ~= nil
-      then
-        return nil, nil
-      end
     end
   end
   local ok, handleOrErr = pcall(function()
@@ -1410,20 +1365,16 @@ local function borrowPortraitCell(envelope, graphics, key, selector)
   local pagePath = nil
   local pageId = nil
   do
-    -- Only a worker-attested page borrows: an unstaged page waits for
-    -- preparation instead of decoding missing bytes or standing in
-    -- another image. Structural manifest problems still fail below.
+    -- The staged manifest names the owning page; the shared pool ticket
+    -- below is the readiness gate, so a worker-ready page borrows
+    -- without a second staged audit. Structural manifest problems still
+    -- fail below.
     local portraits = stagedDoc(envelope, MonCache.portraitManifestPath())
     if type(portraits) == "table" and type(portraits.entries) == "table" then
       entry = portraits.entries[selector]
     end
     pageId = type(entry) == "table" and entry.pageId or nil
     if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
-      if
-        checkStagedPortraitPage(envelope._cacheFs, pageId --[[@as integer]]) ~= nil
-      then
-        return nil, nil
-      end
       pagePath = MonCache.pageImagePath("portraits", pageId --[[@as integer]])
     end
   end
@@ -1490,7 +1441,6 @@ end
 
 -- Menu layout names inside drawable keys, by manifest menu section.
 local MENU_LAYOUTS = { command = "command", moves = "moves", target = "target", twoOption = "two-option" }
-local MENU_ORDER = { "command", "moves", "target", "twoOption" }
 local MENU_SECTIONS = {} ---@type table<string, string> manifest menu section by drawable-key layout
 for section, layout in pairs(MENU_LAYOUTS) do
   MENU_SECTIONS[layout] = section
@@ -1703,11 +1653,6 @@ local function exactPortraitSelector(key)
   return selector
 end
 
-local NOT_STAGED = "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
-
--- The ordinary interface roles a demand may name beside its chosen track.
-local ORDINARY_AUDIO_ROLES = { "wild", "trainer", "rival", "select" }
-
 -- Fixed drawables every graphical launch reaches for.
 local REQUIRED_FIXED_ART = {
   "menu:command",
@@ -1722,64 +1667,6 @@ local REQUIRED_FIXED_ART = {
   "hud:enemy-left",
   "hud:enemy-right",
 }
-
--- Validates the demanded audio members against the staged manifest
--- roles: every demanded role must be one of the staged wild, trainer,
--- rival, or select symbols. Banks and cries ride the demand for
--- exactness; without the normalized audio membership in presentation
--- scope only their shape is checked here.
----@param manifest FieldBattlePresentation.StagedManifest
----@param musicRole string? launch's chosen battle-music symbol
----@param demand table<string, unknown> exact launch demand under validation
----@return string? reason, nil when the audio members validate
-local function checkAudioMembers(manifest, musicRole, demand)
-  local audio = demand.audio or { roles = {}, banks = {}, cries = {} }
-  if type(audio) ~= "table" then
-    return "battle demands carry their audio roles"
-  end
-  local stagedRoles = {}
-  for _, role in ipairs(ORDINARY_AUDIO_ROLES) do
-    stagedRoles[manifest.audioRoles[role]] = true
-  end
-  for _, symbol in pairs(BattleAudio.SINK_SOUNDS) do
-    stagedRoles[symbol] = true
-  end
-  -- The launch's chosen battle-music track is legitimate by
-  -- construction from the source selector beside the staged interface
-  -- roles: special-species and class tracks name staged sequences
-  -- outside the four ordinary roles.
-  if type(musicRole) == "string" and musicRole ~= "" then
-    stagedRoles[musicRole] = true
-  end
-  if type(audio.roles) ~= "table" then
-    return "battle demands carry their audio roles"
-  end
-  for _, role in ipairs(audio.roles) do
-    if type(role) ~= "string" or role == "" then
-      return "battle audio roles must be non-empty strings"
-    end
-    if not stagedRoles[role] then
-      return "battle demand names an unstaged audio role: " .. tostring(role)
-    end
-  end
-  if type(audio.banks) ~= "table" then
-    return "battle demands carry their audio banks"
-  end
-  for _, bank in ipairs(audio.banks) do
-    if type(bank) ~= "number" then
-      return "battle audio banks must be bank identities"
-    end
-  end
-  if type(audio.cries) ~= "table" then
-    return "battle demands carry their audio cries"
-  end
-  for _, cry in ipairs(audio.cries) do
-    if type(cry) ~= "string" or cry == "" then
-      return "battle audio cries must be non-empty strings"
-    end
-  end
-  return nil
-end
 
 -- Resolves the distinct audio bank ids one launch must stage before it
 -- may voice: every numeric music bank plus every cry species bank behind
@@ -1923,221 +1810,6 @@ local function preseedPortraitPage(cacheFs, selector)
   return pageId --[[@as integer]]
 end
 
--- Validates the staged menu, HUD, and font members behind the launch:
--- every drawable the renderers reach for must have its staged image,
--- and every manifest text role must have its staged font definition.
--- The borrowed field text renderer owns font pixels; this checks the
--- staged definitions the roles reference.
----@param cacheFs table<string, unknown> versioned derived cache behind demand validation
----@param manifest FieldBattlePresentation.StagedManifest
----@param demand table<string, unknown> selected launch context
----@param leafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries
----@return string? reason, nil when the staged members validate
----@return table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>? maps
-local function checkStagedMembers(cacheFs, manifest, demand, leafRecords)
-  local moveIcons = cacheFs:loadLua(MoveIconCache.manifestPath())
-  if type(moveIcons) ~= "table" or moveIcons.schema ~= MoveIconCache.SCHEMA then
-    return "battle move type icons are not staged"
-  end
-  local iconsOk, iconPaths = pcall(MoveIconCache.referencedPaths, moveIcons)
-  if not iconsOk or type(iconPaths) ~= "table" then
-    return "battle move type icons are not staged"
-  end
-  for _, path in ipairs(iconPaths) do
-    local bytes = cacheFs:read(path)
-    if type(bytes) ~= "string" or #bytes == 0 then
-      return "battle move type icons are not staged"
-    end
-  end
-  local required = {} ---@type { key: string, path: string? }[]
-  local menuSourceIndices = {} ---@type table<string, { plane: string, width: integer, height: integer, pixels: string, paletteSource: table<string, unknown>? }>
-  local function need(key, path)
-    required[#required + 1] = { key = key, path = path }
-  end
-  local function stageSourceIndices(source, label, paletteSource, requireVariants)
-    if requireVariants and (type(source.variants) ~= "table" or next(source.variants) == nil) then
-      return nil, label .. " lacks its physical MAIN_OBJ source-index layouts"
-    end
-    local function stagePath(path, selectedPaletteSource)
-      local bytes = cacheFs:read(path)
-      if type(bytes) ~= "string" or #bytes ~= source.width * source.height * 4 then
-        return nil, label .. " source-index map is not staged: " .. path
-      end
-      for offset = 1, #bytes, 4 do
-        local index = string.byte(bytes, offset)
-        local green = string.byte(bytes, offset + 1)
-        local blue = string.byte(bytes, offset + 2)
-        local alpha = string.byte(bytes, offset + 3)
-        if index == nil or green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) then
-          return nil, label .. " source-index map has invalid pixel data: " .. path
-        end
-        if alpha == 255 and source.plane == "mainObj" then
-          local firstSlot = type(selectedPaletteSource) == "table" and selectedPaletteSource.firstSlot or nil
-          local words = type(selectedPaletteSource) == "table" and selectedPaletteSource.words or nil
-          if
-            type(firstSlot) ~= "number"
-            or type(words) ~= "table"
-            or index < firstSlot
-            or index >= firstSlot + #words
-          then
-            return nil, label .. " source-index map references an undefined MAIN_OBJ palette slot: " .. tostring(index)
-          end
-        end
-      end
-      menuSourceIndices[path] = {
-        plane = source.plane,
-        width = source.width,
-        height = source.height,
-        pixels = bytes,
-        paletteSource = selectedPaletteSource,
-      }
-      return true
-    end
-    if requireVariants then
-      for _, variant in pairs(source.variants) do
-        local selectedPaletteSource = { firstSlot = variant.firstSlot, words = paletteSource.words }
-        local staged, failure = stagePath(variant.path, selectedPaletteSource)
-        if staged == nil then
-          return nil, failure
-        end
-      end
-      return true
-    end
-    return stagePath(source.path, paletteSource)
-  end
-  for _, key in ipairs(REQUIRED_FIXED_ART) do
-    need(key, fixedArt(manifest, FIXED_ART[key]))
-  end
-  for _, sectionName in ipairs(MENU_ORDER) do
-    local prefix = "menu:" .. MENU_LAYOUTS[sectionName]
-    local section = manifest.menus[sectionName] --[[@as FieldBattlePresentation.MenuSection]]
-    for index, screen in ipairs(section.screens) do
-      local screenKey = prefix .. ":screen:" .. tostring(index)
-      need(screenKey, screen.image)
-      local _, sourceFailure = stageSourceIndices(screen.sourceIndices, "battle menu " .. screenKey)
-      if sourceFailure ~= nil then
-        return sourceFailure
-      end
-      if screen.moveButtons ~= nil then
-        for slotIndex, button in ipairs(screen.moveButtons) do
-          local buttonKey = "menu:moves:move-button:" .. tostring(slotIndex - 1) .. ":"
-          need(buttonKey .. "empty", button.empty)
-          local _, emptyMapFailure =
-            stageSourceIndices(button.sourceIndices.empty, "battle menu " .. buttonKey .. "empty")
-          if emptyMapFailure ~= nil then
-            return emptyMapFailure
-          end
-          for typeKey, states in pairs(button.types) do
-            for state, image in pairs(states) do
-              need(buttonKey .. typeKey .. ":" .. state, image)
-              local _, buttonMapFailure = stageSourceIndices(
-                button.sourceIndices.types[typeKey][state],
-                "battle menu " .. buttonKey .. typeKey .. ":" .. state
-              )
-              if buttonMapFailure ~= nil then
-                return buttonMapFailure
-              end
-            end
-          end
-        end
-      end
-      if screen.backgrounds ~= nil then
-        for background, image in pairs(screen.backgrounds) do
-          need(screenKey .. "@" .. background, image)
-        end
-      end
-      if screen.touchBackgrounds ~= nil then
-        for background, image in pairs(screen.touchBackgrounds) do
-          need(screenKey .. "@" .. background .. ":touch", image)
-        end
-      end
-      -- Feedback patches validate through the same resolution the
-      -- renderers draw with.
-      if screen.feedback ~= nil then
-        for controlId, states in pairs(screen.feedback) do
-          for state, patch in pairs(states) do
-            local feedbackKey = prefix .. ":feedback:" .. controlId .. ":" .. state
-            need(feedbackKey, stagedArtPath(manifest, feedbackKey))
-            local _, feedbackMapFailure = stageSourceIndices(patch.sourceIndices, "battle menu " .. feedbackKey)
-            if feedbackMapFailure ~= nil then
-              return feedbackMapFailure
-            end
-          end
-        end
-      end
-    end
-  end
-  for _, sprite in ipairs({
-    manifest.hud.player,
-    manifest.hud.enemy,
-    manifest.hud.doubles.playerLeft,
-    manifest.hud.doubles.playerRight,
-    manifest.hud.doubles.enemyLeft,
-    manifest.hud.doubles.enemyRight,
-  }) do
-    local paletteSource = assert(sprite.paletteSource, "visible MAIN_OBJ health boxes carry source palette words")
-    local _, sourceFailure = stageSourceIndices(
-      assert(sprite.sourceIndices, "visible battle health boxes carry source indices"),
-      "battle HUD sprite " .. sprite.image,
-      paletteSource
-    )
-    if sourceFailure ~= nil then
-      return sourceFailure
-    end
-  end
-  for _, sprite in ipairs({ manifest.hud.cursor, manifest.hud.partyGauges[1], manifest.hud.partyGauges[2] }) do
-    local _, sourceFailure = stageSourceIndices(
-      assert(sprite.sourceIndices, "visible battle HUD sprites carry source indices"),
-      "battle HUD sprite " .. sprite.image
-    )
-    if sourceFailure ~= nil then
-      return sourceFailure
-    end
-  end
-  for _, selector in ipairs(demand ~= nil and demand.trainerPictures or {}) do
-    local entry = leafRecords.trainerPictures[selector]
-    if type(entry) ~= "table" then
-      return "battle trainer source map is not staged: " .. selector
-    end
-    for _, sequence in ipairs(entry.animation.sequences) do
-      for _, frame in ipairs(sequence.frames) do
-        local _, sourceFailure =
-          stageSourceIndices(frame.sourceIndices, "battle trainer frame " .. selector, entry.paletteSource, true)
-        if sourceFailure ~= nil then
-          return sourceFailure
-        end
-      end
-    end
-  end
-  for _, selector in ipairs(demand ~= nil and demand.battleBalls or {}) do
-    local entry = leafRecords.battleBalls[selector]
-    if type(entry) ~= "table" then
-      return "battle ball source map is not staged: " .. selector
-    end
-    for _, frame in ipairs(entry.frames) do
-      local _, sourceFailure =
-        stageSourceIndices(frame.sourceIndices, "battle ball frame " .. selector, entry.paletteSource, true)
-      if sourceFailure ~= nil then
-        return sourceFailure
-      end
-    end
-  end
-  for _, entry in ipairs(required) do
-    local bytes = entry.path ~= nil and cacheFs:read(entry.path) or nil
-    if type(bytes) ~= "string" or #bytes == 0 then
-      return "battle menu art is not staged: " .. entry.key
-    end
-  end
-  local textRoles = manifest.messages.roles
-  for _, role in ipairs({ "narration", "menu", "hud" }) do
-    local record = textRoles[role]
-    if record == nil or type(cacheFs:read(record.font)) ~= "string" then
-      return "battle font is not staged: " .. role
-    end
-  end
-  return nil, menuSourceIndices
-end
-
 -- The single verified global core for this field envelope's selected
 -- version/epoch. The planning inventory at construction upgrades to the
 -- verified record exactly once, the first time the selected global
@@ -2193,15 +1865,176 @@ function FieldBattlePresentation:_newLaunchManifest()
   return view
 end
 
+-- Indexes one source-index descriptor's staged paths without reading any
+-- bytes: plain descriptors stage under their own path while physical
+-- variants stage under each variant sidecar, pairing the variant palette
+-- base with the shared palette words. Malformed descriptors index
+-- nothing; the reader reports the requested path at first use.
+---@param index table<string, { plane: string, width: integer, height: integer, paletteSource: table<string, unknown>? }> staged path to its source metadata
+---@param descriptor table<string, unknown>? staged source-index metadata
+---@param paletteSource table<string, unknown>? source palette words behind MAIN_OBJ art
+local function indexSourceDescriptor(index, descriptor, paletteSource)
+  if type(descriptor) ~= "table" then
+    return
+  end
+  local plane = descriptor.plane
+  local width = descriptor.width
+  local height = descriptor.height
+  if type(plane) ~= "string" or type(width) ~= "number" or type(height) ~= "number" then
+    return
+  end
+  local function note(path, source)
+    if type(path) == "string" and path ~= "" then
+      index[path] = { plane = plane, width = width, height = height, paletteSource = source }
+    end
+  end
+  if type(descriptor.path) == "string" then
+    note(descriptor.path, paletteSource)
+  end
+  if type(descriptor.variants) == "table" then
+    for _, variant in pairs(descriptor.variants) do
+      if type(variant) == "table" then
+        local source = paletteSource
+        if
+          type(variant.firstSlot) == "number"
+          and type(paletteSource) == "table"
+          and type(paletteSource.words) == "table"
+        then
+          source = { firstSlot = variant.firstSlot, words = paletteSource.words }
+        end
+        note(variant.path, source)
+      end
+    end
+  end
+end
+
+-- Indexes every menu, HUD, and fixed-art source-index path of the
+-- verified core without reading any bytes: geometry and palette words
+-- come from the staged descriptors alone.
+---@param index table<string, { plane: string, width: integer, height: integer, paletteSource: table<string, unknown>? }> staged path to its source metadata
+---@param manifest table<string, unknown> verified battle core carrying staged descriptors
+local function indexManifestSourceMaps(index, manifest)
+  if type(manifest) ~= "table" then
+    return
+  end
+  local menus = manifest.menus
+  if type(menus) == "table" then
+    for _, section in pairs(menus) do
+      if type(section) == "table" and type(section.screens) == "table" then
+        for _, screen in ipairs(section.screens) do
+          if type(screen) == "table" then
+            indexSourceDescriptor(index, screen.sourceIndices)
+            if type(screen.feedback) == "table" then
+              for _, states in pairs(screen.feedback) do
+                for _, patch in pairs(states) do
+                  if type(patch) == "table" then
+                    indexSourceDescriptor(index, patch.sourceIndices)
+                  end
+                end
+              end
+            end
+            if type(screen.moveButtons) == "table" then
+              for _, button in ipairs(screen.moveButtons) do
+                if type(button) == "table" and type(button.sourceIndices) == "table" then
+                  local indices = button.sourceIndices
+                  indexSourceDescriptor(index, indices.empty)
+                  if type(indices.types) == "table" then
+                    for _, states in pairs(indices.types) do
+                      for _, source in pairs(states) do
+                        indexSourceDescriptor(index, source)
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  local hud = manifest.hud
+  if type(hud) == "table" then
+    local function indexHudSprite(sprite)
+      if type(sprite) == "table" then
+        indexSourceDescriptor(index, sprite.sourceIndices, sprite.paletteSource)
+      end
+    end
+    indexHudSprite(hud.player)
+    indexHudSprite(hud.enemy)
+    if type(hud.doubles) == "table" then
+      for _, sprite in pairs(hud.doubles) do
+        indexHudSprite(sprite)
+      end
+    end
+    indexHudSprite(hud.cursor)
+    indexHudSprite(hud.arrow)
+    if type(hud.partyGauges) == "table" then
+      for _, gauge in ipairs(hud.partyGauges) do
+        indexHudSprite(gauge)
+      end
+    end
+  end
+end
+
+-- Indexes the staged trainer and ball leaf frames behind one launch
+-- without reading any bytes, so a visible palette request can resolve
+-- the selected physical variant sidecar on its first use.
+---@param index table<string, { plane: string, width: integer, height: integer, paletteSource: table<string, unknown>? }> staged path to its source metadata
+---@param leaves { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>> } per-launch staged leaf entries
+local function indexLeafSourceMaps(index, leaves)
+  if type(leaves) ~= "table" then
+    return
+  end
+  if type(leaves.trainerPictures) == "table" then
+    for _, entry in pairs(leaves.trainerPictures) do
+      if type(entry) == "table" and type(entry.animation) == "table" then
+        local animation = entry.animation
+        local function indexFrame(frame)
+          if type(frame) == "table" then
+            indexSourceDescriptor(index, frame.sourceIndices, entry.paletteSource)
+          end
+        end
+        if type(animation.frames) == "table" then
+          for _, frame in ipairs(animation.frames) do
+            indexFrame(frame)
+          end
+        end
+        if type(animation.sequences) == "table" then
+          for _, sequence in ipairs(animation.sequences) do
+            if type(sequence) == "table" and type(sequence.frames) == "table" then
+              for _, frame in ipairs(sequence.frames) do
+                indexFrame(frame)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  if type(leaves.battleBalls) == "table" then
+    for _, entry in pairs(leaves.battleBalls) do
+      if type(entry) == "table" and type(entry.frames) == "table" then
+        for _, frame in ipairs(entry.frames) do
+          if type(frame) == "table" then
+            indexSourceDescriptor(index, frame.sourceIndices, entry.paletteSource)
+          end
+        end
+      end
+    end
+  end
+end
+
 -- The cache-backed preparation services behind one envelope: prepare
 -- validates the exact launch demand against the staged or planning
--- manifest, the portrait manifest and page markers, and -- where pixels
--- are actually required -- the staged menu, HUD, font, and audio
--- members; drawable resolves validated handles through the owned image
--- cache without ever inventing a second uploader; release forgets owned
--- handles exactly once. Missing staged scene pixels stay pending as data
--- descriptors in headless composition and fail closed only where pixels
--- are actually required.
+-- manifest and the portrait manifest, then stages only the demanded
+-- scene, portrait, leaf, icon, and audio-bank resources; drawable
+-- resolves staged handles through the owned image cache without ever
+-- inventing a second uploader; release forgets owned handles exactly
+-- once. Source-index bytes are never read here: the scene layer answers
+-- them through its exact-demand reader on first visible use. Missing
+-- staged scene pixels stay pending as data descriptors in headless
+-- composition and fail closed only where pixels are actually required.
 ---@return table<string, unknown> preparation services carrying prepare/drawable/release
 function FieldBattlePresentation:_preparationServices()
   local envelope = self
@@ -2212,7 +2045,7 @@ function FieldBattlePresentation:_preparationServices()
   local stagedSceneKey = nil
   local stagedSceneParticleKeys = {} ---@type string[]
   local stagedSceneLayer = nil
-  local stagedMenuSourceIndices = nil
+  local stagedSourceMeta = nil
   local backgroundPixels = nil
   local backgroundImage = nil
   local fadedIntroPixels = nil
@@ -2256,17 +2089,6 @@ function FieldBattlePresentation:_preparationServices()
     if core == nil then
       return false, nil
     end
-    if graphics ~= nil and not envelope._stagedMembersOk then
-      local stagedErr, sourceIndices = checkStagedMembers(cacheFs, core, {
-        trainerPictures = {},
-        battleBalls = {},
-      }, envelope._launchLeafRecords)
-      if stagedErr ~= nil then
-        return nil, stagedErr
-      end
-      stagedMenuSourceIndices = assert(sourceIndices, "validated menu maps have a staged record")
-      envelope._stagedMembersOk = true
-    end
     for _, sceneKey in ipairs(demand.scenes or {}) do
       if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
         return nil, "unknown battle scene key: " .. tostring(sceneKey)
@@ -2297,13 +2119,6 @@ function FieldBattlePresentation:_preparationServices()
           end
           return nil, "battle scene " .. tostring(sceneKey) .. ": " .. cause
         end
-        if not cacheFs:exists(BattlePresentationCache.sceneImagePath(sceneKey), "file") then
-          if not scheduled then
-            return nil,
-              "battle scene image is not staged: " .. tostring(sceneKey) .. ": no scene demand host to schedule it"
-          end
-          return nil, "battle scene image is not staged: " .. tostring(sceneKey)
-        end
         -- A staged layer stays usable only while its drawables are still
         -- the live warm pins: idle warmup retires a superseded scene's
         -- pins once its successor group completes, so a launch returning
@@ -2332,6 +2147,7 @@ function FieldBattlePresentation:_preparationServices()
           then
             stagedSceneKey = nil
             stagedSceneLayer = nil
+            stagedSourceMeta = nil
           end
         end
         if stagedSceneKey ~= sceneKey then
@@ -2363,28 +2179,15 @@ function FieldBattlePresentation:_preparationServices()
           if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
             return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
           end
-          assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
+          -- Only the BG3 inputs the rasterizer actually consumes are
+          -- read here; staged texture PNGs prove themselves through the
+          -- shared image owner below, never through an existence census.
           local baseCharacters = cacheFs:read(layer.baseCharacters.path)
           if type(baseCharacters) ~= "string" then
             return nil, "battle scene intro characters are not staged: " .. tostring(sceneKey)
           end
-          assert(
-            layer.baseCharacters.format == "indexed8",
-            "unbaked intro characters use the staged 8bpp character format"
-          )
           local intro = record.introLayer
           local sprites = record.terrainSprites
-          local imagePaths = { intro.image, sprites.player.image, sprites.foe.image }
-          for _, set in ipairs(record.encounterParticles) do
-            for _, texture in ipairs(set.textures) do
-              imagePaths[#imagePaths + 1] = texture.image
-            end
-          end
-          for _, imagePath in ipairs(imagePaths) do
-            if not cacheFs:exists(imagePath, "file") then
-              return nil, "battle scene intro art is not staged: " .. tostring(sceneKey) .. ": " .. imagePath
-            end
-          end
           local introKey = "scene-intro:" .. sceneKey
           -- The warm pins this attempt did not create: a failed attempt
           -- below drops only pins it installed itself, so a pre-existing
@@ -2440,94 +2243,70 @@ function FieldBattlePresentation:_preparationServices()
             return failAttempt(assert(foeFailure, "foe terrain lease failures carry a reason"))
           end
           acquiredKeys[#acquiredKeys + 1] = foeKey
+          -- The requested native palette source stages with the scene;
+          -- its slots are consumed by the palette evaluator, never
+          -- audited here.
           local paletteSource = cacheFs:loadLua(record.paletteSource.path)
           if type(paletteSource) ~= "table" then
             return failAttempt(
               "battle scene " .. tostring(sceneKey) .. " palette source is not staged: " .. record.paletteSource.path
             )
           end
-          local subObjOpaque = paletteSource.subObjOpaque
-          local initialDisplayedSubObj = type(paletteSource.initialDisplayed) == "table"
-              and paletteSource.initialDisplayed.subObj
-            or nil
-          if type(subObjOpaque) ~= "table" or type(initialDisplayedSubObj) ~= "table" then
-            return failAttempt(
-              "battle scene "
-                .. tostring(sceneKey)
-                .. " native palette source lacks sparse SUB_OBJ slots: "
-                .. record.paletteSource.path
-            )
-          end
-          for path, source in pairs(assert(stagedMenuSourceIndices, "menu indices are staged before scene entry")) do
-            if source.plane == "mainObj" then
-              local sourcePalette = source.paletteSource
-              if type(sourcePalette) ~= "table" or type(sourcePalette.words) ~= "table" then
-                return failAttempt("battle MAIN_OBJ source-index map has no source palette: " .. path)
-              end
-              for offset = 1, #source.pixels, 4 do
-                if string.byte(source.pixels, offset + 3) == 255 then
-                  local slot = string.byte(source.pixels, offset)
-                  if slot < sourcePalette.firstSlot or slot >= sourcePalette.firstSlot + #sourcePalette.words then
-                    return failAttempt(
-                      "battle scene "
-                        .. tostring(sceneKey)
-                        .. " MAIN_OBJ source slot "
-                        .. tostring(slot)
-                        .. " is undefined in "
-                        .. path
-                    )
-                  end
-                end
-              end
-            end
-            if source.plane == "subObj" then
-              for offset = 1, #source.pixels, 4 do
-                if string.byte(source.pixels, offset + 3) == 255 then
-                  local slot = string.byte(source.pixels, offset)
-                  if subObjOpaque[slot + 1] == nil or initialDisplayedSubObj[slot + 1] == nil then
-                    return failAttempt(
-                      "battle scene "
-                        .. tostring(sceneKey)
-                        .. " SUB_OBJ source slot "
-                        .. tostring(slot)
-                        .. " is undefined in "
-                        .. path
-                    )
-                  end
-                end
-              end
-            end
-          end
+          -- Exact-demand source bytes: descriptors index their staged
+          -- paths and geometry with no file reads, while the reader
+          -- below loads only the maps a visible palette request names,
+          -- once each. Physical variants stage under distinct sidecars,
+          -- so one path entry covers its variant.
+          local sourceMeta = {}
+          local sourceMemo = {}
+          indexManifestSourceMaps(sourceMeta, core)
           local sourceIndices = {}
           for _, side in ipairs({ "player", "foe" }) do
             local descriptor = sprites[side].sourceIndices
-            local bytes = cacheFs:read(descriptor.path)
-            local expectedSize = descriptor.width * descriptor.height * 4
-            if type(bytes) ~= "string" or #bytes ~= expectedSize then
-              return failAttempt(
-                "battle scene " .. tostring(sceneKey) .. " source-index payload has invalid size: " .. descriptor.path
-              )
+            indexSourceDescriptor(sourceMeta, descriptor)
+            sourceIndices[side] = descriptor
+          end
+          local function sourceMapFor(descriptor)
+            if type(descriptor) == "table" and type(descriptor.pixels) == "string" then
+              return descriptor
             end
-            for offset = 1, #bytes, 4 do
-              local green = string.byte(bytes, offset + 1)
-              local blue = string.byte(bytes, offset + 2)
-              local alpha = string.byte(bytes, offset + 3)
-              local index = string.byte(bytes, offset)
-              if green ~= 0 or blue ~= 0 or (alpha ~= 0 and alpha ~= 255) or (alpha == 255 and index >= 224) then
-                return failAttempt(
-                  "battle scene "
-                    .. tostring(sceneKey)
-                    .. " source-index payload has invalid pixel data: "
-                    .. descriptor.path
-                )
-              end
+            local path = type(descriptor) == "table" and descriptor.path or nil
+            assert(type(path) == "string" and path ~= "", "source-index descriptor names its map")
+            local mapPath = path --[[@as string]]
+            local memoized = sourceMemo[mapPath]
+            if memoized ~= nil then
+              return memoized
             end
-            sourceIndices[side] = {
-              plane = descriptor.plane,
-              width = descriptor.width,
-              height = descriptor.height,
+            local meta = sourceMeta[mapPath]
+            local plane = type(descriptor) == "table" and descriptor.plane or nil
+            local width = type(descriptor) == "table" and descriptor.width or nil
+            local height = type(descriptor) == "table" and descriptor.height or nil
+            local sourcePalette = type(descriptor) == "table" and descriptor.paletteSource or nil
+            if meta ~= nil then
+              plane = plane or meta.plane
+              width = width or meta.width
+              height = height or meta.height
+              sourcePalette = sourcePalette or meta.paletteSource
+            end
+            assert(type(plane) == "string" and plane ~= "", "staged source-index map names its plane: " .. mapPath)
+            assert(
+              type(width) == "number" and type(height) == "number",
+              "staged source-index map names its geometry: " .. mapPath
+            )
+            local bytes = cacheFs:read(mapPath)
+            assert(
+              type(bytes) == "string" and #bytes > 0,
+              "battle source-index map is not staged for " .. tostring(sceneKey) .. ": " .. mapPath
+            )
+            local staged = {
+              plane = plane,
+              width = width,
+              height = height,
               pixels = bytes,
+              paletteSource = sourcePalette,
             }
+            sourceMemo[mapPath] = staged
+            return staged
           end
           local particleSets = {}
           for setIndex, set in ipairs(record.encounterParticles) do
@@ -2549,6 +2328,7 @@ function FieldBattlePresentation:_preparationServices()
             }
           end
           stagedSceneKey = sceneKey
+          stagedSourceMeta = sourceMeta
           stagedSceneParticleKeys = {}
           for _, entry in ipairs(particles) do
             stagedSceneParticleKeys[#stagedSceneParticleKeys + 1] = entry.key
@@ -2561,7 +2341,7 @@ function FieldBattlePresentation:_preparationServices()
             paletteSource = paletteSource,
             mainObjBallPaletteSources = {},
             mainObjTrainerPaletteSources = {},
-            menuSourceIndices = stagedMenuSourceIndices,
+            sourceMapFor = sourceMapFor,
             colorMode = "8bpp",
             introLayer = {
               drawable = introDrawable,
@@ -2649,54 +2429,23 @@ function FieldBattlePresentation:_preparationServices()
         return false, nil
       end
     end
-    -- Menu, HUD, font, and audio members are required only where
-    -- pixels are actually required: headless composition keeps its
-    -- descriptor behavior so recording views prove without staged art.
+    -- Newly staged leaf frames index their physical variant sidecars
+    -- into the current scene reader with no file reads, so a visible
+    -- trainer or ball palette request resolves its selected map on
+    -- first use. Indexing repeats harmlessly across polling rounds.
+    if stagedSourceMeta ~= nil then
+      indexLeafSourceMaps(stagedSourceMeta, envelope._launchLeafRecords)
+    end
+    -- Menu, HUD, and fixed art are required only where pixels are
+    -- actually required: headless composition keeps its descriptor
+    -- behavior so recording views prove without staged art.
     if graphics ~= nil then
       local staged = stagedManifest(envelope._manifest)
-      if staged == nil then
-        return nil, NOT_STAGED
-      end
-      local newSourceSelector = false
-      for _, selector in ipairs(demand.trainerPictures or {}) do
-        if not envelope._stagedSourceSelectors.trainerPictures[selector] then
-          newSourceSelector = true
-        end
-      end
-      for _, selector in ipairs(demand.battleBalls or {}) do
-        if not envelope._stagedSourceSelectors.battleBalls[selector] then
-          newSourceSelector = true
-        end
-      end
-      -- Membership validates once per envelope: staged files never
-      -- un-stage under a live envelope, so repeat launches skip the
-      -- full manifest and art reads the first launch already proved.
-      -- A failure always re-checks instead of pinning a stale answer.
-      if not envelope._stagedMembersOk or newSourceSelector then
-        local stagedErr, sourceIndices = checkStagedMembers(cacheFs, staged, demand, envelope._launchLeafRecords)
-        if stagedErr ~= nil then
-          return nil, stagedErr
-        end
-        stagedMenuSourceIndices = assert(sourceIndices, "validated menu maps have a staged record")
-        if stagedSceneLayer ~= nil then
-          stagedSceneLayer.menuSourceIndices = stagedMenuSourceIndices
-        end
-        envelope._stagedMembersOk = true
-        for _, selector in ipairs(demand.trainerPictures or {}) do
-          envelope._stagedSourceSelectors.trainerPictures[selector] = true
-        end
-        for _, selector in ipairs(demand.battleBalls or {}) do
-          envelope._stagedSourceSelectors.battleBalls[selector] = true
-        end
-      end
-      local audioErr = checkAudioMembers(staged, envelope._musicRole, demand)
-      if audioErr ~= nil then
-        return nil, audioErr
-      end
+      assert(staged ~= nil, "a launched battle owns its verified core")
       -- Fixed art decodes while the remaining launch-specific members
-      -- still pend: every graphical launch draws these paths, so the
-      -- first validation enrolls them once per launch and the drawables
-      -- take over each ticket instead of serializing behind the build.
+      -- still pend: every graphical launch draws these paths, so
+      -- preparation enrolls them once per launch and the drawables take
+      -- over each ticket instead of serializing behind the build.
       for _, key in ipairs(REQUIRED_FIXED_ART) do
         local path = fixedArt(staged, FIXED_ART[key])
         if type(path) == "string" then
@@ -3125,11 +2874,13 @@ function FieldBattlePresentation:_preparationServices()
     images[key] = nil
   end
   -- Demands one lazily staged battle effect through the borrowed
-  -- selected-game host at the current generation: the exact flat key is
-  -- requested, then the staged record, marker, and full dependency
-  -- closure must validate before readiness. Pending stays a bare false
-  -- wait; worker, schema, and key-mismatch failures are terminal with
-  -- the effect key and cause. Nothing compiles or parses source here.
+  -- selected-game host at the current generation: a ready worker answer
+  -- is the readiness authority, and dependency payloads stay unread
+  -- until the executed effect resolves them. Pending stays a bare false
+  -- wait; worker failures are terminal with the effect key and cause.
+  -- Without a host only the exact needed record is read, and an absent
+  -- record fails instead of waiting. Nothing compiles or parses source
+  -- here.
   function services.requestEffect(key)
     if type(key) ~= "string" or key == "" or key:find("/", 1, true) ~= nil then
       return nil, "unknown battle effect key: " .. tostring(key)
@@ -3147,16 +2898,11 @@ function FieldBattlePresentation:_preparationServices()
       if ready ~= true then
         return false
       end
+      return true
     end
-    if cacheFs:loadLua(BattlePresentationCache.effectPath(key)) == nil then
-      return false
-    end
-    local record, recordErr = BattlePresentationCache.loadEffect(cacheFs, key)
-    if record == nil then
-      return nil, tostring(recordErr or ("battle effect " .. key .. " is not staged"))
-    end
-    if not BattlePresentationCache.isEffectReady(cacheFs, { key = key, resources = record.dependencies }) then
-      return false
+    local ok, record = pcall(cacheFs.loadLua, cacheFs, BattlePresentationCache.effectPath(key))
+    if not ok or type(record) ~= "table" then
+      return nil, "battle effect " .. key .. " is not staged: no effect host to schedule it"
     end
     return true
   end
@@ -3164,9 +2910,8 @@ function FieldBattlePresentation:_preparationServices()
   -- selected-game host, but only once a committed evolution actually
   -- requires it: pending holds the committed result while the worker
   -- builds, and readiness loads the standalone record exactly once per
-  -- launch after checking its generation against the verified core.
-  -- The record is cached for the launch; a missing leaf or a
-  -- generation mismatch fails terminally naming the evolution bundle.
+  -- launch. The record is cached for the launch; a missing leaf fails
+  -- terminally naming the evolution bundle.
   function services.prepareEvolution()
     if envelope._disposed then
       return nil, "battle evolution is not staged: the presented battle envelope is disposed"
@@ -3193,14 +2938,6 @@ function FieldBattlePresentation:_preparationServices()
     local record, recordErr = BattlePresentationCache.loadEvolution(cacheFs)
     if record == nil then
       return nil, tostring(recordErr or "battle evolution is not staged")
-    end
-    local core = stagedManifest(envelope._manifest)
-    if core == nil then
-      return nil
-    end
-    if record.catalogIdentity ~= core.catalogIdentity then
-      return nil,
-        "battle evolution names " .. tostring(record.catalogIdentity) .. ", not " .. tostring(core.catalogIdentity)
     end
     envelope._launchLeafRecords.evolution = record
     return record
@@ -3242,7 +2979,7 @@ function FieldBattlePresentation:_preparationServices()
       return nil, "unknown battle effect resource " .. tostring(resourceKey) .. " for effect " .. effectKey
     end
     if descriptor.kind ~= "texture" then
-      if type(descriptor.payload) ~= "string" or not cacheFs:exists(descriptor.payload, "file") then
+      if type(descriptor.payload) ~= "string" or descriptor.payload == "" then
         return nil, "battle effect resource " .. tostring(resourceKey) .. " is not staged for effect " .. effectKey
       end
       -- Non-texture payloads decode here, once per resolve: tasks only
