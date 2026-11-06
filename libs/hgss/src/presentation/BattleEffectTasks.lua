@@ -1403,9 +1403,9 @@ end
 -- Advances one source tick: completion is the staged voice ending.
 -- The run arms on its first unfinished observation and completes on
 -- the first finished observation after that, so a voice that never
--- reports alive cannot fake-complete the run; the bounded escape
--- retires such runs instead, so a silent voice cannot park the
--- occurrence past the native horizon. Audio failures propagate so
+-- reports alive cannot fake-complete the run. A voice that never reports
+-- past the native horizon fails loudly so a silent voice cannot park the
+-- occurrence. Audio failures propagate so
 -- the player fails the owning occurrence.
 ---@param self BattleSoundTask
 ---@param tick table<string, unknown>? source tick under advancement
@@ -1426,8 +1426,8 @@ function BattleSoundTask:stepSourceTick(tick)
     self._armed = true
   end
   if self._ticks >= self._escape then
-    self._state = "complete"
     stopSoundVoice(self)
+    error("BATTLE_EFFECT_TASK_VOICE: voice " .. self._voice .. " never reported completion", 0)
   end
 end
 
@@ -3754,7 +3754,14 @@ function BattleEffectTasks.create(kind, args, context, services)
     return BattleParticleSystems.newPathTask(args or {}, context or {})
   end
   if kind == BattleEffectTasks.EMITTER_CURVED_PATH_KIND then
-    return BattleParticleSystems.newCurvedPathTask(context or {})
+    -- The curved emitter path is not reproduced: constructing it fails
+    -- loudly instead of keeping a silently unmoved emitter.
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. kind
+        .. " reproduces the curved emitter path instead of leaving it unplayed",
+      0
+    )
   end
   if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
     assert(type(services) == "table", "picture animations require their services record")

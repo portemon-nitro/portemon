@@ -150,8 +150,16 @@ function T.cancel_from_every_phase_releases_only_its_own_holdings()
     end
     local tasks = {}
     function tasks.create(_kind, _args, _context, _services)
-      local task = { _state = "running" }
-      function task.stepSourceTick(_tick) end
+      -- Stub work honors a bounded lifetime instead of hanging forever:
+      -- real tasks retire on their own boundary, so the stub completes
+      -- after three source ticks unless cancellation lands first.
+      local task = { _state = "running", _steps = 0 }
+      function task.stepSourceTick(_tick)
+        task._steps = task._steps + 1
+        if task._steps >= 3 then
+          task._state = "complete"
+        end
+      end
       function task.status()
         return task._state
       end

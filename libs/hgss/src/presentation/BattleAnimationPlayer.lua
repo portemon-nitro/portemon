@@ -126,28 +126,41 @@ end
 
 ---@param playback unknown playback packet carrying launch and packet identity
 ---@return boolean admitted true for a packet the player can bind
+---@return string? refusal cause behind a rejected packet, nil when admitted
 local function validPlayback(playback)
   if type(playback) ~= "table" then
-    return false
+    return false, "playback is not a record"
   end
   local packet = playback --[[@as table<string, unknown>]]
   if type(packet.launchId) ~= "string" or packet.launchId == "" then
-    return false
+    return false, "playback carries no launch identity"
   end
-  return type(packet.packetId) == "number" and packet.packetId % 1 == 0 and packet.packetId >= 1
+  if type(packet.packetId) ~= "number" or packet.packetId % 1 ~= 0 or packet.packetId < 1 then
+    return false, "playback carries no packet identity"
+  end
+  return true, nil
 end
 
 -- Starts one occurrence bound to an immutable playback packet and a
 -- complete normalized program. Structural failures refuse admission
--- with nil and never raise; a statically detected zero-time control
--- cycle is recorded and fails on the first source tick instead.
+-- with nil plus their cause and never raise; a statically detected
+-- zero-time control cycle is recorded and fails on the first source
+-- tick instead.
 ---@param self BattleAnimationPlayer
 ---@param playback table<string, unknown> immutable occurrence context and identity
 ---@param program table<string, unknown> complete normalized program under execution
 ---@return table<string, unknown>? handle opaque occurrence handle, when admitted
+---@return string? refusal cause behind a rejected program, nil when admitted
 function BattleAnimationPlayer:start(playback, program)
-  if self._disposed or not validPlayback(playback) or type(program) ~= "table" then
-    return nil
+  if self._disposed then
+    return nil, "the animation player is disposed"
+  end
+  local bound, bindingCause = validPlayback(playback)
+  if not bound then
+    return nil, bindingCause
+  end
+  if type(program) ~= "table" then
+    return nil, "the program is not a record"
   end
   local probe = program --[[@as table<string, unknown>]]
   -- The shared shape validates every structural field; the input and
@@ -155,15 +168,15 @@ function BattleAnimationPlayer:start(playback, program)
   -- producer owns their vocabulary and the factory receives them
   -- verbatim), so hand-built and compiler-lowered programs validate
   -- alike while unknown operations still fail admission.
-  local ok, _ = pcall(BattleAnimationSchema.assertProgram, validationView(probe))
+  local ok, schemaCause = pcall(BattleAnimationSchema.assertProgram, validationView(probe))
   if not ok then
-    return nil
+    return nil, "program shape refused admission: " .. tostring(schemaCause)
   end
   local instructions = probe.instructions --[[@as table<integer, table<string, unknown>>]]
   for index, instruction in ipairs(instructions) do
-    local admitted, _ = BattleAnimationCommands.admit(instruction, index, #instructions)
+    local admitted, admitCause = BattleAnimationCommands.admit(instruction, index, #instructions)
     if not admitted then
-      return nil
+      return nil, "instruction " .. tostring(index) .. " refused admission: " .. tostring(admitCause)
     end
   end
   local scratch = {}
@@ -866,7 +879,7 @@ local function streamEnd(self, occurrence)
   if hold == "voices" then
     occurrence.endPark = occurrence.endPark + 1
     if occurrence.endPark > VOICE_ESCAPE_TICKS then
-      settle(self, occurrence, "complete", nil)
+      failOccurrence(self, occurrence, "stream-end voices never completed")
       return
     end
   end

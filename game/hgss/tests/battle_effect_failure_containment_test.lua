@@ -318,8 +318,9 @@ end
 
 ---@param launchId string owning launch identity under test driving
 ---@param staging table staged-effect fixture under test driving
+---@param audioOverride table? screen audio double under test driving, healthy by default
 ---@return table live screen behind the failing effect services plus its port
-local function openFailingScreen(launchId, staging)
+local function openFailingScreen(launchId, staging, audioOverride)
   local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
@@ -345,10 +346,24 @@ local function openFailingScreen(launchId, staging)
   function windows.drawWindow(box, frameKey, background)
     windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
-  local audio = { plays = {} }
-  function audio.play(name)
-    audio.plays[#audio.plays + 1] = name
-    return true
+  local audio = audioOverride or { plays = {} }
+  if audioOverride == nil then
+    function audio.play(name)
+      audio.plays[#audio.plays + 1] = name
+      return true
+    end
+    -- Healthy voices park one query, then complete (BattleVoiceDouble):
+    -- only effect voices gate sound-task arming here.
+    local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+    function audio.isEffectWaitComplete(_, symbol)
+      return completeVoice(symbol)
+    end
+    function audio.isCryFinished()
+      return true
+    end
+    function audio.isFanfarePlaying(_symbol)
+      return false
+    end
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
@@ -960,6 +975,102 @@ function T.pending_effect_stages_and_runs_once_ready_without_new_demands()
   for _, key in ipairs(staging.requests) do
     Assert.equal(key, "TACKLE", "disposal starts no late effect work")
   end
+end
+
+-- An unanswerable voice completion query fails the live screen with
+-- provenance instead of parking behind a wait the audio sink can never
+-- release: a sink that stages voices but answers no completion query is
+-- a bug, never a silent hold.
+function T.unanswerable_voice_query_fails_the_live_screen_with_provenance()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-effect-unanswerable-voice"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  -- A sink without completion-query ports: legacy-shaped and
+  -- deliberately incomplete, so the staged voice can never complete.
+  local portless = { plays = {} }
+  function portless.play(name)
+    portless.plays[#portless.plays + 1] = name
+    return true
+  end
+  local screen = openFailingScreen(launchId, staging, portless)
+  local program = lowered("TACKLE", { 29, 50, 4 })
+  local record = EffectStagingFixture.effectRecord("TACKLE", {})
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  staging:stageEffect("TACKLE", record, {})
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+    if screen:status().mode == "failed" then
+      break
+    end
+  end
+  Assert.equal(
+    screen:status().mode,
+    "failed",
+    "a voice the sink stages but never completes fails the screen, never parks silently"
+  )
+  Assert.isTrue(
+    tostring(screen:status().error):find(launchId, 1, true) ~= nil,
+    "the failure names its launch: " .. tostring(screen:status().error)
+  )
+  Assert.isTrue(
+    tostring(screen:status().error):find("completion query", 1, true) ~= nil,
+    "the failure names the unanswerable query: " .. tostring(screen:status().error)
+  )
+  screen:dispose()
+end
+
+-- Polling an occurrence the player no longer tracks fails the live
+-- screen with provenance instead of parking behind a pending that can
+-- never clear: an unknown or retired handle is a bug, never a stall.
+function T.unknown_player_handle_fails_the_live_screen_with_provenance()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-effect-unknown-handle"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local screen = openFailingScreen(launchId, staging)
+  local program = lowered("TACKLE", { 29, 50, 4 })
+  local record = EffectStagingFixture.effectRecord("TACKLE", {})
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  staging:stageEffect("TACKLE", record, {})
+  presentFailingStrike(screen, launchId)
+  local handle = nil
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+    if screen._liveEffectHandle ~= nil then
+      handle = screen._liveEffectHandle
+      break
+    end
+    if screen:status().mode == "failed" then
+      break
+    end
+  end
+  Assert.notNil(handle, "the effect admits its occurrence handle")
+  Assert.isTrue(screen:status().mode ~= "failed", "admission itself never fails the screen")
+  screen._player:cancel(handle, "probe-retire")
+  Assert.isTrue(screen._player:retire(handle), "the cancelled occurrence retires from the player")
+  for _ = 1, 30 do
+    screen:updateFixed(1 / 30)
+  end
+  Assert.equal(
+    screen:status().mode,
+    "failed",
+    "polling a handle the player no longer tracks fails the screen, never pends silently"
+  )
+  Assert.isTrue(
+    tostring(screen:status().error):find("TACKLE", 1, true) ~= nil,
+    "the failure names its effect: " .. tostring(screen:status().error)
+  )
+  screen:dispose()
 end
 
 return { tests = T }

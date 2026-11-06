@@ -1074,6 +1074,116 @@ function T.particle_effect_schema_closes_emitter_ordinals_and_every_position_pai
   Assert.isFalse(ok, "system slots index only the sixteen source particle systems")
 end
 
+function T.configure_from_script_shape_is_required_and_closed()
+  local offsetConfig = {
+    zMode = 0,
+    battlerOrder = 1,
+    positionMode = 5,
+    axisMode = 0,
+    flags = 0,
+    cameraMode = 0,
+  }
+  local directConfig = {
+    zMode = 0,
+    battlerOrder = 2,
+    positionMode = 6,
+    axisMode = 5,
+    flags = 0,
+    cameraMode = 0,
+  }
+  local offset = { x = 0, y = -4128, z = 0, ignoreSide = 0 }
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 1,
+      emitterConfig = directConfig,
+    })),
+    "the configured emitter carries its six script config words"
+  )
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 1,
+      emitterConfig = offsetConfig,
+      emitterOffset = offset,
+    })),
+    "offset position modes carry their signed script offset block"
+  )
+  local ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 1,
+    })
+  )
+  Assert.isFalse(ok, "the configured emitter never admits without its config words")
+  ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-target-battler-relative",
+      systemIndex = 0,
+      emitter = 1,
+      emitterConfig = directConfig,
+    })
+  )
+  Assert.isFalse(ok, "only the configured profile carries emitter config")
+  local partial = {
+    zMode = 0,
+    battlerOrder = 2,
+    positionMode = 6,
+    axisMode = 5,
+    flags = 0,
+  }
+  ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 1,
+      emitterConfig = partial,
+    })
+  )
+  Assert.isFalse(ok, "partial config words never validate")
+  ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 1,
+      emitterConfig = offsetConfig,
+    })
+  )
+  Assert.isFalse(ok, "offset position modes never admit without their offset block")
+  ok = pcall(
+    schema().assertProgram,
+    program({
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      systemIndex = 0,
+      emitter = 1,
+      emitterConfig = directConfig,
+      emitterOffset = offset,
+    })
+  )
+  Assert.isFalse(ok, "table-driven position modes carry no offset block")
+end
+
 function T.managed_sprite_requires_four_base_resources_and_allows_optional_multi_resources()
   local instruction = {
     op = "create-managed-sprite",

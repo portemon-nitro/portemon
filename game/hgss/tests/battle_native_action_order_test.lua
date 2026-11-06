@@ -810,10 +810,9 @@ function T.repeated_move_in_later_round_announces_and_animates_again()
   Assert.equal(started, 2, "each turn plays its attack animation")
 end
 
--- A mistyped source action identity claims nothing: the outcome still
--- narrates, a diagnostic names the rejection, and no visual is
--- assigned to another user's action.
-function T.malformed_action_identity_is_rejected_without_assigning_the_visual()
+-- A mistyped source action identity fails loudly: the failure names the
+-- rejection and no visual is assigned to another user's action.
+function T.malformed_action_identity_fails_loudly_without_assigning_the_visual()
   local view = openingView()
   local started = {}
   local timeline = BattleTimeline.new({
@@ -832,33 +831,16 @@ function T.malformed_action_identity_is_rejected_without_assigning_the_visual()
   timeline:reset(view)
   local strike = visualStrike(1, 43)
   strike.actionId = {}
-  Assert.isTrue(
+  Assert.throws(function()
     timeline:present({
       launchId = "malformed-probe",
       packetId = 1,
       events = { strike },
       before = view,
       after = view,
-    }),
-    "the malformed delivery is accepted for narration"
-  )
-  local tick = 0
-  while tick < 3000 and not timeline:settled() do
-    tick = tick + 1
-    timeline:update(TICK, function(_)
-      return true
-    end)
-  end
-  Assert.isTrue(timeline:settled(), "narration drains without the rejected visual")
+    })
+  end, "a mistyped action identity fails instead of skipping its visual silently")
   Assert.equal(#started, 0, "the malformed identity starts no visual")
-  local diagnosed = false
-  for _, entry in ipairs(timeline:diagnostics()) do
-    if tostring(entry):find("no usable action identity", 1, true) ~= nil then
-      diagnosed = true
-    end
-  end
-  Assert.isTrue(diagnosed, "the rejection is diagnosed instead of silent")
-  Assert.isTrue(timeline:message():find("used Tackle", 1, true) ~= nil, "the outcome still narrates without its visual")
 end
 
 return { tests = T }

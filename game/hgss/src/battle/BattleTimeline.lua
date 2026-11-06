@@ -853,39 +853,39 @@ local function beginNativeEffect(self, cue)
   end
   cue.startAttempted = true
   if self._effects == nil then
-    if cue.collaboratorMissing ~= true then
-      cue.collaboratorMissing = true
-      self._diagnostics[#self._diagnostics + 1] = "native effect "
+    error(
+      "native effect "
         .. tostring(cue.effectKey)
         .. " for launch "
         .. tostring(cue.launchId)
-        .. " has no animation collaborator"
-    end
-    return
+        .. " has no animation collaborator",
+      0
+    )
   end
   local starter = self._effects.start --[[@as fun(cue: table<string, unknown>): table<string, unknown>?]]
   if type(starter) ~= "function" then
-    if cue.collaboratorMissing ~= true then
-      cue.collaboratorMissing = true
-      self._diagnostics[#self._diagnostics + 1] = "native effect "
+    error(
+      "native effect "
         .. tostring(cue.effectKey)
         .. " for launch "
         .. tostring(cue.launchId)
-        .. " has no animation start"
-    end
-    return
+        .. " has no animation start",
+      0
+    )
   end
   local ok, handle = pcall(starter, cue)
   if ok then
     cue.handle = handle
-  elseif cue.startNoted ~= true then
-    cue.startNoted = true
-    self._diagnostics[#self._diagnostics + 1] = "native effect "
-      .. tostring(cue.effectKey)
-      .. " for launch "
-      .. tostring(cue.launchId)
-      .. " start failed: "
-      .. tostring(handle)
+  else
+    error(
+      "native effect "
+        .. tostring(cue.effectKey)
+        .. " for launch "
+        .. tostring(cue.launchId)
+        .. " start failed: "
+        .. tostring(handle),
+      0
+    )
   end
 end
 
@@ -939,10 +939,9 @@ end
 
 -- Queues one native-effect cue for an effect-keyed source event behind
 -- its attack announcement and ahead of the event's hit and health work.
--- A malformed source action identity claims nothing: the outcome still
--- narrates, but no visual is assigned to another user's action. A Scene
--- Off omission still claims the occurrence so redeliveries and later
--- hits queue nothing new.
+-- A malformed source action identity fails loudly instead of assigning
+-- another user's visual or skipping silently. A Scene Off omission still
+-- claims the occurrence so redeliveries and later hits queue nothing new.
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
@@ -950,12 +949,14 @@ local function enqueueNativeEffect(self, event, packet)
   local launch = launchOf(packet)
   local identity = occurrenceIdentityOf(launch, event, packet)
   if identity == nil then
-    self._diagnostics[#self._diagnostics + 1] = "native effect "
-      .. tostring(event.effectKey)
-      .. " for launch "
-      .. tostring(packet.launchId)
-      .. " names no usable action identity; the visual is skipped"
-    return
+    error(
+      "native effect "
+        .. tostring(event.effectKey)
+        .. " for launch "
+        .. tostring(packet.launchId)
+        .. " names no usable action identity",
+      0
+    )
   end
   if self._nativeSeen[identity] == true then
     return
@@ -2554,6 +2555,13 @@ local function translateMissed(self, event)
   enqueueMessage(self, text, false, 30, true)
 end
 
+local function translateMoveFailed(self, event)
+  local _ = event
+  -- A failed execution announces only: retail shows the failure line
+  -- with no move animation, exactly like a miss.
+  enqueueMessage(self, messageText(self, "battle/narration/move-failed", {}), false, 30, true)
+end
+
 local function translateMultiHit(self, event)
   local hits = (event.payload --[[@as table<string, unknown>]]).hits
   assert(type(hits) == "number" and hits > 1 and hits % 1 == 0, "multi-hit summary carries connected hit count")
@@ -3091,10 +3099,23 @@ end
 -- silent; everything else narrates, moves health, or changes visibility.
 -- Kinds outside this table are genuinely unknown and keep the explicit
 -- diagnostic instead of vanishing.
+-- Ability activations are accounting-only in the current presentation:
+-- cures, stage changes, and flee narration ride their own sibling
+-- events, while the ability event itself claims no narration and no
+-- visual of its own. Retail ability-activation text is a separate
+-- fidelity gap, not a silent failure: the kind is represented here so
+-- it never reads as unrepresentable.
+local function translateAbility(self, event)
+  local _ = event
+  local _ = self
+end
+
 ---@type table<string, fun(self: BattleTimeline, event: table<string, unknown>)>
 local OTHER_TRANSLATORS = {
   flee = translateFlee,
   missed = translateMissed,
+  ability = translateAbility,
+  ["move-failed"] = translateMoveFailed,
   ["move-used"] = translateMoveUsed,
   status = translateStatus,
   cured = translateCured,
@@ -3164,19 +3185,16 @@ local function translateOther(self, event, packet)
     return
   end
   -- Any effect-keyed source event narrates before its selected native
-  -- program, except misses: HGSS subscript_0007 announces and waits but
-  -- does not start a move animation. Other source-attributed kinds keep
-  -- their selected programs instead of collapsing onto a generic hit.
+  -- program, except misses and failed moves: HGSS subscript_0007
+  -- announces and waits but does not start a move animation. Other
+  -- source-attributed kinds keep their selected programs instead of
+  -- collapsing onto a generic hit.
   local translate = OTHER_TRANSLATORS[kind]
   if translate == nil then
-    self._diagnostics[#self._diagnostics + 1] = "unrepresentable effect: " .. kind
-    if nativeEffectKeyOf(event) ~= nil then
-      enqueueNativeEffect(self, event, packet)
-    end
-    return
+    error("unrepresentable effect: " .. kind, 0)
   end
   translate(self, event, packet)
-  if kind ~= "missed" and nativeEffectKeyOf(event) ~= nil then
+  if kind ~= "missed" and kind ~= "move-failed" and nativeEffectKeyOf(event) ~= nil then
     enqueueNativeEffect(self, event, packet)
   end
 end
@@ -3860,9 +3878,6 @@ end
 ---@param cue table<string, unknown> native-effect cue under advancement
 ---@return boolean finished true only after the player occurrence actually completed
 local function pollNativeEffect(self, cue)
-  if cue.collaboratorMissing == true then
-    return false
-  end
   local handle = cue.handle
   if handle == nil then
     -- The collaborator refused admission: the owning screen already
@@ -3870,22 +3885,39 @@ local function pollNativeEffect(self, cue)
     -- of settling silently or replaying generic voices.
     return false
   end
-  local poller = type(self._effects) == "table" and self._effects.status or nil
+  local effects = self._effects
+  if type(effects) ~= "table" then
+    error(
+      "native effect "
+        .. tostring(cue.effectKey)
+        .. " for launch "
+        .. tostring(cue.launchId)
+        .. " polls without its animation collaborator",
+      0
+    )
+  end
+  local poller = effects.status
   if type(poller) ~= "function" then
-    return false
+    error(
+      "native effect "
+        .. tostring(cue.effectKey)
+        .. " for launch "
+        .. tostring(cue.launchId)
+        .. " polls without an animation status query",
+      0
+    )
   end
   local ok, phase = pcall(poller, handle)
   if not ok then
-    if cue.pollNoted ~= true then
-      cue.pollNoted = true
-      self._diagnostics[#self._diagnostics + 1] = "native effect "
+    error(
+      "native effect "
         .. tostring(cue.effectKey)
         .. " for launch "
         .. tostring(cue.launchId)
         .. " status query failed: "
-        .. tostring(phase)
-    end
-    return false
+        .. tostring(phase),
+      0
+    )
   end
   if phase == "complete" then
     -- Only this consumption point releases the occurrence, after the
@@ -3897,27 +3929,25 @@ local function pollNativeEffect(self, cue)
     if type(retirer) == "function" then
       local okRetire, retired = pcall(retirer, handle)
       if not okRetire then
-        if cue.retireNoted ~= true then
-          cue.retireNoted = true
-          self._diagnostics[#self._diagnostics + 1] = "native effect "
+        error(
+          "native effect "
             .. tostring(cue.effectKey)
             .. " for launch "
             .. tostring(cue.launchId)
             .. " retirement failed: "
-            .. tostring(retired)
-        end
-        return false
+            .. tostring(retired),
+          0
+        )
       end
       if retired ~= true then
-        if cue.retireNoted ~= true then
-          cue.retireNoted = true
-          self._diagnostics[#self._diagnostics + 1] = "native effect "
+        error(
+          "native effect "
             .. tostring(cue.effectKey)
             .. " for launch "
             .. tostring(cue.launchId)
-            .. " refuses retirement; the cue holds"
-        end
-        return false
+            .. " refuses retirement; the occurrence never completed",
+          0
+        )
       end
     end
     return true

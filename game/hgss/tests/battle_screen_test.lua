@@ -210,9 +210,9 @@ local function recordingAudio(muted)
   function audio.play(first, second)
     -- The production voice subsystem dispatches sink ports colon-style,
     -- so the recorded semantic cue is the second argument when present.
-    -- Muted playback still accepts every voice (silently): unavailability
-    -- is modeled by absent ports, never by a muted answer, so muted
-    -- cues drain instead of failing the screen.
+    -- Muted playback still accepts every voice (silently): a missing
+    -- completion port is a loud failure, never a muted answer, so
+    -- muted cues complete immediately instead of holding the screen.
     audio.plays[#audio.plays + 1] = second ~= nil and second or first
     return true
   end
@@ -229,6 +229,19 @@ local function recordingAudio(muted)
   function audio.stop(_, symbol)
     audio.stops[#audio.stops + 1] = symbol
     return true
+  end
+  -- Muted playback still accepts every voice: healthy voices park one
+  -- query, then complete (BattleVoiceDouble). A missing completion port
+  -- is a loud failure, never a muted answer.
+  local completeVoice = require("tests.support.BattleVoiceDouble").healthyWait()
+  function audio.isEffectWaitComplete(_, symbol)
+    return completeVoice(symbol)
+  end
+  function audio.isCryFinished()
+    return true
+  end
+  function audio.isFanfarePlaying()
+    return false
   end
   function audio.count(name)
     local total = 0

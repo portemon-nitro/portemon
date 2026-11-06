@@ -446,6 +446,16 @@ end
 -- never clones; there is no second scheduler and no gameplay event
 -- field.
 
+---@param screen BattleScreenState owning screen behind failure reporting
+---@param reason string terminal failure context under latching
+local function failNative(screen, reason)
+  if screen._mode == "failed" then
+    return
+  end
+  screen._mode = "failed"
+  screen._error = reason
+end
+
 ---@param screen BattleScreenState owning screen behind voice routing
 ---@param name unknown staged voice identity under playback
 ---@param extra unknown? voice operands behind playback
@@ -516,14 +526,23 @@ local function nativeVoiceFinished(screen, name)
   if handle == nil then
     return true
   end
-  -- An unanswerable completion query never fails the occurrence and
-  -- never fakes completion: the wait parks until the native voice
-  -- escape retires the run, so legacy sinks without query ports still
-  -- terminate instead of hanging.
+  -- An unanswerable completion query fails the screen with
+  -- launch and voice provenance instead of parking behind a wait
+  -- the sink can never release: a sink that stages voices but
+  -- answers no completion query is a bug, never a silent hold.
   local ok, done = pcall(function()
     return screen._battleAudio:voiceComplete(handle)
   end)
   if not ok then
+    failNative(
+      screen,
+      "battle voice "
+        .. tostring(name)
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": unanswerable completion query: "
+        .. tostring(done)
+    )
     return false
   end
   return done == true
@@ -598,16 +617,6 @@ local function nativeResourceAdapter(screen)
     return released
   end
   return adapter
-end
-
----@param screen BattleScreenState owning screen behind failure reporting
----@param reason string terminal failure context under latching
-local function failNative(screen, reason)
-  if screen._mode == "failed" then
-    return
-  end
-  screen._mode = "failed"
-  screen._error = reason
 end
 
 ---@param fault unknown player failure detail under rendering
@@ -798,12 +807,17 @@ local function nativeEffectAdmit(screen, cue, effectKey)
     return nil
   end
   screen._liveEffectRecord = record
-  local handle = screen._player:start(playback, program)
+  local handle, refusal = screen._player:start(playback, program)
   if handle == nil then
     screen._liveEffectRecord = nil
     failNative(
       screen,
-      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": program refused admission"
+      "battle effect "
+        .. effectKey
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": program refused admission: "
+        .. tostring(refusal)
     )
     return nil
   end
@@ -894,7 +908,16 @@ local function nativeEffectStatus(screen, handleOrToken)
   end
   local phase = screen._player:status(track.handle)
   if phase == nil then
-    return "pending"
+    track.failed = true
+    failNative(
+      screen,
+      "battle effect "
+        .. track.effectKey
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": its occurrence handle is unknown to the player; it never settles silently"
+    )
+    return "failed"
   end
   if phase == "failed" then
     -- A failed program never counts as a completed invisible

@@ -5619,9 +5619,10 @@ local function compileParticleMember(bytes)
   return compiled
 end
 
--- Reads the emitter placement table the battle emitter callbacks index: the
--- kind-0 emitter world position of each battler position under each
--- particle perspective type.
+-- Reads the emitter placement table the battle emitter callbacks index:
+-- every emitter kind's world position of each battler position under each
+-- particle perspective type. Kind 0 is the first vector of each
+-- perspective pair; higher kinds follow at twice the kind index.
 ---@param state BattleEffectStaging
 ---@return table<string, table<string, number>[]> placements by battler position, perspective 0 first
 local function readEmitterPlacements(state)
@@ -5645,16 +5646,56 @@ local function readEmitterPlacements(state)
     return value / source.unit
   end
   local placements = {}
+  local kindCount = source.vectorsPerBattlerType / source.perspectiveCount
+  assert(kindCount % 1 == 0, "emitter placement rows split evenly across perspective types")
   for battlerType = 0, source.battlerTypeCount - 1 do
     local position = assert(state.sources.resolveBattlerPosition(battlerType), "battler types have positions")
-    local perspectives = {}
-    for perspective = 0, source.perspectiveCount - 1 do
-      local at = base + battlerType * rowBytes + perspective * source.vectorBytes
-      perspectives[perspective + 1] = { x = fx32(at), y = fx32(at + 4), z = fx32(at + 8) }
+    local kinds = {}
+    for kind = 0, kindCount - 1 do
+      local perspectives = {}
+      for perspective = 0, source.perspectiveCount - 1 do
+        local at = base + battlerType * rowBytes + (kind * source.perspectiveCount + perspective) * source.vectorBytes
+        perspectives[perspective + 1] = { x = fx32(at), y = fx32(at + 4), z = fx32(at + 8) }
+      end
+      kinds[kind + 1] = perspectives
     end
-    placements[position] = perspectives
+    placements[position] = kinds
   end
   return placements
+end
+
+-- Reads one configured emitter axis table the battle emitter callbacks
+-- index: one fixed-point axis vector per ordered battler-type pair in
+-- row-major attacker-major order.
+---@param state BattleEffectStaging
+---@param source table<string, unknown> overlay table description
+---@return table<integer, table<string, number>> axis vectors in row-major battler-type order
+local function readEmitterAxisTable(state, source)
+  local bytes, info = state.romFs:readOverlay(source.cpu, source.overlayId)
+  if bytes == nil then
+    error(info, 0)
+  end
+  assert(info ~= nil, "overlay reads describe their image")
+  local base = source.address - info.ramAddress --[[@as integer]]
+  local function fx32(offset)
+    local low1, low2, low3, low4 = string.byte(bytes, offset + 1, offset + 4)
+    local value = low1 + low2 * 256 + low3 * 65536 + low4 * 16777216
+    if value >= 2147483648 then
+      value = value - 4294967296
+    end
+    return value / source.unit
+  end
+  local count = source.entryCount
+  assert(type(count) == "number" and count % 1 == 0 and count >= 1, "emitter axis tables declare their entry count")
+  if base < 0 or base + count * source.vectorBytes > #bytes then
+    error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "emitter axis table lies outside its overlay", {}), 0)
+  end
+  local axes = {}
+  for index = 0, count - 1 do
+    local at = base + index * source.vectorBytes
+    axes[index + 1] = { x = fx32(at), y = fx32(at + 4), z = fx32(at + 8) }
+  end
+  return axes
 end
 
 ---@param state BattleEffectStaging
@@ -6471,6 +6512,10 @@ local function stageClosureParticle(state, resourceKey, particle)
     emitters = set.emitters,
     textures = textures,
     placements = readEmitterPlacements(state),
+    axisTables = {
+      mode1 = readEmitterAxisTable(state, state.sources.EMITTER_AXIS_MODE1),
+      mode10 = readEmitterAxisTable(state, state.sources.EMITTER_AXIS_MODE10),
+    },
   }
   BattlePresentationSchema.assertParticleSystem(payload)
   addEffectResource(state, resourceKey, "particle", Hashing.sha1hex(particle.bytes), payload)
