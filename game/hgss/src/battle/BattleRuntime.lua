@@ -850,9 +850,10 @@ end
 -- naming an unprovisioned move still fail explicitly at the move boundary.
 -- Battles without a fact source carry no facts and fail the same way on
 -- their first offending execution.
----@param record table<string, unknown> detached scenario under session construction
+---@param moveKeys string[] sorted distinct referenced move identities collected once per session build
+---@param speciesForms table<integer, { species: string, form: integer }> sorted distinct referenced species forms collected once per session build
 ---@return table<string, table<string, unknown>> immutable move facts for the referenced moves
-function BattleRuntime:_sessionMoveFacts(record)
+function BattleRuntime:_sessionMoveFacts(moveKeys, speciesForms)
   local facts = {} ---@type table<string, table<string, unknown>>
   local catalog = self:_factCatalog()
   if catalog == nil then
@@ -868,7 +869,6 @@ function BattleRuntime:_sessionMoveFacts(record)
     moveFacts.flags = copyValue(battle.flags)
     return moveFacts
   end
-  local moveKeys = referencedStaticKeys(record)
   for _, key in ipairs(moveKeys) do
     facts[key] = sessionMoveFacts(moveByName(source, key))
   end
@@ -876,7 +876,6 @@ function BattleRuntime:_sessionMoveFacts(record)
   -- move of a referenced form resolves beside the carried move sets.
   local formByKey = source.form --[[@as fun(self: table<string, unknown>, speciesKey: string, form: integer): table<string, unknown>]]
   assert(type(formByKey) == "function", "learnset moves resolve through the mon catalog")
-  local _, speciesForms = referencedStaticKeys(record)
   for _, entry in ipairs(speciesForms) do
     local formRecord = formByKey(source, entry.species, entry.form)
     assert(type(formRecord.levelUpMoves) == "table", "species forms carry their learnsets")
@@ -902,9 +901,9 @@ end
 -- referenced species and form. Unresolvable species fail the build instead
 -- of guessing; battles without a fact source carry no facts and fail
 -- explicitly on their first offending execution.
----@param record table<string, unknown> detached scenario under session construction
+---@param speciesForms table<integer, { species: string, form: integer }> sorted distinct referenced species forms collected once per session build
 ---@return table<string, SpeciesFormFacts> static species facts by species and form
-function BattleRuntime:_sessionSpeciesFacts(record)
+function BattleRuntime:_sessionSpeciesFacts(speciesForms)
   local facts = {} ---@type table<string, SpeciesFormFacts>
   local catalog = self:_factCatalog()
   if catalog == nil then
@@ -918,7 +917,6 @@ function BattleRuntime:_sessionSpeciesFacts(record)
     type(speciesByKey) == "function" and type(formByKey) == "function" and type(curveByKey) == "function",
     "species facts resolve through the mon catalog"
   )
-  local _, speciesForms = referencedStaticKeys(record)
   for _, entry in ipairs(speciesForms) do
     local speciesRecord = speciesByKey(source, entry.species)
     local curveKey = speciesRecord.growthCurve
@@ -1143,6 +1141,11 @@ end
 -- the native executor from it; everything else rides the detached
 -- fragment.
 function BattleRuntime:_buildSession()
+  -- The build stamps battle style, seed, ruleset, and fact maps onto its
+  -- working record while later phases keep reading the
+  -- constructor-owned scenario for views, rewards, and consequences, so
+  -- this detached copy stays: it protects those later reads, while the
+  -- session itself is isolated again by scenario validation.
   local record = copyValue(self._scenario)
   assert(type(record) == "table", "session builds need their scenario")
   -- The saved battle style reaches the actual player-controlled
@@ -1182,8 +1185,12 @@ function BattleRuntime:_buildSession()
     record.random = { seed = self._seed }
   end
   record.ruleset = Executor.RULESET
-  record.moveFacts = self:_sessionMoveFacts(record --[[@as table<string, unknown>]])
-  record.speciesFacts = self:_sessionSpeciesFacts(record --[[@as table<string, unknown>]])
+  -- One static-key scan per session build: both fact projections share
+  -- the collected move and species-form keys instead of rescanning the
+  -- detached scenario.
+  local moveKeys, speciesForms = referencedStaticKeys(record)
+  record.moveFacts = self:_sessionMoveFacts(moveKeys, speciesForms)
+  record.speciesFacts = self:_sessionSpeciesFacts(speciesForms)
   record.moneyUpItems = self:_sessionMoneyUpItems(record --[[@as table<string, unknown>]])
   record.itemFacts = self:_sessionItemFacts(record --[[@as table<string, unknown>]])
   self._session = Battle.newSession(record, self:_executableContent())

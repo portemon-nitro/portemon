@@ -1313,4 +1313,151 @@ function T.dex_malformed_switch_checkpoints_fail_without_poisoning_dedup()
   fixture.session:dispose()
 end
 
+-- Successive battles borrow one frozen native bundle instead of
+-- rebuilding the ruleset, type chart, and formats every launch, while
+-- each battle still opens its own live session.
+function T.native_bindings_are_built_once_and_shared_across_sessions()
+  local HgssBattleContent =
+    requirePresent("game.hgss.src.battle.HgssBattleContent", "immutable native battle bindings")
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime sharing its native bindings")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+
+  local contentBuilds, behaviorBuilds = 0, 0
+  local originalContentNew = ContentBuilder.new
+  local originalBehaviorNew = BattleBehaviorBuilder.new
+  ContentBuilder.new = function(...)
+    contentBuilds = contentBuilds + 1
+    return originalContentNew(...)
+  end
+  BattleBehaviorBuilder.new = function(...)
+    behaviorBuilds = behaviorBuilds + 1
+    return originalBehaviorNew(...)
+  end
+  local first, second
+  local ok, buildErr = pcall(function()
+    first = HgssBattleContent.nativeContent()
+    second = HgssBattleContent.nativeContent()
+  end)
+  ContentBuilder.new = originalContentNew
+  BattleBehaviorBuilder.new = originalBehaviorNew
+  Assert.isTrue(ok, "native bindings build cleanly: " .. tostring(buildErr))
+  Assert.isTrue(rawequal(first, second), "successive native bundles reuse the same frozen binding")
+  Assert.isTrue(contentBuilds <= 1, "the composed content builds at most once across successive calls")
+  Assert.isTrue(behaviorBuilds <= 1, "the bound behaviors build at most once across successive calls")
+
+  local battles = {}
+  for index, species in ipairs({ "TOTODILE", "CHIKORITA" }) do
+    local launch = { id = "launch-shared-bindings-" .. index, kind = "wild", payload = preparedWild() }
+    local party = newPartyOwner()
+    local foe = foeRecord(species, 4, 0x5EED0010 + index)
+    local scenario =
+      ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, { party = party })
+    local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+    battles[#battles + 1] = BattleRuntime.new({
+      request = launch,
+      scenario = scenario,
+      party = party,
+      seed = 0x1A2B3C00 + index,
+      presentation = headlessPort(portRecord),
+    })
+  end
+  for _, battle in ipairs(battles) do
+    for _ = 1, 20 do
+      battle:update()
+    end
+    local status = battle:status()
+    Assert.isTrue(
+      status.phase == "entering" or status.phase == "running",
+      "a borrowed bundle still opens its own battle"
+    )
+  end
+  Assert.isTrue(rawequal(battles[1]._content, battles[2]._content), "field battles share one native bundle")
+  Assert.isTrue(rawequal(battles[1]._content, first), "field battles borrow the memoized bundle")
+  Assert.isFalse(rawequal(battles[1]._session, battles[2]._session), "field battles never share a live session")
+  for _, battle in ipairs(battles) do
+    battle:dispose()
+  end
+end
+
+-- Sequential battles stay isolated: answering one battle never changes
+-- the opening decision an identical later battle offers, and battles
+-- with different foes still open normally side by side.
+function T.successive_battles_keep_isolated_facts_and_replay_equal_seeds()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with isolated session facts")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+
+  ---@param tag string launch tag under battle construction
+  ---@param foeSpecies string foe species under battle construction
+  ---@param foeSeed integer foe generator state under battle construction
+  ---@param heldItem string|nil foe held item under battle construction
+  ---@param seed integer explicit battle stream seed under battle construction
+  ---@return table live battle driven to its first player decision
+  ---@return table first player decision offered by the battle
+  local function openBattle(tag, foeSpecies, foeSeed, heldItem, seed)
+    local launch = { id = "launch-isolated-" .. tag, kind = "wild", payload = preparedWild() }
+    local party = newPartyOwner()
+    local foe = foeRecord(foeSpecies, 5, foeSeed)
+    if heldItem ~= nil then
+      foe.heldItem = heldItem
+    end
+    local scenario =
+      ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, { party = party })
+    local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+    local battle = BattleRuntime.new({
+      request = launch,
+      scenario = scenario,
+      party = party,
+      seed = seed,
+      presentation = headlessPort(portRecord),
+    })
+    local status = driveToDecision(battle, 400)
+    Assert.equal(status.phase, "running", "the isolated battle reaches its player decision")
+    local request = assert(status.request, "the isolated battle offers its player decision")
+    return battle, request
+  end
+
+  local seed = 0x5EEDBEEF
+  local firstBattle, firstRequest = openBattle("first", "TOTODILE", 0xAAAA0001, "AMULET_COIN", seed)
+  Assert.isTrue(#firstRequest.actors > 0, "the first battle names its decision actors")
+  local firstId = firstRequest.requestId
+  local reply = SessionFixture.replyFor(
+    firstRequest,
+    (function()
+      local choices = {}
+      for _, actor in ipairs(firstRequest.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      end
+      return choices
+    end)()
+  )
+  Assert.isTrue(firstBattle:submit(reply), "the first battle accepts its answered decision")
+  drivePastRequest(firstBattle, firstId, 400)
+
+  -- The later identical battle replays the same opening decision even
+  -- though the first battle already moved on.
+  local secondBattle, secondRequest = openBattle("second", "TOTODILE", 0xAAAA0001, "AMULET_COIN", seed)
+  Assert.deepEqual(secondRequest.actors, firstRequest.actors, "an identical later battle replays its actors")
+  Assert.deepEqual(
+    secondRequest.legalChoices,
+    firstRequest.legalChoices,
+    "an identical later battle replays its admitted vocabulary"
+  )
+  Assert.isFalse(
+    rawequal(firstBattle._session, secondBattle._session),
+    "replayed battles never share a live session"
+  )
+
+  -- A battle with a different foe and different facts still opens
+  -- normally beside them.
+  local thirdBattle, thirdRequest = openBattle("third", "CHIKORITA", 0xBBBB0002, nil, 0x5EED00D1)
+  Assert.isTrue(#thirdRequest.actors > 0, "the distinct battle names its own decision actors")
+
+  firstBattle:dispose()
+  secondBattle:dispose()
+  thirdBattle:dispose()
+end
+
 return { tests = T }

@@ -17,6 +17,14 @@ local Errors = require("libs.errors.src.Errors")
 ---@class HgssBattleContent
 local HgssBattleContent = {}
 
+-- One frozen native ruleset, type chart, and format bundle per module
+-- lifetime. This memo covers only the hardcoded built-in native
+-- bindings below, which take no contributors, so it can never carry
+-- modded catalog state; any future contributed configuration needs its
+-- own construction path.
+---@type BattleContent?
+local memoizedNative
+
 ---@param contribution unknown
 ---@param index integer
 local function checkContribution(contribution, index)
@@ -54,6 +62,9 @@ end
 -- native lifecycle for field-owned battles.
 ---@return BattleContent the frozen native battle binding set
 function HgssBattleContent.nativeContent()
+  if memoizedNative ~= nil then
+    return memoizedNative
+  end
   local Executor = require("libs.battle.src.gen4.HgssSessionExecutor")
   local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
   local builder = ContentBuilder.new()
@@ -63,7 +74,10 @@ function HgssBattleContent.nativeContent()
   for _, formatKey in ipairs({ "wild-single", "single", "double" }) do
     behaviors:registerFormat(formatKey, { key = formatKey }, "battle-runtime")
   end
-  return BattleContent.new(builder:freeze(), behaviors:freeze())
+  -- Only a successful freeze publishes the memo, so a failed build
+  -- publishes nothing and retries on the next call.
+  memoizedNative = BattleContent.new(builder:freeze(), behaviors:freeze())
+  return memoizedNative
 end
 
 ---@param options HgssBattleContentOptions
