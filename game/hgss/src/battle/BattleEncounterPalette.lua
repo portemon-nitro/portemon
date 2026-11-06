@@ -38,6 +38,7 @@
 ---@field _backupMainBg integer[] pre-fill main BG words
 ---@field _backupMainObj table<integer, integer> pre-fill defined main OBJ words
 ---@field _frame integer last accepted source-task frame
+---@field _displayed table<integer, table<integer, integer>> cached displayed planes in mainBg, mainObj, subBg, subObj order
 ---@field _restoreCount integer native OBJ backup span
 ---@field _restored boolean true once the frame-28 opaque backup is installed
 ---@field _lateFrame integer? frame that armed the late fade
@@ -91,7 +92,7 @@ local function blendWord(source, target, coefficient)
     + blendComponent(sb, tb, coefficient) * 1024
 end
 
----@param buffer unknown source palette words under validation
+---@param buffer unknown source palette words under staged ownership
 ---@param plane "mainBg"|"mainObj"|"subBg"|"subObj" native plane name
 ---@return integer[] detached RGB555 words
 local function checkBuffer(buffer, plane)
@@ -99,14 +100,12 @@ local function checkBuffer(buffer, plane)
   assert(type(buffer) == "table" and #buffer == count, plane .. " stages " .. count .. " source colors")
   local out = {}
   for index = 1, count do
-    local word = buffer[index]
-    assert(type(word) == "number" and word % 1 == 0 and word >= 0 and word <= 0x7FFF, plane .. " stages RGB555 words")
-    out[index] = word
+    out[index] = buffer[index]
   end
   return out
 end
 
----@param buffer unknown sparse source palette words under validation
+---@param buffer unknown sparse source palette words under staged ownership
 ---@param plane "mainObj"|"subObj" sparse native plane name
 ---@return table<integer, integer> detached defined RGB555 words
 local function checkDefinedBuffer(buffer, plane)
@@ -117,7 +116,6 @@ local function checkDefinedBuffer(buffer, plane)
       type(index) == "number" and index % 1 == 0 and index >= 1 and index <= BUFFER_LENGTHS[plane],
       plane .. " stages an in-range source slot"
     )
-    assert(type(word) == "number" and word % 1 == 0 and word >= 0 and word <= 0x7FFF, plane .. " stages RGB555 words")
     out[index] = word
   end
   return out
@@ -300,7 +298,7 @@ end
 ---@param self BattleEncounterPalette
 ---@param frame integer absolute source frame
 ---@return table<integer, table<integer, integer>> displayed defined words for every native plane
-local function displayedPlanes(self, frame)
+local function recomputeDisplayed(self, frame)
   return {
     displayedMainBg(self, frame),
     displayedMainObj(self, frame),
@@ -323,6 +321,15 @@ local function planesChanged(before, after)
     end
   end
   return false
+end
+
+---@param self BattleEncounterPalette
+---@param fresh table<integer, table<integer, integer>> freshly computed displayed planes
+local function publishDisplayed(self, fresh)
+  if planesChanged(self._displayed, fresh) then
+    self._version = self._version + 1
+  end
+  self._displayed = fresh
 end
 
 ---@param opts BattleEncounterPalette.Options constructor source facts
@@ -380,7 +387,7 @@ function M.new(opts)
   local initialOpaqueMainObj = copyDefinedWords(opaqueMainObj)
   fillWords(displayedInitialMainBg, BLACK, 161, 192)
 
-  return setmetatable({
+  local self = setmetatable({
     _battleType = opts.battleType,
     _fill = fill,
     _opaqueMainBg = opaqueMainBg,
@@ -400,6 +407,8 @@ function M.new(opts)
     _lateFrame = nil,
     _version = 0,
   }, M)
+  self._displayed = recomputeDisplayed(self, 0)
+  return self
 end
 
 ---@param self BattleEncounterPalette
@@ -409,16 +418,13 @@ function M:tick(frame)
   if frame == self._frame then
     return
   end
-  local before = displayedPlanes(self, self._frame)
   self._frame = frame
   if frame >= RESTORE_FRAME and not self._restored then
     restoreWords(self._backupMainBg, MAIN_BG_RESTORE_COUNT, self._opaqueMainBg)
     restoreWords(self._backupMainObj, self._restoreCount, self._opaqueMainObj)
     self._restored = true
   end
-  if planesChanged(before, displayedPlanes(self, frame)) then
-    self._version = self._version + 1
-  end
+  publishDisplayed(self, recomputeDisplayed(self, frame))
 end
 
 ---@param self BattleEncounterPalette
@@ -427,34 +433,29 @@ function M:beginLateFade()
   if self._lateFrame ~= nil then
     return
   end
-  local before = displayedPlanes(self, self._frame)
   self._lateFrame = self._frame
-  if planesChanged(before, displayedPlanes(self, self._frame)) then
-    self._version = self._version + 1
-  end
+  publishDisplayed(self, recomputeDisplayed(self, self._frame))
 end
 
 ---@param self BattleEncounterPalette
 function M:reset()
-  local before = displayedPlanes(self, self._frame)
   self._opaqueMainBg = copyWords(self._initialOpaqueMainBg)
   self._opaqueMainObj = copyDefinedWords(self._initialOpaqueMainObj)
   self._frame = 0
   self._lateFrame = nil
   self._restored = false
-  if planesChanged(before, displayedPlanes(self, 0)) then
-    self._version = self._version + 1
-  end
+  publishDisplayed(self, recomputeDisplayed(self, 0))
 end
 
 ---@param self BattleEncounterPalette
 ---@return BattleEncounterPalette.Snapshot detached per-plane source palette state
 function M:snapshot()
+  local displayed = self._displayed
   local state = {
-    mainBg = displayedMainBg(self, self._frame),
-    mainObj = displayedMainObj(self, self._frame),
-    subBg = displayedSubBg(self, self._frame),
-    subObj = displayedSubObj(self, self._frame),
+    mainBg = copyWords(displayed[1]),
+    mainObj = copyDefinedWords(displayed[2]),
+    subBg = copyWords(displayed[3]),
+    subObj = copyDefinedWords(displayed[4]),
     version = self._version,
   }
   if self._lateFrame ~= nil then
@@ -469,14 +470,14 @@ end
 ---@return integer displayed RGB555 word
 function M:colorAt(plane, index)
   if plane == "mainBg" then
-    return displayedMainBg(self, self._frame)[checkedIndex(self._opaqueMainBg, index, plane, BUFFER_LENGTHS.mainBg)]
+    return self._displayed[1][checkedIndex(self._opaqueMainBg, index, plane, BUFFER_LENGTHS.mainBg)]
   elseif plane == "mainObj" then
-    return displayedMainObj(self, self._frame)[checkedIndex(self._opaqueMainObj, index, plane, BUFFER_LENGTHS.mainObj)]
+    return self._displayed[2][checkedIndex(self._opaqueMainObj, index, plane, BUFFER_LENGTHS.mainObj)]
   elseif plane == "subBg" then
-    return displayedSubBg(self, self._frame)[checkedIndex(self._opaqueSubBg, index, plane, BUFFER_LENGTHS.subBg)]
+    return self._displayed[3][checkedIndex(self._opaqueSubBg, index, plane, BUFFER_LENGTHS.subBg)]
   end
   assert(plane == "subObj", "palette samples name their native plane")
-  return displayedSubObj(self, self._frame)[checkedIndex(self._opaqueSubObj, index, plane, BUFFER_LENGTHS.subObj)]
+  return self._displayed[4][checkedIndex(self._opaqueSubObj, index, plane, BUFFER_LENGTHS.subObj)]
 end
 
 return M

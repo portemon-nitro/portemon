@@ -6538,7 +6538,7 @@ function BattleScreenState:_reconcile(view)
   apply(view.foes)
 end
 
----@param values unknown palette words
+---@param values unknown staged palette words
 ---@param count integer native plane size
 ---@param plane string native plane name
 ---@return integer[] copied RGB555 words
@@ -6546,31 +6546,18 @@ local function copyEncounterPalette(values, count, plane)
   assert(type(values) == "table" and #values == count, plane .. " source has its native word count")
   local words = {}
   for index = 1, count do
-    local word = values[index]
-    assert(
-      type(word) == "number" and word % 1 == 0 and word >= 0 and word <= 0x7FFF,
-      plane .. " source contains a valid RGB555 word at " .. index
-    )
-    words[index] = word
+    words[index] = values[index]
   end
   return words
 end
 
----@param values unknown sparse native RGB555 palette words keyed by one-based slot
+---@param values unknown staged sparse native RGB555 palette words keyed by one-based slot
 ---@param plane string native plane name
 ---@return table<integer, integer> copied defined RGB555 words
 local function copySparseEncounterPalette(values, plane)
   assert(type(values) == "table", plane .. " source carries its defined native words")
   local words = {}
   for index, word in pairs(values) do
-    assert(
-      type(index) == "number" and index % 1 == 0 and index >= 1 and index <= 256,
-      plane .. " source contains an in-range one-based slot"
-    )
-    assert(
-      type(word) == "number" and word % 1 == 0 and word >= 0 and word <= 0x7FFF,
-      plane .. " source contains a valid RGB555 word at " .. index
-    )
     words[index] = word
   end
   return words
@@ -6929,7 +6916,7 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
   -- Terrain slides draw per-side artwork only while a slide of that side
   -- stays visible, so a hidden side keeps its static lease.
   local terrainVisible = { player = false, foe = false } ---@type table<string, boolean>
-  local terrainSlides = opening.terrainSlides
+  local terrainSlides = type(opening) == "table" and opening.terrainSlides or nil
   if type(terrainSlides) == "table" then
     for _, slide in ipairs(terrainSlides) do
       if type(slide) == "table" and slide.visible == true then
@@ -7090,11 +7077,11 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
   -- Party rows follow the opening visibility the renderer draws: the
   -- player row once shown, the trainer-battle enemy row only while the
   -- ceremony reveals it. Wild battles never sample an enemy row.
-  if opening.playerGaugeVisible == true then
+  if type(opening) == "table" and opening.playerGaugeVisible == true then
     local playerGauge = assert(hud.partyGauges[2], "battle manifest carries the player party gauge")
     addDescriptor("gauges:player", assert(playerGauge.sourceIndices, "visible party gauge art carries source indices"))
   end
-  if self._kind ~= "wild" and opening.enemyGaugeVisible == true then
+  if self._kind ~= "wild" and type(opening) == "table" and opening.enemyGaugeVisible == true then
     local enemyGauge = assert(hud.partyGauges[1], "battle manifest carries the enemy party gauge")
     addDescriptor("gauges:enemy", assert(enemyGauge.sourceIndices, "visible party gauge art carries source indices"))
   end

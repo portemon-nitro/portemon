@@ -931,4 +931,53 @@ function T.encounter_late_fade_darkens_only_background_banks_ten_and_eleven()
   Assert.equal(palette:snapshot().mainBg[161], 0, "reset clears the armed late fade")
 end
 
+function T.encounter_palette_reuses_one_evaluation_across_same_tick_reads()
+  for _, battleType in ipairs({ "wild", "trainer", "ordinary-doubles", "special-doubles" }) do
+    local source = stagedSource()
+    local palette = BattleEncounterPalette.new({ battleType = battleType, source = source })
+    local previousVersion = palette:snapshot().version
+    for frame = 1, 55 do
+      palette:tick(frame)
+      local first = palette:snapshot()
+      local reread = palette:snapshot()
+      Assert.equal(reread.version, first.version, battleType .. " frame " .. frame .. " keeps its version")
+      for _, plane in ipairs({ "mainBg", "subBg" }) do
+        for index = 1, #first[plane] do
+          Assert.equal(reread[plane][index], first[plane][index], battleType .. " frame " .. frame .. " " .. plane .. " reread matches")
+        end
+      end
+      for index, word in pairs(first.mainObj) do
+        Assert.equal(reread.mainObj[index], word, battleType .. " frame " .. frame .. " reread object matches")
+      end
+      for index, word in pairs(reread.mainObj) do
+        Assert.equal(first.mainObj[index], word, battleType .. " frame " .. frame .. " reread object matches")
+      end
+      local sampled = palette:colorAt("mainBg", 112)
+      Assert.equal(sampled, first.mainBg[113], battleType .. " frame " .. frame .. " samples its displayed plane")
+      Assert.isTrue(first.version - previousVersion <= 1, battleType .. " frame " .. frame .. " advances at most once")
+      previousVersion = first.version
+      palette:tick(frame)
+      Assert.equal(palette:snapshot().version, previousVersion, battleType .. " frame " .. frame .. " retick is a no-op")
+    end
+    local before = palette:snapshot()
+    before.mainBg[113] = -1
+    before.mainObj[224] = -1
+    local after = palette:snapshot()
+    Assert.equal(after.mainBg[113], palette:colorAt("mainBg", 112), battleType .. " snapshot mutation stays detached")
+    Assert.isTrue(after.mainBg[113] ~= -1, battleType .. " snapshot mutation cannot leak into later reads")
+  end
+end
+
+function T.encounter_palette_trusts_unread_source_words_until_sampled()
+  local source = stagedSource()
+  source.mainBg[1] = "edited"
+  source.mainObj[1] = "edited"
+  local palette = BattleEncounterPalette.new({ battleType = "wild", source = source })
+  palette:tick(11)
+  local displayed = palette:snapshot()
+  Assert.equal(displayed.mainBg[1], source.fill, "a fill-covered background word reads the setup fill")
+  Assert.equal(displayed.mainObj[1], source.fill, "a fill-covered object word reads the setup fill")
+  Assert.equal(displayed.mainBg[113], blendWord(source.mainBg[113], source.fill, 2), "neighboring words still fade")
+end
+
 return { tests = T }
