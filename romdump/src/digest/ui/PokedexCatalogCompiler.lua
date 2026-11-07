@@ -190,6 +190,350 @@ local function keysForIds(monCatalog, ids, label)
   return keys
 end
 
+local function parseMeasures(archive, label)
+  local heights = readMember(archive, 0, label .. " heights")
+  local weights = readMember(archive, 1, label .. " weights")
+  if #heights ~= 494 * 4 or #weights ~= 494 * 4 then
+    raise(
+      PokedexCatalogCompiler.ERROR.MEMBER_SIZE,
+      "pokedex " .. label .. " measurement tables are not 494 entries",
+      {}
+    )
+  end
+  local shapes = readMember(archive, 2, label .. " shapes")
+  if #shapes ~= 494 then
+    raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex " .. label .. " shape table is not 494 bytes", {})
+  end
+  local scales = {}
+  for member = 3, 10 do
+    local bytes = readMember(archive, member, label .. " geometry")
+    if #bytes ~= 494 * 2 then
+      raise(
+        PokedexCatalogCompiler.ERROR.MEMBER_SIZE,
+        "pokedex " .. label .. " geometry member " .. member .. " is not 494 entries",
+        {}
+      )
+    end
+    scales[member] = bytes
+  end
+  return { heights = heights, weights = weights, shapes = shapes, scales = scales }
+end
+
+local function parseSorts(archive, label)
+  local parsed = {}
+  for member = 14, 17 do
+    parsed[member] = readIdList(archive, member, 493, label .. " sort order " .. member)
+  end
+  return parsed
+end
+
+local function profileMeasurements(parsed, monCatalog)
+  local measurements = {}
+  for id = 1, 493 do
+    local key = MonSources.speciesKeys[id]
+    if key ~= nil and monCatalog.species[key] ~= nil then
+      measurements[key] = {
+        heightDm = u32le(parsed.heights, id * 4 + 1),
+        weightHg = u32le(parsed.weights, id * 4 + 1),
+        scale = {
+          male = { trainer = s16le(parsed.scales[5], id * 2 + 1), mon = s16le(parsed.scales[6], id * 2 + 1) },
+          female = { trainer = s16le(parsed.scales[3], id * 2 + 1), mon = s16le(parsed.scales[4], id * 2 + 1) },
+        },
+        yOffset = {
+          male = { trainer = s16le(parsed.scales[9], id * 2 + 1), mon = s16le(parsed.scales[10], id * 2 + 1) },
+          female = { trainer = s16le(parsed.scales[7], id * 2 + 1), mon = s16le(parsed.scales[8], id * 2 + 1) },
+        },
+      }
+    end
+  end
+  return measurements
+end
+
+local function resolveSorts(sortIds, label, monCatalog)
+  local resolved = {}
+  for member = 14, 17 do
+    resolved[member] = keysForIds(monCatalog, sortIds[member], label .. " sort order " .. member)
+  end
+  return resolved
+end
+
+local function maskFor(speciesId, maskBytes)
+  return byteAt(maskBytes, speciesId + 1)
+end
+
+local function orderLikeNational(list, national)
+  local wanted = {}
+  for _, key in ipairs(list) do
+    wanted[key] = true
+  end
+  local ordered = {}
+  for _, key in ipairs(national) do
+    if wanted[key] then
+      ordered[#ordered + 1] = key
+    end
+  end
+  return ordered
+end
+
+local function outdoorKey(id)
+  return "dex-outdoor-" .. id
+end
+
+local function dungeonKey(id)
+  return "dex-dungeon-" .. id
+end
+
+local function resolveAreaName(kind, id, label, areaMapSymbols, landmarkBanks)
+  local symbols = areaMapSymbols[kind]
+  local symbol = type(symbols) == "table" and symbols[id] or nil
+  if symbol == nil then
+    return { bankId = 0, messageId = 0 }
+  end
+  local headerId = MapCatalog.idForSymbol(symbol)
+  if headerId == nil then
+    raise(
+      PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
+      "pokedex " .. label .. " names an unknown retail map " .. symbol,
+      { kind = kind, id = id, symbol = symbol }
+    )
+  end
+  assert(headerId ~= nil, "unmapped retail maps fail above")
+  local record = MapCatalog.get(headerId)
+  if record == nil then
+    raise(
+      PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
+      "pokedex " .. label .. " resolves no map record for " .. symbol,
+      { kind = kind, id = id, symbol = symbol }
+    )
+  end
+  assert(type(record) == "table", "unmapped retail maps fail above")
+  local sectionId = record.mapSectionNativeId
+  if type(sectionId) ~= "number" or sectionId % 1 ~= 0 or sectionId == 0 then
+    return { bankId = landmarkBanks.fallbackBankId, messageId = landmarkBanks.fallbackMessageId }
+  end
+  return { bankId = landmarkBanks.bankId, messageId = sectionId }
+end
+
+local function readAreaList(group, slot, areaBases, habitatArchive)
+  local memberId = areaBases[group + 1] + slot
+  local bytes = readMember(habitatArchive, memberId, "habitat list")
+  if #bytes < 4 or #bytes % 4 ~= 0 then
+    raise(
+      PokedexCatalogCompiler.ERROR.MEMBER_SIZE,
+      "pokedex habitat list is not a u32 row grid (group " .. group .. " slot " .. slot .. ")",
+      {}
+    )
+  end
+  local values = {}
+  for offset = 1, #bytes, 4 do
+    values[#values + 1] = u32le(bytes, offset)
+  end
+  if values[#values] ~= 0 then
+    raise(
+      PokedexCatalogCompiler.ERROR.UNTERMINATED_LIST,
+      "pokedex habitat list has no zero terminator (group " .. group .. " slot " .. slot .. ")",
+      {}
+    )
+  end
+  values[#values] = nil
+  return values
+end
+
+local function areaKeysFor(group, slot, namespace, areaBases, habitatArchive)
+  local keys = {}
+  for _, areaId in ipairs(readAreaList(group, slot, areaBases, habitatArchive)) do
+    local limit = namespace == "outdoor" and 70 or 26
+    if areaId < 1 or areaId > limit then
+      raise(
+        PokedexCatalogCompiler.ERROR.ILLEGAL_AREA,
+        "pokedex habitat list references illegal " .. namespace .. " area " .. areaId,
+        { area = areaId }
+      )
+    end
+    if namespace == "outdoor" then
+      keys[#keys + 1] = outdoorKey(areaId)
+    else
+      keys[#keys + 1] = dungeonKey(areaId)
+    end
+  end
+  return keys
+end
+
+local function habitatSetsFor(slot, areaBases, habitatArchive)
+  return {
+    morning = {
+      dungeon = areaKeysFor(0, slot, "dungeon", areaBases, habitatArchive),
+      outdoor = areaKeysFor(3, slot, "outdoor", areaBases, habitatArchive),
+    },
+    day = {
+      dungeon = areaKeysFor(1, slot, "dungeon", areaBases, habitatArchive),
+      outdoor = areaKeysFor(4, slot, "outdoor", areaBases, habitatArchive),
+    },
+    night = {
+      dungeon = areaKeysFor(2, slot, "dungeon", areaBases, habitatArchive),
+      outdoor = areaKeysFor(5, slot, "outdoor", areaBases, habitatArchive),
+    },
+    other = {
+      dungeon = areaKeysFor(6, slot, "dungeon", areaBases, habitatArchive),
+      outdoor = areaKeysFor(7, slot, "outdoor", areaBases, habitatArchive),
+    },
+  }
+end
+
+---@param memberId integer
+---@param heightArchive Narc portrait height archive under read
+---@return string|nil
+local function rawHeightMember(memberId, heightArchive)
+  return heightArchive:readMember(memberId)
+end
+
+---@param memberId integer
+---@param label string
+---@param heightArchive Narc portrait height archive under read
+---@return string
+local function heightMember(memberId, label, heightArchive)
+  local bytes = rawHeightMember(memberId, heightArchive)
+  if bytes == nil then
+    raise(
+      PokedexCatalogCompiler.ERROR.SOURCE_UNAVAILABLE,
+      "pokedex " .. label .. " height member is unavailable",
+      { member = memberId }
+    )
+  end
+  assert(bytes ~= nil, "pokedex height member is unavailable")
+  assert(bytes ~= nil, "pokedex height member is unavailable")
+  return bytes
+end
+
+---@param memberId integer
+---@param heightAltArchive Narc alternate portrait height archive under read
+---@return string
+local function altHeightMember(memberId, heightAltArchive)
+  local bytes = heightAltArchive:readMember(memberId)
+  if bytes == nil then
+    raise(
+      PokedexCatalogCompiler.ERROR.SOURCE_UNAVAILABLE,
+      "pokedex alternate height member is unavailable",
+      { member = memberId }
+    )
+  end
+  assert(bytes ~= nil, "pokedex alternate height member is unavailable")
+  return bytes
+end
+
+local function genderRatioOf(key, monCatalog)
+  local record = monCatalog.species[key]
+  if type(record) ~= "table" or type(record.genderRatio) ~= "number" then
+    return nil
+  end
+  return record.genderRatio
+end
+
+local function validGenders(key, monCatalog)
+  local ratio = genderRatioOf(key, monCatalog)
+  if ratio == 0 then
+    return { "male" }
+  end
+  if ratio == 254 then
+    return { "female" }
+  end
+  if ratio == 255 then
+    return { "male" }
+  end
+  return { "male", "female" }
+end
+
+local function formPolicyFor(key, monCatalog)
+  local ordered = PokedexSources.orderedPolicies[key]
+  local automatic = PokedexSources.automaticFamilies[key] == true
+  local catalogRecord = monCatalog.species[key]
+  local resolved = {}
+  if type(catalogRecord) == "table" and type(catalogRecord.forms) == "table" then
+    for form in pairs(catalogRecord.forms) do
+      if type(form) == "number" then
+        resolved[#resolved + 1] = form
+      end
+    end
+  end
+  table.sort(resolved)
+  local resolvedSet = {}
+  for _, form in ipairs(resolved) do
+    resolvedSet[form] = true
+  end
+  if ordered ~= nil then
+    local variants = {}
+    if key == "PICHU" then
+      for _, fixed in ipairs(PokedexSources.pichuVariants) do
+        if resolvedSet[fixed.form] then
+          variants[#variants + 1] = { id = fixed.id, form = fixed.form, gender = fixed.gender }
+        end
+      end
+      for _, form in ipairs(resolved) do
+        if form >= 2 then
+          variants[#variants + 1] = { id = form + 1, form = form }
+        end
+      end
+    else
+      for id = 0, ordered.capacity - 1 do
+        if resolvedSet[id] then
+          variants[#variants + 1] = { id = id, form = id }
+        end
+      end
+      for _, form in ipairs(resolved) do
+        if form >= ordered.capacity then
+          variants[#variants + 1] = { id = form, form = form }
+        end
+      end
+    end
+    if #variants == 0 then
+      variants[#variants + 1] = { id = 0, form = resolved[1] or 0 }
+    end
+    return {
+      kind = "ordered",
+      variants = variants,
+      defaultVariant = variants[1].id,
+      rememberCaughtVariants = ordered.rememberCaughtVariants == true,
+      rememberFirstPersonality = ordered.rememberFirstPersonality == true,
+    }
+  end
+  if automatic then
+    local variants = {}
+    for _, form in ipairs(resolved) do
+      variants[#variants + 1] = { id = form, form = form }
+    end
+    if #variants == 0 then
+      variants[#variants + 1] = { id = 0, form = 0 }
+    end
+    return {
+      kind = "automatic",
+      variants = variants,
+      defaultVariant = variants[1].id,
+      rememberCaughtVariants = false,
+      rememberFirstPersonality = false,
+    }
+  end
+  return {
+    kind = "ordinary",
+    variants = { { id = 0, form = resolved[1] or 0 } },
+    defaultVariant = 0,
+    rememberCaughtVariants = false,
+    rememberFirstPersonality = false,
+  }
+end
+
+local function sortKeys(sortTable, member)
+  return sortTable[member]
+end
+
+local function ratingFor(required)
+  return {
+    bands = { { max = required - 1, messageId = 0 } },
+    complete = { maleMessageId = 0, femaleMessageId = 0 },
+    incompleteMusicId = 0,
+    completeMusicId = 0,
+  }
+end
+
 local function _compile(romFs, versionId, monCatalog, sink)
   if not PokedexSources.versions[versionId] then
     raise(
@@ -214,45 +558,8 @@ local function _compile(romFs, versionId, monCatalog, sink)
   local heightArchive = readArchive(romFs, PokedexSources.archives.portraitY, "portrait heights")
   local heightAltArchive = readArchive(romFs, PokedexSources.archives.portraitYAlt, "alternate portrait heights")
 
-  local function parseMeasures(archive, label)
-    local heights = readMember(archive, 0, label .. " heights")
-    local weights = readMember(archive, 1, label .. " weights")
-    if #heights ~= 494 * 4 or #weights ~= 494 * 4 then
-      raise(
-        PokedexCatalogCompiler.ERROR.MEMBER_SIZE,
-        "pokedex " .. label .. " measurement tables are not 494 entries",
-        {}
-      )
-    end
-    local shapes = readMember(archive, 2, label .. " shapes")
-    if #shapes ~= 494 then
-      raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex " .. label .. " shape table is not 494 bytes", {})
-    end
-    local scales = {}
-    for member = 3, 10 do
-      local bytes = readMember(archive, member, label .. " geometry")
-      if #bytes ~= 494 * 2 then
-        raise(
-          PokedexCatalogCompiler.ERROR.MEMBER_SIZE,
-          "pokedex " .. label .. " geometry member " .. member .. " is not 494 entries",
-          {}
-        )
-      end
-      scales[member] = bytes
-    end
-    return { heights = heights, weights = weights, shapes = shapes, scales = scales }
-  end
-
   local base = parseMeasures(baseArchive, "base")
   local origin = parseMeasures(originArchive, "origin")
-
-  local function parseSorts(archive, label)
-    local parsed = {}
-    for member = 14, 17 do
-      parsed[member] = readIdList(archive, member, 493, label .. " sort order " .. member)
-    end
-    return parsed
-  end
 
   local baseSortIds = parseSorts(baseArchive, "base")
   local originSortIds = parseSorts(originArchive, "origin")
@@ -260,30 +567,9 @@ local function _compile(romFs, versionId, monCatalog, sink)
   -- Species slots are entry-indexed: entry e (zero-based) carries species
   -- e, so species s reads byte offset s * size. Entry 0 is the source
   -- padding slot and is never emitted.
-  local function profileMeasurements(parsed)
-    local measurements = {}
-    for id = 1, 493 do
-      local key = MonSources.speciesKeys[id]
-      if key ~= nil and monCatalog.species[key] ~= nil then
-        measurements[key] = {
-          heightDm = u32le(parsed.heights, id * 4 + 1),
-          weightHg = u32le(parsed.weights, id * 4 + 1),
-          scale = {
-            male = { trainer = s16le(parsed.scales[5], id * 2 + 1), mon = s16le(parsed.scales[6], id * 2 + 1) },
-            female = { trainer = s16le(parsed.scales[3], id * 2 + 1), mon = s16le(parsed.scales[4], id * 2 + 1) },
-          },
-          yOffset = {
-            male = { trainer = s16le(parsed.scales[9], id * 2 + 1), mon = s16le(parsed.scales[10], id * 2 + 1) },
-            female = { trainer = s16le(parsed.scales[7], id * 2 + 1), mon = s16le(parsed.scales[8], id * 2 + 1) },
-          },
-        }
-      end
-    end
-    return measurements
-  end
 
-  local baseMeasurements = profileMeasurements(base)
-  local originMeasurements = profileMeasurements(origin)
+  local baseMeasurements = profileMeasurements(base, monCatalog)
+  local originMeasurements = profileMeasurements(origin, monCatalog)
 
   local nationalIds = readIdList(baseArchive, 11, 493, "national order")
   local johtoIds = readIdList(baseArchive, 12, 256, "johto order")
@@ -292,16 +578,9 @@ local function _compile(romFs, versionId, monCatalog, sink)
   local national = keysForIds(monCatalog, nationalIds, "national order")
   local johto = keysForIds(monCatalog, johtoIds, "johto order")
   local alphabetical = keysForIds(monCatalog, alphaIds, "alphabetical order")
-  local function resolveSorts(sortIds, label)
-    local resolved = {}
-    for member = 14, 17 do
-      resolved[member] = keysForIds(monCatalog, sortIds[member], label .. " sort order " .. member)
-    end
-    return resolved
-  end
 
-  local baseSorts = resolveSorts(baseSortIds, "base")
-  local originSorts = resolveSorts(originSortIds, "origin")
+  local baseSorts = resolveSorts(baseSortIds, "base", monCatalog)
+  local originSorts = resolveSorts(originSortIds, "origin", monCatalog)
 
   local nationalSet = {}
   for _, key in ipairs(national) do
@@ -388,15 +667,12 @@ local function _compile(romFs, versionId, monCatalog, sink)
   if #maskBytes ~= 494 then
     raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex area mask member is not 494 bytes", {})
   end
-  local function maskFor(speciesId)
-    return byteAt(maskBytes, speciesId + 1)
-  end
 
   local areas = { johto = {}, kanto = {}, unknown = {} }
   for id = 1, 493 do
     local key = MonSources.speciesKeys[id]
     if key ~= nil and monCatalog.species[key] ~= nil then
-      local mask = maskFor(id)
+      local mask = maskFor(id, maskBytes)
       local unrestricted = (math.floor(mask / 128) % 2) == 1
       if unrestricted or (mask % 4) >= 2 then
         areas.johto[#areas.johto + 1] = key
@@ -411,22 +687,9 @@ local function _compile(romFs, versionId, monCatalog, sink)
   end
   -- Preserve source tie order: national order filtered by mask bit. The
   -- mask member is species-indexed while display follows dex order.
-  local function orderLikeNational(list)
-    local wanted = {}
-    for _, key in ipairs(list) do
-      wanted[key] = true
-    end
-    local ordered = {}
-    for _, key in ipairs(national) do
-      if wanted[key] then
-        ordered[#ordered + 1] = key
-      end
-    end
-    return ordered
-  end
-  areas.johto = orderLikeNational(areas.johto)
-  areas.kanto = orderLikeNational(areas.kanto)
-  areas.unknown = orderLikeNational(areas.unknown)
+  areas.johto = orderLikeNational(areas.johto, national)
+  areas.kanto = orderLikeNational(areas.kanto, national)
+  areas.unknown = orderLikeNational(areas.unknown, national)
 
   local dungeonGeometry = readMember(habitatArchive, 0, "dungeon geometry")
   if #dungeonGeometry ~= 26 * 4 then
@@ -438,13 +701,6 @@ local function _compile(romFs, versionId, monCatalog, sink)
   end
 
   local areaGeometry = {}
-  local function outdoorKey(id)
-    return "dex-outdoor-" .. id
-  end
-
-  local function dungeonKey(id)
-    return "dex-dungeon-" .. id
-  end
 
   local areaMapSymbols = PokedexSources.areaMapSymbols()
   local landmarkBanks = PokedexSources.textBindings(versionId).landmarks
@@ -456,36 +712,6 @@ local function _compile(romFs, versionId, monCatalog, sink)
   -- keep the zero placeholder and never invent a label. The bank-279
   -- range side of the native fallback is guarded by ROM conformance
   -- over the compiled catalog instead of a second message-archive read.
-  local function resolveAreaName(kind, id, label)
-    local symbols = areaMapSymbols[kind]
-    local symbol = type(symbols) == "table" and symbols[id] or nil
-    if symbol == nil then
-      return { bankId = 0, messageId = 0 }
-    end
-    local headerId = MapCatalog.idForSymbol(symbol)
-    if headerId == nil then
-      raise(
-        PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
-        "pokedex " .. label .. " names an unknown retail map " .. symbol,
-        { kind = kind, id = id, symbol = symbol }
-      )
-    end
-    assert(headerId ~= nil, "unmapped retail maps fail above")
-    local record = MapCatalog.get(headerId)
-    if record == nil then
-      raise(
-        PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
-        "pokedex " .. label .. " resolves no map record for " .. symbol,
-        { kind = kind, id = id, symbol = symbol }
-      )
-    end
-    assert(type(record) == "table", "unmapped retail maps fail above")
-    local sectionId = record.mapSectionNativeId
-    if type(sectionId) ~= "number" or sectionId % 1 ~= 0 or sectionId == 0 then
-      return { bankId = landmarkBanks.fallbackBankId, messageId = landmarkBanks.fallbackMessageId }
-    end
-    return { bankId = landmarkBanks.bankId, messageId = sectionId }
-  end
   for id = 1, 70 do
     local baseOffset = (id - 1) * 36 + 1
     local x = byteAt(outdoorGeometry, baseOffset)
@@ -498,7 +724,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
       kind = "outdoor",
       region = x < 22 and "johto" or "kanto",
       mapKey = outdoorKey(id),
-      name = resolveAreaName("outdoor", id, outdoorKey(id)),
+      name = resolveAreaName("outdoor", id, outdoorKey(id), areaMapSymbols, landmarkBanks),
       rect = {
         x = x,
         y = y,
@@ -534,7 +760,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
       kind = "dungeon",
       region = x < 22 and "johto" or "kanto",
       mapKey = dungeonKey(id),
-      name = resolveAreaName("dungeon", id, dungeonKey(id)),
+      name = resolveAreaName("dungeon", id, dungeonKey(id), areaMapSymbols, landmarkBanks),
       position = { x = x, y = y },
       markerShape = shape,
       markerOffsetPx = { x = offsetX, y = offsetY },
@@ -542,62 +768,9 @@ local function _compile(romFs, versionId, monCatalog, sink)
   end
 
   local areaBases = PokedexSources.habitatBases
-  local function readAreaList(group, slot)
-    local memberId = areaBases[group + 1] + slot
-    local bytes = readMember(habitatArchive, memberId, "habitat list")
-    if #bytes < 4 or #bytes % 4 ~= 0 then
-      raise(
-        PokedexCatalogCompiler.ERROR.MEMBER_SIZE,
-        "pokedex habitat list is not a u32 row grid (group " .. group .. " slot " .. slot .. ")",
-        {}
-      )
-    end
-    local values = {}
-    for offset = 1, #bytes, 4 do
-      values[#values + 1] = u32le(bytes, offset)
-    end
-    if values[#values] ~= 0 then
-      raise(
-        PokedexCatalogCompiler.ERROR.UNTERMINATED_LIST,
-        "pokedex habitat list has no zero terminator (group " .. group .. " slot " .. slot .. ")",
-        {}
-      )
-    end
-    values[#values] = nil
-    return values
-  end
-
-  local function areaKeysFor(group, slot, namespace)
-    local keys = {}
-    for _, areaId in ipairs(readAreaList(group, slot)) do
-      local limit = namespace == "outdoor" and 70 or 26
-      if areaId < 1 or areaId > limit then
-        raise(
-          PokedexCatalogCompiler.ERROR.ILLEGAL_AREA,
-          "pokedex habitat list references illegal " .. namespace .. " area " .. areaId,
-          { area = areaId }
-        )
-      end
-      if namespace == "outdoor" then
-        keys[#keys + 1] = outdoorKey(areaId)
-      else
-        keys[#keys + 1] = dungeonKey(areaId)
-      end
-    end
-    return keys
-  end
-
-  local function habitatSetsFor(slot)
-    return {
-      morning = { dungeon = areaKeysFor(0, slot, "dungeon"), outdoor = areaKeysFor(3, slot, "outdoor") },
-      day = { dungeon = areaKeysFor(1, slot, "dungeon"), outdoor = areaKeysFor(4, slot, "outdoor") },
-      night = { dungeon = areaKeysFor(2, slot, "dungeon"), outdoor = areaKeysFor(5, slot, "outdoor") },
-      other = { dungeon = areaKeysFor(6, slot, "dungeon"), outdoor = areaKeysFor(7, slot, "outdoor") },
-    }
-  end
 
   for group = 0, 7 do
-    local values = readAreaList(group, 494)
+    local values = readAreaList(group, 494, areaBases, habitatArchive)
     if #values ~= 0 then
       raise(
         PokedexCatalogCompiler.ERROR.ILLEGAL_AREA,
@@ -606,12 +779,12 @@ local function _compile(romFs, versionId, monCatalog, sink)
       )
     end
   end
-  local allAreaSets = habitatSetsFor(0)
+  local allAreaSets = habitatSetsFor(0, areaBases, habitatArchive)
   local habitats = {}
   for id = 1, 493 do
     local key = MonSources.speciesKeys[id]
     if key ~= nil and monCatalog.species[key] ~= nil then
-      habitats[key] = habitatSetsFor(id)
+      habitats[key] = habitatSetsFor(id, areaBases, habitatArchive)
     end
   end
 
@@ -650,72 +823,12 @@ local function _compile(romFs, versionId, monCatalog, sink)
     end
   end
 
-  ---@param memberId integer
-  ---@return string|nil
-  local function rawHeightMember(memberId)
-    return heightArchive:readMember(memberId)
-  end
-
-  ---@param memberId integer
-  ---@param label string
-  ---@return string
-  local function heightMember(memberId, label)
-    local bytes = rawHeightMember(memberId)
-    if bytes == nil then
-      raise(
-        PokedexCatalogCompiler.ERROR.SOURCE_UNAVAILABLE,
-        "pokedex " .. label .. " height member is unavailable",
-        { member = memberId }
-      )
-    end
-    assert(bytes ~= nil, "pokedex height member is unavailable")
-    assert(bytes ~= nil, "pokedex height member is unavailable")
-    return bytes
-  end
-
-  ---@param memberId integer
-  ---@return string
-  local function altHeightMember(memberId)
-    local bytes = heightAltArchive:readMember(memberId)
-    if bytes == nil then
-      raise(
-        PokedexCatalogCompiler.ERROR.SOURCE_UNAVAILABLE,
-        "pokedex alternate height member is unavailable",
-        { member = memberId }
-      )
-    end
-    assert(bytes ~= nil, "pokedex alternate height member is unavailable")
-    return bytes
-  end
-
-  local function genderRatioOf(key)
-    local record = monCatalog.species[key]
-    if type(record) ~= "table" or type(record.genderRatio) ~= "number" then
-      return nil
-    end
-    return record.genderRatio
-  end
-
-  local function validGenders(key)
-    local ratio = genderRatioOf(key)
-    if ratio == 0 then
-      return { "male" }
-    end
-    if ratio == 254 then
-      return { "female" }
-    end
-    if ratio == 255 then
-      return { "male" }
-    end
-    return { "male", "female" }
-  end
-
   -- Gender-invalid ordinary slots stay empty: female slots of male-only
   -- and genderless species, non-female slots of female-only species.
   for id = 1, 493 do
     local key = MonSources.speciesKeys[id]
     if key ~= nil and monCatalog.species[key] ~= nil then
-      local ratio = genderRatioOf(key)
+      local ratio = genderRatioOf(key, monCatalog)
       local invalid = {}
       if ratio == 0 or ratio == 255 or ratio == nil then
         invalid = { 4 * id, 4 * id + 2 }
@@ -723,7 +836,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
         invalid = { 4 * id + 1, 4 * id + 3 }
       end
       for _, memberId in ipairs(invalid) do
-        local bytes = rawHeightMember(memberId)
+        local bytes = rawHeightMember(memberId, heightArchive)
         if bytes ~= nil and #bytes ~= 0 then
           raise(
             PokedexCatalogCompiler.ERROR.HEIGHT_UNAVAILABLE,
@@ -747,13 +860,13 @@ local function _compile(romFs, versionId, monCatalog, sink)
         end
       end
       table.sort(forms)
-      local genders = validGenders(key)
+      local genders = validGenders(key, monCatalog)
       for _, form in ipairs(forms) do
         local memberId = PokedexSources.altHeightMember(key, form, 0)
         if memberId == nil then
           for _, gender in ipairs(genders) do
             memberId = PokedexSources.ordinaryHeightMember(id, 0, gender == "female")
-            local bytes = heightMember(memberId, "ordinary")
+            local bytes = heightMember(memberId, "ordinary", heightArchive)
             if #bytes == 0 then
               raise(
                 PokedexCatalogCompiler.ERROR.HEIGHT_UNAVAILABLE,
@@ -765,7 +878,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
               byteAt(bytes, 1)
           end
         else
-          local altBytes = altHeightMember(memberId)
+          local altBytes = altHeightMember(memberId, heightAltArchive)
           if #altBytes == 0 then
             raise(
               PokedexCatalogCompiler.ERROR.HEIGHT_UNAVAILABLE,
@@ -780,84 +893,6 @@ local function _compile(romFs, versionId, monCatalog, sink)
         end
       end
     end
-  end
-
-  local function formPolicyFor(key)
-    local ordered = PokedexSources.orderedPolicies[key]
-    local automatic = PokedexSources.automaticFamilies[key] == true
-    local catalogRecord = monCatalog.species[key]
-    local resolved = {}
-    if type(catalogRecord) == "table" and type(catalogRecord.forms) == "table" then
-      for form in pairs(catalogRecord.forms) do
-        if type(form) == "number" then
-          resolved[#resolved + 1] = form
-        end
-      end
-    end
-    table.sort(resolved)
-    local resolvedSet = {}
-    for _, form in ipairs(resolved) do
-      resolvedSet[form] = true
-    end
-    if ordered ~= nil then
-      local variants = {}
-      if key == "PICHU" then
-        for _, fixed in ipairs(PokedexSources.pichuVariants) do
-          if resolvedSet[fixed.form] then
-            variants[#variants + 1] = { id = fixed.id, form = fixed.form, gender = fixed.gender }
-          end
-        end
-        for _, form in ipairs(resolved) do
-          if form >= 2 then
-            variants[#variants + 1] = { id = form + 1, form = form }
-          end
-        end
-      else
-        for id = 0, ordered.capacity - 1 do
-          if resolvedSet[id] then
-            variants[#variants + 1] = { id = id, form = id }
-          end
-        end
-        for _, form in ipairs(resolved) do
-          if form >= ordered.capacity then
-            variants[#variants + 1] = { id = form, form = form }
-          end
-        end
-      end
-      if #variants == 0 then
-        variants[#variants + 1] = { id = 0, form = resolved[1] or 0 }
-      end
-      return {
-        kind = "ordered",
-        variants = variants,
-        defaultVariant = variants[1].id,
-        rememberCaughtVariants = ordered.rememberCaughtVariants == true,
-        rememberFirstPersonality = ordered.rememberFirstPersonality == true,
-      }
-    end
-    if automatic then
-      local variants = {}
-      for _, form in ipairs(resolved) do
-        variants[#variants + 1] = { id = form, form = form }
-      end
-      if #variants == 0 then
-        variants[#variants + 1] = { id = 0, form = 0 }
-      end
-      return {
-        kind = "automatic",
-        variants = variants,
-        defaultVariant = variants[1].id,
-        rememberCaughtVariants = false,
-        rememberFirstPersonality = false,
-      }
-    end
-    return {
-      kind = "ordinary",
-      variants = { { id = 0, form = resolved[1] or 0 } },
-      defaultVariant = 0,
-      rememberCaughtVariants = false,
-      rememberFirstPersonality = false,
-    }
   end
 
   local johtoPosition = {}
@@ -880,7 +915,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
   for key in pairs(monCatalog.species) do
     if type(key) == "string" then
       local displayed = nationalPosition[key] ~= nil
-      local record = { formPolicy = formPolicyFor(key) }
+      local record = { formPolicy = formPolicyFor(key, monCatalog) }
       if displayed then
         record.nationalNumber = nationalPosition[key]
         record.johtoNumber = johtoPosition[key]
@@ -910,10 +945,6 @@ local function _compile(romFs, versionId, monCatalog, sink)
     end
   end
 
-  local function sortKeys(sortTable, member)
-    return sortTable[member]
-  end
-
   local measurementProfiles = {
     base = {
       measurements = baseMeasurements,
@@ -941,15 +972,6 @@ local function _compile(romFs, versionId, monCatalog, sink)
   end
   for id = 1, 70 do
     areaOrder[#areaOrder + 1] = outdoorKey(id)
-  end
-
-  local function ratingFor(required)
-    return {
-      bands = { { max = required - 1, messageId = 0 } },
-      complete = { maleMessageId = 0, femaleMessageId = 0 },
-      incompleteMusicId = 0,
-      completeMusicId = 0,
-    }
   end
 
   -- The generated criterion option order. Uses copies, not shared config mutation.
