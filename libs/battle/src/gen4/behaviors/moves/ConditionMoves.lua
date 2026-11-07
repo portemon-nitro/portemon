@@ -1153,6 +1153,24 @@ local function connects(ctx, frame, defender)
   return foeAccuracy(ctx, record, defender)
 end
 
+-- Shared foe-target gate: asserts the step frame, resolves the first
+-- target, and refuses the miss through the accuracy gate. Returns the
+-- defender when the step connects and nil for the gated miss, so callers
+-- keep their single miss branch beside their own effects.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@return integer? defender combatant when the step connects
+local function gatedDefender(ctx, frame)
+  assert(type(ctx) == "table", "conditions step through the battle context")
+  assert(type(frame) == "table", "conditions step from their move frame")
+  local record = frame --[[@as table<string, unknown>]]
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if not connects(ctx, record, defender) then
+    return nil
+  end
+  return defender
+end
+
 -- Optional battle facts read without failing: gendered and history
 -- moves refuse gracefully when their facts never arrive, matching the
 -- no-recorded-move failure instead of crashing the session.
@@ -1214,11 +1232,9 @@ end
 -- Confusion-setting strikes root a two-to-five-turn volatile on a
 -- connecting hit and refuse the already confused.
 local function stepConfuse(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if not applyConfusion(ctx, record, defender) then
@@ -1232,11 +1248,9 @@ end
 -- genderless, and the already infatuated. Substitute never blocks it.
 -- Source reference: BtlCmd_TryAttract in src/battle/battle_command.c.
 local function stepAttract(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   local genders = gendersIn(record)
@@ -1271,11 +1285,9 @@ end
 -- taunted. Source reference: the taunt subscript in
 -- files/battledata/script/subscript/subscript_0132_TauntStart.s.
 local function stepTaunt(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if ctx:hasBattleEffect(defender, "taunt") then
@@ -1297,11 +1309,9 @@ end
 -- refuses a doll and an already blocked target. Source references:
 -- effect_script_0236.s and subscript_0173_HealBlockStart.s.
 local function stepHealBlock(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if ctx:hasBattleEffect(defender, "substitute") or ctx:hasBattleEffect(defender, "healblock") then
@@ -1321,11 +1331,9 @@ end
 -- tormented. Source reference: the torment subscript in
 -- files/battledata/script/subscript/subscript_0127_TormentStart.s.
 local function stepTorment(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if ctx:hasBattleEffect(defender, "torment") then
@@ -1355,11 +1363,9 @@ local ENCORE_BANNED = {
 -- Encore forces the recorded last move for three-to-seven turns.
 -- Source reference: BtlCmd_TryEncore in src/battle/battle_command.c.
 local function stepEncore(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   local recentMoves = recentMovesIn(record)
@@ -1385,11 +1391,9 @@ end
 -- Disable refuses the recorded last move for three-to-six turns.
 -- Source reference: BtlCmd_TryDisable in src/battle/battle_command.c.
 local function stepDisable(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   local recentMoves = recentMovesIn(record)
@@ -1533,11 +1537,9 @@ end
 -- marked doll absorbs the aim. Source reference: the lock-on subscript
 -- in files/battledata/script/subscript/subscript_0079_LockOn.s.
 local function stepLockOn(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if ctx:hasBattleEffect(defender, "substitute") then
@@ -1723,11 +1725,9 @@ end
 -- without one. Source reference: BtlCmd_TrySpite in
 -- src/battle/battle_command.c.
 local function stepSpite(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   local recentMoves = recentMovesIn(record)
@@ -1761,11 +1761,9 @@ end
 -- Captivate drops special attack by two for opposite genders and
 -- refuses same genders, the genderless, and dolls.
 local function stepCaptivate(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   local genders = gendersIn(record)
@@ -1801,11 +1799,9 @@ end
 -- files/battledata/script/subscript.
 local function swaggerLike(spec)
   local function stepSwaggerLike(ctx, frame)
-    assert(type(ctx) == "table", "conditions step through the battle context")
-    assert(type(frame) == "table", "conditions step from their move frame")
     local record = frame --[[@as table<string, unknown>]]
-    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    if not connects(ctx, record, defender) then
+    local defender = gatedDefender(ctx, frame)
+    if defender == nil then
       return { kind = "complete", result = "missed" }
     end
     if ctx:hasBattleEffect(defender, "substitute") then
@@ -1877,11 +1873,9 @@ end
 -- Yawn drowses healthy, unshielded defenders; the drowsiness counts
 -- the defender actions down to sleep through the before-action timing.
 local function stepYawn(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if ctx:statusOf(defender) ~= nil then
@@ -2083,11 +2077,9 @@ end
 -- look subscript in
 -- files/battledata/script/subscript/subscript_0086_MeanLook.s.
 local function stepTrapHold(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if statusImmune(record, defender) then
@@ -2112,11 +2104,9 @@ end
 -- Nightmare roots quarter-maximum residual damage on sleeping
 -- defenders behind a doll check.
 local function stepNightmare(ctx, frame)
-  assert(type(ctx) == "table", "conditions step through the battle context")
-  assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  if not connects(ctx, record, defender) then
+  local defender = gatedDefender(ctx, frame)
+  if defender == nil then
     return { kind = "complete", result = "missed" }
   end
   if ctx:statusOf(defender) ~= "sleep" then
