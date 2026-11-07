@@ -116,6 +116,12 @@ function PokegearScreenState.new(opts)
   )
   assert(type(opts.measureDisplay) == "function", "the gear shell requires the display facts")
   assert(opts.signal == nil or type(opts.signal) == "boolean", "the gear shell reception flag must be a boolean")
+  -- The source opens with the cursor in the app switch zone
+  -- (cursorInAppSwitchZone = 1): a browse open focuses the strip while
+  -- the remembered card waits underneath, and only a scripted call
+  -- launch starts inside the card. Selecting the focused cell enters
+  -- the card; backing out of a card returns to the strip.
+  local entered = opts.entry.kind == "call"
   local self = setmetatable({
     _state = opts.state,
     _assets = opts.assets,
@@ -126,7 +132,7 @@ function PokegearScreenState.new(opts)
     _signal = opts.signal == true,
     _tab = "phone",
     _focus = "phone",
-    _entered = true,
+    _entered = entered,
     _transition = nil,
     _result = nil,
     _closed = false,
@@ -212,6 +218,10 @@ function PokegearScreenState:_resolveView()
     nestedCancel = status.nestedCancel == true,
     skin = preferences.skin,
     assets = self._assets,
+    -- The fixed source tick behind every focus indicator: the shell owns
+    -- the clock, so strip corners, card cursors, and scroll arrows blink
+    -- in step instead of sticking on their opening frame.
+    ticks = self._ticks,
   }
 end
 
@@ -325,7 +335,12 @@ function PokegearScreenState:_handle(mapped, view)
           self:_forwardToChild(event)
           self:_playSound(RESELECT_SOUND)
         elseif self._focus == self._tab then
-          self:_forwardToChild(event)
+          -- Confirming the focused current cell re-enters the card
+          -- without acting on it: focus transitions consume their
+          -- event, so returning from the strip never opens a menu or
+          -- starts a call as a side effect. Boundary navigation and the
+          -- cancel unfocus both land here.
+          self._entered = true
           self:_playSound(RESELECT_SOUND)
         else
           self:_switch(self._focus)
@@ -419,6 +434,7 @@ function PokegearScreenState:status()
     skin = prefs.skin,
     unlockedSkins = prefs.unlockedSkins,
     cards = { radio = isAvailable(self._state, "radio"), map = isAvailable(self._state, "map") },
+    ticks = self._ticks,
     clock = {
       hour = now.hour,
       minute = now.minute,

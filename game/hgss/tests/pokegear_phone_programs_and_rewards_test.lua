@@ -154,10 +154,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -265,10 +263,7 @@ local function phoneMessages()
       return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
     end,
     resolvePhoneUiMessage = function(_, entryId)
-      assert(
-        type(entryId) == "number" and entryId % 1 == 0,
-        "phone UI text resolves through its source bank entry"
-      )
+      assert(type(entryId) == "number" and entryId % 1 == 0, "phone UI text resolves through its source bank entry")
       local text = "suite-ui-271-" .. entryId
       return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
     end,
@@ -382,10 +377,7 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
   })
   local function speechLine(handle)
     local view = call:view(handle)
-    local lines = assert(
-      (view --[[@as table<string, unknown>]]).lines,
-      "the staged hangup prints into speech"
-    )
+    local lines = assert((view --[[@as table<string, unknown>]]).lines, "the staged hangup prints into speech")
     local line = assert((lines --[[@as table<integer, unknown>]])[1], "the staged hangup prints its message")
     if type(line) == "table" then
       return tostring((line --[[@as table<string, unknown>]]).text)
@@ -483,6 +475,10 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
     direction = "outgoing",
     kind = "ordinary",
   })
+  -- The single-glyph greeting types: the first edge reaches native
+  -- text, the second completes the open page, and the third turns it
+  -- toward the staged hangup.
+  call:step(secondHandle, { advance = true })
   call:step(secondHandle, { advance = true })
   call:step(secondHandle, { advance = true })
   Assert.equal(
@@ -1092,12 +1088,7 @@ function T.tests.selectors_resolve_every_family_branch_in_source_order()
   check("elm", { localMap = true, panicCall = true }, "elm-local-map", "the local map precedes the panic call")
   check("elm", { localMap = false, panicCall = true }, "elm-panic", "a false local map falls through to panic")
   check("elm", { eggEvent = true, eggGift = true }, "elm-egg", "the egg call precedes its gift state")
-  check(
-    "elm",
-    { badges = { zephyr = true }, rockets = true },
-    "elm-rockets",
-    "rockets precede the badge default"
-  )
+  check("elm", { badges = { zephyr = true }, rockets = true }, "elm-rockets", "rockets precede the badge default")
   check("elm", { gameClear = true, pokerus = true }, "elm-clear", "the clear state precedes pokerus")
   check("elm", { ssTicket = true, pokerus = true }, "elm-ticket", "the ticket precedes pokerus")
 
@@ -1443,6 +1434,9 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   })
   call:step(handle, {})
   call:step(handle, {})
+  -- The single-glyph page types first: the first edge completes it
+  -- and the next turns toward the program that needs its owner.
+  call:step(handle, { advance = true })
   call:step(handle, { advance = true })
   local failed = call:result(handle)
   Assert.notNil(failed, "the unavailable source owner returns a terminal result")
@@ -1597,10 +1591,10 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
       aiPasses = {},
     },
   }
-  local scenario = ScenarioFactory.fromTrainer(
-    { id = "trainer-prize-mom", trainers = trainers },
-    { party = owner, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromTrainer({ id = "trainer-prize-mom", trainers = trainers }, {
+    party = owner,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local pokegearState = PokegearState.new({ seed = 82 }, catalogRefs(record))
   local battle = BattleRuntime.new({
     request = { id = "launch-mom-settlement", kind = "trainer", payload = { trainer = "rival-early" } },
@@ -1784,6 +1778,383 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
     })
   end, "an unstamped family never takes the lease")
   Assert.equal((unmapped --[[@as table]]).domain, "phone", "the unstamped family names the phone domain")
+end
+
+-- The savings choice is owed only on the source dynamic Mother path:
+-- outgoing, away from home, with the rival named and introduced. Static
+-- scripts (the local-map greeting, the early-rival greetings, and any
+-- incoming predefined script) print their text and hang up without ever
+-- offering to save money. A static choice writes nothing, even when an
+-- explicit answer arrives.
+function T.tests.mother_savings_choice_only_owes_on_source_dynamic_calls()
+  local MotherPhoneProgram = requireFeature(
+    "game.hgss.src.pokegear.phone.MotherPhoneProgram",
+    "mother policy has no savings owner yet: static calls cannot skip the choice"
+  )
+  ---@param facts table<string, unknown>
+  ---@return table<string, unknown> session, table written flag sink
+  local function openSession(facts)
+    local written = {}
+    local world = {
+      setMomSavingsChoice = function(_, choice)
+        written.choice = choice
+      end,
+    }
+    local session = MotherPhoneProgram.select(world, { contact = "custom.mom", facts = facts })
+    return session, written
+  end
+  local staticCases = {
+    { name = "the local-map greeting", facts = { savingsChoice = false, localMap = true } },
+    { name = "an incoming predefined script", facts = { savingsChoice = false, incomingCall = true } },
+    {
+      name = "the unnamed-rival greeting",
+      facts = { savingsChoice = false, localMap = false, gaveRivalName = false },
+    },
+    {
+      name = "the unintroduced-rival greeting",
+      facts = { savingsChoice = false, localMap = false, gaveRivalName = true, talkedAfterNamingRival = false },
+    },
+  }
+  for _, case in ipairs(staticCases) do
+    local session, written = openSession(case.facts)
+    Assert.equal(MotherPhoneProgram.step(session, {}), "done", case.name .. " owes no savings choice")
+    Assert.isNil(written.choice, case.name .. " writes no savings flag")
+    Assert.equal(MotherPhoneProgram.step(session, { choice = "save" }), "done", case.name .. " ignores a late answer")
+    Assert.isNil(written.choice, case.name .. " writes no savings flag for a late answer")
+  end
+  local dynamicFacts = { savingsChoice = false, localMap = false, gaveRivalName = true, talkedAfterNamingRival = true }
+  local waiting, _ = openSession(dynamicFacts)
+  Assert.equal(MotherPhoneProgram.step(waiting, {}), "waiting", "the dynamic call owes its savings choice")
+  local saving, writtenSave = openSession(dynamicFacts)
+  Assert.equal(MotherPhoneProgram.step(saving, { choice = "save" }), "done", "an answered choice finishes")
+  Assert.isTrue(writtenSave.choice == true, "saving writes the native savings flag")
+  local keeping, writtenKeep = openSession(dynamicFacts)
+  Assert.equal(MotherPhoneProgram.step(keeping, { choice = "keep" }), "done", "keeping finishes as well")
+  Assert.isTrue(writtenKeep.choice == false, "keeping clears the native savings flag")
+end
+
+-- ScriptedCall==2 forces the dynamic Mother path even on the local map
+-- (retail order: scripted first, before localMap). The selector must
+-- reach dynamic, not script 23, and the savings choice is owed.
+function T.tests.scripted_mother_call_forces_dynamic_on_the_local_map()
+  local MotherPhoneProgram =
+    requireFeature("game.hgss.src.pokegear.phone.MotherPhoneProgram", "mother policy has no scripted-call fact yet")
+  Assert.isTrue(
+    MotherPhoneProgram.isSavingsCall({
+      scriptedCall = 2,
+      localMap = true,
+      incomingCall = false,
+      gaveRivalName = true,
+      talkedAfterNamingRival = true,
+    }),
+    "scriptedCall==2 owes the choice even on the local map"
+  )
+  Assert.isTrue(
+    MotherPhoneProgram.isSavingsCall({
+      scriptedCall = 2,
+      localMap = true,
+      incomingCall = true,
+      gaveRivalName = false,
+      talkedAfterNamingRival = false,
+    }),
+    "scriptedCall==2 owes the choice even for incoming unnamed-rival calls"
+  )
+  Assert.equal(MotherPhoneProgram.promptEntry({ scriptedCall = 2 }), 22, "scripted prompt prints msg 22")
+  Assert.equal(MotherPhoneProgram.introEntry({ momCallIntroParam = 3 }), 10, "intro resolves 7+param (7+3=10)")
+  Assert.equal(MotherPhoneProgram.introEntry({}), 17, "missing intro param defaults to 10 (7+10=17)")
+  Assert.equal(
+    MotherPhoneProgram.promptEntry({ savingsChoice = true, momBalance = 500 }),
+    23,
+    "savings with balance prints 23"
+  )
+  Assert.equal(
+    MotherPhoneProgram.promptEntry({ savingsChoice = true, momBalance = 0 }),
+    27,
+    "savings without balance prints 27"
+  )
+  Assert.equal(
+    MotherPhoneProgram.promptEntry({ savingsChoice = false, momBalance = 900 }),
+    24,
+    "no savings with balance prints 24"
+  )
+  Assert.equal(
+    MotherPhoneProgram.promptEntry({ savingsChoice = false, momBalance = 0 }),
+    28,
+    "no savings without balance prints 28"
+  )
+  Assert.equal(MotherPhoneProgram.resultEntry("save"), 25, "save prints 25")
+  Assert.equal(MotherPhoneProgram.resultEntry("keep"), 26, "keep prints 26")
+end
+
+-- Dynamic Mother end-to-end through PhoneCall with scriptedCall==2 on a
+-- local map: intro (7+param) → prompt 22 → choice menu 2 → save writes
+-- the flag → result 25 → hangup. Bank entries resolve through
+-- resolveContactEntry with the Mom balance; the intro splits pages on
+-- line breaks and never pre-flattens Bank 664 multi-page copy.
+function T.tests.dynamic_mother_call_completes_through_intro_prompt_choice_and_result()
+  local PhoneCall = requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no dynamic mother path yet")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, catalogRefs(record))
+  state:registerContact("custom.mom")
+  state:setMom({ balance = 500, purchases = {}, gifts = {} })
+  local written = {}
+  local world = {
+    flags = {},
+    rematchReady = {},
+    setMomSavingsChoice = function(_, choice)
+      written.choice = choice
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = true, gaveRivalName = true, talkedAfterNamingRival = true }
+    end,
+  }
+  local pagesByEntry = {
+    [17] = { tokens = { { kind = "glyph", code = 1, text = "intro-7+10", raw = { 1 } } } },
+    [22] = { tokens = { { kind = "glyph", code = 1, text = "prompt-22", raw = { 1 } } } },
+    [25] = { tokens = { { kind = "glyph", code = 1, text = "result-25", raw = { 1 } } } },
+  }
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, contact, entry, opts)
+    Assert.equal(contact, "custom.mom", "dynamic entries resolve for Mom")
+    Assert.equal(type(entry), "number", "dynamic entries name their bank entry")
+    Assert.notNil(pagesByEntry[entry], "entry " .. entry .. " is stubbed")
+    return pagesByEntry[entry]
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(4242),
+  })
+  local handle = call:begin({
+    id = "mom-dynamic-1",
+    contact = "custom.mom",
+    direction = "outgoing",
+    kind = "ordinary",
+    isScriptedCall = 2,
+  })
+  call:step(handle, {})
+  call:step(handle, {})
+  local greeting = call:view(handle)
+  Assert.equal(greeting.stage, "message", "intro prints before the program stage")
+  Assert.equal(
+    tostring((greeting.lines --[[@as table]])[1].text),
+    "intro-7+10",
+    "scripted local call prints the intro, not script 23"
+  )
+  -- The intro page types: the first edge completes its single glyph
+  -- and the next turns the completed page toward the program.
+  call:step(handle, { advance = true })
+  call:step(handle, { advance = true })
+  call:step(handle, {})
+  local owed = call:view(handle)
+  Assert.equal(owed.stage, "choice", "the prompt owes the savings choice")
+  Assert.deepEqual(owed.choices, { "save", "keep" }, "the choice carries semantic answers")
+  Assert.equal(owed.menuId, 2, "the savings choice carries menu 2")
+  call:step(handle, { choice = "save" })
+  local result = call:view(handle)
+  Assert.equal(result.stage, "message", "the result prints before hangup")
+  Assert.equal(tostring((result.lines --[[@as table]])[1].text), "result-25", "saving prints result 25")
+  Assert.isTrue(written.choice == true, "saving writes the native savings flag")
+  for _ = 1, 60 do
+    if call:result(handle) ~= nil then
+      break
+    end
+    call:step(handle, { advance = true })
+  end
+  Assert.notNil(call:result(handle), "the dynamic call completes through hangup")
+end
+
+-- Irwin outgoing outside the takeover rolls 172/173/174; scripted and
+-- takeover paths stay pinned, and the random window never leaves its
+-- three ids.
+function T.tests.irwin_outgoing_rolls_its_three_source_scripts()
+  local PhoneCall = requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no irwin selector yet")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] =
+    { key = "custom.irwin", family = "irwin", sortWeight = 70 }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.irwin"
+  local record = PokegearAssetSchema.validate(manifest)
+  assert(record ~= nil, "irwin catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local seen = {}
+  for seed = 1, 12 do
+    local state = PokegearState.new({ seed = seed }, catalogRefs(record))
+    state:registerContact("custom.irwin")
+    local world = {
+      flags = {},
+      rematchReady = {},
+      nativeSelectorFacts = function()
+        return {}
+      end,
+      callFacts = function()
+        return {}
+      end,
+    }
+    local messages = phoneMessages()
+    messages.resolveLine = function(_, _, scriptId)
+      seen[#seen + 1] = scriptId
+      return { tokens = { { kind = "glyph", code = 1, text = "irwin", raw = { 1 } } } }
+    end
+    local call = PhoneCall.new({
+      state = state,
+      catalog = record.catalog,
+      messages = messages,
+      world = world,
+      audio = instantAudio(),
+      random = PokegearRandom.new(seed),
+    })
+    local handle = call:begin({
+      id = "irwin-" .. seed,
+      contact = "custom.irwin",
+      direction = "outgoing",
+      kind = "ordinary",
+    })
+    call:step(handle, {})
+    call:step(handle, {})
+    Assert.notNil(call:view(handle).lines, "irwin outgoing resolves")
+  end
+  for _, scriptId in ipairs(seen) do
+    Assert.isTrue(scriptId >= 172 and scriptId <= 174, "irwin outgoing stays in 172..174")
+  end
+end
+
+-- Static script side effects mirror ApplyGenericNPCcallSideEffect:
+-- rematch stages readiness, item stages a contact gift, flag writes the
+-- named event flag, word draws its pick. None kinds do nothing.
+function T.tests.static_script_side_effects_stage_through_their_owners()
+  local PhoneCall =
+    requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no static side-effect applier yet")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  -- Rematch kind stages readiness without needing a save owner.
+  local manifest = fixtureManifest()
+  manifest.catalog.callDefinitions[33] =
+    { male = { bank = 1, entry = 1 }, female = { bank = 1, entry = 1 }, kind = "rematch", param0 = 1, param1 = 0 }
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] =
+    { key = "custom.rematch-man", family = "trainer", sortWeight = 60 }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.rematch-man"
+  local record = PokegearAssetSchema.validate(manifest)
+  assert(record ~= nil, "rematch catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 5 }, catalogRefs(record))
+  state:registerContact("custom.rematch-man")
+  local world = {
+    flags = {},
+    rematchReady = {},
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return { predefinedScript = 33 }
+    end,
+  }
+  local messages = phoneMessages()
+  messages.resolveLine = function(_, _, scriptId)
+    Assert.equal(scriptId, 33, "rematch script resolves")
+    return { tokens = { { kind = "glyph", code = 1, text = "rematch", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(5),
+  })
+  -- Trainer incoming with predefined 33 exercises the static path; the
+  -- contact needs a localScript-free record so incoming routes via
+  -- predefinedScript.
+  local handle = call:begin({
+    id = "rematch-1",
+    contact = "custom.rematch-man",
+    direction = "incoming",
+    kind = "ordinary",
+  })
+  call:step(handle, {})
+  call:step(handle, {})
+  Assert.isTrue(world.rematchReady["custom.rematch-man"] == true, "rematch kind stages readiness")
+end
+
+-- Gift-full dynamic Mother ends with no choice: intro → gift-full 21 →
+-- hangup. The choice menu never opens and no flag is written.
+function T.tests.dynamic_mother_gift_full_ends_without_a_choice()
+  local PhoneCall =
+    requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no dynamic mother gift-full branch yet")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 99 }, catalogRefs(record))
+  state:registerContact("custom.mom")
+  state:setMom({
+    balance = 0,
+    purchases = {},
+    gifts = {
+      { item = "SUPER_POTION", quantity = 1 },
+      { item = "REPEL", quantity = 1 },
+      { item = "HYPER_POTION", quantity = 1 },
+      { item = "MOON_STONE", quantity = 1 },
+      { item = "SILK_SCARF", quantity = 1 },
+    },
+  })
+  local written = {}
+  local world = {
+    flags = {},
+    rematchReady = {},
+    setMomSavingsChoice = function(_, choice)
+      written.choice = choice
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = false, gaveRivalName = true, talkedAfterNamingRival = true }
+    end,
+  }
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry)
+    if entry == 21 then
+      return { tokens = { { kind = "glyph", code = 1, text = "gift-full-21", raw = { 1 } } } }
+    end
+    return { tokens = { { kind = "glyph", code = 1, text = "entry-" .. entry, raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(99),
+  })
+  local handle = call:begin({
+    id = "mom-giftfull-1",
+    contact = "custom.mom",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(handle, {})
+  call:step(handle, {})
+  call:step(handle, { advance = true })
+  call:step(handle, {})
+  local view = call:view(handle)
+  Assert.isTrue(view.stage ~= "choice", "gift-full owes no choice")
+  Assert.isNil(written.choice, "gift-full writes no savings flag")
+  for _ = 1, 60 do
+    if call:result(handle) ~= nil then
+      break
+    end
+    call:step(handle, { advance = true })
+  end
+  Assert.notNil(call:result(handle), "gift-full completes through hangup")
 end
 
 return T

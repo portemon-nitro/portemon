@@ -758,6 +758,40 @@ function PokegearComposition.compose(runtime, owners)
   }
   local children = cardFactories(runtime, shared)
   local PokegearScreenState = require("game.hgss.src.pokegear.PokegearScreenState")
+  -- The top-screen reception indicator follows the source LoadGraphics
+  -- rule (pokegear_app_ui PokegearApp_LoadGraphics): lit unless the
+  -- current header map forbids outgoing phone calls
+  -- (map_header MapHeader_CanPlacePhoneCalls over outgoingCalls). The
+  -- map cannot change while the gear owns the tick, so the open-time
+  -- header read stays valid for the session. An undeterminable map
+  -- yields no flag and the shell keeps its unlit default, exactly like
+  -- the previous wiring, instead of failing the open.
+  local function outgoingCallSignal()
+    local session = runtime.session
+    local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+    local mapId = type(currentMap) == "table" and currentMap.mapId or nil
+    if type(mapId) ~= "number" or mapId % 1 ~= 0 then
+      return nil
+    end
+    local okMaps, maps = pcall(require, "romdump.src.catalog.hgss.maps")
+    if not okMaps or type(maps) ~= "table" then
+      return nil
+    end
+    local byId = (maps --[[@as table<string, unknown>]]).byId
+    if type(byId) ~= "table" then
+      return nil
+    end
+    local header = (byId --[[@as table<integer, unknown>]])[mapId]
+    if type(header) ~= "table" then
+      return nil
+    end
+    if
+      (header --[[@as table<string, unknown>]]).outgoingCalls == true
+    then
+      return true
+    end
+    return false
+  end
   local disposed = false
   local function screenFactory(entry)
     if disposed then
@@ -792,6 +826,7 @@ function PokegearComposition.compose(runtime, owners)
       effect = play,
       entry = entry or { kind = "browse" },
       measureDisplay = measurePresentationDisplay,
+      signal = outgoingCallSignal(),
     })
   end
 

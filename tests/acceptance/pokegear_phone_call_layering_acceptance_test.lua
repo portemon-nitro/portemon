@@ -425,10 +425,11 @@ end
 
 -- Source window geometry in pixels: the SUB_2 speech window (tiles
 -- x2/y19 27x4) and name window (tiles x4/y16 9x2), and the MAIN_3 six
--- 24px contact rows starting at surface y16.
+-- 24px contact rows riding the scrolled layer at surface y8 inside the
+-- plane frame interior.
 local SPEECH_RECT = rectOf(16, 152, 216, 32)
 local NAME_RECT = rectOf(32, 128, 72, 16)
-local LIST_BAND = rectOf(8, 16, 216, 144)
+local LIST_BAND = rectOf(13, 8, 211, 144)
 
 -- Paints one pane through the controller's published plan callbacks: the
 -- lower controls surface through render, the upper information surface
@@ -531,12 +532,12 @@ local function paletteLines(log)
   return lines
 end
 
--- (1) an ordinary browse paints its contact list on the lower surface
--- only: the lower render draws the six-band list with names through the
--- name font and classes through the class font, while the upper render
--- draws the static information plane with no list band or contact text.
--- The plan carries no second list projection beside the view.
-function T.tests.browse_list_occupies_only_the_lower_pane()
+-- Call layering through one controller: browse paints its contact list
+-- on the lower surface only, a live call keeps that same list below
+-- under dim with the native fast-forward sprite while the conversation
+-- moves above, and ending the call restores the browse look on both
+-- surfaces.
+function T.tests.call_layering_keeps_list_below_and_speech_above()
   local controller = openMenuController()
   local view = assert(controller:status().view, "the browse state exports its view")
   Assert.notNil(view.list, "the browse state carries its contact list projection")
@@ -545,11 +546,13 @@ function T.tests.browse_list_occupies_only_the_lower_pane()
   local content = assert(controller:status().presentation, "the browse state publishes its plan").content
   Assert.isNil(content.callList, "the plan carries no second list projection beside the view")
 
-  local lower = paintPane(controller, "lower")
-  Assert.isTrue(listBandFills(lower) > 0, "the lower surface paints the contact row bands")
+  local browseLower = paintPane(controller, "lower")
+  Assert.isTrue(listBandFills(browseLower) > 0, "the lower surface paints the contact row bands")
   local lowerNames, lowerClasses = 0, 0
-  for _, record in ipairs(lower) do
+  local browseLabels = {}
+  for _, record in ipairs(browseLower) do
     if record.op == "text" and record.plain == false and textHits(record, LIST_BAND) then
+      browseLabels[record.line] = true
       if record.role == "name" then
         lowerNames = lowerNames + 1
       elseif record.role == "class" then
@@ -560,27 +563,9 @@ function T.tests.browse_list_occupies_only_the_lower_pane()
   Assert.equal(lowerNames, 3, "the lower surface prints every contact name through the name font")
   Assert.equal(lowerClasses, 3, "the lower surface prints every contact class through the class font")
 
-  local upper = paintPane(controller, "upper")
-  Assert.equal(listBandFills(upper), 0, "the upper surface never paints contact row bands")
-  Assert.equal(listBandText(upper), 0, "the upper surface never paints contact palette text")
-  controller:dispose()
-end
-
--- (2) a live call keeps the same contact list on the lower surface and
--- moves only the conversation above: the lower render still paints the
--- contact labels and row bands with the dimmed planes and the native
--- fast-forward sprite, the upper render paints the caller name and
--- speech with no contacts, and ending the call restores the browse
--- look on both surfaces.
-function T.tests.live_call_keeps_list_below_and_speech_above()
-  local controller = openMenuController()
-  local browseLower = paintPane(controller, "lower")
-  local browseLabels = {}
-  for _, record in ipairs(browseLower) do
-    if record.op == "text" and record.plain == false and textHits(record, LIST_BAND) then
-      browseLabels[record.line] = true
-    end
-  end
+  local browseUpper = paintPane(controller, "upper")
+  Assert.equal(listBandFills(browseUpper), 0, "the upper surface never paints contact row bands")
+  Assert.equal(listBandText(browseUpper), 0, "the upper surface never paints contact palette text")
 
   placeMenuCall(controller)
   local call = assert(controller:status().view.call, "the live call keeps its conversation projection")

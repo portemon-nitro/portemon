@@ -9,6 +9,7 @@
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PokegearAtlas = require("libs.hgss.src.presentation.PokegearAtlas")
 local PokegearConfigureRenderer = require("libs.hgss.src.presentation.PokegearConfigureRenderer")
+local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
 
 ---@class PokegearRenderer
 local PokegearRenderer = {}
@@ -143,22 +144,68 @@ local function drawStrip(graphics, images, content, view)
       PokegearAtlas.draw(graphics, atlas, 0, ATLAS_BLANK_Y, CELL_WIDTH, STRIP_HEIGHT, SLOT_X[tab], STRIP_Y)
     end
   end
-  local transition = view.transition --[[@as table<string, unknown>?]]
   local pressedX = SLOT_X[
     view.tab --[[@as string]]
   ]
-  if transition ~= nil and transition.kind == "switch" and pressedX ~= nil then
+  if pressedX ~= nil then
     PokegearAtlas.draw(graphics, atlas, pressedX, ATLAS_PRESSED_Y, CELL_WIDTH, STRIP_HEIGHT, pressedX, STRIP_Y)
   end
-  local corners = content.cursorCorners --[[@as string[]?]]
+  local corners = content.cursorCorners --[[@as table[]?]]
   local centerX = SLOT_CENTER_X[
     view.focus --[[@as string]]
   ]
   if corners ~= nil and view.entered ~= true and centerX ~= nil then
+    local tick = type(view.ticks) == "number" and view.ticks or 0
     for index, offset in ipairs(CORNER_OFFSETS) do
-      local corner = images[corners[index]]
-      assert(corner ~= nil, "the companion render needs its prepared cursor corners")
-      corner:draw(graphics, centerX + offset[1] - 8, SLOT_CENTER_Y + offset[2] - 8)
+      local frames = corners[index]
+      local frame = nil
+      if type(frames) == "table" and type(frames[1]) == "table" then
+        -- Compiled corner animations blink on their source durations.
+        local total = 0
+        for _, candidate in ipairs(frames) do
+          local duration = (candidate --[[@as table<string, unknown>]]).duration or 1
+          if type(duration) ~= "number" or duration < 1 then
+            duration = 1
+          end
+          total = total + duration
+        end
+        local elapsed = total > 0 and (tick % total) or 0
+        for _, candidate in ipairs(frames) do
+          local record = candidate --[[@as table<string, unknown>]]
+          local duration = record.duration or 1
+          if type(duration) ~= "number" or duration < 1 then
+            duration = 1
+          end
+          if elapsed < duration then
+            frame = record
+            break
+          end
+          elapsed = elapsed - duration
+        end
+        frame = frame or frames[#frames]
+      elseif type(frames) == "string" then
+        -- Legacy single-image corners stay static.
+        local lease = images[frames]
+        assert(lease ~= nil, "the companion render needs its prepared cursor corners")
+        lease:draw(graphics, centerX + offset[1] - 8, SLOT_CENTER_Y + offset[2] - 8)
+        frame = nil
+      else
+        assert(frames ~= nil, "the companion render needs its prepared cursor corners")
+      end
+      if type(frame) == "table" then
+        local path = assert((frame --[[@as table<string, unknown>]]).image, "corner frames carry their image")
+        local lease = images[path]
+        assert(lease ~= nil, "the companion render needs its prepared cursor corners")
+        local anchorX = (frame --[[@as table<string, unknown>]]).anchorX or -8
+        local anchorY = (frame --[[@as table<string, unknown>]]).anchorY or -8
+        if type(anchorX) ~= "number" then
+          anchorX = -8
+        end
+        if type(anchorY) ~= "number" then
+          anchorY = -8
+        end
+        lease:draw(graphics, centerX + offset[1] + anchorX, SLOT_CENTER_Y + offset[2] + anchorY)
+      end
     end
   end
 end
@@ -182,7 +229,8 @@ local function drawChild(graphics, images, text, nameText, content, view)
       text,
       content,
       child.view --[[@as table<string, unknown>]],
-      view.unlockedSkins --[[@as table<integer, integer>]]
+      view.unlockedSkins --[[@as table<integer, integer>]],
+      view
     )
     return
   end
@@ -293,6 +341,31 @@ function PokegearRenderer.draw(resources, view, plan)
       )
       if not stripFirst and not stripHidden then
         drawStrip(graphics, images --[[@as table<string, unknown>]], content --[[@as table<string, unknown>]], view)
+      end
+      -- The phone tooltip bar shows over the bottom strip whenever the
+      -- phone child owes a prompt (context, sort, or choice menus): the
+      -- child paints below the strip, so the shell repaints the bar on
+      -- top here from the child's detached prompt and palette.
+      if view.tab == "phone" then
+        local phoneTooltip = type(childView) == "table" and (childView --[[@as table<string, unknown>]]).tooltip or nil
+        if type(phoneTooltip) == "string" and phoneTooltip ~= "" then
+          local phonePresentation = type(child) == "table" and (child --[[@as table<string, unknown>]]).presentation
+            or nil
+          local phoneContent = type(phonePresentation) == "table"
+              and (phonePresentation --[[@as table<string, unknown>]]).content
+            or nil
+          local tooltipPalette = type(phoneContent) == "table"
+              and (phoneContent --[[@as table<string, unknown>]]).tooltipPalette
+            or nil
+          if type(tooltipPalette) == "table" then
+            PokegearPhoneRenderer.drawTooltipBar(
+              graphics,
+              text --[[@as table<string, unknown>?]],
+              tooltipPalette --[[@as table]],
+              phoneTooltip
+            )
+          end
+        end
       end
       -- A card fade covers the whole lower screen, strip included.
       local fade = type(childView) == "table" and (childView --[[@as table<string, unknown>]]).fade or nil

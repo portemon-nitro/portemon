@@ -13,9 +13,11 @@ local T = {}
 local LIST_X = 8
 local ROW_WIDTH = 216
 
--- Source surface geometry: the six 24px contact rows, the SUB_2 caller
--- windows, and the fast-forward sprite source position.
-local LIST_BAND = { x = 8, y = 16, width = 216, height = 144 }
+-- Source surface geometry: the six 24px contact rows ride the scrolled
+-- window at screen y8 with the plane frame covering the window's left
+-- edge, so the visible bands span x13..224/y8..152; the SUB_2 caller
+-- windows and the fast-forward sprite keep their source positions.
+local LIST_BAND = { x = 13, y = 8, width = 211, height = 144 }
 local NAME_WINDOW = { x = 32, y = 128, width = 72, height = 16 }
 local SPEECH_WINDOW = { x = 16, y = 152, width = 216, height = 32 }
 local FAST_FORWARD_SOURCE = { x = 128, y = 160 }
@@ -32,17 +34,13 @@ local function recordingGraphics()
     records[#records + 1] =
       { op = "rect", mode = mode, x = x, y = y, width = width, height = height, color = graphics._color }
   end
-  function graphics.push(_)
-  end
-  function graphics.pop()
-  end
-  function graphics.origin()
-  end
-  function graphics.translate(_, _)
-  end
-  function graphics.scale(_, _)
-  end
-  function graphics.intersectScissor(_, _, _, _)
+  function graphics.push(_) end
+  function graphics.pop() end
+  function graphics.origin() end
+  function graphics.translate(_, _) end
+  function graphics.scale(_, _) end
+  function graphics.intersectScissor(x, y, width, height)
+    records[#records + 1] = { op = "scissor", x = x, y = y, width = width, height = height }
   end
   function graphics.transformPoint(x, y)
     return x, y
@@ -74,10 +72,8 @@ end
 ---@return table stub text renderer recording nothing
 local function stubText()
   return {
-    drawText = function(_, _, _, _)
-    end,
-    drawTextWithPalette = function(_, _, _, _, _)
-    end,
+    drawText = function(_, _, _, _) end,
+    drawTextWithPalette = function(_, _, _, _, _) end,
   }
 end
 
@@ -254,7 +250,12 @@ local function drawLowerList(graphics, firstBg)
   PokegearPhoneRenderer.draw(
     { graphics = graphics, images = stubImages(), textRenderer = stubText() },
     { list = list },
-    { skin = 0, sprites = { phone = spriteSequences("test-sprite-") }, foreground = "test-foreground", listPalette = distinctPalette() }
+    {
+      skin = 0,
+      sprites = { phone = spriteSequences("test-sprite-") },
+      foreground = "test-foreground",
+      listPalette = distinctPalette(),
+    }
   )
 end
 
@@ -268,7 +269,7 @@ local function bandRed(graphics, slot)
       and fill.width == ROW_WIDTH
       and fill.height == 24
       and fill.x == LIST_X
-      and fill.y == 16 + slot * 24
+      and fill.y == 8 + slot * 24
     then
       return fill.color.r
     end
@@ -318,23 +319,16 @@ function T.sliding_bands_travel_with_their_rows()
   PokegearPhoneRenderer.draw(
     { graphics = graphics, images = stubImages(), textRenderer = stubText() },
     { list = list },
-    { skin = 0, sprites = { phone = spriteSequences("test-sprite-") }, foreground = "test-foreground", listPalette = distinctPalette() }
+    {
+      skin = 0,
+      sprites = { phone = spriteSequences("test-sprite-") },
+      foreground = "test-foreground",
+      listPalette = distinctPalette(),
+    }
   )
-  Assert.equal(
-    bandRedAt(graphics, 16 - 8),
-    14 / 255,
-    "the outgoing row keeps its band one tick in"
-  )
-  Assert.equal(
-    bandRedAt(graphics, 16 + 24 - 8),
-    11 / 255,
-    "the next traveling row keeps its alternating band"
-  )
-  Assert.equal(
-    bandRedAt(graphics, 16 + 2 * 24 - 8),
-    14 / 255,
-    "a further traveling row keeps its band one tick in"
-  )
+  Assert.equal(bandRedAt(graphics, 8 - 8), 14 / 255, "the outgoing row keeps its band one tick in")
+  Assert.equal(bandRedAt(graphics, 8 + 24 - 8), 11 / 255, "the next traveling row keeps its alternating band")
+  Assert.equal(bandRedAt(graphics, 8 + 2 * 24 - 8), 14 / 255, "a further traveling row keeps its band one tick in")
 end
 
 function T.scroll_flip_flag_inverts_every_band()
@@ -370,7 +364,12 @@ function T.list_name_and_class_print_through_their_source_fonts()
   PokegearPhoneRenderer.draw(
     { graphics = graphics, images = stubImages(), textRenderer = classText, phoneNameTextRenderer = nameText },
     { list = list },
-    { skin = 0, sprites = { phone = spriteSequences("test-sprite-") }, foreground = "test-foreground", listPalette = distinctPalette() }
+    {
+      skin = 0,
+      sprites = { phone = spriteSequences("test-sprite-") },
+      foreground = "test-foreground",
+      listPalette = distinctPalette(),
+    }
   )
   Assert.equal(#nameText._calls, 1, "the name cell prints once through the name font")
   Assert.equal(recordedLine(nameText._calls[1]), "NAME-1", "the name cell prints the contact name")
@@ -394,7 +393,10 @@ end
 ---@param area table pixel rect with x/y/width/height fields
 ---@return boolean
 local function textHitsArea(record, area)
-  return record.x >= area.x and record.x < area.x + area.width and record.y >= area.y and record.y < area.y + area.height
+  return record.x >= area.x
+    and record.x < area.x + area.width
+    and record.y >= area.y
+    and record.y < area.y + area.height
 end
 
 ---@param graphics table
@@ -472,7 +474,11 @@ end
 ---@return string? staged path of the drawn lower plane
 local function drawnLowerPlane(graphics)
   for _, record in ipairs(graphics._records) do
-    if record.op == "image" and type(record.path) == "string" and record.path:find("test-foreground", 1, true) ~= nil then
+    if
+      record.op == "image"
+      and type(record.path) == "string"
+      and record.path:find("test-foreground", 1, true) ~= nil
+    then
       return record.path
     end
   end
@@ -504,7 +510,12 @@ function T.lower_list_survives_the_live_call_with_dim_and_sprite()
   for _, record in ipairs(graphics._records) do
     if record.op == "rect" and record.mode == "fill" then
       if
-        (record.x == NAME_WINDOW.x and record.y == NAME_WINDOW.y and record.width == NAME_WINDOW.width and record.height == NAME_WINDOW.height)
+        (
+          record.x == NAME_WINDOW.x
+          and record.y == NAME_WINDOW.y
+          and record.width == NAME_WINDOW.width
+          and record.height == NAME_WINDOW.height
+        )
         or (
           record.x == SPEECH_WINDOW.x
           and record.y == SPEECH_WINDOW.y
@@ -585,29 +596,32 @@ function T.upper_call_paints_only_the_caller_windows()
   )
   Assert.equal(rowBandFills(graphics), 0, "the call information never paints contact row bands")
   Assert.equal(rowTextDraws({ nameText, classText }), 0, "the call information never paints contact row text")
-  local nameFill = nil
+  -- Palette index 0 is the transparent pen on the SUB_2 windows: the
+  -- static upper plane already carries the message box art, so the
+  -- caller windows paint text only and never fill their rects.
   for _, record in ipairs(graphics._records) do
-    if
-      record.op == "rect"
-      and record.x == NAME_WINDOW.x
-      and record.y == NAME_WINDOW.y
-      and record.width == NAME_WINDOW.width
-      and record.height == NAME_WINDOW.height
-    then
-      nameFill = record
+    if record.op == "rect" and record.mode == "fill" then
+      Assert.isTrue(
+        not (
+            record.x == NAME_WINDOW.x
+            and record.y == NAME_WINDOW.y
+            and record.width == NAME_WINDOW.width
+            and record.height == NAME_WINDOW.height
+          ),
+        "the call name window paints no opaque fill"
+      )
+      Assert.isTrue(
+        not (
+            record.x == SPEECH_WINDOW.x
+            and record.y == SPEECH_WINDOW.y
+            and record.width == SPEECH_WINDOW.width
+            and record.height == SPEECH_WINDOW.height
+          ),
+        "the call speech window paints no opaque fill"
+      )
     end
   end
-  Assert.notNil(nameFill, "the call name window paints its fill")
-  assert(nameFill ~= nil, "the name fill painted above")
-  Assert.equal(
-    nameFill.color.r,
-    (100 + 0) / 255,
-    "the name window fills from the window palette, never the list palette"
-  )
-  Assert.isTrue(
-    callTextDraws({ nameText, classText }) > 0,
-    "the call information paints the caller name and speech"
-  )
+  Assert.isTrue(callTextDraws({ nameText, classText }) > 0, "the call information paints the caller name and speech")
   Assert.equal(#nameText._calls, 0, "no call line borrows the name font")
   local byLine = {}
   for _, line in ipairs(classText._calls) do
@@ -645,11 +659,7 @@ function T.choice_menu_uses_the_choice_plane_and_hides_the_sprite()
     "test-foreground-dim-choice",
     "the open choice composes the choice-dimmed lower plane"
   )
-  Assert.equal(
-    #fastForwardPaints(graphics, "test-sprite-dim-"),
-    0,
-    "the open choice hides the fast-forward sprite"
-  )
+  Assert.equal(#fastForwardPaints(graphics, "test-sprite-dim-"), 0, "the open choice hides the fast-forward sprite")
   Assert.equal(#fastForwardPaints(graphics, "test-sprite-"), 0, "the open choice draws no bright sprite either")
   local framePaints = 0
   for _, record in ipairs(graphics._records) do
@@ -697,10 +707,7 @@ function T.dimming_never_paints_a_fullscreen_mask()
   )
   for _, record in ipairs(graphics._records) do
     if record.op == "rect" and record.mode == "fill" then
-      Assert.isTrue(
-        not (record.width == 256 and record.height == 192),
-        "no lower fill covers the whole surface"
-      )
+      Assert.isTrue(not (record.width == 256 and record.height == 192), "no lower fill covers the whole surface")
     end
   end
   local upper = recordingGraphics()
@@ -711,20 +718,15 @@ function T.dimming_never_paints_a_fullscreen_mask()
     contentFixture()
   )
   for _, line in ipairs(classText._calls) do
-    Assert.equal(
-      line.palette.foreground.r,
-      100 + 1,
-      "the undimmed caller text keeps its window foreground"
-    )
+    Assert.equal(line.palette.foreground.r, 100 + 1, "the undimmed caller text keeps its window foreground")
     Assert.equal(line.palette.shadow.r, 100 + 2, "the undimmed caller text keeps its window shadow")
-    Assert.equal(line.palette.background.r, 100 + 0, "the undimmed caller text keeps its window background")
+    Assert.equal(line.palette.background.a, 0, "the undimmed caller text keeps a transparent background pen")
   end
 end
 
--- windows[3] behind the context tooltip (MAIN_1 tile (0,21), 32x2,
--- palette 10): the strip fills with palette index 5 behind the prompt
+-- The full-strip tooltip bar (y160..192, palette 10) behind the prompt
 -- centered in the 3/2/5 combination.
-local TOOLTIP_STRIP = { x = 0, y = 168, width = 256, height = 16 }
+local TOOLTIP_STRIP = { x = 0, y = 160, width = 256, height = 32 }
 
 function T.tooltip_paints_its_strip_behind_centered_text()
   local graphics = recordingGraphics()
@@ -741,7 +743,13 @@ function T.tooltip_paints_its_strip_behind_centered_text()
   PokegearPhoneRenderer.draw(
     { graphics = graphics, images = stubImages(), textRenderer = text },
     { list = list, tooltip = "tip" },
-    { skin = 0, sprites = { phone = spriteSequences("test-sprite-") }, foreground = "test-foreground", listPalette = distinctPalette(), tooltipPalette = distinctPalette() }
+    {
+      skin = 0,
+      sprites = { phone = spriteSequences("test-sprite-") },
+      foreground = "test-foreground",
+      listPalette = distinctPalette(),
+      tooltipPalette = distinctPalette(),
+    }
   )
   local strip = nil
   for _, fill in ipairs(graphics._records) do
@@ -839,6 +847,229 @@ function T.context_menu_frame_stays_in_tiles()
   Assert.notNil(entry, "the deselected entry fills inside the tile frame")
   assert(entry ~= nil, "the deselected entry filled above")
   Assert.equal(entry.color.r, 3 / 255, "the deselected entry fills with palette index 3")
+end
+
+-- The scrolled list viewport clips to the plane frame interior: the
+-- MAIN_2 plane covers the window's top 16px scroll offset and its left
+-- 5px behind the frame, so rows paint at screen y8 behind a
+-- x13/y5/211x152 clip instead of the bare window origin.
+function T.list_viewport_clips_to_the_plane_frame_interior()
+  local graphics = recordingGraphics()
+  drawLowerList(graphics, 0)
+  local clip = nil
+  for _, record in ipairs(graphics._records) do
+    if record.op == "scissor" and record.x == 13 and record.y == 5 and record.width == 211 and record.height == 152 then
+      clip = record
+    end
+  end
+  Assert.notNil(clip, "the list viewport clips to the frame interior x13/y5/211x152")
+end
+
+-- Manual-move chevrons track the selected row at the source sprite
+-- position: the 32px chevron centers on the row's source center, so
+-- with the scrolled rows the selected chevron paints through its
+-- compiled anchor from (12, 16) for the first slot.
+function T.manual_move_chevrons_track_their_source_positions()
+  local graphics = recordingGraphics()
+  local list = {
+    rows = settledRows(2),
+    selected = 0,
+    scrollOffset = 0,
+    firstBgColor = 0,
+    manual = true,
+    total = 2,
+    cursorVisible = false,
+  }
+  PokegearPhoneRenderer.draw(
+    { graphics = graphics, images = stubImages(), textRenderer = stubText() },
+    { list = list },
+    {
+      skin = 0,
+      sprites = { phone = spriteSequences("test-sprite-") },
+      foreground = "test-foreground",
+      listPalette = distinctPalette(),
+    }
+  )
+  local paint = nil
+  for _, record in ipairs(graphics._records) do
+    if record.op == "image" and record.path == "test-sprite-8-1.png" then
+      paint = record
+    end
+  end
+  Assert.notNil(paint, "the selected row paints its selected chevron")
+  assert(paint ~= nil, "the chevron painted above")
+  Assert.equal(paint.x, 12 - 8, "the chevron centers on the source x through its anchor")
+  Assert.equal(paint.y, 16 - 8, "the chevron centers on the scrolled row through its anchor")
+end
+
+---@param role string the font role the renderer must route through
+---@param charWidth number measured width per character cell
+---@return table stub text renderer measuring advance per character
+local function measuringText(role, charWidth)
+  local calls = {}
+  return {
+    role = role,
+    textWidth = function(_, line)
+      return #tostring(line) * charWidth
+    end,
+    drawTextWithPalette = function(self, line, x, y, palette)
+      calls[#calls + 1] = { role = self.role, plain = false, line = line, x = x, y = y, palette = palette }
+    end,
+    _calls = calls,
+  }
+end
+
+-- Source line breaks become window rows: the speech page prints each
+-- source line on its own 16px row from the speech origin instead of
+-- concatenating them into one clipped line.
+function T.call_speech_breaks_source_lines_into_window_rows()
+  local graphics = recordingGraphics()
+  local classText = recordingText("class")
+  local call = liveCall()
+  call.lines = { { text = "first\nsecond" } }
+  call.page = 1
+  PokegearPhoneRenderer.drawInformation(
+    { graphics = graphics, images = stubImages(), textRenderer = classText },
+    browseView({ call = call }),
+    contentFixture()
+  )
+  local rows = {}
+  for _, line in ipairs(classText._calls) do
+    if line.line == "first" or line.line == "second" then
+      rows[#rows + 1] = line
+    end
+  end
+  Assert.equal(#rows, 2, "both source lines print")
+  Assert.equal(rows[1].x, SPEECH_WINDOW.x, "the first row prints at the speech x origin")
+  Assert.equal(rows[1].y, SPEECH_WINDOW.y, "the first row prints at the speech y origin")
+  Assert.equal(rows[2].x, SPEECH_WINDOW.x, "the second row prints at the speech x origin")
+  Assert.equal(rows[2].y, SPEECH_WINDOW.y + 16, "the second row prints one text row below")
+end
+
+-- Long speech rows wrap inside the 216px speech window instead of
+-- running past its edge: the wrapped rows rejoin to the source row.
+function T.call_speech_wraps_long_rows_inside_its_window()
+  local graphics = recordingGraphics()
+  local classText = measuringText("class", 10)
+  local call = liveCall()
+  call.lines = { { text = "aaa bbb ccc ddd eee fff ggg" } }
+  call.page = 1
+  PokegearPhoneRenderer.drawInformation(
+    { graphics = graphics, images = stubImages(), textRenderer = classText },
+    browseView({ call = call }),
+    contentFixture()
+  )
+  local speech = {}
+  for _, line in ipairs(classText._calls) do
+    if line.y >= SPEECH_WINDOW.y then
+      speech[#speech + 1] = line
+    end
+  end
+  Assert.isTrue(#speech >= 2, "an overlong row wraps instead of clipping")
+  local joined = {}
+  for _, line in ipairs(speech) do
+    Assert.isTrue(line.x >= SPEECH_WINDOW.x, "wrapped rows stay inside the speech window")
+    Assert.isTrue(line.x < SPEECH_WINDOW.x + SPEECH_WINDOW.width, "wrapped rows start inside the speech window")
+    Assert.isTrue(#line.line * 10 <= SPEECH_WINDOW.width, "no wrapped row overruns the speech width")
+    joined[#joined + 1] = line.line
+  end
+  Assert.equal(table.concat(joined, " "), "aaa bbb ccc ddd eee fff ggg", "the wrapped rows rejoin to the source row")
+end
+
+-- Call text types behind the reveal count: only the revealed glyph
+-- prefix of the page prints, with source breaks intact, while a page
+-- past its total prints whole.
+function T.call_speech_types_behind_the_reveal_count()
+  local graphics = recordingGraphics()
+  local classText = recordingText("class")
+  local tokens = {}
+  for index = 1, 5 do
+    tokens[#tokens + 1] = { kind = "glyph", code = index, text = ("hello"):sub(index, index), raw = { index } }
+  end
+  local call = liveCall()
+  call.lines = { { text = "hello", tokens = tokens } }
+  call.page = 1
+  call.revealed = 2
+  call.total = 5
+  PokegearPhoneRenderer.drawInformation(
+    { graphics = graphics, images = stubImages(), textRenderer = classText },
+    browseView({ call = call }),
+    contentFixture()
+  )
+  local speech = {}
+  for _, line in ipairs(classText._calls) do
+    if line.y >= SPEECH_WINDOW.y then
+      speech[#speech + 1] = line
+    end
+  end
+  Assert.equal(#speech, 1, "the typing page prints one speech row")
+  Assert.equal(speech[1].line, "he", "only the revealed glyph prefix prints")
+  call.revealed = 5
+  local doneText = recordingText("class")
+  PokegearPhoneRenderer.drawInformation(
+    { graphics = graphics, images = stubImages(), textRenderer = doneText },
+    browseView({ call = call }),
+    contentFixture()
+  )
+  local doneSpeech = {}
+  for _, line in ipairs(doneText._calls) do
+    if line.y >= SPEECH_WINDOW.y then
+      doneSpeech[#doneSpeech + 1] = line
+    end
+  end
+  Assert.equal(#doneSpeech, 1, "a completed page prints one speech row")
+  Assert.equal(doneSpeech[1].line, "hello", "a completed page prints whole")
+end
+
+-- The selected-row corners answer card focus, never the list alone:
+-- while the shell strip owns focus the strip paints its own corners
+-- at the focused cell, so the waiting list hides its frame instead of
+-- doubling the indicator. Direct draws without a shell keep the
+-- card-owned frame.
+function T.list_corners_answer_card_focus_not_the_list_alone()
+  local function cornerPaints(shell)
+    local graphics = recordingGraphics()
+    local list = {
+      rows = settledRows(2),
+      selected = 0,
+      scrollOffset = 0,
+      firstBgColor = 0,
+      manual = false,
+      total = 2,
+      cursorVisible = true,
+    }
+    PokegearPhoneRenderer.draw(
+      { graphics = graphics, images = stubImages(), textRenderer = stubText() },
+      { list = list },
+      {
+        skin = 0,
+        sprites = { phone = spriteSequences("test-sprite-") },
+        foreground = "test-foreground",
+        listPalette = distinctPalette(),
+      },
+      shell
+    )
+    for _, record in ipairs(graphics._records) do
+      if
+        record.op == "image"
+        and (
+          record.path == "test-sprite-3-1.png"
+          or record.path == "test-sprite-4-1.png"
+          or record.path == "test-sprite-5-1.png"
+          or record.path == "test-sprite-6-1.png"
+        )
+      then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(cornerPaints(nil), "the shell-less list keeps its card-owned frame")
+  Assert.isTrue(cornerPaints({ entered = true }), "the entered card frames its selected row")
+  Assert.isFalse(
+    cornerPaints({ entered = false }),
+    "the strip-owned list hides its frame so only the strip corners show"
+  )
 end
 
 return { tests = T }

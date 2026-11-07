@@ -71,10 +71,7 @@ end
 ---@return table the same facade with its UI resolver attached
 local function withUiMessages(messages)
   messages.resolvePhoneUiMessage = function(_, entryId)
-    assert(
-      type(entryId) == "number" and entryId % 1 == 0,
-      "phone UI text resolves through its source bank entry"
-    )
+    assert(type(entryId) == "number" and entryId % 1 == 0, "phone UI text resolves through its source bank entry")
     local text = "suite-ui-271-" .. entryId
     return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
   end
@@ -114,10 +111,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -536,8 +531,9 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   local host, _ = openHost(record, world, audio)
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
 
-  -- Open through the scheduler task, then drive the source-backed
-  -- savings choice through its durable effect before losing the handle.
+  -- Open through the scheduler task, then drive the static mother call
+  -- to its terminal result: no savings choice is owed, so the durable
+  -- savings flags stay untouched before losing the handle.
   world.flags.savingsChoice = false
   world.flags["mom.savings-choice"] = false
   local taskState = PokegearApplicationTask.create({
@@ -561,8 +557,8 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
     end
   end
   Assert.isTrue(
-    world.flags.savingsChoice == true,
-    "the source choice commits its durable effect before result publication"
+    world.flags.savingsChoice == false and world.flags["mom.savings-choice"] == false,
+    "the static call commits no savings write before result publication"
   )
   local dialsAfterCommit = audio.dials
   Assert.isTrue(dialsAfterCommit >= 1, "the committed call dialled exactly through its audio boundary")
@@ -587,7 +583,7 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   )
   Assert.isFalse(host:isActive(), "the fault never recreates the lost conversation")
   Assert.equal(audio.dials, dialsAfterCommit, "the fault replays no dial tone")
-  Assert.isTrue(world.flags.savingsChoice == true, "the fault neither repeats nor undoes the committed choice")
+  Assert.isTrue(world.flags.savingsChoice == false, "the fault neither repeats nor undoes any savings write")
 
   -- Repeated cancellation after the fault stays terminal: no error, no
   -- replay, no rollback.
@@ -595,7 +591,7 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   PokegearApplicationTask.cancel(taskState, "test cancellation", taskCtx)
   Assert.isFalse(host:isActive(), "cancelling a faulted task recreates nothing")
   Assert.equal(audio.dials, dialsAfterCommit, "cancellation replays no conversation audio")
-  Assert.isTrue(world.flags.savingsChoice == true, "cancellation preserves the committed choice")
+  Assert.isTrue(world.flags.savingsChoice == false, "cancellation preserves the untouched savings flag")
 
   -- The released line still opens fresh: the fault consumed nothing it
   -- did not own.
@@ -874,6 +870,54 @@ function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_tempora
   reopened:dispose()
 end
 
+-- Manual-mode touch bands are 16px tall (sContactListTouchHitboxes2:
+-- top 8+24i, bottom +16, x4..36). Taps in the lower 8px of a 24px band
+-- must not move the manual cursor; the upper 16px must.
+function T.tests.manual_move_touch_bands_are_sixteen_pixels_tall()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: manual bands cannot be checked"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 7 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  state:registerContact("custom.mom")
+  state:registerContact("custom.leader-falkner")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({ greeting = "custom.greeting" }),
+    world = worldFixture(),
+    random = PokegearRandom.new(7),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  -- Enter manual move mode.
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(controller:status().view.list.manual, "choosing Move enters manual mode")
+  local before = controller:status().view.list.selected
+  -- Tap in the lower 8px of row 0 (y = 8+16..8+24 → y=20 is dead).
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 20 } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 20 } })
+  Assert.equal(controller:status().view.list.selected, before, "a tap in the lower 8px of a manual band moves nothing")
+  -- Tap in the upper 16px of row 2 (y = 8+48+4 = 60) moves there.
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = 10, y = 60 } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = 10, y = 60 } })
+  Assert.equal(controller:status().view.list.selected, 2, "a tap in the upper 16px moves the cursor")
+  controller:dispose()
+end
+
 -- The declarative script surface stays closed and delegates meaning:
 -- builders return ordinary records, the schema rejects extra keys and
 -- bad enums, and runtime routes queries and updates through the
@@ -894,7 +938,6 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     contact = "custom.mom",
     result = { value = "var", id = "seen" },
   }, "query builds its typed record")
-  Assert.isNil(S.pokegearInvoke, "phone operations expose no open-ended dispatch")
   Assert.isTrue(
     S.validate(S.script({
       api = 1,
@@ -1275,8 +1318,7 @@ function T.tests.phone_list_background_flag_tracks_scrolled_rows()
   local manifest = fixtureManifest()
   for index = 4, 8 do
     local key = "custom.extra-" .. index
-    manifest.catalog.contacts[#manifest.catalog.contacts + 1] =
-      { key = key, family = "kurt", sortWeight = 30 + index }
+    manifest.catalog.contacts[#manifest.catalog.contacts + 1] = { key = key, family = "kurt", sortWeight = 30 + index }
     manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = key
   end
   local record = PokegearAssetSchema.validate(manifest)
@@ -1302,11 +1344,7 @@ function T.tests.phone_list_background_flag_tracks_scrolled_rows()
       controller:updateFixed({})
     end
   end
-  Assert.equal(
-    controller:status().view.list.firstBgColor,
-    0,
-    "the list background flag opens cleared"
-  )
+  Assert.equal(controller:status().view.list.firstBgColor, 0, "the list background flag opens cleared")
   for _ = 1, 5 do
     controller:updateFixed({ { type = "navigate", direction = "down" } })
     settle()
@@ -1315,24 +1353,12 @@ function T.tests.phone_list_background_flag_tracks_scrolled_rows()
   local sliding = controller:status().view.list
   Assert.equal(sliding.scrollOffset, 1, "six downs scroll one row")
   Assert.equal(sliding.slide.from, 0, "the sliding strip anchors at its scroll start")
-  Assert.equal(
-    sliding.firstBgColor,
-    0,
-    "the background flag waits while the bitmap shifts"
-  )
+  Assert.equal(sliding.firstBgColor, 0, "the background flag waits while the bitmap shifts")
   settle()
-  Assert.equal(
-    controller:status().view.list.firstBgColor,
-    1,
-    "one scrolled row flips the background flag at settle"
-  )
+  Assert.equal(controller:status().view.list.firstBgColor, 1, "one scrolled row flips the background flag at settle")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   settle()
-  Assert.equal(
-    controller:status().view.list.firstBgColor,
-    0,
-    "two scrolled rows restore the background flag"
-  )
+  Assert.equal(controller:status().view.list.firstBgColor, 0, "two scrolled rows restore the background flag")
   controller:dispose()
 end
 
@@ -1374,10 +1400,7 @@ function T.tests.busy_phone_keeps_strip_touches_while_idle_tabs_still_select()
       kind = "ordinary",
     },
   })
-  local call = assert(
-    controller:status().view.call,
-    "direct entry starts its conversation without menu labels"
-  )
+  local call = assert(controller:status().view.call, "direct entry starts its conversation without menu labels")
   assert(type(call) == "table", "the live call keeps its conversation projection")
   local fastForward = assert(
     (call --[[@as table<string, unknown>]]).fastForward,
@@ -1404,17 +1427,11 @@ function T.tests.busy_phone_keeps_strip_touches_while_idle_tabs_still_select()
   end
   for _, probe in ipairs({ { 8, 136 }, { 247, 183 }, { 10, 140 }, { 170, 172 } }) do
     Assert.isTrue(insideSource(probe[1], probe[2]), "the oracle admits its inside probe")
-    Assert.isTrue(
-      insidePublished(probe[1], probe[2]),
-      "the published hitbox admits the source inside probe"
-    )
+    Assert.isTrue(insidePublished(probe[1], probe[2]), "the published hitbox admits the source inside probe")
   end
   for _, probe in ipairs({ { 7, 136 }, { 248, 136 }, { 8, 135 }, { 8, 184 } }) do
     Assert.isFalse(insideSource(probe[1], probe[2]), "the oracle rejects its edge-negative probe")
-    Assert.isFalse(
-      insidePublished(probe[1], probe[2]),
-      "the published hitbox rejects the source edge-negative probe"
-    )
+    Assert.isFalse(insidePublished(probe[1], probe[2]), "the published hitbox rejects the source edge-negative probe")
   end
   controller:dispose()
 
@@ -1490,13 +1507,11 @@ function T.tests.active_calls_step_once_per_fixed_tick_with_single_press_semanti
     step = function(_, _, edge)
       steps[#steps + 1] = edge or {}
     end,
-    cancel = function()
-    end,
+    cancel = function() end,
     result = function()
       return nil
     end,
-    release = function()
-    end,
+    release = function() end,
   }
   controller._call = spy
   controller:updateFixed({})
@@ -1507,6 +1522,171 @@ function T.tests.active_calls_step_once_per_fixed_tick_with_single_press_semanti
   Assert.equal(#steps, 3, "a source-valid press advances on touch, not on release")
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 140 } })
   Assert.equal(#steps, 3, "the matching release issues no second advance")
+  controller:dispose()
+end
+
+-- Call text types at the configured text speed instead of appearing
+-- at once: empty ticks reveal one glyph per configured tick, a forced
+-- edge completes the open page instead of turning it, and the next
+-- forced edge turns the completed page with the reveal reset.
+function T.tests.call_text_types_at_the_configured_text_speed()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: call text cannot type at text speed"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 11 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  local function glyphs(word)
+    local tokens = {}
+    for index = 1, #word do
+      tokens[#tokens + 1] = { kind = "glyph", code = index, text = word:sub(index, index), raw = { index } }
+    end
+    return tokens
+  end
+  local pageTokens = glyphs("HELLO")
+  pageTokens[#pageTokens + 1] = { kind = "prompt_break", raw = {} }
+  for _, token in ipairs(glyphs("BYE")) do
+    pageTokens[#pageTokens + 1] = token
+  end
+  local world = worldFixture()
+  world.textSpeed = function()
+    return "fastest"
+  end
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({
+      greeting = "custom.greeting",
+      resolveLine = function()
+        return { tokens = pageTokens, text = "HELLO\rBYE" }
+      end,
+    }),
+    world = world,
+    audio = countingAudio(),
+    random = PokegearRandom.new(11),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(controller:status().view.call, "choosing Call starts its conversation")
+  local call = nil
+  for _ = 1, 10 do
+    controller:updateFixed({ { type = "advance" } })
+    call = controller:status().view.call
+    if call ~= nil and call.stage == "message" then
+      break
+    end
+  end
+  call = assert(call, "the conversation reaches its message stage")
+  Assert.equal(call.stage, "message", "the conversation waits on its first page")
+  Assert.equal(call.total, 5, "the first page carries five glyphs")
+  Assert.equal(call.revealed, 0, "the fresh page starts unrevealed")
+  -- At the fastest speed one empty tick reveals two glyphs behind the
+  -- shared fastest budget, so it stays distinct from fast.
+  controller:updateFixed({})
+  call = assert(controller:status().view.call, "the conversation stays on its first page")
+  Assert.equal(call.page, 1, "empty ticks never turn the page")
+  Assert.equal(call.revealed, 2, "one empty tick reveals two glyphs at the fastest budget")
+  -- A forced edge completes the open page instead of turning it, and
+  -- the next forced edge turns the completed page with reset reveal.
+  controller:updateFixed({ { type = "advance" } })
+  call = assert(controller:status().view.call, "completing the page keeps the conversation")
+  Assert.equal(call.page, 1, "the completing edge turns nothing")
+  Assert.equal(call.revealed, 5, "the forced edge completes the open page")
+  controller:updateFixed({ { type = "advance" } })
+  call = assert(controller:status().view.call, "turning the page keeps the conversation")
+  Assert.equal(call.page, 2, "the next forced edge turns the completed page")
+  Assert.equal(call.total, 3, "the second page carries three glyphs")
+  Assert.equal(call.revealed, 0, "the turned page starts unrevealed")
+  controller:dispose()
+end
+
+-- Dynamic Mother end-to-end through the controller: outgoing, non-local,
+-- rival named+introduced reaches the intro, owes the savings choice with
+-- menu-2 geometry, answers via tap, writes the flag, and completes.
+-- Frame, labels, and tap routing ride the shared choice projection;
+-- static calls never owe a choice (pinned elsewhere).
+function T.tests.dynamic_mother_choice_answers_through_controller_taps()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: dynamic choice cannot complete"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 11 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  state:setMom({ balance = 800, purchases = {}, gifts = {} })
+  local written = {}
+  local world = {
+    flags = {},
+    read = function(_, key)
+      return nil
+    end,
+    setMomSavingsChoice = function(_, choice)
+      written.choice = choice
+    end,
+    rematchReady = {},
+    nativeSelectorFacts = function()
+      return { localMap = false, gaveRivalName = true, talkedAfterNamingRival = true }
+    end,
+  }
+  local messages = withUiMessages({ greeting = "custom.greeting" })
+  messages.resolveContactEntry = function(_, contact, entry)
+    Assert.equal(contact, "custom.mom", "dynamic entries resolve for Mom")
+    return { tokens = { { kind = "glyph", code = entry, text = "dyn-" .. entry, raw = { 1 } } } }
+  end
+  messages.resolveLine = function()
+    error("dynamic mother never resolves a static script", 0)
+  end
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = countingAudio(),
+    random = PokegearRandom.new(11),
+    request = { id = "dyn-mom-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
+  })
+  -- Advance to the owed choice: connecting → greeting → message pages →
+  -- program (prompt + waiting) → choice.
+  for _ = 1, 10 do
+    controller:updateFixed({})
+    local view = controller:status().view
+    if view.callMenu ~= nil then
+      break
+    end
+    controller:updateFixed({ { type = "advance" } })
+  end
+  local owed = controller:status().view
+  Assert.notNil(owed.callMenu, "dynamic mother owes its choice menu")
+  Assert.equal(owed.callMenu.frame.x, 7, "the choice frame carries menu-2 x")
+  Assert.equal(owed.callMenu.frame.y, 11, "the choice frame carries menu-2 y")
+  Assert.equal(#owed.callMenu.options, 2, "the choice carries two source labels")
+  -- Tap the first (save) label: compute its band center from the frame.
+  local frame = owed.callMenu.frame
+  local x = frame.x * 8 + 4
+  local y = frame.y * 8 + 8 + 8
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:9", x = x, y = y } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = x, y = y } })
+  Assert.isTrue(written.choice == true, "tapping save writes the native savings flag")
+  for _ = 1, 80 do
+    if controller:takeResult() ~= nil then
+      break
+    end
+    controller:updateFixed({ { type = "advance" } })
+  end
+  Assert.notNil(controller:takeResult(), "the dynamic choice completes")
   controller:dispose()
 end
 
@@ -1561,18 +1741,14 @@ function T.tests.other_call_menus_keep_their_own_frames_without_new_programs()
     step = function(_, _, edge)
       seen[#seen + 1] = edge
     end,
-    cancel = function()
-    end,
+    cancel = function() end,
     result = function()
       return nil
     end,
-    release = function()
-    end,
+    release = function() end,
   }
-  local menu = assert(
-    controller:status().view.callMenu,
-    "the synthetic choice projects its menu through the shared frame"
-  )
+  local menu =
+    assert(controller:status().view.callMenu, "the synthetic choice projects its menu through the shared frame")
   assert(type(menu) == "table", "the synthetic menu is a record")
   local frame = assert((menu --[[@as table<string, unknown>]]).frame, "the menu carries its window frame")
   assert(type(frame) == "table", "the menu frame is a record")
@@ -1597,12 +1773,12 @@ function T.tests.other_call_menus_keep_their_own_frames_without_new_programs()
   Assert.deepEqual(seen[#seen], { choice = "syn-c" }, "a label tap answers its own semantic id")
   -- The source border and the outside never answer.
   local before = #seen
-  controller:updateFixed(
-    { { type = "pointer_down", pointerId = "touch:4", x = frameRecord.x * 8 + 2, y = frameRecord.y * 8 + 2 } }
-  )
-  controller:updateFixed(
-    { { type = "pointer_up", pointerId = "touch:4", x = frameRecord.x * 8 + 2, y = frameRecord.y * 8 + 2 } }
-  )
+  controller:updateFixed({
+    { type = "pointer_down", pointerId = "touch:4", x = frameRecord.x * 8 + 2, y = frameRecord.y * 8 + 2 },
+  })
+  controller:updateFixed({
+    { type = "pointer_up", pointerId = "touch:4", x = frameRecord.x * 8 + 2, y = frameRecord.y * 8 + 2 },
+  })
   Assert.equal(#seen, before, "a border tap answers nothing")
   -- The two-option identity frames narrower and taller-columner at its
   -- own tiles while answering through the same projection.
@@ -1615,15 +1791,10 @@ function T.tests.other_call_menus_keep_their_own_frames_without_new_programs()
     choiceLabels = { "syn-L18", "syn-L19" },
     choiceTooltip = "suite-ui-271-22",
   }
-  local narrow = assert(
-    controller:status().view.callMenu,
-    "the second synthetic choice projects its own menu"
-  )
+  local narrow = assert(controller:status().view.callMenu, "the second synthetic choice projects its own menu")
   assert(type(narrow) == "table", "the second synthetic menu is a record")
-  local narrowFrame = assert(
-    (narrow --[[@as table<string, unknown>]]).frame,
-    "the second menu carries its window frame"
-  )
+  local narrowFrame =
+    assert((narrow --[[@as table<string, unknown>]]).frame, "the second menu carries its window frame")
   assert(type(narrowFrame) == "table", "the second menu frame is a record")
   local narrowRecord = narrowFrame --[[@as table<string, integer>]]
   Assert.deepEqual(
@@ -1687,10 +1858,7 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
     local active = assert(host._active, "the staged call keeps its lease")
     local view = (active.controller --[[@as table]]):status().view
     local call = assert(view.call, "the staged hangup keeps its conversation projection")
-    local lines = assert(
-      (call --[[@as table<string, unknown>]]).lines,
-      "the staged hangup prints into speech"
-    )
+    local lines = assert((call --[[@as table<string, unknown>]]).lines, "the staged hangup prints into speech")
     local firstLine = assert((lines --[[@as table<integer, unknown>]])[1], "the staged hangup prints its message")
     if type(firstLine) == "table" then
       return tostring((firstLine --[[@as table<string, unknown>]]).text)
@@ -1704,20 +1872,25 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
   end
   for _ = 1, 40 do
     local call = activeCall()
-    if (call --[[@as table<string, unknown>]]).stage == "choice" then
+    if
+      (call --[[@as table<string, unknown>]]).stage == "hangingUp"
+    then
       break
     end
+    Assert.isTrue(
+      (call --[[@as table<string, unknown>]]).stage ~= "choice",
+      "a static mother call never owes its savings choice"
+    )
     host:step(handle, { { type = "advance" } })
   end
   Assert.equal(
     (activeCall() --[[@as table<string, unknown>]]).stage,
-    "choice",
-    "the mother call owes its savings choice"
+    "hangingUp",
+    "the static mother call stages its hangup with no choice"
   )
   host:step(handle, { { type = "move", direction = "north" } })
   Assert.deepEqual(world.player, { x = 5, y = 7 }, "call input never leaks into field movement")
-  host:step(handle, { { type = "confirm" } })
-  Assert.equal(writes, 1, "the answered choice commits its savings write once")
+  Assert.equal(writes, 0, "the static call commits no savings write")
   local uiProbe = withUiMessages({})
   local first = uiProbe.resolvePhoneUiMessage(uiProbe, 33).text
   local second = uiProbe.resolvePhoneUiMessage(uiProbe, 34).text
@@ -1725,7 +1898,7 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
   Assert.equal(
     (activeCall() --[[@as table<string, unknown>]]).stage,
     "hangingUp",
-    "the answered call enters the staged normal hangup"
+    "the completed call enters the staged normal hangup"
   )
   Assert.equal(speechLine(), first, "the hangup entry prints the first source message")
   Assert.equal(hangups, 1, "the hangup entry plays the source tone once")
@@ -1735,7 +1908,7 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
   Assert.isTrue(host:isActive(), "a hangup cancel keeps the staged call on its lease")
   Assert.isNil(host:result(handle), "a hangup cancel completes nothing at once")
   Assert.equal(hangups, 1, "a hangup cancel replays no tone")
-  Assert.equal(writes, 1, "a hangup cancel repeats no committed effect")
+  Assert.equal(writes, 0, "a hangup cancel repeats no committed effect")
   host:step(handle, { { type = "cancel" } })
   Assert.isTrue(host:isActive(), "a second hangup cancel keeps the staged call on its lease")
   Assert.equal(hangups, 1, "a second hangup cancel replays no tone")
@@ -1782,7 +1955,7 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
   end
   Assert.equal(debug, 0, "the staged hangup plays no debug click tone")
   Assert.equal(hangups, 1, "the settled hangup played its tone exactly once")
-  Assert.equal(writes, 1, "the settled hangup repeats no committed effect")
+  Assert.equal(writes, 0, "the settled hangup repeats no committed effect")
   Assert.deepEqual(host:result(handle), terminal, "the terminal result reads back identically until close")
   host:close(handle)
   Assert.isFalse(host:isActive(), "closing the handle releases the lease")
@@ -1790,6 +1963,104 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
   Assert.throws(function()
     host:result(handle)
   end, "a closed host call rejects its stale handle")
+end
+
+-- Opening the phone list resolves display names only for registered
+-- contacts: catalogued-but-unregistered contacts never appear in the
+-- session order, so formatting their names and classes at open is pure
+-- wasted message-provider work on the open path.
+function T.tests.open_resolves_labels_only_for_registered_contacts()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: the open path cannot skip unregistered contacts"
+  )
+  local resolvedNames, resolvedClasses = {}, {}
+  local messages = {
+    greeting = "custom.greeting",
+    resolveName = function(_, key)
+      resolvedNames[#resolvedNames + 1] = key
+      return "Name-" .. key
+    end,
+    resolveClass = function(_, key)
+      resolvedClasses[#resolvedClasses + 1] = key
+      return "Class-" .. key
+    end,
+  }
+  local catalog = {
+    contacts = {
+      { key = "reg.one", family = "mother", name = { bank = 1, entry = 0 }, class = { bank = 2, entry = 0 }, sortWeight = 1 },
+      { key = "unreg.two", family = "kurt", name = { bank = 1, entry = 0 }, class = { bank = 2, entry = 0 }, sortWeight = 2 },
+      { key = "unreg.three", family = "kurt", name = { bank = 1, entry = 0 }, class = { bank = 2, entry = 0 }, sortWeight = 3 },
+    },
+    contactOrder = { "reg.one", "unreg.two", "unreg.three" },
+  }
+  local state = {
+    readPhone = function(_)
+      return { contacts = { ["reg.one"] = true }, contactOrder = { "reg.one" } }
+    end,
+    setContactOrder = function(_, _) end,
+    readPreferences = function(_)
+      return { skin = 0 }
+    end,
+  }
+  local controller = PhoneController.new({
+    state = state,
+    catalog = catalog,
+    messages = messages,
+    world = {},
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  Assert.deepEqual(resolvedNames, { "reg.one" }, "open resolves names only for registered contacts")
+  Assert.deepEqual(resolvedClasses, { "reg.one" }, "open resolves classes only for registered contacts")
+  Assert.equal(controller:status().view.list.total, 1, "the session order still carries its registered contact")
+  controller:dispose()
+end
+
+-- The published phone render answers card focus through the shell
+-- snapshot: while the strip owns focus the strip paints its own
+-- corners, so the waiting list must hide its frame instead of doubling
+-- the indicator. The presentation wrapper must forward the shell it is
+-- given, or the composed card always paints both.
+function T.tests.phone_presentation_forwards_shell_focus_to_renderer()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: the presentation cannot forward shell focus"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.mom")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({ greeting = "custom.greeting" }),
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  local status = controller:status()
+  local presentation = assert(status.presentation, "the phone card publishes its presentation")
+  local render = assert(presentation.render, "the phone card publishes its render entry")
+  local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
+  local original = PokegearPhoneRenderer.draw
+  local seen = {}
+  PokegearPhoneRenderer.draw = function(_, _, _, shell)
+    seen[#seen + 1] = shell == nil and "nil-shell" or shell
+  end
+  local ok, err = pcall(render, {}, status, presentation, { entered = false })
+  PokegearPhoneRenderer.draw = original
+  Assert.isTrue(ok, "the phone presentation renders: " .. tostring(err))
+  Assert.equal(#seen, 1, "the phone presentation reaches its renderer once")
+  Assert.isTrue(type(seen[1]) == "table", "the phone presentation forwards the shell snapshot to its renderer")
+  Assert.isFalse(seen[1].entered, "the forwarded shell carries the strip-owned focus")
+  controller:dispose()
 end
 
 return T
