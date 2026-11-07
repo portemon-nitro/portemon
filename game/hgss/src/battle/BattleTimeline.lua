@@ -4277,284 +4277,341 @@ end
 
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> active cue under advancement
----@param soundComplete (fun(cue: table<string, unknown>): boolean)? held sound cue completion probe
----@param printerCallback (fun(messageId: integer, callback: integer, controlIndex: integer): boolean)? source callback dispatcher
 ---@return boolean finished
-local function tickCue(self, cue, soundComplete, printerCallback)
-  if cue.kind == "native-effect" then
-    -- Only the player occurrence's real completion releases the cue;
-    -- every other phase holds without consuming invented timers.
-    return pollNativeEffect(self, cue)
-  elseif cue.kind == "message" then
-    local slideDone = tickHealthBoxExit(self, cue)
-    local previousHold = cue.hold
-    local messageDone = tickMessage(self, cue, printerCallback)
-    if not slideDone then
-      cue.hold = previousHold
+local function tickNativeEffectCue(self, cue)
+  -- Only the player occurrence's real completion releases the cue;
+  -- every other phase holds without consuming invented timers.
+  return pollNativeEffect(self, cue)
+end
+
+local function tickMessageCue(self, cue, deps)
+  local slideDone = tickHealthBoxExit(self, cue)
+  local previousHold = cue.hold
+  local messageDone = tickMessage(self, cue, deps.printerCallback)
+  if not slideDone then
+    cue.hold = previousHold
+  end
+  return slideDone and messageDone
+end
+
+local function tickSoundCue(_, cue, deps)
+  local sound = cue.cue --[[@as table<string, unknown>?]]
+  if type(sound) == "table" and sound.waitForVoice == true and deps.soundComplete ~= nil then
+    return deps.soundComplete(sound) == true
+  end
+  return true
+end
+
+local function tickImmediateCue()
+  return true
+end
+
+local function tickStatsWindowCue(_, cue)
+  return cue.acknowledged == true
+end
+
+local function tickTrainerIntroWaitCue(self)
+  for _, track in ipairs(self._trainerSlideTracks) do
+    if track.encounterComplete ~= true then
+      return false
     end
-    return slideDone and messageDone
-  elseif cue.kind == "sound" then
-    local sound = cue.cue --[[@as table<string, unknown>?]]
-    if type(sound) == "table" and sound.waitForVoice == true and soundComplete ~= nil then
-      return soundComplete(sound) == true
-    end
-    return true
-  elseif cue.kind == "ball-particles" then
-    return true
-  elseif cue.kind == "stats-window" then
-    return cue.acknowledged == true
-  elseif cue.kind == "opening-presentation" then
-    return true
-  elseif cue.kind == "trainer-intro-wait" then
-    for _, track in ipairs(self._trainerSlideTracks) do
-      if track.encounterComplete ~= true then
-        return false
-      end
-    end
-    return true
-  elseif cue.kind == "trainer-exit" then
-    local found = false
-    local finished = true
-    for index, slide in ipairs(self._openingPresentation and self._openingPresentation.trainerSlides or {}) do
-      local track = assert(self._trainerSlideTracks[index], "trainer exits retain their source slide tracks")
-      if slide.role == cue.role and track.participant == cue.participant then
-        found = true
-        finished = finished and slide.visible ~= true
-        local x = assert(type(slide.x) == "number" and slide.x, "foe trainer exits carry their native x")
-        if x >= 160 then
-          local ball = self._openingPresentation.ballThrow
-          if ball == nil or ball.trainerParticipant ~= cue.participant then
-            ball = {
-              selector = cue.selector,
-              x = cue.ballX,
-              y = cue.ballY,
-              frame = 0,
-              rotation = 0,
-              trainerParticipant = cue.participant,
-              visible = true,
-            }
-            self._openingPresentation.ballThrow = ball
-            cue.ballElapsed = 0
-          else
-            cue.ballElapsed = (cue.ballElapsed or 0) + 1
-          end
-          if cue.ballElapsed >= 12 then
-            ball.visible = false
-          end
+  end
+  return true
+end
+
+local function tickTrainerExitCue(self, cue)
+  local found = false
+  local finished = true
+  for index, slide in ipairs(self._openingPresentation and self._openingPresentation.trainerSlides or {}) do
+    local track = assert(self._trainerSlideTracks[index], "trainer exits retain their source slide tracks")
+    if slide.role == cue.role and track.participant == cue.participant then
+      found = true
+      finished = finished and slide.visible ~= true
+      local x = assert(type(slide.x) == "number" and slide.x, "foe trainer exits carry their native x")
+      if x >= 160 then
+        local ball = self._openingPresentation.ballThrow
+        if ball == nil or ball.trainerParticipant ~= cue.participant then
+          ball = {
+            selector = cue.selector,
+            x = cue.ballX,
+            y = cue.ballY,
+            frame = 0,
+            rotation = 0,
+            trainerParticipant = cue.participant,
+            visible = true,
+          }
+          self._openingPresentation.ballThrow = ball
+          cue.ballElapsed = 0
+        else
+          cue.ballElapsed = (cue.ballElapsed or 0) + 1
+        end
+        if cue.ballElapsed >= 12 then
+          ball.visible = false
         end
       end
     end
-    assert(found, "trainer exit resolves to its source participant slide")
-    return finished
-  elseif cue.kind == "ball-throw" then
-    local ball =
-      assert(self._openingPresentation and self._openingPresentation.ballThrow, "active throws publish a ball sprite")
-    local offsets = ball.throwOffsets --[[@as table<integer, table<string, integer>>]]
-    local slide, track
-    for index, candidate in ipairs(self._openingPresentation.trainerSlides) do
-      if candidate.selector == ball.trainerSelector then
-        slide = candidate
-        track = self._trainerSlideTracks[index]
-        break
-      end
+  end
+  assert(found, "trainer exit resolves to its source participant slide")
+  return finished
+end
+
+local function tickBallThrowCue(self)
+  local ball =
+    assert(self._openingPresentation and self._openingPresentation.ballThrow, "active throws publish a ball sprite")
+  local offsets = ball.throwOffsets --[[@as table<integer, table<string, integer>>]]
+  local slide, track
+  for index, candidate in ipairs(self._openingPresentation.trainerSlides) do
+    if candidate.selector == ball.trainerSelector then
+      slide = candidate
+      track = self._trainerSlideTracks[index]
+      break
     end
-    assert(slide ~= nil and track ~= nil, "trainer throws retain their backpic slide")
-    if track.throwPending == true then
-      return false
-    end
-    if slide.visible ~= true then
+  end
+  assert(slide ~= nil and track ~= nil, "trainer throws retain their backpic slide")
+  if track.throwPending == true then
+    return false
+  end
+  if slide.visible ~= true then
+    ball.visible = false
+    return true
+  end
+  local pose = assert(track.frames[track.frame + 1], "trainer pose resolves its staged source frame")
+  local frame = pose.sourceFrame --[[@as integer]]
+  local offset = assert(
+    offsets[frame + 1],
+    "trainer source frame "
+      .. tostring(frame)
+      .. " at sequence position "
+      .. tostring(track.frame)
+      .. " resolves its throw anchor"
+  )
+  if offset.x ~= 32767 then
+    ball.x = slide.x + offset.x
+    ball.y = slide.y + offset.y
+    ball.visible = true
+  end
+  return false
+end
+
+local function tickBallFlightCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local duration = cue.duration --[[@as integer]]
+  local motionTicks = cue.motionTicks --[[@as integer]]
+  local lead = cue.leadTicks --[[@as integer]]
+  local n = math.min(motionTicks, math.max(0, elapsed - lead))
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball ~= nil then
+    ball.x, ball.y = ballArcPoint(cue, n)
+    -- Each update spins the ball 45 degrees; the frame after the last
+    -- update resets the rotation.
+    ball.rotation = elapsed <= lead + motionTicks and (n * 0x2000) % 0x10000 or 0
+    if elapsed >= duration and cue.hideAtEnd == true then
       ball.visible = false
-      return true
     end
-    local pose = assert(track.frames[track.frame + 1], "trainer pose resolves its staged source frame")
-    local frame = pose.sourceFrame --[[@as integer]]
-    local offset = assert(
-      offsets[frame + 1],
-      "trainer source frame "
-        .. tostring(frame)
-        .. " at sequence position "
-        .. tostring(track.frame)
-        .. " resolves its throw anchor"
-    )
-    if offset.x ~= 32767 then
-      ball.x = slide.x + offset.x
-      ball.y = slide.y + offset.y
-      ball.visible = true
-    end
-    return false
-  elseif cue.kind == "ball-flight" then
-    local elapsed = cue.elapsed --[[@as integer]]
-    local duration = cue.duration --[[@as integer]]
-    local motionTicks = cue.motionTicks --[[@as integer]]
-    local lead = cue.leadTicks --[[@as integer]]
-    local n = math.min(motionTicks, math.max(0, elapsed - lead))
-    local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
-    if ball ~= nil then
-      ball.x, ball.y = ballArcPoint(cue, n)
-      -- Each update spins the ball 45 degrees; the frame after the last
-      -- update resets the rotation.
-      ball.rotation = elapsed <= lead + motionTicks and (n * 0x2000) % 0x10000 or 0
-      if elapsed >= duration and cue.hideAtEnd == true then
-        ball.visible = false
-      end
-    end
-    return elapsed >= duration
-  elseif cue.kind == "wait" then
-    local elapsed = cue.elapsed --[[@as integer]]
-    local duration = cue.duration --[[@as integer]]
-    return elapsed >= duration
-  elseif cue.kind == "hp" then
-    local shown = self:_shown(cue.combatant --[[@as integer]])
-    local from = cue.from --[[@as integer]]
-    local to = cue.to --[[@as integer]]
-    local duration = cue.duration --[[@as integer]]
-    local progress = math.min(1, cue.elapsed --[[@as integer]] / math.max(1, duration))
-    local value = from + math.floor((to - from) * progress + 0.5)
-    if
-      cue.elapsed --[[@as integer]]
-      >= duration
-    then
-      value = to
-    end
-    if shown ~= nil then
-      shown.hp = value
-      if cue.flicker == true then
-        local toggles = cue.flickerToggles --[[@as integer]]
-        if
-          toggles < 6
-          and cue.elapsed --[[@as integer]]
-            == toggles * 3 + 1
-        then
-          shown.visible = not shown.visible
-          cue.flickerToggles = toggles + 1
-        elseif
-          cue.elapsed --[[@as integer]]
-          >= 17
-        then
-          shown.visible = true
-        end
-      end
-    end
-    return cue.elapsed --[[@as integer]] >= math.max(duration, cue.flicker == true and 17 or 0)
-  elseif cue.kind == "hit" then
-    return cue.elapsed --[[@as integer]] >= BattleTimeline.HIT_TICKS
-  elseif cue.kind == "faint" then
-    local shown = self:_shown(cue.combatant --[[@as integer]])
-    if shown == nil then
-      return true
-    end
-    if
-      cue.elevation --[[@as integer]]
-      > 0
-    then
-      cue.elevation = math.max(0, cue.elevation --[[@as integer]] - 8)
-      shown.shadowHeight = cue.elevation
-      if cue.elevation > 0 then
-        return false
-      end
-      shown.pictureVisible = true
-      cue.sinkElapsed = 0
-      return false
-    end
-    cue.sinkElapsed = (cue.sinkElapsed or 0) + 1
-    local initialPictureHeight = math.max(0, 80 - (type(cue.sourceHeight) == "number" and cue.sourceHeight or 0))
-    local pictureHeight = math.max(0, initialPictureHeight - cue.sinkElapsed * 8)
-    shown.pictureHeight = pictureHeight
-    shown.pictureYOffset = cue.sinkElapsed * 8
-    if pictureHeight == 0 then
-      shown.visible = false
-      shown.pictureVisible = false
-      return true
-    end
-    return false
-  elseif cue.kind == "hud-slide" then
-    -- BattleHpBar_StartSlide/Task_BattleHpBarSlide: 24 px per frame; the
-    -- player boxes travel 160 px to the right edge, the foe boxes 24 px left.
-    local sliding = self:_shown(cue.combatant --[[@as integer]])
-    if sliding == nil then
-      return true
-    end
-    local player = sliding.side == 1
-    local offset = (
-      sliding.hudOffsetX --[[@as integer?]]
-      or 0
-    )
-    if cue.direction == "in" then
-      offset = player and math.max(0, offset - 24) or math.min(0, offset + 24)
-      sliding.hudOffsetX = offset
-      return offset == 0
-    end
-    offset = player and math.min(160, offset + 24) or math.max(-24, offset - 24)
-    sliding.hudOffsetX = offset
-    if offset == (player and 160 or -24) then
-      sliding.hudVisible = false
-      return true
-    end
-    return false
-  elseif cue.kind == "withdraw" then
-    local shown = self:_shown(cue.combatant --[[@as integer]])
-    if shown ~= nil and cue.fadeColor ~= nil then
-      tickBallPoof(self, cue, shown, false)
-    end
-    if
-      cue.elapsed --[[@as integer]]
-      >= cue.duration --[[@as integer]]
-    then
-      if shown ~= nil then
-        shown.visible = false
-        if cue.keepHud == true then
-          shown.hudVisible = true
-        end
-      end
-      return true
-    end
-    return false
-  elseif cue.kind == "reveal" then
-    local shown = self:_shown(cue.combatant --[[@as integer]])
-    if shown ~= nil and cue.fadeColor ~= nil then
-      tickBallPoof(self, cue, shown, true)
-    end
-    if
-      cue.elapsed --[[@as integer]]
-      >= cue.duration --[[@as integer]]
-    then
-      if shown ~= nil then
+  end
+  return elapsed >= duration
+end
+
+local function tickWaitCue(_, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local duration = cue.duration --[[@as integer]]
+  return elapsed >= duration
+end
+
+local function tickHpCue(self, cue)
+  local shown = self:_shown(cue.combatant --[[@as integer]])
+  local from = cue.from --[[@as integer]]
+  local to = cue.to --[[@as integer]]
+  local duration = cue.duration --[[@as integer]]
+  local progress = math.min(1, cue.elapsed --[[@as integer]] / math.max(1, duration))
+  local value = from + math.floor((to - from) * progress + 0.5)
+  if
+    cue.elapsed --[[@as integer]]
+    >= duration
+  then
+    value = to
+  end
+  if shown ~= nil then
+    shown.hp = value
+    if cue.flicker == true then
+      local toggles = cue.flickerToggles --[[@as integer]]
+      if
+        toggles < 6
+        and cue.elapsed --[[@as integer]]
+          == toggles * 3 + 1
+      then
+        shown.visible = not shown.visible
+        cue.flickerToggles = toggles + 1
+      elseif
+        cue.elapsed --[[@as integer]]
+        >= 17
+      then
         shown.visible = true
       end
-      return true
     end
+  end
+  return cue.elapsed --[[@as integer]] >= math.max(duration, cue.flicker == true and 17 or 0)
+end
+
+local function tickHitCue(_, cue)
+  return cue.elapsed --[[@as integer]] >= BattleTimeline.HIT_TICKS
+end
+
+local function tickFaintCue(self, cue)
+  local shown = self:_shown(cue.combatant --[[@as integer]])
+  if shown == nil then
+    return true
+  end
+  if
+    cue.elevation --[[@as integer]]
+    > 0
+  then
+    cue.elevation = math.max(0, cue.elevation --[[@as integer]] - 8)
+    shown.shadowHeight = cue.elevation
+    if cue.elevation > 0 then
+      return false
+    end
+    shown.pictureVisible = true
+    cue.sinkElapsed = 0
     return false
-  elseif cue.kind == "exp" then
-    local shown = self:_shown(cue.combatant --[[@as integer]])
-    local duration = cue.duration --[[@as integer]]
-    local progress = math.min(1, cue.elapsed --[[@as integer]] / math.max(1, duration --[[@as integer]]))
-    local startExp = cue.startExp --[[@as integer]]
-    local targetExp = cue.targetExp --[[@as integer]]
-    local targetLevel = cue.targetLevel --[[@as integer]]
-    if type(startExp) ~= "number" or type(targetExp) ~= "number" then
-      return cue.elapsed --[[@as integer]] >= duration
-    end
-    local value = startExp + (targetExp - startExp) * progress
-    if progress >= 1 then
-      value = targetExp
-    end
+  end
+  cue.sinkElapsed = (cue.sinkElapsed or 0) + 1
+  local initialPictureHeight = math.max(0, 80 - (type(cue.sourceHeight) == "number" and cue.sourceHeight or 0))
+  local pictureHeight = math.max(0, initialPictureHeight - cue.sinkElapsed * 8)
+  shown.pictureHeight = pictureHeight
+  shown.pictureYOffset = cue.sinkElapsed * 8
+  if pictureHeight == 0 then
+    shown.visible = false
+    shown.pictureVisible = false
+    return true
+  end
+  return false
+end
+
+local function tickHudSlideCue(self, cue)
+  -- BattleHpBar_StartSlide/Task_BattleHpBarSlide: 24 px per frame; the
+  -- player boxes travel 160 px to the right edge, the foe boxes 24 px left.
+  local sliding = self:_shown(cue.combatant --[[@as integer]])
+  if sliding == nil then
+    return true
+  end
+  local player = sliding.side == 1
+  local offset = (
+    sliding.hudOffsetX --[[@as integer?]]
+    or 0
+  )
+  if cue.direction == "in" then
+    offset = player and math.max(0, offset - 24) or math.min(0, offset + 24)
+    sliding.hudOffsetX = offset
+    return offset == 0
+  end
+  offset = player and math.min(160, offset + 24) or math.max(-24, offset - 24)
+  sliding.hudOffsetX = offset
+  if offset == (player and 160 or -24) then
+    sliding.hudVisible = false
+    return true
+  end
+  return false
+end
+
+local function tickWithdrawCue(self, cue)
+  local shown = self:_shown(cue.combatant --[[@as integer]])
+  if shown ~= nil and cue.fadeColor ~= nil then
+    tickBallPoof(self, cue, shown, false)
+  end
+  if
+    cue.elapsed --[[@as integer]]
+    >= cue.duration --[[@as integer]]
+  then
     if shown ~= nil then
-      shown.exp = math.floor(value + 0.5)
-      if progress >= 1 and type(targetLevel) == "number" then
-        shown.level = targetLevel
+      shown.visible = false
+      if cue.keepHud == true then
+        shown.hudVisible = true
       end
     end
-    if
-      cue.elapsed --[[@as integer]]
-      >= cue.soundStopTicks --[[@as integer]]
-    then
-      emitSound(self, { kind = "stop-effect", voiceKey = cue.soundKey })
-      if cue.levelUp ~= nil then
-        emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.experienceMax))
-      end
-      return true
+    return true
+  end
+  return false
+end
+
+local function tickRevealCue(self, cue)
+  local shown = self:_shown(cue.combatant --[[@as integer]])
+  if shown ~= nil and cue.fadeColor ~= nil then
+    tickBallPoof(self, cue, shown, true)
+  end
+  if
+    cue.elapsed --[[@as integer]]
+    >= cue.duration --[[@as integer]]
+  then
+    if shown ~= nil then
+      shown.visible = true
     end
-    return false
+    return true
+  end
+  return false
+end
+
+local function tickExpCue(self, cue)
+  local shown = self:_shown(cue.combatant --[[@as integer]])
+  local duration = cue.duration --[[@as integer]]
+  local progress = math.min(1, cue.elapsed --[[@as integer]] / math.max(1, duration --[[@as integer]]))
+  local startExp = cue.startExp --[[@as integer]]
+  local targetExp = cue.targetExp --[[@as integer]]
+  local targetLevel = cue.targetLevel --[[@as integer]]
+  if type(startExp) ~= "number" or type(targetExp) ~= "number" then
+    return cue.elapsed --[[@as integer]] >= duration
+  end
+  local value = startExp + (targetExp - startExp) * progress
+  if progress >= 1 then
+    value = targetExp
+  end
+  if shown ~= nil then
+    shown.exp = math.floor(value + 0.5)
+    if progress >= 1 and type(targetLevel) == "number" then
+      shown.level = targetLevel
+    end
+  end
+  if
+    cue.elapsed --[[@as integer]]
+    >= cue.soundStopTicks --[[@as integer]]
+  then
+    emitSound(self, { kind = "stop-effect", voiceKey = cue.soundKey })
+    if cue.levelUp ~= nil then
+      emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.experienceMax))
+    end
+    return true
+  end
+  return false
+end
+
+local TICK_CUE_HANDLERS = {
+  ["native-effect"] = tickNativeEffectCue,
+  ["message"] = tickMessageCue,
+  ["sound"] = tickSoundCue,
+  ["ball-particles"] = tickImmediateCue,
+  ["stats-window"] = tickStatsWindowCue,
+  ["opening-presentation"] = tickImmediateCue,
+  ["trainer-intro-wait"] = tickTrainerIntroWaitCue,
+  ["trainer-exit"] = tickTrainerExitCue,
+  ["ball-throw"] = tickBallThrowCue,
+  ["ball-flight"] = tickBallFlightCue,
+  ["wait"] = tickWaitCue,
+  ["hp"] = tickHpCue,
+  ["hit"] = tickHitCue,
+  ["faint"] = tickFaintCue,
+  ["hud-slide"] = tickHudSlideCue,
+  ["withdraw"] = tickWithdrawCue,
+  ["reveal"] = tickRevealCue,
+  ["exp"] = tickExpCue,
+}
+
+local function tickCue(self, cue, soundComplete, printerCallback)
+  local handler = TICK_CUE_HANDLERS[cue.kind]
+  if handler ~= nil then
+    return handler(self, cue, {
+      soundComplete = soundComplete,
+      printerCallback = printerCallback,
+    })
   end
   return true
 end
