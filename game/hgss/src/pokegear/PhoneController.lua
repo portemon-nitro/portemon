@@ -516,6 +516,8 @@ end
 ---@param direction string
 ---@param kind string
 ---@param id string stable runtime id
+---@param isScriptedCall integer? source scripted-call marker
+---@param callScriptID integer? source script identity behind scripted calls
 function PhoneController:_beginCall(contact, direction, kind, id, isScriptedCall, callScriptID)
   assert(self._callHandle == nil, "one foreground call owns the phone line")
   local ok, handle = pcall(function()

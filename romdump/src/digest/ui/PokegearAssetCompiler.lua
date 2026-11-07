@@ -32,8 +32,15 @@ local function unpackMember(archive, memberId, label)
   return bytes, Hashing.sha1hex(bytes)
 end
 
-local function decode(kind, bytes, role)
-  local record, err = G2dDecoder[kind](bytes, { label = "pokegear:" .. role })
+local function decode(kind, bytes, role, layout)
+  ---@type table<string, string>
+  local options = { label = "pokegear:" .. role }
+  if layout ~= nil then
+    assert(kind == "decodeScreen", "only screen decoding selects a layout")
+    assert(type(layout) == "string", "screen layouts stay identities")
+    options.layout = layout
+  end
+  local record, err = G2dDecoder[kind](bytes, options)
   if not record then
     if Errors.is(err) then
       local attributed = err --[[@as Errors.Error]]
@@ -160,11 +167,17 @@ local function renderTriple(archive, selection, role, assets, assetName, palette
     local paletteBytes = unpackMember(archive, selection.palette, role .. ".palette")
     palette = decode("decodePalette", paletteBytes, role .. ".palette")
   end
+  -- Row-major screens (the world planes) declare their layout on the
+  -- selection; every other plane keeps the hardware-block default.
+  local screenLayout = selection.layout
+  if screenLayout ~= nil then
+    assert(type(screenLayout) == "string", "screen layouts stay identities: " .. role)
+  end
   local ok, image = pcall(
     G2dRasterizer.renderScreen,
     { depth = depth, tiles = table.concat(tiles) },
     palette,
-    decode("decodeScreen", screenBytes, role .. ".screen"),
+    decode("decodeScreen", screenBytes, role .. ".screen", screenLayout),
     { role = role }
   )
   if not ok then

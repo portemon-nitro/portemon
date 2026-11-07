@@ -169,10 +169,30 @@ local function splitKey(key)
     fact --[[@as string]]
 end
 
+-- Maps a matrix cell without the source row offset to the displayed region
+-- name behind unmapped field maps: Johto cells read as Johto, every other
+-- cell reads as Kanto, matching the compiled location records (Indigo
+-- Plateau itself is recorded as Kanto).
+---@param cellX integer matrix column
+---@param cellY integer matrix row
+---@return string region "johto"|"kanto"
+local function fallbackRegion(cellX, cellY)
+  local MapLocations = require("game.hgss.src.pokegear.map.MapLocations")
+  if MapLocations.regionOf(cellX, cellY) == MapLocations.REGION.JOHTO then
+    return "johto"
+  end
+  return "kanto"
+end
+
 -- Builds the source-normalized map context from the current field map,
 -- its compiled location record, and live global player coordinates only
 -- on outdoor maps. Indoor headers remain authoritative; zero headers may
--- use only the exterior captured by a committed world swap.
+-- use only the exterior captured by a committed world swap. Field maps
+-- without a compiled location still open the region map instead of
+-- refusing it: outdoor maps center on the live world position with the
+-- cell's region, indoor maps hold the last exterior (or special spawn)
+-- exactly like zero-coordinate headers, and maps with neither show the
+-- origin corner rather than crashing the gear.
 ---@param field { mapSymbol: string, playerX: number, playerZ: number, isOutdoor: boolean, playerGender: string }
 ---@param catalog table<string, unknown> the borrowed compiled map catalog
 ---@return { fieldMap: string, location: string, matrixX: number, matrixY: number, explicitX: integer?, explicitY: integer?, lastExterior: { x: integer, y: integer }?, specialSpawn: { x: integer, y: integer }?, region: string, unlockLevel: integer, specialMode: string?, playerGender: string }
@@ -199,27 +219,12 @@ function PhoneWorldContext:mapInit(field, catalog)
       break
     end
   end
-  if record == nil then
-    missingOwner("map", "no compiled location covers field map " .. field.mapSymbol)
-  end
-  assert(type(record) == "table", "map initialization resolves its compiled location")
-  assert(type(record.location) == "string", "compiled locations carry their displayed location")
-  assert(type(record.region) == "string", "compiled locations carry their region")
-  local matrix = record.matrix
-  assert(
-    type(matrix) == "table" and type(matrix.x) == "number" and type(matrix.y) == "number",
-    "compiled locations carry a source matrix anchor"
-  )
   local state = self._owners.state
   assert(type(state) == "table", "phone world reads borrow the companion state")
   local preferences = state:readPreferences()
   assert(type(preferences) == "table", "map initialization reads the saved progression facts")
   local unlockLevel = preferences.mapUnlockLevel
   assert(type(unlockLevel) == "number", "the saved map unlock level is a number")
-  local matrixX, matrixY = matrix.x, matrix.y
-  if field.isOutdoor then
-    matrixX, matrixY = field.playerX, field.playerZ
-  end
   local runtime = self._owners.runtime
   local worldSwapCoordinator = type(runtime) == "table" and runtime.worldSwapCoordinator or nil
   local lastExterior = nil
@@ -252,6 +257,43 @@ function PhoneWorldContext:mapInit(field, catalog)
         end
       end
     end
+  end
+  if record == nil then
+    local matrixX, matrixY = 0, 0
+    local region = "johto"
+    if field.isOutdoor then
+      matrixX, matrixY = field.playerX, field.playerZ
+      region = fallbackRegion(math.floor(matrixX / 32), math.floor(matrixY / 32))
+    elseif lastExterior ~= nil then
+      region = fallbackRegion(lastExterior.x, lastExterior.y)
+    elseif specialSpawn ~= nil then
+      region = fallbackRegion(specialSpawn.x, specialSpawn.y)
+    end
+    return {
+      fieldMap = field.mapSymbol,
+      location = field.mapSymbol,
+      matrixX = matrixX,
+      matrixY = matrixY,
+      explicitX = field.isOutdoor and nil or 0,
+      explicitY = field.isOutdoor and nil or 0,
+      lastExterior = lastExterior,
+      specialSpawn = specialSpawn,
+      region = region,
+      unlockLevel = unlockLevel,
+      specialMode = nil,
+      playerGender = field.playerGender,
+    }
+  end
+  assert(type(record.location) == "string", "compiled locations carry their displayed location")
+  assert(type(record.region) == "string", "compiled locations carry their region")
+  local matrix = record.matrix
+  assert(
+    type(matrix) == "table" and type(matrix.x) == "number" and type(matrix.y) == "number",
+    "compiled locations carry a source matrix anchor"
+  )
+  local matrixX, matrixY = matrix.x, matrix.y
+  if field.isOutdoor then
+    matrixX, matrixY = field.playerX, field.playerZ
   end
   return {
     fieldMap = field.mapSymbol,

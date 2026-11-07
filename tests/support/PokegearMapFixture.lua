@@ -284,13 +284,16 @@ function PokegearMapFixture.facts(visited)
 end
 
 -- A scripted word selector handoff; the suites answer through the
--- controller's acceptWordResult instead.
+-- controller's acceptWordResult instead, or inject a driven fake.
 ---@return table
 function PokegearMapFixture.wordEntry()
   return {
     open = function() end,
     step = function() end,
     result = function()
+      return nil
+    end,
+    status = function()
       return nil
     end,
     cancel = function() end,

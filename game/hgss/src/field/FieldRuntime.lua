@@ -3058,7 +3058,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
     local release = provider.releaseBank
     local get = provider.get
     local format = provider.format
-    local bank = assert(acquire(provider, bankId), "phone entry bank is available")
+    assert(acquire(provider, bankId), "phone entry bank is available")
     local function formatEntry()
       local template = assert(get(provider, bankId, messageId), "phone entry exists")
       local resolvers = {}

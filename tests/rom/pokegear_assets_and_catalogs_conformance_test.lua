@@ -143,6 +143,63 @@ function T.pokegear_family_accounts_for_the_full_selected_resource_closure(romFs
   end
 end
 
+-- The world map screen (member 11 of the map archive) stores row-major:
+-- retail never uploads it as a VRAM hardware image but reads it
+-- piece-wise through CopyToBgTilemapRect with stride width/8 behind
+-- PokegearMap_DrawMapTilemap (pokegear_map_view.c). The compiled world
+-- planes must match an independent row-major render of the same members,
+-- and must differ from the hardware-blocked reading, or the map screen
+-- shows jumbled tiles.
+function T.pokegear_world_planes_compile_row_major(romFs, versionId)
+  local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
+  Assert.isTrue(loaded, "the pokegear family compiler must be published")
+  local bundle = PokegearAssetCompiler.compile(romFs, versionId)
+  local compiled = assert(bundle, "the pokegear family must compile from the owned dump")
+  local manifest = assert(compiled.manifest, "the bundle carries its manifest")
+  local assets = assert(compiled.assets or compiled.files, "the bundle carries its staged assets")
+  local selections = assert(compiled.provenance.selections, "the bundle publishes its selections")
+  local worldSelection = assert(
+    selections["map.world.skin0"],
+    "the bundle publishes the world plane selection"
+  )
+  Assert.equal(
+    worldSelection.members.layout,
+    "linear",
+    "the world plane selection declares the row-major layout"
+  )
+  local flySelection = assert(selections["fly.world"], "the bundle publishes the fly world selection")
+  Assert.equal(flySelection.members.layout, "linear", "the fly world selection declares the row-major layout")
+
+  local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+  local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+  local PngWriter = require("romdump.src.digest.PngEncoder")
+  local Lz10 = require("romdump.src.digest.Lz10")
+  local archive = openArchive(romFs, "a/1/4/4")
+  local function plain(memberId)
+    local bytes = assert(archive:readMember(memberId), "the map archive carries member " .. memberId)
+    if string.byte(bytes, 1) == 0x10 then
+      return assert(Lz10.decode(bytes))
+    end
+    return bytes
+  end
+  local character = assert(G2dDecoder.decodeChar(plain(10), {}))
+  local palette = assert(G2dDecoder.decodePalette(plain(20), {}))
+  local charData = { depth = character.depth, tiles = character.tiles }
+  local function render(layout)
+    local screen = assert(G2dDecoder.decodeScreen(plain(11), { layout = layout })) --[[@as table]]
+    local image = G2dRasterizer.renderScreen(charData, palette, screen, { role = "conformance-world" })
+    return PngWriter.encode(image.width, image.height, image.pixels)
+  end
+  local mapWorld = assert(manifest.map, "the manifest carries its map section").world
+  local skinZero = assert(mapWorld[0], "the map section carries its first skin")
+  local staged = assert(assets[skinZero.image], "the staged assets carry the world plane")
+  Assert.equal(staged, render("linear"), "the staged world plane matches the row-major render")
+  Assert.isTrue(
+    staged ~= render(nil),
+    "the staged world plane differs from the hardware-blocked reading"
+  )
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 return suite

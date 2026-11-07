@@ -187,7 +187,7 @@ end
 -- fails loudly instead of offering a fabricated list.
 ---@param runtime table<string, unknown>
 ---@param assets table<string, unknown>
----@return table<string, unknown> the handoff with open, step, result, cancel
+---@return table<string, unknown> the handoff with open, step, result, status, cancel
 function PokegearComposition.wordEntryHandoff(runtime, assets)
   local selector = nil
   local function ensureSelector(request)
@@ -225,6 +225,14 @@ function PokegearComposition.wordEntryHandoff(runtime, assets)
     assert(type(takeResult) == "function", "word edits read back through their selector")
     return takeResult(selector)
   end
+  local function readHandoffStatus()
+    if selector == nil then
+      return nil
+    end
+    local status = (selector --[[@as table<string, unknown>]]).status
+    assert(type(status) == "function", "word edits expose their selector status")
+    return status(selector)
+  end
   local function cancelHandoff(reason)
     assert(type(reason) == "string", "word edits cancel with a reason")
     if selector == nil then
@@ -240,6 +248,7 @@ function PokegearComposition.wordEntryHandoff(runtime, assets)
     open = openHandoff,
     step = stepHandoff,
     result = readHandoffResult,
+    status = readHandoffStatus,
     cancel = cancelHandoff,
   }
 end

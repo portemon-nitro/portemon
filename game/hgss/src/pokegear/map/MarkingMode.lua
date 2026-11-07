@@ -91,11 +91,13 @@ function MarkingMode.emptyMarking()
   return { icons = { false, false, false, false }, words = { false, false, false, false } }
 end
 
--- The source UI tones in marking mode: cursor motion, seal grabs and
--- stamps, trash drops, and cancellation. Exits close silently here; the
--- owning controller answers the exit itself, so Back stays silent while
--- every B press answers.
+-- The source UI tones in marking mode: cursor motion, A-press
+-- decisions, seal grabs and stamps, trash drops, and cancellation. The
+-- key Back button decides like every source A-press on the cancel slot
+-- while the touch Back button cancels like the source tap; the owning
+-- controller answers the exit transition itself.
 local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
+local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
 local GRAB_SOUND = "SEQ_SE_GS_GEARSEALGRAB"
 local STAMP_SOUND = "SEQ_SE_GS_GEARSEALHAMERU"
 local TRASH_SOUND = "SEQ_SE_GS_GEARGOMIBAKO"
@@ -259,6 +261,7 @@ function MarkingMode:_handleKey(event)
     if pressedConfirm then
       if self._mainPos == 8 then
         self._backPressed = true
+        playEffect(self, DECIDE_SOUND)
         return "exit"
       end
       local slot = self._mainPos
@@ -341,6 +344,7 @@ function MarkingMode:_handlePointer(event)
     end
     if hit == 16 then
       self._backPressed = true
+      playEffect(self, CANCEL_SOUND)
       return "exit"
     elseif hit >= 8 then
       self._dragType = "pool"

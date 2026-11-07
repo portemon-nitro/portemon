@@ -46,12 +46,20 @@ local KNOWN_TABS = {
 -- the semantic card identity.
 local WALK_ORDER = { "configure", "radio", "map", "phone" }
 
-local SWITCH_SOUND = "SEQ_SE_DP_SELECT"
-local RESELECT_SOUND = "SEQ_SE_DP_DECIDE"
--- Leaving a card for the strip answers with the card cancel tone: the
--- source moves the cursor into the app-switch zone with GEARCANCEL. This
--- also covers B in the phone list and the gear map, which the shell owns.
-local UNFOCUS_SOUND = "SEQ_SE_GS_GEARCANCEL"
+-- Entering or switching cards answers with the application-change tone:
+-- the source plays GEARAPPLICHANGE on every A-press and strip tap that
+-- selects a card, including reselecting the current one, and GEARCANCEL
+-- only for the cancel cell. Walking strip focus answers with the cursor
+-- tone, exactly like the source left/right keys in the app-switch zone.
+local APPLY_SOUND = "SEQ_SE_GS_GEARAPPLICHANGE"
+local WALK_SOUND = "SEQ_SE_GS_GEARCURSOR"
+-- Leaving a card for the strip, and closing the gear from the strip,
+-- both answer with the cancel tone: the source moves the cursor into the
+-- app-switch zone with GEARCANCEL, and every B-press, cancel tap, and
+-- cancel-cell selection that dismisses the application plays it before
+-- the close latches. This also covers B in the phone list and the gear
+-- map, which the shell owns.
+local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
 ---@param child unknown
 ---@param tab string
@@ -257,7 +265,7 @@ function PokegearScreenState:_switch(tab)
   self._entered = true
   old:dispose()
   self:_beginTransition("switch")
-  self:_playSound(SWITCH_SOUND)
+  self:_playSound(APPLY_SOUND)
 end
 
 -- Records the single close: remembers the actual last card, including after
@@ -269,6 +277,7 @@ function PokegearScreenState:_close()
   end
   self._closed = true
   self._state:setPreference("lastApp", self._tab)
+  self:_playSound(CANCEL_SOUND)
   self._result = { kind = "close" }
 end
 
@@ -302,6 +311,7 @@ function PokegearScreenState:_walkFocus(direction)
     index = index % #order + 1
   end
   self._focus = order[index]
+  self:_playSound(WALK_SOUND)
 end
 
 ---@param event table<string, unknown>
@@ -332,8 +342,10 @@ function PokegearScreenState:_handle(mapped, view)
         end
       elseif eventType == "confirm" then
         if self._entered then
+          -- In-card confirms belong to the card alone: the source
+          -- app-switch handler never runs inside a card, so the shell
+          -- forwards without answering and the card voices the press.
           self:_forwardToChild(event)
-          self:_playSound(RESELECT_SOUND)
         elseif self._focus == self._tab then
           -- Confirming the focused current cell re-enters the card
           -- without acting on it: focus transitions consume their
@@ -341,7 +353,7 @@ function PokegearScreenState:_handle(mapped, view)
           -- starts a call as a side effect. Boundary navigation and the
           -- cancel unfocus both land here.
           self._entered = true
-          self:_playSound(RESELECT_SOUND)
+          self:_playSound(APPLY_SOUND)
         else
           self:_switch(self._focus)
         end
@@ -352,7 +364,7 @@ function PokegearScreenState:_handle(mapped, view)
         elseif self._entered then
           self._entered = false
           self._focus = self._tab
-          self:_playSound(UNFOCUS_SOUND)
+          self:_playSound(CANCEL_SOUND)
         else
           self:_close()
         end

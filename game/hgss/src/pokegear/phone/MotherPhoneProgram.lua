@@ -139,7 +139,7 @@ end
 -- answer entry, "giftFull" ends without a choice.
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
----@return string|"waiting" outcome, or table { status: string, entry: integer? } for dynamic lines
+---@return "done"|"waiting"|{ status: string, entry: integer? } outcome
 function MotherPhoneProgram.step(session, input)
   assert(type(session) == "table", "mother programs step their session")
   assert(type(input) == "table", "mother programs read their input")
@@ -185,7 +185,7 @@ end
 -- the menu, exactly like the retail flag1 branch.
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
----@return string|{ status: string, entry: integer? } outcome
+---@return "done"|{ status: string, entry: integer? } outcome
 function MotherPhoneProgram.stepDynamic(session, input)
   local facts = session.facts --[[@as table<string, unknown>]]
   if session.dynamicPhase == "result" then

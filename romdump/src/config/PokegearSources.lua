@@ -152,13 +152,17 @@ end
 -- (screen 38+s) and backdrop (screen 44+s) which draw from the chrome
 -- tiles. The upper screen holds the information chrome (50+s tiles, screen
 -- 56+s) and the 7x7 location-preview atlas (shared tiles 12, screen 13),
--- both on the sub palette 14+s.
+-- both on the sub palette 14+s. The world screen stores row-major: retail
+-- never uploads it as a VRAM hardware image but reads it piece-wise
+-- through CopyToBgTilemapRect with stride width/8 behind
+-- PokegearMap_DrawMapTilemap, so its selection carries layout "linear"
+-- to skip the hardware-block deswizzle.
 function PokegearSources.mapForeground(skin)
   return { char = 26 + skin, screen = 32 + skin, palette = 20 + skin }
 end
 
 function PokegearSources.mapWorld(skin)
-  return { char = 10, screen = 11, palette = 20 + skin }
+  return { char = 10, screen = 11, palette = 20 + skin, layout = "linear" }
 end
 
 function PokegearSources.mapMarkingPanel(skin)
@@ -201,9 +205,10 @@ PokegearSources.flyTextMembers = { upper = 62, lower = 63 }
 PokegearSources.listMenu = { path = "a/1/6/5", palette = 0, char = 1 }
 
 -- The Fly entry loads its own skin-independent planes: main palette 63 for
--- the chrome and world, sub palette 62 for the upper screen.
+-- the chrome and world, sub palette 62 for the upper screen. Its world
+-- shares the map screen member and its row-major layout.
 PokegearSources.fly = {
-  world = { char = 10, screen = 11, palette = 63 },
+  world = { char = 10, screen = 11, palette = 63, layout = "linear" },
   foreground = { char = 66, screen = 67, palette = 63 },
   top = { char = 64, screen = 65, palette = 62 },
   upper = { char = 68, screen = 69, palette = 62 },

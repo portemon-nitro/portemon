@@ -125,7 +125,7 @@ function MapController.new(opts)
   assert(type(opts.roamerProjection) == "table", "the region map samples roamers once at creation")
   local wordEntry = opts.wordEntry
   assert(type(wordEntry) == "table", "the region map requires its word-entry handoff")
-  for _, method in ipairs({ "open", "step", "result", "cancel" }) do
+  for _, method in ipairs({ "open", "step", "result", "status", "cancel" }) do
     assert(type(wordEntry[method]) == "function", "the word-entry handoff needs " .. method)
   end
   assert(opts.effect == nil or type(opts.effect) == "function", "the region map sound boundary must be a function")
@@ -182,28 +182,31 @@ function MapController:_playerCell()
       break
     end
   end
-  if record == nil then
-    Errors.raise(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "the region map has no source location for " .. context.fieldMap,
-      { map = context.fieldMap }
-    )
-  end
-  assert(type(record) == "table", "the region map resolves its compiled location")
+  -- Field maps without a compiled location resolve from the context alone:
+  -- the normalized context already carries the outdoor position or the
+  -- indoor explicit coordinates, so the card opens on the player cell
+  -- instead of refusing the map.
   local explicitX, explicitY = context.explicitX, context.explicitY
-  if explicitX == nil and explicitY == nil then
+  if explicitX == nil and explicitY == nil and record ~= nil then
     explicitX, explicitY = record.explicitX, record.explicitY
   end
   local special = context.specialMode
-  if special == nil and type(record.special) == "string" then
+  if special == nil and record ~= nil and type(record.special) == "string" then
     special = record.special
   end
   if explicitX == 0 and explicitY == 0 and context.lastExterior == nil and context.specialSpawn == nil then
-    Errors.raise(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "the region map has no proven exterior position for " .. context.fieldMap,
-      { map = context.fieldMap }
-    )
+    if record ~= nil then
+      -- A source-known zero-coordinate header with no exterior evidence
+      -- refuses its unprovable cell instead of guessing one.
+      Errors.raise(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "the region map has no proven exterior position for " .. context.fieldMap,
+        { map = context.fieldMap }
+      )
+    end
+    -- Maps without compiled coverage carry no such promise: the card
+    -- opens on the context anchor cell instead of refusing the map.
+    explicitX, explicitY = nil, nil
   end
   return MapProjection.contextCell({
     matrixX = context.matrixX,
@@ -313,14 +316,15 @@ function MapController:_findRematchOrGift(mapId)
 end
 
 -- The source UI tones on the gear map card: opening the editor,
--- touching the map, zooming with its directional tones, and the mode
--- change. B in map mode belongs to the shell's app-switch zone, and Y
--- tab switches belong to the shell chrome, so neither plays here.
+-- touching the map, zooming with its directional tones, and the Y-button
+-- tone that opens and closes the marking transition. B in map mode
+-- belongs to the shell's app-switch zone, and Y tab switches belong to
+-- the shell chrome, so neither plays here.
 local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
-local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
 local MAP_TOUCH_SOUND = "SEQ_SE_GS_GEARMAPTOUCH"
 local ZOOM_SOUND = "SEQ_SE_GS_GEARXBUTTON"
 local UNZOOM_SOUND = "SEQ_SE_GS_XBUTTON_SYUKUSHOU"
+local YBUTTON_SOUND = "SEQ_SE_GS_GEARYBUTTON"
 
 ---@param self MapController
 ---@param sequence string
@@ -465,6 +469,12 @@ end
 
 function MapController:_advanceTransition()
   local transition = self._transition --[[@as table<string, unknown>]]
+  if transition.kind == "exit" and transition.t == 0 then
+    -- The exit answers at its first tick, exactly like the source
+    -- animation's opening Y-button beat; the entrance answers when the
+    -- editor flips active below.
+    playEffect(self, YBUTTON_SOUND)
+  end
   transition.t = transition.t + 1
   local frame = transitionFrame(transition)
   if transition.kind == "enter" and frame.content == "marking" and self._marking == nil then
@@ -474,7 +484,7 @@ function MapController:_advanceTransition()
       effect = self._effect,
     })
     self._mode = "marking"
-    playEffect(self, CURSOR_SOUND)
+    playEffect(self, YBUTTON_SOUND)
   elseif transition.kind == "exit" and frame.content == "map" and self._mode == "marking" then
     self._mode = "map"
     self._marking = nil
@@ -483,7 +493,6 @@ function MapController:_advanceTransition()
       self._world:restore(self._session)
       self._session = nil
     end
-    playEffect(self, CURSOR_SOUND)
   end
   if frame.done == true then
     self._transition = nil
@@ -496,30 +505,77 @@ function MapController:_markingResult(result, slot)
   if result == "exit" then
     self._transition = { kind = "exit", t = 0 }
   elseif result == "word" then
+    -- Asking for a word answers with the decide tone, matching the
+    -- source key and touch paths into the word selector.
+    playEffect(self, DECIDE_SOUND)
     self:_requestWord(slot --[[@as integer]])
   end
 end
 
--- Pends one typed word request for the open location; the external selector
--- answers through acceptWordResult and the card returns to marking mode.
+-- Pends one typed word request for the open location and opens the borrowed
+-- single-word selector on it; the selector answers through the pending tick
+-- and the card returns to marking mode. An open failure keeps the marking
+-- mode instead of stranding the card behind a pending edit.
 ---@param slot integer zero-based word slot
 function MapController:_requestWord(slot)
   if self._wordPending ~= nil then
     return
   end
   self._operations = self._operations + 1
+  local marking = self._marking --[[@as MarkingMode]]
+  local current = marking:marking()
+  local oldWord = current.words[slot + 1]
   local request = {
     mapSymbol = (self._selection --[[@as table<string, unknown>]]).mapSymbol,
     slot = slot + 1,
-    oldWord = false,
+    oldWord = oldWord ~= false and oldWord or false,
     operationId = "map-word-" .. tostring(self._operations),
     session = self._world:snapshot(),
   }
   self._wordPending = request
   self._wordOutbox = request
+  local ok, err = pcall(self._wordEntry.open, request)
+  if not ok then
+    self._wordPending, self._wordOutbox = nil, nil
+    error(err, 0)
+  end
+end
+
+-- Settles the pending edit from the borrowed selector outcome: a selected
+-- word writes once, a cancellation keeps the old word, and either way the
+-- card returns to its marking mode with a fresh selector behind the next
+-- edit. Unknown or consumed operation identities fail without touching the
+-- markings.
+---@param outcome table<string, unknown> the selector terminal result
+function MapController:_settleWordEdit(outcome)
+  local pending = assert(self._wordPending, "word edits settle their pending request")
+  assert(type(outcome) == "table", "word edits settle through their selector outcome")
+  if self._consumed[outcome.operationId] == true then
+    error("a replayed word result edits nothing: " .. tostring(outcome.operationId), 0)
+  end
+  if pending.operationId ~= outcome.operationId then
+    error("a stale word result edits nothing: " .. tostring(outcome.operationId), 0)
+  end
+  if outcome.kind == "selected" then
+    assert(
+      type(outcome.wordKey) == "string" and outcome.wordKey:match("^[0-9]+$") ~= nil,
+      "selected words carry decimal identities"
+    )
+    local marking = assert(self._marking, "word edits settle inside marking mode")
+    marking:applyWord(pending.slot - 1, outcome.wordKey --[[@as string]])
+    marking:takeEdited()
+    self:_commitMarking(pending.mapSymbol, marking:marking())
+  else
+    assert(outcome.kind == "cancelled", "word edits settle selected or cancelled")
+  end
+  self._wordPending, self._wordOutbox = nil, nil
+  self._consumed[outcome.operationId] = true
+  self._wordEntry.cancel("word edit settled")
 end
 
 -- Takes the pending word request for the external selector, exactly once.
+-- Production settles through the borrowed selector instead; this stays for
+-- test drivers that answer outside the pending tick.
 ---@return table<string, unknown>? the typed request, or nil when no edit is pending
 function MapController:takeWordRequest()
   local request = self._wordOutbox
@@ -555,6 +611,7 @@ function MapController:acceptWordResult(answer)
   end
   self._wordPending, self._wordOutbox = nil, nil
   self._consumed[answer.operationId] = true
+  self._wordEntry.cancel("external word answer")
 end
 
 -- One fixed tick: a running transition gates input, marking mode consumes
@@ -569,10 +626,13 @@ function MapController:updateFixed(events)
     return
   end
   if self._wordPending ~= nil then
-    for _, event in ipairs(events) do
-      if event.type == "cancel" then
-        self._wordPending, self._wordOutbox = nil, nil
-      end
+    -- The borrowed selector owns the pending edit: every tick steps it
+    -- and its terminal result settles the marking, including the nested
+    -- cancellation levels the source retreats through.
+    self._wordEntry.step(events)
+    local outcome = self._wordEntry.result()
+    if outcome ~= nil then
+      self:_settleWordEdit(outcome)
     end
     return
   end
@@ -822,6 +882,9 @@ function MapController:status()
     end
     view.marking = marking
   end
+  if self._wordPending ~= nil then
+    view.wordEntry = self._wordEntry.status()
+  end
   local presentation = {
     content = self:_planContent(),
   }
@@ -847,11 +910,12 @@ function MapController:takeResult()
 end
 
 -- Idempotent release of the logical lifetime. Committed markings already
--- live in the borrowed state owner.
+-- live in the borrowed state owner; a pending selector releases with the card.
 function MapController:dispose()
   self._wordOutbox, self._wordPending = nil, nil
   self._transition = nil
   self._disposed = true
+  self._wordEntry.cancel("region map teardown")
 end
 
 return MapController

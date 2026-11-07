@@ -92,6 +92,26 @@ function T.tests.the_card_opens_on_the_player_with_the_selection_panel()
   )
 end
 
+function T.tests.the_card_opens_on_field_maps_without_compiled_coverage()
+  local context = Fixture.context()
+  context.fieldMap = "MAP_UNMAPPED"
+  local box = Fixture.openMap({ mapContext = context })
+  local v = view(box.controller)
+  Assert.equal(v.mode, "map", "the card opens in map mode without a compiled location")
+  Assert.equal(v.panel.landmark, "Landmark 41", "the selection follows the player cell, not the catalog entry")
+  Assert.equal(v.buttons.markings, "normal", "a selected location enables the markings button")
+end
+
+function T.tests.the_card_opens_on_unmapped_headers_without_an_exterior()
+  local context = Fixture.context()
+  context.fieldMap = "MAP_UNMAPPED"
+  context.explicitX, context.explicitY = 0, 0
+  local box = Fixture.openMap({ mapContext = context })
+  local v = view(box.controller)
+  Assert.equal(v.mode, "map", "the card opens in map mode without a proven exterior")
+  Assert.equal(v.panel.landmark, "Landmark 41", "the selection falls back to the anchor cell")
+end
+
 function T.tests.a_keyboard_move_selects_the_next_location_after_two_ticks()
   local box = Fixture.openMap()
   local before = view(box.controller).sprites.cursor.x
@@ -270,6 +290,126 @@ function T.tests.a_word_edit_round_trips_through_the_typed_request()
   Assert.equal(box.state:capture().markings.MAP_A.words[1], "7", "the replay changed nothing")
 end
 
+-- The borrowed word selector drives the text edit: requesting a word opens
+-- it, ticks step it, and its terminal result commits through the marking.
+local WORD_GROUP_COUNTS = { 496, 468, 18, 124, 38, 38, 107, 104, 47, 32, 23 }
+local WORD_BANKS = { 237, 751, 735, 721, 285, 286, 287, 288, 289, 290, 291 }
+
+---@return table catalog with eleven groups in source order
+local function wordCatalog()
+  local catalog = { groups = {} }
+  for index, bank in ipairs(WORD_BANKS) do
+    catalog.groups[index] = { group = index - 1, bank = bank, count = WORD_GROUP_COUNTS[index] }
+  end
+  return catalog
+end
+
+-- A handoff backed by the real single-word selector that records its drive.
+---@return table handoff, table taps
+local function drivenWordEntry()
+  local WordEntryScreenState = require("game.hgss.src.pokegear.WordEntryScreenState")
+  local taps = { opened = nil, stepped = 0, cancelled = nil }
+  local selector = nil
+  local handoff = {}
+  function handoff.open(request)
+    taps.opened = request
+    selector = WordEntryScreenState.new({
+      operationId = request.operationId,
+      selectedWord = request.oldWord or false,
+      wordCatalog = wordCatalog(),
+      availability = {},
+      assets = {},
+      presentation = { layout = "dual" },
+    })
+  end
+  function handoff.step(events)
+    assert(selector ~= nil, "word edits open before they step")
+    taps.stepped = taps.stepped + 1
+    selector:updateFixed(events)
+  end
+  function handoff.result()
+    if selector == nil then
+      return nil
+    end
+    return selector:takeResult()
+  end
+  function handoff.status()
+    if selector == nil then
+      return nil
+    end
+    return selector:status()
+  end
+  function handoff.cancel(reason)
+    taps.cancelled = reason
+    if selector ~= nil then
+      selector:dispose()
+    end
+    selector = nil
+  end
+  return handoff, taps
+end
+
+---@param box table the opened map fixture
+local function openWordSlot(box)
+  box.controller:updateFixed({ { type = "confirm" } })
+  settle(box.controller)
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "confirm" } })
+end
+
+function T.tests.word_requests_open_and_step_the_borrowed_selector()
+  local handoff, taps = drivenWordEntry()
+  local box = Fixture.openMap({ wordEntry = handoff })
+  openWordSlot(box)
+  Assert.notNil(taps.opened, "requesting a word opens the borrowed selector")
+  assert(taps.opened ~= nil, "selector opened above")
+  Assert.equal(taps.opened.operationId, "map-word-1", "the selector carries the caller operation identity")
+  Assert.equal(taps.opened.slot, 1, "the selector names the one-based word slot")
+  Assert.isTrue(box.controller:status().busy, "the card waits for the selector")
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(taps.stepped, 1, "ticks while pending step the selector instead of stalling")
+  local selectorView = view(box.controller).wordEntry
+  Assert.notNil(selectorView, "the status exposes the selector for presentation")
+  Assert.equal(selectorView.mode, "single-word", "the exposed selector names its single-word mode")
+end
+
+function T.tests.selector_choice_commits_and_returns_to_marking()
+  local handoff, taps = drivenWordEntry()
+  local box = Fixture.openMap({ wordEntry = handoff })
+  openWordSlot(box)
+  -- Category level: confirm the first group, walk down three words, pick it twice.
+  box.controller:updateFixed({ { type = "confirm" } })
+  for _ = 1, 3 do
+    box.controller:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  box.controller:updateFixed({ { type = "confirm" } })
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(
+    box.state:capture().markings.MAP_A.words,
+    { "3", false, false, false },
+    "the selector choice persists through the marking"
+  )
+  Assert.isFalse(box.controller:status().busy, "the settled edit leaves the card idle")
+  Assert.equal(view(box.controller).mode, "marking", "the settled edit returns to marking mode")
+  Assert.isNil(view(box.controller).wordEntry, "the settled selector leaves the status")
+  -- A second edit opens a fresh selector instead of reusing the settled one.
+  box.controller:updateFixed({ { type = "navigate", direction = "down" } })
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(taps.opened, "the second edit opens the selector again")
+  Assert.equal(taps.opened.operationId, "map-word-2", "the second edit carries a fresh operation identity")
+end
+
+function T.tests.selector_cancellation_keeps_the_old_word()
+  local handoff, _ = drivenWordEntry()
+  local box = Fixture.openMap({ wordEntry = handoff })
+  openWordSlot(box)
+  box.controller:updateFixed({ { type = "cancel" } })
+  Assert.isNil(box.state:capture().markings.MAP_A, "cancelling the selector writes no marking")
+  Assert.isFalse(box.controller:status().busy, "the cancelled edit leaves the card idle")
+  Assert.equal(view(box.controller).mode, "marking", "the cancelled edit returns to marking mode")
+end
+
 function T.tests.live_roamers_appear_only_on_visible_locations()
   local box = Fixture.openMap({
     roamerProjection = {
@@ -330,17 +470,21 @@ function T.tests.map_card_plays_its_source_tones()
   Assert.equal(#effects, 3, "a confirm during the entrance transition plays nothing")
   settle(box.controller)
   Assert.equal(view(box.controller).mode, "marking", "the entrance settles in marking mode")
-  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "the mode change plays the cursor tone")
-  -- B leaves the editor with the cancel tone and the return plays the cursor tone.
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARYBUTTON", "the mode change plays the Y-button tone")
+  -- B leaves the editor with the cancel tone; the exit transition answers
+  -- with the Y-button tone on its first tick, and the return settles
+  -- silently afterwards.
   -- The editor opens in touch mode, so the first key only reveals the cursor.
   box.controller:updateFixed({ { type = "cancel" } })
   Assert.equal(view(box.controller).mode, "marking", "the first key only reveals the cursor")
-  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "revealing plays nothing further")
+  local revealed = #effects
   box.controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(#effects, revealed + 1, "leaving markings answers exactly once")
   Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "leaving markings plays the cancel tone")
+  box.controller:updateFixed({})
   settle(box.controller)
   Assert.equal(view(box.controller).mode, "map", "the exit settles back in map mode")
-  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "returning to the map plays the cursor tone")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARYBUTTON", "the exit transition plays the Y-button tone")
   -- Touch on the map opening plays the touch tone.
   box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = 100, y = 100 } })
   Assert.equal(effects[#effects], "SEQ_SE_GS_GEARMAPTOUCH", "touching the map plays the touch tone")
@@ -383,6 +527,58 @@ function T.tests.marking_edits_play_their_source_tones()
   Assert.isTrue(anchored > before, "the walk to Back answers audibly")
   mode:updateFixed({ { type = "cancel" } })
   Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "leaving the editor plays the cancel tone")
+end
+
+function T.tests.marking_back_and_word_requests_play_their_source_tones()
+  local effects = {}
+  local function play(sequence)
+    effects[#effects + 1] = sequence
+  end
+  -- The key Back button decides audibly, matching the source A-press on
+  -- the cancel slot.
+  local back = MarkingMode.new({
+    marking = { icons = { false, false, false, false }, words = { false, false, false, false } },
+    effect = play,
+  })
+  back:updateFixed({ { type = "navigate", direction = "down" } })
+  back:updateFixed({ { type = "navigate", direction = "down" } })
+  back:updateFixed({ { type = "navigate", direction = "right" } })
+  back:updateFixed({ { type = "navigate", direction = "right" } })
+  back:updateFixed({ { type = "navigate", direction = "right" } })
+  back:updateFixed({ { type = "navigate", direction = "down" } })
+  local result = select(1, back:updateFixed({ { type = "confirm" } }))
+  Assert.equal(result, "exit", "confirming the Back button exits the editor")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "confirming Back plays the decide tone")
+  -- The touch Back button cancels audibly, matching the source tap.
+  local touchBack = MarkingMode.new({
+    marking = { icons = { false, false, false, false }, words = { false, false, false, false } },
+    effect = play,
+  })
+  local before = #effects
+  result = select(1, touchBack:updateFixed({ { type = "pointer_down", x = 208, y = 84 } }))
+  Assert.equal(result, "exit", "touching Back exits the editor")
+  Assert.equal(#effects, before + 1, "touching Back answers exactly once")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL", "touching Back plays the cancel tone")
+end
+
+function T.tests.requesting_a_word_plays_the_decide_tone()
+  local effects = {}
+  local box = Fixture.openMap({ effect = function(sequence)
+    effects[#effects + 1] = sequence
+  end })
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "opening markings plays the decide tone")
+  settle(box.controller)
+  Assert.equal(view(box.controller).mode, "marking", "the entrance settles in marking mode")
+  -- The editor opens in touch mode: reveal, step to the first word slot,
+  -- and confirm the empty slot.
+  box.controller:updateFixed({ { type = "navigate", direction = "down" } })
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  local before = #effects
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(box.controller:takeWordRequest(), "confirming an empty word slot asks for a word")
+  Assert.equal(#effects, before + 1, "asking for a word answers exactly once")
+  Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "asking for a word plays the decide tone")
 end
 
 function T.tests.marking_touch_drags_play_their_source_tones()

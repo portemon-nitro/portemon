@@ -484,6 +484,11 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
       tap(host.shell, x, y)
       settle(host.shell)
       Assert.isTrue(#host.log.effects > effectsBefore, "switching cards plays a sound")
+      Assert.equal(
+        host.log.effects[#host.log.effects],
+        "SEQ_SE_GS_GEARAPPLICHANGE",
+        "switching cards plays the application-change tone"
+      )
     end
   end
 
@@ -583,7 +588,14 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
     Assert.isNil(keys.shell:takeResult(), "the unfocused open publishes no result")
     local seen = {}
     for _ = 1, 8 do
+      local beforeStep = #keys.log.effects
       press(keys.shell, { type = "navigate", direction = "right" })
+      Assert.equal(#keys.log.effects, beforeStep + 1, "walking strip focus answers audibly")
+      Assert.equal(
+        keys.log.effects[#keys.log.effects],
+        "SEQ_SE_GS_GEARCURSOR",
+        "walking strip focus plays the cursor tone"
+      )
       local focus = keys.shell:status().focus
       Assert.isTrue(type(focus) == "string", "strip focus is a semantic card identity")
       seen[#seen + 1] = focus
@@ -618,13 +630,33 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
     end
     -- One new press advances exactly one slot: no held-key repeat globally.
     local first = keys.shell:status().focus
-    press(keys.shell, { type = "navigate", direction = "right" })
+    do
+      local beforeStep = #keys.log.effects
+      press(keys.shell, { type = "navigate", direction = "right" })
+      Assert.equal(
+        keys.log.effects[#keys.log.effects],
+        "SEQ_SE_GS_GEARCURSOR",
+        "a single focus step plays the cursor tone"
+      )
+      Assert.equal(#keys.log.effects, beforeStep + 1, "a single focus step answers exactly once")
+    end
     Assert.isTrue(keys.shell:status().focus ~= first, "one press advances strip focus")
     -- Confirming the focused card enters it without acting on it: focus
     -- transitions consume their event, so entering the card never
     -- opens a menu or starts a call as a side effect.
+    -- Confirming the focused card enters it with the application-change
+    -- tone, matching the source A-press in the app-switch zone.
     local focus = keys.shell:status().focus
-    press(keys.shell, { type = "confirm" })
+    do
+      local beforeEnter = #keys.log.effects
+      press(keys.shell, { type = "confirm" })
+      Assert.equal(#keys.log.effects, beforeEnter + 1, "entering the focused card answers audibly")
+      Assert.equal(
+        keys.log.effects[#keys.log.effects],
+        "SEQ_SE_GS_GEARAPPLICHANGE",
+        "entering the focused card plays the application-change tone"
+      )
+    end
     settle(keys.shell)
     Assert.equal(keys.shell:status().tab, focus, "confirming strip focus enters that card")
     Assert.isTrue(keys.shell:status().entered, "confirming strip focus moves focus inside the card")
@@ -632,11 +664,13 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
     for _, eventType in ipairs(entered.events) do
       Assert.isTrue(eventType ~= "confirm", "entering the card forwards no confirm into it")
     end
-    -- Confirming the already selected card answers audibly and reaches it.
+    -- Confirming the already selected card forwards into it without any
+    -- shell tone: in-card confirms belong to the card, exactly like the
+    -- source where the app-switch handler never runs inside a card.
     local effectsBefore = #keys.log.effects
     press(keys.shell, { type = "confirm" })
     Assert.equal(keys.shell:status().tab, focus, "re-confirming the selected card keeps it")
-    Assert.isTrue(#keys.log.effects > effectsBefore, "re-confirming the selected card answers audibly")
+    Assert.equal(#keys.log.effects, effectsBefore, "an in-card confirm plays no shell tone")
     local heardConfirm = false
     for _, eventType in ipairs(entered.events) do
       if eventType == "confirm" then
@@ -665,7 +699,17 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
     local entered = closer.shell:status().tab
     press(closer.shell, { type = "cancel" })
     Assert.isNil(closer.shell:takeResult(), "the first cancel returns focus without closing")
+    Assert.equal(
+      closer.log.effects[#closer.log.effects],
+      "SEQ_SE_GS_GEARCANCEL",
+      "returning to the strip plays the cancel tone"
+    )
     press(closer.shell, { type = "cancel" })
+    Assert.equal(
+      closer.log.effects[#closer.log.effects],
+      "SEQ_SE_GS_GEARCANCEL",
+      "closing the gear plays the cancel tone"
+    )
     local result = assert(closer.shell:takeResult(), "the second cancel closes the shell")
     Assert.equal(result.kind, "close", "the shell only returns close")
     Assert.isNil(closer.shell:takeResult(), "the close is reported exactly once")
@@ -1016,6 +1060,11 @@ function T.tests.strip_edges_and_masked_slots_reject_selection()
     settle(host.shell)
     Assert.equal(host.shell:status().tab, "radio", "the shared band edge selects the right-hand slot")
     Assert.isTrue(#host.log.effects > effectsBefore, "the edge selection plays a sound")
+    Assert.equal(
+      host.log.effects[#host.log.effects],
+      "SEQ_SE_GS_GEARAPPLICHANGE",
+      "the edge selection plays the application-change tone"
+    )
   end
   -- The top strip row is live: tapping the current card's top edge keeps
   -- the card silently, and the transparent band corner does the same.
@@ -1230,7 +1279,12 @@ function T.tests.cancelling_to_the_strip_plays_the_cancel_tone()
   Assert.equal(#child.events, eventsBefore, "the unfocused card never sees the strip press")
   local silent = #host.log.effects
   press(host.shell, { type = "cancel" })
-  Assert.equal(#host.log.effects, silent, "closing from the strip plays nothing further")
+  Assert.equal(#host.log.effects, silent + 1, "closing from the strip answers audibly")
+  Assert.equal(
+    host.log.effects[#host.log.effects],
+    "SEQ_SE_GS_GEARCANCEL",
+    "closing the gear plays the cancel tone"
+  )
   host.shell:dispose()
 end
 

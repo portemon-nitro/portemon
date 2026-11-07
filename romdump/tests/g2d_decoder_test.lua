@@ -120,6 +120,41 @@ function T.wide_screens_decode_hardware_screen_blocks_into_row_major_entries()
   end
 end
 
+function T.square_screens_default_to_hardware_screen_blocks()
+  -- A 512x512 text BG stores four consecutive 32x32-tile screen blocks
+  -- (top-left, top-right, bottom-left, bottom-right). Each entry's tile
+  -- names its logical position so the decoded order is checkable.
+  local stored = {}
+  for block = 0, 3 do
+    for row = 0, 31 do
+      for column = 0, 31 do
+        stored[#stored + 1] = (math.floor(block / 2) * 32 + row) * 64 + (block % 2) * 32 + column
+      end
+    end
+  end
+  local scr = assert(G2dDecoder.decodeScreen(container("RCSN", { screenBlock(stored, 512, 512) })))
+  Assert.equal(#scr.entries, 4096, "a square screen decodes all its entries")
+  for index, entry in ipairs(scr.entries) do
+    Assert.equal(entry.tile, (index - 1) % 1024, "entry " .. index .. " sits at its logical row-major position")
+  end
+end
+
+function T.linear_layout_keeps_wide_screen_entries_in_stored_order()
+  -- Screens retail reads piece-wise through CopyToBgTilemapRect (stride
+  -- = width/8), such as the pokegear world map, store row-major: the
+  -- linear layout skips the hardware-block deswizzle.
+  local stored = {}
+  for index = 0, 4095 do
+    stored[#stored + 1] = index % 1024
+  end
+  local scr =
+    assert(G2dDecoder.decodeScreen(container("RCSN", { screenBlock(stored, 512, 512) }), { layout = "linear" }))
+  Assert.equal(#scr.entries, 4096, "a linear screen decodes all its entries")
+  for index, entry in ipairs(scr.entries) do
+    Assert.equal(entry.tile, (index - 1) % 1024, "entry " .. index .. " keeps its stored position")
+  end
+end
+
 function T.palette_chunk_decodes_15bit_colors()
   local data = container("NCLR", { paletteBlock({ 0x7FFF, 0x0000, 0x001F }) })
   local pal = assert(G2dDecoder.decodePalette(data))

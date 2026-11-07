@@ -402,8 +402,16 @@ local function decodeScreenBlock(data, opts)
   -- A 512-pixel-wide text background stores its map as consecutive
   -- 32x32-tile screen blocks, the order the hardware reads VRAM in; decoded
   -- entries are row-major over the whole screen. Narrower maps are already
-  -- row-major, and other widths are not hardware block layouts.
-  local blocked = width == 512 and height % 256 == 0
+  -- row-major, and other widths are not hardware block layouts. Screens
+  -- retail reads piece-wise through CopyToBgTilemapRect (stride = width/8)
+  -- instead of a VRAM upload, such as the pokegear world map, store
+  -- row-major: pass layout "linear" to keep the stored order.
+  local layout = opts.layout or "hardware-blocks"
+  assert(
+    layout == "hardware-blocks" or layout == "linear",
+    "screen layouts are hardware-blocks or linear, got " .. tostring(opts.layout)
+  )
+  local blocked = width == 512 and height % 256 == 0 and layout == "hardware-blocks"
   local entries = {}
   local count = math.floor(dataSize / 2)
   for i = 0, count - 1 do
@@ -442,7 +450,7 @@ function G2dDecoder.decodeChar(data, opts)
 end
 
 ---@param data string
----@param opts? { label?: string }
+---@param opts? { label?: string, layout?: string }
 ---@return { width: integer, height: integer, entries: table[] }?
 ---@return Errors.Error?
 function G2dDecoder.decodeScreen(data, opts)

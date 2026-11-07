@@ -966,6 +966,44 @@ function T.tests.radio_facts_resolve_region_and_story_flags_from_compiled_data()
   Assert.isTrue(cleared.flags.rocketTakeover, "the active takeover reads its field flag")
 end
 
+function T.tests.map_init_covers_field_maps_without_compiled_locations()
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local friends = companion()
+  local world = PhoneWorldContext.new({ state = friends.state, runtime = {} })
+  local context = world:mapInit({
+    mapSymbol = "MAP_UNMAPPED",
+    playerX = 12 * 32 + 8,
+    playerZ = 8 * 32 + 8,
+    isOutdoor = true,
+    playerGender = "male",
+  }, friends.catalog)
+  Assert.equal(context.fieldMap, "MAP_UNMAPPED", "the fallback names the live field map")
+  Assert.equal(context.matrixX, 12 * 32 + 8, "the fallback keeps the live outdoor position")
+  Assert.equal(context.region, "johto", "the fallback region follows the player cell")
+  Assert.equal(context.unlockLevel, 0, "the fallback carries the saved progression tier")
+  Assert.equal(context.playerGender, "male", "the fallback carries the live gender")
+end
+
+function T.tests.map_init_holds_the_last_exterior_on_unmapped_indoor_maps()
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local friends = companion()
+  local world = PhoneWorldContext.new({
+    state = friends.state,
+    runtime = { worldSwapCoordinator = { pokegearLastExterior = { x = 12, y = 8 } } },
+  })
+  local context = world:mapInit({
+    mapSymbol = "MAP_UNMAPPED_INTERIOR",
+    playerX = 3,
+    playerZ = 4,
+    isOutdoor = false,
+    playerGender = "female",
+  }, friends.catalog)
+  Assert.equal(context.explicitX, 0, "the indoor fallback carries zero headers")
+  Assert.deepEqual(context.lastExterior, { x = 12, y = 8 }, "the indoor fallback holds the last exterior")
+  Assert.equal(context.region, "johto", "the indoor fallback region follows the exterior cell")
+  Assert.equal(context.playerGender, "female", "the indoor fallback carries the live gender")
+end
+
 function T.tests.radio_facts_refuse_maps_without_compiled_coverage()
   local ok, err = pcall(PokegearComposition.radioFacts, radioRuntime("MAP_UNCOMPILED", {}), regionCatalog())
   Assert.isFalse(ok, "a map without compiled coverage never defaults to Johto")
