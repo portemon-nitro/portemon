@@ -3417,11 +3417,22 @@ function FieldBattlePresentation:advanceWarmup(sceneKey, gpuAllowance)
   return false, cause
 end
 
----@param sceneKey string predicted scene key under warming
----@param gpuAllowance integer shared idle realization allowance
----@return boolean usedGpu
----@return string? failure
-function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowance)
+local function failWarmPlan(self, sceneKey, suffix)
+  local cause = "battle warmup " .. sceneKey .. suffix
+  self._warmPlanFailure = cause
+  return nil, cause
+end
+
+local function dropWarmTicket(self, token)
+  for position, ticket in ipairs(self._warmTickets) do
+    if ticket.token == token then
+      table.remove(self._warmTickets, position)
+      break
+    end
+  end
+end
+
+local function warmupPreconditions(self, sceneKey)
   if self._disposed then
     return false, nil
   end
@@ -3444,27 +3455,10 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
   if type(requestPresentation) ~= "function" or type(requestScene) ~= "function" then
     return false, nil
   end
-  local allowance = (type(gpuAllowance) == "number" and gpuAllowance >= 1) and 1 or 0
-  if self._warmTickets == nil then
-    self._warmTickets = {}
-  end
-  if self._warmPaths == nil then
-    self._warmPaths = {}
-  end
-  if self._warmSamplers == nil then
-    self._warmSamplers = {}
-  end
-  if self._warmDesired ~= sceneKey then
-    cancelWarmTickets(self)
-    retireIncompleteWarmGroups(self)
-    self._warmDesired = sceneKey
-    self._warmFailed = {}
-    self._warmPlan = nil
-    self._warmPlanFailure = nil
-  end
-  if self._warmFailed == nil then
-    self._warmFailed = {}
-  end
+  return requestPresentation, requestScene
+end
+
+local function warmupFastSettled(self, sceneKey)
   -- A settled scene idles without touching derived hosts or staged
   -- documents: the desired key, staged BG3 record, empty ticket ledger,
   -- complete scene group, and every fixed pin with its recorded path
@@ -3493,65 +3487,53 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       end
     end
     if settledFast then
-      return false, nil
+      return true
     end
   end
-  -- A latched terminal fault idles quietly until the prediction
-  -- changes: the first failure stays in _warmFailure, while later
-  -- same-key rounds spend no semantic, document, or pool work.
-  if self._warmPlanFailure ~= nil or next(self._warmFailed) ~= nil then
-    return false, nil
-  end
+  return false
+end
+
+local function requestWarmDemands(self, sceneKey, requestPresentation, requestScene)
   -- Semantic demand stays below the foreground: near compilation only,
   -- and a pending source waits without touching missing files.
   local okPresentation, readyPresentation, failurePresentation = pcall(requestPresentation, "near")
   if not okPresentation then
-    local cause = "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(readyPresentation)
-    self._warmPlanFailure = cause
-    return false, cause
+    return failWarmPlan(self, sceneKey, " presentation demand failed: " .. tostring(readyPresentation))
   end
   if failurePresentation ~= nil then
-    local cause = "battle warmup " .. sceneKey .. " presentation demand failed: " .. tostring(failurePresentation)
-    self._warmPlanFailure = cause
-    return false, cause
+    return failWarmPlan(self, sceneKey, " presentation demand failed: " .. tostring(failurePresentation))
   end
   if readyPresentation ~= true then
     return false, nil
   end
   local okScene, readyScene, failureScene = pcall(requestScene, sceneKey, "near")
   if not okScene then
-    local sceneCause = "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(readyScene)
-    self._warmPlanFailure = sceneCause
-    return false, sceneCause
+    return failWarmPlan(self, sceneKey, " scene demand failed: " .. tostring(readyScene))
   end
   if failureScene ~= nil then
-    local sceneCause = "battle warmup " .. sceneKey .. " scene demand failed: " .. tostring(failureScene)
-    self._warmPlanFailure = sceneCause
-    return false, sceneCause
+    return failWarmPlan(self, sceneKey, " scene demand failed: " .. tostring(failureScene))
   end
   if readyScene ~= true then
     return false, nil
   end
-  -- One validated plan per semantically ready prediction: the scene
-  -- record and the ordered scene-plus-fixed art list resolve once,
-  -- then every pending round reuses them without reparsing staged
-  -- documents. A ready answer without a verifiable staged
-  -- scene/global record is a terminal speculative fault, never a
-  -- reason to reload every frame.
+  return true
+end
+
+---@param self FieldBattlePresentation
+---@param sceneKey string predicted scene key under warming
+---@return { sceneKey: string, record: BattlePresentationCache.SceneRecord, ordered: { key: string, path: string, sampler: table<string, string>? }[] }? validated plan
+---@return string? failure latched cause when unready
+local function buildWarmPlan(self, sceneKey)
   local plan = self._warmPlan
   if plan == nil then
     local stagedRecord, stagedRecordErr = BattlePresentationCache.loadScene(self._cacheFs, sceneKey)
     if stagedRecord == nil then
-      local cause = "battle warmup " .. sceneKey .. " scene is not staged: " .. tostring(stagedRecordErr)
-      self._warmPlanFailure = cause
-      return false, cause
+      return failWarmPlan(self, sceneKey, " scene is not staged: " .. tostring(stagedRecordErr))
     end
     local introLayer = stagedRecord.introLayer
     local terrainSprites = stagedRecord.terrainSprites
     if type(introLayer) ~= "table" or type(introLayer.image) ~= "string" or introLayer.image == "" then
-      local cause = "battle warmup " .. sceneKey .. " scene has no staged intro art"
-      self._warmPlanFailure = cause
-      return false, cause
+      return failWarmPlan(self, sceneKey, " scene has no staged intro art")
     end
     if
       type(terrainSprites) ~= "table"
@@ -3562,23 +3544,17 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       or type(terrainSprites.foe.image) ~= "string"
       or terrainSprites.foe.image == ""
     then
-      local cause = "battle warmup " .. sceneKey .. " scene has no staged terrain art"
-      self._warmPlanFailure = cause
-      return false, cause
+      return failWarmPlan(self, sceneKey, " scene has no staged terrain art")
     end
     -- The single verified envelope core is reused as-is; a pending
     -- global worker simply waits while a terminal core failure latches
     -- the speculative fault, never a per-frame reload.
     local staged, stagedErr = self:_verifiedManifest()
     if stagedErr ~= nil then
-      local cause = "battle warmup " .. sceneKey .. " presentation failed: " .. tostring(stagedErr)
-      self._warmPlanFailure = cause
-      return false, cause
+      return failWarmPlan(self, sceneKey, " presentation failed: " .. tostring(stagedErr))
     end
     if staged == nil then
-      local cause = "battle warmup " .. sceneKey .. " presentation is not staged"
-      self._warmPlanFailure = cause
-      return false, cause
+      return failWarmPlan(self, sceneKey, " presentation is not staged")
     end
     local grouped = {} ---@type { key: string, path: string, sampler: table<string, string>? }[]
     local particles = registerParticleEntries(self, sceneKey, stagedRecord)
@@ -3602,9 +3578,7 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     for _, fixedKey in ipairs(fixedKeys) do
       local artPath = stagedArtPath(staged, fixedKey)
       if type(artPath) ~= "string" or artPath == "" then
-        local cause = "battle warmup " .. sceneKey .. " fixed art is not staged: " .. fixedKey
-        self._warmPlanFailure = cause
-        return false, cause
+        return failWarmPlan(self, sceneKey, " fixed art is not staged: " .. fixedKey)
       end
       planned[#planned + 1] = { key = fixedKey, path = artPath }
     end
@@ -3613,13 +3587,10 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     plan = { sceneKey = sceneKey, record = stagedRecord, ordered = planned }
     self._warmPlan = plan
   end
-  local record = plan.record
-  local ordered = plan.ordered
-  local ticketed = {} ---@type table<string, boolean>
-  for _, ticket in ipairs(self._warmTickets) do
-    ticketed[ticket.key] = true
-  end
-  enrollWarmEntries(self, pool, ordered, ticketed)
+  return plan
+end
+
+local function stageWarmBg3(self, sceneKey, record)
   -- The BG3 source values stage once per predicted scene as pure cache
   -- reads under any allowance; a pending replacement keeps the preceding
   -- usable record until its own successor stages.
@@ -3630,35 +3601,30 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
     local mapEntry = type(layer) == "table" and layer.map or nil
     local paletteEntry = type(layer) == "table" and layer.palette or nil
     if type(charactersEntry) ~= "table" or type(mapEntry) ~= "table" or type(paletteEntry) ~= "table" then
-      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
-      self._warmPlanFailure = bg3Cause
-      return false, bg3Cause
+      return failWarmPlan(self, sceneKey, " BG3 source paths are not staged")
     end
     if charactersEntry.format ~= "indexed8" then
-      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 keeps the staged 8bpp character format"
-      self._warmPlanFailure = bg3Cause
-      return false, bg3Cause
+      return failWarmPlan(self, sceneKey, " BG3 keeps the staged 8bpp character format")
     end
     local charactersPath = charactersEntry.path
     local mapPath = mapEntry.path
     local palettePath = paletteEntry.path
     if type(charactersPath) ~= "string" or type(mapPath) ~= "string" or type(palettePath) ~= "string" then
-      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 source paths are not staged"
-      self._warmPlanFailure = bg3Cause
-      return false, bg3Cause
+      return failWarmPlan(self, sceneKey, " BG3 source paths are not staged")
     end
     local characters = self._cacheFs:read(charactersPath)
     local map = self._cacheFs:loadLua(mapPath)
     local palette = self._cacheFs:loadLua(palettePath)
     if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
-      local bg3Cause = "battle warmup " .. sceneKey .. " BG3 payload is not staged"
-      self._warmPlanFailure = bg3Cause
-      return false, bg3Cause
+      return failWarmPlan(self, sceneKey, " BG3 payload is not staged")
     end
     self._warmBg3 = { sceneKey = sceneKey, characters = characters, map = map, palette = palette }
     self._warmBg3Key = sceneKey
   end
-  -- A fully warm group settles without touching the hosts again.
+  return true
+end
+
+local function warmupGroupSettled(self, sceneKey, ordered)
   local settled = self._warmBg3Key == sceneKey
   if settled then
     for _, entry in ipairs(ordered) do
@@ -3672,11 +3638,11 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       end
     end
   end
-  if settled then
-    return false, nil
-  end
-  -- Poll every ticket without blocking; the first failure names its
-  -- scene, key, and path while the remaining tickets stay pending.
+
+  return settled
+end
+
+local function pollWarmTickets(self, sceneKey, pool)
   local readyTicket = nil ---@type { key: string, path: string, sampler: table<string, string>?, token: integer }?
   local index = 1
   while index <= #self._warmTickets do
@@ -3694,41 +3660,106 @@ function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowanc
       table.remove(self._warmTickets, index)
       local reason = okPoll and tostring(cause) or tostring(status)
       self._warmFailed[ticket.path] = reason
-      return false,
+      return nil,
         "battle warmup " .. sceneKey .. " image " .. ticket.key .. " upload failed: " .. ticket.path .. ": " .. reason
     end
   end
-  if allowance < 1 or readyTicket == nil then
-    return false, nil
-  end
+  return readyTicket, nil
+end
+
+local function adoptWarmTicket(self, sceneKey, pool, readyTicket)
   -- One pool adoption per granted allowance: the source and palette
   -- pair behind the ticket counts as the single operation.
   local ticketKey, ticketPath, ticketToken = readyTicket.key, readyTicket.path, readyTicket.token
   local okAcquire, lease = pcall(pool.acquire, pool, ticketToken)
   if not okAcquire or type(lease) ~= "table" or lease.image == nil then
     cancelWarmTicketToken(self, ticketToken)
-    for position, ticket in ipairs(self._warmTickets) do
-      if ticket.token == ticketToken then
-        table.remove(self._warmTickets, position)
-        break
-      end
-    end
+    dropWarmTicket(self, ticketToken)
     local reason = okAcquire and "empty image lease" or tostring(lease)
     self._warmFailed[ticketPath] = reason
     return false,
       "battle warmup " .. sceneKey .. " image " .. ticketKey .. " upload failed: " .. ticketPath .. ": " .. reason
   end
-  for position, ticket in ipairs(self._warmTickets) do
-    if ticket.token == ticketToken then
-      table.remove(self._warmTickets, position)
-      break
-    end
-  end
+  dropWarmTicket(self, ticketToken)
   self._warmPinned[ticketKey] = { lease = lease, handle = lease }
   self._warmPaths[ticketKey] = ticketPath
   self._warmSamplers[ticketKey] = readyTicket.sampler or POOLED_SAMPLER
   if warmGroupComplete(self, sceneKey) then
     retireWarmGroups(self, sceneKey)
+  end
+  return true
+end
+
+---@param sceneKey string predicted scene key under warming
+---@param gpuAllowance integer shared idle realization allowance
+---@return boolean usedGpu
+---@return string? failure
+function FieldBattlePresentation._advanceWarmupInner(self, sceneKey, gpuAllowance)
+  local requestPresentation, requestScene = warmupPreconditions(self, sceneKey)
+  if requestPresentation == nil then
+    return false, nil
+  end
+  local allowance = (type(gpuAllowance) == "number" and gpuAllowance >= 1) and 1 or 0
+  local pool = self._pool
+  assert(pool ~= nil, "warmup preconditions stage the shared pool")
+  if self._warmTickets == nil then
+    self._warmTickets = {}
+  end
+  if self._warmPaths == nil then
+    self._warmPaths = {}
+  end
+  if self._warmSamplers == nil then
+    self._warmSamplers = {}
+  end
+  if self._warmDesired ~= sceneKey then
+    cancelWarmTickets(self)
+    retireIncompleteWarmGroups(self)
+    self._warmDesired = sceneKey
+    self._warmFailed = {}
+    self._warmPlan = nil
+    self._warmPlanFailure = nil
+  end
+  if self._warmFailed == nil then
+    self._warmFailed = {}
+  end
+  if warmupFastSettled(self, sceneKey) then
+    return false, nil
+  end
+  if self._warmPlanFailure ~= nil or next(self._warmFailed) ~= nil then
+    return false, nil
+  end
+  local demandsOk, demandErr = requestWarmDemands(self, sceneKey, requestPresentation, requestScene)
+  if not demandsOk then
+    return false, demandErr
+  end
+  local plan, planErr = buildWarmPlan(self, sceneKey)
+  if plan == nil then
+    return false, planErr
+  end
+  local record = plan.record
+  local ordered = plan.ordered
+  local ticketed = {} ---@type table<string, boolean>
+  for _, ticket in ipairs(self._warmTickets) do
+    ticketed[ticket.key] = true
+  end
+  enrollWarmEntries(self, pool, ordered, ticketed)
+  local stagedOk, stageErr = stageWarmBg3(self, sceneKey, record)
+  if not stagedOk then
+    return false, stageErr
+  end
+  if warmupGroupSettled(self, sceneKey, ordered) then
+    return false, nil
+  end
+  local readyTicket, ticketErr = pollWarmTickets(self, sceneKey, pool)
+  if ticketErr ~= nil then
+    return false, ticketErr
+  end
+  if allowance < 1 or readyTicket == nil then
+    return false, nil
+  end
+  local adopted, adoptErr = adoptWarmTicket(self, sceneKey, pool, readyTicket)
+  if not adopted then
+    return false, adoptErr
   end
   return true, nil
 end
