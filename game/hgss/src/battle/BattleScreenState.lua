@@ -1924,87 +1924,119 @@ local function sourceIndexPathsAtSlot(entry, firstSlot)
   return paths
 end
 
----@return table<string, unknown> internal semantic snapshot for resolvers and renderers
-function BattleScreenState:_snapshot()
-  local battlers = self._timeline:battlers()
-  local openingPresentation = self._timeline:openingPresentation()
-  local sceneAssets = self._assets:sceneLayer()
-  local introLayer = type(sceneAssets) == "table" and sceneAssets.introLayer or nil
-  local terrainSprites = type(sceneAssets) == "table" and sceneAssets.terrainSprites or nil
-  if openingPresentation ~= nil then
-    -- Demand before dereference: every selector the opening names
-    -- reaches the asset holder before any entry lookup, and a still
-    -- pending leaf only skips enrichment on this pass. The per-launch
-    -- entry maps stay stable, so a later ready pass enriches the same
-    -- slide records without replacing the timeline tables.
-    local trainerPictures = {} ---@type string[]
-    local latestView = self._pendingFinal or self._latestView
-    if openingPresentation.playerTrainerVisible == true and type(latestView) == "table" then
-      local playerTrainer = latestView.playerTrainer
-      if type(playerTrainer) == "table" and type(playerTrainer.classKey) == "string" then
-        trainerPictures[#trainerPictures + 1] = "back:" .. playerTrainer.classKey
+-- Shared icon animation grade: hit points, maximum, condition, and the
+-- animation frame class shared by command and target icons.
+---@param record table<string, unknown> icon record carrying hit points and condition
+---@return number hit points
+---@return number maximum hit points
+---@return integer animation class
+local function snapshotIconAnimation(record)
+  local hp = tonumber(record.hp) or 0
+  local maxHp = tonumber(record.maxHp) or 0
+  local condition = type(record.condition) == "string" and record.condition:lower() or ""
+  local animation = 0
+  if hp > 0 and condition ~= "sleep" then
+    if condition == "poison" or condition == "bad-poison" then
+      animation = 5
+    elseif maxHp > 0 then
+      local pixels = math.max(1, math.floor(hp * 48 / maxHp))
+      animation = hp == maxHp and 1 or pixels > 24 and 2 or pixels > 9 and 3 or 4
+    end
+  end
+  return hp, maxHp, animation
+end
+
+-- Stages opening trainers and battle balls behind their asset holder.
+---@param self BattleScreenState
+---@param openingPresentation table<string, unknown>? opening presentation under stage
+---@param latest table<string, unknown>? latest battle view under stage
+local function stageSnapshotOpening(self, openingPresentation, latest)
+  if openingPresentation == nil then
+    return
+  end
+  -- Demand before dereference: every selector the opening names
+  -- reaches the asset holder before any entry lookup, and a still
+  -- pending leaf only skips enrichment on this pass. The per-launch
+  -- entry maps stay stable, so a later ready pass enriches the same
+  -- slide records without replacing the timeline tables.
+  local trainerPictures = {} ---@type string[]
+  if openingPresentation.playerTrainerVisible == true and type(latest) == "table" then
+    local playerTrainer = latest.playerTrainer
+    if type(playerTrainer) == "table" and type(playerTrainer.classKey) == "string" then
+      trainerPictures[#trainerPictures + 1] = "back:" .. playerTrainer.classKey
+    end
+  end
+  if openingPresentation.foeTrainerVisible == true and type(latest) == "table" then
+    local foeTrainers = latest.foeTrainers
+    if type(foeTrainers) == "table" then
+      for _, trainer in ipairs(foeTrainers) do
+        if type(trainer) == "table" and type(trainer.classKey) == "string" then
+          trainerPictures[#trainerPictures + 1] = "front:" .. trainer.classKey
+        end
       end
     end
-    if openingPresentation.foeTrainerVisible == true and type(latestView) == "table" then
-      local foeTrainers = latestView.foeTrainers
-      if type(foeTrainers) == "table" then
-        for _, trainer in ipairs(foeTrainers) do
-          if type(trainer) == "table" and type(trainer.classKey) == "string" then
-            trainerPictures[#trainerPictures + 1] = "front:" .. trainer.classKey
+  end
+  self._assets:addTrainerPictures(trainerPictures)
+  local battleBalls = {} ---@type string[]
+  if type(latest) == "table" then
+    for _, groupName in ipairs({ "own", "foes" }) do
+      local group = latest[groupName]
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.active ~= false and type(record.ballKey) == "string" then
+            battleBalls[#battleBalls + 1] = "ball:" .. record.ballKey
           end
         end
       end
     end
-    self._assets:addTrainerPictures(trainerPictures)
-    local battleBalls = {} ---@type string[]
-    if type(latestView) == "table" then
-      for _, groupName in ipairs({ "own", "foes" }) do
-        local group = latestView[groupName]
-        if type(group) == "table" then
-          for _, record in ipairs(group) do
-            if type(record) == "table" and record.active ~= false and type(record.ballKey) == "string" then
-              battleBalls[#battleBalls + 1] = "ball:" .. record.ballKey
-            end
-          end
-        end
-      end
+  end
+  self._assets:addBattleBalls(battleBalls)
+end
+
+-- Enriches opening trainer slides with staged picture metadata and palette order.
+---@param self BattleScreenState
+---@param openingPresentation table<string, unknown>? opening presentation under enrich
+---@param sceneAssets table<string, unknown>? staged scene layer under enrich
+local function enrichSnapshotSlides(self, openingPresentation, sceneAssets)
+  if openingPresentation == nil then
+    return
+  end
+  local view = self._manifest --[[@as table<string, unknown>]]
+  local trainerEntries = view.trainerPictures.entries
+  local nativePaletteLayout = type(sceneAssets) == "table" and sceneAssets.nativePaletteLayout or nil
+  local nativeTrainerLayouts = type(nativePaletteLayout) == "table" and nativePaletteLayout.trainers or nil
+  for slideIndex, slide in ipairs(openingPresentation.trainerSlides or {}) do
+    local selector = assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
+    if type(nativeTrainerLayouts) == "table" then
+      local layout =
+        assert(nativeTrainerLayouts[slideIndex], "visible trainer slides have an ordered physical palette instance")
+      assert(layout.selector == selector, "trainer slides follow their accepted physical palette order")
+      slide.paletteLayoutIndex = slideIndex
+      slide.sourceIndexPaths = layout.sourceIndexPaths
     end
-    self._assets:addBattleBalls(battleBalls)
-    local view = self._manifest --[[@as table<string, unknown>]]
-    local trainerEntries = view.trainerPictures.entries
-    local nativePaletteLayout = type(sceneAssets) == "table" and sceneAssets.nativePaletteLayout or nil
-    local nativeTrainerLayouts = type(nativePaletteLayout) == "table" and nativePaletteLayout.trainers or nil
-    for slideIndex, slide in ipairs(openingPresentation.trainerSlides or {}) do
-      local selector =
-        assert(type(slide.selector) == "string" and slide.selector, "trainer slides name a staged picture")
-      if type(nativeTrainerLayouts) == "table" then
-        local layout =
-          assert(nativeTrainerLayouts[slideIndex], "visible trainer slides have an ordered physical palette instance")
-        assert(layout.selector == selector, "trainer slides follow their accepted physical palette order")
-        slide.paletteLayoutIndex = slideIndex
-        slide.sourceIndexPaths = layout.sourceIndexPaths
-      end
-      local entry = trainerEntries[selector]
-      if entry ~= nil then
-        local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
-        local sourceSequence = assert(slide.sourceSequence, "trainer slides identify their source animation sequence")
-        local animationData = assert(entry.animation, "trainer picture metadata stages animation frames")
-        local animation = sourceSequence == 0 and animationData or animationData.sequences[sourceSequence + 1]
-        assert(animation ~= nil, "trainer slide sequence is staged")
-        local sourceFrame =
-          assert(animation.frames[frame + 1], "trainer slide frame resolves to staged source metadata")
-        local offset = assert(sourceFrame.rasterOffset, "trainer frame metadata includes its raster origin")
-        slide.drawableKey = assert(sourceFrame.drawableKey, "trainer frame metadata includes its exact drawable key")
-        slide.x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry an origin x") + offset.x
-        slide.y = assert(type(slide.y) == "number" and slide.y, "trainer slides carry an origin y") + offset.y
-      end
+    local entry = trainerEntries[selector]
+    if entry ~= nil then
+      local frame = assert(type(slide.frame) == "number" and slide.frame, "trainer slides select a source frame")
+      local sourceSequence = assert(slide.sourceSequence, "trainer slides identify their source animation sequence")
+      local animationData = assert(entry.animation, "trainer picture metadata stages animation frames")
+      local animation = sourceSequence == 0 and animationData or animationData.sequences[sourceSequence + 1]
+      assert(animation ~= nil, "trainer slide sequence is staged")
+      local sourceFrame = assert(animation.frames[frame + 1], "trainer slide frame resolves to staged source metadata")
+      local offset = assert(sourceFrame.rasterOffset, "trainer frame metadata includes its raster origin")
+      slide.drawableKey = assert(sourceFrame.drawableKey, "trainer frame metadata includes its exact drawable key")
+      slide.x = assert(type(slide.x) == "number" and slide.x, "trainer slides carry an origin x") + offset.x
+      slide.y = assert(type(slide.y) == "number" and slide.y, "trainer slides carry an origin y") + offset.y
     end
   end
-  for _, battler in ipairs(battlers) do
-    battler.shakeDx = self._timeline:shake(battler.combatant --[[@as integer]])
-  end
-  self._scene:observe(battlers)
-  enrichScene(self, battlers)
+end
+
+-- Collects the snapshot roster, foe count, and combatant records by slot.
+---@param self BattleScreenState
+---@param battlers table<integer, table<string, unknown>> detached battlers under snapshot
+---@return table<integer, table<string, unknown>> roster records
+---@return integer foe count
+---@return table<integer, table<string, unknown>> battlers by combatant
+local function snapshotRoster(self, battlers)
   local roster = {}
   local latest = self._pendingFinal or self._latestView
   if type(latest) == "table" and type(latest.own) == "table" then
@@ -2024,6 +2056,15 @@ function BattleScreenState:_snapshot()
       names[battler.combatant] = battler
     end
   end
+  return roster, foes, names
+end
+
+-- Resolves the snapshot narration line from notice, timeline, and prompts.
+---@param self BattleScreenState
+---@param names table<integer, table<string, unknown>> battlers by combatant
+---@return string? message
+---@return table<string, unknown>? level-up stats
+local function snapshotMessage(self, names)
   local commandPrompt = self:_commandPrompt(names)
   local timelineMessage = self._timeline:message()
   local timelineMessageActive = self._timeline:messageActive()
@@ -2037,6 +2078,16 @@ function BattleScreenState:_snapshot()
       message = shiftPrompt or commandPrompt or timelineMessage
     end
   end
+  return message, levelUpStats
+end
+
+-- Resolves the acting record and active battler behind command selection.
+---@param self BattleScreenState
+---@param names table<integer, table<string, unknown>> battlers by combatant
+---@param battlers table<integer, table<string, unknown>> detached battlers under snapshot
+---@return table<string, unknown>? acting record
+---@return table<string, unknown>? active battler
+local function snapshotActing(self, names, battlers)
   local acting = nil
   local activeBattler = nil
   local addressedActor = false
@@ -2096,6 +2147,15 @@ function BattleScreenState:_snapshot()
       ) + math.modf(1.5 * math.sin(math.rad(180 + 20 * self._activeEffectTick)))
     end
   end
+  return acting, activeBattler
+end
+
+-- Builds the command icon behind the acting record.
+---@param self BattleScreenState
+---@param acting table<string, unknown>? acting record
+---@param latest table<string, unknown>? latest battle view under snapshot
+---@return table<string, unknown>? command icon
+local function snapshotCommandIcon(self, acting, latest)
   local commandIcon = nil
   if type(latest) == "table" and type(latest.own) == "table" then
     local iconRecord = nil
@@ -2124,18 +2184,7 @@ function BattleScreenState:_snapshot()
     then
       local iconKey = MonCache.iconSelector(iconRecord.species, iconRecord.form --[[@as integer]], false)
       if self._monIconProvider ~= nil then
-        local hp = tonumber(iconRecord.hp) or 0
-        local maxHp = tonumber(iconRecord.maxHp) or 0
-        local condition = type(iconRecord.condition) == "string" and iconRecord.condition:lower() or ""
-        local animation = 0
-        if hp > 0 and condition ~= "sleep" then
-          if condition == "poison" or condition == "bad-poison" then
-            animation = 5
-          elseif maxHp > 0 then
-            local pixels = math.max(1, math.floor(hp * 48 / maxHp))
-            animation = hp == maxHp and 1 or pixels > 24 and 2 or pixels > 9 and 3 or 4
-          end
-        end
+        local hp, maxHp, animation = snapshotIconAnimation(iconRecord)
         commandIcon = {
           key = iconKey,
           hp = hp,
@@ -2147,6 +2196,14 @@ function BattleScreenState:_snapshot()
       end
     end
   end
+  return commandIcon
+end
+
+-- Collects drawable icon keys behind the command icon and child slots.
+---@param self BattleScreenState
+---@param commandIcon table<string, unknown>? command icon
+---@return string[] icon keys
+local function snapshotIconKeys(self, commandIcon)
   local iconKeys = commandIcon ~= nil and { commandIcon.key } or {}
   local activeChildView = self._subflows:status().childView
   local childNative = type(activeChildView) == "table" and activeChildView.native or nil
@@ -2159,15 +2216,16 @@ function BattleScreenState:_snapshot()
       end
     end
   end
-  local menuWindows = nil
-  if self._mode == "command" and self._menuGateTicks > 0 and type(acting) == "table" then
-    local sideType = acting.sideType
-    assert(
-      type(sideType) == "number" and sideType % 1 == 0,
-      "the active command actor resolves its integer source battle slot"
-    )
-    menuWindows = menuSlideState(self._menuRevealStep, sideType --[[@as integer]])
-  end
+  return iconKeys
+end
+
+-- Builds target records with icons behind the target candidates.
+---@param self BattleScreenState
+---@param names table<integer, table<string, unknown>> battlers by combatant
+---@param iconKeys string[] icon keys under extension
+---@return table<integer, table<string, unknown>>? targets
+---@return string[] icon keys
+local function snapshotTargets(self, names, iconKeys)
   local targets = nil
   if self._targetCandidates ~= nil then
     targets = {}
@@ -2188,18 +2246,7 @@ function BattleScreenState:_snapshot()
       local iconFrameIndex = nil
       if iconKey ~= nil then
         assert(type(known) == "table" and known.visible ~= false, "a target icon belongs to a visible battler")
-        local hp = tonumber(known.hp) or 0
-        local maxHp = tonumber(known.maxHp) or 0
-        local condition = type(known.condition) == "string" and known.condition:lower() or ""
-        local animation = 0
-        if hp > 0 and condition ~= "sleep" then
-          if condition == "poison" or condition == "bad-poison" then
-            animation = 5
-          elseif maxHp > 0 then
-            local pixels = math.max(1, math.floor(hp * 48 / maxHp))
-            animation = hp == maxHp and 1 or pixels > 24 and 2 or pixels > 9 and 3 or 4
-          end
-        end
+        local _, _, animation = snapshotIconAnimation(known)
         iconFrameIndex = animation == 0 and 1 or math.floor(self._iconAnimationTick / (animation + 2)) % 2 + 1
       end
       local gender = type(known) == "table" and known.gender or nil
@@ -2231,30 +2278,16 @@ function BattleScreenState:_snapshot()
       }
     end
   end
-  self._assets:setIconKeys(iconKeys)
-  local staged = {}
-  if self._request ~= nil and type(self._request.actors) == "table" then
-    local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
-    for index, addressed in ipairs(actors) do
-      local fragment = self._staged[index]
-      if type(fragment) == "table" and type(addressed) == "table" then
-        staged[#staged + 1] = {
-          index = index,
-          combatant = addressed.combatant,
-          kind = fragment.kind,
-        }
-      end
-    end
-  end
-  local gaugePatchTiles = {}
-  for key, visual in pairs(self._gaugeVisuals) do
-    local side = gaugePatchTiles[visual.sideType]
-    if side == nil then
-      side = {}
-      gaugePatchTiles[visual.sideType] = side
-    end
-    side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
-  end
+  return targets, iconKeys
+end
+
+-- Builds completion child views, prompts, and button feedback.
+---@param self BattleScreenState
+---@return table<string, unknown>? child view
+---@return string? completion prompt
+---@return table<string, unknown>? button feedback
+---@return table<string, unknown>? armed button
+local function snapshotCompletionViews(self)
   local childView = self:_completionChildView(self:_twoOptionChildView(copyValue(self._subflows:status().childView)))
   if type(childView) == "table" then
     if childView.kind == "party" then
@@ -2291,6 +2324,14 @@ function BattleScreenState:_snapshot()
       armed = { scope = feedback.scope, id = feedback.id }
     end
   end
+  return childView, completionPrompt, buttonFeedback, armed
+end
+
+-- Copies staged terrain sprites with resolved drawables.
+---@param self BattleScreenState
+---@param terrainSprites table<string, unknown>? staged terrain sprites
+---@return table<string, unknown>? terrain sprite views
+local function snapshotTerrainSprites(self, terrainSprites)
   local terrainSpritesView = terrainSprites
   if type(terrainSprites) == "table" then
     terrainSpritesView = {}
@@ -2309,6 +2350,66 @@ function BattleScreenState:_snapshot()
       end
     end
   end
+  return terrainSpritesView
+end
+
+---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
+function BattleScreenState:_snapshot()
+  local battlers = self._timeline:battlers()
+  local openingPresentation = self._timeline:openingPresentation()
+  local sceneAssets = self._assets:sceneLayer()
+  local introLayer = type(sceneAssets) == "table" and sceneAssets.introLayer or nil
+  local terrainSprites = type(sceneAssets) == "table" and sceneAssets.terrainSprites or nil
+  local latest = self._pendingFinal or self._latestView
+  stageSnapshotOpening(self, openingPresentation, latest)
+  enrichSnapshotSlides(self, openingPresentation, sceneAssets)
+  for _, battler in ipairs(battlers) do
+    battler.shakeDx = self._timeline:shake(battler.combatant --[[@as integer]])
+  end
+  self._scene:observe(battlers)
+  enrichScene(self, battlers)
+  local roster, foes, names = snapshotRoster(self, battlers)
+  local message, levelUpStats = snapshotMessage(self, names)
+  local acting = snapshotActing(self, names, battlers)
+  local commandIcon = snapshotCommandIcon(self, acting, latest)
+  local iconKeys = snapshotIconKeys(self, commandIcon)
+  local menuWindows = nil
+  if self._mode == "command" and self._menuGateTicks > 0 and type(acting) == "table" then
+    local sideType = acting.sideType
+    assert(
+      type(sideType) == "number" and sideType % 1 == 0,
+      "the active command actor resolves its integer source battle slot"
+    )
+    menuWindows = menuSlideState(self._menuRevealStep, sideType --[[@as integer]])
+  end
+  local targets
+  targets, iconKeys = snapshotTargets(self, names, iconKeys)
+  self._assets:setIconKeys(iconKeys)
+  local staged = {}
+  if self._request ~= nil and type(self._request.actors) == "table" then
+    local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
+    for index, addressed in ipairs(actors) do
+      local fragment = self._staged[index]
+      if type(fragment) == "table" and type(addressed) == "table" then
+        staged[#staged + 1] = {
+          index = index,
+          combatant = addressed.combatant,
+          kind = fragment.kind,
+        }
+      end
+    end
+  end
+  local gaugePatchTiles = {}
+  for key, visual in pairs(self._gaugeVisuals) do
+    local side = gaugePatchTiles[visual.sideType]
+    if side == nil then
+      side = {}
+      gaugePatchTiles[visual.sideType] = side
+    end
+    side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
+  end
+  local childView, completionPrompt, buttonFeedback, armed = snapshotCompletionViews(self)
+  local terrainSpritesView = snapshotTerrainSprites(self, terrainSprites)
   return {
     battleKind = self._kind,
     menuMode = self:_menuMode(),
@@ -2380,7 +2481,6 @@ function BattleScreenState:_snapshot()
   }
 end
 
----@return table<string, unknown>? options entry for the acting request position, nil without an open request
 function BattleScreenState:_actorOptions()
   if self._request == nil or self._options == nil then
     return nil
