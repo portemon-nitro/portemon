@@ -10,6 +10,7 @@
 -- surrounding facility progression or networking stays with their owners.
 
 local BattleErrors = require("libs.battle.src.errors")
+local BattleState = require("libs.battle.src.BattleState")
 
 ---@class BattleFormatDefinition
 ---@field key string format identity this policy binds
@@ -437,6 +438,43 @@ end
 function NativeFormats.validateScenario(key, scenario)
   NativeFormats.policyFor(key).validateScenario(scenario)
   return true
+end
+
+--- Resolves the admitted action vocabulary for decision batches: custom
+--- content formats name their own kinds, native policies contribute
+--- theirs, and the caller supplies the fallback vocabulary when no policy
+--- names kinds. Hgss wild formats extend the fallback with run; generic
+--- sessions fall back to their default kinds.
+---@param formatKey string format identity owning the admitted action vocabulary
+---@param content table<string, unknown> frozen executable battle content
+---@param validated table<string, unknown>? detached scenario under construction for native topology proof
+---@param defaultsFor fun(formatKey: string, validated: table<string, unknown>?): string[] fallback vocabulary when no policy names kinds
+---@return string[] admitted action kinds for the decision batches
+function NativeFormats.admittedKindsFor(formatKey, content, validated, defaultsFor)
+  local contentRecord = content --[[@as table<string, unknown>]]
+  local lookup = contentRecord.format
+  if type(lookup) == "function" then
+    local okCustom, custom = pcall(lookup, contentRecord, formatKey)
+    if okCustom and type(custom) == "table" then
+      local kinds = (custom --[[@as table<string, unknown>]]).actionKinds
+      if kinds == nil then
+        return defaultsFor(formatKey, validated)
+      end
+      return BattleState.copyActionKinds(kinds)
+    end
+  end
+  local okNative, policy = pcall(NativeFormats.policyFor, formatKey)
+  if okNative and type(policy) == "table" then
+    if validated ~= nil then
+      NativeFormats.validateScenario(formatKey, validated)
+    end
+    local kinds = (policy --[[@as table<string, unknown>]]).actionKinds
+    if kinds == nil then
+      return defaultsFor(formatKey, validated)
+    end
+    return BattleState.copyActionKinds(kinds)
+  end
+  error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
 end
 
 return NativeFormats

@@ -178,37 +178,6 @@ local function defaultKindsFor(formatKey, validated)
   return kinds
 end
 
----@param formatKey string format identity owning the admitted action vocabulary
----@param content table<string, unknown> frozen executable battle content
----@param validated table<string, unknown>? detached scenario under construction for native topology proof
----@return string[] admitted action kinds for the decision batches
-local function admittedKindsFor(formatKey, content, validated)
-  local contentRecord = content --[[@as table<string, unknown>]]
-  local lookup = contentRecord.format
-  if type(lookup) == "function" then
-    local okCustom, custom = pcall(lookup, contentRecord, formatKey)
-    if okCustom and type(custom) == "table" then
-      local kinds = (custom --[[@as table<string, unknown>]]).actionKinds
-      if kinds == nil then
-        return defaultKindsFor(formatKey, validated)
-      end
-      return BattleState.copyActionKinds(kinds)
-    end
-  end
-  local okNative, policy = pcall(NativeFormats.policyFor, formatKey)
-  if okNative and type(policy) == "table" then
-    if validated ~= nil then
-      NativeFormats.validateScenario(formatKey, validated)
-    end
-    local kinds = (policy --[[@as table<string, unknown>]]).actionKinds
-    if kinds == nil then
-      return defaultKindsFor(formatKey, validated)
-    end
-    return BattleState.copyActionKinds(kinds)
-  end
-  error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
-end
-
 ---@param value unknown
 ---@return boolean
 local function isPositiveInt(value)
@@ -6556,7 +6525,8 @@ function HgssSessionExecutor.new(scenarioRecord, content)
     }))
   end
   BattleState.checkBattleContent(content, validated.ruleset --[[@as string]])
-  local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
+  local admitted =
+    NativeFormats.admittedKindsFor(validated.format --[[@as string]], content, validated, defaultKindsFor)
   local moveFacts = checkMoveFacts(validated)
   local speciesFacts = checkSpeciesFacts(validated)
   local itemFacts = checkItemFacts(validated)
@@ -6630,7 +6600,7 @@ function HgssSessionExecutor.restore(snapshotData, content)
     }))
   end
   BattleState.checkBattleContent(content, live.ruleset --[[@as string]])
-  local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
+  local admitted = NativeFormats.admittedKindsFor(live.format --[[@as string]], content, nil, defaultKindsFor)
   if type(live.rng) ~= "table" or live.rng.algorithm ~= BattleRng.ALGORITHM then
     error(BattleErrors.incompatibleSnapshot("native snapshots carry the native stream identity", {}))
   end
@@ -6816,22 +6786,6 @@ function HgssSessionExecutor:_finalizeOnce()
   end
 end
 
----@param a table<string, unknown>
----@param b table<string, unknown>
----@return boolean true when a commits before b
-local function byCommitOrder(a, b)
-  local actorA = (a.choice --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>]]
-  local actorB = (b.choice --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>]]
-  local combatA = actorA.combatant --[[@as integer]]
-  local combatB = actorB.combatant --[[@as integer]]
-  if combatA ~= combatB then
-    return combatA < combatB
-  end
-  local requestA = a.requestId --[[@as integer]]
-  local requestB = b.requestId --[[@as integer]]
-  return requestA < requestB
-end
-
 ---@param state table<string, unknown> live battle state under commit
 ---@param allowance integer? operations the current advance may still spend
 function HgssSessionExecutor:_commitBatch(state, allowance)
@@ -6854,7 +6808,7 @@ function HgssSessionExecutor:_commitBatch(state, allowance)
       }
     end
   end
-  table.sort(ordered, byCommitOrder)
+  table.sort(ordered, DecisionBatch.byCommitOrder)
   local ruleset = self._ruleset --[[@as HgssRuleset]]
   ruleset:handler("openTurn")(ordered)
   state.status = "running"

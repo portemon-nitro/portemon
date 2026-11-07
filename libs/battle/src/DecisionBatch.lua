@@ -407,4 +407,20 @@ function DecisionBatch.submit(state, reply, validateBinding)
   return true, nil, wanted.requestId --[[@as integer]]
 end
 
+---@param a table<string, unknown>
+---@param b table<string, unknown>
+---@return boolean true when a commits before b
+function DecisionBatch.byCommitOrder(a, b)
+  local actorA = (a.choice --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>]]
+  local actorB = (b.choice --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>]]
+  local combatA = actorA.combatant --[[@as integer]]
+  local combatB = actorB.combatant --[[@as integer]]
+  if combatA ~= combatB then
+    return combatA < combatB
+  end
+  local requestA = a.requestId --[[@as integer]]
+  local requestB = b.requestId --[[@as integer]]
+  return requestA < requestB
+end
+
 return DecisionBatch

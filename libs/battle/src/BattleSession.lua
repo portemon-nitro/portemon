@@ -59,44 +59,6 @@ local function copyValue(value)
   return out
 end
 
--- Resolves the admitted action vocabulary for one format identity.
--- Registered content formats win over native keys: a content-registered
--- policy carries its own admitted kinds (or the standard vocabulary when
--- the registration names none), while a native key additionally proves
--- its topology against the scenario under construction. Anything else is
--- missing behavior naming the unknown key: sessions never run an unknown
--- or misspelled format on a guessed vocabulary.
----@param formatKey string format identity owning the admitted action vocabulary
----@param content table<string, unknown> frozen executable battle content
----@param validated table<string, unknown>? detached scenario under construction for native topology proof
----@return string[] admitted action kinds for the decision batches
-local function admittedKindsFor(formatKey, content, validated)
-  local contentRecord = content --[[@as table<string, unknown>]]
-  local lookup = contentRecord.format
-  if type(lookup) == "function" then
-    local okCustom, custom = pcall(lookup, contentRecord, formatKey)
-    if okCustom and type(custom) == "table" then
-      local kinds = (custom --[[@as table<string, unknown>]]).actionKinds
-      if kinds == nil then
-        return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
-      end
-      return BattleState.copyActionKinds(kinds)
-    end
-  end
-  local okNative, policy = pcall(NativeFormats.policyFor, formatKey)
-  if okNative and type(policy) == "table" then
-    if validated ~= nil then
-      NativeFormats.validateScenario(formatKey, validated)
-    end
-    local kinds = (policy --[[@as table<string, unknown>]]).actionKinds
-    if kinds == nil then
-      return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
-    end
-    return BattleState.copyActionKinds(kinds)
-  end
-  error(BattleErrors.missingBehavior("unknown battle format " .. formatKey, { format = formatKey }))
-end
-
 ---@param state table<string, unknown>
 local function checkRestoredShape(state)
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
@@ -120,6 +82,10 @@ local function checkRestoredShape(state)
   end
 end
 
+local function sessionDefaultKinds()
+  return copyValue(BattleSession.DEFAULT_ACTION_KINDS) --[[@as string[] ]]
+end
+
 ---@param live table<string, unknown>
 ---@param content table<string, unknown>
 ---@param admitted string[] admitted action kinds resolved at construction
@@ -135,7 +101,8 @@ function BattleSession.new(scenarioRecord, content)
   assert(type(scenarioRecord) == "table", "session construction requires its scenario record")
   local validated = BattleScenario.validate(scenarioRecord)
   BattleState.checkBattleContent(content, validated.ruleset --[[@as string]])
-  local admitted = admittedKindsFor(validated.format --[[@as string]], content, validated)
+  local admitted =
+    NativeFormats.admittedKindsFor(validated.format --[[@as string]], content, validated, sessionDefaultKinds)
   local live = BattleState.create(validated)
   live.maxRounds = SCRIPTED_MAX_ROUNDS
   return wrap(live, content --[[@as table<string, unknown>]], admitted)
@@ -156,7 +123,7 @@ function BattleSession.restore(snapshotData, content)
     error(BattleErrors.incompatibleSnapshot("scripted snapshots must carry their round bound", {}))
   end
   BattleState.checkBattleContent(content, live.ruleset --[[@as string]])
-  local admitted = admittedKindsFor(live.format --[[@as string]], content, nil)
+  local admitted = NativeFormats.admittedKindsFor(live.format --[[@as string]], content, nil, sessionDefaultKinds)
   live.rng = Lcrng.restore(live.rng --[[@as table<string, integer>]])
   -- Restored snapshots carry plain effect records; rebuild the live
   -- owner from them exactly as construction does.
@@ -321,22 +288,6 @@ local function applyChoice(state, context, choice, controller, ordinal)
   frames[#frames] = nil
 end
 
----@param a table<string, unknown>
----@param b table<string, unknown>
----@return boolean true when a commits before b
-local function byCommitOrder(a, b)
-  local actorA = (a.choice --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>]]
-  local actorB = (b.choice --[[@as table<string, unknown>]]).actor --[[@as table<string, unknown>]]
-  local combatA = actorA.combatant --[[@as integer]]
-  local combatB = actorB.combatant --[[@as integer]]
-  if combatA ~= combatB then
-    return combatA < combatB
-  end
-  local requestA = a.requestId --[[@as integer]]
-  local requestB = b.requestId --[[@as integer]]
-  return requestA < requestB
-end
-
 ---@param state table<string, unknown>
 local function commitBatch(state)
   local context = BattleContext.wrap(state)
@@ -358,7 +309,7 @@ local function commitBatch(state)
       }
     end
   end
-  table.sort(ordered, byCommitOrder)
+  table.sort(ordered, DecisionBatch.byCommitOrder)
   for ordinal, entry in ipairs(ordered) do
     applyChoice(
       state,
