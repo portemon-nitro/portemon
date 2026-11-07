@@ -17,7 +17,6 @@
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("romdump.src.digest.PngEncoder")
-local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 local ItemSources = require("romdump.src.config.ItemSources")
@@ -29,6 +28,7 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local MonSources = require("romdump.src.config.MonSources")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
+local UiAssetHelpers = require("romdump.src.digest.ui.UiAssetHelpers")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 
 ---@class SummaryAssetCompiler
@@ -66,12 +66,7 @@ local function readMember(archive, memberId, role, dependencies, archiveLabel)
 end
 
 local function decode(kind, bytes, role)
-  local record, err = G2dDecoder[kind](bytes, { label = "summary:" .. role })
-  if not record then
-    assert(err)
-    sourceError(role .. " does not decode: " .. err.message, { role = role, cause = err.code })
-  end
-  return record
+  return UiAssetHelpers.decode(kind, bytes, role, "summary", sourceError)
 end
 
 local function paletteSlice(colors, bank, role)
@@ -768,21 +763,7 @@ local function lowerMessage(tokens, bankId, index)
 end
 
 local function readMessageBank(archive, bankId, role, dependencies)
-  local bank, failure = UiMessageBank.read(archive, bankId, role, dependencies, "summary-message-bank-" .. bankId)
-  if not bank then
-    assert(failure)
-    if failure.stage == "read" then
-      sourceError("message bank " .. bankId .. " is unreadable: " .. failure.message, { role = role, bank = bankId })
-    else
-      sourceError("message bank " .. bankId .. " does not decode: " .. failure.message, {
-        role = role,
-        bank = bankId,
-        cause = failure.code,
-      })
-    end
-  end
-  assert(bank ~= nil, "unreadable message banks fail above")
-  return bank
+  return UiAssetHelpers.readMessageBank(archive, bankId, role, dependencies, "summary", sourceError)
 end
 
 local function tokenizeBank(bank, bankId, role)

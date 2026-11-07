@@ -22,8 +22,6 @@
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("romdump.src.digest.PngEncoder")
-local Lz10 = require("romdump.src.digest.Lz10")
-local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
@@ -38,9 +36,8 @@ local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
 local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCompiler")
 local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
-local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
+local UiAssetHelpers = require("romdump.src.digest.ui.UiAssetHelpers")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local charmap = require("romdump.src.catalog.hgss.charmap")
 
 ---@class BagAssetCompiler
 local BagAssetCompiler = {}
@@ -76,42 +73,15 @@ local function modelUnits(raw)
 end
 
 local function readMember(archive, memberId, role, dependencies, archiveLabel)
-  local member, err = archive:readMember(memberId)
-  if not member then
-    sourceError("member " .. memberId .. " is unreadable: " .. Errors.format(err), { role = role, memberId = memberId })
-  end
-  assert(member ~= nil, "unreadable members fail above")
-  dependencies[#dependencies + 1] =
-    { name = (archiveLabel or "bag_ui") .. ":member:" .. memberId, role = role, sha1 = Hashing.sha1hex(member) }
-  if string.byte(member, 1) == 0x10 then
-    local plain, lzErr = Lz10.decode(member)
-    if not plain then
-      error(lzErr, 0)
-    end
-    member = plain
-  end
-  return member
+  return UiAssetHelpers.readMember(archive, memberId, role, dependencies, archiveLabel or "bag_ui", sourceError)
 end
 
 local function decode(kind, bytes, role)
-  local record, err = G2dDecoder[kind](bytes, { label = "bag:" .. role })
-  if not record then
-    assert(err)
-    sourceError(role .. " does not decode: " .. err.message, { role = role, cause = err.code })
-  end
-  return record
+  return UiAssetHelpers.decode(kind, bytes, role, "bag", sourceError)
 end
 
 local function rasterizeScreen(charData, palette, screen, role)
-  local ok, image = pcall(G2dRasterizer.renderScreen, charData, { colors = palette }, screen, { role = role })
-  if not ok then
-    if Errors.is(image) then
-      ---@cast image Errors.Error
-      sourceError(role .. " does not rasterize: " .. image.message, { role = role, cause = image.code })
-    end
-    error(image, 0)
-  end
-  return image
+  return UiAssetHelpers.rasterizeScreen(charData, palette, screen, role, sourceError)
 end
 
 -- Upper-pane screens share one char/palette pair; lower-pane screens share
@@ -1130,38 +1100,11 @@ local QUANTITY_SUBSTITUTION_ALIAS = FieldMessageText.STRVAR_1 + 51
 local SALE_TOTAL_SUBSTITUTION = FieldMessageText.STRVAR_1 + 55
 
 local function readMessageBank(archive, bankId, role, dependencies)
-  local bank, failure = UiMessageBank.read(archive, bankId, role, dependencies, "bag-message-bank-" .. bankId)
-  if not bank then
-    assert(failure)
-    if failure.stage == "read" then
-      sourceError("message bank " .. bankId .. " is unreadable: " .. failure.message, { role = role, bank = bankId })
-    else
-      sourceError("message bank " .. bankId .. " does not decode: " .. failure.message, {
-        role = role,
-        bank = bankId,
-        cause = failure.code,
-      })
-    end
-  end
-  assert(bank ~= nil, "unreadable message banks fail above")
-  return bank
+  return UiAssetHelpers.readMessageBank(archive, bankId, role, dependencies, "bag", sourceError)
 end
 
 local function messageTokens(bank, bankId, index, role)
-  local tokens, failure = UiMessageBank.tokens(bank, bankId, index, charmap)
-  if not tokens then
-    assert(failure)
-    if failure.stage == "missing_message" then
-      sourceError(
-        "message bank " .. bankId .. " carries no message " .. index,
-        { role = role, bank = bankId, index = index }
-      )
-    else
-      sourceError("bag message does not tokenize: " .. failure.message, { role = role, bank = bankId, index = index })
-    end
-  end
-  assert(tokens ~= nil, "untokenizable bag messages fail above")
-  return tokens
+  return UiAssetHelpers.messageTokens(bank, bankId, index, role, "bag", sourceError)
 end
 
 local function lowerLabel(bank, bankId, index, role)
@@ -1878,23 +1821,7 @@ end
 ---@return table<string, unknown>|nil bundle
 ---@return Errors.Error?
 function BagAssetCompiler.compile(romFs)
-  assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "compile requires a RomFs-shaped object")
-  local ok, result = xpcall(_compile, function(e)
-    if Errors.is(e) then
-      return e
-    end
-    return { raw = e, trace = debug.traceback("", 2) }
-  end, romFs)
-  if ok then
-    return result
-  end
-  if Errors.is(result) then
-    return nil, result --[[@as Errors.Error]]
-  end
-  if type(result) == "table" and result.trace then
-    error(result.raw, 0)
-  end
-  error(result, 0)
+  return UiAssetHelpers.compileWithGuard(_compile, romFs)
 end
 
 return BagAssetCompiler
