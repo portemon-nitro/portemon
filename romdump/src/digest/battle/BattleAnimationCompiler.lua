@@ -278,6 +278,120 @@ local function resolveSound(key, selector, sounds, offset)
   return sound
 end
 
+-- Decodes the parameterized battler-effect opcodes (46-49): reads the
+-- source-declared operand frame, resolves the particle action profile,
+-- validates the fixed-emitter or position-pair plan, and consumes the
+-- ConfigureFromScript trailer so its words never decode as opcodes.
+---@param key string animation entry identity under decode
+---@param stream string command stream under decode
+---@param offset integer word offset of the first operand
+---@param start integer word offset of the opcode under decode
+---@param opcode integer opcode under decode
+---@param label unknown dispatch label resolved for the opcode
+---@param resolveSourceInput function? source route resolver, nil for unresolved routes
+---@return BattleAnimationInstruction decoded instruction
+---@return integer word offset past the consumed operands
+local function decodeParticleOperands(key, stream, offset, start, opcode, label, resolveSourceInput)
+  local instruction
+  local definition = sources().sourceInput(opcode)
+  assert(definition ~= nil and definition.operandCount ~= nil, "particle handler frame is source-declared")
+  local operands = {}
+  for index = 1, definition.operandCount do
+    operands[index] = readWord(stream, key, offset + (index - 1) * 4)
+  end
+  if opcode == 47 and operands[2] > 70 then
+    error(decodeError(key, start, "particle continuation slot is outside the source-allocated table", offset + 4), 0)
+  end
+  local resolved = resolveSourceInput and resolveSourceInput("battler-particle-action", operands)
+  if type(resolved) ~= "table" then
+    error(
+      decodeError(
+        key,
+        start,
+        "handler " .. label .. " requires an unresolved particle action profile",
+        offset + #operands * 4
+      ),
+      0
+    )
+  end
+  assert(type(resolved) == "table", "particle resolver returns a selection table")
+  if resolved.taskKind ~= "battler-effect-continuation" then
+    error(decodeError(key, start, "particle action resolver returned an unknown task kind", offset + #operands * 4), 0)
+  end
+  -- Operand 1 is the particle system slot the emitter joins.
+  if operands[1] > 15 then
+    error(decodeError(key, start, "particle handler names a system outside the 16 slots", offset), 0)
+  end
+  instruction = {
+    op = "create-parameterized-battler-effect",
+    actionProfile = resolved.actionProfile,
+    systemIndex = operands[1],
+    taskKind = resolved.taskKind,
+  }
+  if opcode == 46 or opcode == 47 then
+    if
+      type(resolved.actionProfile) ~= "string"
+      or type(resolved.emitter) ~= "number"
+      or resolved.emitterCases ~= nil
+      or resolved.callbackCases ~= nil
+      or resolved.runtimeSelection ~= nil
+    then
+      error(
+        decodeError(
+          key,
+          start,
+          "particle action resolver returned an invalid fixed emitter plan",
+          offset + #operands * 4
+        ),
+        0
+      )
+    end
+    instruction.emitter = resolved.emitter
+    if opcode == 47 then
+      instruction.continuationSlot = operands[2]
+    end
+  else
+    if
+      resolved.runtimeSelection ~= "battler-particle-position-pair"
+      or type(resolved.emitterCases) ~= "table"
+      or type(resolved.actionProfile) ~= "string"
+      or resolved.emitter ~= nil
+      or resolved.callbackCases ~= nil
+    then
+      error(
+        decodeError(
+          key,
+          start,
+          "particle action resolver returned an invalid position-pair emitter map",
+          offset + #operands * 4
+        ),
+        0
+      )
+    end
+    instruction.runtimeSelection = resolved.runtimeSelection
+    instruction.emitterCases = resolved.emitterCases
+  end
+  offset = offset + #operands * 4
+  -- Emitter callbacks that configure from the script (ConfigureFromScript,
+  -- index 17) read a [skip, count, count words] trailer inline during
+  -- dispatch (BattleAnimSystem_ReadScriptArgs via
+  -- BattleAnimEmitterCb_ConfigureFromScript): consume it for cursor
+  -- framing so its words never decode as opcodes. The count must agree
+  -- with the reader exactly as production asserts it; anything else is
+  -- a malformed source route, never a guessed operation. The trailer
+  -- values never enter the action plan; per-emitter placement
+  -- refinement stays future work.
+  local callbackIndex = operands[definition.callbackOperand]
+  if callbackIndex == 17 then
+    local configCount = readWord(stream, key, offset + 4)
+    if configCount ~= 6 then
+      error(decodeError(key, offset, "emitter config count disagrees with the source reader"), 0)
+    end
+    offset = offset + 8 + configCount * 4
+  end
+  return instruction, offset
+end
+
 -- Decode the subset whose source cursor and observable normalized meaning are
 -- fully established by the pinned handlers. Other valid handlers fail closed
 -- until their runtime-dependent selectors and resources have semantic inputs.
@@ -479,108 +593,7 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       }
       offset = offset + 20
     elseif opcode >= 46 and opcode <= 49 then
-      local definition = sources().sourceInput(opcode)
-      assert(definition ~= nil and definition.operandCount ~= nil, "particle handler frame is source-declared")
-      local operands = {}
-      for index = 1, definition.operandCount do
-        operands[index] = readWord(stream, key, offset + (index - 1) * 4)
-      end
-      if opcode == 47 and operands[2] > 70 then
-        error(
-          decodeError(key, start, "particle continuation slot is outside the source-allocated table", offset + 4),
-          0
-        )
-      end
-      local resolved = resolveSourceInput and resolveSourceInput("battler-particle-action", operands)
-      if type(resolved) ~= "table" then
-        error(
-          decodeError(
-            key,
-            start,
-            "handler " .. label .. " requires an unresolved particle action profile",
-            offset + #operands * 4
-          ),
-          0
-        )
-      end
-      assert(type(resolved) == "table", "particle resolver returns a selection table")
-      if resolved.taskKind ~= "battler-effect-continuation" then
-        error(
-          decodeError(key, start, "particle action resolver returned an unknown task kind", offset + #operands * 4),
-          0
-        )
-      end
-      -- Operand 1 is the particle system slot the emitter joins.
-      if operands[1] > 15 then
-        error(decodeError(key, start, "particle handler names a system outside the 16 slots", offset), 0)
-      end
-      instruction = {
-        op = "create-parameterized-battler-effect",
-        actionProfile = resolved.actionProfile,
-        systemIndex = operands[1],
-        taskKind = resolved.taskKind,
-      }
-      if opcode == 46 or opcode == 47 then
-        if
-          type(resolved.actionProfile) ~= "string"
-          or type(resolved.emitter) ~= "number"
-          or resolved.emitterCases ~= nil
-          or resolved.callbackCases ~= nil
-          or resolved.runtimeSelection ~= nil
-        then
-          error(
-            decodeError(
-              key,
-              start,
-              "particle action resolver returned an invalid fixed emitter plan",
-              offset + #operands * 4
-            ),
-            0
-          )
-        end
-        instruction.emitter = resolved.emitter
-        if opcode == 47 then
-          instruction.continuationSlot = operands[2]
-        end
-      else
-        if
-          resolved.runtimeSelection ~= "battler-particle-position-pair"
-          or type(resolved.emitterCases) ~= "table"
-          or type(resolved.actionProfile) ~= "string"
-          or resolved.emitter ~= nil
-          or resolved.callbackCases ~= nil
-        then
-          error(
-            decodeError(
-              key,
-              start,
-              "particle action resolver returned an invalid position-pair emitter map",
-              offset + #operands * 4
-            ),
-            0
-          )
-        end
-        instruction.runtimeSelection = resolved.runtimeSelection
-        instruction.emitterCases = resolved.emitterCases
-      end
-      offset = offset + #operands * 4
-      -- Emitter callbacks that configure from the script (ConfigureFromScript,
-      -- index 17) read a [skip, count, count words] trailer inline during
-      -- dispatch (BattleAnimSystem_ReadScriptArgs via
-      -- BattleAnimEmitterCb_ConfigureFromScript): consume it for cursor
-      -- framing so its words never decode as opcodes. The count must agree
-      -- with the reader exactly as production asserts it; anything else is
-      -- a malformed source route, never a guessed operation. The trailer
-      -- values never enter the action plan; per-emitter placement
-      -- refinement stays future work.
-      local callbackIndex = operands[definition.callbackOperand]
-      if callbackIndex == 17 then
-        local configCount = readWord(stream, key, offset + 4)
-        if configCount ~= 6 then
-          error(decodeError(key, offset, "emitter config count disagrees with the source reader"), 0)
-        end
-        offset = offset + 8 + configCount * 4
-      end
+      instruction, offset = decodeParticleOperands(key, stream, offset, start, opcode, label, resolveSourceInput)
     elseif opcode == 50 then
       instruction = { op = "wait-for-battler-effects", cursorRule = "advance-when-effects-finish" }
     elseif opcode == 51 then
