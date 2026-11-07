@@ -2322,7 +2322,23 @@ do
     local contact = GearEval.evalContact(node, run, "contact", "phone_set_call")
     local direction = GearEval.evalDirection(node, run, "direction", "phone_set_call")
     local kind = GearEval.evalKind(node, run, "kind", "phone_set_call")
-    host:stageCall(run.instance.instanceId, { contact = contact, direction = direction, kind = kind })
+    local staged = { contact = contact, direction = direction, kind = kind }
+    -- Scripted field calls (ScrCmd_SetPhoneCall operand 2/3) thread the
+    -- source scripted flag and script identity when the node carries
+    -- them; menu and synthetic requests omit both and stay unscripted.
+    for _, name in ipairs({ "isScriptedCall", "scriptedCall", "callScriptID", "scriptId" }) do
+      if node[name] ~= nil then
+        local value = semanticsFor(run).evaluateValue(node[name], run)
+        if type(value) == "number" and value % 1 == 0 then
+          if name == "isScriptedCall" or name == "scriptedCall" then
+            staged.isScriptedCall = value
+          else
+            staged.callScriptID = value
+          end
+        end
+      end
+    end
+    host:stageCall(run.instance.instanceId, staged)
     return Runtime.OUTCOME_CONTINUE
   end
 
@@ -2346,6 +2362,8 @@ do
       contact = staged.contact,
       direction = staged.direction,
       kind = staged.kind,
+      isScriptedCall = staged.isScriptedCall,
+      callScriptID = staged.callScriptID,
     }
     return blockOnTask(run, "pokegear_application", {
       kind = "call",
@@ -2398,14 +2416,27 @@ do
       local contact = GearEval.evalContact(node, run, "contact", "pokegear_open")
       local direction = GearEval.evalDirection(node, run, "direction", "pokegear_open")
       local kind = GearEval.evalKind(node, run, "kind", "pokegear_open")
+      local request = {
+        id = "phone:" .. tostring(run.instance.instanceId) .. ":" .. tostring(run.tick),
+        contact = contact,
+        direction = direction,
+        kind = kind,
+      }
+      for _, name in ipairs({ "isScriptedCall", "scriptedCall", "callScriptID", "scriptId" }) do
+        if node[name] ~= nil then
+          local value = semanticsFor(run).evaluateValue(node[name], run)
+          if type(value) == "number" and value % 1 == 0 then
+            if name == "isScriptedCall" or name == "scriptedCall" then
+              request.isScriptedCall = value
+            else
+              request.callScriptID = value
+            end
+          end
+        end
+      end
       return blockOnTask(run, "pokegear_application", {
         kind = "call",
-        request = {
-          id = "phone:" .. tostring(run.instance.instanceId) .. ":" .. tostring(run.tick),
-          contact = contact,
-          direction = direction,
-          kind = kind,
-        },
+        request = request,
         parentOwner = "script:" .. tostring(scriptId),
       })
     end

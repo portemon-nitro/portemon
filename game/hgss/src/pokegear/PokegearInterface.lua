@@ -157,25 +157,27 @@ local function optionalPath(section)
   return firstImage(section)
 end
 
--- The four focus-corner frames of the strip cursor, or nil when the
--- compiled family carries no cursor sequences.
+-- The four focus-corner animations of the strip cursor, or nil when the
+-- compiled family carries no cursor sequences. Each entry carries its
+-- compiled frames so the renderer blinks on source durations instead of
+-- sticking on the opening frame.
 ---@param assets table<string, unknown>
----@return string[]? paths top-left, bottom-left, top-right, bottom-right
+---@return table<integer, table[]>? frames top-left, bottom-left, top-right, bottom-right
 local function cursorCorners(assets)
   local sequences = assets.sequences
   if type(sequences) ~= "table" then
     return nil
   end
-  local paths = {}
+  local corners = {}
   for corner = 1, 4 do
     local clip = (sequences --[[@as table<string, unknown>]])["shell.cursor." .. (corner + 4)]
-    local frame = type(clip) == "table" and type(clip.frames) == "table" and clip.frames[1] or nil
-    if type(frame) ~= "table" or type(frame.image) ~= "string" then
+    local frames = type(clip) == "table" and (clip --[[@as table<string, unknown>]]).frames or nil
+    if type(frames) ~= "table" or #frames == 0 then
       return nil
     end
-    paths[corner] = frame.image
+    corners[corner] = frames
   end
-  return paths
+  return corners
 end
 
 -- The compiled clock sprite strips of the shell object set: digit frames

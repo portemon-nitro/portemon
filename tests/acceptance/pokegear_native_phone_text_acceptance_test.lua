@@ -62,7 +62,18 @@ local function actionEdge(game)
   game.runtime:releaseAction()
 end
 
-function T.tests.native_phone_rows_use_caller_bank_names_and_class_rules()
+function T.tests.native_phone_rows_and_incoming_banner_share_rom_resolved_names()
+  local sample = { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
+  local clock = LocalClock.new(function()
+    return {
+      year = sample.year,
+      month = sample.month,
+      day = sample.day,
+      hour = sample.hour,
+      minute = sample.minute,
+      second = sample.second,
+    }
+  end)
   Fixture.withGame(Fixture.TOWN, function(game)
     local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns the ROM-derived phone catalog")
     local mom = contactByFamily(catalog, "mother")
@@ -103,28 +114,11 @@ function T.tests.native_phone_rows_use_caller_bank_names_and_class_rules()
         Assert.isFalse(row.class == contact.key, "the class cell never displays a caller key")
       end
     end
-  end)
-end
+    Fixture.closeGearThroughMenu(game)
 
-function T.tests.incoming_banner_uses_the_same_rom_resolved_caller_name()
-  local sample = { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
-  local clock = LocalClock.new(function()
-    return {
-      year = sample.year,
-      month = sample.month,
-      day = sample.day,
-      hour = sample.hour,
-      minute = sample.minute,
-      second = sample.second,
-    }
-  end)
-  Fixture.withGame(Fixture.TOWN, function(game)
-    local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns the ROM-derived phone catalog")
-    local state = assert(game.runtime.pokegearState, "the field runtime owns the phonebook state")
     for _, contact in ipairs(catalog.contacts) do
       state:registerContact(contact.key)
     end
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
     local trigger = assert(catalog.callTriggers[1], "the source catalog has a native incoming-call trigger")
     local calls = assert(game.runtime.incomingCalls, "the field runtime owns incoming-call policy")
     calls:setTrigger(trigger.key, true)
@@ -158,6 +152,10 @@ function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_te
       local status = game.runtime.applicationHost:status().application
       return status ~= nil and status.transition == nil
     end, 40)
+    -- The gear opens with the strip focused: the first edge enters the
+    -- card, the second opens the row menu, the third starts the call,
+    -- and the fourth advances to the message stage.
+    actionEdge(game)
     actionEdge(game)
     actionEdge(game)
     actionEdge(game)
@@ -177,6 +175,35 @@ function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_te
       Assert.isFalse(page.text:find("msg.hgss.", 1, true) ~= nil, "a dialogue page never prints a message identity")
       Assert.isFalse(page.text:find("PHONE_SCRIPT", 1, true) ~= nil, "a dialogue page never prints a script label")
     end
+    -- The retail phone buffers the player name behind STRVAR slot zero:
+    -- Mom's greeting addresses the caller by name, never by a landmark.
+    local profile = assert(game.runtime.playerData, "the production field owns its player data").profile
+    local playerName = assert(profile.name, "the production profile carries its name")
+    local haystack = ""
+    for _, page in ipairs(call.lines) do
+      haystack = haystack .. tostring(page.text) .. "\n"
+    end
+    Assert.isTrue(
+      haystack:find(playerName, 1, true) ~= nil,
+      "Mom's greeting addresses the player by name, got: " .. haystack
+    )
+    -- The open page types at the player's text speed: empty ticks
+    -- reveal more glyphs, and a forced edge completes the page.
+    Assert.equal(call.revealed, 0, "the fresh message page starts unrevealed")
+    Assert.isTrue(call.total > 0, "the greeting page carries printable glyphs")
+    local grown = nil
+    for _ = 1, 10 do
+      game:step()
+      local now = assert(phoneView(game).call, "the live phone call keeps its detached text view").revealed
+      if now > 0 then
+        grown = now
+        break
+      end
+    end
+    Assert.notNil(grown, "empty ticks type the open page")
+    actionEdge(game)
+    local completed = assert(phoneView(game).call, "completing the page keeps the conversation")
+    Assert.equal(completed.revealed, completed.total, "a forced edge completes the open page")
   end)
 end
 

@@ -334,22 +334,27 @@ local function placeMenuCall(controller)
   Assert.notNil(controller:status().view.call, "choosing Call starts the live conversation")
 end
 
--- Advances the live conversation through semantic advance input until
--- the mother program owes its save/keep choice. The bound only guards
--- against a stuck call; a healthy call owes its choice within a few
+-- Advances the live static conversation through semantic advance input
+-- until it stages its normal hangup. Static scripts never owe a choice:
+-- the message pages complete straight into the staged hangup. The bound
+-- only guards against a stuck call; a healthy call hangs up within a few
 -- fixed steps with no wall-clock waits.
 ---@param controller table
----@return table the detached view at the owed choice
-local function driveToOwedChoice(controller)
+---@return table the detached view at the staged hangup
+local function driveToHangup(controller)
   for _ = 1, 24 do
     local view = controller:status().view
     local call = view.call
-    if type(call) == "table" and call.stage == "choice" then
+    if type(call) == "table" and call.stage == "hangingUp" then
       return view
     end
+    Assert.isTrue(
+      type(call) ~= "table" or call.stage ~= "choice",
+      "a static mother call never owes its save/keep choice"
+    )
     controller:updateFixed({ { type = "advance" } })
   end
-  error("the mother call never reached its owed save/keep choice", 0)
+  error("the static mother call never reached its staged hangup", 0)
 end
 
 ---@param view table
@@ -394,15 +399,14 @@ function T.tests.call_start_publishes_dim_state_and_name_window_and_exit_clears_
     { 1, 2, 0 },
     "the caller name prints in the source windows[1] text colors (1,2,0)"
   )
-  local owed = driveToOwedChoice(controller)
+  -- Completing the static message stages the normal hangup with no
+  -- choice owed: empty ticks and advancing edges alike settle it.
+  local hanging = driveToHangup(controller)
   Assert.deepEqual(
-    liveCall(owed).fastForward,
+    liveCall(hanging).fastForward,
     FAST_FORWARD_HITBOX,
-    "the fast-forward hitbox stays live while the call owes its choice"
+    "the fast-forward hitbox stays live through the staged hangup"
   )
-  -- Answering the choice stages the normal hangup: empty ticks and
-  -- advancing edges alike settle it without further choice input.
-  controller:updateFixed({ { type = "confirm" } })
   for _ = 1, 48 do
     if controller:status().view.call == nil then
       break
@@ -444,18 +448,16 @@ function T.tests.hangup_prints_three_source_messages_on_the_source_cadence()
   local controller, _, _, audioLog = openMenuController()
   assert(audioLog ~= nil, "the hangup scenario records the audio boundary")
   placeMenuCall(controller)
-  driveToOwedChoice(controller)
   local refs = messageRefs()
   local first = refs.resolvePhoneUiMessage(refs, 33).text
   local second = refs.resolvePhoneUiMessage(refs, 34).text
   local third = refs.resolvePhoneUiMessage(refs, 35).text
-  -- Answering the owed choice starts the normal hangup staging. The
-  -- tone window opens before the answering tick because hangup entry
-  -- plays its single tone in that same tick.
+  -- Completing the static message starts the normal hangup staging
+  -- with no choice owed. The tone window opens before the completing
+  -- tick because hangup entry plays its single tone in that same tick.
   local answered = #audioLog
-  controller:updateFixed({ { type = "confirm" } })
-  local staged = liveCall(controller:status().view)
-  Assert.equal(staged.stage, "hangingUp", "the answered call enters the staged normal hangup, not an instant cut")
+  local staged = liveCall(driveToHangup(controller))
+  Assert.equal(staged.stage, "hangingUp", "the completed call enters the staged normal hangup, not an instant cut")
   Assert.equal(linesSnapshot(staged.lines), first, "the hangup entry prints the first source message")
   -- Repeated status reads change nothing and replay no tone.
   local quiet = #audioLog
@@ -533,66 +535,19 @@ function T.tests.hangup_prints_three_source_messages_on_the_source_cadence()
   controller:dispose()
 end
 
----@param controller table
----@param x number tap x in pixels
----@param y number tap y in pixels
----@param pointerId integer
-local function tap(controller, x, y, pointerId)
-  controller:updateFixed({ { type = "pointer_down", pointerId = pointerId, x = x, y = y } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = pointerId, x = x, y = y } })
-end
-
--- (3) the owed in-call choice renders localized source labels in the
--- source frame while answering semantic choices. sContextMenuParam[2]
--- frames the savings menu at tiles x7/y11 width 22; the two display
--- rows read bank271 entries 8 and 9 behind the entry22 tooltip, and
--- tapping a visible row answers its semantic save/keep choice without
--- key input, exactly like the source TouchscreenListMenu choice
--- plumbing (tap selects, never just navigate/confirm keys). Tapping
--- the second owed row answers "keep" and commits the savings choice
--- without any key input.
-function T.tests.in_call_choice_renders_source_labels_and_answers_semantic_choices()
+-- (3) a static mother call completes without ever owing the savings
+-- choice. The local-map greeting prints its static text and hangs up;
+-- no choice menu is projected, no choice stage is entered, and the
+-- savings flag is never written. The dynamic savings offer (outgoing,
+-- away from home, rival named and introduced) keeps its own unit-level
+-- contract beside the mother policy.
+function T.tests.static_mother_calls_complete_without_owing_the_savings_choice()
   local controller, _, flags = openMenuController()
   placeMenuCall(controller)
-  local owed = driveToOwedChoice(controller)
-  local call = liveCall(owed)
-  Assert.deepEqual(call.choices, { "save", "keep" }, "the mother call owes its save/keep choice")
-  local refs = messageRefs()
-  local firstLabel = refs.resolvePhoneUiMessage(refs, 8).text
-  local secondLabel = refs.resolvePhoneUiMessage(refs, 9).text
-  local tip = refs.resolvePhoneUiMessage(refs, 22).text
-  local menu = assert(owed.callMenu, "the owed choices are exposed as a menu projection on the call surface")
-  assert(type(menu) == "table", "the choice menu is a record")
-  Assert.deepEqual(
-    (menu --[[@as table<string, unknown>]]).options,
-    { firstLabel, secondLabel },
-    "the choice rows print the localized source labels, never the semantic ids"
-  )
-  Assert.deepEqual(
-    (menu --[[@as table<string, unknown>]]).frame,
-    { x = 7, y = 11, width = 22, height = 7 },
-    "the savings choice frames at its source tiles"
-  )
-  Assert.equal(
-    (menu --[[@as table<string, unknown>]]).cursor,
-    0,
-    "the choice menu cursor opens on the first option"
-  )
-  Assert.equal(owed.tooltip, tip, "the owed choice carries the source tooltip")
-  local frame = assert((menu --[[@as table<string, unknown>]]).frame, "the choice menu carries its window frame")
-  assert(type(frame) == "table", "the choice menu frame is a record")
-  local frameRecord = frame --[[@as table<string, integer>]]
-  -- The second option row starts three tiles below the first text row:
-  -- one tile frame border plus one 24px text row per preceding option.
-  local secondRowY = (frameRecord.y + 3 * (2 - 1) + 1) * 8
-  tap(
-    controller,
-    frameRecord.x * 8 + 16,
-    secondRowY + 8,
-    7
-  )
-  -- The answered choice stages the normal hangup: empty ticks and
-  -- advancing edges alike settle it without further choice input.
+  local hanging = driveToHangup(controller)
+  local call = liveCall(hanging)
+  Assert.isNil(call.choices, "a static mother call owes no save/keep choice")
+  Assert.isNil(hanging.callMenu, "a static mother call projects no choice menu")
   for _ = 1, 48 do
     if controller:status().view.call == nil then
       break
@@ -605,9 +560,9 @@ function T.tests.in_call_choice_renders_source_labels_and_answers_semantic_choic
   end
   Assert.isNil(
     controller:status().view.call,
-    "tapping the second option answers and completes the call"
+    "the static call settles through its staged hangup"
   )
-  Assert.equal(flags["mom.savings-choice"], false, "tapping the second option answers keep")
+  Assert.equal(flags["mom.savings-choice"], false, "the static call writes no savings flag")
   controller:dispose()
 end
 

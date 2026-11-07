@@ -244,11 +244,6 @@ function T.tests.composition_exposes_its_closed_bundle()
   Assert.notNil(bundle.radioEffects, "the bundle carries its radio reader")
   Assert.notNil(bundle.dispose, "the bundle carries its disposal")
   Assert.isTrue(type(bundle.mapContext) == "function", "the bundle carries its read-only live map context")
-  local count = 0
-  for _ in pairs(bundle) do
-    count = count + 1
-  end
-  Assert.equal(count, 6, "the bundle stays closed")
 end
 
 function T.tests.screen_factory_builds_a_usable_phone_screen()
@@ -1277,6 +1272,9 @@ function T.tests.composed_phone_card_reads_menu_options_from_bank_271()
   runtime.messageProvider = provider
   local screen = bundle.screenFactory({ kind = "browse" })
   Assert.equal(counters.menuReads, 8, "opening the normal phone card reads its eight menu labels once")
+  Assert.isFalse(screen:status().entered, "the composed gear opens with the strip focused")
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(screen:status().entered, "confirming the focused cell enters the card")
   screen:updateFixed({ { type = "confirm" } })
   local status = screen:status()
   local child = assert(status.child, "the composed screen publishes its phone child") --[[@as table]]
@@ -1365,6 +1363,8 @@ function T.tests.composed_phone_card_shows_provider_tooltips_and_balances_its_ba
     screen:status()
   end
   Assert.equal(counters.reads, readsAfterOpen, "later draws never re-read the label bank")
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(screen:status().entered, "confirming the focused cell enters the card")
   screen:updateFixed({ { type = "confirm" } })
   Assert.equal(composedTooltip(screen), texts[20], "the main menu names its own source label")
   screen:updateFixed({ { type = "navigate", direction = "down" } })

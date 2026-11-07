@@ -106,6 +106,11 @@ local function fixtureManifest()
   local phoneForeground, phoneUpper = {}, {}
   local phoneForegroundDim, phoneForegroundDimChoice, phoneDimShellForeground = {}, {}, {}
   local phoneListPalette, phoneListPaletteDim, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}, {}
+  local phoneMenuPalette = {}
+  for index = 1, 16 do
+    phoneMenuPalette[index] =
+      { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
+  end
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapUpper = {}, {}
   for skin = 0, 5 do
@@ -122,8 +127,7 @@ local function fixtureManifest()
       visualRef("assets/generated/pokegear/phone-foreground-shade-" .. skin .. ".png", 256, 192)
     phoneForegroundDimChoice[skin] =
       visualRef("assets/generated/pokegear/phone-foreground-pick-" .. skin .. ".png", 256, 192)
-    phoneDimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-strip-dusk-" .. skin .. ".png", 256, 192)
+    phoneDimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-strip-dusk-" .. skin .. ".png", 256, 192)
     phoneListPalette[skin] = {}
     phoneListPaletteDim[skin] = {}
     phoneTooltipPalette[skin] = {}
@@ -169,7 +173,11 @@ local function fixtureManifest()
       world = visualRef("assets/generated/pokegear/map-world.png", 256, 192),
       upperBase = visualRef("assets/generated/pokegear/map-upper-base.png", 256, 192),
     },
-    fly = { pairs = { visualRef("assets/generated/pokegear/fly-pair-1.png", 256, 192) } },
+    fly = {
+      pairs = { visualRef("assets/generated/pokegear/fly-pair-1.png", 256, 192) },
+      menuTiles = visualRef("assets/generated/pokegear/fly-menu-tiles.png", 256, 16),
+      menuPalette = phoneMenuPalette,
+    },
     radio = { main = radioMain, second = radioSecond, upper = radioUpper },
     catalog = {
       contacts = {
@@ -606,6 +614,8 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
   })
   settle(host.shell)
   Assert.equal(host.shell:status().tab, "configure", "the remembered setup card opens")
+  host.shell:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(host.shell:status().entered, "confirming the focused cell enters the card")
   local configure = assert(configureHandle.controller, "the setup factory built the real controller")
 
   -- The detached view carries all six fixed thumbnail cells at their
@@ -751,8 +761,7 @@ function T.setup_cursor_paints_from_compiled_sprites(scope)
     "game.hgss.src.pokegear.ConfigureController",
     "the gear setup card has no controller yet: the compiled focus cursor cannot draw"
   )
-  local PokegearConfigureRenderer =
-    require("libs.hgss.src.presentation.PokegearConfigureRenderer")
+  local PokegearConfigureRenderer = require("libs.hgss.src.presentation.PokegearConfigureRenderer")
   local manifest = fixtureManifest()
   local record = PokegearAssetSchema.validate(manifest)
   Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
@@ -969,6 +978,11 @@ function T.live_phone_call_dims_the_strip_and_overlays_the_sprite(scope)
   Assert.isTrue(spriteMatches(call) > 100, "the live call overlays the sprite over the strip")
   controller:dispose()
 end
+
+-- Opening the Call/Sort/Quit menu keeps the strip and paints the
+-- tooltip bar over it: the prompt survives the strip that the child
+-- paints beneath, so the bottom bar carries the message while the
+-- menu is open.
 
 function T.display_plan_keeps_roles_and_pointer_targets(scope)
   requireFeature(
@@ -1218,6 +1232,8 @@ function T.every_skin_repaints_from_prepared_assets(scope)
     end,
   })
   settle(host.shell)
+  host.shell:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(host.shell:status().entered, "confirming the focused cell enters the card")
   local configure = assert(configureHandle.controller, "the setup factory built the real controller")
   local resources = renderResources(scope, manifest)
   local seen = {}
@@ -1288,6 +1304,8 @@ function T.spotlight_covers_a_menu_overlapping_other_cells(scope)
     end,
   })
   settle(host.shell)
+  host.shell:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(host.shell:status().entered, "confirming the focused cell enters the card")
   local configure = assert(configureHandle.controller, "the setup factory built the real controller")
   -- Skin 4 sits at x104..152, y96..136 while its context window opens
   -- at the skin's source tile origin x20/y11 (160,88) clear of the cell:

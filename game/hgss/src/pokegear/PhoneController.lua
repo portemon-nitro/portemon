@@ -209,9 +209,10 @@ end
 ---@param resources table<string, unknown> borrowed host collaborators
 ---@param snapshot table<string, unknown> the card status carrying the detached view
 ---@param plan table<string, unknown> the published plan carrying the payload
-local function renderPhonePresentation(resources, snapshot, plan)
+---@param shell table<string, unknown>? the shell snapshot carrying strip focus, when composed
+local function renderPhonePresentation(resources, snapshot, plan, shell)
   local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
-  PokegearPhoneRenderer.draw(resources, snapshot.view, plan.content)
+  PokegearPhoneRenderer.draw(resources, snapshot.view, plan.content, shell)
 end
 
 -- The information-pane half: the phone's upper plane with the live
@@ -237,7 +238,7 @@ end
 ---@field audio table<string, unknown>? the audio boundary
 ---@field random table<string, unknown>? the companion streams
 ---@field assets table<string, unknown>? the compiled asset family
----@field request { id: string, contact: string, direction: string, kind: string }? direct call entry
+---@field request { id: string, contact: string, direction: string, kind: string, isScriptedCall: integer?, callScriptID: integer? }? direct call entry
 ---@field tooltips string[]? the eight context labels for normal browse entry
 ---@field menuLabels string[]? the eight action and sort option labels for normal browse entry, in source bank order
 
@@ -327,6 +328,7 @@ function PhoneController.new(opts)
     _firstBgColor = 0,
     _scrollAnim = nil,
     _mode = "list",
+    _selectedContact = nil,
     _entryOwner = opts.request == nil and "menu" or "host",
     _tooltips = tooltips,
     _menuLabels = menuLabels,
@@ -338,6 +340,7 @@ function PhoneController.new(opts)
     _choiceCursor = 0,
     _held = nil,
     _effect = effect,
+    _animTick = 0,
     _disposed = false,
   }, PhoneController)
   self:_readCatalog()
@@ -349,13 +352,24 @@ function PhoneController.new(opts)
         Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "direct phone entry names its " .. name, { field = name })
       end
     end
-    self:_beginCall(request.contact, request.direction, request.kind, request.id)
+    self:_beginCall(
+      request.contact,
+      request.direction,
+      request.kind,
+      request.id,
+      request.isScriptedCall,
+      request.callScriptID
+    )
   end
   return self
 end
 
 -- Reads the canonical saved order for registered contacts. Weights,
--- labels, and class tokens ride along from the same catalog records.
+-- labels, and class tokens ride along from the same catalog records,
+-- resolved only for the registered contacts the session order can
+-- display: catalogued-but-unregistered contacts never paint a row, so
+-- formatting their message-provider names and classes at open is wasted
+-- work on the open path.
 function PhoneController:_readCatalog()
   local phone = (self._state --[[@as table<string, unknown>]]).readPhone(self._state)
   assert(type(phone) == "table", "the phone card reads its registered contacts")
@@ -371,40 +385,6 @@ function PhoneController:_readCatalog()
     assert(isNonEmptyString(record.key), "catalog contacts carry semantic keys")
     local key = record.key --[[@as string]]
     byKey[key] = record
-    local weights = record.sortWeights
-    if type(weights) == "table" then
-      local list = {}
-      for _, weight in
-        ipairs(weights --[[@as table[] ]])
-      do
-        list[#list + 1] = weight
-      end
-      self._weights[key] = list
-    elseif record.sortWeight ~= nil then
-      assert(type(record.sortWeight) == "number", "catalog sort weights stay numeric")
-      self._weights[key] = {
-        record.sortWeight --[[@as integer]],
-      }
-    else
-      self._weights[key] = {}
-    end
-    self._records[key] = record
-    local label = record.name or record.label or key
-    if type(label) == "table" then
-      local resolveName = self._messages.resolveName
-      assert(type(resolveName) == "function", "native phone names resolve through the field message provider")
-      label = resolveName(self._messages, key)
-    end
-    assert(type(label) == "string", "contact rows carry their label")
-    self._labels[key] = label --[[@as string]]
-    local class = record.className or record.class or record.classNameRef or ""
-    if type(class) == "table" then
-      local resolveClass = self._messages.resolveClass
-      assert(type(resolveClass) == "function", "native phone classes resolve through the field message provider")
-      class = resolveClass(self._messages, key)
-    end
-    assert(type(class) == "string", "contact rows carry their class token")
-    self._classes[key] = class --[[@as string]]
   end
   local order, seen = {}, {}
   for _, key in ipairs(saved) do
@@ -420,6 +400,53 @@ function PhoneController:_readCatalog()
     registeredCount = registeredCount + 1
   end
   assert(#order == registeredCount, "saved phone order contains every registered contact")
+  for _, key in ipairs(order) do
+    local record = assert(byKey[key], "session order entries resolve through the catalog")
+    local weights = (record --[[@as table<string, unknown>]]).sortWeights
+    if type(weights) == "table" then
+      local list = {}
+      for _, weight in
+        ipairs(weights --[[@as table[] ]])
+      do
+        list[#list + 1] = weight
+      end
+      self._weights[key] = list
+    elseif
+      (record --[[@as table<string, unknown>]]).sortWeight ~= nil
+    then
+      assert(
+        type((record --[[@as table<string, unknown>]]).sortWeight) == "number",
+        "catalog sort weights stay numeric"
+      )
+      self._weights[key] = {
+        (record --[[@as table<string, unknown>]]).sortWeight --[[@as integer]],
+      }
+    else
+      self._weights[key] = {}
+    end
+    self._records[key] = record
+    local label = (record --[[@as table<string, unknown>]]).name
+      or (record --[[@as table<string, unknown>]]).label
+      or key
+    if type(label) == "table" then
+      local resolveName = self._messages.resolveName
+      assert(type(resolveName) == "function", "native phone names resolve through the field message provider")
+      label = resolveName(self._messages, key)
+    end
+    assert(type(label) == "string", "contact rows carry their label")
+    self._labels[key] = label --[[@as string]]
+    local class = (record --[[@as table<string, unknown>]]).className
+      or (record --[[@as table<string, unknown>]]).class
+      or (record --[[@as table<string, unknown>]]).classNameRef
+      or ""
+    if type(class) == "table" then
+      local resolveClass = self._messages.resolveClass
+      assert(type(resolveClass) == "function", "native phone classes resolve through the field message provider")
+      class = resolveClass(self._messages, key)
+    end
+    assert(type(class) == "string", "contact rows carry their class token")
+    self._classes[key] = class --[[@as string]]
+  end
   self._order = order
   self._selected = 0
   self._scroll = 0
@@ -489,10 +516,17 @@ end
 ---@param direction string
 ---@param kind string
 ---@param id string stable runtime id
-function PhoneController:_beginCall(contact, direction, kind, id)
+function PhoneController:_beginCall(contact, direction, kind, id, isScriptedCall, callScriptID)
   assert(self._callHandle == nil, "one foreground call owns the phone line")
   local ok, handle = pcall(function()
-    return self._call:begin({ id = id, contact = contact, direction = direction, kind = kind })
+    return self._call:begin({
+      id = id,
+      contact = contact,
+      direction = direction,
+      kind = kind,
+      isScriptedCall = isScriptedCall,
+      callScriptID = callScriptID,
+    })
   end)
   if not ok then
     if Errors.is(handle) then
@@ -534,6 +568,7 @@ function PhoneController:_finishCall()
     self._mode = "list"
     self._held = nil
     self._choiceCursor = 0
+    self._selectedContact = nil
   end
   return true
 end
@@ -573,12 +608,15 @@ local function playEffect(self, sequence)
 end
 
 -- Opens the context menu over the selected row: the source hides the
--- list cursors and prints the menu tooltip behind it.
+-- list cursors and prints the menu tooltip behind it. The source
+-- selects the contact text with it (selectedIndex), while the cursor
+-- focus alone never selects text; browsing keeps every row deselected.
 ---@param self PhoneController
 local function openMenu(self)
   self._mode = "menu"
   self._menuCursor = 0
   self._held = nil
+  self._selectedContact = self._selected
   playEffect(self, DECIDE_SOUND)
 end
 
@@ -605,6 +643,7 @@ function PhoneController:_applySort(way)
   self._selected = 0
   self._scroll = 0
   self._scrollAnim = nil
+  self._selectedContact = nil
   self._mode = "list"
   self._held = nil
 end
@@ -631,6 +670,7 @@ function PhoneController:_dropManual()
   self._grab = nil
   self._mode = "list"
   self._held = nil
+  self._selectedContact = nil
   self:_moveSelection(at)
 end
 
@@ -660,9 +700,13 @@ end
 ---@param y number
 function PhoneController:_tap(x, y)
   if self._mode == "manual" then
+    -- Retail manual hitboxes are 16px tall (sContactListTouchHitboxes2:
+    -- top 8+24i, bottom +16, x4..36); the lower 8px of each 24px band
+    -- is dead space, not a superset.
     if x >= MOVE_STRIP_X0 and x < MOVE_STRIP_X1 then
       local slot = math.floor((y - LIST_TOP) / ROW_HEIGHT)
-      if slot >= 0 and slot < VISIBLE_ROWS and self._scroll + slot < #self._order then
+      local within = (y - LIST_TOP) % ROW_HEIGHT
+      if slot >= 0 and slot < VISIBLE_ROWS and within < 16 and self._scroll + slot < #self._order then
         local before = self._selected
         self:_moveSelection(self._scroll + slot)
         if self._selected ~= before then
@@ -699,6 +743,9 @@ end
 function PhoneController:_handleList(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" or event.direction == "down" then
+      -- Pushing past the edge of the plain list moves nothing and wraps
+      -- nothing, exactly like the source list input: the shell owns
+      -- leaving the card, never the list cursor.
       local before = self._selected
       self:_moveSelection(self._selected + (event.direction == "down" and 1 or -1))
       if self._selected ~= before then
@@ -776,6 +823,7 @@ function PhoneController:_chooseMain(option)
   else
     self._mode = "list"
     self._held = nil
+    self._selectedContact = nil
   end
 end
 
@@ -866,10 +914,12 @@ function PhoneController:_handleMenu(event)
   elseif event.type == "cancel" then
     self._mode = "list"
     self._held = nil
+    self._selectedContact = nil
     playEffect(self, CANCEL_SOUND)
   elseif event.type == "pointer_cancel" then
     self._mode = "list"
     self._held = nil
+    self._selectedContact = nil
   elseif event.type == "pointer_down" or event.type == "pointer_move" then
     menuPointerRow(self, event, "menu", MAIN_OPTION_COUNT)
   elseif event.type == "pointer_up" then
@@ -959,6 +1009,7 @@ function PhoneController:_handleManual(event)
     self._grab = nil
     self._mode = "list"
     self._held = nil
+    self._selectedContact = nil
   elseif event.type == "pointer_down" then
     if type(event.x) == "number" and type(event.y) == "number" then
       self._held = { id = event.pointerId, x = event.x, y = event.y }
@@ -1270,6 +1321,9 @@ function PhoneController:updateFixed(uiInput)
       self._scrollAnim = nil
     end
   end
+  -- The fixed tick behind the focus indicators: corners and scroll
+  -- arrows blink on source durations instead of sticking on frame one.
+  self._animTick = (self._animTick or 0) + 1
 end
 
 ---@return table<string, unknown> the detached contact list projection
@@ -1277,8 +1331,12 @@ function PhoneController:_listView()
   local count = #self._order
   local anim = self._scrollAnim
   if anim == nil then
+    -- Retail shows 3px of window slot 0 (screen y5..8) and 5px of slot 7
+    -- (y152..157) inside the plane frame interior; the settled view
+    -- carries those slivers as slots -1/6 so the clip reveals them
+    -- instead of plane-through.
     local rows = {}
-    for slot = 0, VISIBLE_ROWS - 1 do
+    for slot = -1, VISIBLE_ROWS do
       local absolute = self._scroll + slot
       local key = self._order[absolute + 1]
       if key ~= nil then
@@ -1299,6 +1357,11 @@ function PhoneController:_listView()
       firstBgColor = self._firstBgColor,
       manual = self._mode == "manual",
       total = count,
+      -- The source selects contact text only after pressing A (the
+      -- selectedIndex), never for mere cursor focus: browsing keeps
+      -- every row in its deselected colors while the corners frame focus.
+      selectedContact = self._selectedContact,
+      animationTick = self._animTick or 0,
       -- The source frames the selected row with four corner sprites and
       -- shows the scroll arrows only while the plain list owns the card:
       -- menus hide the corners, manual mode swaps them for move arrows.
@@ -1360,6 +1423,8 @@ function PhoneController:_listView()
     slide = slide,
     manual = self._mode == "manual",
     total = count,
+    selectedContact = self._selectedContact,
+    animationTick = self._animTick or 0,
     cursorVisible = self._mode == "list",
   }
 end

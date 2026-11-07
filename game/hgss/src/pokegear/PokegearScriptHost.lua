@@ -217,7 +217,7 @@ function PokegearScriptHost:open(args)
     return self:_openMap(args --[[@as table<string, unknown>]])
   end
   checkCallRequest(args.request)
-  local request = args.request --[[@as table<string, string>]]
+  local request = args.request --[[@as table<string, unknown>]]
   local ok, controller = pcall(PhoneController.new, {
     state = self._state,
     catalog = self._catalog,
@@ -225,7 +225,14 @@ function PokegearScriptHost:open(args)
     world = self._world,
     audio = self._audio,
     random = self._random,
-    request = { id = request.id, contact = request.contact, direction = request.direction, kind = request.kind },
+    request = {
+      id = request.id,
+      contact = request.contact,
+      direction = request.direction,
+      kind = request.kind,
+      isScriptedCall = request.isScriptedCall,
+      callScriptID = request.callScriptID,
+    },
   })
   if not ok then
     if Errors.is(controller) then
@@ -480,10 +487,24 @@ function PokegearScriptHost:stageCall(ownerKey, request)
     isNonEmptyString(record.contact) and isNonEmptyString(record.direction) and isNonEmptyString(record.kind),
     "staged phone requests carry their evaluated call identity"
   )
+  if record.isScriptedCall ~= nil then
+    assert(
+      type(record.isScriptedCall) == "number" and record.isScriptedCall % 1 == 0,
+      "staged phone requests carry their source scripted flag"
+    )
+  end
+  if record.callScriptID ~= nil then
+    assert(
+      type(record.callScriptID) == "number" and record.callScriptID % 1 == 0,
+      "staged phone requests carry their source script identity"
+    )
+  end
   self._staged[ownerKey] = {
     contact = record.contact --[[@as string]],
     direction = record.direction --[[@as string]],
     kind = record.kind --[[@as string]],
+    isScriptedCall = record.isScriptedCall,
+    callScriptID = record.callScriptID,
   }
 end
 

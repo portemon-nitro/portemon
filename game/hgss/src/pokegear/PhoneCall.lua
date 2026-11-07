@@ -91,6 +91,11 @@ local FACT_KEYS = {
   "storyEvent",
   "kenjiActive",
   "waitExpired",
+  "scriptedCall",
+  "momBalance",
+  "momGiftFull",
+  "momCallIntroParam",
+  "momSavingsFlag",
 }
 
 ---@param deps { state: table<string, unknown>, catalog: table<string, unknown>, messages: table<string, unknown>, world: table<string, unknown>, audio: table<string, unknown>?, random: table<string, unknown>? }
@@ -300,7 +305,10 @@ end
 -- kind, message references, and signal before taking the single call
 -- lease; branch-required facts are preflighted at their stage, not
 -- here. An invalid signal takes no lease and selects no program.
----@param args { id: string, contact: string, direction: string, kind: string }
+-- Scripted field calls thread their source isScriptedCall/callScriptID
+-- through the request so the native selector sees scriptedCall==2
+-- first, before localMap (retail order).
+---@param args { id: string, contact: string, direction: string, kind: string, isScriptedCall: integer?, callScriptID: integer? }
 ---@return { id: string } typed call handle
 function PhoneCall:begin(args)
   assert(type(args) == "table", "phone calls open through a request record")
@@ -308,6 +316,18 @@ function PhoneCall:begin(args)
   assert(type(args.contact) == "string" and args.contact ~= "", "phone calls name their contact")
   assert(PhoneCall.DIRECTIONS[args.direction] == true, "phone calls name an incoming or outgoing direction")
   assert(PhoneCall.KINDS[args.kind] == true, "phone calls name a known source call kind")
+  if args.isScriptedCall ~= nil then
+    assert(
+      type(args.isScriptedCall) == "number" and args.isScriptedCall % 1 == 0,
+      "scripted phone calls carry their source scripted flag"
+    )
+  end
+  if args.callScriptID ~= nil then
+    assert(
+      type(args.callScriptID) == "number" and args.callScriptID % 1 == 0,
+      "scripted phone calls carry their source script identity"
+    )
+  end
   if self._active ~= nil then
     error("a foreground phone call already owns the line", 0)
   end
@@ -319,6 +339,37 @@ function PhoneCall:begin(args)
     unacquiredContact(args.contact)
   end
   local greeting = frozenGreeting(self._messages)
+  local facts = snapshotFacts(self._world, args.kind, args.direction, record)
+  if args.isScriptedCall ~= nil then
+    facts.scriptedCall = args.isScriptedCall
+  end
+  if args.callScriptID ~= nil then
+    facts.callScriptID = args.callScriptID
+  end
+  -- Mom balance and gift-full read through the durable companion state,
+  -- never the world facade: the balance stages the save-prompt variant
+  -- and the gift queue gates the gift-full branch.
+  if record.family == "mother" then
+    local okPhone, phone = pcall(function()
+      local readPhone = (self._state --[[@as table<string, unknown>]]).readPhone
+      assert(type(readPhone) == "function", "mother facts read the companion phone")
+      return readPhone(self._state)
+    end)
+    if okPhone and type(phone) == "table" then
+      local mom = (phone --[[@as table<string, unknown>]]).mom
+      if type(mom) == "table" then
+        if
+          type((mom --[[@as table<string, unknown>]]).balance) == "number"
+        then
+          facts.momBalance = (mom --[[@as table<string, unknown>]]).balance
+        end
+        local gifts = (mom --[[@as table<string, unknown>]]).gifts
+        if type(gifts) == "table" then
+          facts.momGiftFull = #gifts >= 5
+        end
+      end
+    end
+  end
   local session = {
     id = args.id,
     contact = args.contact,
@@ -327,7 +378,11 @@ function PhoneCall:begin(args)
     world = self._world,
     record = record,
     greeting = greeting,
-    facts = snapshotFacts(self._world, args.kind, args.direction, record),
+    facts = facts,
+    isScriptedCall = args.isScriptedCall or 0,
+    callScriptID = args.callScriptID,
+    dynamicMother = false,
+    random = self._random,
     owner = nil,
     family = nil,
     program = nil,
@@ -335,6 +390,8 @@ function PhoneCall:begin(args)
     scriptId = nil,
     lines = nil,
     textPage = 1,
+    textRevealed = 0,
+    textTick = 0,
     stage = "connecting",
     position = 1,
     ticks = 0,
@@ -426,36 +483,63 @@ local function selectNativeScript(session, record)
   assert(type(readFacts) == "function", "native script selection reads source selector facts")
   local nativeFacts = readFacts(world, record)
   assert(type(nativeFacts) == "table", "native selector returns a fact record")
+  local scripted = session.isScriptedCall == 2 and 2 or (facts.scriptedCall == 2 and 2 or 0)
   if session.family == "mother" then
-    if session.direction == "incoming" then
-      session.scriptId = facts.predefinedScript
+    -- Source order: the scripted dynamic path precedes everything,
+    -- then the local-map greeting, the incoming predefined script,
+    -- then the early-rival greetings in flag order. A fall-through
+    -- reaches the dynamic savings offer (scriptType 4, no scriptId).
+    if scripted == 2 then
+      session.dynamicMother = true
+      facts.dynamicMother = true
     elseif nativeFacts.localMap then
       session.scriptId = 23
+    elseif session.direction == "incoming" then
+      session.scriptId = facts.predefinedScript
     elseif not nativeFacts.gaveRivalName then
       session.scriptId = 25
     elseif not nativeFacts.talkedAfterNamingRival then
       session.scriptId = 26
+    else
+      session.dynamicMother = true
+      facts.dynamicMother = true
     end
   elseif session.family == "bill" then
     if session.direction == "incoming" then
       session.scriptId = 93
     elseif nativeFacts.localMap then
       session.scriptId = 92
+    else
+      session.dynamicBill = true
     end
   elseif session.family == "bike" then
     session.scriptId = nativeFacts.localMap and 84 or 85
   elseif session.family == "kurt" then
     if nativeFacts.localMap then
       session.scriptId = 83
+    else
+      session.dynamicKurt = true
     end
   elseif session.family == "daycare" then
     if record.id == 6 and session.direction == "incoming" then
       session.scriptId = nativeFacts.eggCallPending and 96 or 95
     elseif record.id == 7 and nativeFacts.localMap then
       session.scriptId = 97
+    elseif record.id == 6 then
+      session.dynamicDaycareMan = true
+    else
+      session.dynamicDaycareLady = true
     end
   elseif session.family == "elm" then
-    if session.direction == "incoming" then
+    if scripted == 2 then
+      local mapScripts = { [0] = 2, [1] = 3, [2] = 4, [3] = 5, [4] = 6 }
+      local predefined = facts.callScriptID or facts.predefinedScript
+      if type(predefined) == "number" and mapScripts[predefined] ~= nil then
+        session.scriptId = mapScripts[predefined]
+      elseif predefined == nil then
+        session.scriptId = 2
+      end
+    elseif session.direction == "incoming" then
       session.scriptId = facts.predefinedScript
     elseif nativeFacts.localMap then
       session.scriptId = 1
@@ -467,7 +551,137 @@ local function selectNativeScript(session, record)
       session.scriptId = 10
     elseif facts.eggGift == true then
       session.scriptId = 11
+    else
+      session.dynamicElm = true
     end
+  elseif session.family == "oak" then
+    if scripted == 2 then
+      session.scriptId = 82
+    elseif session.direction == "incoming" then
+      local caught = facts.dexCaught
+      local param = 1
+      if type(caught) == "number" then
+        param = math.floor(caught / 50)
+        if param < 1 then
+          param = 1
+        elseif param > 9 then
+          param = 9
+        end
+      end
+      session.scriptId = 68 + param
+    elseif nativeFacts.localMap then
+      session.scriptId = 68
+    elseif facts.acknowledged == true then
+      session.scriptId = 81
+    elseif facts.nationalDex == true then
+      session.scriptId = 80
+    else
+      session.dynamicOak = true
+    end
+  elseif session.family == "baoba" then
+    if scripted == 2 then
+      session.scriptId = 141
+    elseif nativeFacts.localMap then
+      session.scriptId = 140
+    elseif session.direction == "incoming" then
+      session.scriptId = facts.predefinedScript
+    else
+      local safariVar = facts.safariTest
+      if type(safariVar) == "number" then
+        session.scriptId = 147 + safariVar
+      end
+    end
+  elseif session.family == "kenji" then
+    if nativeFacts.localMap then
+      session.scriptId = 86
+    elseif facts.waitExpired == true then
+      session.scriptId = 88
+    elseif facts.kenjiActive == true then
+      session.scriptId = 87
+    else
+      session.dynamicKenji = true
+    end
+  elseif session.family == "irwin" then
+    if session.direction ~= "incoming" then
+      if facts.takeover == true then
+        session.scriptId = 156
+      else
+        -- Retail rolls 172/173/174 (LCRandom()%3) for ordinary outgoing
+        -- Irwin calls outside the takeover.
+        local roll = 0
+        local rng = session.random
+        if type(rng) == "table" and type(rng.lc) == "function" then
+          roll = rng:lc("irwin_outgoing") % 3
+        else
+          roll = math.random(0, 2)
+        end
+        session.scriptId = 172 + roll
+      end
+    elseif facts.storyEvent == true then
+      session.scriptId = facts.predefinedScript
+    elseif facts.acknowledged ~= true then
+      session.scriptId = 169
+    elseif (facts.badges or 0) >= 16 then
+      session.scriptId = 171
+    else
+      session.scriptId = 170
+    end
+  elseif session.family == "gym" or session.family == "rematch" or session.family == "trainer" then
+    if nativeFacts.localMap and record.localScript ~= nil then
+      session.scriptId = record.localScript
+    elseif session.direction == "incoming" then
+      session.scriptId = facts.predefinedScript
+    else
+      session.dynamicGeneric = true
+    end
+  elseif session.family == "friend" then
+    if session.direction == "incoming" then
+      session.dynamicFriendIncoming = true
+    elseif nativeFacts.localMap then
+      local gender = facts.playerGender
+      session.scriptId = (gender == "female" or gender == 1) and 101 or 102
+    else
+      session.dynamicFriend = true
+    end
+  elseif session.family == "buena" then
+    if facts.takeover == true then
+      session.scriptId = 99
+    elseif session.direction == "incoming" then
+      session.dynamicBuenaIncoming = true
+    elseif facts.passwordKnown == true then
+      session.scriptId = 100
+    elseif nativeFacts.localMap then
+      session.scriptId = 98
+    else
+      session.dynamicBuena = true
+    end
+  elseif session.family == "generic" then
+    if nativeFacts.localMap and record.localScript ~= nil then
+      session.scriptId = record.localScript
+    elseif session.direction == "incoming" then
+      session.scriptId = facts.predefinedScript
+    else
+      session.dynamicGeneric = true
+    end
+  end
+  if session.dynamicMother == true then
+    return
+  end
+  if
+    session.dynamicBill == true
+    or session.dynamicKurt == true
+    or session.dynamicDaycareMan == true
+    or session.dynamicDaycareLady == true
+    or session.dynamicElm == true
+    or session.dynamicOak == true
+    or session.dynamicKenji == true
+    or session.dynamicGeneric == true
+    or session.dynamicFriendIncoming == true
+    or session.dynamicFriend == true
+    or session.dynamicBuenaIncoming == true
+    or session.dynamicBuena == true
+  then
+    return
   end
   if type(session.scriptId) ~= "number" then
     local failure = Errors.new(
@@ -503,7 +717,7 @@ end
 
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
----@return string program step result
+---@return string|{ status: string, entry: integer? } program step result ("waiting"|"done" or { status: string, entry: integer? } for dynamic lines)
 local function stepProgram(session, input)
   local owner = session.owner --[[@as string]]
   local programSession = session.programSession --[[@as table<string, unknown>]]
@@ -522,11 +736,63 @@ local function stepProgram(session, input)
   return GenericPhoneProgram.step(programSession, input)
 end
 
+-- Resolves one bank-664 entry for the dynamic Mother flow through the
+-- contact-entry reader when present, else through the script table when
+-- the entry coincides with a static definition. Tests stub the reader;
+-- production resolves through the field message provider with the same
+-- landmark fallback (id 0 → bank 280 entry 2) as static greetings.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@param entry integer bank-664 entry number
+---@return table<string, unknown> resolved native dialogue
+local function resolveMotherEntry(messages, session, entry)
+  local resolveEntry = messages.resolveContactEntry
+  if type(resolveEntry) == "function" then
+    local facts = session.facts --[[@as table<string, unknown>]]
+    local balance = facts.momBalance
+    if type(balance) ~= "number" then
+      balance = 0
+    end
+    return resolveEntry(messages, session.contact, entry, { balance = balance })
+  end
+  local resolveLine = messages.resolveLine
+  assert(type(resolveLine) == "function", "phone dialogue resolves through the field message provider")
+  -- Fallback for fixtures that only stub resolveLine: map the dynamic
+  -- entries onto their closest static definitions is forbidden (producer
+  -- work); fail loudly so the missing reader is added instead.
+  error("dynamic mother needs its contact-entry message reader, got entry " .. tostring(entry), 0)
+end
+
 ---@param messages table<string, unknown>
 ---@param session table<string, unknown>
 ---@return table<string, unknown> resolved native dialogue
 local function resolveNativeDialogue(messages, session)
   selectNativeScript(session, session.record --[[@as table<string, unknown>]])
+  if session.dynamicMother == true then
+    local entry = MotherPhoneProgram.introEntry(session.facts --[[@as table<string, unknown>]])
+    return resolveMotherEntry(messages, session, entry)
+  end
+  if
+    session.dynamicBill == true
+    or session.dynamicKurt == true
+    or session.dynamicDaycareMan == true
+    or session.dynamicDaycareLady == true
+    or session.dynamicElm == true
+    or session.dynamicOak == true
+    or session.dynamicKenji == true
+    or session.dynamicGeneric == true
+    or session.dynamicFriendIncoming == true
+    or session.dynamicFriend == true
+    or session.dynamicBuenaIncoming == true
+    or session.dynamicBuena == true
+  then
+    local failure = Errors.new(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "native phone dynamic handler needs its save-owned program wiring for " .. tostring(session.family),
+      { family = session.family, contact = session.contact, program = session.program }
+    )
+    error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+  end
   local scriptId = session.scriptId
   local resolveLine = messages.resolveLine
   assert(type(scriptId) == "number", "the selected caller carries its native script identity")
@@ -684,6 +950,103 @@ function PhoneCall:_resolveChoiceLabels(session)
   session.choiceTooltip = prompt.text
 end
 
+-- Counts the printable glyphs on the session's current page: only
+-- glyph-kind tokens reveal, so breaks and zero-width controls never stall
+-- the typewriter. Pages without compiled tokens carry no reveal count.
+---@param session table<string, unknown>
+---@return integer glyph count
+local function pageGlyphTotal(session)
+  local lines = session.lines --[[@as table<integer, unknown>?]]
+  local page = session.textPage --[[@as integer?]]
+  if type(lines) ~= "table" or type(page) ~= "number" then
+    return 0
+  end
+  local entry = lines[page]
+  if type(entry) ~= "table" then
+    return 0
+  end
+  local tokens = (entry --[[@as table<string, unknown>]]).tokens
+  if type(tokens) ~= "table" then
+    return 0
+  end
+  local total = 0
+  for _, token in
+    ipairs(tokens --[[@as table<integer, unknown>]])
+  do
+    if
+      type(token) == "table" and (token --[[@as table<string, unknown>]]).kind == "glyph"
+    then
+      total = total + 1
+    end
+  end
+  return total
+end
+
+-- Reads the player's text speed behind call text typing through the
+-- world boundary, defaulting to mid where the world carries no option.
+-- Retail prints call pages behind Options_GetTextFrameDelay, never a
+-- fixed cadence. The world may carry the speed as a function returning
+-- the option or as the plain option string; both are honored so a
+-- setting change always reaches the typewriter.
+---@return string the configured text speed
+function PhoneCall:_textSpeed()
+  local world = self._world
+  local query = type(world) == "table" and (world --[[@as table<string, unknown>]]).textSpeed or nil
+  local speed = nil
+  if type(query) == "function" then
+    speed = query(world)
+  elseif type(query) == "string" then
+    speed = query
+  end
+  if type(speed) ~= "string" then
+    return "mid"
+  end
+  local PlayerData = require("libs.hgss.src.save.PlayerData")
+  if PlayerData.TEXT_SPEEDS[speed] == nil then
+    return "mid"
+  end
+  return speed --[[@as string]]
+end
+
+-- Reads the player's text speed behind call text typing through the
+-- world boundary, defaulting to mid where the world carries no option.
+-- Retail prints call pages behind Options_GetTextFrameDelay, never a
+-- fixed cadence.
+---@return integer fixed ticks per revealed glyph
+function PhoneCall:_ticksPerGlyph()
+  local PlayerData = require("libs.hgss.src.save.PlayerData")
+  return PlayerData.ticksPerGlyph(self:_textSpeed())
+end
+
+-- Advances the typewriter one fixed tick on the session's open page:
+-- glyphs reveal behind the configured text speed, with the fastest
+-- setting printing its two-glyph budget so it stays distinct from fast.
+-- Returns true while the page still hides glyphs. Callers reset the
+-- counters when they publish new lines or turn the page; hangup lines
+-- never type and never call this.
+---@param session table<string, unknown>
+---@return boolean typing true while glyphs remain hidden
+function PhoneCall:_revealTick(session)
+  local total = pageGlyphTotal(session)
+  local revealed = session.textRevealed --[[@as integer?]] or 0
+  if revealed >= total then
+    session.textRevealed = total
+    return false
+  end
+  local tick = (
+    session.textTick --[[@as integer?]]
+    or 0
+  ) + 1
+  if tick >= self:_ticksPerGlyph() then
+    tick = 0
+    local budget = self:_textSpeed() == "fastest" and 2 or 1
+    revealed = math.min(total, revealed + budget)
+  end
+  session.textTick = tick
+  session.textRevealed = revealed
+  return revealed < total
+end
+
 -- Advances the call one step. Waits hold their stage until the audio or
 -- text completion boundary reports done; each stage advance moves the
 -- program position once and runs the stage effect once. Steps on a
@@ -726,29 +1089,36 @@ function PhoneCall:step(handle, input)
         type(formatted) == "table" and type(formatted.tokens) == "table",
         "phone dialogue returns formatted source tokens"
       )
-      local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-      local lines = {}
-      local pageTokens = {}
-      local function finishPage()
-        if #pageTokens > 0 then
-          lines[#lines + 1] = { text = FieldMessageText.tokensToText(pageTokens), tokens = pageTokens }
-          pageTokens = {}
+      session.lines = self:_pagesFromTokens(formatted.tokens)
+      session.textRevealed, session.textTick = 0, 0
+      assert(#session.lines > 0, "phone scripts produce at least one printable text page")
+      -- Static script side effects (rematch/item/flag/word) run once at
+      -- greeting, before the text prints, mirroring
+      -- PhoneCall_ApplyGenericNPCcallSideEffect. Dynamic Mother has no
+      -- scriptId; its savings flag runs in the program stage.
+      if session.dynamicMother ~= true then
+        local sideOk, sideFault = pcall(function()
+          self:_applyStaticSideEffect(session)
+        end)
+        if not sideOk then
+          self:_failCall(session, sideFault)
+          return
         end
       end
-      for _, token in ipairs(formatted.tokens) do
-        if token.kind == "page_break" or token.kind == "prompt_break" then
-          finishPage()
-        else
-          pageTokens[#pageTokens + 1] = token
-        end
-      end
-      finishPage()
-      assert(#lines > 0, "phone scripts produce at least one printable text page")
-      session.lines = lines
       session.stage = "message"
       enterStage(session)
       return
     elseif stage == "message" then
+      if self:_revealTick(session) then
+        -- The page still types: a forced edge completes it at once
+        -- instead of turning it, exactly like the source printer
+        -- fast-forward behind Action.
+        if forced then
+          session.textRevealed = pageGlyphTotal(session)
+          session.textTick = 0
+        end
+        return
+      end
       if not forced then
         return
       end
@@ -757,6 +1127,7 @@ function PhoneCall:step(handle, input)
       local lines = session.lines --[[@as table<integer, unknown>]]
       if page < #lines then
         session.textPage = page + 1
+        session.textRevealed, session.textTick = 0, 0
         enterStage(session)
         return
       end
@@ -768,7 +1139,24 @@ function PhoneCall:step(handle, input)
         self:_failCall(session, outcome)
         return
       end
-      if outcome == "waiting" then
+      local status, entry = outcome, nil
+      if type(outcome) == "table" then
+        status = (outcome --[[@as table<string, unknown>]]).status
+        entry = (outcome --[[@as table<string, unknown>]]).entry
+      end
+      if status == "waiting" then
+        -- Dynamic Mother prompt: resolve the staged prompt entry so the
+        -- choice views the retail prompt text before answering.
+        if type(entry) == "number" and session.dynamicMother == true then
+          local promptOk, promptFormatted = pcall(resolveMotherEntry, self._messages, session, entry)
+          if not promptOk then
+            self:_failCall(session, promptFormatted)
+            return
+          end
+          session.lines = self:_pagesFromTokens(promptFormatted.tokens)
+          session.textPage = 1
+          session.textRevealed, session.textTick = 0, 0
+        end
         session.stage = "choice"
         enterStage(session)
         local labelsOk, labelsFault = pcall(function()
@@ -780,18 +1168,88 @@ function PhoneCall:step(handle, input)
         end
         return
       end
+      -- Dynamic Mother terminal entries (gift-full 21, result 25/26):
+      -- show the staged pages in a result stage before hangup.
+      if type(entry) == "number" and session.dynamicMother == true then
+        local resultOk, resultFormatted = pcall(resolveMotherEntry, self._messages, session, entry)
+        if not resultOk then
+          self:_failCall(session, resultFormatted)
+          return
+        end
+        session.lines = self:_pagesFromTokens(resultFormatted.tokens)
+        session.textPage = 1
+        session.textRevealed, session.textTick = 0, 0
+        session.stage = "result"
+        enterStage(session)
+        return
+      end
       self:_beginHangup(session)
       return
     elseif stage == "choice" then
       if edges.choice == nil then
+        if self:_revealTick(session) then
+          -- The prompt still types while the menu waits: a forced edge
+          -- completes it at once.
+          if forced then
+            session.textRevealed = pageGlyphTotal(session)
+            session.textTick = 0
+          end
+          return
+        end
         return
       end
+      -- An answer lands while the prompt still types: completing the
+      -- page and answering at once keeps one tap counting.
+      session.textRevealed = pageGlyphTotal(session)
+      session.textTick = 0
       local ok, outcome = pcall(stepProgram, session, edges)
       if not ok then
         self:_failCall(session, outcome)
         return
       end
-      if outcome == "waiting" then
+      local status, entry = outcome, nil
+      if type(outcome) == "table" then
+        status = (outcome --[[@as table<string, unknown>]]).status
+        entry = (outcome --[[@as table<string, unknown>]]).entry
+      end
+      if status == "waiting" then
+        return
+      end
+      if type(entry) == "number" and session.dynamicMother == true then
+        local resultOk, resultFormatted = pcall(resolveMotherEntry, self._messages, session, entry)
+        if not resultOk then
+          self:_failCall(session, resultFormatted)
+          return
+        end
+        session.lines = self:_pagesFromTokens(resultFormatted.tokens)
+        session.textPage = 1
+        session.textRevealed, session.textTick = 0, 0
+        session.stage = "result"
+        enterStage(session)
+        return
+      end
+      self:_beginHangup(session)
+      return
+    elseif stage == "result" then
+      -- Dynamic Mother result/gift-full pages print like message pages,
+      -- then the staged hangup runs. No program re-entry.
+      if self:_revealTick(session) then
+        if forced then
+          session.textRevealed = pageGlyphTotal(session)
+          session.textTick = 0
+        end
+        return
+      end
+      if not forced then
+        return
+      end
+      forced = false
+      local page = session.textPage --[[@as integer]]
+      local lines = session.lines --[[@as table<integer, unknown>]]
+      if page < #lines then
+        session.textPage = page + 1
+        session.textRevealed, session.textTick = 0, 0
+        enterStage(session)
         return
       end
       self:_beginHangup(session)
@@ -805,13 +1263,183 @@ function PhoneCall:step(handle, input)
   end
 end
 
+-- Splits formatted source tokens into printable pages at page and
+-- prompt breaks, exactly like the greeting path. Shared by static
+-- greetings and dynamic Mother entries so Bank 664 multi-page intros
+-- never pre-flatten.
+---@param tokens table<integer, unknown> formatted source tokens
+---@return table<integer, unknown> printable pages
+function PhoneCall:_pagesFromTokens(tokens)
+  assert(type(tokens) == "table", "phone pages split formatted source tokens")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local lines = {}
+  local pageTokens = {}
+  local function finishPage()
+    if #pageTokens > 0 then
+      lines[#lines + 1] = { text = FieldMessageText.tokensToText(pageTokens), tokens = pageTokens }
+      pageTokens = {}
+    end
+  end
+  for _, token in
+    ipairs(tokens --[[@as table<integer, unknown>]])
+  do
+    local kind = (token --[[@as table<string, unknown>]]).kind
+    if kind == "page_break" or kind == "prompt_break" then
+      finishPage()
+    else
+      pageTokens[#pageTokens + 1] = token
+    end
+  end
+  finishPage()
+  return lines
+end
+
+-- Applies one static script side effect from the compiled call table,
+-- mirroring PhoneCall_ApplyGenericNPCcallSideEffect: rematch stages
+-- readiness, item stages a contact gift (Cheri Berry and Poke Ball
+-- roll their source random windows), flag sets/clears the named event
+-- flag, word draws its random pick. None kinds do nothing. Missing
+-- owners fail with attribution, never a fabricated world.
+---@param session table<string, unknown>
+function PhoneCall:_applyStaticSideEffect(session)
+  local scriptId = session.scriptId
+  if type(scriptId) ~= "number" then
+    return
+  end
+  local catalog = self._catalog --[[@as table<string, unknown>]]
+  local definitions = catalog.callDefinitions
+  if type(definitions) ~= "table" then
+    return
+  end
+  local definition = (definitions --[[@as table<integer, unknown>]])[scriptId]
+  if type(definition) ~= "table" then
+    return
+  end
+  local record = definition --[[@as table<string, unknown>]]
+  local kind = record.kind
+  if kind == nil or kind == "none" then
+    return
+  end
+  local contact = session.contact --[[@as string]]
+  if kind == "rematch" then
+    local world = self._world --[[@as table<string, unknown>]]
+    if type(world.setRematch) == "function" then
+      local query = world.queryRematch
+      local current = type(query) == "function" and query(world, contact) or nil
+      local wins = 0
+      if type(current) == "table" and type(current.wins) == "number" then
+        wins = current.wins
+      end
+      world.setRematch(world, contact, { stage = 1, wins = wins })
+    else
+      local ready = world.rematchReady
+      if type(ready) ~= "table" then
+        ready = {}
+        world.rematchReady = ready
+      end
+      (ready --[[@as table<string, boolean>]])[contact] = true
+    end
+    return
+  end
+  if kind == "item" then
+    local item = record.param1
+    assert(type(item) == "string" and item ~= "", "phone item effects name their item")
+    local resolved = item
+    if item == "ITEM_CHERI_BERRY" then
+      local berries = {
+        "ITEM_CHERI_BERRY",
+        "ITEM_CHESTO_BERRY",
+        "ITEM_PECHA_BERRY",
+        "ITEM_RAWST_BERRY",
+        "ITEM_ASPEAR_BERRY",
+        "ITEM_LEPPA_BERRY",
+        "ITEM_ORAN_BERRY",
+        "ITEM_PERSIM_BERRY",
+        "ITEM_LUM_BERRY",
+        "ITEM_SITRUS_BERRY",
+      }
+      local draw = 0
+      if type(self._random) == "table" and type(self._random.mt) == "function" then
+        draw = self._random:mt("gift_item") % 10
+      else
+        draw = math.random(0, 9)
+      end
+      resolved = berries[draw + 1]
+    elseif item == "ITEM_POKE_BALL" then
+      local balls = { "ITEM_ULTRA_BALL", "ITEM_GREAT_BALL", "ITEM_POKE_BALL" }
+      local draw = 0
+      if type(self._random) == "table" and type(self._random.mt) == "function" then
+        draw = self._random:mt("gift_item") % 3
+      else
+        draw = math.random(0, 2)
+      end
+      resolved = balls[draw + 1]
+    end
+    local state = self._state --[[@as table<string, unknown>]]
+    local setReward = state.setContactReward
+    if type(setReward) == "function" then
+      setReward(state, contact, { item = resolved, quantity = 1 })
+    else
+      local world = self._world --[[@as table<string, unknown>]]
+      local gifts = world.contactGifts
+      if type(gifts) ~= "table" then
+        gifts = {}
+        world.contactGifts = gifts
+      end
+      (gifts --[[@as table<string, unknown>]])[contact] = { item = resolved, quantity = 1 }
+    end
+    return
+  end
+  if kind == "flag" then
+    local flag = record.param1
+    assert(flag ~= nil, "phone flag effects name their flag")
+    local set = record.param0 ~= 0
+    local world = self._world --[[@as table<string, unknown>]]
+    if type(world.setFlag) == "function" and type(world.clearFlag) == "function" then
+      if set then
+        world.setFlag(world, flag)
+      else
+        world.clearFlag(world, flag)
+      end
+    else
+      local flags = world.flags
+      assert(type(flags) == "table", "phone flag effects need their flag owner")
+      if set then
+        flags[flag] = true
+      else
+        flags[flag] = nil
+      end
+    end
+    return
+  end
+  if kind == "word" then
+    local count = record.param0
+    assert(type(count) == "number" and count > 0, "phone word effects name their pick count")
+    local pick = 0
+    if type(self._random) == "table" and type(self._random.lc) == "function" then
+      pick = self._random:lc("word_pick") % count
+    else
+      pick = math.random(0, count - 1)
+    end
+    local world = self._world --[[@as table<string, unknown>]]
+    local words = world.wordBuffer
+    if type(words) ~= "table" then
+      words = {}
+      world.wordBuffer = words
+    end
+    (words --[[@as table<string, unknown>]])[contact] = { base = record.param1, pick = pick }
+    return
+  end
+  error("phone static effects name a known source kind, got " .. tostring(kind), 0)
+end
+
 ---@param stage string
 ---@return string public view stage
 local function publicStage(stage)
   if stage == "connecting" then
     return "connecting"
   end
-  if stage == "greeting" or stage == "message" or stage == "program" then
+  if stage == "greeting" or stage == "message" or stage == "program" or stage == "result" then
     return "message"
   end
   if stage == "choice" then
@@ -844,6 +1472,13 @@ function PhoneCall:view(handle)
     lines = session.lines,
     page = session.textPage,
   }
+  -- Typing stages publish the typewriter position behind the current
+  -- page: revealed glyphs and the page glyph total. Instant stages
+  -- (ringing, signal, hangup, completed) omit both and render whole.
+  if stage == "message" or stage == "choice" then
+    shown.revealed = session.textRevealed or 0
+    shown.total = pageGlyphTotal(session)
+  end
   if stage == "choice" then
     -- Only the savings choice waits for input today; the owed choice
     -- ids stay with the program that defines them so a new waiting

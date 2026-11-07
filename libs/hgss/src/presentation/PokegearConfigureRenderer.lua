@@ -64,7 +64,8 @@ end
 ---@param content table<string, unknown> the plan payload with resolved paths
 ---@param childView table<string, unknown> the detached setup selection view
 ---@param unlockedSkins table<integer, integer>? the saved unlocked skins
-function PokegearConfigureRenderer.drawPane(graphics, images, text, content, childView, unlockedSkins)
+---@param shell table<string, unknown>? the shell snapshot carrying strip focus, when composed
+function PokegearConfigureRenderer.drawPane(graphics, images, text, content, childView, unlockedSkins, shell)
   assert(graphics ~= nil, "the setup render borrows its host graphics")
   assert(type(images) == "table", "the setup render borrows its prepared images")
   local thumbnails = assert(childView.thumbnails, "the setup view carries its thumbnail cells")
@@ -96,7 +97,13 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
       end
     end
   end
-  if type(cursor) == "number" and thumbnails[cursor] ~= nil then
+  -- The focus cursor answers card focus, never the card alone: while the
+  -- shell strip owns focus the strip paints its own corners at the focused
+  -- cell, so the waiting card hides its cursor instead of doubling the
+  -- indicator. Direct draws without a shell keep the card-owned cursor.
+  -- Corners blink on their source two-frame durations.
+  local stripOwnsFocus = type(shell) == "table" and (shell --[[@as table<string, unknown>]]).entered == false
+  if type(cursor) == "number" and thumbnails[cursor] ~= nil and not stripOwnsFocus then
     local rect = thumbnails[cursor] --[[@as table<string, number>]]
     local sprites = assert(content.configureSprites, "the setup plan resolves its sprite set")
     local corners = {
@@ -105,9 +112,18 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
       { rect.x + rect.width, rect.y },
       { rect.x + rect.width, rect.y + rect.height },
     }
+    local tick = 0
+    if
+      type(shell) == "table" and type((shell --[[@as table<string, unknown>]]).ticks) == "number"
+    then
+      tick = (shell --[[@as table<string, unknown>]]).ticks --[[@as integer]]
+    elseif type(childView.animationTick) == "number" then
+      tick = childView.animationTick --[[@as integer]]
+    end
     graphics.setColor(1, 1, 1, 1)
     for index, point in ipairs(corners) do
-      drawSprite(graphics, images, sprites, CONFIGURE_SET, CURSOR_SEQUENCES[index], 1, point[1], point[2])
+      local frame = PokegearMapLayers.animationFrame(sprites, CONFIGURE_SET, CURSOR_SEQUENCES[index], tick)
+      drawSprite(graphics, images, sprites, CONFIGURE_SET, CURSOR_SEQUENCES[index], frame, point[1], point[2])
     end
   end
   local menu = childView.menu

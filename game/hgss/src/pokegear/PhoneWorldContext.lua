@@ -121,6 +121,27 @@ function PhoneWorldContext:callFacts(contact)
     facts.dexCaught = dex:countCaught("national")
     facts.nationalDex = dex:hasNationalDex()
   end
+  -- Mom intro param joins the current map id onto the static map-header
+  -- catalog (romdump maps.lua momCallIntroParam, zero-based map ids).
+  -- Absent maps or headers omit the fact; the call defaults to 10.
+  local session = runtime.session
+  local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+  local mapId = type(currentMap) == "table" and currentMap.mapId or nil
+  if type(mapId) == "number" and mapId % 1 == 0 then
+    local okMaps, maps = pcall(require, "romdump.src.catalog.hgss.maps")
+    if okMaps and type(maps) == "table" then
+      local byId = (maps --[[@as table<string, unknown>]]).byId
+      if type(byId) == "table" then
+        local header = (byId --[[@as table<integer, unknown>]])[mapId]
+        if type(header) == "table" then
+          local param = (header --[[@as table<string, unknown>]]).momCallIntroParam
+          if type(param) == "number" and param % 1 == 0 then
+            facts.momCallIntroParam = param
+          end
+        end
+      end
+    end
+  end
   return facts
 end
 
@@ -421,6 +442,23 @@ function PhoneWorldContext:queryRematch(contact)
     "phone rematches read durable companion state"
   )
   return state:queryRematch(contact)
+end
+
+-- Reads the player's text speed option behind call text typing: the
+-- live player-data gameplay option when the runtime carries one,
+-- otherwise the production default for option-less worlds. Retail
+-- prints call pages behind Options_GetTextFrameDelay.
+---@return string a supported text speed
+function PhoneWorldContext:textSpeed()
+  local PlayerData = require("libs.hgss.src.save.PlayerData")
+  local runtime = self._owners.runtime
+  local playerData = type(runtime) == "table" and runtime.playerData or nil
+  local options = type(playerData) == "table" and playerData.options or nil
+  local speed = type(options) == "table" and options.textSpeed or nil
+  if PlayerData.TEXT_SPEEDS[speed] == nil then
+    return PlayerData.defaultOptions().textSpeed
+  end
+  return speed --[[@as string]]
 end
 
 ---@param contact string

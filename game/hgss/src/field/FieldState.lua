@@ -1145,7 +1145,6 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
     type(appStatus.tab) == "string" and type(appStatus.focus) == "string",
     "the companion view carries its card identities"
   )
-  local PokegearRenderer = require("libs.hgss.src.presentation.PokegearRenderer")
   local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
   -- Companion chrome borrows the session image owner: one lease per
   -- generated path, retained for the field lifetime like other pinned
@@ -1203,12 +1202,37 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
   if type(childPresentation) == "table" then
     realize((childPresentation --[[@as table<string, unknown>]]).content)
   end
-  PokegearRenderer.draw({
+  -- Every other application draws through the shared presentation
+  -- pipeline: the leaf render callback borrows resources, then the
+  -- selected outer frame paints over it. The companion previously drew
+  -- its shell directly and skipped the frame; route it through the same
+  -- pipeline so it carries the frame all other apps have.
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+  ApplicationPresentation.draw(graphics, {
     graphics = graphics,
     images = images,
     textRenderer = resources.textRenderer,
     phoneNameTextRenderer = resources.phoneNameTextRenderer,
   }, appStatus, plan --[[@as table<string, unknown>]])
+  local frames = plan.frames --[[@as table[] ]]
+  if type(frames) == "table" and #frames > 0 then
+    local window = assert(resources.windowRenderer, "companion frame drawing needs its window renderer")
+    local frameIndex =
+      assert(resources.applicationFrameIndex, "companion frame drawing needs its application frame index")
+    graphics.push("all")
+    local ok, err = pcall(function()
+      for _, frame in ipairs(frames) do
+        LogicalSurface.draw(graphics, assert(frame.placement, "the outer frame carries its placement"), function()
+          local contentBox = assert(frame.contentBox, "the outer frame carries its content box")
+          window:drawApplicationFrame(contentBox, frameIndex)
+        end)
+      end
+    end)
+    graphics.pop()
+    if not ok then
+      error(err, 0)
+    end
+  end
 end
 
 -- Draws the incoming-call caller window while the coordinator rings: the

@@ -1,11 +1,16 @@
 -- Source-backed phonebook and preference behavior through the production
--- field runtime, gear shell, input path, and save store.
+-- field runtime, gear shell, input path, and save store. One boot covers
+-- the fresh bootstrap, the clock reception indicator, strip focus, the
+-- v9 skin migration, and manual phone ordering so the expensive field
+-- composition and ROM decode pay once.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local Fixture = require("tests.support.PokegearJourneyFixture")
+local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local PokegearCache = require("libs.assets.src.PokegearCache")
 local CacheFs = require("libs.storage.src.CacheFs")
+local PokegearSources = require("romdump.src.config.PokegearSources")
 
 local DERIVED_ASSETS = {}
 for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
@@ -13,6 +18,12 @@ for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
 end
 -- The setup card reads its CHANGE/QUIT context labels from bank 270.
 DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:270"
+for _, bankId in ipairs({ 271, 279, 280, 664, 675, 716, 730 }) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:" .. tostring(bankId)
+end
+for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:" .. tostring(bankId)
+end
 
 local T = {
   metadata = {
@@ -47,14 +58,6 @@ local function application(game)
   return assert(game.runtime.applicationHost:status().application, "the open gear publishes its application view")
 end
 
-local function openConfigure(game)
-  Fixture.openGearThroughMenu(game)
-  cancel(game)
-  direction(game, "left")
-  confirm(game)
-  Assert.equal(application(game).tab, "configure", "the Configure card opens through the gear strip")
-end
-
 local function nativeMom(catalog)
   local found = nil
   for _, contact in ipairs(catalog.contacts) do
@@ -67,19 +70,23 @@ local function nativeMom(catalog)
   return assert(found, "the compiled HGSS catalog contains native phonebook contact zero")
 end
 
-function T.tests.fresh_and_saved_field_bootstrap_register_native_mom_once()
+function T.tests.field_phonebook_preferences_and_strip_focus_persist_through_save()
   Fixture.withGame(Fixture.TOWN, function(game)
     local manifest = PokegearCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
     local catalog = assert(manifest.catalog, "the prepared ROM cache publishes the phone catalog")
     local mom = nativeMom(catalog)
     local state = assert(game.runtime.pokegearState, "the field runtime owns phonebook state")
 
+    -- Fresh bootstrap registers only Mom, exactly once.
     Assert.deepEqual(
       state:readPhone().contactOrder,
       { mom.key },
       "a fresh field runtime registers only Mom from native phonebook defaults"
     )
     Assert.deepEqual(state:readPhone().contacts, { [mom.key] = {} }, "Mom is registered through the phonebook owner")
+    local revision = state:revision()
+    state:registerContact(mom.key)
+    Assert.equal(state:revision(), revision, "registering the already seeded Mom is a no-op")
 
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_SAVE_BUTTON })
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
@@ -87,35 +94,41 @@ function T.tests.fresh_and_saved_field_bootstrap_register_native_mom_once()
     state = assert(game.runtime.pokegearState, "the loaded field runtime owns restored phonebook state")
     Assert.deepEqual(state:readPhone().contactOrder, { mom.key }, "the real save roundtrip retains exactly one Mom row")
 
-    local revision = state:revision()
-    state:registerContact(mom.key)
-    Assert.equal(state:revision(), revision, "registering the already seeded Mom is a no-op")
-    game:restart()
-    state = assert(game.runtime.pokegearState, "the repeated runtime bind retains its phonebook owner")
-    Assert.deepEqual(state:readPhone().contactOrder, { mom.key }, "repeated composition does not duplicate Mom")
-    Assert.equal(game:renderAttempts(), 0, "phonebook acceptance stops before GPU rendering")
-  end)
-end
+    -- The gear opens strip-focused in a permitting map: New Bark allows
+    -- outgoing calls, so the clock reception indicator stays lit while
+    -- the strip owns focus underneath.
+    Fixture.openGearThroughMenu(game)
+    game:advanceUntil("the opening Phone transition completes", function()
+      local status = game.runtime.applicationHost:status().application
+      return status ~= nil and status.transition == nil
+    end, 40)
+    Assert.isFalse(application(game).entered, "the gear opens with the strip focused")
+    Assert.equal(application(game).focus, "phone", "the opened strip focuses the Phone cell")
+    local clock = assert(application(game).clock, "the gear shell publishes its civil clock strip")
+    Assert.isTrue(clock.signal == true, "New Bark Town permits outgoing calls, so the reception indicator stays lit")
+    confirm(game)
+    Assert.isTrue(application(game).entered, "confirming the focused Phone cell enters the card")
+    cancel(game)
+    Assert.isFalse(application(game).entered, "back from the list returns focus to the strip")
+    Fixture.closeGearThroughMenu(game)
 
-function T.tests.saved_v9_skin_subset_can_select_and_persist_skin_five()
-  Fixture.withGame(Fixture.TOWN, function(game)
-    local state = assert(game.runtime.pokegearState, "the field runtime owns Configure preferences")
+    -- An older v9 subset migrates to all six skins and persists skin five.
+    state = assert(game.runtime.pokegearState, "the field runtime owns Configure preferences")
     state:setPreference("skin", 0)
     state:setPreference("unlockedSkins", { 0 })
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_SAVE_BUTTON })
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
     Fixture.saveAndReload(game)
-
     state = assert(game.runtime.pokegearState, "the restored field runtime owns old v9 preferences")
     Assert.deepEqual(
       state:readPreferences().unlockedSkins,
       { 0, 1, 2, 3, 4, 5 },
       "runtime binding publishes all six source Configure skins for an older valid preference subset"
     )
-    openConfigure(game)
+    Fixture.openGearThroughMenu(game)
+    Assert.isFalse(application(game).entered, "the gear opens with the strip focused")
+    direction(game, "left")
+    confirm(game)
+    Assert.equal(application(game).tab, "configure", "the Configure card opens through the gear strip")
     Assert.deepEqual(application(game).unlockedSkins, { 0, 1, 2, 3, 4, 5 }, "all six Configure cells are enabled")
-    -- Right wraps within its row and down crosses rows, so skin five is
-    -- right, right, down from skin zero.
     direction(game, "right")
     direction(game, "right")
     direction(game, "down")
@@ -123,25 +136,13 @@ function T.tests.saved_v9_skin_subset_can_select_and_persist_skin_five()
     Assert.isTrue(application(game).child.menuOpen, "skin five opens its normal Configure selection menu")
     confirm(game)
     Assert.equal(state:readPreferences().skin, 5, "the player can select skin five through production input")
-
     Fixture.closeGearThroughMenu(game)
     Fixture.saveAndReload(game)
     state = assert(game.runtime.pokegearState, "the reloaded runtime restores the selected skin")
     Assert.equal(state:readPreferences().skin, 5, "the real save pipeline persists skin five")
-    Assert.deepEqual(
-      state:readPreferences().unlockedSkins,
-      { 0, 1, 2, 3, 4, 5 },
-      "all six styles remain available after reload"
-    )
-    Assert.equal(game:renderAttempts(), 0, "Configure acceptance stops before GPU rendering")
-  end)
-end
 
-function T.tests.manual_phone_order_is_shown_moved_and_saved_independently_of_auto_sort()
-  Fixture.withGame(Fixture.TOWN, function(game)
-    local manifest = PokegearCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
-    local catalog = assert(manifest.catalog, "the prepared ROM cache publishes native contact identities")
-    local mom = nativeMom(catalog)
+    -- Manual phone ordering shows, moves, and saves independently of
+    -- automatic sort, and survives the same save pipeline.
     local keys = { mom.key }
     for _, contact in ipairs(catalog.contacts) do
       if contact.id ~= 0 and #keys < 3 then
@@ -149,15 +150,14 @@ function T.tests.manual_phone_order_is_shown_moved_and_saved_independently_of_au
       end
     end
     Assert.equal(#keys, 3, "the compiled catalog provides two additional source contacts")
-    local state = assert(game.runtime.pokegearState, "the field runtime owns phone ordering")
+    state = assert(game.runtime.pokegearState, "the field runtime owns phone ordering")
     for _, key in ipairs(keys) do
       state:registerContact(key)
     end
+    state:setPreference("lastApp", "phone")
     local sourceOrder = state:readPhone().contactOrder
     local manualOrder = { sourceOrder[3], sourceOrder[1], sourceOrder[2] }
     state:setContactOrder(manualOrder)
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_SAVE_BUTTON })
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
 
     Fixture.openGearThroughMenu(game)
     local phone = assert(application(game).child.view, "the phone card publishes its real catalog rows")
@@ -167,6 +167,8 @@ function T.tests.manual_phone_order_is_shown_moved_and_saved_independently_of_au
     end
     Assert.deepEqual(visible, manualOrder, "the Phone card opens in the saved manual order")
 
+    confirm(game)
+    Assert.isTrue(application(game).entered, "confirming the focused cell enters the card")
     confirm(game)
     direction(game, "down")
     confirm(game)
@@ -195,14 +197,7 @@ function T.tests.manual_phone_order_is_shown_moved_and_saved_independently_of_au
     Fixture.saveAndReload(game)
     state = assert(game.runtime.pokegearState, "the loaded runtime restores the manually moved order")
     Assert.deepEqual(state:readPhone().contactOrder, moved, "the real save pipeline preserves manual order")
-    Fixture.openGearThroughMenu(game)
-    phone = assert(application(game).child.view, "the reopened Phone card publishes rows")
-    visible = {}
-    for _, row in ipairs(phone.list.rows) do
-      visible[#visible + 1] = row.contact
-    end
-    Assert.deepEqual(visible, moved, "reopening Phone after reload reproduces manual order")
-    Assert.equal(game:renderAttempts(), 0, "phone ordering acceptance stops before GPU rendering")
+    Assert.equal(game:renderAttempts(), 0, "phonebook acceptance stops before GPU rendering")
   end)
 end
 

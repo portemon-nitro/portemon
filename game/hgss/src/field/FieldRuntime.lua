@@ -2917,11 +2917,23 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
         elseif
           token.kind == "substitution"
           and token.control >= FieldMessageText.STRVAR_1
-          and token.control <= FieldMessageText.STRVAR_1 + 3
+          and token.control < FieldMessageText.STRVAR_1 + 0x100
         then
           assert(type(contactKey) == "string", "phone substitutions identify their caller")
-          local slot = token.control - FieldMessageText.STRVAR_1
-          local function resolveSourceSubstitution()
+          -- The buffer slot is the marker's first argument, never the
+          -- control low byte: the retail encoder folds that argument's
+          -- predecessor into the command (msgenc MessagesEncoder), while
+          -- expansion indexes the buffered fields by the first argument
+          -- (message_format StringExpandPlaceholders via
+          -- MsgArray_ControlCodeGetField(cstr, 0)). PhoneCall buffers the
+          -- player name at 0, the caller name at 1, and the player and
+          -- caller landmarks at 2 and 3
+          -- (PhoneCall_InitMsgDataAndBufferNames), so {STRVAR_1 3, 0, 0}
+          -- names the player behind slot zero. One resolver per control
+          -- dispatches on its call-time arguments, so markers sharing a
+          -- control but naming different slots each resolve.
+          local function resolveSourceSubstitution(_, args, _)
+            local slot = type(args) == "table" and args[1] or nil
             local text = nil
             if slot == 0 then
               text = profile.name
@@ -2956,7 +2968,9 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
               end
               text = resolve(landmarkBankId, landmarkEntryId, contactKey).text
             end
-            assert(type(text) == "string", "source phone substitution has a resolved text value")
+            if text == nil then
+              return nil
+            end
             return assert(FieldMessageProvider.asciiGlyphTokens(text, fontDef))
           end
           resolvers[token.control] = resolveSourceSubstitution
@@ -3020,6 +3034,101 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
     return resolve(message.bank, message.entry, contactKey)
   end
   messages.resolveLine = resolveLine
+  -- Direct bank-entry reader behind the dynamic Mother flow: intro
+  -- 664.(7+param), prompt 22/23/24/27/28, gift-full 21, result 25/26.
+  -- Entries resolve through the caller's own bank with the same player
+  -- and landmark substitutions as static lines, plus the Mom balance
+  -- integer slot (BufferIntegerAsString slot 10) when the caller passes
+  -- it. Retail fallback identical: caller-landmark id 0 → bank 280
+  -- entry 2 ("Faraway place").
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@param entry integer bank entry number
+  ---@param opts table<string, unknown>? { balance: integer? }
+  ---@return table<string, unknown> formatted message text
+  local function resolveContactEntry(_, contactKey, entry, opts)
+    local contact = assert(contactsByKey[contactKey], "phone entry resolves a catalog contact")
+    assert(type(entry) == "number" and entry % 1 == 0, "phone entries name their bank entry")
+    local balance = type(opts) == "table" and opts.balance or nil
+    if balance ~= nil then
+      assert(type(balance) == "number" and balance % 1 == 0, "phone balance formats its integer slot")
+    end
+    local bankId, messageId = contact.messageBank, entry
+    local acquire = provider.acquireBank
+    local release = provider.releaseBank
+    local get = provider.get
+    local format = provider.format
+    local bank = assert(acquire(provider, bankId), "phone entry bank is available")
+    local function formatEntry()
+      local template = assert(get(provider, bankId, messageId), "phone entry exists")
+      local resolvers = {}
+      local templateTokens = (template --[[@as table<string, unknown>]]).tokens
+      assert(type(templateTokens) == "table", "phone templates carry tokens")
+      for _, token in ipairs(templateTokens) do
+        if token.kind == "substitution" and token.control == FieldMessageText.TRNAME then
+          local function resolveTrainerName()
+            return assert(FieldMessageProvider.asciiGlyphTokens(profile.name, fontDef))
+          end
+          resolvers[token.control] = resolveTrainerName
+        elseif
+          token.kind == "substitution"
+          and token.control >= FieldMessageText.STRVAR_1
+          and token.control < FieldMessageText.STRVAR_1 + 0x100
+        then
+          -- The buffer slot is the marker's first argument, never the
+          -- control low byte (see the static path above for the source
+          -- rule). Mother buffers her savings balance at field 10
+          -- (BufferIntegerAsString in phone_scripts_mother), so
+          -- {STRVAR_1 55, 10, 0} reads the balance behind slot ten.
+          local function resolveSourceSubstitution(_, args, _)
+            local slot = type(args) == "table" and args[1] or nil
+            local text = nil
+            if slot == 0 then
+              text = profile.name
+            elseif slot == 1 then
+              local contactRecord = assert(contactsByKey[contactKey])
+              text = resolve(contactRecord.messageBank, 0, contactKey).text
+            elseif slot == 2 or slot == 3 then
+              local mapSection = nil
+              if slot == 2 then
+                local session = runtime.session
+                local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+                assert(type(currentMap) == "table", "player landmark substitution reads the current map")
+                mapSection = currentMap.mapSectionNativeId
+              else
+                local contactRecord = assert(contactsByKey[contactKey])
+                mapSection = contactRecord.map
+              end
+              local landmarkBankId, landmarkEntryId = phoneLabels.bank, mapSection
+              local landmarkBank = assert(provider.acquireBank(phoneLabels.bank))
+              local landmarkCount = landmarkBank.messageCount
+              provider.releaseBank(phoneLabels.bank)
+              if landmarkEntryId == 0 or landmarkEntryId >= landmarkCount then
+                landmarkBankId, landmarkEntryId = phoneLabels.fallbackBank, phoneLabels.fallbackEntry
+              end
+              text = resolve(landmarkBankId, landmarkEntryId, contactKey).text
+            elseif slot == 10 then
+              text = tostring(balance or 0)
+            end
+            if text == nil then
+              return nil
+            end
+            return assert(FieldMessageProvider.asciiGlyphTokens(text, fontDef))
+          end
+          resolvers[token.control] = resolveSourceSubstitution
+        end
+      end
+      return format(provider, template, {}, resolvers)
+    end
+    local ok, result = pcall(formatEntry)
+    release(provider, bankId)
+    if not ok then
+      error(result, 0)
+    end
+    assert(not result.hadUnresolvedSubstitutions, "phone entry substitutions resolve through the field profile")
+    return result
+  end
+  messages.resolveContactEntry = resolveContactEntry
   -- The narrow bank271 UI text reader behind live calls: choice labels,
   -- the choice tooltip, and the three hangup messages. Both the menu
   -- card and direct scripted calls share this facade, so both resolve

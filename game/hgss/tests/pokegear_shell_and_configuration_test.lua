@@ -57,10 +57,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -579,8 +577,10 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
       touch = false,
     })
     settle(keys.shell)
-    press(keys.shell, { type = "cancel" })
-    Assert.isNil(keys.shell:takeResult(), "the first cancel returns focus without closing")
+    -- The source opens with the cursor in the app switch zone, so the
+    -- strip owns focus from the first tick without any cancel.
+    Assert.isFalse(keys.shell:status().entered, "the gear opens with the strip focused")
+    Assert.isNil(keys.shell:takeResult(), "the unfocused open publishes no result")
     local seen = {}
     for _ = 1, 8 do
       press(keys.shell, { type = "navigate", direction = "right" })
@@ -620,17 +620,23 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
     local first = keys.shell:status().focus
     press(keys.shell, { type = "navigate", direction = "right" })
     Assert.isTrue(keys.shell:status().focus ~= first, "one press advances strip focus")
-    -- Confirming the focused card enters it.
+    -- Confirming the focused card enters it without acting on it: focus
+    -- transitions consume their event, so entering the card never
+    -- opens a menu or starts a call as a side effect.
     local focus = keys.shell:status().focus
     press(keys.shell, { type = "confirm" })
     settle(keys.shell)
     Assert.equal(keys.shell:status().tab, focus, "confirming strip focus enters that card")
-    -- Confirming the already selected card re-enters it audibly.
+    Assert.isTrue(keys.shell:status().entered, "confirming strip focus moves focus inside the card")
+    local entered = assert(keys.log.children[focus], "the entered card exists")
+    for _, eventType in ipairs(entered.events) do
+      Assert.isTrue(eventType ~= "confirm", "entering the card forwards no confirm into it")
+    end
+    -- Confirming the already selected card answers audibly and reaches it.
     local effectsBefore = #keys.log.effects
     press(keys.shell, { type = "confirm" })
     Assert.equal(keys.shell:status().tab, focus, "re-confirming the selected card keeps it")
     Assert.isTrue(#keys.log.effects > effectsBefore, "re-confirming the selected card answers audibly")
-    local entered = assert(keys.log.children[focus], "the entered card exists")
     local heardConfirm = false
     for _, eventType in ipairs(entered.events) do
       if eventType == "confirm" then
@@ -1110,8 +1116,7 @@ function T.tests.configuration_cursor_follows_the_source_grid()
   local state = PokegearState.new(nil, catalogRefs(record))
   state:setPreference("skin", 0)
   local labels = { change = "CHANGE", quit = "QUIT" }
-  local controller =
-    ConfigureController.new({ state = state, assets = fixtureManifest(), labels = labels })
+  local controller = ConfigureController.new({ state = state, assets = fixtureManifest(), labels = labels })
   Assert.equal(controller:status().cursor, 0, "the setup cursor starts on skin zero")
   local function move(direction)
     controller:updateFixed({ { type = "navigate", direction = direction } })
@@ -1175,7 +1180,11 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   local state = PokegearState.new(nil, catalogRefs(record))
   state:setPreference("unlockedSkins", { 0 })
 
-  local keyboard = ConfigureController.new({ state = state, assets = fixtureManifest(), labels = { change = "CHANGE", quit = "QUIT" } })
+  local keyboard = ConfigureController.new({
+    state = state,
+    assets = fixtureManifest(),
+    labels = { change = "CHANGE", quit = "QUIT" },
+  })
   -- Right wraps within its row and down crosses rows, so skin five is
   -- right, right, down from skin zero.
   keyboard:updateFixed({ { type = "navigate", direction = "right" } })
@@ -1189,8 +1198,11 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   keyboard:dispose()
 
   state:setPreference("skin", 0)
-  local pointer =
-    ConfigureController.new({ state = state, assets = fixtureManifest(), labels = { change = "CHANGE", quit = "QUIT" } })
+  local pointer = ConfigureController.new({
+    state = state,
+    assets = fixtureManifest(),
+    labels = { change = "CHANGE", quit = "QUIT" },
+  })
   pointer:updateFixed({ { type = "pointer_down", x = 208, y = 116 } })
   Assert.isTrue(pointer:status().menuOpen, "pointer selection opens the source skin five menu")
   pointer:updateFixed({ { type = "confirm" } })
@@ -1202,6 +1214,10 @@ function T.tests.cancelling_to_the_strip_plays_the_cancel_tone()
   local host = openShell({ manifest = fixtureManifest() })
   settle(host.shell)
   local tab = host.shell:status().tab
+  Assert.isFalse(host.shell:status().entered, "the gear opens with the strip focused")
+  -- Selecting the focused cell enters the card without acting on it.
+  press(host.shell, { type = "confirm" })
+  Assert.isTrue(host.shell:status().entered, "confirming the focused cell enters the card")
   local child = assert(host.log.children[tab], "the entered card exists")
   local eventsBefore = #child.events
   press(host.shell, { type = "cancel" })
@@ -1220,7 +1236,7 @@ end
 
 function T.tests.shell_prepares_the_active_cards_presentation_images()
   local FieldState = require("game.hgss.src.field.FieldState")
-  local PokegearRenderer = require("libs.hgss.src.presentation.PokegearRenderer")
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
   local path = "assets/generated/pokegear/phone-upper-skin-0.png"
   local requested = {}
   local pool = {
@@ -1235,27 +1251,24 @@ function T.tests.shell_prepares_the_active_cards_presentation_images()
       return { image = {} }
     end,
   }
-  local oldDraw = PokegearRenderer.draw
-  local oldLove = love
+  local oldDraw = ApplicationPresentation.draw
   local observed
-  PokegearRenderer.draw = function(_, _, plan)
+  ApplicationPresentation.draw = function(_, _, _, plan)
     observed = plan
   end
-  love = { graphics = {} }
   local ok, err = pcall(FieldState._drawPokegearApplication, {
     runtime = { imageAssets = pool },
-  }, { battleTextRenderers = { menu = {} } }, {
+  }, { battleTextRenderers = { menu = {} }, windowRenderer = {}, applicationFrameIndex = 0 }, {
     tab = "phone",
     focus = "application",
-    presentation = { content = { slots = {} } },
+    presentation = { content = { slots = {} }, frames = {} },
     child = {
       presentation = {
         content = { upper = path },
       },
     },
   })
-  PokegearRenderer.draw = oldDraw
-  love = oldLove
+  ApplicationPresentation.draw = oldDraw
   assert(ok, tostring(err))
   Assert.isTrue(requested[path], "the shell prepares the active phone card's upper image")
   Assert.notNil(observed, "the shell publishes the resolved plan to its renderer")
@@ -1266,8 +1279,8 @@ end
 function T.tests.small_resizes_keep_logical_state()
   local host = openShell({ manifest = fixtureManifest(), touch = false })
   settle(host.shell)
-  press(host.shell, { type = "cancel" })
-  Assert.isNil(host.shell:takeResult(), "the first cancel returns focus without closing")
+  Assert.isFalse(host.shell:status().entered, "the gear opens with the strip focused")
+  Assert.isNil(host.shell:takeResult(), "the unfocused open publishes no result")
   local tab, focus = host.shell:status().tab, host.shell:status().focus
   host.box.facts = displayFacts(514, 194, false)
   host.shell:updateFixed({})
