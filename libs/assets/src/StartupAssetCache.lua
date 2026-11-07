@@ -1137,307 +1137,400 @@ end
 -- Per-op operand shapes for the closed step-clocked grammar. The step clock
 -- is the single source clock: events carry atStepTick and never a parallel
 -- atTick. Returns true, or nil plus the rejection cause.
-local function validateOpeningEventOperands(event, sceneNumber)
-  local op = event.op
-  if op == "waitTicks" then
-    if not isPositiveInteger(event.ticks) then
-      return nil, "opening scene wait carries no source tick count"
+local function validateOpeningWaitTicks(event)
+  if not isPositiveInteger(event.ticks) then
+    return nil, "opening scene wait carries no source tick count"
+  end
+  return true
+end
+
+local function validateOpeningSetFade(event)
+  if event.scope ~= "main" and event.scope ~= "sub" and event.scope ~= "both" then
+    return nil, "opening scene fade names no source scope"
+  end
+  if event.mode ~= "brightness" and event.mode ~= "line-shutter" then
+    return nil, "opening scene fade names no source mode"
+  end
+  if event.color ~= "white" and event.color ~= "black" then
+    return nil, "opening scene fade names no source color"
+  end
+  if event.direction ~= "in" and event.direction ~= "out" then
+    return nil, "opening scene fade names no source direction"
+  end
+  if not isPositiveInteger(event.ticks) then
+    return nil, "opening scene effect carries no source tick count"
+  end
+  if event.terminal ~= "hold" and event.terminal ~= "neutral" then
+    return nil, "opening scene fade names no terminal hold"
+  end
+  if event.mode == "line-shutter" then
+    if event.shape ~= "center-out" and event.shape ~= "outer-in" then
+      return nil, "opening scene line shutter carries no source shape"
     end
-  elseif op == "setFade" then
-    if event.scope ~= "main" and event.scope ~= "sub" and event.scope ~= "both" then
-      return nil, "opening scene fade names no source scope"
-    end
-    if event.mode ~= "brightness" and event.mode ~= "line-shutter" then
-      return nil, "opening scene fade names no source mode"
-    end
-    if event.color ~= "white" and event.color ~= "black" then
-      return nil, "opening scene fade names no source color"
-    end
-    if event.direction ~= "in" and event.direction ~= "out" then
-      return nil, "opening scene fade names no source direction"
-    end
-    if not isPositiveInteger(event.ticks) then
-      return nil, "opening scene effect carries no source tick count"
-    end
-    if event.terminal ~= "hold" and event.terminal ~= "neutral" then
-      return nil, "opening scene fade names no terminal hold"
-    end
-    if event.mode == "line-shutter" then
-      if event.shape ~= "center-out" and event.shape ~= "outer-in" then
-        return nil, "opening scene line shutter carries no source shape"
-      end
-    elseif event.shape ~= nil then
-      return nil, "opening scene brightness fade carries no shape"
-    end
-    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
-      return nil, "opening scene effect start names no effect"
-    end
-  elseif op == "setScrollPosition" then
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene position names no source engine"
-    end
-    if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
-      return nil, "opening scene position names no numeric background slot"
-    end
-    if not isInteger(event.x) or not isInteger(event.y) then
-      return nil, "opening scene position carries no integer source coordinates"
-    end
-  elseif op == "setBrightness" then
-    -- Brightness registers are engine-bound (the TOP screen reset drives
-    -- the main engine), so the reset names its engine directly; only the
-    -- source neutral reset exists.
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene brightness names no source engine"
-    end
-    if event.value ~= "neutral" then
-      return nil, "opening scene brightness carries no neutral reset"
-    end
-  elseif op == "setBlend" then
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene blend names no source engine"
-    end
-    if not isSixBitMask(event.firstMask) then
-      return nil, "opening scene blend carries no six-bit first plane mask"
-    end
-    if not isSixBitMask(event.secondMask) then
-      return nil, "opening scene blend carries no six-bit second plane mask"
-    end
-    if event.ticks == 0 then
-      -- An instant register restore carries the constant source weights
-      -- and starts no timed program or effect wait; the timed direction
-      -- has no meaning on a constant program.
-      if event.direction ~= nil then
-        return nil, "opening scene immediate blend carries no source direction"
-      end
-      if event.effect ~= nil then
-        return nil, "opening scene immediate blend schedules no permanent wait"
-      end
-      if not isNonnegativeInteger(event.eva) or event.eva > 31 then
-        return nil, "opening scene immediate blend carries no source first weight"
-      end
-      if not isNonnegativeInteger(event.evb) or event.evb > 31 then
-        return nil, "opening scene immediate blend carries no source second weight"
-      end
-    else
-      if event.direction ~= 0 and event.direction ~= 1 then
-        return nil, "opening scene blend carries no source direction"
-      end
-      if not isPositiveInteger(event.ticks) then
-        return nil, "opening scene blend carries no source tick count"
-      end
-      if event.eva ~= nil or event.evb ~= nil then
-        return nil, "opening scene timed blend derives its weights from its direction"
-      end
-      if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
-        return nil, "opening scene blend start names no effect"
-      end
-    end
-  elseif op == "setScroll" then
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene scroll names no source engine"
-    end
-    if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
-      return nil, "opening scene scroll names no numeric background slot"
-    end
-    if not isInteger(event.dx) or not isInteger(event.dy) then
-      return nil, "opening scene scroll carries no integer source displacement"
-    end
-    if not isInteger(event.ticks) or event.ticks < -1 then
-      return nil, "opening scene scroll carries no source duration mode"
-    end
-    if event.ticks <= 0 and event.effect ~= nil then
-      return nil, "opening scene immediate scroll schedules no effect wait"
-    end
-    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
-      return nil, "opening scene scroll start names no effect"
-    end
-  elseif op == "circleWipe" then
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene wipe names no source engine"
-    end
-    if not isNonnegativeInteger(event.kind) or event.kind > 3 then
-      return nil, "opening scene wipe carries no source kind"
-    end
-    if not isPositiveInteger(event.ticks) then
-      return nil, "opening scene wipe carries no source tick count"
-    end
-    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
-      return nil, "opening scene wipe start names no effect"
-    end
-  elseif op == "shutterFade" then
-    -- The scene 5 sequential line shutter is one opening-specific event:
-    -- both engines start together, main advances center-out before sub
-    -- rises bottom-up, through black, one frame per step. No numeric
-    -- retail fade type crosses the producer boundary.
-    if sceneNumber ~= 5 then
-      return nil, "only opening scene 5 carries its sequential line shutter"
-    end
-    if event.order ~= "main-then-sub" then
-      return nil, "opening scene shutter carries no source engine order"
-    end
-    if event.mainPattern ~= "center-out" then
-      return nil, "opening scene shutter carries no source main shape"
-    end
-    if event.subPattern ~= "bottom-up" then
-      return nil, "opening scene shutter carries no source sub shape"
-    end
-    if event.color ~= "black" then
-      return nil, "opening scene shutter carries no source color"
-    end
-    if event.steps ~= 18 then
-      return nil, "opening scene shutter carries no source step count"
-    end
-    if event.framesPerStep ~= 1 then
-      return nil, "opening scene shutter carries no source frame cadence"
-    end
-    if event.effect ~= "scene5-shutter" then
-      return nil, "opening scene shutter start names no effect"
-    end
-  elseif op == "setLayer" then
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene layer names no source engine"
-    end
-    if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
-      return nil, "opening scene layer names no numeric background slot"
-    end
-    if type(event.image) ~= "string" or event.image == "" then
-      return nil, "opening scene layer points at no compiled image"
-    end
-    if type(event.visible) ~= "boolean" then
-      return nil, "opening scene layer carries no visibility"
-    end
-    if not isNonnegativeInteger(event.priority) then
-      return nil, "opening scene layer carries no source priority"
-    end
-  elseif op == "window" then
-    -- Engine-local source window: the engine whose registers the source
-    -- wrote, source pixel endpoints, positive-or-zero duration, inside
-    -- and outside plane masks, and an optional started effect that
-    -- requires a positive duration.
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene window names no source engine"
-    end
-    if not isWindowRect(event.from) then
-      return nil, "opening scene window carries no source start rectangle"
-    end
-    if not isWindowRect(event.to) then
-      return nil, "opening scene window carries no source end rectangle"
-    end
-    if not isNonnegativeInteger(event.ticks) then
-      return nil, "opening scene window carries no source frame count"
-    end
-    if not isPlaneMask(event.insideMask) then
-      return nil, "opening scene window carries no inside plane mask"
-    end
-    if not isPlaneMask(event.outsideMask) then
-      return nil, "opening scene window carries no outside plane mask"
+  elseif event.shape ~= nil then
+    return nil, "opening scene brightness fade carries no shape"
+  end
+  if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
+    return nil, "opening scene effect start names no effect"
+  end
+  return true
+end
+
+local function validateOpeningSetScrollPosition(event)
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene position names no source engine"
+  end
+  if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
+    return nil, "opening scene position names no numeric background slot"
+  end
+  if not isInteger(event.x) or not isInteger(event.y) then
+    return nil, "opening scene position carries no integer source coordinates"
+  end
+  return true
+end
+
+local function validateOpeningSetBrightness(event)
+  -- Brightness registers are engine-bound (the TOP screen reset drives
+  -- the main engine), so the reset names its engine directly; only the
+  -- source neutral reset exists.
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene brightness names no source engine"
+  end
+  if event.value ~= "neutral" then
+    return nil, "opening scene brightness carries no neutral reset"
+  end
+  return true
+end
+
+local function validateOpeningSetBlend(event)
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene blend names no source engine"
+  end
+  if not isSixBitMask(event.firstMask) then
+    return nil, "opening scene blend carries no six-bit first plane mask"
+  end
+  if not isSixBitMask(event.secondMask) then
+    return nil, "opening scene blend carries no six-bit second plane mask"
+  end
+  if event.ticks == 0 then
+    -- An instant register restore carries the constant source weights
+    -- and starts no timed program or effect wait; the timed direction
+    -- has no meaning on a constant program.
+    if event.direction ~= nil then
+      return nil, "opening scene immediate blend carries no source direction"
     end
     if event.effect ~= nil then
-      if type(event.effect) ~= "string" or event.effect == "" then
-        return nil, "opening scene window start names no effect"
-      end
-      if event.ticks == 0 then
-        return nil, "opening scene immediate window assignment schedules no permanent wait"
-      end
+      return nil, "opening scene immediate blend schedules no permanent wait"
     end
-  elseif op == "setWindowSecondary" then
-    -- Direct WIN1 register override: immediate rect and inside mask only.
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene window override names no source engine"
+    if not isNonnegativeInteger(event.eva) or event.eva > 31 then
+      return nil, "opening scene immediate blend carries no source first weight"
     end
-    if not isWindowRect(event.rect) then
-      return nil, "opening scene window override carries no source rectangle"
+    if not isNonnegativeInteger(event.evb) or event.evb > 31 then
+      return nil, "opening scene immediate blend carries no source second weight"
     end
-    if not isPlaneMask(event.insideMask) then
-      return nil, "opening scene window override carries no inside plane mask"
+  else
+    if event.direction ~= 0 and event.direction ~= 1 then
+      return nil, "opening scene blend carries no source direction"
     end
-  elseif op == "setWindowVisible" then
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene window visibility names no source engine"
+    if not isPositiveInteger(event.ticks) then
+      return nil, "opening scene blend carries no source tick count"
     end
-    if not isWindowMask(event.mask) then
-      return nil, "opening scene window visibility names no window mask"
+    if event.eva ~= nil or event.evb ~= nil then
+      return nil, "opening scene timed blend derives its weights from its direction"
     end
-  elseif op == "setModelVisible" then
-    if type(event.visible) ~= "boolean" then
-      return nil, "opening scene town visibility is malformed"
+    if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
+      return nil, "opening scene blend start names no effect"
     end
-  elseif op == "setSpriteClip" then
-    if type(event.instanceId) ~= "string" or event.instanceId == "" then
-      return nil, "opening scene sprite clip names no instance"
+  end
+  return true
+end
+
+local function validateOpeningSetScroll(event)
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene scroll names no source engine"
+  end
+  if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
+    return nil, "opening scene scroll names no numeric background slot"
+  end
+  if not isInteger(event.dx) or not isInteger(event.dy) then
+    return nil, "opening scene scroll carries no integer source displacement"
+  end
+  if not isInteger(event.ticks) or event.ticks < -1 then
+    return nil, "opening scene scroll carries no source duration mode"
+  end
+  if event.ticks <= 0 and event.effect ~= nil then
+    return nil, "opening scene immediate scroll schedules no effect wait"
+  end
+  if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
+    return nil, "opening scene scroll start names no effect"
+  end
+  return true
+end
+
+local function validateOpeningCircleWipe(event)
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene wipe names no source engine"
+  end
+  if not isNonnegativeInteger(event.kind) or event.kind > 3 then
+    return nil, "opening scene wipe carries no source kind"
+  end
+  if not isPositiveInteger(event.ticks) then
+    return nil, "opening scene wipe carries no source tick count"
+  end
+  if event.effect ~= nil and (type(event.effect) ~= "string" or event.effect == "") then
+    return nil, "opening scene wipe start names no effect"
+  end
+  return true
+end
+
+local function validateOpeningShutterFade(event, sceneNumber)
+  -- The scene 5 sequential line shutter is one opening-specific event:
+  -- both engines start together, main advances center-out before sub
+  -- rises bottom-up, through black, one frame per step. No numeric
+  -- retail fade type crosses the producer boundary.
+  if sceneNumber ~= 5 then
+    return nil, "only opening scene 5 carries its sequential line shutter"
+  end
+  if event.order ~= "main-then-sub" then
+    return nil, "opening scene shutter carries no source engine order"
+  end
+  if event.mainPattern ~= "center-out" then
+    return nil, "opening scene shutter carries no source main shape"
+  end
+  if event.subPattern ~= "bottom-up" then
+    return nil, "opening scene shutter carries no source sub shape"
+  end
+  if event.color ~= "black" then
+    return nil, "opening scene shutter carries no source color"
+  end
+  if event.steps ~= 18 then
+    return nil, "opening scene shutter carries no source step count"
+  end
+  if event.framesPerStep ~= 1 then
+    return nil, "opening scene shutter carries no source frame cadence"
+  end
+  if event.effect ~= "scene5-shutter" then
+    return nil, "opening scene shutter start names no effect"
+  end
+  return true
+end
+
+local function validateOpeningSetLayer(event)
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene layer names no source engine"
+  end
+  if not isNonnegativeInteger(event.bgSlot) or event.bgSlot > 3 then
+    return nil, "opening scene layer names no numeric background slot"
+  end
+  if type(event.image) ~= "string" or event.image == "" then
+    return nil, "opening scene layer points at no compiled image"
+  end
+  if type(event.visible) ~= "boolean" then
+    return nil, "opening scene layer carries no visibility"
+  end
+  if not isNonnegativeInteger(event.priority) then
+    return nil, "opening scene layer carries no source priority"
+  end
+  return true
+end
+
+local function validateOpeningWindow(event)
+  -- Engine-local source window: the engine whose registers the source
+  -- wrote, source pixel endpoints, positive-or-zero duration, inside
+  -- and outside plane masks, and an optional started effect that
+  -- requires a positive duration.
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene window names no source engine"
+  end
+  if not isWindowRect(event.from) then
+    return nil, "opening scene window carries no source start rectangle"
+  end
+  if not isWindowRect(event.to) then
+    return nil, "opening scene window carries no source end rectangle"
+  end
+  if not isNonnegativeInteger(event.ticks) then
+    return nil, "opening scene window carries no source frame count"
+  end
+  if not isPlaneMask(event.insideMask) then
+    return nil, "opening scene window carries no inside plane mask"
+  end
+  if not isPlaneMask(event.outsideMask) then
+    return nil, "opening scene window carries no outside plane mask"
+  end
+  if event.effect ~= nil then
+    if type(event.effect) ~= "string" or event.effect == "" then
+      return nil, "opening scene window start names no effect"
     end
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene sprite owns no source engine"
+    if event.ticks == 0 then
+      return nil, "opening scene immediate window assignment schedules no permanent wait"
     end
-    if not isFiniteNumber(event.x) or not isFiniteNumber(event.y) then
-      return nil, "opening scene sprite carries no authored coordinates"
+  end
+  return true
+end
+
+local function validateOpeningSetWindowSecondary(event)
+  -- Direct WIN1 register override: immediate rect and inside mask only.
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene window override names no source engine"
+  end
+  if not isWindowRect(event.rect) then
+    return nil, "opening scene window override carries no source rectangle"
+  end
+  if not isPlaneMask(event.insideMask) then
+    return nil, "opening scene window override carries no inside plane mask"
+  end
+  return true
+end
+
+local function validateOpeningSetWindowVisible(event)
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene window visibility names no source engine"
+  end
+  if not isWindowMask(event.mask) then
+    return nil, "opening scene window visibility names no window mask"
+  end
+  return true
+end
+
+local function validateOpeningSetModelVisible(event)
+  if type(event.visible) ~= "boolean" then
+    return nil, "opening scene town visibility is malformed"
+  end
+  return true
+end
+
+local function validateOpeningSetSpriteClip(event)
+  if type(event.instanceId) ~= "string" or event.instanceId == "" then
+    return nil, "opening scene sprite clip names no instance"
+  end
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene sprite owns no source engine"
+  end
+  if not isFiniteNumber(event.x) or not isFiniteNumber(event.y) then
+    return nil, "opening scene sprite carries no authored coordinates"
+  end
+  if not isNonnegativeInteger(event.drawOrder) then
+    return nil, "opening scene sprite carries no draw order"
+  end
+  if not isNonnegativeInteger(event.objPriority) or event.objPriority > 3 then
+    return nil, "opening scene sprite clip carries no hardware sprite priority"
+  end
+  if type(event.clipId) ~= "string" or event.clipId == "" then
+    return nil, "opening scene sprite clip event points at no compiled clip"
+  end
+  if type(event.animate) ~= "boolean" then
+    return nil, "opening scene sprite clip carries no animation flag"
+  end
+  return true
+end
+
+local function validateOpeningSpriteVisible(event)
+  if type(event.instanceId) ~= "string" or event.instanceId == "" then
+    return nil, "opening scene sprite visibility names no instance"
+  end
+  if OPENING_ENGINES[event.engine] ~= true then
+    return nil, "opening scene sprite owns no source engine"
+  end
+  if not isFiniteNumber(event.x) or not isFiniteNumber(event.y) then
+    return nil, "opening scene sprite carries no authored coordinates"
+  end
+  if not isNonnegativeInteger(event.drawOrder) then
+    return nil, "opening scene sprite carries no draw order"
+  end
+  if type(event.visible) ~= "boolean" then
+    return nil, "opening scene sprite visibility event is malformed"
+  end
+  return true
+end
+
+local function validateOpeningSetModelClip(event)
+  if type(event.model) ~= "string" or type(event.clip) ~= "string" then
+    return nil, "opening scene model clip event is malformed"
+  end
+  return true
+end
+
+local function validateOpeningSetCamera(event)
+  if type(event.distance) ~= "number" then
+    return nil, "opening scene camera event carries no source distance"
+  end
+  return true
+end
+
+local function validateOpeningSetLighting(event)
+  if type(event.map) ~= "number" then
+    return nil, "opening scene lighting event carries no town"
+  end
+  return true
+end
+
+local function validateOpeningStartEmitters(event)
+  if
+    type(event.group) ~= "string"
+    or (event.group ~= "grass" and event.group ~= "fire" and event.group ~= "water")
+    or type(event.emitters) ~= "table"
+    or #event.emitters == 0
+  then
+    return nil, "opening scene emitter start names no source emitter group"
+  end
+  for _, id in ipairs(event.emitters) do
+    if not isNonnegativeInteger(id) or id > 8 or OPENING_EMITTER_GROUPS[id] ~= event.group then
+      return nil, "opening scene emitter id is outside its source group"
     end
-    if not isNonnegativeInteger(event.drawOrder) then
-      return nil, "opening scene sprite carries no draw order"
-    end
-    if not isNonnegativeInteger(event.objPriority) or event.objPriority > 3 then
-      return nil, "opening scene sprite clip carries no hardware sprite priority"
-    end
-    if type(event.clipId) ~= "string" or event.clipId == "" then
-      return nil, "opening scene sprite clip event points at no compiled clip"
-    end
-    if type(event.animate) ~= "boolean" then
-      return nil, "opening scene sprite clip carries no animation flag"
-    end
-  elseif op == "spriteVisible" then
-    if type(event.instanceId) ~= "string" or event.instanceId == "" then
-      return nil, "opening scene sprite visibility names no instance"
-    end
-    if OPENING_ENGINES[event.engine] ~= true then
-      return nil, "opening scene sprite owns no source engine"
-    end
-    if not isFiniteNumber(event.x) or not isFiniteNumber(event.y) then
-      return nil, "opening scene sprite carries no authored coordinates"
-    end
-    if not isNonnegativeInteger(event.drawOrder) then
-      return nil, "opening scene sprite carries no draw order"
-    end
-    if type(event.visible) ~= "boolean" then
-      return nil, "opening scene sprite visibility event is malformed"
-    end
-  elseif op == "setModelClip" then
-    if type(event.model) ~= "string" or type(event.clip) ~= "string" then
-      return nil, "opening scene model clip event is malformed"
-    end
-  elseif op == "setCamera" then
-    if type(event.distance) ~= "number" then
-      return nil, "opening scene camera event carries no source distance"
-    end
-  elseif op == "setLighting" then
-    if type(event.map) ~= "number" then
-      return nil, "opening scene lighting event carries no town"
-    end
-  elseif op == "startEmitters" then
-    if
-      type(event.group) ~= "string"
-      or (event.group ~= "grass" and event.group ~= "fire" and event.group ~= "water")
-      or type(event.emitters) ~= "table"
-      or #event.emitters == 0
-    then
-      return nil, "opening scene emitter start names no source emitter group"
-    end
-    for _, id in ipairs(event.emitters) do
-      if not isNonnegativeInteger(id) or id > 8 or OPENING_EMITTER_GROUPS[id] ~= event.group then
-        return nil, "opening scene emitter id is outside its source group"
-      end
-    end
-  elseif op == "setScreenMapping" then
-    if event.mainPhysical ~= "upper" and event.mainPhysical ~= "lower" then
-      return nil, "opening scene screen mapping names no physical screen"
-    end
-  elseif op == "enableSkip" then
-    if sceneNumber ~= 1 then
-      return nil, "only opening scene 1 opens the movie skip gate"
-    end
-  elseif op == "setPalette" then
-    if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
-      return nil, "opening scene palette carries a malformed tick count"
-    end
+  end
+  return true
+end
+
+local function validateOpeningSetScreenMapping(event)
+  if event.mainPhysical ~= "upper" and event.mainPhysical ~= "lower" then
+    return nil, "opening scene screen mapping names no physical screen"
+  end
+  return true
+end
+
+local function validateOpeningEnableSkip(_, sceneNumber)
+  if sceneNumber ~= 1 then
+    return nil, "only opening scene 1 opens the movie skip gate"
+  end
+  return true
+end
+
+local function validateOpeningSetPalette(event)
+  if event.ticks ~= nil and not isPositiveInteger(event.ticks) then
+    return nil, "opening scene palette carries a malformed tick count"
+  end
+  return true
+end
+
+local OPENING_EVENT_OPERAND_VALIDATORS = {
+  waitTicks = validateOpeningWaitTicks,
+  setFade = validateOpeningSetFade,
+  setScrollPosition = validateOpeningSetScrollPosition,
+  setBrightness = validateOpeningSetBrightness,
+  setBlend = validateOpeningSetBlend,
+  setScroll = validateOpeningSetScroll,
+  circleWipe = validateOpeningCircleWipe,
+  shutterFade = validateOpeningShutterFade,
+  setLayer = validateOpeningSetLayer,
+  window = validateOpeningWindow,
+  setWindowSecondary = validateOpeningSetWindowSecondary,
+  setWindowVisible = validateOpeningSetWindowVisible,
+  setModelVisible = validateOpeningSetModelVisible,
+  setSpriteClip = validateOpeningSetSpriteClip,
+  spriteVisible = validateOpeningSpriteVisible,
+  setModelClip = validateOpeningSetModelClip,
+  setCamera = validateOpeningSetCamera,
+  setLighting = validateOpeningSetLighting,
+  startEmitters = validateOpeningStartEmitters,
+  setScreenMapping = validateOpeningSetScreenMapping,
+  enableSkip = validateOpeningEnableSkip,
+  setPalette = validateOpeningSetPalette,
+}
+
+local function validateOpeningEventOperands(event, sceneNumber)
+  local validate = OPENING_EVENT_OPERAND_VALIDATORS[event.op]
+  if validate ~= nil then
+    return validate(event, sceneNumber)
   end
   return true
 end
