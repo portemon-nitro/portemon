@@ -4505,6 +4505,71 @@ function BattleScreenState:_crySpecies(cue)
   return facts.nativeId --[[@as integer]]
 end
 
+-- Plays one staged select cue through the launch voice operations.
+---@param self BattleScreenState
+---@param _ table<string, unknown> unused select cue
+local function playSelectCue(self, _)
+  self._battleAudio:playEffect(self:_selectSymbol())
+end
+
+-- Voices one staged effect cue, tracking its voice for later stops.
+---@param self BattleScreenState
+---@param cue table<string, unknown> typed effect cue under dispatch
+local function playEffectCue(self, cue)
+  assert(type(cue.symbol) == "string" and cue.symbol ~= "", "effect cues name their staged symbol")
+  -- Legacy string-role sinks carry no mix; they voice the role alone.
+  local pan = not self._legacyAudio and cue.pan or nil
+  local handle = self._battleAudio:playEffect(cue.symbol --[[@as string]], pan --[[@as integer?]])
+  if type(cue.voiceKey) == "string" then
+    self._nativeVoices[cue.voiceKey] = handle
+  end
+end
+
+-- Stops one tracked effect voice by its started voice key.
+---@param self BattleScreenState
+---@param cue table<string, unknown> typed effect-stop cue under dispatch
+local function playStopEffectCue(self, cue)
+  local voiceKey = assert(cue.voiceKey, "effect stops name their started voice") --[[@as string]]
+  local handle = assert(self._nativeVoices[voiceKey], "effect stops own a started voice")
+  self._battleAudio:stopVoice(handle)
+  self._nativeVoices[voiceKey] = nil
+end
+
+-- Voices one staged fanfare cue, latching completion voices.
+---@param self BattleScreenState
+---@param cue table<string, unknown> typed fanfare cue under dispatch
+local function playFanfareCue(self, cue)
+  assert(type(cue.symbol) == "string" and cue.symbol ~= "", "fanfare cues name their staged symbol")
+  local handle = self._battleAudio:playFanfare(cue.symbol --[[@as string]])
+  if cue.waitForVoice == true then
+    self._waitingCueVoice = handle
+  end
+end
+
+-- Voices the result music cue for the won battle.
+---@param self BattleScreenState
+---@param _ table<string, unknown> unused music cue
+local function playMusicCue(self, _)
+  self:_notifyResultMusic("win")
+end
+
+-- Voices one send-out cry through the launch operations.
+---@param self BattleScreenState
+---@param cue table<string, unknown> typed cry cue under dispatch
+local function playCryCue(self, cue)
+  self:_playCryCue(cue)
+end
+
+---@type table<string, fun(self: BattleScreenState, cue: table<string, unknown>)>
+local CUE_PLAYERS = {
+  select = playSelectCue,
+  effect = playEffectCue,
+  ["stop-effect"] = playStopEffectCue,
+  fanfare = playFanfareCue,
+  music = playMusicCue,
+  cry = playCryCue,
+}
+
 -- Dispatches one typed cue through the launch voice operations. A
 -- rejected cue fails the launch once with launch and role context; the
 -- envelope then reports the failed screen and later ticks replay
@@ -4523,34 +4588,13 @@ function BattleScreenState:_playCue(cue)
       end
       return
     end
-    if cue.kind == "select" then
-      self._battleAudio:playEffect(self:_selectSymbol())
-    elseif cue.kind == "effect" then
-      assert(type(cue.symbol) == "string" and cue.symbol ~= "", "effect cues name their staged symbol")
-      -- Legacy string-role sinks carry no mix; they voice the role alone.
-      local pan = not self._legacyAudio and cue.pan or nil
-      local handle = self._battleAudio:playEffect(cue.symbol --[[@as string]], pan --[[@as integer?]])
-      if type(cue.voiceKey) == "string" then
-        self._nativeVoices[cue.voiceKey] = handle
-      end
-    elseif cue.kind == "stop-effect" then
-      local voiceKey = assert(cue.voiceKey, "effect stops name their started voice") --[[@as string]]
-      local handle = assert(self._nativeVoices[voiceKey], "effect stops own a started voice")
-      self._battleAudio:stopVoice(handle)
-      self._nativeVoices[voiceKey] = nil
-    elseif cue.kind == "fanfare" then
-      assert(type(cue.symbol) == "string" and cue.symbol ~= "", "fanfare cues name their staged symbol")
-      local handle = self._battleAudio:playFanfare(cue.symbol --[[@as string]])
-      if cue.waitForVoice == true then
-        self._waitingCueVoice = handle
-      end
-    elseif cue.kind == "music" then
-      self:_notifyResultMusic("win")
-    elseif cue.kind == "cry" then
-      self:_playCryCue(cue --[[@as table<string, unknown>]])
-    else
+    local kind = cue.kind
+    assert(type(kind) == "string", "sound cues carry their string kind")
+    local play = CUE_PLAYERS[kind]
+    if play == nil then
       error("unknown battle sound role for launch " .. self._launchId .. ": " .. tostring(role), 0)
     end
+    play(self, cue)
   end)
   if ok then
     return true
