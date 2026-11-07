@@ -626,6 +626,18 @@ DamageMoves.MEMBERS = {
   "ZEN_HEADBUTT",
 }
 
+-- Shared damage-step opening: asserts the step frame and roots the move
+-- record beside the step body. Handlers keep their own mechanics; only
+-- the identical contract preamble lives here.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> move record under execution
+local function damageRecord(ctx, frame)
+  assert(type(ctx) == "table", "damage steps through the battle context")
+  assert(type(frame) == "table", "damage steps from its move frame")
+  return frame
+end
+
 -- Reads one defender's per-target facts when the frame carries the
 -- action-local snapshot, falling back to the legacy single-target
 -- scalars for frames built without it. Every per-target reader below
@@ -2767,18 +2779,14 @@ local function bind(handler)
 end
 
 local function stepCanonical(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   error(BattleErrors.missingBehavior("no native damage semantics are modeled for the source identity", {
     key = record.executingMove --[[@as string]],
   }))
 end
 
 local function stepGated(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   error(BattleErrors.missingBehavior("no native damage semantics are modeled for the source identity", {
     key = record.executingMove --[[@as string]],
   }))
@@ -2816,9 +2824,7 @@ local function makeFixed(amount)
 end
 
 local function stepSuperFang(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local targets = record.targets --[[@as table<integer, unknown>]]
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
@@ -2837,9 +2843,7 @@ local function stepSuperFang(ctx, frame)
 end
 
 local function stepEndeavor(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local user = userOf(record)
   local targets = record.targets --[[@as table<integer, unknown>]]
   local userHealth = ctx:damage(user, 0, causeFor(record))
@@ -2889,9 +2893,7 @@ end
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler deriving power from friendship
 local function makeFriendship(sense)
   local function stepFriendship(ctx, frame)
-    assert(type(ctx) == "table", "damage steps through the battle context")
-    assert(type(frame) == "table", "damage steps from its move frame")
-    local record = frame --[[@as table<string, unknown>]]
+    local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
     local locals = record.locals --[[@as table<string, unknown>]]
     local friendship = locals.friendship
     assert(type(friendship) == "number", "friendship moves read their friendship fact")
@@ -2909,9 +2911,7 @@ local function makeFriendship(sense)
 end
 
 local function stepMagnitude(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local stream = checkStream(record.stream)
   local roll = stream:nextU16("magnitude", causeFor(record)) % 100
   local ladder = { 10, 30, 50, 70, 90, 110, 150 }
@@ -2934,9 +2934,7 @@ end
 -- base defense with the staged 85-100 percent range. Source reference:
 -- BtlCmd_BeatUp in src/battle/battle_command.c.
 local function stepBeatUp(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local stream = checkStream(record.stream)
   local strike = strikeFactsOf(record)
   local party = beatupOf(record)
@@ -2998,9 +2996,7 @@ end
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler sampling a two-to-five-hit sequence
 local function makeSampledHits(secondaries)
   local function stepSampled(ctx, frame)
-    assert(type(ctx) == "table", "damage steps through the battle context")
-    assert(type(frame) == "table", "damage steps from its move frame")
-    local record = frame --[[@as table<string, unknown>]]
+    local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
     return runStriker(ctx, record, { hits = sampleMultiHitCount(record), secondaries = secondaries })
   end
   return stepSampled
@@ -3010,9 +3006,7 @@ end
 -- ten times the kick ordinal, sharing one critical roll. Source
 -- reference: files/battledata/script/effect_script/effect_script_0104.s.
 local function stepTripleKick(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local strike = strikeFactsOf(record)
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local connected = false
@@ -3034,9 +3028,7 @@ local function stepTripleKick(ctx, frame)
 end
 
 local function stepLevelFixed(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local combat = locals.combat
   if
@@ -3051,9 +3043,7 @@ local function stepLevelFixed(ctx, frame)
 end
 
 local function stepWeight(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local weightKg = foeWeightHgOf(record) / 10
   local power = 120
   if weightKg <= 10 then
@@ -3075,9 +3065,7 @@ end
 -- reference: the pay day subscript in
 -- files/battledata/script/subscript/subscript_0048_PayDay.s.
 local function stepPayday(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local outcome = runStriker(ctx, record, {})
   if outcome.result == "hit" then
     local combat = combatOf(record)
@@ -3091,9 +3079,7 @@ end
 -- reference: effect_script_0088.s and BtlCmd_Random in
 -- src/battle/battle_command.c.
 local function stepPsywave(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local combat = combatOf(record)
   local roll = checkStream(record.stream):nextU16("psywave_damage", causeFor(record)) % 11 + 5
   local amount = math.floor((combat.level * roll) / 10)
@@ -3123,9 +3109,7 @@ local SECRET_POWER_SECONDARIES = {
 }
 
 local function stepSecretPower(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local terrain = locals.terrain
   if type(terrain) ~= "string" or terrain == "" then
@@ -3157,9 +3141,7 @@ end
 -- Brick Break lands its strike, then drops the defender side screens
 -- whether or not they softened this blow.
 local function stepBrickBreak(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local outcome = runStriker(ctx, record, {})
   if outcome.result == "hit" then
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
@@ -3180,9 +3162,7 @@ local applyFlingEffect
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking then recording
 local function makeStealIntent(mode)
   local function stepStealIntent(ctx, frame)
-    assert(type(ctx) == "table", "damage steps through the battle context")
-    assert(type(frame) == "table", "damage steps from its move frame")
-    local record = frame --[[@as table<string, unknown>]]
+    local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
     local outcome = runStriker(ctx, record, {})
     if
       outcome.result == "hit"
@@ -3259,9 +3239,7 @@ end
 -- bracket the whole move fails, and with it the bracket breaks first.
 -- Source reference: BtlCmd_TryFeint in src/battle/battle_command.c.
 local function stepFeint(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   if not isProtected(ctx, defender) then
     return { kind = "complete", result = "failed" }
@@ -3282,9 +3260,7 @@ end
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking under weather law
 local function makeWeatherStrike(params, rainy, sunny)
   local function stepWeatherStrike(ctx, frame)
-    assert(type(ctx) == "table", "damage steps through the battle context")
-    assert(type(frame) == "table", "damage steps from its move frame")
-    local record = frame --[[@as table<string, unknown>]]
+    local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
     local controls = {}
     for key, value in pairs(params) do
       controls[key] = value
@@ -3316,9 +3292,7 @@ end
 -- src/battle/battle_command.c and files/battledata/script/effect_script/
 -- effect_script_0185.s.
 local function stepRevenge(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local duel = duelOf(record)
   local physical = duel.revengePhysical --[[@as table<string, unknown>?]]
@@ -3336,9 +3310,7 @@ end
 -- BtlCmd_CalcPaybackPower in src/battle/battle_command.c and
 -- files/battledata/script/effect_script/effect_script_0230.s.
 local function stepPayback(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local duel = duelOf(record)
   return runStriker(ctx, record, {
     power = revengePower(record, duel.foeActed --[[@as boolean]]),
@@ -3349,9 +3321,7 @@ end
 -- turn, from any recorded staged strike. Source reference:
 -- files/battledata/script/effect_script/effect_script_0231.s.
 local function stepAssurance(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local duel = duelOf(record)
   return runStriker(ctx, record, {
     power = revengePower(record, duel.foeHurt --[[@as boolean]]),
@@ -3363,9 +3333,7 @@ end
 -- Source reference: files/battledata/script/effect_script/
 -- effect_script_0221.s.
 local function stepBrine(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local probe = ctx:damage(defender, 0, causeFor(record))
   local ceiling = ctx:entryOf(defender).maxHp --[[@as integer]]
@@ -3378,9 +3346,7 @@ end
 -- references: STATUS_FACADE_BOOST in include/constants/battle.h and
 -- files/battledata/script/effect_script/effect_script_0169.s.
 local function stepFacade(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local condition = ctx:statusOf(userOf(record))
   local answered = condition == "burn" or condition == "poison" or condition == "toxic" or condition == "paralysis"
   return runStriker(ctx, record, { power = revengePower(record, answered) })
@@ -3398,9 +3364,7 @@ end
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler returning the doubled damage
 local function makeReaction(category)
   local function stepReaction(ctx, frame)
-    assert(type(ctx) == "table", "damage steps through the battle context")
-    assert(type(frame) == "table", "damage steps from its move frame")
-    local record = frame --[[@as table<string, unknown>]]
+    local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
     local duel = duelOf(record)
     local answer = nil
     if category == "physical" then
@@ -3432,9 +3396,7 @@ end
 -- defender remaining health. Source reference: BtlCmd_TryOHKOMove in
 -- src/battle/battle_command.c.
 local function stepOhko(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   if isProtected(ctx, defender) then
     emitProtected(ctx, record, defender)
@@ -3478,9 +3440,7 @@ end
 -- hundred fifty times health over ceiling, minimum one. Source
 -- reference: BtlCmd_CalcHPFalloffPower in src/battle/battle_command.c.
 local function stepEruption(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local user = userOf(record)
   local strike = strikeFactsOf(record)
   local probe = ctx:damage(user, 0, causeFor(record))
@@ -3507,9 +3467,7 @@ local FLAIL_LADDER = {
 }
 
 local function stepFlail(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local user = userOf(record)
   local probe = ctx:damage(user, 0, causeFor(record))
   local ceiling = ctx:entryOf(user).maxHp --[[@as integer]]
@@ -3531,9 +3489,7 @@ end
 -- health over ceiling. Source reference: BtlCmd_CalcWringOutPower in
 -- src/battle/battle_command.c.
 local function stepWringOut(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local probe = ctx:damage(defender, 0, causeFor(record))
   local ceiling = ctx:entryOf(defender).maxHp --[[@as integer]]
@@ -3545,9 +3501,7 @@ end
 -- spends one point. Source references: effect_script_0235.s and
 -- BtlCmd_CalcTrumpCardPower in src/battle/battle_command.c.
 local function stepTrumpCard(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local slot = record.ppOwnerSlot
   local moves = record.moves
   if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or type(moves) ~= "table" then
@@ -3571,9 +3525,7 @@ end
 -- Smelling Salt doubles and cures paralysis only when the defender has
 -- no substitute. Source reference: effect_script_0171.s.
 local function stepSmellingSalt(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local strike = strikeFactsOf(record)
   local paralyzed = ctx:statusOf(defender) == "paralysis"
@@ -3612,9 +3564,7 @@ local JUDGMENT_PLATE_TYPES = {
 -- reference: effect_script_0268.s and HOLD_EFFECT_ARCEUS_* in
 -- include/constants/items.h.
 local function stepJudgment(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local held = heldItemOf(record)
   local moveType = held and JUDGMENT_PLATE_TYPES[held] or nil
   return runStriker(ctx, record, { moveType = moveType })
@@ -3624,9 +3574,7 @@ end
 -- its power at two hundred. The source loop includes an always-neutral
 -- HP slot before these seven semantic stages.
 local function stepPunishment(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local stages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   local boosts = 0
@@ -3643,9 +3591,7 @@ end
 -- Rock Wrecker creates one recharge turn only after its strike connects.
 -- Source reference: effect_script_0080.s and the recharge-turn subscript.
 local function stepRockWrecker(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local outcome = runStriker(ctx, record, {})
   if outcome.result == "hit" then
     local user = userOf(record)
@@ -3663,9 +3609,7 @@ end
 -- damage recording and the eventual release. Source references:
 -- effect_script_0026.s and subscript_0035_BideStart.s.
 local function stepBideStart(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local user = userOf(record)
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("bide"),
@@ -3681,9 +3625,7 @@ end
 -- that opposing attacker. Source reference: TryMetalBurst in
 -- src/battle/battle_command.c.
 local function stepMetalBurst(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local duel = duelOf(record)
   local answer = duel.revengeAny
   if answer == false then
@@ -3757,9 +3699,7 @@ end
 -- defender speed over user speed, capped at one-fifty. Source reference:
 -- BtlCmd_CalcGyroBallPower in src/battle/battle_command.c.
 local function stepGyroBall(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local userSpeed, foeSpeed = speedsOf(record)
   if userSpeed < 1 then
     error(BattleErrors.missingBehavior("weightless power reads its effective speeds", {
@@ -3798,9 +3738,7 @@ local HIDDEN_POWER_TYPES = {
 }
 
 local function stepHiddenPower(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local ivs = userIvsOf(record)
   local function bit(value, position)
     return math.floor(value / (2 ^ position)) % 2
@@ -3833,9 +3771,7 @@ end
 -- references: BtlCmd_Present in src/battle/battle_command.c and
 -- files/battledata/script/effect_script/effect_script_0122.s.
 local function stepPresent(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local strike = strikeFactsOf(record)
   if not accuracyGate(ctx, record, defender, strike.accuracy) then
@@ -3870,9 +3806,7 @@ end
 -- chance otherwise. Source reference:
 -- files/battledata/script/effect_script/effect_script_0092.s.
 local function stepSnore(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   if locals.userAsleep ~= true then
     return { kind = "complete", result = "failed" }
@@ -3884,9 +3818,7 @@ end
 -- its compiled chance either way. Source reference:
 -- files/battledata/script/effect_script/effect_script_0150.s.
 local function stepStomp(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local strike = strikeFactsOf(record)
   local power = strike.power
@@ -3911,9 +3843,7 @@ end
 -- pool without waking. Source reference:
 -- files/battledata/script/effect_script/effect_script_0217.s.
 local function stepWakeUpSlap(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   local strike = strikeFactsOf(record)
   local sleeping = ctx:statusOf(defender) == "sleep"
@@ -3934,9 +3864,7 @@ end
 -- withdrawing resets the count. Source reference: BtlCmd_TryLastResort
 -- in src/battle/battle_command.c.
 local function stepLastResort(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local known = locals.userMoves
   if type(known) ~= "table" or #known < 2 then
@@ -3972,9 +3900,7 @@ local WEATHER_BALL_TYPES = {
 }
 
 local function stepWeatherBall(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local strike = strikeFactsOf(record)
   local power, moveType = strike.power, nil
   for _, weather in ipairs({ "raindance", "sandstorm", "sunnyday", "hail" }) do
@@ -3992,9 +3918,7 @@ end
 -- src/battle/battle_command.c and files/battledata/script/effect_script/
 -- effect_script_0222.s.
 local function stepNaturalGift(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local held = heldItemOf(record)
   if held == nil then
@@ -4216,9 +4140,7 @@ end
 applyFlingEffect = applyFlingEffectImpl
 
 local function stepFling(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
   local held = heldItemOf(record)
   if held == nil then
@@ -4276,9 +4198,7 @@ end
 -- Source reference:
 -- files/battledata/script/effect_script/effect_script_0008.s.
 local function stepDreamEater(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
   if ctx:hasBattleEffect(defender, "substitute") then
     return { kind = "complete", result = "failed" }
@@ -4294,9 +4214,7 @@ end
 -- dealt damage, and performs no guard check. Source reference:
 -- files/battledata/script/subscript/subscript_0043_Struggle.s.
 local function stepStruggle(ctx, frame)
-  assert(type(ctx) == "table", "damage steps through the battle context")
-  assert(type(frame) == "table", "damage steps from its move frame")
-  local record = frame --[[@as table<string, unknown>]]
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
   local outcome = runStriker(ctx, record, {})
   if outcome.result ~= "hit" then
     return outcome
