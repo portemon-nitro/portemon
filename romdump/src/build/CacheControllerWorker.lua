@@ -288,6 +288,268 @@ local function formatError(value)
   return tostring(value)
 end
 
+local VALID_MILESTONES = {
+  bootstrap = true,
+  ["new-game-intro"] = true,
+  ["field-planning"] = true,
+  ["field-runtime"] = true,
+  ["startup-title"] = true,
+  ["startup-audio"] = true,
+}
+
+local function isNonNegativeInteger(value)
+  return type(value) == "number" and value % 1 == 0 and value >= 0
+end
+
+---@param params table<string, unknown>
+---@param kind string
+---@param fields string[]
+---@return string? selector error for the first unexpected field
+local function rejectExtraSelectors(params, kind, fields)
+  for _, field in ipairs(fields) do
+    if params[field] ~= nil then
+      return kind .. " request carries no " .. field .. " selector"
+    end
+  end
+  return nil
+end
+
+local NO_SELECTORS_12 = {
+  "name",
+  "mapId",
+  "matrixMemberId",
+  "index",
+  "pageId",
+  "sceneKey",
+  "bankId",
+  "effectKey",
+  "trainerSelector",
+  "ballSelector",
+  "sceneNumber",
+  "pairIndex",
+}
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkMilestone(params)
+  if not VALID_MILESTONES[params.name] then
+    return "unknown milestone: " .. tostring(params.name)
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@param kind string
+---@return string? selector error
+local function checkField(params, kind)
+  if not isNonNegativeInteger(params.mapId) then
+    return kind .. " request needs a non-negative integer mapId"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkCell(params)
+  if not isNonNegativeInteger(params.matrixMemberId) then
+    return "cell request needs a non-negative integer matrixMemberId"
+  end
+  if not isNonNegativeInteger(params.index) then
+    return "cell request needs a non-negative integer index"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkPortrait(params)
+  if not isNonNegativeInteger(params.pageId) then
+    return "portrait request needs a non-negative integer pageId"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkIconPage(params)
+  if not isNonNegativeInteger(params.pageId) then
+    return "icon request needs a non-negative integer pageId"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkAudioBank(params)
+  if not isNonNegativeInteger(params.bankId) then
+    return "audio-bank request needs a non-negative integer bankId"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkBattleScene(params)
+  local Sources = require("romdump.src.config.BattlePresentationSources")
+  if not Sources.validateSceneKey(params.sceneKey) then
+    return "battle-scene request needs its background/terrain/time sceneKey"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkPokedex(params)
+  -- The selector-free pokedex demand carries no job, source, page, or
+  -- map identity: urgency alone rides the registered global job.
+  return rejectExtraSelectors(params, "pokedex", {
+    "name",
+    "mapId",
+    "matrixMemberId",
+    "index",
+    "pageId",
+    "sceneKey",
+    "bankId",
+    "trainerSelector",
+    "ballSelector",
+  })
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkBattleEffect(params)
+  if type(params.effectKey) ~= "string" or params.effectKey == "" or params.effectKey:find("/", 1, true) ~= nil then
+    return "battle-effect request needs its flat effectKey"
+  end
+  return nil
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkBattlePresentation(params)
+  -- The shared battle catalog is one global job: urgency alone rides it.
+  return rejectExtraSelectors(params, "battle-presentation", {
+    "name",
+    "mapId",
+    "matrixMemberId",
+    "index",
+    "pageId",
+    "sceneKey",
+    "bankId",
+    "effectKey",
+    "trainerSelector",
+    "ballSelector",
+  })
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkBattleTrainerPicture(params)
+  -- Source-independent syntax only: the worker compiles the exact
+  -- spelling and the producer proves catalog membership. The receipt
+  -- key never carries the colon. Lua patterns have no alternation, so
+  -- the role stem is captured and required explicitly.
+  local trainerRole, trainerClass
+  if type(params.trainerSelector) == "string" then
+    trainerRole, trainerClass = params.trainerSelector:match("^([a-z]+):([A-Z][A-Z0-9_]*)$")
+  end
+  if (trainerRole ~= "front" and trainerRole ~= "back") or trainerClass == nil then
+    return "battle-trainer-picture request needs its front:CLASS or back:CLASS trainerSelector"
+  end
+  return rejectExtraSelectors(params, "battle-trainer-picture", {
+    "name",
+    "mapId",
+    "matrixMemberId",
+    "index",
+    "pageId",
+    "sceneKey",
+    "bankId",
+    "effectKey",
+    "ballSelector",
+    "sceneNumber",
+    "pairIndex",
+  })
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkBattleBall(params)
+  if type(params.ballSelector) ~= "string" or params.ballSelector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
+    return "battle-ball request needs its ball:ITEM ballSelector"
+  end
+  return rejectExtraSelectors(params, "battle-ball", {
+    "name",
+    "mapId",
+    "matrixMemberId",
+    "index",
+    "pageId",
+    "sceneKey",
+    "bankId",
+    "effectKey",
+    "trainerSelector",
+    "sceneNumber",
+    "pairIndex",
+  })
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkBattleEvolution(params)
+  -- One global-keyed evolution job: urgency alone rides it.
+  return rejectExtraSelectors(params, "battle-evolution", NO_SELECTORS_12)
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkStartupWalker(params)
+  return rejectExtraSelectors(params, "startup-walker", NO_SELECTORS_12)
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
+local function checkOpeningScene(params)
+  if
+    type(params.sceneNumber) ~= "number"
+    or params.sceneNumber % 1 ~= 0
+    or params.sceneNumber < 1
+    or params.sceneNumber > 5
+  then
+    return "opening-scene request needs an integer sceneNumber 1..5"
+  end
+  return rejectExtraSelectors(params, "opening-scene", {
+    "name",
+    "mapId",
+    "matrixMemberId",
+    "index",
+    "pageId",
+    "sceneKey",
+    "bankId",
+    "pairIndex",
+    "trainerSelector",
+    "ballSelector",
+  })
+end
+
+---@type table<string, fun(params: table<string, unknown>, kind: string): string?>
+local SELECTOR_CHECKS = {
+  milestone = checkMilestone,
+  field = checkField,
+  ["logical-field"] = checkField,
+  cell = checkCell,
+  portrait = checkPortrait,
+  ["icon-page"] = checkIconPage,
+  ["audio-bank"] = checkAudioBank,
+  ["battle-scene"] = checkBattleScene,
+  pokedex = checkPokedex,
+  ["battle-effect"] = checkBattleEffect,
+  ["battle-presentation"] = checkBattlePresentation,
+  ["battle-trainer-picture"] = checkBattleTrainerPicture,
+  ["battle-ball"] = checkBattleBall,
+  ["battle-evolution"] = checkBattleEvolution,
+  ["startup-walker"] = checkStartupWalker,
+  ["opening-scene"] = checkOpeningScene,
+}
+
 ---@param params table<string, unknown>
 ---@return string|nil selector error for an invalid current-epoch message
 local function validateSelectors(params)
@@ -298,201 +560,10 @@ local function validateSelectors(params)
   if not VALID_URGENCIES[params.urgency] then
     return "unknown cache urgency: " .. tostring(params.urgency)
   end
-  if kind == "milestone" then
-    if
-      params.name ~= "bootstrap"
-      and params.name ~= "new-game-intro"
-      and params.name ~= "field-planning"
-      and params.name ~= "field-runtime"
-      and params.name ~= "startup-title"
-      and params.name ~= "startup-audio"
-    then
-      return "unknown milestone: " .. tostring(params.name)
-    end
-  elseif kind == "field" or kind == "logical-field" then
-    if type(params.mapId) ~= "number" or params.mapId % 1 ~= 0 or params.mapId < 0 then
-      return kind .. " request needs a non-negative integer mapId"
-    end
-  elseif kind == "cell" then
-    if type(params.matrixMemberId) ~= "number" or params.matrixMemberId % 1 ~= 0 or params.matrixMemberId < 0 then
-      return "cell request needs a non-negative integer matrixMemberId"
-    end
-    if type(params.index) ~= "number" or params.index % 1 ~= 0 or params.index < 0 then
-      return "cell request needs a non-negative integer index"
-    end
-  elseif kind == "portrait" then
-    if type(params.pageId) ~= "number" or params.pageId % 1 ~= 0 or params.pageId < 0 then
-      return "portrait request needs a non-negative integer pageId"
-    end
-  elseif kind == "icon-page" then
-    if type(params.pageId) ~= "number" or params.pageId % 1 ~= 0 or params.pageId < 0 then
-      return "icon request needs a non-negative integer pageId"
-    end
-  elseif kind == "audio-bank" then
-    if type(params.bankId) ~= "number" or params.bankId % 1 ~= 0 or params.bankId < 0 then
-      return "audio-bank request needs a non-negative integer bankId"
-    end
-  elseif kind == "battle-scene" then
-    local Sources = require("romdump.src.config.BattlePresentationSources")
-    if not Sources.validateSceneKey(params.sceneKey) then
-      return "battle-scene request needs its background/terrain/time sceneKey"
-    end
-  elseif kind == "pokedex" then
-    -- The selector-free pokedex demand carries no job, source, page, or
-    -- map identity: urgency alone rides the registered global job.
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "trainerSelector",
-      "ballSelector",
-    }) do
-      if params[field] ~= nil then
-        return "pokedex request carries no " .. field .. " selector"
-      end
-    end
-  elseif kind == "battle-effect" then
-    if type(params.effectKey) ~= "string" or params.effectKey == "" or params.effectKey:find("/", 1, true) ~= nil then
-      return "battle-effect request needs its flat effectKey"
-    end
-  elseif kind == "battle-presentation" then
-    -- The shared battle catalog is one global job: urgency alone rides it.
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "effectKey",
-      "trainerSelector",
-      "ballSelector",
-    }) do
-      if params[field] ~= nil then
-        return "battle-presentation request carries no " .. field .. " selector"
-      end
-    end
-  elseif kind == "battle-trainer-picture" then
-    -- Source-independent syntax only: the worker compiles the exact
-    -- spelling and the producer proves catalog membership. The receipt
-    -- key never carries the colon. Lua patterns have no alternation, so
-    -- the role stem is captured and required explicitly.
-    local trainerRole, trainerClass
-    if type(params.trainerSelector) == "string" then
-      trainerRole, trainerClass = params.trainerSelector:match("^([a-z]+):([A-Z][A-Z0-9_]*)$")
-    end
-    if (trainerRole ~= "front" and trainerRole ~= "back") or trainerClass == nil then
-      return "battle-trainer-picture request needs its front:CLASS or back:CLASS trainerSelector"
-    end
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "effectKey",
-      "ballSelector",
-      "sceneNumber",
-      "pairIndex",
-    }) do
-      if params[field] ~= nil then
-        return "battle-trainer-picture request carries no " .. field .. " selector"
-      end
-    end
-  elseif kind == "battle-ball" then
-    if type(params.ballSelector) ~= "string" or params.ballSelector:match("^ball:[A-Z][A-Z0-9_]*$") == nil then
-      return "battle-ball request needs its ball:ITEM ballSelector"
-    end
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "effectKey",
-      "trainerSelector",
-      "sceneNumber",
-      "pairIndex",
-    }) do
-      if params[field] ~= nil then
-        return "battle-ball request carries no " .. field .. " selector"
-      end
-    end
-  elseif kind == "battle-evolution" then
-    -- One global-keyed evolution job: urgency alone rides it.
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "effectKey",
-      "trainerSelector",
-      "ballSelector",
-      "sceneNumber",
-      "pairIndex",
-    }) do
-      if params[field] ~= nil then
-        return "battle-evolution request carries no " .. field .. " selector"
-      end
-    end
-  elseif kind == "startup-walker" then
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "effectKey",
-      "trainerSelector",
-      "ballSelector",
-      "sceneNumber",
-      "pairIndex",
-    }) do
-      if params[field] ~= nil then
-        return "startup-walker request carries no " .. field .. " selector"
-      end
-    end
-  elseif kind == "opening-scene" then
-    if
-      type(params.sceneNumber) ~= "number"
-      or params.sceneNumber % 1 ~= 0
-      or params.sceneNumber < 1
-      or params.sceneNumber > 5
-    then
-      return "opening-scene request needs an integer sceneNumber 1..5"
-    end
-    for _, field in ipairs({
-      "name",
-      "mapId",
-      "matrixMemberId",
-      "index",
-      "pageId",
-      "sceneKey",
-      "bankId",
-      "pairIndex",
-      "trainerSelector",
-      "ballSelector",
-    }) do
-      if params[field] ~= nil then
-        return "opening-scene request carries no " .. field .. " selector"
-      end
-    end
-  end
-  return nil
+  assert(type(kind) == "string", "cache request kind is a known string")
+  local check = SELECTOR_CHECKS[kind]
+  assert(check ~= nil, "cache request kind has its selector check")
+  return check(params, kind)
 end
 
 ---@param params table<string, unknown>
