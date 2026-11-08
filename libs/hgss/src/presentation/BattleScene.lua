@@ -598,6 +598,197 @@ local function pictureStateFrom(record)
   return state
 end
 
+-- Validates one canonical picture selector.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkSelector(value)
+  assert(type(value) == "string" and value ~= "", "picture appearance uses a canonical selector")
+  return value
+end
+
+-- Validates one picture visibility attribute.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkBoolean(value)
+  assert(type(value) == "boolean", "picture visibility attributes are boolean")
+  return value
+end
+
+-- Validates one affine number.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkFiniteNumber(value)
+  assert(type(value) == "number" and value == value, "picture affine attributes are finite numbers")
+  return value
+end
+
+-- Validates one native 16-bit angle index.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkAngleIndex(value)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFFFF,
+    "native picture rotation is a 16-bit angle index"
+  )
+  return value
+end
+
+-- Validates one signed native pixel offset.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkPixelOffset(value)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= -0x8000 and value <= 0x7FFF,
+    "picture offsets are signed native pixel values"
+  )
+  return value
+end
+
+-- Validates one unsigned crop byte.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkCropByte(value)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFF,
+    "visible picture crop fields are unsigned bytes"
+  )
+  return value
+end
+
+-- Validates one Pokepic shadow size.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkShadowSize(value)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 3,
+    "Pokepic shadow size selects one native UV region"
+  )
+  return value
+end
+
+-- Validates one native integer depth offset.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkDepthOffset(value)
+  assert(type(value) == "number" and value % 1 == 0, "picture depth offset uses native integer units")
+  return value
+end
+
+-- Validates one five-bit polygon alpha.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkPolygonAlpha(value)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 31,
+    "picture polygon alpha is a five-bit integer"
+  )
+  return value
+end
+
+-- Validates one signed 16-bit 8.8 affine dimension.
+---@param value unknown source value under validation
+---@return unknown validated value
+local function checkAffineDimension(value)
+  assert(
+    type(value) == "number" and value % 1 == 0 and value >= -32768 and value <= 32767,
+    "picture affine dimensions are signed 16-bit 8.8 values"
+  )
+  return value
+end
+
+-- Builds one tint checker returning a detached channel copy.
+---@param recordMessage string failure message for a non-record tint
+---@param channelMessage string failure message for a bad tint channel
+---@return fun(value: unknown): unknown tint checker
+local function checkTint(recordMessage, channelMessage)
+  local function check(value)
+    assert(type(value) == "table", recordMessage)
+    for _, channel in ipairs({ "r", "g", "b", "a" }) do
+      assert(type(value[channel]) == "number" and value[channel] >= 0 and value[channel] <= 1, channelMessage)
+    end
+    return { r = value.r, g = value.g, b = value.b, a = value.a }
+  end
+  return check
+end
+
+-- Validates one palette fade and converts it into its stepped scene form.
+---@param value unknown source value under validation
+---@return unknown converted fade record
+local function checkPaletteFade(value)
+  assert(type(value) == "table", "palette fades carry their source task parameters")
+  assert(
+    type(value.start) == "number" and value.start % 1 == 0 and value.start >= 0 and value.start <= 16,
+    "palette fade start is a native blend coefficient"
+  )
+  assert(
+    type(value.finish) == "number" and value.finish % 1 == 0 and value.finish >= 0 and value.finish <= 16,
+    "palette fade end is a native blend coefficient"
+  )
+  assert(
+    type(value.framesPer) == "number" and value.framesPer % 1 == 0 and value.framesPer >= 0 and value.framesPer <= 0xFF,
+    "palette fade delay is an unsigned source byte"
+  )
+  assert(
+    type(value.targetColor) == "number"
+      and value.targetColor % 1 == 0
+      and value.targetColor >= 0
+      and value.targetColor <= 0x7FFF,
+    "palette fade target is a native RGB555 color"
+  )
+  return {
+    intensity = value.start,
+    current = value.start,
+    finish = value.finish,
+    delayCounter = 0,
+    delayLength = value.framesPer,
+    targetColor = value.targetColor,
+    active = true,
+    applied = false,
+  }
+end
+
+---@type table<string, fun(value: unknown): unknown>
+local FIELD_CHECKS = {
+  portraitSelector = checkSelector,
+  substitute = checkBoolean,
+  shadowVisible = checkBoolean,
+  affineMode = checkBoolean,
+  pictureVisible = checkBoolean,
+  shadowAffine = checkBoolean,
+  shadowAdjustX = checkBoolean,
+  shadowAdjustY = checkBoolean,
+  vanished = checkBoolean,
+  dontDraw = checkBoolean,
+  rotation = checkFiniteNumber,
+  scaleX = checkFiniteNumber,
+  scaleY = checkFiniteNumber,
+  rotationX = checkAngleIndex,
+  rotationY = checkAngleIndex,
+  rotationZ = checkAngleIndex,
+  pictureXOffset = checkPixelOffset,
+  pictureYOffset = checkPixelOffset,
+  shadowHeight = checkPixelOffset,
+  shadowX = checkPixelOffset,
+  shadowY = checkPixelOffset,
+  shadowOffsetX = checkPixelOffset,
+  shadowOffsetY = checkPixelOffset,
+  pictureXOffset2 = checkCropByte,
+  pictureYOffset2 = checkCropByte,
+  pictureWidth = checkCropByte,
+  pictureHeight = checkCropByte,
+  shadowSize = checkShadowSize,
+  zOffset = checkDepthOffset,
+  polygonAlpha = checkPolygonAlpha,
+  affineWidth = checkAffineDimension,
+  affineHeight = checkAffineDimension,
+  pictureTint = checkTint(
+    "picture tint is a normalized color record",
+    "picture tint has four normalized numeric channels"
+  ),
+  shadowTint = checkTint("shadow palette changes use an explicit color", "shadow color has four normalized channels"),
+  paletteFade = checkPaletteFade,
+}
+
 -- Validates source picture attributes and converts the palette fade
 -- into its stepped scene form, shared by saved appearance patches and
 -- task-owned transient overlays.
@@ -606,124 +797,9 @@ end
 local function checkedPicturePatch(patch)
   local overlay = {}
   for field, value in pairs(patch) do
-    assert(PICTURE_STATE_FIELDS[field] == true, "picture state accepts only rendered appearance attributes")
-    if field == "portraitSelector" then
-      assert(type(value) == "string" and value ~= "", "picture appearance uses a canonical selector")
-    elseif
-      field == "substitute"
-      or field == "shadowVisible"
-      or field == "affineMode"
-      or field == "pictureVisible"
-      or field == "shadowAffine"
-      or field == "shadowAdjustX"
-      or field == "shadowAdjustY"
-      or field == "vanished"
-      or field == "dontDraw"
-    then
-      assert(type(value) == "boolean", "picture visibility attributes are boolean")
-    elseif field == "rotation" or field == "scaleX" or field == "scaleY" then
-      assert(type(value) == "number" and value == value, "picture affine attributes are finite numbers")
-    elseif field == "rotationX" or field == "rotationY" or field == "rotationZ" then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFFFF,
-        "native picture rotation is a 16-bit angle index"
-      )
-    elseif
-      field == "pictureXOffset"
-      or field == "pictureYOffset"
-      or field == "shadowHeight"
-      or field == "shadowX"
-      or field == "shadowY"
-      or field == "shadowOffsetX"
-      or field == "shadowOffsetY"
-    then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= -0x8000 and value <= 0x7FFF,
-        "picture offsets are signed native pixel values"
-      )
-    elseif
-      field == "pictureXOffset2"
-      or field == "pictureYOffset2"
-      or field == "pictureWidth"
-      or field == "pictureHeight"
-    then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 0xFF,
-        "visible picture crop fields are unsigned bytes"
-      )
-    elseif field == "shadowSize" then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 3,
-        "Pokepic shadow size selects one native UV region"
-      )
-    elseif field == "zOffset" then
-      assert(type(value) == "number" and value % 1 == 0, "picture depth offset uses native integer units")
-    elseif field == "polygonAlpha" then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 31,
-        "picture polygon alpha is a five-bit integer"
-      )
-    elseif field == "affineWidth" or field == "affineHeight" then
-      assert(
-        type(value) == "number" and value % 1 == 0 and value >= -32768 and value <= 32767,
-        "picture affine dimensions are signed 16-bit 8.8 values"
-      )
-    end
-    if field == "pictureTint" then
-      assert(type(value) == "table", "picture tint is a normalized color record")
-      for _, channel in ipairs({ "r", "g", "b", "a" }) do
-        assert(
-          type(value[channel]) == "number" and value[channel] >= 0 and value[channel] <= 1,
-          "picture tint has four normalized numeric channels"
-        )
-      end
-    end
-    if field == "shadowTint" then
-      assert(type(value) == "table", "shadow palette changes use an explicit color")
-      for _, channel in ipairs({ "r", "g", "b", "a" }) do
-        assert(
-          type(value[channel]) == "number" and value[channel] >= 0 and value[channel] <= 1,
-          "shadow color has four normalized channels"
-        )
-      end
-    end
-    if field == "paletteFade" then
-      assert(type(value) == "table", "palette fades carry their source task parameters")
-      assert(
-        type(value.start) == "number" and value.start % 1 == 0 and value.start >= 0 and value.start <= 16,
-        "palette fade start is a native blend coefficient"
-      )
-      assert(
-        type(value.finish) == "number" and value.finish % 1 == 0 and value.finish >= 0 and value.finish <= 16,
-        "palette fade end is a native blend coefficient"
-      )
-      assert(
-        type(value.framesPer) == "number"
-          and value.framesPer % 1 == 0
-          and value.framesPer >= 0
-          and value.framesPer <= 0xFF,
-        "palette fade delay is an unsigned source byte"
-      )
-      assert(
-        type(value.targetColor) == "number"
-          and value.targetColor % 1 == 0
-          and value.targetColor >= 0
-          and value.targetColor <= 0x7FFF,
-        "palette fade target is a native RGB555 color"
-      )
-      value = {
-        intensity = value.start,
-        current = value.start,
-        finish = value.finish,
-        delayCounter = 0,
-        delayLength = value.framesPer,
-        targetColor = value.targetColor,
-        active = true,
-        applied = false,
-      }
-    end
-    overlay[field] = (field == "pictureTint" or field == "shadowTint") and copyPictureState({ [field] = value })[field]
-      or value
+    local check = FIELD_CHECKS[field]
+    assert(check ~= nil, "picture state accepts only rendered appearance attributes")
+    overlay[field] = check(value)
   end
   return overlay
 end
