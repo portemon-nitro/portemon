@@ -1611,6 +1611,62 @@ local OPENING_EVENT_KEYS = {
   finish = {},
 }
 
+-- Checks one duration step completion for its positive source ticks.
+---@param finish table<string, unknown> step completion under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkDurationFinish(finish, path)
+  if not isPositiveInteger(finish.ticks) then
+    return nil, invalid("opening scene step carries no source duration", path)
+  end
+  return true
+end
+
+-- Checks one named effect wait against the effects started so far.
+---@param finish table<string, unknown> step completion under validation
+---@param path string scene manifest path behind diagnostics
+---@param guardResolves fun(name: string): boolean|nil, Errors.Error|nil started-effect resolver
+---@return boolean|nil, Errors.Error|nil
+local function checkEffectFinish(finish, path, guardResolves)
+  if type(finish.effect) ~= "string" or finish.effect == "" then
+    return nil, invalid("opening scene step waits on no named effect", path)
+  end
+  return guardResolves(finish.effect)
+end
+
+-- Checks one conjunctive effect wait for distinct started effects.
+---@param finish table<string, unknown> step completion under validation
+---@param path string scene manifest path behind diagnostics
+---@param guardResolves fun(name: string): boolean|nil, Errors.Error|nil started-effect resolver
+---@return boolean|nil, Errors.Error|nil
+local function checkEffectsFinish(finish, path, guardResolves)
+  if type(finish.effects) ~= "table" or #finish.effects == 0 then
+    return nil, invalid("opening scene step waits on no named effect", path)
+  end
+  local distinct = {}
+  for _, name in ipairs(finish.effects) do
+    if type(name) ~= "string" or name == "" then
+      return nil, invalid("opening scene step waits on no named effect", path)
+    end
+    if distinct[name] == true then
+      return nil, invalid("opening scene step waits twice on one effect", path)
+    end
+    distinct[name] = true
+    local ok, err = guardResolves(name)
+    if not ok then
+      return nil, err
+    end
+  end
+  return true
+end
+
+---@type table<string, fun(finish: table<string, unknown>, path: string, guardResolves: fun(name: string): boolean|nil, Errors.Error|nil): boolean|nil, Errors.Error|nil>
+local COMPLETION_CHECKS = {
+  duration = checkDurationFinish,
+  effect = checkEffectFinish,
+  effects = checkEffectsFinish,
+}
+
 local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, slotImageSets, assetIndex)
   local path = StartupAssetCache.openingScenePath(sceneNumber)
   if type(timeline) ~= "table" or type(timeline.steps) ~= "table" or type(timeline.events) ~= "table" then
@@ -1775,38 +1831,13 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
       return nil, invalid("opening scene effect wait has no started effect or compiled clip", path)
     end
     local finish = step["until"]
-    if finish.kind == "duration" then
-      if not isPositiveInteger(finish.ticks) then
-        return nil, invalid("opening scene step carries no source duration", path)
-      end
-    elseif finish.kind == "effect" then
-      if type(finish.effect) ~= "string" or finish.effect == "" then
-        return nil, invalid("opening scene step waits on no named effect", path)
-      end
-      local ok, err = guardResolves(finish.effect)
-      if not ok then
-        return nil, err
-      end
-    elseif finish.kind == "effects" then
-      if type(finish.effects) ~= "table" or #finish.effects == 0 then
-        return nil, invalid("opening scene step waits on no named effect", path)
-      end
-      local distinct = {}
-      for _, name in ipairs(finish.effects) do
-        if type(name) ~= "string" or name == "" then
-          return nil, invalid("opening scene step waits on no named effect", path)
-        end
-        if distinct[name] == true then
-          return nil, invalid("opening scene step waits twice on one effect", path)
-        end
-        distinct[name] = true
-        local ok, err = guardResolves(name)
-        if not ok then
-          return nil, err
-        end
-      end
-    else
+    local check = type(finish.kind) == "string" and COMPLETION_CHECKS[finish.kind] or nil
+    if check == nil then
       return nil, invalid("opening scene step completion is malformed", path)
+    end
+    local done, doneErr = check(finish, path, guardResolves)
+    if not done then
+      return nil, doneErr
     end
     -- Completion starts run with the guarded actions once the predicate
     -- passes, so later cases may wait on them but the current case cannot.
