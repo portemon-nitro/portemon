@@ -1182,6 +1182,24 @@ local function buildFallbackSection(ctx)
   addRow(ctx, "read-only value", "section", ctx.section, "Available in a later update")
 end
 
+-- Builds the Bag section once its pocket tabs publish; otherwise falls back.
+local function buildBagSection(ctx)
+  if ctx.view.bagPocketTabRects ~= nil then
+    buildBag(ctx)
+  else
+    buildFallbackSection(ctx)
+  end
+end
+
+-- Section builders by closed section name; Bag guards its tab precondition.
+local SECTION_BUILDERS = {
+  Location = buildLocation,
+  Player = buildPlayer,
+  Progress = buildProgress,
+  Party = buildParty,
+  Bag = buildBagSection,
+}
+
 -- The closed section selection invokes exactly one builder; overlays below
 -- add value/decision geometry on top of the section rows.
 local function buildSection(ctx)
@@ -1190,18 +1208,13 @@ local function buildSection(ctx)
     buildOpening(ctx)
   elseif view.status == "error" then
     buildErrorStatus(ctx)
-  elseif ctx.section == "Location" then
-    buildLocation(ctx)
-  elseif ctx.section == "Player" then
-    buildPlayer(ctx)
-  elseif ctx.section == "Progress" then
-    buildProgress(ctx)
-  elseif ctx.section == "Party" then
-    buildParty(ctx)
-  elseif ctx.section == "Bag" and view.bagPocketTabRects ~= nil then
-    buildBag(ctx)
   else
-    buildFallbackSection(ctx)
+    local build = ctx.section ~= nil and SECTION_BUILDERS[ctx.section] or nil
+    if build == nil then
+      buildFallbackSection(ctx)
+    else
+      build(ctx)
+    end
   end
 end
 
@@ -1462,17 +1475,21 @@ local function buildNumberScope(ctx)
   ctx.valueModalError = numberLayout.errorRect
 end
 
+-- Value editors build exactly one dialog scope by editor kind.
+local VALUE_BUILDERS = {
+  choice = buildChoiceScope,
+  name = buildNameScope,
+  number = buildNumberScope,
+}
+
 local function buildValueScope(ctx)
   if ctx.view.valueEditor == nil then
     return
   end
   local dialog = ctx.view.valueEditor
-  if dialog.kind == "choice" then
-    buildChoiceScope(ctx)
-  elseif dialog.kind == "name" then
-    buildNameScope(ctx)
-  elseif dialog.kind == "number" then
-    buildNumberScope(ctx)
+  local build = dialog.kind ~= nil and VALUE_BUILDERS[dialog.kind] or nil
+  if build ~= nil then
+    build(ctx)
   end
 end
 
