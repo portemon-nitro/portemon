@@ -190,6 +190,54 @@ local function keysForIds(monCatalog, ids, label)
   return keys
 end
 
+---@param archive Narc
+---@param memberId integer
+---@param count integer
+---@param label string
+---@param monCatalog table<string, unknown>
+---@return string[] catalog keys in source order
+local function readOrderList(archive, memberId, count, label, monCatalog)
+  return keysForIds(monCatalog, readIdList(archive, memberId, count, label), label)
+end
+
+---@param national string[] national-order catalog keys
+---@param alphabetical string[] alphabetical-order catalog keys
+local function checkAlphabeticalCoverage(national, alphabetical)
+  local nationalSet = {}
+  for _, key in ipairs(national) do
+    nationalSet[key] = true
+  end
+  for _, key in ipairs(alphabetical) do
+    if not nationalSet[key] then
+      raise(
+        PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
+        "pokedex alphabetical order covers species outside the national order: " .. key,
+        { key = key }
+      )
+    end
+  end
+  if #alphabetical ~= #national then
+    raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex alphabetical order does not cover every species", {})
+  end
+end
+
+---@param archive Narc
+---@param memberId integer
+---@param label string
+---@param monCatalog table<string, unknown>
+---@return string[] catalog keys in source order
+local function readKeyList(archive, memberId, label, monCatalog)
+  local bytes = readMember(archive, memberId, label)
+  if #bytes % 2 ~= 0 then
+    raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex " .. label .. " is not u16-aligned", {})
+  end
+  local ids = {}
+  for offset = 1, #bytes, 2 do
+    ids[#ids + 1] = u16le(bytes, offset)
+  end
+  return keysForIds(monCatalog, ids, label)
+end
+
 local function parseMeasures(archive, label)
   local heights = readMember(archive, 0, label .. " heights")
   local weights = readMember(archive, 1, label .. " weights")
@@ -571,45 +619,18 @@ local function _compile(romFs, versionId, monCatalog, sink)
   local baseMeasurements = profileMeasurements(base, monCatalog)
   local originMeasurements = profileMeasurements(origin, monCatalog)
 
-  local nationalIds = readIdList(baseArchive, 11, 493, "national order")
-  local johtoIds = readIdList(baseArchive, 12, 256, "johto order")
-  local alphaIds = readIdList(baseArchive, 13, 493, "alphabetical order")
-
-  local national = keysForIds(monCatalog, nationalIds, "national order")
-  local johto = keysForIds(monCatalog, johtoIds, "johto order")
-  local alphabetical = keysForIds(monCatalog, alphaIds, "alphabetical order")
+  local national = readOrderList(baseArchive, 11, 493, "national order", monCatalog)
+  local johto = readOrderList(baseArchive, 12, 256, "johto order", monCatalog)
+  local alphabetical = readOrderList(baseArchive, 13, 493, "alphabetical order", monCatalog)
 
   local baseSorts = resolveSorts(baseSortIds, "base", monCatalog)
   local originSorts = resolveSorts(originSortIds, "origin", monCatalog)
 
-  local nationalSet = {}
-  for _, key in ipairs(national) do
-    nationalSet[key] = true
-  end
-  for _, key in ipairs(alphabetical) do
-    if not nationalSet[key] then
-      raise(
-        PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
-        "pokedex alphabetical order covers species outside the national order: " .. key,
-        { key = key }
-      )
-    end
-  end
-  if #alphabetical ~= #national then
-    raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex alphabetical order does not cover every species", {})
-  end
+  checkAlphabeticalCoverage(national, alphabetical)
 
   local letters = {}
   for index, letter in ipairs(PokedexSources.letterOrder) do
-    local bytes = readMember(baseArchive, 17 + index, "letter list " .. letter)
-    if #bytes % 2 ~= 0 then
-      raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex letter list " .. letter .. " is not u16-aligned", {})
-    end
-    local ids = {}
-    for offset = 1, #bytes, 2 do
-      ids[#ids + 1] = u16le(bytes, offset)
-    end
-    letters[letter] = keysForIds(monCatalog, ids, "letter list " .. letter)
+    letters[letter] = readKeyList(baseArchive, 17 + index, "letter list " .. letter, monCatalog)
   end
   for member = 44, 61 do
     local bytes = readMember(baseArchive, member, "extra letter slot")
@@ -624,28 +645,12 @@ local function _compile(romFs, versionId, monCatalog, sink)
 
   local types = {}
   for index, name in ipairs(PokedexSources.typeOrder) do
-    local bytes = readMember(baseArchive, 61 + index, "type list " .. name)
-    if #bytes % 2 ~= 0 then
-      raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex type list " .. name .. " is not u16-aligned", {})
-    end
-    local ids = {}
-    for offset = 1, #bytes, 2 do
-      ids[#ids + 1] = u16le(bytes, offset)
-    end
-    types[name] = keysForIds(monCatalog, ids, "type list " .. name)
+    types[name] = readKeyList(baseArchive, 61 + index, "type list " .. name, monCatalog)
   end
 
   local shapeLists = {}
   for index, name in ipairs(PokedexSources.shapeOrder) do
-    local bytes = readMember(baseArchive, 78 + index, "shape list " .. name)
-    if #bytes % 2 ~= 0 then
-      raise(PokedexCatalogCompiler.ERROR.MEMBER_SIZE, "pokedex shape list " .. name .. " is not u16-aligned", {})
-    end
-    local ids = {}
-    for offset = 1, #bytes, 2 do
-      ids[#ids + 1] = u16le(bytes, offset)
-    end
-    shapeLists[name] = keysForIds(monCatalog, ids, "shape list " .. name)
+    shapeLists[name] = readKeyList(baseArchive, 78 + index, "shape list " .. name, monCatalog)
   end
 
   local sliderBytes = readMember(sliderArchive, 0, "slider rows")
