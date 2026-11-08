@@ -965,6 +965,56 @@ local function validateOpeningChild(child, sceneNumber)
   return true
 end
 
+-- Checks one emitter gravity field for its displacement vector.
+---@param field table<string, unknown> emitter field under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkGravityField(field, path)
+  if not onlyKeys(field, { kind = true, magnitude = true }) or not isXyz(field.magnitude) then
+    return nil, invalid("opening scene emitter gravity field is malformed", path)
+  end
+  return true
+end
+
+-- Checks one emitter magnet field for its position and strength.
+---@param field table<string, unknown> emitter field under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkMagnetField(field, path)
+  if
+    not onlyKeys(field, { kind = true, position = true, magnitude = true })
+    or not isXyz(field.position)
+    or not isFiniteNumber(field.magnitude)
+  then
+    return nil, invalid("opening scene emitter magnet field is malformed", path)
+  end
+  return true
+end
+
+-- Checks one emitter spin field for its rotation axis.
+---@param field table<string, unknown> emitter field under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkSpinField(field, path)
+  if
+    not onlyKeys(field, { kind = true, rotation = true, axis = true })
+    or not isNonnegativeInteger(field.rotation)
+    or field.rotation > 65535
+    or not isNonnegativeInteger(field.axis)
+    or field.axis > 2
+  then
+    return nil, invalid("opening scene emitter spin field is malformed", path)
+  end
+  return true
+end
+
+-- Emitter field checkers by observed field kind.
+local FIELD_KIND_CHECKS = {
+  gravity = checkGravityField,
+  magnet = checkMagnetField,
+  spin = checkSpinField,
+}
+
 ---@param fields unknown
 ---@param sceneNumber integer
 ---@return boolean|nil, Errors.Error|nil
@@ -977,30 +1027,13 @@ local function validateOpeningFields(fields, sceneNumber)
     if type(field) ~= "table" or type(field.kind) ~= "string" then
       return nil, invalid("opening scene emitter field is malformed", path)
     end
-    if field.kind == "gravity" then
-      if not onlyKeys(field, { kind = true, magnitude = true }) or not isXyz(field.magnitude) then
-        return nil, invalid("opening scene emitter gravity field is malformed", path)
-      end
-    elseif field.kind == "magnet" then
-      if
-        not onlyKeys(field, { kind = true, position = true, magnitude = true })
-        or not isXyz(field.position)
-        or not isFiniteNumber(field.magnitude)
-      then
-        return nil, invalid("opening scene emitter magnet field is malformed", path)
-      end
-    elseif field.kind == "spin" then
-      if
-        not onlyKeys(field, { kind = true, rotation = true, axis = true })
-        or not isNonnegativeInteger(field.rotation)
-        or field.rotation > 65535
-        or not isNonnegativeInteger(field.axis)
-        or field.axis > 2
-      then
-        return nil, invalid("opening scene emitter spin field is malformed", path)
-      end
-    else
+    local check = FIELD_KIND_CHECKS[field.kind]
+    if check == nil then
       return nil, invalid("opening scene emitter field is outside the observed set", path)
+    end
+    local ok, err = check(field, path)
+    if not ok then
+      return nil, err
     end
   end
   return true
