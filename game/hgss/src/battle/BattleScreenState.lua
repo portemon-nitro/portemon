@@ -5478,10 +5478,11 @@ function BattleScreenState:_activateCommand(id)
     self._menuGateTicks = 1
     self._notice = nil
   elseif id == "bag" then
-    -- Frontier facilities refuse bag items natively, so the command
-    -- refuses at selection instead of opening a usable bag.
+    -- Frontier facilities refuse bag items natively with msg_0197_00593
+    -- (battle_input.c BATTLE_INPUT_BAG with BATTLE_TYPE_FRONTIER prints
+    -- via EmitPrintSelectionMessage) instead of opening a usable bag.
     if self._kind == "frontier" then
-      self:_refuse(nil)
+      self:_refuse(resolveBattleText(self, "battle/narration/item-could-not-be-used", {}))
       return
     end
     self:_openVoluntaryChild("bag", "bag")

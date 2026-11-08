@@ -1650,6 +1650,50 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/narration/item-could-not-be-used"] = { bank = "scriptController", messageId = 593 },
   ["battle/narration/item-no-effect"] = { bank = "itemFeedback", messageId = 34 },
   ["battle/narration/pp-restored"] = { bank = "partyResult", messageId = 87 },
+  -- Retail battle bag screen labels (battle_bag_menu.c PrintPocketMenuPage
+  -- and PrintPocketName): pocket names and the last-used/USE buttons from
+  -- msg 0005. Producer-only bank/member selection; runtime resolves text.
+  ["battle/bag/pocket/hp-pp"] = { bank = "itemFeedback", messageId = 0 },
+  ["battle/bag/pocket/restore"] = { bank = "itemFeedback", messageId = 1 },
+  ["battle/bag/pocket/status"] = { bank = "itemFeedback", messageId = 2 },
+  ["battle/bag/pocket/healers"] = { bank = "itemFeedback", messageId = 3 },
+  ["battle/bag/pocket/battle-items"] = { bank = "itemFeedback", messageId = 6 },
+  ["battle/bag/pocket/balls"] = { bank = "itemFeedback", messageId = 7 },
+  ["battle/bag/last-used"] = { bank = "itemFeedback", messageId = 8 },
+  ["battle/bag/use"] = { bank = "itemFeedback", messageId = 31 },
+  ["battle/bag/list-pocket/hp-pp"] = { bank = "itemFeedback", messageId = 22 },
+  ["battle/bag/list-pocket/restore"] = { bank = "itemFeedback", messageId = 23 },
+  ["battle/bag/list-pocket/status"] = { bank = "itemFeedback", messageId = 24 },
+  ["battle/bag/list-pocket/healers"] = { bank = "itemFeedback", messageId = 25 },
+  ["battle/bag/list-pocket/balls"] = { bank = "itemFeedback", messageId = 26 },
+  ["battle/bag/list-pocket/battle-items"] = { bank = "itemFeedback", messageId = 27 },
+  -- Retail battle bag failure messages (BattleBagMenu_TryUseItem):
+  -- doubles aim, full PC, embargo, and hidden-foe blocks from msg 0005.
+  ["battle/bag/message/no-aim-doubles"] = { bank = "itemFeedback", messageId = 44 },
+  ["battle/bag/message/no-room"] = { bank = "itemFeedback", messageId = 45 },
+  ["battle/bag/message/embargo"] = { bank = "itemFeedback", messageId = 46 },
+  ["battle/bag/message/no-aim-hidden"] = { bank = "itemFeedback", messageId = 47 },
+  -- Retail battle party screen prompts and buttons (battle_party_menu.c):
+  -- choose/use prompts, SHIFT/SUMMARY/CHECK MOVES, FORGET/CANCEL, and
+  -- the HM refusal from msg 0006. Titles 6/7/94 already stage as child keys.
+  ["battle/party/prompt/choose"] = { bank = "partyResult", messageId = 6 },
+  ["battle/party/prompt/use"] = { bank = "partyResult", messageId = 7 },
+  ["battle/party/button/shift"] = { bank = "partyResult", messageId = 15 },
+  ["battle/party/button/summary"] = { bank = "partyResult", messageId = 18 },
+  ["battle/party/button/check-moves"] = { bank = "partyResult", messageId = 19 },
+  ["battle/party/button/forget"] = { bank = "partyResult", messageId = 58 },
+  ["battle/party/button/cancel"] = { bank = "partyResult", messageId = 59 },
+  ["battle/party/message/hm-forget"] = { bank = "partyResult", messageId = 60 },
+  -- Retail party selection refusals (BattlePartyMenu_HandlePartyListInput
+  -- and TryUseItemOnMon paths) from msg 0006.
+  ["battle/party/message/already-in-battle"] = { bank = "partyResult", messageId = 76 },
+  ["battle/party/message/no-energy"] = { bank = "partyResult", messageId = 77 },
+  ["battle/party/message/cant-switch-out"] = { bank = "partyResult", messageId = 78 },
+  ["battle/party/message/egg"] = { bank = "partyResult", messageId = 79 },
+  ["battle/party/message/cant-switch-foe"] = { bank = "partyResult", messageId = 80 },
+  ["battle/party/message/no-effect"] = { bank = "partyResult", messageId = 81 },
+  ["battle/party/message/already-selected"] = { bank = "partyResult", messageId = 93 },
+  ["battle/party/message/embargo"] = { bank = "partyResult", messageId = 95 },
   ["battle/narration/transformed"] = { bank = "scriptController", messageId = 345 },
   ["battle/narration/foretold/own"] = { bank = "scriptController", messageId = 472 },
   ["battle/narration/foretold/wild"] = { bank = "scriptController", messageId = 473 },

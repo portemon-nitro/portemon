@@ -47,11 +47,14 @@ function T.catalog_exposes_the_full_locked_item_definition()
   -- fields are asserted through TM/HM and berry representatives below.
   Assert.keySet(
     potion,
-    "canHold,description,friendshipBoost,heldFormEffect,icon,isBall,isHm,name,nameIndefinite,namePlural,nativeId,partyUse,pocket,preventToss,price,selectable",
+    "battlePocket,canHold,description,friendshipBoost,heldFormEffect,icon,isBall,isHm,name,nameIndefinite,namePlural,nativeId,partyUse,pocket,preventToss,price,selectable",
     "item definitions carry exactly the locked always-present fields"
   )
   Assert.equal(potion.name, "Potion")
   Assert.equal(potion.pocket, "medicine")
+  -- Retail battle bag grouping mask (ITEMATTR_BATTLE_POCKET): POTION
+  -- restores HP, so its battle pocket selects the HP/PP restore pocket.
+  Assert.equal(potion.battlePocket, 4)
   Assert.equal(potion.price, 0)
   Assert.isFalse(potion.preventToss)
   local machine = catalog:item("TM01")

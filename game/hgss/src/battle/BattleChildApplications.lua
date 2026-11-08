@@ -1271,9 +1271,15 @@ local function openPartyChild(intent, services)
     end
     assert(initialFocus ~= nil, "reserve pickers focus an eligible reserve")
   end
+  -- Retail battle party mon menu (battle_party_menu.c PrintMonMenuPage
+  -- with msg_0006_00015 SHIFT): selecting the mon offers SHIFT to switch
+  -- and cancelling returns to the list. SUMMARY (msg_0006_00018) and
+  -- CHECK MOVES (msg_0006_00019) inspect in retail but need the summary
+  -- and move pages; they stay out until those pages land. Labels name the
+  -- retail roles; asset-derived text resolution travels with the manifest.
   local function menuFor(_)
     return {
-      { kind = "switch", label = "SWITCH" },
+      { kind = "switch", label = "SHIFT" },
       { kind = "quit", label = "QUIT" },
     }
   end

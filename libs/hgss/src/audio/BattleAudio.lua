@@ -35,6 +35,10 @@ BattleAudio.CODE = "BATTLE_AUDIO_REJECTED"
 -- progression jingles the result flows record.
 BattleAudio.SINK_SOUNDS = {
   slide = "SEQ_SE_DP_SLIDEIN",
+  -- Retail bag and party menus voice DECIDE on every accepted
+  -- selection (battle_bag_menu.c and battle_party_menu.c PlaySE
+  -- call sites) and SELECT on cursor moves (battle_dpad_cursor.c).
+  decide = "SEQ_SE_DP_DECIDE",
   faint = "SEQ_SE_DP_POKE_DEAD3",
   escape = "SEQ_SE_DP_NIGERU2",
   impact = "SEQ_SE_DP_KOUKA_M",

@@ -46,6 +46,10 @@ local ITEM_FIELDS = {
   namePlural = true,
   description = true,
   pocket = true,
+  -- Retail battle bag grouping mask (ITEMATTR_BATTLE_POCKET, five bits
+  -- selecting the battle pockets the item appears in via
+  -- sBattleBagPocketOrder). Producer-side source fact for retail grouping.
+  battlePocket = true,
   preventToss = true,
   selectable = true,
   isBall = true,
@@ -339,6 +343,12 @@ local function assertItem(key, record, context)
   end
   checkBoolean(record.preventToss, context, "ITEM_CATALOG_INVALID", "item " .. key .. " preventToss")
   checkBoolean(record.selectable, context, "ITEM_CATALOG_INVALID", "item " .. key .. " selectable")
+  -- Retail battle bag grouping is optional for catalogs produced before
+  -- the battle-pocket import; battle children require it when present and
+  -- fail closed without inventing a pocket.
+  if record.battlePocket ~= nil then
+    checkInteger(record.battlePocket, context, "ITEM_CATALOG_INVALID", "item " .. key .. " battlePocket", 0, 31)
+  end
   checkBoolean(record.isBall, context, "ITEM_CATALOG_INVALID", "item " .. key .. " isBall")
   checkBoolean(record.friendshipBoost, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendshipBoost")
   checkNonEmptyString(record.icon, context, "ITEM_CATALOG_INVALID", "item " .. key .. " icon")

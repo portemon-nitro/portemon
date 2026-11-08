@@ -846,6 +846,12 @@ ItemSources.ITEM_DATA_PREVENT_TOSS_BIT = 5
 ItemSources.ITEM_DATA_SELECTABLE_BIT = 6
 ItemSources.ITEM_DATA_FIELD_POCKET_SHIFT = 7
 ItemSources.ITEM_DATA_FIELD_POCKET_MASK = 15
+-- Battle-pocket bits 11-15 select the battle bag pockets an item appears
+-- in (struct ItemData battlePocket:5, ITEMATTR_BATTLE_POCKET). Retail
+-- battle bag sorts field stock into battle pockets via this mask and
+-- sBattleBagPocketOrder; the mask travels producer-side for retail grouping.
+ItemSources.ITEM_DATA_BATTLE_POCKET_SHIFT = 11
+ItemSources.ITEM_DATA_BATTLE_POCKET_MASK = 31
 
 -- Icon character/palette member selection by native item identity, from the
 -- ITEMNARC_NCGR/ITEMNARC_NCLR columns of sItemNarcIds. Numeric

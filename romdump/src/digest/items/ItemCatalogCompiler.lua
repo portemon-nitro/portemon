@@ -105,6 +105,7 @@ function ItemCatalogCompiler.decodeItemData(member, context)
   local tossBit = 2 ^ ItemSources.ITEM_DATA_PREVENT_TOSS_BIT
   local selectBit = 2 ^ ItemSources.ITEM_DATA_SELECTABLE_BIT
   local pocketShift = 2 ^ ItemSources.ITEM_DATA_FIELD_POCKET_SHIFT
+  local battlePocketShift = 2 ^ ItemSources.ITEM_DATA_BATTLE_POCKET_SHIFT
   local paramBase = ItemSources.ITEM_DATA_PARTY_PARAM_OFFSET
   local function flag(index)
     return string.byte(member, paramBase + index + 1)
@@ -134,6 +135,10 @@ function ItemCatalogCompiler.decodeItemData(member, context)
     preventToss = math.floor(word / tossBit) % 2 == 1,
     selectable = math.floor(word / selectBit) % 2 == 1,
     fieldPocket = math.floor(word / pocketShift) % (ItemSources.ITEM_DATA_FIELD_POCKET_MASK + 1),
+    -- Retail battle bag grouping mask (ITEMATTR_BATTLE_POCKET): five bits
+    -- selecting the battle pockets the item appears in. The mask travels
+    -- for the battle bag producer; grouping follows sBattleBagPocketOrder.
+    battlePocket = math.floor(word / battlePocketShift) % (ItemSources.ITEM_DATA_BATTLE_POCKET_MASK + 1),
     partyUse = string.byte(member, ItemSources.ITEM_DATA_PARTY_USE_OFFSET + 1) == 1,
     party = {
       slpHeal = has(0, 0),
@@ -707,6 +712,8 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         namePlural = must(requireText(plurals, nativeId, "item plural name", context)),
         description = descriptions[nativeId],
         pocket = pocketKey,
+        -- Retail battle bag grouping mask for the battle pockets.
+        battlePocket = assert(decoded.battlePocket, "item decode carries its battle pocket mask"),
         preventToss = decoded.preventToss,
         selectable = decoded.selectable,
         isBall = ItemSources.ballItemIds[nativeId] == true,

@@ -56,8 +56,9 @@ function T.decodes_pocket_toss_and_selectable_bits()
 end
 
 function T.ignores_non_catalog_bitfields()
-  -- Battle-pocket bits never leak into catalog facts; the natural-gift
-  -- type bits project through their own facts below.
+  -- Natural-gift type bits project through their own facts below;
+  -- battle-pocket bits (ITEMATTR_BATTLE_POCKET) decode for the retail
+  -- battle bag grouping via sBattleBagPocketOrder.
   local word = 31 + 31 * 2048
   local decoded = assert(compiler().decodeItemData(memberWith(0, word), {
     archive = "item_data",
@@ -67,6 +68,21 @@ function T.ignores_non_catalog_bitfields()
   Assert.isFalse(decoded.preventToss)
   Assert.isFalse(decoded.selectable)
   Assert.equal(decoded.naturalGiftType, 31)
+  Assert.equal(decoded.battlePocket, 31)
+end
+
+function T.decodes_battle_pocket_grouping_bits()
+  -- fieldPocket 1 (medicine) with battlePocket bits 0 and 2 set
+  -- (BALLS and HP/PP pockets via sBattleBagPocketOrder): word packs
+  -- naturalGift 0, prevent/select 0, field 1 at bits 7-10, battle 5 at
+  -- bits 11-15 (binary 00101 = 5).
+  local word = 1 * 128 + 5 * 2048
+  local decoded = assert(compiler().decodeItemData(memberWith(0, word), {
+    archive = "item_data",
+    memberId = 17,
+  }))
+  Assert.equal(decoded.fieldPocket, 1)
+  Assert.equal(decoded.battlePocket, 5)
 end
 
 function T.decodes_fling_and_natural_gift_throw_facts()

@@ -34,18 +34,19 @@ ItemFixture.POCKET_NAMES = {
 -- domain tests assert. Every other identity becomes a deterministic
 -- placeholder below.
 local KNOWN = {
-  NONE = { nativeId = 0, pocket = "items" },
-  POKE_BALL = { nativeId = 4, pocket = "balls", isBall = true },
-  GREAT_BALL = { nativeId = 3, pocket = "balls", isBall = true },
-  LUXURY_BALL = { nativeId = 11, pocket = "balls", isBall = true },
+  NONE = { nativeId = 0, pocket = "items", battlePocket = 0 },
+  POKE_BALL = { nativeId = 4, pocket = "balls", isBall = true, battlePocket = 1 },
+  GREAT_BALL = { nativeId = 3, pocket = "balls", isBall = true, battlePocket = 1 },
+  LUXURY_BALL = { nativeId = 11, pocket = "balls", isBall = true, battlePocket = 1 },
   -- The wild-capture scenario stocks this ball. The synthetic identity
   -- avoids displacing the ITEM_1 placeholder other suites stock; battle capture keys balls by semantic key, so no
   -- behavior depends on it. Production catalogs carry the retail identity.
-  MASTER_BALL = { nativeId = 7, pocket = "balls", isBall = true },
-  SMOKE_BALL = { nativeId = 228, pocket = "items", name = "Smoke Ball" },
+  MASTER_BALL = { nativeId = 7, pocket = "balls", isBall = true, battlePocket = 1 },
+  SMOKE_BALL = { nativeId = 228, pocket = "items", name = "Smoke Ball", battlePocket = 2 },
   POTION = {
     nativeId = 17,
     pocket = "medicine",
+    battlePocket = 4,
     name = "Potion",
     partyUse = {
       kind = "medicine",
@@ -67,26 +68,30 @@ local KNOWN = {
   ETHER = {
     nativeId = 49,
     pocket = "medicine",
+    battlePocket = 4,
     name = "Ether",
     partyUse = { kind = "pp", target = "one", restore = 10, mood = 0 },
   },
-  SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true },
-  EXP__SHARE = { nativeId = 61, pocket = "items" },
+  SOOTHE_BELL = { nativeId = 218, pocket = "items", friendshipBoost = true, battlePocket = 0 },
+  EXP__SHARE = { nativeId = 61, pocket = "items", battlePocket = 0 },
   AMULET_COIN = {
     nativeId = 223,
     pocket = "items",
+    battlePocket = 0,
     heldBehavior = { key = "money_up", params = { nativeId = 223, holdEffect = 58 } },
   },
   LUCK_INCENSE = {
     nativeId = 319,
     pocket = "items",
+    battlePocket = 0,
     heldBehavior = { key = "money_up", params = { nativeId = 319, holdEffect = 58 } },
   },
-  TM01 = { nativeId = 328, pocket = "tmhm", tmhmMoveNativeId = 264 },
-  HM01 = { nativeId = 420, pocket = "tmhm", tmhmMoveNativeId = 15, isHm = true, canHold = false },
+  TM01 = { nativeId = 328, pocket = "tmhm", tmhmMoveNativeId = 264, battlePocket = 0 },
+  HM01 = { nativeId = 420, pocket = "tmhm", tmhmMoveNativeId = 15, isHm = true, canHold = false, battlePocket = 0 },
   CHERI_BERRY = {
     nativeId = 149,
     pocket = "berries",
+    battlePocket = 8,
     berryNameSingular = "Cheri Berry",
     berryNamePlural = "Cheri Berries",
     partyUse = {
@@ -105,6 +110,7 @@ local KNOWN = {
   SITRUS_BERRY = {
     nativeId = 158,
     pocket = "berries",
+    battlePocket = 4,
     berryNameSingular = "Sitrus Berry",
     berryNamePlural = "Sitrus Berries",
     partyUse = {
@@ -121,11 +127,11 @@ local KNOWN = {
       mood = 0,
     },
   },
-  BICYCLE = { nativeId = 450, pocket = "key_items", preventToss = true, selectable = true },
+  BICYCLE = { nativeId = 450, pocket = "key_items", preventToss = true, selectable = true, battlePocket = 0 },
   -- The Spiky-Ear Pichu gift hold item (retail ROM): a real
   -- plate identity, carrying the shared plate form effect explicitly
   -- because named records bypass the placeholder plate rule below.
-  ZAP_PLATE = { nativeId = 300, pocket = "items", heldFormEffect = "arceus_plate" },
+  ZAP_PLATE = { nativeId = 300, pocket = "items", heldFormEffect = "arceus_plate", battlePocket = 0 },
 }
 
 local MANUAL_POCKETS = { "items", "medicine", "balls", "mail", "battle_items", "key_items" }
@@ -150,6 +156,10 @@ local function placeholder(nativeId, key)
     canHold = true,
     heldFormEffect = "none",
     partyUse = { kind = "none" },
+    -- Synthetic battle-pocket grouping for battle bag tests: all
+    -- placeholders appear in the HP/PP battle pocket (bit2) so crowded
+    -- pocket paging stays exercisable without ROM data.
+    battlePocket = 4,
   }
   if nativeId >= 328 and nativeId <= 427 then
     record.pocket = "tmhm"
@@ -199,6 +209,7 @@ function ItemFixture.buildAssetRoot()
         namePlural = (known.name or key) .. "s",
         description = (known.name or key) .. " description",
         pocket = known.pocket,
+        battlePocket = known.battlePocket or 0,
         preventToss = known.preventToss or false,
         selectable = known.selectable or false,
         isBall = known.isBall or false,
