@@ -1930,6 +1930,9 @@ function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
   if type(record.spriteClips) ~= "table" then
     return nil, invalid("opening scene sprite clips are malformed", path)
   end
+  if type(record.assets) ~= "table" then
+    return nil, invalid("opening scene asset index is malformed", path)
+  end
   local clipIds = {}
   for _, clip in ipairs(record.spriteClips) do
     local ok, err = validateOpeningClip(clip, sceneNumber)
@@ -1948,17 +1951,13 @@ function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
       return nil, invalid("opening scene sprite clip is missing from the asset index", path)
     end
   end
-  if type(record.assets) ~= "table" then
-    return nil, invalid("opening scene asset index is malformed", path)
-  end
   for assetPath in pairs(record.assets) do
     local okAsset, assetErr = checkOpeningAssetPath(cacheFs, assetPath, sceneNumber, "indexed asset")
     if not okAsset then
       return nil, assetErr
     end
   end
-  for key, images in pairs(slotImageSets) do
-    local _ = key
+  for _, images in pairs(slotImageSets) do
     for image in pairs(images) do
       if record.assets[image] ~= true then
         return nil, invalid("opening scene slot image is missing from the asset index", path)
