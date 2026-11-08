@@ -1220,6 +1220,8 @@ local function fullManifest()
       templateExpansion = { input = "tagSelectedBuffers" },
       entries = {
         ["battle/narration/wild-appeared"] = messageRecord({ "A wild ", false, " appeared!" }),
+        ["battle/narration/wild-appeared-doubles"] =
+          messageRecord({ "A wild ", false, " and\n", false, " appeared!" }),
         ["battle/narration/trainer-challenged"] = messageRecord({ false, " ", false, " wants to battle!" }),
         ["battle/narration/trainer-victory"] = messageRecord({ "Player defeated ", false, " ", false, "!" }),
         ["battle/narration/won-money"] = messageRecord({ false, " got $", false, " for winning!" }),
@@ -1228,8 +1230,12 @@ local function fullManifest()
           "Trainer reacts to defeat.",
         }),
         ["battle/narration/trainer-sent-out"] = messageRecord({ false, " ", false, " sent out ", false, "!" }),
+        ["battle/narration/trainer-sent-out-doubles"] = messageRecord(
+          { false, " ", false, " sent\nout ", false, " and ", false, "!" }
+        ),
         ["battle/narration/trainer-used-item"] = messageRecord({ false, " ", false, " used one ", false, "!" }),
         ["battle/narration/player-sent-out"] = messageRecord({ "Go! ", false, "!" }),
+        ["battle/narration/player-sent-out-doubles"] = messageRecord({ "Go! ", false, " and\n", false, "!" }),
         ["battle/narration/player-sent-out/foe-weak"] = messageRecord({ "Your foe's weak! Get 'em, ", false, "!" }),
         ["battle/narration/player-sent-out/foe-hurt"] = messageRecord({
           "Just a little more! Hang in there, ",

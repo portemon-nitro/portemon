@@ -83,6 +83,9 @@ end
 -- A method-faithful stand-in for the production audio controller: every
 -- call records its receiver so the tests can tell a correctly bound
 -- method call from a free-function call carrying the role as its self.
+-- Query ports answer completed at once: the fake voices no durations,
+-- so every started voice is already finished (the voice-hold suites
+-- cover unfinished voices with controllable fakes instead).
 ---@return table controller double with colon-semantics play and playCry
 local function methodAudio()
   local controller = { calls = {} }
@@ -94,8 +97,29 @@ local function methodAudio()
     controller.calls[#controller.calls + 1] = { method = "playPanned", receiver = self, symbol = symbol, pan = pan }
     return true
   end
+  function controller:playFanfare(symbol)
+    controller.calls[#controller.calls + 1] = { method = "playFanfare", receiver = self, symbol = symbol }
+    return true
+  end
+  function controller:playMusic(symbol)
+    controller.calls[#controller.calls + 1] = { method = "playMusic", receiver = self, symbol = symbol }
+    return true
+  end
   function controller:stop(symbol)
     controller.calls[#controller.calls + 1] = { method = "stop", receiver = self, symbol = symbol }
+    return true
+  end
+  function controller:stopMusic()
+    controller.calls[#controller.calls + 1] = { method = "stopMusic", receiver = self }
+    return true
+  end
+  function controller:isCryFinished()
+    return true
+  end
+  function controller:isFanfarePlaying()
+    return false
+  end
+  function controller:isEffectWaitComplete()
     return true
   end
   function controller:playCry(species, pattern, form, mode, pan, volume, pitch)

@@ -41,7 +41,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _encounterPalette BattleEncounterPalette? per-battle source palette evaluator, nil while no source art is staged
 ---@field _encounterAnimation { elapsed: integer, phase: "init"|"fade"|"wait", secondStarted: boolean, secondActive: boolean, lateArmed: boolean }? Task_PlayEncounterAnimation state, nil while no animation runs
 ---@field _encounterWild boolean? wild encounter behind the installed opening, set with the opening
----@field _wildIntroTrack { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }? source timing for the wild foe entrance
+---@field _wildIntroTracks table<integer, { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }> source timing tracks for the wild foe entrances
+---@field _throwRelease { x: integer, y: integer }? stashed ball release point behind doubles arcs
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
 ---@field _lastStruck integer? most recent strike recipient, the source of a following drain
@@ -91,6 +92,59 @@ BattleTimeline.VANISH_TICKS = 12
 -- and the picture's affine scale moves 32/256 per frame (8 steps).
 BattleTimeline.BALL_FADE_TICKS = 17
 BattleTimeline.BALL_SCALE_TICKS = 8
+-- Task_ThrowPokeball walks the settled trainer off at 5 px/frame over
+-- 104 px (21 ticks: 64 to -40, 192 to 296) while the send-out poof grows
+-- the picture from zero inside the ball-color fade above (8 + 17 ticks).
+-- subscript_0000 and subscript_0009 count their scripted WaitTime through
+-- those visuals at once; the serial player runs them first, so each
+-- send-out settle keeps only the scripted count minus the measured visual
+-- ticks, and the health box lands on the retail wall tick.
+BattleTimeline.THROW_EXIT_TICKS = 21
+-- Managed trainer sprites animate at twice the source-tick rate: the cell
+-- animation steps its default speed of FX32_CONST(2) once per main loop,
+-- so one staged frame duration lasts half as many ticks.
+BattleTimeline.TRAINER_ANIM_RATE = 2
+-- Player send-out ball after the windup release (kind 6/8/7): a 21-tick
+-- arc phase (init plus the 20-tick flight at height 48) and an 18-tick
+-- open phase (ThrowArcAndOpen steps around the arc). Foe send-outs open
+-- in place and need no arc. Retail flashes the ball sprite white through
+-- the open (RunThrowArc's palette blend); with no runtime blend path for
+-- thrown sprites, the staged ball-open burst stands in at the same spot
+-- and beat, matching the capture and recall opens.
+BattleTimeline.THROW_ARC_TICKS = 21
+BattleTimeline.THROW_ARC_HEIGHT = 48
+BattleTimeline.THROW_OPEN_TICKS = 18
+BattleTimeline.THROW_ARC_MOTION_TICKS = 20
+-- BallThrow_InitThrowTarget for the player send-out kinds (6/8/7): the
+-- ball lands on the mon's screen spot plus 32 pixels, per side type.
+BattleTimeline.PLAYER_ARC_TARGETS = {
+  [0] = { x = 64, y = 144 },
+  [2] = { x = 40, y = 144 },
+  [4] = { x = 80, y = 152 },
+}
+-- BallThrow_GetStartPosition for the player send-out kinds (6/8/7): the
+-- mid-battle ball starts at the fixed hand spot with no trainer behind it.
+BattleTimeline.PLAYER_ARC_START = { x = 10, y = 100 }
+-- Task_FollowMonSlideIn/SendOut slides the follower from the source
+-- offscreen edge with move anim 41 (battle_anim_funcs.c
+-- BattleAnimFunc_MoveBattlerOffscreen with toHome 1 over 20 ticks),
+-- then plays its animation and cry: no ball, no seal, no palette fade.
+BattleTimeline.FOLLOW_SLIDE_TICKS = 20
+-- Task_FollowMonSlideIn holds a doubles second-slot follower twelve ticks
+-- before placing it on the offscreen edge.
+BattleTimeline.FOLLOW_SLIDE_LEAD_TICKS = 12
+-- Settled mon screen X behind follower send-out slides, per native side
+-- type: the anim-41 slide lands on the mon spot (solo 64/192, doubles
+-- 40/80 and 216/176, matching the published slot geometry and the
+-- staged player arc targets above).
+BattleTimeline.FOLLOW_SLIDE_HOME_X = {
+  [0] = 64,
+  [1] = 192,
+  [2] = 40,
+  [3] = 216,
+  [4] = 80,
+  [5] = 176,
+}
 -- party_gauge.c mid-battle show (arrow and balls slide at 18 px/frame, then
 -- the gauge task polls) and hide (arrow alpha fades 16 -> 0 at 1 per frame).
 BattleTimeline.PARTY_GAUGE_SHOW_TICKS = 11
@@ -229,7 +283,7 @@ function BattleTimeline.new(opts)
     _trainerSlideTracks = {},
     _trainerPictures = opts.trainerPictures or {},
     _terrainSlideTracks = {},
-    _wildIntroTrack = nil,
+    _wildIntroTracks = {},
     _wildVictoryMusicStarted = false,
     _accum = 0,
     _diagnostics = {},
@@ -434,7 +488,8 @@ function BattleTimeline:reset(view)
   self._flowIntroDone = false
   self._wildVictoryMusicStarted = false
   self._terrainSlideTracks = {}
-  self._wildIntroTrack = nil
+  self._wildIntroTracks = {}
+  self._throwRelease = nil
   self._encounterAnimation = nil
   self._encounterPalette = nil
   self._encounterWild = nil
@@ -453,7 +508,8 @@ function BattleTimeline:dispose()
   self._openingPresentation = nil
   self._trainerSlideTracks = {}
   self._terrainSlideTracks = {}
-  self._wildIntroTrack = nil
+  self._wildIntroTracks = {}
+  self._throwRelease = nil
   self._encounterAnimation = nil
   self._encounterPalette = nil
   self._encounterWild = nil
@@ -472,12 +528,63 @@ local function enqueueOpeningPresentation(self, changes)
   enqueue(self, { kind = "opening-presentation", changes = changes })
 end
 
+-- Windup ticks until the thrown ball releases: the trainer's throw
+-- sequence (sourceSequence 1) advances at TRAINER_ANIM_RATE frames per
+-- source tick, and Task_ThrowPokeball releases on its fourth frame.
+-- Capped by the exit walk: the serial cue releases on whichever lands
+-- the ball first, matching the decomp task's frame/motion gates. Both
+-- sides count from the sequence's loop start, so wait math and cue stay
+-- exact against the same staged data.
+---@param self BattleTimeline
+---@param trainerSelector string staged backpic selector behind the throw
+---@return integer? windup ticks before the arc starts, nil when the staged sequence is too short for a release
+local function throwReleaseTicks(self, trainerSelector)
+  local pictures = assert(self._trainerPictures, "throws resolve staged trainer backpics")
+  local entry = assert(pictures[trainerSelector], "player trainer backpic metadata is staged")
+  local animation = assert(entry.animation, "player trainer backpic carries its sequence inventory")
+  local sequences = assert(animation.sequences, "trainer backpics stage source animation sequences")
+  local throwAnim = nil
+  for _, sequence in ipairs(sequences) do
+    if type(sequence) == "table" and sequence.sourceSequence == 1 then
+      throwAnim = sequence
+      break
+    end
+  end
+  throwAnim = assert(throwAnim, "trainer backpics stage the source throw sequence")
+  local frames = assert(throwAnim.frames, "throw sequences carry staged source frames")
+  local loopStart = throwAnim.loopStartFrameIdx or 0
+  assert(type(loopStart) == "number" and loopStart % 1 == 0 and loopStart >= 0, "throw sequences declare a loop start")
+  if #frames < loopStart + 3 then
+    -- Degenerate staging without a full throw sequence: no release to
+    -- count, so the cue holds the ball through the exit walk only.
+    return nil
+  end
+  local ticks = 0
+  for index = loopStart + 1, loopStart + 3 do
+    local duration = frames[index].durationTicks
+    assert(
+      type(duration) == "number" and duration % 1 == 0 and duration >= 0,
+      "throw frames carry finite staged durations"
+    )
+    ticks = ticks + math.ceil(duration / BattleTimeline.TRAINER_ANIM_RATE)
+  end
+  return math.min(ticks, BattleTimeline.THROW_EXIT_TICKS)
+end
+
+-- Forward send-out addressing: the opening thrower reads side types and
+-- the follower slot before their owners' definitions below.
+local battlerTypeOf, isFollowSendOut
+-- Forward ball-burst start: the trainerless open fires it at cue start,
+-- before the burst owner's definition below.
+local startBallBurst
+
 ---@param self BattleTimeline
 ---@param combatant integer battler receiving the source send-out
 ---@param role "player"|"foe" source side selected for the opening throw
+---@return integer nominal throw ticks behind the settle math
 local function enqueueBallThrow(self, combatant, role)
   if self._openingPresentation == nil then
-    return
+    return 0
   end
   local view = assert(self._latest, "send-out ball selection uses the newest detached battle view")
   local record = nil
@@ -508,13 +615,69 @@ local function enqueueBallThrow(self, combatant, role)
         break
       end
     end
-    if playerTrack == nil or playerTrack.throwQueued == true then
-      return
+    if playerTrack == nil then
+      -- No trainer on screen: mid-battle send-outs fly their own ball
+      -- with no windup (Task_PokemonSendOut), unless the follower slides
+      -- in ball-free.
+      if isFollowSendOut(self, combatant) then
+        return 0
+      end
+      local target = assert(
+        BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
+        "player send-outs arc to a staged side type"
+      )
+      enqueue(self, {
+        kind = "ball-throw",
+        selector = "ball:" .. ballKey,
+        requiresImage = "battle-ball:" .. ballKey .. ":0",
+        trainerless = true,
+        fromX = BattleTimeline.PLAYER_ARC_START.x,
+        fromY = BattleTimeline.PLAYER_ARC_START.y,
+        targetX = target.x,
+        targetY = target.y,
+        nominalTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
+      })
+      return BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
     end
     local entry = assert(self._trainerPictures[trainerSelector], "player trainer backpic metadata is staged")
     assert(type(entry.animation) == "table", "player trainer backpic carries its sequence-zero compatibility record")
     assert(type(entry.animation.sequences) == "table", "player trainer backpic stages source animation sequences")
     throwOffsets = assert(entry.throwOffsets, "animated player trainer backpics carry source throw anchors")
+    local target = assert(
+      BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
+      "player send-outs arc to a staged side type"
+    )
+    if isFollowSendOut(self, combatant) then
+      -- The follower slides in with no ball behind it: the trainer still
+      -- walks off (marking the throw handled so a doubles partner arcs
+      -- from the release point), but no arc, open, or burst follows.
+      playerTrack.throwQueued = true
+      enqueue(self, {
+        kind = "ball-throw",
+        trainerSelector = trainerSelector,
+        noBall = true,
+        nominalTicks = BattleTimeline.THROW_EXIT_TICKS,
+      })
+      return BattleTimeline.THROW_EXIT_TICKS
+    end
+    if playerTrack.throwQueued == true then
+      -- Doubles partner: the trainer already left with the first ball, so
+      -- only the arc and open run, from the release point the first throw
+      -- stashes when it releases (resolved at cue start, not here: the
+      -- first throw has not run yet at enqueue time).
+      enqueue(self, {
+        kind = "ball-throw",
+        selector = "ball:" .. ballKey,
+        trainerSelector = trainerSelector,
+        throwOffsets = throwOffsets,
+        requiresImage = "battle-ball:" .. ballKey .. ":0",
+        arcOnly = true,
+        targetX = target.x,
+        targetY = target.y,
+        nominalTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
+      })
+      return BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
+    end
     playerTrack.throwQueued = true
   else
     local participantValue = sendOutRecord.participant
@@ -529,7 +692,25 @@ local function enqueueBallThrow(self, combatant, role)
       end
     end
     if slideTrack == nil then
-      return
+      -- No trainer on screen: the foe ball opens in place on its own
+      -- (Task_PokemonSendOut kind 1/3/5), with no exit walk behind it.
+      local target = assert(
+        FOE_BALL_START_BY_BATTLER_TYPE[battlerTypeOf(self, combatant)],
+        "foe send-outs open at a staged source ball position"
+      )
+      enqueue(self, {
+        kind = "ball-throw",
+        selector = "ball:" .. ballKey,
+        requiresImage = "battle-ball:" .. ballKey .. ":0",
+        trainerless = true,
+        openOnly = true,
+        fromX = target.x,
+        fromY = target.y,
+        targetX = target.x,
+        targetY = target.y,
+        nominalTicks = BattleTimeline.THROW_OPEN_TICKS,
+      })
+      return BattleTimeline.THROW_OPEN_TICKS
     end
     local start = assert(
       FOE_BALL_START_BY_BATTLER_TYPE[
@@ -545,17 +726,35 @@ local function enqueueBallThrow(self, combatant, role)
       ballX = start.x,
       ballY = start.y,
       requiresImage = "battle-ball:" .. ballKey .. ":0",
+      nominalTicks = BattleTimeline.THROW_EXIT_TICKS,
     })
-    return
+    return BattleTimeline.THROW_EXIT_TICKS
   end
   local selector = "ball:" .. ballKey
+  local releaseTicks = throwReleaseTicks(self, trainerSelector)
+  local nominalTicks
+  local skipArc = releaseTicks == nil
+  if skipArc then
+    nominalTicks = BattleTimeline.THROW_EXIT_TICKS
+  else
+    nominalTicks = releaseTicks + BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
+  end
+  local target = assert(
+    BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
+    "player send-outs arc to a staged side type"
+  )
   enqueue(self, {
     kind = "ball-throw",
     selector = selector,
     trainerSelector = trainerSelector,
     throwOffsets = throwOffsets,
     requiresImage = "battle-ball:" .. ballKey .. ":0",
+    nominalTicks = nominalTicks,
+    skipArc = skipArc,
+    targetX = target.x,
+    targetY = target.y,
   })
+  return nominalTicks
 end
 
 ---@param view table<string, unknown> detached view carrying semantic trainer keys
@@ -1058,18 +1257,35 @@ local function moveUseText(self, user, move)
 end
 
 -- The encounter line: msg_0197_00965 ends in \r, then WaitButtonABTime 30.
+-- Wild doubles print msg_0197_00967 instead (same trailing \r, same hold).
+-- The \r-less special lines (first-rival 01167, legendary 01246) have no
+-- staged selector yet: the product launches those battles without battle
+-- specials, so they read as the plain wild line here. When specials land,
+-- select the matching record and drop the auto-scroll hold for records
+-- without a trailing prompt break.
 ---@param self BattleTimeline
 ---@param wild boolean true for a wild encounter
 ---@param foeName string lead foe name
-function enqueueEncounterMessage(self, wild, foeName)
+---@param secondFoeName string? second foe name behind the doubles line, nil for singles
+function enqueueEncounterMessage(self, wild, foeName, secondFoeName)
   if wild then
-    enqueueMessage(
-      self,
-      messageText(self, "battle/narration/wild-appeared", { foeName }),
-      false,
-      BattleTimeline.AUTO_SCROLL_TICKS + 30,
-      true
-    )
+    if secondFoeName ~= nil then
+      enqueueMessage(
+        self,
+        messageText(self, "battle/narration/wild-appeared-doubles", { foeName, secondFoeName }),
+        false,
+        BattleTimeline.AUTO_SCROLL_TICKS + 30,
+        true
+      )
+    else
+      enqueueMessage(
+        self,
+        messageText(self, "battle/narration/wild-appeared", { foeName }),
+        false,
+        BattleTimeline.AUTO_SCROLL_TICKS + 30,
+        true
+      )
+    end
   else
     local trainer = assert(firstTrainer(self), "trainer encounters name their opponent")
     local trainerName = assert(trainer.name, "trainer encounters carry the opponent name")
@@ -1132,9 +1348,10 @@ local function queueOpening(self, view)
   }
   self._trainerSlideTracks = trainerTracks
   self._terrainSlideTracks = terrainTracks
-  if not wild then
-    enqueue(self, { kind = "trainer-intro-wait" })
-  end
+  -- The trainer slides and throw animation run on the parallel opening
+  -- track while the script counts WaitTime 96 through them (subscript_0000
+  -- never waits on them); the unsettled-throw guard in ball-throw covers
+  -- any late settle, so the queue never holds here.
   if type(foeSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
   end
@@ -1802,6 +2019,23 @@ local function enqueueBallSound(self, combatant)
   })
 end
 
+-- Task_FollowMonSlideIn and Task_FollowMonSendOut voice the switch sound
+-- panned at the switching battler's side as the move-anim-41 slide
+-- starts (the anim script's positioned IREKAE cue, decoded from
+-- NARC_a_0_6_1 member 41).
+---@param self BattleTimeline
+---@param combatant integer arriving follower combatant
+local function enqueueFollowerSlideSound(self, combatant)
+  local own = self._addressing[combatant] == "own"
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.followerSlide, {
+      pan = own and BattleAudio.SIDE_PAN.player or BattleAudio.SIDE_PAN.foe,
+    }),
+    duration = 0,
+  })
+end
+
 -- The semantic ball a battler left or enters: the newest view's record, then
 -- the displayed one.
 ---@param self BattleTimeline
@@ -1822,12 +2056,41 @@ local function ballKeyOf(self, combatant)
   return shown ~= nil and type(shown.ballKey) == "string" and shown.ballKey or nil --[[@as string?]]
 end
 
+-- Whether the arriving battler is the follower walking behind the player:
+-- retail runs those send-outs with no ball at all
+-- (Task_ThrowPokeballWithFollowMon walks the trainer off ball-free, then
+-- Task_FollowMonSlideIn/SendOut slides the mon in with move anim 41 and its
+-- cry, skipping the seal, the ball sound, and the palette fade). The view
+-- carries the field follower's party slot; own records carry theirs.
+---@param self BattleTimeline
+---@param combatant integer battler under lookup
+---@return boolean true while the follower slides in without a ball
+function isFollowSendOut(self, combatant)
+  if self._addressing[combatant] ~= "own" then
+    return false
+  end
+  local view = self._latest
+  if type(view) ~= "table" or type(view.followMonSlot) ~= "number" then
+    return false
+  end
+  local own = view.own
+  if type(own) ~= "table" then
+    return false
+  end
+  for _, record in ipairs(own) do
+    if type(record) == "table" and record.combatant == combatant then
+      return record.slot == view.followMonSlot
+    end
+  end
+  return false
+end
+
 -- BATTLER_TYPE_* of a battler: solo in single battles, otherwise the first or
 -- second side slot by native slot order.
 ---@param self BattleTimeline
 ---@param combatant integer battler under lookup
 ---@return integer battlerType
-local function battlerTypeOf(self, combatant)
+function battlerTypeOf(self, combatant)
   local own = self._addressing[combatant] == "own"
   local slots = { [true] = {}, [false] = {} }
   for _, id in ipairs(self._order) do
@@ -1840,10 +2103,29 @@ local function battlerTypeOf(self, combatant)
   if #slots[true] < 2 and #slots[false] < 2 then
     return own and 0 or 1
   end
+  local shown = self._battlers[combatant]
+  local position = nil
+  if shown ~= nil and type(shown.position) == "number" then
+    position = shown.position --[[@as integer]]
+  else
+    -- Arrivals not shown yet claim their slot from the newest view, so
+    -- a doubles replacement arcs to its own slot instead of the first.
+    local view = self._latest
+    if type(view) == "table" then
+      for _, group in ipairs({ view.own, view.foes }) do
+        if type(group) == "table" then
+          for _, record in ipairs(group) do
+            if type(record) == "table" and record.combatant == combatant and type(record.position) == "number" then
+              position = record.position --[[@as integer]]
+            end
+          end
+        end
+      end
+    end
+  end
   local sameSide = slots[own]
   table.sort(sameSide)
-  local shown = self._battlers[combatant]
-  local second = shown ~= nil and sameSide[1] ~= nil and shown.position ~= sameSide[1]
+  local second = position ~= nil and sameSide[1] ~= nil and position ~= sameSide[1]
   if own then
     return second and 4 or 2
   end
@@ -1905,17 +2187,56 @@ end
 ---@param self BattleTimeline
 ---@param combatant integer combatant to reveal
 ---@param holdHud boolean? keep the health box hidden for a later slide-in
-local function enqueueReveal(self, combatant, holdHud)
-  local fadeColor = ballFadeColorOf(self, combatant)
+---@param sendOutCry table<string, unknown>? tracked send-out cry voiced when the poof finishes growing
+---@param fadeBallKey string? explicit ball key behind the poof fade, defaulting to the battler's own ball
+---@param slideDelay integer? hidden source ticks before a follower slide starts, nil while it slides at once
+---@return integer reveal duration in source ticks behind the settle math
+local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, slideDelay)
+  -- The follower slides in with no ball-color poof: Task_FollowMonSlideIn
+  -- and Task_FollowMonSendOut place it full-size at once on the source
+  -- offscreen edge, slide it home with move anim 41, then play its
+  -- animation and cry.
+  local follower = isFollowSendOut(self, combatant)
+  local fadeColor = nil
+  if not follower then
+    if type(fadeBallKey) == "string" then
+      -- A break-out poofs with its capture ball, not the origin ball.
+      if self._ballFadeColor ~= nil then
+        fadeColor = self._ballFadeColor(fadeBallKey)
+      end
+    else
+      fadeColor = ballFadeColorOf(self, combatant)
+    end
+  end
+  local duration = fadeColor ~= nil and BattleTimeline.BALL_SCALE_TICKS + BattleTimeline.BALL_FADE_TICKS
+    or BattleTimeline.VANISH_TICKS
+  local slideOffset = nil
+  local leadTicks = 0
+  if follower then
+    -- BattleAnimFunc_MoveBattlerOffscreen parks the battler offscreen by
+    -- side (player -80, foe 336) and toHome slides it onto its mon spot.
+    local battlerType = battlerTypeOf(self, combatant)
+    local homeX = assert(BattleTimeline.FOLLOW_SLIDE_HOME_X[battlerType], "follower slides land on a staged side type")
+    local fromX = battlerType % 2 == 0 and -80 or 336
+    slideOffset = fromX - homeX
+    if type(slideDelay) == "number" then
+      assert(slideDelay % 1 == 0 and slideDelay >= 0, "follower slide holds run whole source ticks")
+      leadTicks = slideDelay
+    end
+    duration = leadTicks + BattleTimeline.FOLLOW_SLIDE_TICKS
+  end
   enqueue(self, {
     kind = "reveal",
     combatant = combatant,
     holdHud = holdHud,
     fadeColor = fadeColor,
-    duration = fadeColor ~= nil and BattleTimeline.BALL_SCALE_TICKS + BattleTimeline.BALL_FADE_TICKS
-      or BattleTimeline.VANISH_TICKS,
+    slideOffset = slideOffset,
+    slideLeadTicks = leadTicks,
+    duration = duration,
     requiresImage = self:_imageKeyFor(combatant),
+    sendOutCry = sendOutCry,
   })
+  return duration
 end
 
 ---@param self BattleTimeline
@@ -2040,102 +2361,178 @@ function enqueueSendOut(self, incoming, event, switching)
   if switching == true then
     enqueuePartyGauge(self, ownSide, BattleTimeline.PARTY_GAUGE_HIDE_TICKS, false)
   end
-  enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
-  enqueueBallSound(self, incoming)
-  -- Task_PokemonSendOut starts the ball's seal particles with its ball sound.
-  local sendOutBall = ballKeyOf(self, incoming)
-  if sendOutBall ~= nil then
-    enqueue(self, {
-      kind = "ball-particles",
-      effect = "seal",
-      ballKey = sendOutBall,
-      battlerType = battlerTypeOf(self, incoming),
-      duration = 0,
-    })
+  local throwTicks = enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+  -- The follower slides in with no ball at all: Task_FollowMonSendOut
+  -- runs no seal, no ball sound, and no palette fade behind its cry,
+  -- voicing the switch sound as its slide starts instead.
+  local follower = isFollowSendOut(self, incoming)
+  if follower then
+    enqueueFollowerSlideSound(self, incoming)
+  else
+    enqueueBallSound(self, incoming)
   end
+  -- Task_PokemonSendOut starts the ball's seal particles with its ball sound.
+  if not follower then
+    local sendOutBall = ballKeyOf(self, incoming)
+    if sendOutBall ~= nil then
+      enqueue(self, {
+        kind = "ball-particles",
+        effect = "seal",
+        ballKey = sendOutBall,
+        battlerType = battlerTypeOf(self, incoming),
+        duration = 0,
+      })
+    end
+  end
+  -- The cry voices from the reveal once the poof finishes growing (the
+  -- source plays the mon animation and cry at affine completion); the
+  -- tracked voice lets the post-box hold absorb long cries.
+  local sendOutCry = nil
   local species, form = speciesOf(self, incoming)
   if species ~= nil then
-    enqueue(self, {
-      kind = "sound",
-      cue = cryCue(species, form, not ownSide),
-      duration = 0,
-    })
+    sendOutCry = cryCue(species, form, not ownSide)
+    sendOutCry.trackVoice = true
   end
-  enqueueReveal(self, incoming, switching)
+  local revealTicks = enqueueReveal(self, incoming, switching, sendOutCry)
   if switching == true then
-    -- WaitTime 72, then HealthbarSlideIn; the arriving health box stays
-    -- hidden until that slide.
-    enqueue(self, { kind = "wait", duration = BattleTimeline.SWITCH_SETTLE_TICKS })
+    -- subscript_0009 counts WaitTime 72 through the send-out visuals at
+    -- once (Task_PokemonSendOut runs while the script holds); the
+    -- trainerless ball arc runs without a trainer mid-battle, so the
+    -- hold keeps the scripted settle minus the visuals the serial
+    -- player already ran above.
+    enqueue(self, { kind = "wait", duration = BattleTimeline.SWITCH_SETTLE_TICKS - throwTicks - revealTicks })
     enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
+    if sendOutCry ~= nil then
+      enqueue(self, { kind = "voice-hold", waitForVoice = true })
+    end
   end
 end
 
--- subscript_0000_StartEncounter opening send-out: the ThrowPokeball and
--- PokemonSlideIn pair with the scripted WaitTime settle and the delayed
--- health-box slide. Unlike mid-battle switches there is no party gauge
--- on either side of the line; the reveal holds its box until the slide.
+-- subscript_0000_StartEncounter opening send-out batch: one message for the
+-- batch (singular/plural by count, since the script prints once per side),
+-- per-mon throw and send-out visuals, a single scripted WaitTime settle,
+-- then per-mon health-box slides. Retail emits one Throw/SlideIn per
+-- battler concurrently and counts WaitTime once; the serial player runs the
+-- visuals back-to-back, so the hold keeps the scripted settle minus their
+-- total, clamped at zero for doubles players whose two arcs cannot fit
+-- inside WaitTime 96 (documented serial cost: the box lands late there).
 ---@param self BattleTimeline
----@param incoming integer arriving combatant
----@param settleTicks integer scripted WaitTime between the slide-in and the box slide
-local function enqueueOpeningSendOut(self, incoming, settleTicks)
-  local ownSide = self._addressing[incoming] == "own"
+---@param combatants integer[] arriving combatant identities in send-out order
+---@param settleTicks integer scripted WaitTime between the slide-ins and the box slides
+---@param role "player"|"foe" source side selected for the batch
+---@param wild boolean true while the batch runs on the wild path (plain Go! even in doubles)
+local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, wild)
+  local ownSide = role == "player"
+  assert(#combatants >= 1, "opening send-out batches name their battlers")
+  assert(#combatants <= 2, "HGSS fields at most two battlers per side")
   if ownSide then
-    local name = combatName(self, incoming)
-    local key = "battle/narration/player-sent-out"
-    local hp, maxHp = foeHealthAt(self, nil)
-    if not playerDoubles(self) and type(hp) == "number" and type(maxHp) == "number" and maxHp > 0 then
-      local value = hp == 0 and 1000 or math.floor(1000 * hp / maxHp)
-      if value < 100 then
-        key = "battle/narration/player-sent-out/foe-weak"
-      elseif value < 325 then
-        key = "battle/narration/player-sent-out/foe-hurt"
-      elseif value < 550 then
-        key = "battle/narration/player-sent-out/go-for-it"
-      elseif value < 775 then
-        key = "battle/narration/player-sent-out/in-charge"
-      end
-    end
-    enqueueMessage(self, messageText(self, key, { name }), false, 0)
-  else
-    local trainer = firstTrainer(self)
-    if trainer ~= nil then
-      local trainerName = assert(trainer.name, "trainer send-outs carry the opponent name")
-      local monName = combatName(self, incoming)
+    -- PrintMessage msg_0197_00979 on the wild path (always singular, even
+    -- for wild doubles); PrintFirstSendOutMessage resolves to 979 for
+    -- singles and 978 for doubles on trainer paths. The foe-health
+    -- variants belong to mid-battle PrintSendOutMessage in subscript_0009,
+    -- never the intro.
+    if not wild and #combatants > 1 then
       enqueueMessage(
         self,
         messageText(
           self,
-          "battle/narration/trainer-sent-out",
-          { trainerClassText(self, trainer), trainerName, monName }
+          "battle/narration/player-sent-out-doubles",
+          { combatName(self, combatants[1]), combatName(self, combatants[2]) }
         ),
         false,
         0
       )
+    else
+      enqueueMessage(
+        self,
+        messageText(self, "battle/narration/player-sent-out", { combatName(self, combatants[1]) }),
+        false,
+        0
+      )
+    end
+  else
+    local trainer = firstTrainer(self)
+    if trainer ~= nil then
+      local trainerName = assert(trainer.name, "trainer send-outs carry the opponent name")
+      if #combatants > 1 then
+        enqueueMessage(
+          self,
+          messageText(self, "battle/narration/trainer-sent-out-doubles", {
+            trainerClassText(self, trainer),
+            trainerName,
+            combatName(self, combatants[1]),
+            combatName(self, combatants[2]),
+          }),
+          false,
+          0
+        )
+      else
+        enqueueMessage(
+          self,
+          messageText(
+            self,
+            "battle/narration/trainer-sent-out",
+            { trainerClassText(self, trainer), trainerName, combatName(self, combatants[1]) }
+          ),
+          false,
+          0
+        )
+      end
     end
   end
-  enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
-  enqueueBallSound(self, incoming)
-  local sendOutBall = ballKeyOf(self, incoming)
-  if sendOutBall ~= nil then
-    enqueue(self, {
-      kind = "ball-particles",
-      effect = "seal",
-      ballKey = sendOutBall,
-      battlerType = battlerTypeOf(self, incoming),
-      duration = 0,
-    })
+  local visualTicks = 0
+  local cries = {}
+  for _, incoming in ipairs(combatants) do
+    visualTicks = visualTicks + enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+    -- The follower slides in with no ball at all: Task_FollowMonSlideIn
+    -- runs no seal and no ball sound behind its cry, voicing the switch
+    -- sound as its slide starts instead.
+    local follower = isFollowSendOut(self, incoming)
+    if follower then
+      enqueueFollowerSlideSound(self, incoming)
+    else
+      enqueueBallSound(self, incoming)
+      local sendOutBall = ballKeyOf(self, incoming)
+      if sendOutBall ~= nil then
+        enqueue(self, {
+          kind = "ball-particles",
+          effect = "seal",
+          ballKey = sendOutBall,
+          battlerType = battlerTypeOf(self, incoming),
+          duration = 0,
+        })
+      end
+    end
+    local species, form = speciesOf(self, incoming)
+    local sendOutCry = nil
+    if species ~= nil then
+      -- The cry voices from the reveal once the poof finishes growing
+      -- (source plays the mon animation and cry at affine completion);
+      -- tracking it lets the post-box hold absorb long cries.
+      sendOutCry = cryCue(species, form, not ownSide)
+      sendOutCry.trackVoice = true
+      cries[#cries + 1] = sendOutCry
+    end
+    -- Task_FollowMonSlideIn holds a doubles second-slot follower twelve
+    -- ticks before placing it; every other send-out slides at once.
+    local slideDelay = nil
+    if follower and battlerTypeOf(self, incoming) == 4 then
+      slideDelay = BattleTimeline.FOLLOW_SLIDE_LEAD_TICKS
+    end
+    visualTicks = visualTicks + enqueueReveal(self, incoming, true, sendOutCry, nil, slideDelay)
   end
-  local species, form = speciesOf(self, incoming)
-  if species ~= nil then
-    enqueue(self, {
-      kind = "sound",
-      cue = cryCue(species, form, not ownSide),
-      duration = 0,
-    })
+  local waitTicks = settleTicks - visualTicks
+  if waitTicks < 0 then
+    assert(#combatants > 1, "single send-out settles outlast their visuals")
+    waitTicks = 0
   end
-  enqueueReveal(self, incoming, true)
-  enqueue(self, { kind = "wait", duration = settleTicks })
-  enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
+  enqueue(self, { kind = "wait", duration = waitTicks })
+  for _, incoming in ipairs(combatants) do
+    enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
+  end
+  if #cries > 0 then
+    enqueue(self, { kind = "voice-hold", waitForVoice = true })
+  end
 end
 
 ---@param self BattleTimeline
@@ -2961,9 +3358,30 @@ local function translateThrow(self, event)
       duration = 0,
     })
     self._captureBall = { ballKey = ballKey, x = resting.x, y = resting.y + BALL_DROP_PIXELS }
+    -- BallThrow_CaptureStateDrop lowers the opened ball 32 pixels over 10
+    -- ticks: the shakes, the click, and a break-out all play at the
+    -- resting spot, not the arc landing. The script's 23-frame hold
+    -- covers the fall and the pause before the target enters the ball.
+    -- The fall continues the arc's already-visible sprite, so it carries
+    -- no image gate: re-gating a continuation on transiently staged bag
+    -- art can park the queue after the arc already drew it.
+    enqueue(self, {
+      kind = "ball-flight",
+      selector = "ball:" .. ballKey,
+      startX = resting.x,
+      startY = resting.y,
+      targetX = resting.x,
+      targetY = resting.y + BALL_DROP_PIXELS,
+      arcHeight = 0,
+      motionTicks = 10,
+      leadTicks = 0,
+      duration = 11,
+      hideAtEnd = false,
+      spin = false,
+    })
     -- STATE_GET_POKEMON_CALCULATE_SHAKES counts 23 frames before the
     -- target enters the ball.
-    enqueue(self, { kind = "wait", duration = 23 })
+    enqueue(self, { kind = "wait", duration = 12 })
     enqueue(self, {
       kind = "withdraw",
       combatant = target,
@@ -3063,17 +3481,57 @@ local function translateCaught(self, event)
   end
 end
 
+-- BattleController_EmitPokemonSendOut with breakOut re-sends the target
+-- with its capture ball before the outcome line prints: a fresh ball
+-- opens at the foe's in-place spot (GetStartPosition kind 1/3/5), then
+-- the seal, the ball sound, and the cry follow exactly like a send-out.
+-- The script never waits on the cry; the outcome line's own hold
+-- absorbs it.
 ---@param self BattleTimeline
 ---@param event table<string, unknown> native capture event under translation
 local function translateBrokeFree(self, event)
   local sourceText = assert(event.sourceText, "capture outcomes require selected native source text")
   assert(type(sourceText) == "string", "capture outcome source text is a string")
-  -- BREAK_OUT sends the target back out before its line prints.
   local target = captureTargetOf(self, event)
   if target ~= nil and self._inBall == target then
-    enqueueReveal(self, target)
+    local resting = self._captureBall
+    if resting ~= nil and self._openingPresentation ~= nil then
+      -- The fresh ball opens where the foe send-outs open; the capture
+      -- ball's art is already on screen from the fall, so the open
+      -- carries no image gate.
+      local spot =
+        assert(FOE_BALL_START_BY_BATTLER_TYPE[battlerTypeOf(self, target)], "break-outs open at a staged foe ball spot")
+      enqueue(self, {
+        kind = "ball-throw",
+        selector = "ball:" .. resting.ballKey,
+        trainerless = true,
+        openOnly = true,
+        fromX = spot.x,
+        fromY = spot.y,
+        targetX = spot.x,
+        targetY = spot.y,
+        nominalTicks = BattleTimeline.THROW_OPEN_TICKS,
+      })
+    end
+    self._captureBall = nil
+    local sendOutBall = resting ~= nil and resting.ballKey or ballKeyOf(self, target)
+    if sendOutBall ~= nil then
+      enqueueBallSound(self, target)
+      enqueue(self, {
+        kind = "ball-particles",
+        effect = "seal",
+        ballKey = sendOutBall,
+        battlerType = battlerTypeOf(self, target),
+        duration = 0,
+      })
+    end
+    local sendOutCry = nil
+    local species, form = speciesOf(self, target)
+    if species ~= nil then
+      sendOutCry = cryCue(species, form, true)
+    end
+    enqueueReveal(self, target, nil, sendOutCry, sendOutBall)
   end
-  -- BREAK_OUT sends the target back out before its line prints, and
   -- STATE_GET_POKEMON_BREAK_OUT_MESSAGE/_DONE prints the selected
   -- outcome line (msg_0197_00863 and siblings have no \r), then counts
   -- 30 frames once printing ends.
@@ -3368,23 +3826,11 @@ function BattleTimeline:intro(view, wild)
   indexFacts(self, view)
   self._latest = view
   local foeName = nil
-  local foeSpecies = nil
-  local foeForm = nil
-  local foeRecord = nil
   local openingFoes = view.foes
   if type(openingFoes) == "table" then
-    foeRecord = openingFoes[1]
-  end
-  if type(foeRecord) == "table" then
-    local foe = foeRecord --[[@as table<string, unknown>]]
-    if type(foe.name) == "string" then
-      foeName = foe.name --[[@as string]]
-    end
-    if type(foe.species) == "string" then
-      foeSpecies = foe.species --[[@as string]]
-    end
-    if type(foe.form) == "number" then
-      foeForm = foe.form --[[@as integer]]
+    local firstFoe = openingFoes[1]
+    if type(firstFoe) == "table" and type(firstFoe.name) == "string" then
+      foeName = firstFoe.name --[[@as string]]
     end
   end
   assert(type(foeName) == "string", "opening foe view carries its display name")
@@ -3422,7 +3868,8 @@ function BattleTimeline:intro(view, wild)
   }
   self._trainerSlideTracks = trainerTracks
   self._terrainSlideTracks = terrainTracks
-  self._wildIntroTrack = nil
+  self._wildIntroTracks = {}
+  self._throwRelease = nil
   self._encounterWild = wild
   -- PlayEncounterAnimation starts its task in the script's first tick on
   -- every encounter path.
@@ -3446,24 +3893,48 @@ function BattleTimeline:intro(view, wild)
       shown.hudVisible = false
     end
   end
-  if not wild then
-    enqueue(self, { kind = "trainer-intro-wait" })
-  end
+  -- The trainer slides and throw animation run on the parallel opening
+  -- track while the script counts its waits through them (subscript_0000
+  -- never waits on them); the unsettled-throw guard in ball-throw covers
+  -- any late settle, so the queue never holds here.
   if wild then
-    local wildFoe = assert(foeRecord, "wild openings carry one foe") --[[@as table<string, unknown>]]
-    if type(wildFoe.combatant) == "number" then
+    -- Every active enemy foe slides in on its own entrance track (delay 28,
+    -- 8 px/frame from x=-80 like Task_PokemonEncounter; solo at 192,
+    -- doubles slots at 216/176 by the ball-target convention) and cries on
+    -- arrival while WaitTime 122 runs. Both boxes slide back-to-back after
+    -- the hold and the line prints once they arrive.
+    local wildFoes = {}
+    if type(openingFoes) == "table" then
+      for _, foe in ipairs(openingFoes) do
+        if type(foe) == "table" and foe.active ~= false and type(foe.combatant) == "number" then
+          wildFoes[#wildFoes + 1] = foe
+        end
+      end
+    end
+    assert(#wildFoes >= 1, "wild openings carry at least one foe")
+    assert(#wildFoes <= 2, "HGSS fields at most two wild foes")
+    local wildNames = {}
+    local wildCry = false
+    for foeIndex, wildFoe in ipairs(wildFoes) do
       local foeCombatant = wildFoe.combatant --[[@as integer]]
+      if type(wildFoe.name) == "string" then
+        wildNames[#wildNames + 1] = wildFoe.name
+      end
       local shownFoe = self:_shown(foeCombatant)
       if shownFoe ~= nil then
+        local targetX = 192
+        if #wildFoes > 1 then
+          targetX = foeIndex == 1 and 216 or 176
+        end
         shownFoe.visible = true
-        shownFoe.pictureXOffset = -272
+        shownFoe.pictureXOffset = -80 - targetX
         shownFoe.paletteFade = { applied = true, targetColor = 0, intensity = 8 }
-        self._wildIntroTrack = {
+        self._wildIntroTracks[#self._wildIntroTracks + 1] = {
           combatant = foeCombatant,
           delay = 28,
           elapsed = 0,
           x = -80,
-          targetX = 192,
+          targetX = targetX,
           speed = 8,
           arrived = false,
           fadeElapsed = 0,
@@ -3471,19 +3942,39 @@ function BattleTimeline:intro(view, wild)
       end
     end
     enqueue(self, { kind = "wait", duration = 61 })
-    if type(foeSpecies) == "string" then
-      enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
+    for _, wildFoe in ipairs(wildFoes) do
+      if type(wildFoe.species) == "string" then
+        local foeCry = cryCue(wildFoe.species, type(wildFoe.form) == "number" and wildFoe.form or nil, true)
+        foeCry.trackVoice = true
+        enqueue(self, { kind = "sound", cue = foeCry, duration = 0 })
+        wildCry = true
+      end
     end
     -- WaitTime 122 runs from the script's first tick; HealthbarSlideInDelay
     -- slides the foe box in and the encounter line prints after that slide.
-    -- The second half holds 60 ticks: the cry occupies the arrival tick
-    -- itself, so the post-cry pause completes the 122-tick script hold.
-    enqueue(self, { kind = "wait", duration = 60 })
-    if type(wildFoe.combatant) == "number" then
-      enqueue(self, { kind = "hud-slide", combatant = wildFoe.combatant, direction = "in" })
+    -- Sound cues voice without consuming a source tick, so both halves
+    -- hold their full waits to complete the 122-tick script hold.
+    enqueue(self, { kind = "wait", duration = 61 })
+    for _, wildFoe in ipairs(wildFoes) do
+      enqueue(self, {
+        kind = "hud-slide",
+        combatant = wildFoe.combatant --[[@as integer]],
+        direction = "in",
+      })
     end
-    enqueueEncounterMessage(self, true, foeName)
+    if wildCry then
+      enqueue(self, { kind = "voice-hold", waitForVoice = true })
+    end
+    if #wildNames > 1 then
+      enqueueEncounterMessage(self, true, wildNames[1], wildNames[2])
+    else
+      enqueueEncounterMessage(self, true, foeName)
+    end
   else
+    -- Trainer path (subscript_0000 _118 order: foe send-out, then player).
+    -- The recorded-battle order (_169: player first, then foe) is not
+    -- modeled: the product stages no link or recorded launches, so every
+    -- trainer intro follows the live-battle order.
     enqueue(self, { kind = "wait", duration = 96 })
     enqueueOpeningPresentation(self, { playerGaugeVisible = true, enemyGaugeVisible = true })
     enqueueEncounterMessage(self, false, foeName)
@@ -3492,27 +3983,36 @@ function BattleTimeline:intro(view, wild)
     assert(type(trainerValue) == "table", "trainer send-out carries its class and name")
     local foesValue = view.foes
     assert(type(foesValue) == "table", "trainer opening carries its lead foe")
-    local foes = foesValue --[[@as table<integer, table<string, unknown>>]]
-    local sentOutFoe = false
-    for _, foe in ipairs(foes) do
-      if foe.active ~= false then
-        enqueueOpeningSendOut(self, foe.combatant --[[@as integer]], 112)
-        sentOutFoe = true
+    local foeIds = {}
+    for _, foe in
+      ipairs(foesValue --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(foe) == "table" and foe.active ~= false and type(foe.combatant) == "number" then
+        foeIds[#foeIds + 1] = foe.combatant
       end
     end
-    assert(sentOutFoe, "trainer openings send out an active foe")
+    assert(#foeIds >= 1, "trainer openings send out an active foe")
+    enqueueOpeningSendOutBatch(self, foeIds, 112, "foe", wild)
   end
   if not wild then
     enqueueOpeningPresentation(self, { playerGaugeVisible = false })
   end
-  enqueueOpeningSendOut(self, own.combatant --[[@as integer]], 96)
+  local ownIds = {
+    own.combatant --[[@as integer]],
+  }
   if type(view.own) == "table" then
     for _, partner in ipairs(view.own) do
-      if partner.active ~= false and partner.combatant ~= own.combatant then
-        enqueueOpeningSendOut(self, partner.combatant --[[@as integer]], 96)
+      if
+        type(partner) == "table"
+        and partner.active ~= false
+        and partner.combatant ~= own.combatant
+        and type(partner.combatant) == "number"
+      then
+        ownIds[#ownIds + 1] = partner.combatant
       end
     end
   end
+  enqueueOpeningSendOutBatch(self, ownIds, 96, "player", wild)
   -- SetBattleBackground hands the intro terrain to the battle background
   -- once every send-out settled. The start gauges are freed there, and the
   -- command input re-enables the ball gauge on arrival, so the handoff
@@ -3583,7 +4083,8 @@ local function tickTrainerSlides(self)
           end
         end
         if not sequenceChanged then
-          track.frameElapsed = track.frameElapsed + 1
+          -- Cell animations step at twice the source-tick rate.
+          track.frameElapsed = track.frameElapsed + BattleTimeline.TRAINER_ANIM_RATE
           local frameDuration = frame.durationTicks --[[@as integer]]
           if frameDuration == 0 or track.frameElapsed >= frameDuration then
             track.frameElapsed = 0
@@ -3747,34 +4248,30 @@ end
 
 ---@param self BattleTimeline
 local function tickWildIntro(self)
-  local track = self._wildIntroTrack
-  if track == nil then
-    return
-  end
-  local shown = self:_shown(track.combatant)
-  assert(shown ~= nil, "the wild intro track keeps its foe installed")
-  if not track.arrived then
-    if track.elapsed < track.delay then
-      track.elapsed = track.elapsed + 1
-      return
+  for _, track in ipairs(self._wildIntroTracks) do
+    local shown = self:_shown(track.combatant)
+    assert(shown ~= nil, "the wild intro track keeps its foe installed")
+    if not track.arrived then
+      if track.elapsed < track.delay then
+        track.elapsed = track.elapsed + 1
+      else
+        track.x = math.min(track.x + track.speed, track.targetX)
+        shown.pictureXOffset = track.x - track.targetX
+        if track.x == track.targetX then
+          track.arrived = true
+          track.fadeElapsed = 0
+        end
+      end
+    elseif track.fadeElapsed < 8 then
+      track.fadeElapsed = track.fadeElapsed + 1
+      shown.paletteFade = {
+        applied = true,
+        targetColor = 0,
+        intensity = 8 - track.fadeElapsed,
+      }
+      -- The ground stays up through every send-out: SetBattleBackground
+      -- hands it to the battle background with the closing handoff cue.
     end
-    track.x = math.min(track.x + track.speed, track.targetX)
-    shown.pictureXOffset = track.x - track.targetX
-    if track.x == track.targetX then
-      track.arrived = true
-      track.fadeElapsed = 0
-    end
-    return
-  end
-  if track.fadeElapsed < 8 then
-    track.fadeElapsed = track.fadeElapsed + 1
-    shown.paletteFade = {
-      applied = true,
-      targetColor = 0,
-      intensity = 8 - track.fadeElapsed,
-    }
-    -- The ground stays up through every send-out: SetBattleBackground
-    -- hands it to the battle background with the closing handoff cue.
   end
 end
 
@@ -3825,6 +4322,9 @@ local function tickEncounterAnimation(self)
   if self._encounterPalette ~= nil then
     self._encounterPalette:tick(frame)
   end
+  -- The source reissues this fade every tick from frame 50 on, but
+  -- PaletteData_BeginPaletteFade ignores buffers already in its selected
+  -- set, so arming once is identical: the fade runs exactly once either way.
   if frame == ENCOUNTER_LATE_FADE and not track.lateArmed then
     track.lateArmed = true
     track.phase = "wait"
@@ -3997,10 +4497,57 @@ local function startCue(self, cue)
     local state = assert(self._openingPresentation, "opening ball throws follow an installed opening")
     local trainerTracks = self._trainerSlideTracks
     local slides = state.trainerSlides --[[@as table<integer, table<string, unknown>>]]
+    if cue.trainerless == true then
+      -- Mid-battle send-out: no trainer on screen, so the ball starts at
+      -- its staged spot and arcs (player) or opens in place (foe).
+      cue.phase = "arc"
+      cue.arcElapsed = 0
+      cue.startX = assert(type(cue.fromX) == "number" and cue.fromX, "trainerless throws carry their start")
+      cue.startY = assert(type(cue.fromY) == "number" and cue.fromY, "trainerless throws carry their start")
+      cue.motionTicks = BattleTimeline.THROW_ARC_MOTION_TICKS
+      cue.arcHeight = BattleTimeline.THROW_ARC_HEIGHT
+      state.ballThrow = {
+        selector = cue.selector,
+        x = cue.startX,
+        y = cue.startY,
+        frame = 0,
+        rotation = 0,
+        visible = true,
+      }
+      if cue.openOnly == true then
+        cue.phase = "open"
+        cue.openElapsed = 0
+        local ballKey = cue.selector:match("^ball:([%w_]+)$")
+        assert(type(ballKey) == "string", "thrown balls name their staged ball key")
+        startBallBurst(self, ballKey, cue.targetX, cue.targetY)
+      end
+      return
+    end
+    -- Windup tracks the trainer's throw animation and releases on its
+    -- fourth frame (Task_ThrowPokeball); the arc-only doubles partner
+    -- skips straight to the flight from the stashed release point.
+    cue.phase = "windup"
+    cue.advances = 0
+    cue.seenAnim = nil
+    cue.lastFrame = nil
+    cue.motionTicks = BattleTimeline.THROW_ARC_MOTION_TICKS
+    cue.arcHeight = BattleTimeline.THROW_ARC_HEIGHT
     for index, slide in ipairs(slides) do
       local track = assert(trainerTracks[index], "trainer slides retain their source animation tracks")
       if slide.selector == cue.trainerSelector then
-        if slide.phase == "intro-settle" and slide.x == track.targetX then
+        if cue.arcOnly == true then
+          -- Doubles partner: the trainer already left with the first ball,
+          -- so the arc starts at once from its stashed release point.
+          cue.phase = "arc"
+          cue.arcElapsed = 0
+          local release = self._throwRelease
+          if release ~= nil then
+            cue.startX, cue.startY = release.x, release.y
+          else
+            cue.startX = cue.targetX
+            cue.startY = cue.targetY
+          end
+        elseif slide.phase == "intro-settle" and slide.x == track.targetX then
           track.exitDirection = -1
           track.exitTargetX = -40
           slide.phase = "exit-slide"
@@ -4010,6 +4557,17 @@ local function startCue(self, cue)
         end
       end
     end
+    if cue.noBall == true then
+      -- The follower slides in with no ball behind it: the cue only walks
+      -- the trainer off, publishing no ball sprite.
+      return
+    end
+    -- Arc targets ride the cue from enqueue (per side type); the cue
+    -- start never re-derives them.
+    assert(
+      type(cue.targetX) == "number" and type(cue.targetY) == "number",
+      "player throws carry their staged arc target"
+    )
     state.ballThrow = {
       selector = cue.selector,
       x = 0,
@@ -4374,6 +4932,23 @@ function tickBallPoof(self, cue, shown, entering)
   end
 end
 
+-- Starts the ball-burst flash where a thrown ball opens, mirroring the
+-- ball-particles cue: the thrown ball bursts while the send-out poof grows
+-- the mon behind it, so the open never reads as a frozen ball. The burst
+-- animates on its own timeline once started; the cue timing is unchanged.
+---@param self BattleTimeline
+---@param ballKey string staged ball behind the burst particles
+---@param x number burst origin x in source pixels
+---@param y number burst origin y in source pixels
+function startBallBurst(self, ballKey, x, y)
+  self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+    effect = "burst",
+    ballKey = ballKey,
+    x = x,
+    y = y,
+  }
+end
+
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> active cue under advancement
 ---@return boolean finished
@@ -4409,15 +4984,6 @@ local function tickStatsWindowCue(_, cue)
   return cue.acknowledged == true
 end
 
-local function tickTrainerIntroWaitCue(self)
-  for _, track in ipairs(self._trainerSlideTracks) do
-    if track.encounterComplete ~= true then
-      return false
-    end
-  end
-  return true
-end
-
 local function tickTrainerExitCue(self, cue)
   local found = false
   local finished = true
@@ -4444,8 +5010,14 @@ local function tickTrainerExitCue(self, cue)
         else
           cue.ballElapsed = (cue.ballElapsed or 0) + 1
         end
-        if cue.ballElapsed >= 12 then
+        if cue.ballElapsed >= 12 and ball.visible ~= false then
+          -- The in-place open finishes here (BallThrow_OpenInPlace):
+          -- burst the ball so its hide reads as an opening, matching
+          -- the player arc's burst at its own open.
           ball.visible = false
+          local ballKey = cue.selector:match("^ball:([%w_]+)$")
+          assert(type(ballKey) == "string", "thrown balls name their staged ball key")
+          startBallBurst(self, ballKey, ball.x, ball.y)
         end
       end
     end
@@ -4454,40 +5026,133 @@ local function tickTrainerExitCue(self, cue)
   return finished
 end
 
-local function tickBallThrowCue(self)
-  local ball =
-    assert(self._openingPresentation and self._openingPresentation.ballThrow, "active throws publish a ball sprite")
-  local offsets = ball.throwOffsets --[[@as table<integer, table<string, integer>>]]
-  local slide, track
-  for index, candidate in ipairs(self._openingPresentation.trainerSlides) do
-    if candidate.selector == ball.trainerSelector then
-      slide = candidate
-      track = self._trainerSlideTracks[index]
-      break
+local function tickBallThrowCue(self, cue)
+  local state = assert(self._openingPresentation, "opening ball throws follow an installed opening")
+  local slide, track, offsets = nil, nil, nil
+  local ball = state.ballThrow
+  if cue.trainerless ~= true then
+    for index, candidate in ipairs(state.trainerSlides) do
+      if candidate.selector == cue.trainerSelector then
+        slide = candidate
+        track = self._trainerSlideTracks[index]
+        break
+      end
+    end
+    assert(slide ~= nil and track ~= nil, "trainer throws retain their backpic slide")
+    if cue.noBall == true then
+      -- No ball behind the follower: done once its trainer leaves.
+      return slide.visible ~= true
+    end
+    if track.throwPending == true then
+      return false
+    end
+    offsets = assert(state.ballThrow, "active throws publish a ball sprite").throwOffsets --[[@as table<integer, table<string, integer>>]]
+    if cue.skipArc == true then
+      -- Degenerate staging without a throw sequence: hold the staged
+      -- ball at the hand until the trainer exits, as before arcs existed.
+      local pose = assert(track.frames[track.frame + 1], "trainer pose resolves its staged source frame")
+      local frame = pose.sourceFrame --[[@as integer]]
+      local offset = assert(
+        offsets[frame + 1],
+        "trainer source frame "
+          .. tostring(frame)
+          .. " at sequence position "
+          .. tostring(track.frame)
+          .. " resolves its throw anchor"
+      )
+      if offset.x ~= 32767 then
+        ball.x = slide.x + offset.x
+        ball.y = slide.y + offset.y
+        ball.visible = true
+      end
+      if slide.visible ~= true then
+        self._throwRelease = { x = ball.x, y = ball.y }
+        ball.visible = false
+        return true
+      end
+      return false
     end
   end
-  assert(slide ~= nil and track ~= nil, "trainer throws retain their backpic slide")
-  if track.throwPending == true then
+  ball = assert(ball, "active throws publish a ball sprite")
+  if cue.phase == "arc" then
+    -- Ball in flight from the release point to the mon spot, spinning
+    -- as it travels, then opening over the target.
+    cue.arcElapsed = (cue.arcElapsed or 0) + 1
+    local n = math.min(BattleTimeline.THROW_ARC_MOTION_TICKS, cue.arcElapsed - 1)
+    ball.x, ball.y = ballArcPoint(cue --[[@as table<string, unknown>]], n)
+    ball.visible = true
+    ball.rotation = (n * 0x2000) % 0x10000
+    if cue.arcElapsed >= BattleTimeline.THROW_ARC_TICKS then
+      cue.phase = "open"
+      cue.openElapsed = 0
+      local ballKey = cue.selector:match("^ball:([%w_]+)$")
+      assert(type(ballKey) == "string", "thrown balls name their staged ball key")
+      startBallBurst(self, ballKey, cue.targetX, cue.targetY)
+    end
     return false
   end
-  if slide.visible ~= true then
-    ball.visible = false
-    return true
+  if cue.phase == "open" then
+    cue.openElapsed = (cue.openElapsed or 0) + 1
+    ball.x = cue.targetX
+    ball.y = cue.targetY
+    ball.visible = true
+    ball.rotation = 0
+    if cue.openElapsed >= BattleTimeline.THROW_OPEN_TICKS then
+      ball.visible = false
+      return true
+    end
+    return false
   end
-  local pose = assert(track.frames[track.frame + 1], "trainer pose resolves its staged source frame")
+  -- Trainerless throws only arc and open (set at cue start); anything
+  -- else reaching the windup has no trainer to track.
+  local windupSlide = assert(slide, "windups retain their backpic slide")
+  local windupTrack = assert(track, "windups retain their backpic track")
+  local windupOffsets = assert(offsets, "windups retain their backpic throw anchors") --[[@as table<integer, table<string, integer>>]]
+  if windupSlide.visible ~= true then
+    -- Trainer exited before the release frame: release from the last
+    -- hand position so a slow throw animation cannot park the queue.
+    self._throwRelease = { x = ball.x, y = ball.y }
+    cue.phase = "arc"
+    cue.arcElapsed = 0
+    cue.startX, cue.startY = ball.x, ball.y
+    return false
+  end
+  local pose = assert(windupTrack.frames[windupTrack.frame + 1], "trainer pose resolves its staged source frame")
   local frame = pose.sourceFrame --[[@as integer]]
   local offset = assert(
-    offsets[frame + 1],
+    windupOffsets[frame + 1],
     "trainer source frame "
       .. tostring(frame)
       .. " at sequence position "
-      .. tostring(track.frame)
+      .. tostring(windupTrack.frame)
       .. " resolves its throw anchor"
   )
   if offset.x ~= 32767 then
-    ball.x = slide.x + offset.x
-    ball.y = slide.y + offset.y
+    ball.x = windupSlide.x + offset.x
+    ball.y = windupSlide.y + offset.y
     ball.visible = true
+  end
+  -- Release three throw-animation frames after the exit starts, matching
+  -- the decomp release on the fourth frame; the count rebases whenever
+  -- the animation changes, so unsettled starts and skips stay exact.
+  if windupTrack.animation ~= cue.seenAnim then
+    cue.seenAnim = windupTrack.animation
+    cue.lastFrame = windupTrack.frame
+    cue.advances = 0
+  elseif windupSlide.phase == "exit-slide" and cue.lastFrame ~= nil then
+    local stepped = windupTrack.frame - cue.lastFrame
+    if stepped > 0 then
+      cue.advances = cue.advances + stepped
+    end
+    cue.lastFrame = windupTrack.frame
+  else
+    cue.lastFrame = windupTrack.frame
+  end
+  if cue.advances >= 3 then
+    self._throwRelease = { x = ball.x, y = ball.y }
+    cue.phase = "arc"
+    cue.arcElapsed = 0
+    cue.startX, cue.startY = ball.x, ball.y
   end
   return false
 end
@@ -4501,9 +5166,15 @@ local function tickBallFlightCue(self, cue)
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
   if ball ~= nil then
     ball.x, ball.y = ballArcPoint(cue, n)
-    -- Each update spins the ball 45 degrees; the frame after the last
-    -- update resets the rotation.
-    ball.rotation = elapsed <= lead + motionTicks and (n * 0x2000) % 0x10000 or 0
+    if cue.spin == false then
+      -- The capture fall drops straight down with no spin: the arc
+      -- reset the rotation when its flight finished.
+      ball.rotation = 0
+    else
+      -- Each update spins the ball 45 degrees; the frame after the last
+      -- update resets the rotation.
+      ball.rotation = elapsed <= lead + motionTicks and (n * 0x2000) % 0x10000 or 0
+    end
     if elapsed >= duration and cue.hideAtEnd == true then
       ball.visible = false
     end
@@ -4515,6 +5186,19 @@ local function tickWaitCue(_, cue)
   local elapsed = cue.elapsed --[[@as integer]]
   local duration = cue.duration --[[@as integer]]
   return elapsed >= duration
+end
+
+local function tickVoiceHoldCue(_, cue, deps)
+  -- Holds the queue until the tracked send-out cry finishes: the script's
+  -- post-box Wait absorbs the send-out task remainder (Task_PokemonSlideIn
+  -- and Task_PokemonEncounter retire on their entrance animation, which
+  -- runs about as long as the cry voice). The hold polls the screen's
+  -- single tracked-voice slot through the usual completion probe, so
+  -- above single rate it releases at once while the cry keeps playing.
+  if deps.soundComplete ~= nil and not deps.soundComplete(cue) then
+    return false
+  end
+  return true
 end
 
 local function tickHpCue(self, cue)
@@ -4588,8 +5272,8 @@ local function tickFaintCue(self, cue)
 end
 
 local function tickHudSlideCue(self, cue)
-  -- BattleHpBar_StartSlide/Task_BattleHpBarSlide: 24 px per frame; the
-  -- player boxes travel 160 px to the right edge, the foe boxes 24 px left.
+  -- BattleHpBar_StartSlide/Task_BattleHpBarSlide: both boxes start
+  -- 160 px off their own edge and slide 24 px per frame (7 ticks).
   local sliding = self:_shown(cue.combatant --[[@as integer]])
   if sliding == nil then
     return true
@@ -4635,8 +5319,46 @@ end
 
 local function tickRevealCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
-  if shown ~= nil and cue.fadeColor ~= nil then
+  if shown ~= nil and cue.slideOffset ~= nil then
+    -- Task_FollowMonSlideIn/SendOut places the follower full-size at
+    -- once on the offscreen edge and slides it home linearly with
+    -- move anim 41: show it once its lead hold (doubles second slot
+    -- only) releases and travel it onto its row on the existing
+    -- picture travel channel instead of hiding it for a vanish-length
+    -- pop. The idle animation pose rides on top of travel downstream,
+    -- so the slide composes with it exactly like every other
+    -- displacement the renderer samples.
+    local elapsed = cue.elapsed --[[@as integer]]
+    local leadTicks = cue.slideLeadTicks or 0 --[[@as integer]]
+    if elapsed <= leadTicks then
+      shown.visible = false
+      shown.pictureXOffset = nil
+    elseif elapsed < leadTicks + BattleTimeline.FOLLOW_SLIDE_TICKS then
+      shown.visible = true
+      local remaining = leadTicks + BattleTimeline.FOLLOW_SLIDE_TICKS - elapsed
+      shown.pictureXOffset = math.floor(cue.slideOffset * remaining / BattleTimeline.FOLLOW_SLIDE_TICKS + 0.5)
+    else
+      shown.visible = true
+      shown.pictureXOffset = nil
+    end
+  elseif shown ~= nil and cue.fadeColor ~= nil then
     tickBallPoof(self, cue, shown, true)
+  end
+  -- Send-out cries voice where the source starts them: as the poof
+  -- finishes growing (Task_PokemonSlideIn plays the mon animation and
+  -- cry once the affine scale completes), or as the follower slide
+  -- lands (Task_FollowMonSlideIn/SendOut cries once move anim 41
+  -- retires), never over the throw. The voice is tracked so the
+  -- post-box hold can absorb long cries.
+  local cryAt = cue.slideOffset ~= nil and cue.duration --[[@as integer]] or BattleTimeline.BALL_SCALE_TICKS + 1
+  if
+    cue.sendOutCry ~= nil
+    and cue.cryEmitted ~= true
+    and cue.elapsed --[[@as integer]]
+      >= cryAt
+  then
+    cue.cryEmitted = true
+    emitSound(self, cue.sendOutCry --[[@as table<string, unknown>]])
   end
   if
     cue.elapsed --[[@as integer]]
@@ -4644,6 +5366,9 @@ local function tickRevealCue(self, cue)
   then
     if shown ~= nil then
       shown.visible = true
+      if cue.slideOffset ~= nil then
+        shown.pictureXOffset = nil
+      end
     end
     return true
   end
@@ -4690,11 +5415,11 @@ local TICK_CUE_HANDLERS = {
   ["ball-particles"] = tickImmediateCue,
   ["stats-window"] = tickStatsWindowCue,
   ["opening-presentation"] = tickImmediateCue,
-  ["trainer-intro-wait"] = tickTrainerIntroWaitCue,
   ["trainer-exit"] = tickTrainerExitCue,
   ["ball-throw"] = tickBallThrowCue,
   ["ball-flight"] = tickBallFlightCue,
   ["wait"] = tickWaitCue,
+  ["voice-hold"] = tickVoiceHoldCue,
   ["hp"] = tickHpCue,
   ["hit"] = tickHitCue,
   ["faint"] = tickFaintCue,

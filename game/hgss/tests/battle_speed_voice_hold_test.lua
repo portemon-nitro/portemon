@@ -283,10 +283,89 @@ function T.fast_rate_releases_native_effect_voices_without_waiting()
   local screen = newScreen(4, { effectDone = false })
   local ok, failure = xpcall(function()
     local key = screen._player._audio.play("probe-native-se")
+    Assert.isFalse(
+      screen._player._audio.isFinished(key),
+      "quadruple rate arms each fresh voice for a single tick so sound tasks observe it alive"
+    )
     Assert.isTrue(
       screen._player._audio.isFinished(key),
-      "quadruple rate never gates native occurrences on unfinished voices"
+      "quadruple rate never gates native occurrences past the single arming tick"
     )
+  end, debug.traceback)
+  pcall(function()
+    screen:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.tracked_send_out_cries_stage_the_single_voice_slot()
+  local voiceState = {}
+  local screen = newScreen(1, voiceState)
+  screen._monCatalog = {
+    species = function(_)
+      return { nativeId = 25 }
+    end,
+  }
+  local ok, failure = xpcall(function()
+    screen:_playCryCue({ species = "EEVEE", speciesKey = "EEVEE", foe = false })
+    Assert.isNil(screen._waitingCueVoice, "untracked cries leave the voice slot alone")
+    screen:_playCryCue({ species = "EEVEE", speciesKey = "EEVEE", foe = false, waitForVoice = true })
+    Assert.notNil(screen._waitingCueVoice, "held cries stage the single voice slot")
+    screen._waitingCueVoice = nil
+    screen:_playCryCue({ species = "EEVEE", speciesKey = "EEVEE", foe = false, trackVoice = true })
+    Assert.notNil(
+      screen._waitingCueVoice,
+      "tracked send-out cries stage the slot without gating the queue"
+    )
+    Assert.isTrue(
+      screen:_soundCueComplete({ kind = "cry" }),
+      "the tracked stage never gates a cue that waits on nothing"
+    )
+    Assert.isFalse(
+      screen:_soundCueComplete({ kind = "cry", waitForVoice = true }),
+      "the staged slot still holds a waiter while the cry is unfinished"
+    )
+    voiceState.cryDone = true
+    Assert.isTrue(
+      screen:_soundCueComplete({ kind = "cry", waitForVoice = true }),
+      "a finished cry releases the tracked slot through the same poll"
+    )
+    Assert.isNil(screen._waitingCueVoice, "the release consumes the single voice slot")
+  end, debug.traceback)
+  pcall(function()
+    screen:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.fast_rate_retires_positioned_sound_tasks_without_arming_escape()
+  local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local screen = newScreen(4, { effectDone = false })
+  local ok, failure = xpcall(function()
+    for _, symbol in ipairs({ "SEQ_SE_DP_209", "SEQ_SE_DP_209" }) do
+      local task = assert(
+        BattleEffectTasks.create("positioned-sound-motion", {
+          sound = symbol,
+          values = { 0, 0, 0, 0 },
+        }, {}, { audio = screen._player._audio })
+      )
+      for _ = 1, 100 do
+        task:stepSourceTick({ tick = 1 })
+        if task:status() == "complete" then
+          break
+        end
+      end
+      Assert.equal(
+        task:status(),
+        "complete",
+        "quadruple rate retires the positioned voice " .. symbol .. " instead of escaping"
+      )
+      task:dispose()
+    end
   end, debug.traceback)
   pcall(function()
     screen:dispose()

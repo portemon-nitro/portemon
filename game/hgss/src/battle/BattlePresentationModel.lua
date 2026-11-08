@@ -497,6 +497,8 @@ function BattlePresentationModel.view(snapshot, scenario, deps)
     playerName = playerName,
     playerTrainer = playerTrainer,
     foeTrainers = foeTrainers,
+    followMonSlot = type(scenario) == "table" and type(scenario.followMonSlot) == "number" and scenario.followMonSlot
+      or nil,
   }
 end
 

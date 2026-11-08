@@ -1039,9 +1039,20 @@ function T.presentation_view_carries_semantic_foe_trainer_identity()
   }, {
     trainer = { { class = 2, name = "WHITNEY" } },
     playerContext = { trainerClassKey = "PKMN_TRAINER_ETHAN", trainerName = "ETHAN" },
+    followMonSlot = 0,
   })
   Assert.deepEqual(view.foeTrainers, { { classKey = "YOUNGSTER", name = "WHITNEY" } })
   Assert.deepEqual(view.playerTrainer, { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" })
+  Assert.equal(view.followMonSlot, 0, "the view carries the field follower slot for send-outs")
+  local absent = BattlePresentationModel.view({
+    combatants = {},
+    combatantOrder = {},
+    participants = {},
+  }, {
+    trainer = { { class = 2, name = "WHITNEY" } },
+    playerContext = { trainerClassKey = "PKMN_TRAINER_ETHAN", trainerName = "ETHAN" },
+  })
+  Assert.isNil(absent.followMonSlot, "launches without a follower carry no slot")
 end
 
 return { tests = T }

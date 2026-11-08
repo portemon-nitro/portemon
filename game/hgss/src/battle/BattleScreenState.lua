@@ -56,6 +56,7 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
 ---@field _nativeHandles table<table<string, unknown>, table<string, unknown>> native occurrence tracks by player handle or pending token
 ---@field _nativeVoices table<string, table<string, unknown>> staged player voices by name behind launch-owned stops
+---@field _nativeVoiceArmed table<string, boolean> per-play fast-rate arming behind sound-task completion
 ---@field _waitingCueVoice table<string, unknown>? cry handle blocking the next timeline cue
 ---@field _nativeRouting boolean true while the effects collaborator routes native cues
 ---@field _liveEffectHandle table<string, unknown>? player handle behind the running occurrence
@@ -478,6 +479,7 @@ local function nativeVoicePlay(screen, name, extra)
     assert(battler ~= nil and type(battler.species) == "string", "animation cries need the attacker's species")
     if screen._legacyAudio then
       screen._nativeVoices[name] = screen._battleAudio:playEffect("cry:" .. battler.species)
+      screen._nativeVoiceArmed[name] = nil
       return name
     end
     handle = screen._battleAudio:playCry({
@@ -497,6 +499,7 @@ local function nativeVoicePlay(screen, name, extra)
     handle = screen._battleAudio:playEffect(name)
   end
   screen._nativeVoices[name] = handle
+  screen._nativeVoiceArmed[name] = nil
   return name
 end
 
@@ -521,8 +524,20 @@ end
 local function nativeVoiceFinished(screen, name)
   -- Above single rate native voices never gate source progress either:
   -- move-animation occurrences retire on their tick-scaled tasks while
-  -- the voice keeps playing in real time.
+  -- the voice keeps playing in real time. Sound tasks arm on their
+  -- first unfinished observation before a finished one can complete
+  -- them, so each fresh play reports one unfinished tick before the
+  -- fast-rate release; without that single arming tick every fast voice
+  -- would read as never-armed and escape instead of retiring.
   if screen._battleSpeed > 1 then
+    local handle = screen._nativeVoices[name]
+    if handle == nil then
+      return true
+    end
+    if screen._nativeVoiceArmed[name] ~= true then
+      screen._nativeVoiceArmed[name] = true
+      return false
+    end
     return true
   end
   local handle = screen._nativeVoices[name]
@@ -1171,6 +1186,7 @@ function BattleScreenState.new(opts)
     _nativeRouting = false,
     _nativeHandles = {},
     _nativeVoices = {},
+    _nativeVoiceArmed = {},
     _waitingCueVoice = nil,
     _liveEffectHandle = nil,
     _liveEffectRecord = nil,
@@ -1615,14 +1631,20 @@ end
 ---@param step integer source slide update count from zero through four
 ---@param sideType integer source battler position type
 ---@return table<string, unknown> detached native lower-plane window and scroll state
+-- BattleInput_InitMenuSlideIn with Task_BattleMenuSlideIn and
+-- VBlankTask/HBlankCB_BattleMenuSlideIn (battle_input.c): the task state
+-- runs x from -25500 by 6375 per tick and y from 4000 by -1000 per tick
+-- over four ticks, finishing at x 0, y 144; the BG planes ride the task
+-- xSet ((25500 - x) / 100, zeroed at completion) while the W0 edge rides
+-- 255 + x / 100 (near side) or -x / 100 (slot 2) and the W1 edge rides
+-- 144 + y / 100. The planes start offscreen and wipe in; publishing the
+-- window edge as the BG scroll starts them onscreen, which reads as a
+-- pop instead of the source slide.
 local function menuSlideState(step, sideType)
   local updates = math.min(step, 4)
   local x = -25500 + updates * 6375
   local y = 4000 - updates * 1000
-  local bgY = 40
-  if updates > 0 and updates < 4 then
-    bgY = -(40 - updates * 10)
-  end
+  local bgY = -(40 - updates * 10)
   if updates == 4 then
     x = 0
     y = 144
@@ -1635,8 +1657,9 @@ local function menuSlideState(step, sideType)
   local bg1x
   if sideType == 4 then
     windowEdge = math.floor(-x / 100)
-    bg0x = math.max(0, 255 - windowEdge)
-    bg1x = 255 - windowEdge
+    local taskX = updates >= 4 and 0 or math.floor((25500 - x) / 100)
+    bg0x = updates >= 4 and 255 or 255 - taskX
+    bg1x = updates >= 4 and 255 or 255 - taskX
     return {
       edge = edge,
       outsideTop = { x = windowEdge + 1, y = 0, width = 255 - windowEdge, height = 144 },
@@ -1652,8 +1675,14 @@ local function menuSlideState(step, sideType)
   if windowEdge == 0 then
     windowEdge = 1
   end
-  bg0x = math.max(0, windowEdge)
-  bg1x = windowEdge
+  if updates >= 4 then
+    bg0x = 0
+    bg1x = 0
+  else
+    local taskX = math.floor((25500 - x) / 100)
+    bg0x = taskX
+    bg1x = taskX
+  end
   return {
     edge = edge,
     outsideTop = { x = 1, y = 0, width = windowEdge - 1, height = 144 },
@@ -4801,7 +4830,10 @@ function BattleScreenState:_playCryCue(cue)
     volume = defaults.volume,
     pitch = defaults.pitch,
   })
-  if cue.waitForVoice == true then
+  -- Tracked send-out cries stage the same single-voice slot without
+  -- gating the queue: the post-box hold polls the slot until the voice
+  -- finishes, absorbing long cries exactly like the script's final Wait.
+  if cue.waitForVoice == true or cue.trackVoice == true then
     self._waitingCueVoice = handle
   end
 end

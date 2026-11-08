@@ -49,6 +49,9 @@ BattleAudio.SINK_SOUNDS = {
   ballBounce3 = "SEQ_SE_DP_KON3",
   ballBounce4 = "SEQ_SE_DP_KON4",
   ballOpen = "SEQ_SE_DP_BOWA2",
+  -- Move anim 41 voices the switch sound as the follower slide starts
+  -- (battle_controller_opponent.c Task_FollowMonSlideIn/SendOut).
+  followerSlide = "SEQ_SE_DP_IREKAE",
   partyGaugeShow = "SEQ_SE_DP_TB_START",
   encounterStart = "SEQ_SE_DP_PASA2",
   encounterSettle = "SEQ_SE_DP_PASA3",

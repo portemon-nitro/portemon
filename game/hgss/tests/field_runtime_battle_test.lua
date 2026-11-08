@@ -1240,6 +1240,33 @@ local function leadStepRuntime(overrides)
   end
 end
 
+function T.scenarios_carry_the_follower_slot_for_send_outs()
+  local party = newPartyOwner()
+  local request = { id = "launch-follow", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
+  local followingMon = {
+    isActive = function()
+      return true
+    end,
+  }
+  local runtime = fakeRuntime({ monService = party, followingMon = followingMon })
+  local scenario = runtime:buildBattleScenario(request)
+  Assert.equal(scenario.followMonSlot, 0, "the live follower slot rides the scenario so send-outs skip its ball")
+  runtime.followingMon = {
+    isActive = function()
+      return false
+    end,
+  }
+  local absent = runtime:buildBattleScenario(request)
+  Assert.isNil(absent.followMonSlot, "no follower out means send-outs keep their ball")
+  local slotless = fakeRuntime({ monService = { partyCount = function()
+    return 1
+  end } })
+  Assert.isNil(
+    slotless:buildBattleScenario(request).followMonSlot,
+    "a party without a lead slot never lends a follower slot"
+  )
+end
+
 function T.committed_steps_name_the_live_party_lead_facts()
   local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
   local RoamerState = EncounterFixture.requirePresent(

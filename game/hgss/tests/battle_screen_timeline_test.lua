@@ -6,6 +6,7 @@
 -- boundary, and sounds drain into a recording sink.
 
 local Assert = require("tests.support.Assert")
+local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local BattleTimelineCore = require("game.hgss.src.battle.BattleTimeline")
 local MonCache = require("libs.assets.src.MonCache")
@@ -1556,6 +1557,8 @@ function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
   local firstVisibleX = nil
   local firstVisibleY = nil
   local lastVisibleTick = nil
+  local lastVisibleX = nil
+  local lastVisibleY = nil
   for tick = 1, 1000 do
     advance(timeline, TICK)
     if timeline:messageActive() then
@@ -1568,6 +1571,8 @@ function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
       firstVisibleX = firstVisibleX or ball.x
       firstVisibleY = firstVisibleY or ball.y
       lastVisibleTick = tick
+      lastVisibleX = ball.x
+      lastVisibleY = ball.y
     elseif firstVisibleTick ~= nil then
       break
     end
@@ -1575,9 +1580,29 @@ function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
   Assert.notNil(firstVisibleTick, "the player send-out opens with its staged ball sprite")
   Assert.equal(firstVisibleX, 64, "the player ball follows the settled backpic x anchor")
   Assert.equal(firstVisibleY, 240, "the player ball follows the staged backpic y anchor")
-  Assert.equal(lastVisibleTick - firstVisibleTick + 1, 21, "the ball stays until the source trainer exits to x=-40")
+  Assert.equal(
+    lastVisibleTick - firstVisibleTick + 1,
+    15 + BattleTimelineCore.THROW_ARC_TICKS + BattleTimelineCore.THROW_OPEN_TICKS,
+    "the ball winds up to its release frame, arcs, and opens before the poof: "
+      .. "Task_ThrowPokeball releases on the fourth throw frame, then BallThrow arcs and opens"
+  )
+  Assert.equal(lastVisibleX, 64, "the arc lands on the player's mon spot")
+  Assert.equal(
+    lastVisibleY,
+    144,
+    "the arc lands 32 pixels below the mon anchor: BallThrow_InitThrowTarget kind 6"
+  )
   local ball = timeline:openingPresentation().ballThrow
   Assert.isFalse(ball.visible, "the staged ball hides after its opening sequence")
+  local bursts = {}
+  for _, start in ipairs(timeline:takeBallParticleStarts()) do
+    if type(start) == "table" and start.effect == "burst" then
+      bursts[#bursts + 1] = start
+    end
+  end
+  Assert.equal(#bursts, 1, "the opening arc bursts once where it lands")
+  Assert.equal(bursts[1].x, 64, "the burst covers the landing spot")
+  Assert.equal(bursts[1].y, 144, "the burst covers the landing spot 32 below the mon anchor")
 end
 
 -- Retail text delay is counted by printer-task update. NitroMain runs
@@ -2077,7 +2102,10 @@ function T.native_menu_reveal_frames_and_input_gate_follow_source_ticks()
 
   local expectedEdges = { 184, 174, 164, 154, 145 }
   local expectedOutsideWidths = { 0, 63, 127, 191, 254 }
-  local expectedScroll = { 1, 64, 128, 192, 255 }
+  -- Task_BattleMenuSlideIn rides the BG planes on the task xSet
+  -- ((25500 - x) / 100: 510, 446, 382, 318, 0), not on the W0 window
+  -- edge (battle_input.c VBlankTask_BattleMenuSlideIn).
+  local expectedScroll = { 510, 446, 382, 318, 0 }
   local function run(partition, doublePartner)
     local measurement = {
       width = 256,
@@ -2327,9 +2355,18 @@ function T.native_menu_reveal_frames_and_input_gate_follow_source_ticks()
       )
       Assert.equal(
         menuWindows.scroll[0].x,
-        doublePartner and ({ 0, 64, 128, 192, 255 })[index] or expectedScroll[index]
+        doublePartner and ({ -255, -191, -127, -63, 255 })[index] or expectedScroll[index]
       )
       Assert.equal(menuWindows.scroll[1].x, menuWindows.scroll[0].x)
+      if index == 1 then
+        Assert.deepEqual(
+          menuWindows.outsideBottom,
+          { x = 0, y = 184, width = 256, height = 8 },
+          "only the bottom strip shows at frame zero"
+        )
+        Assert.equal(menuWindows.scroll[0].bottomY, -40, "the lower BG starts one slide unit up")
+        Assert.equal(menuWindows.scroll[1].bottomY, -40, "both menu planes share the lower scroll")
+      end
       screen:draw({ graphics = graphics })
       trace[#trace + 1] = viewEdge
     end
@@ -3435,6 +3472,410 @@ function T.stage_changes_use_source_wording()
     "The wild FOE’s Defense fell!",
     "LEAD’s Speed won’t go higher!",
   }, "stage lines follow the source table")
+end
+
+-- Retail mid-battle switches onto the follower (Task_FollowMonSendOut)
+-- ride no ball, seal, or ball sound: the mon appears with its cry only.
+function T.follower_switch_in_rides_no_ball_and_slides_home()
+  local timeline = BattleTimeline.new({})
+  local before = openingView()
+  before.followMonSlot = 1
+  before.own[1].slot = 0
+  timeline:reset(before)
+  local after = openingView()
+  after.followMonSlot = 1
+  after.own = {
+    {
+      combatant = 2,
+      participant = 2,
+      side = 1,
+      controller = "player",
+      active = true,
+      position = 1,
+      activation = 2,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "FOLLOWER",
+      level = 20,
+      ballKey = "POKE_BALL",
+      slot = 1,
+      selector = "back",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back"),
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+      experience = 8000,
+    },
+  }
+  local switch = event("switch", { from = 1, incoming = 2 }, { [1] = 52, [3] = 57 })
+  Assert.isTrue(timeline:present(packet(1, { switch }, after)), "the follower switch is accepted")
+  Assert.isTrue(
+    type(BattleAudio.SINK_SOUNDS.followerSlide) == "string",
+    "the follower slide has its staged switch sound"
+  )
+  local seenReveal = false
+  local ballSounds, seals, slideSounds = 0, 0, 0
+  for _, cue in ipairs(timeline._queue) do
+    if cue.kind == "sound" and type(cue.cue) == "table" then
+      if cue.cue.symbol == BattleAudio.SINK_SOUNDS.ballOpen then
+        ballSounds = ballSounds + 1
+      end
+      if cue.cue.symbol == BattleAudio.SINK_SOUNDS.followerSlide then
+        slideSounds = slideSounds + 1
+        Assert.equal(
+          cue.cue.pan,
+          BattleAudio.SIDE_PAN.player,
+          "the slide switch sound voices on the player side"
+        )
+      end
+    end
+    if cue.kind == "ball-particles" and cue.effect == "seal" then
+      seals = seals + 1
+    end
+    if cue.kind == "reveal" and cue.combatant == 2 then
+      seenReveal = true
+      Assert.equal(
+        cue.duration,
+        BattleTimelineCore.FOLLOW_SLIDE_TICKS,
+        "the follower slides home over the source 20 ticks with no ball-color poof"
+      )
+    end
+  end
+  Assert.isTrue(seenReveal, "the follower switch-in reveals its battler")
+  Assert.equal(ballSounds, 1, "only the departed mon's recall voices the ball: none for the follower")
+  Assert.equal(slideSounds, 1, "the anim-41 slide voices its switch sound once")
+  Assert.equal(seals, 0, "no seal sparkle starts for the follower switch-in")
+  -- Task_FollowMonSlideIn/SendOut places the follower full-size at once
+  -- and slides it from the source offscreen edge with move anim 41 before
+  -- its cry (battle_controller_opponent.c, battle_anim_funcs.c
+  -- BattleAnimFunc_MoveBattlerOffscreen with toHome 1 over 20 ticks):
+  -- hiding it for a vanish-length pop, or hopping it vertically,
+  -- contradicts the source, which slides it horizontally with no fade.
+  local reveal = nil
+  for _, cue in ipairs(timeline._queue) do
+    if cue.kind == "reveal" and cue.combatant == 2 then
+      reveal = cue
+    end
+  end
+  Assert.notNil(reveal, "the follower switch-in reveals its battler")
+  Assert.equal(
+    reveal.slideOffset,
+    -144,
+    "the solo follower starts 144 px left of its spot (offscreen -80 to home 64)"
+  )
+  local seenVisibleEarly = false
+  local seenTravel = false
+  local revealTicks = 0
+  local revealDone = false
+  for _ = 1, 1000 do
+    advance(timeline, TICK)
+    if timeline._active == reveal then
+      revealTicks = revealTicks + 1
+      local shown = battler(timeline:battlers(), 2)
+      if revealTicks <= 2 and shown.visible == true then
+        seenVisibleEarly = true
+      end
+      if type(shown.pictureXOffset) == "number" and shown.pictureXOffset < 0 then
+        seenTravel = true
+      end
+    elseif revealTicks > 0 and timeline._active ~= reveal then
+      revealDone = true
+      break
+    end
+  end
+  Assert.isTrue(revealDone, "the follower reveal completes")
+  Assert.isTrue(seenVisibleEarly, "the follower shows at once instead of hiding for a pop")
+  Assert.isTrue(seenTravel, "the follower travels horizontally toward its spot")
+  local shown = battler(timeline:battlers(), 2)
+  Assert.isTrue(shown.visible == true, "the follower stays out after its slide")
+  Assert.isNil(shown.pictureXOffset, "the slide settles exactly on its row")
+  Assert.isTrue(reveal.cryEmitted == true, "the follower still cries with its reveal")
+end
+
+-- Drains one full wild opening so later packets run behind a settled
+-- mid-battle presentation: the trainer has left and every box has slid in.
+---@param timeline table cue player under test driving
+local function drainOpening(timeline)
+  for _ = 1, 3000 do
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    advance(timeline, TICK)
+    if timeline:settled() then
+      return
+    end
+  end
+  error("the opening never settles", 0)
+end
+
+-- Retail mid-battle send-outs fly their own ball with no trainer on
+-- screen (Task_PokemonSendOut builds its BallThrow from the hand spot):
+-- the player ball arcs from (10, 100) to the mon spot plus 32 pixels,
+-- while the foe ball opens in place at its source spot (kinds 1/3/5).
+function T.mid_battle_send_outs_fly_their_own_balls()
+  -- The staged fade color stands in for the production ball inventory:
+  -- without it every reveal degrades to the unfaded vanish.
+  local timeline = BattleTimeline.new({ ballFadeColor = function(_)
+    return 0
+  end })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
+  drainOpening(timeline)
+  timeline:takeBallParticleStarts()
+  local queued = #timeline._queue
+  local after = openingView()
+  after.own = {
+    {
+      combatant = 2,
+      participant = 2,
+      side = 1,
+      controller = "player",
+      active = true,
+      position = 1,
+      activation = 2,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "BACKUP",
+      level = 20,
+      ballKey = "POKE_BALL",
+      slot = 1,
+      selector = "back",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back"),
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+      experience = 8000,
+    },
+  }
+  local switch = event("switch", { from = 1, incoming = 2 }, { [1] = 52, [3] = 57 })
+  Assert.isTrue(timeline:present(packet(1, { switch }, after)), "the mid-battle switch is accepted")
+  local throws, reveals, waits = {}, {}, {}
+  for index = queued + 1, #timeline._queue do
+    local cue = timeline._queue[index]
+    if cue.kind == "ball-throw" then
+      throws[#throws + 1] = cue
+    elseif cue.kind == "reveal" then
+      reveals[#reveals + 1] = cue
+    elseif cue.kind == "wait" then
+      waits[#waits + 1] = cue
+    end
+  end
+  Assert.equal(#throws, 1, "the mid-battle send-out throws its own ball with no trainer")
+  Assert.isTrue(throws[1].trainerless == true, "no trainer tracks the mid-battle ball")
+  Assert.isNil(throws[1].trainerSelector, "no backpic anchors the mid-battle ball")
+  Assert.equal(throws[1].targetX, 64, "the mid-battle arc lands on the mon spot")
+  Assert.equal(throws[1].targetY, 144, "the mid-battle arc lands 32 pixels below the mon anchor")
+  Assert.equal(
+    throws[1].nominalTicks,
+    BattleTimelineCore.THROW_ARC_TICKS + BattleTimelineCore.THROW_OPEN_TICKS,
+    "the mid-battle arc runs the source arc plus open with no windup"
+  )
+  Assert.equal(#reveals, 1, "the mid-battle send-out reveals its battler")
+  Assert.equal(reveals[1].duration, 25, "the mid-battle poof keeps its ball-color fade")
+  -- The switch also holds the party gauge open and closed; the settle
+  -- wait is the last hold before the box slides in.
+  Assert.isTrue(#waits >= 1, "the mid-battle send-out settles")
+  Assert.equal(waits[#waits].duration, 8, "the settle keeps WaitTime 72 minus the arc and the poof")
+  drainOpening(timeline)
+  local bursts = {}
+  for _, start in ipairs(timeline:takeBallParticleStarts()) do
+    if type(start) == "table" and start.effect == "burst" then
+      bursts[#bursts + 1] = start
+    end
+  end
+  Assert.equal(#bursts, 1, "the mid-battle arc bursts once where it lands")
+  Assert.equal(bursts[1].x, 64, "the mid-battle burst covers the landing spot")
+  Assert.equal(bursts[1].y, 144, "the mid-battle burst covers the landing spot")
+  -- The foe send-out opens its own ball in place on the same mid-battle
+  -- timeline: no trainer tracks it and it never arcs.
+  local queued = #timeline._queue
+  local after = openingView()
+  after.own = {
+    {
+      combatant = 2,
+      participant = 2,
+      side = 1,
+      controller = "player",
+      active = true,
+      position = 1,
+      activation = 2,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "BACKUP",
+      level = 20,
+      ballKey = "POKE_BALL",
+      slot = 1,
+      selector = "back",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back"),
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+      experience = 8000,
+    },
+  }
+  after.foes = {
+    {
+      combatant = 5,
+      participant = 5,
+      side = 2,
+      controller = "wild",
+      active = true,
+      position = 3,
+      activation = 5,
+      hp = 57,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = "FOE2",
+      level = 20,
+      ballKey = "POKE_BALL",
+      selector = "front",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false),
+    },
+  }
+  local switch = event("switch", { from = 3, incoming = 5 }, { [1] = 52, [5] = 57 })
+  switch.sequence = 2
+  Assert.isTrue(timeline:present(packet(2, { switch }, after)), "the mid-battle foe switch is accepted")
+  local throws, waits = {}, {}
+  for index = queued + 1, #timeline._queue do
+    local cue = timeline._queue[index]
+    if cue.kind == "ball-throw" then
+      throws[#throws + 1] = cue
+    elseif cue.kind == "wait" then
+      waits[#waits + 1] = cue
+    end
+  end
+  Assert.equal(#throws, 1, "the foe send-out opens its own ball with no trainer")
+  Assert.isTrue(throws[1].trainerless == true, "no trainer tracks the foe ball")
+  Assert.isTrue(throws[1].openOnly == true, "the foe ball opens in place without an arc")
+  Assert.equal(throws[1].targetX, 192, "the foe ball opens at its source spot")
+  Assert.equal(throws[1].targetY, 86, "the foe ball opens at its source spot")
+  Assert.equal(
+    throws[1].nominalTicks,
+    BattleTimelineCore.THROW_OPEN_TICKS,
+    "the in-place open runs the source open with no arc"
+  )
+  -- The switch also holds the party gauge open and closed; the settle
+  -- wait is the last hold before the box slides in.
+  Assert.isTrue(#waits >= 1, "the foe send-out settles")
+  Assert.equal(waits[#waits].duration, 29, "the settle keeps WaitTime 72 minus the open and the poof")
+  drainOpening(timeline)
+  local bursts = {}
+  for _, start in ipairs(timeline:takeBallParticleStarts()) do
+    if type(start) == "table" and start.effect == "burst" then
+      bursts[#bursts + 1] = start
+    end
+  end
+  Assert.equal(#bursts, 1, "the foe ball bursts once where it opens")
+  Assert.equal(bursts[1].x, 192, "the foe burst covers its source spot")
+  Assert.equal(bursts[1].y, 86, "the foe burst covers its source spot")
+end
+
+-- BallThrow_CaptureStateDrop lowers the opened ball 32 pixels over 10
+-- ticks: the shakes, the click, and a break-out all play at the resting
+-- spot, not the arc landing. BREAK_OUT then re-sends the target with its
+-- capture ball (Task_PokemonSendOut with breakOut): the resting ball
+-- opens again, then the seal, the ball sound, and the cry follow exactly
+-- like a send-out.
+function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
+  local timeline = BattleTimeline.new({
+    itemName = function(_)
+      return "Great Ball"
+    end,
+    ballFadeColor = function(_)
+      return 0
+    end,
+  })
+  local view = openingView()
+  view.playerName = "GOLD"
+  timeline:reset(view)
+  timeline:intro(view, true)
+  drainOpening(timeline)
+  local queued = #timeline._queue
+  local after = openingView()
+  after.playerName = "GOLD"
+  local throw = event("throw", { ball = "GREAT_BALL" }, { [1] = 52, [3] = 57 })
+  throw.actors = { { combatant = 1 } }
+  throw.targets = { { combatant = 3 } }
+  throw.sequence = 1
+  Assert.isTrue(timeline:present(packet(1, { throw }, after)), "the throw is accepted")
+  local drops = {}
+  for index = queued + 1, #timeline._queue do
+    local cue = timeline._queue[index]
+    if cue.kind == "ball-flight" and cue.targetY == 88 then
+      drops[#drops + 1] = cue
+    end
+  end
+  Assert.equal(#drops, 1, "the opened ball falls to its resting spot")
+  Assert.equal(drops[1].startX, 192, "the fall starts where the arc landed")
+  Assert.equal(drops[1].startY, 56, "the fall starts where the arc landed")
+  Assert.equal(drops[1].targetX, 192, "the fall drops straight down")
+  Assert.equal(drops[1].targetY, 88, "the fall drops 32 pixels")
+  drainOpening(timeline)
+  local ball = timeline:openingPresentation().ballThrow
+  Assert.notNil(ball, "the capture ball stays on screen")
+  Assert.isTrue(ball.visible, "the resting ball stays visible through the shakes")
+  Assert.equal(ball.x, 192, "the ball rests where it fell")
+  -- Fixed-point truncation lands one pixel above the nominal spot with
+  -- no snap (BattleAnimUtil_UpdateLinearMotion), matching the source.
+  Assert.equal(ball.y, 87, "the ball rests where it fell")
+  -- BREAK_OUT re-sends the target with the same capture ball: the
+  -- resting ball opens again where it fell, then the seal, the ball
+  -- sound, and the cry follow exactly like a send-out.
+  timeline:takeBallParticleStarts()
+  local queued = #timeline._queue
+  local broke = event("broke_free", { shakes = 1 }, { [1] = 52, [3] = 57 })
+  broke.sequence = 2
+  broke.targets = { { combatant = 3 } }
+  Assert.isTrue(
+    timeline:present(packet(2, { broke }, after), { [2] = "Aargh! Almost had it!" }),
+    "the break-out is accepted with its selected wording"
+  )
+  local opens, sounds, seals, reveals = {}, {}, {}, {}
+  for index = queued + 1, #timeline._queue do
+    local cue = timeline._queue[index]
+    if cue.kind == "ball-throw" then
+      opens[#opens + 1] = cue
+    elseif cue.kind == "sound" then
+      sounds[#sounds + 1] = cue
+    elseif cue.kind == "ball-particles" and cue.effect == "seal" then
+      seals[#seals + 1] = cue
+    elseif cue.kind == "reveal" then
+      reveals[#reveals + 1] = cue
+    end
+  end
+  Assert.equal(#opens, 1, "the break-out re-opens the resting ball")
+  Assert.isTrue(opens[1].trainerless == true, "no trainer tracks the re-opened ball")
+  Assert.isTrue(opens[1].openOnly == true, "the fresh ball opens in place")
+  Assert.equal(opens[1].targetX, 192, "the re-open plays at the foe's source spot")
+  Assert.equal(opens[1].targetY, 86, "the re-open plays at the foe's source spot")
+  local resendSound = false
+  for _, cue in ipairs(sounds) do
+    if type(cue.cue) == "table" and cue.cue.kind == "effect" then
+      resendSound = resendSound or cue.cue.symbol == BattleAudio.SINK_SOUNDS.ballOpen
+    end
+  end
+  Assert.isTrue(resendSound, "the re-open voices the ball sound")
+  Assert.equal(#seals, 1, "the re-open starts the capture ball's seal")
+  Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
+  Assert.equal(#reveals, 1, "the break-out reveals its battler")
+  Assert.isTrue(reveals[1].fadeColor ~= nil, "the re-open poofs with the capture ball's color")
+  Assert.notNil(reveals[1].sendOutCry, "the re-open cries with the reveal")
+  drainOpening(timeline)
+  Assert.isTrue(timeline:settled(), "the break-out drains")
+  Assert.isTrue(battler(timeline:battlers(), 3).visible, "the target comes back out")
+  local ball = timeline:openingPresentation().ballThrow
+  Assert.isFalse(ball.visible, "the re-opened ball hides behind the poof")
+  local bursts = {}
+  for _, start in ipairs(timeline:takeBallParticleStarts()) do
+    if type(start) == "table" and start.effect == "burst" then
+      bursts[#bursts + 1] = start
+    end
+  end
+  Assert.equal(#bursts, 1, "the re-open bursts once at the foe's source spot")
+  Assert.equal(bursts[1].x, 192, "the re-open burst covers the foe's source spot")
+  Assert.equal(bursts[1].y, 86, "the re-open burst covers the foe's source spot")
 end
 
 return { tests = T }

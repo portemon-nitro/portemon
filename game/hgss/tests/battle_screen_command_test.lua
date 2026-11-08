@@ -4394,6 +4394,10 @@ end
 -- The lower command menu stays hidden until command input opens: it
 -- must not paint behind the intro and then flicker through its reveal.
 -- Proved at the renderer level in battle_scene_composition_test, which
--- owns the interaction pane contracts with full manifest views.
+-- owns the interaction pane contracts with full manifest views. The
+-- source slide geometry (offscreen BG wipe, bottom strip, input gate)
+-- is pinned cheaply by battle_screen_timeline_test's
+-- native_menu_reveal_frames_and_input_gate_follow_source_ticks, so no
+-- runtime-driven duplicate lives here.
 
 return { tests = T }

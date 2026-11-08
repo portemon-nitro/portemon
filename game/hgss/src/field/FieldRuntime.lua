@@ -3203,11 +3203,27 @@ end
 -- identities resolve through the composed trainer catalog and materializer
 -- before shaping; explicit caller-authored parties still ride through
 -- untouched, and unknown trainer identities fail loudly.
+--
+-- The follower's party slot rides the scenario when one walks behind the
+-- player (BattleSystem_GetFollowMonSlot): send-outs onto that slot skip
+-- their ball throw, matching Task_FollowMonSlideIn/SendOut. No follower
+-- out leaves the field absent, matching the native 0xFF default.
 ---@param request table<string, unknown>
 ---@return table<string, unknown> detached scenario fragment
 function FieldRuntime:buildBattleScenario(request)
-  local HgssBattleScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   assert(type(request) == "table" and type(request.kind) == "string", "scenario builds need their request")
+  local scenario = self:_buildBattleScenarioFragment(request)
+  local followMonSlot = self:_launchFollowMonSlot()
+  if type(followMonSlot) == "number" then
+    scenario.followMonSlot = followMonSlot
+  end
+  return scenario
+end
+
+---@param request table<string, unknown> admitted source battle request
+---@return table<string, unknown> detached scenario fragment without field send-out facts
+function FieldRuntime:_buildBattleScenarioFragment(request)
+  local HgssBattleScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local live = { party = self.monService, bag = self.bagService, world = self.scripts.worldState }
   -- The current player reward identity rides the scenario context for
   -- traded and foreign award classification: the validated profile owns
@@ -4153,6 +4169,25 @@ function FieldRuntime:_isFollowActive(hasAliveMon)
     return false
   end
   return following:isActive() == true
+end
+
+-- The follower's zero-based party slot for battle launches, nil when no
+-- follower walks behind the player. The slot matches the battle view's
+-- party-slot mapping (BattleSystem_GetFollowMonSlot, 0xFF when absent).
+---@return integer? follower party slot, nil without one out
+function FieldRuntime:_launchFollowMonSlot()
+  local service = self.monService
+  if type(service) ~= "table" or type(service.leadAliveSlot) ~= "function" then
+    return nil
+  end
+  local slot = service:leadAliveSlot()
+  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 then
+    return nil
+  end
+  if not self:_isFollowActive(true) then
+    return nil
+  end
+  return slot
 end
 
 -- Resets the step-driven encounter counters on map entry: the native field

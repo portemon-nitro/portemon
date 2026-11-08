@@ -33,9 +33,12 @@ function T.battle_narration_records_keep_semantic_keys_and_source_bank_ids()
   local records = sources().MESSAGE_RECORDS
   local expected = {
     ["battle/narration/wild-appeared"] = 965,
+    ["battle/narration/wild-appeared-doubles"] = 967,
     ["battle/narration/trainer-challenged"] = 969,
     ["battle/narration/trainer-sent-out"] = 972,
+    ["battle/narration/trainer-sent-out-doubles"] = 973,
     ["battle/narration/player-sent-out"] = 979,
+    ["battle/narration/player-sent-out-doubles"] = 978,
     ["battle/narration/trainer-withdrew"] = 989,
     ["battle/narration/trainer-used-item"] = 858,
     ["battle/child/party-title"] = 6,
