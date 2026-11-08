@@ -2001,6 +2001,154 @@ function State:_retireValueEditor(editor)
   return removedLayer
 end
 
+-- Applies one accepted money edit, retiring the editor on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishMoneyValue(self, editor, result)
+  local changed = self.session:setMoney(result.value)
+  if not changed.ok then
+    self.errorMessage = message(changed.error)
+    editor:retry()
+    return false
+  end
+  self:_retireValueEditor(editor)
+  return true
+end
+
+-- Applies one accepted dialogue-frame edit, retiring the editor on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishDialogueFrame(self, editor, result)
+  local changed = self.session:setFrameIndex(tonumber(result.value))
+  if not changed.ok then
+    self.errorMessage = message(changed.error)
+    editor:retry()
+    return false
+  end
+  self:_retireValueEditor(editor)
+  return true
+end
+
+-- Begins one member addition, retiring the editor on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishPartyAddSpecies(self, editor, result)
+  if not self:_beginMonAdd(result.value) then
+    editor:retry()
+    return false
+  end
+  self:_retireValueEditor(editor)
+  return true
+end
+
+-- Adds one move to the member draft, retiring the editor on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishPartyAddMove(self, editor, result)
+  if not self.monDraft:addMove(result.value) then
+    self.errorMessage = "That move cannot be added to this member."
+    editor:retry()
+    return false
+  else
+    self.errorMessage = nil
+  end
+  self:_retireValueEditor(editor)
+  return true
+end
+
+-- Applies one move-component edit, restoring the move parent on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@param purpose string move-component purpose naming the edited component
+---@return boolean finished
+local function finishPartyMoveComponent(self, editor, result, purpose)
+  local slot0 = assert(self.pendingMoveSlot, "a move component editor owns its slot")
+  local draft = assert(self.monDraft, "a move component editor needs its member draft")
+  local component = purpose == "party_move_key" and "move" or purpose == "party_move_pp" and "pp" or "ppUps"
+  if not draft:setMove(slot0, component, result.value) then
+    self.errorMessage = "That value is not valid for this move."
+    editor:retry()
+    return false
+  end
+  self.errorMessage = nil
+  local removedLayer = self:_retireValueEditor(editor)
+  self.pendingFocusReturn = nil
+  self:_restoreMoveParent(removedLayer)
+  return true
+end
+
+-- Applies one bag-item choice, opening its quantity editor.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishBagAddItem(self, editor, result)
+  self.numberHold = nil
+  self.numberPressTarget = nil
+  self:_popValueLayer(editor)
+  self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
+  self.controller:selectBagItem(result.value)
+  self.valueReturnFocus = "bag:add"
+  self:_openBagQuantity("add")
+  return true
+end
+
+-- Applies one companion preset, retiring the editor on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishCompanionPreset(self, editor, result)
+  if not self:_applyCompanionPreset(result.value) then
+    editor:retry()
+    return false
+  end
+  self:_retireValueEditor(editor)
+  return true
+end
+
+-- Publishes one bag quantity, retiring the editor on success.
+---@param self SaveEditorState
+---@param editor SaveEditorValueEditor
+---@param result table<string, unknown>
+---@return boolean finished
+local function finishBagQuantity(self, editor, result)
+  local pending = assert(self.pendingQuantity)
+  if not self:_publishBagQuantity(pending.itemKey, result.value) then
+    editor:retry()
+    return false
+  end
+  if pending.returnModal then
+    self.controller.modal = pending.returnModal
+  end
+  self.pendingQuantity = nil
+  self:_retireValueEditor(editor)
+  return true
+end
+
+---@type table<string, fun(self: SaveEditorState, editor: SaveEditorValueEditor, result: table<string, unknown>, purpose: string): boolean>
+local VALUE_FINISHERS = {
+  money = finishMoneyValue,
+  dialogue_frame = finishDialogueFrame,
+  party_add_species = finishPartyAddSpecies,
+  party_add_move = finishPartyAddMove,
+  party_move_key = finishPartyMoveComponent,
+  party_move_pp = finishPartyMoveComponent,
+  party_move_pp_ups = finishPartyMoveComponent,
+  bag_add_item = finishBagAddItem,
+  companion_preset = finishCompanionPreset,
+  bag_quantity = finishBagQuantity,
+}
+
 function State:_finishValueEditor()
   local editor = self.valueEditor
   if editor == nil then
@@ -2028,72 +2176,13 @@ function State:_finishValueEditor()
     end
     return true
   end
-  if purpose == "money" then
-    local changed = self.session:setMoney(result.value)
-    if not changed.ok then
-      self.errorMessage = message(changed.error)
-      editor:retry()
-      return false
+  if purpose ~= nil then
+    local finish = VALUE_FINISHERS[purpose]
+    if finish ~= nil then
+      return finish(self, editor, result, purpose)
     end
-  elseif purpose == "dialogue_frame" then
-    local changed = self.session:setFrameIndex(tonumber(result.value))
-    if not changed.ok then
-      self.errorMessage = message(changed.error)
-      editor:retry()
-      return false
-    end
-  elseif purpose == "party_add_species" then
-    if not self:_beginMonAdd(result.value) then
-      editor:retry()
-      return false
-    end
-  elseif purpose == "party_add_move" then
-    if not self.monDraft:addMove(result.value) then
-      self.errorMessage = "That move cannot be added to this member."
-      editor:retry()
-      return false
-    else
-      self.errorMessage = nil
-    end
-  elseif purpose == "party_move_key" or purpose == "party_move_pp" or purpose == "party_move_pp_ups" then
-    local slot0 = assert(self.pendingMoveSlot, "a move component editor owns its slot")
-    local draft = assert(self.monDraft, "a move component editor needs its member draft")
-    local component = purpose == "party_move_key" and "move" or purpose == "party_move_pp" and "pp" or "ppUps"
-    if not draft:setMove(slot0, component, result.value) then
-      self.errorMessage = "That value is not valid for this move."
-      editor:retry()
-      return false
-    end
-    self.errorMessage = nil
-    local removedLayer = self:_retireValueEditor(editor)
-    self.pendingFocusReturn = nil
-    self:_restoreMoveParent(removedLayer)
-    return true
-  elseif purpose == "bag_add_item" then
-    self.numberHold = nil
-    self.numberPressTarget = nil
-    self:_popValueLayer(editor)
-    self.valueEditor, self.valuePurpose, self.activeDraftField = nil, nil, nil
-    self.controller:selectBagItem(result.value)
-    self.valueReturnFocus = "bag:add"
-    self:_openBagQuantity("add")
-    return true
-  elseif purpose == "companion_preset" then
-    if not self:_applyCompanionPreset(result.value) then
-      editor:retry()
-      return false
-    end
-  elseif purpose == "bag_quantity" then
-    local pending = assert(self.pendingQuantity)
-    if not self:_publishBagQuantity(pending.itemKey, result.value) then
-      editor:retry()
-      return false
-    end
-    if pending.returnModal then
-      self.controller.modal = pending.returnModal
-    end
-    self.pendingQuantity = nil
-  elseif descriptor ~= nil and self.monDraft ~= nil then
+  end
+  if descriptor ~= nil and self.monDraft ~= nil then
     local value = result.value
     if descriptor.convert == "integer" then
       value = assert(tonumber(value))
