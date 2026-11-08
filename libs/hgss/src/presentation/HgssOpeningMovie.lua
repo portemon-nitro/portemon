@@ -1120,336 +1120,494 @@ local function startWindowProgram(slot, event)
   end
 end
 
+---@param slot OpeningMovieSlot scene slot
+---@param engine unknown source engine naming the background
+---@param bgSlot unknown background slot index
+---@param message string failure message when the slot is uncompiled
+---@return table<string, unknown> compiled background slot
+local function backgroundSlot(slot, engine, bgSlot, message)
+  local engineLayers = slot.backgrounds[engine]
+  local background = engineLayers ~= nil and engineLayers[bgSlot] or nil
+  if background == nil then
+    error(
+      invalid(message, {
+        scene = slot.sceneNumber,
+        engine = engine,
+        bgSlot = bgSlot,
+      }),
+      0
+    )
+  end
+  return background
+end
+
+-- Resolves one sprite instance, creating its draw-order entry on first use.
+---@param slot OpeningMovieSlot scene slot
+---@param instanceId unknown sprite instance identity
+---@param visible unknown initial visibility for created instances
+---@return table<string, unknown> live sprite instance
+local function spriteInstance(slot, instanceId, visible)
+  local instance = slot.spriteInstances[instanceId]
+  if instance == nil then
+    instance = { tick = 0, visible = visible, quads = {} }
+    slot.spriteInstances[instanceId] = instance
+    slot.spriteOrder[#slot.spriteOrder + 1] = instanceId
+  end
+  return instance
+end
+
+-- Stages one compiled background image onto its engine slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetLayer(_, slot, event)
+  local background =
+    backgroundSlot(slot, event.engine, event.bgSlot, "opening scene layer names no compiled background slot")
+  background.image = event.image
+  background.visible = event.visible
+  background.priority = event.priority
+  -- The sampled image and its native dimensions change atomically:
+  -- later viewport math follows the newly selected art, never extents
+  -- inherited from the previous image.
+  local extents = slot.imageExtents ~= nil and slot.imageExtents[event.image] or nil
+  if extents == nil then
+    error(
+      invalid("opening scene layer points outside its compiled slot images", {
+        scene = slot.sceneNumber,
+        engine = event.engine,
+        bgSlot = event.bgSlot,
+      }),
+      0
+    )
+  end
+  background.width = extents.width
+  background.height = extents.height
+end
+
+-- Stages one palette event onto the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetPalette(_, slot, event)
+  slot.palette = event
+end
+
+-- Pans one compiled background by an absolute source displacement.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetScroll(_, slot, event)
+  -- A slot scroll pans one compiled background by an absolute source
+  -- displacement, never a per-tick speed. A target scroll names a
+  -- sprite group instead of a slot; no current program emits one, so only
+  -- its named effect starts while no displacement is recorded.
+  if event.engine ~= nil then
+    local background =
+      backgroundSlot(slot, event.engine, event.bgSlot, "opening scene scroll names no compiled background slot")
+    -- Zero-duration displacements land at once, negative durations drift
+    -- every source tick, and positive durations interpolate from the
+    -- staged origin. A later start on the same engine slot replaces the
+    -- running program; immediate starts schedule no effect wait.
+    local key = event.engine .. ":" .. event.bgSlot
+    if event.ticks == 0 then
+      background.scrollX = background.scrollX + event.dx
+      background.scrollY = background.scrollY + event.dy
+      slot.scrolls[key] = nil
+    elseif event.ticks == -1 then
+      slot.scrolls[key] = {
+        ticks = -1,
+        dx = event.dx,
+        dy = event.dy,
+        background = background,
+      }
+    else
+      slot.scrolls[key] = {
+        ticks = event.ticks,
+        elapsed = 0,
+        originX = background.scrollX,
+        originY = background.scrollY,
+        dx = event.dx,
+        dy = event.dy,
+        background = background,
+      }
+      startTimedEffect(slot, event.effect, event.ticks)
+    end
+  else
+    startTimedEffect(slot, event.effect, event.ticks)
+  end
+end
+
+-- Starts one alpha blend program on its source engine.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetBlend(_, slot, event)
+  -- One alpha program per source engine carries the six-bit first and
+  -- second plane masks, the direction, and the elapsed source ticks. A
+  -- later start on the same engine replaces the running program while
+  -- the named effect gates its own wait; starts on the other engine
+  -- never touch this slot. A zero-duration start restores the constant
+  -- source register weights at once and starts no timed program.
+  if event.ticks == 0 then
+    slot.blendPrograms[event.engine] = {
+      firstMask = event.firstMask,
+      secondMask = event.secondMask,
+      direction = event.direction,
+      ticks = 0,
+      elapsed = 0,
+      eva = event.eva,
+      evb = event.evb,
+    }
+  else
+    slot.blendPrograms[event.engine] = {
+      firstMask = event.firstMask,
+      secondMask = event.secondMask,
+      direction = event.direction,
+      ticks = event.ticks,
+      elapsed = 0,
+    }
+    startTimedEffect(slot, event.effect, event.ticks)
+  end
+end
+
+-- Starts one window program on the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applyWindow(_, slot, event)
+  startWindowProgram(slot, event)
+end
+
+-- Replaces only the second window rectangle and its mask.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetWindowSecondary(_, slot, event)
+  -- A direct second-register override replaces only the second rectangle
+  -- and its mask on the same engine; the running first-window program and
+  -- the outside mask stay exactly as the source left them.
+  local state = windowState(slot, event.engine)
+  state.win1Rect = copyWindowRect(event.rect)
+  state.win1InsideMask = event.insideMask --[[@as integer]]
+end
+
+-- Toggles one engine window-visibility mask.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetWindowVisible(_, slot, event)
+  -- A retail visible-window mask: positions and masks survive the
+  -- toggle either way, and a cleared bit retires its stale register
+  -- instead of clipping through it.
+  windowState(slot, event.engine).visibleMask = event.mask
+end
+
+-- Stops only the town draw contribution.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetModelVisible(_, slot, event)
+  -- The town meshes and renderer stay staged until the slot retires;
+  -- only the draw contribution stops here.
+  slot.townVisible = event.visible
+end
+
+-- Starts one scanline wipe program on the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applyCircleWipe(_, slot, event)
+  -- One active scanline wipe program per slot carries its owning source
+  -- engine, kind, and elapsed source ticks. A new start replaces the
+  -- running program; the source programs never overlap two wipes, so a
+  -- single program plus its engine tag is the whole state. An opening
+  -- wipe resets its own engine to neutral at the source start, releasing
+  -- any white or black hold a close kind left behind.
+  slot.wipe = { engine = event.engine, kind = event.kind, ticks = event.ticks, elapsed = 0 }
+  if event.kind == 0 or event.kind == 2 then
+    if slot.wipeHold == nil then
+      slot.wipeHold = { main = nil, sub = nil }
+    end
+    slot.wipeHold[event.engine] = nil
+    -- An opening wipe releases the hold on its owning engine; the
+    -- staged sprite and layer state stays.
+    releaseEngineHold(slot, event.engine)
+  end
+  startTimedEffect(slot, event.effect, event.ticks)
+end
+
+-- Starts one ordered line shutter covering both engines.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applyShutterFade(_, slot, event)
+  -- One ordered line shutter per slot: both engine row masks start
+  -- masked black with the main fade active; the source tick hands the
+  -- sub fade its first step only after the main reveal and cleanup.
+  -- The validated event pins the order, patterns, color, steps, and
+  -- cadence, so the runtime keeps no retail fade-type knowledge.
+  slot.shutter = {
+    active = "main",
+    effect = event.effect,
+    steps = event.steps,
+    framesPerStep = event.framesPerStep,
+    main = { elapsed = 0, clean = 0 },
+    sub = { elapsed = 0, clean = 0 },
+  }
+  -- The ordered shutter covers both engines, so both entry holds retire
+  -- with its masks rather than painting over the reveal.
+  releaseEngineHold(slot, "main")
+  releaseEngineHold(slot, "sub")
+  slot.effects[event.effect] = { started = true, done = false }
+end
+
+-- Assigns one sprite clip, restarting its playback from the loop start.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetSpriteClip(_, slot, event)
+  local instance = spriteInstance(slot, event.instanceId, false)
+  instance.engine = event.engine
+  instance.x = event.x
+  instance.y = event.y
+  instance.drawOrder = event.drawOrder
+  instance.objPriority = event.objPriority
+  instance.clipId = event.clipId
+  instance.animate = event.animate
+  instance.tick = 0
+  instance.quads = {}
+  local clip = slot.clipIds[event.clipId]
+  if clip ~= nil then
+    -- A fresh assignment restarts the sequence from the clip loop
+    -- start; the reset cell shows until the first source advance.
+    local state = startPlayback(clip)
+    instance.playback = state
+    instance.displayFrame = state.cell
+  else
+    instance.playback = nil
+    instance.displayFrame = 1
+  end
+  slot.clipStarts[event.clipId] = slot.sceneTick
+end
+
+-- Moves one sprite instance and sets its visibility.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySpriteVisible(_, slot, event)
+  local instance = spriteInstance(slot, event.instanceId, event.visible)
+  instance.engine = event.engine
+  instance.x = event.x
+  instance.y = event.y
+  instance.drawOrder = event.drawOrder
+  instance.visible = event.visible
+end
+
+-- Selects one town model clip and shows the town meshes.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetModelClip(_, slot, event)
+  slot.activeTown = event.model
+  slot.townClipTicks[event.model] = 0
+  slot.townVisible = true
+end
+
+-- Stages one camera distance onto the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetCamera(_, slot, event)
+  slot.cameraDistance = event.distance
+end
+
+-- Stages one lighting map onto the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetLighting(_, slot, event)
+  slot.lightingMap = event.map
+end
+
+-- Starts one emitter group on the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applyStartEmitters(_, slot, event)
+  startEmitters(slot, event.group, event.emitters)
+end
+
+-- Stages one screen mapping onto the scene slot.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetScreenMapping(_, slot, event)
+  slot.mainPhysical = event.mainPhysical
+end
+
+-- Replaces one background scroll origin, retiring its live program.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetScrollPosition(_, slot, event)
+  -- An absolute origin replaces the slot register and retires any live
+  -- program on the same slot, so later ticks hold the authored origin
+  -- instead of resuming a superseded drift.
+  local background =
+    backgroundSlot(slot, event.engine, event.bgSlot, "opening scene position names no compiled background slot")
+  background.scrollX = event.x
+  background.scrollY = event.y
+  slot.scrolls[event.engine .. ":" .. event.bgSlot] = nil
+end
+
+-- Resets one engine brightness hold to neutral.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetBrightness(_, slot, event)
+  -- An engine reset clears the staged hold on that engine plus its
+  -- fade task and hold; the other engine keeps its own hold or task.
+  -- Brightness registers are engine-bound on the hardware, so the reset
+  -- follows the named engine across physical screen flips.
+  if event.value ~= "neutral" then
+    error(
+      invalid("opening scene brightness carries no neutral reset", {
+        scene = slot.sceneNumber,
+        engine = event.engine,
+      }),
+      0
+    )
+  end
+  if event.engine ~= "main" and event.engine ~= "sub" then
+    error(
+      invalid("opening scene brightness names no source engine", {
+        scene = slot.sceneNumber,
+        engine = event.engine,
+      }),
+      0
+    )
+  end
+  local holds = assert(slot.brightness, "movie slot keeps its staged engine holds")
+  holds[event.engine] = "neutral"
+  local state = slot.fadeByEngine[event.engine]
+  assert(state ~= nil, "movie slot keeps a fade record per source engine")
+  state.task = nil
+  state.hold = nil
+end
+
+-- Starts one named fade across its selected engines.
+---@param _ HgssOpeningMovie unused movie owner
+---@param slot OpeningMovieSlot scene slot
+---@param event table<string, unknown> authored timeline event
+local function applySetFade(_, slot, event)
+  -- One named wait covers every selected engine while each selected
+  -- engine runs its own task and terminal hold; the other engine is
+  -- untouched. A new fade supersedes the selected engines' holds.
+  local engines
+  if event.scope == "both" then
+    engines = { "main", "sub" }
+  elseif event.scope == "main" or event.scope == "sub" then
+    engines = { event.scope }
+  else
+    error(
+      invalid("opening scene fade names no source scope", {
+        scene = slot.sceneNumber,
+        scope = event.scope,
+      }),
+      0
+    )
+  end
+  for _, engine in ipairs(engines) do
+    local state = slot.fadeByEngine[engine]
+    if state == nil then
+      error(
+        invalid("opening scene fade names no source engine", {
+          scene = slot.sceneNumber,
+          engine = engine,
+        }),
+        0
+      )
+    end
+    -- The authored fade replaces the entry hold on the engines it
+    -- drives; the fade task itself covers the transition.
+    releaseEngineHold(slot, engine)
+    state.task = {
+      mode = event.mode,
+      color = event.color,
+      direction = event.direction,
+      ticks = event.ticks,
+      elapsed = 0,
+      terminal = event.terminal,
+      shape = event.shape,
+    }
+    state.hold = nil
+  end
+  -- The named wait is retail IsPaletteFadeFinished: it trails the last
+  -- visible step by the fade cleanup update and the following call.
+  startTimedEffect(slot, event.effect, event.ticks + PALETTE_FADE_SETTLE_TICKS)
+end
+
+-- Marks one authored beat; duration steps own the wait itself.
+local function applyWaitTicks()
+  -- Duration steps own the wait; the event only marks the authored beat.
+  -- Guards live on the owning step record, so there is no wait-shaped
+  -- event in the grammar.
+end
+
+-- Opens the movie skip gate on scene 1.
+---@param self HgssOpeningMovie
+---@param slot OpeningMovieSlot scene slot
+local function applyEnableSkip(self, slot)
+  if slot.sceneNumber ~= 1 then
+    error(invalid("only opening scene 1 opens the movie skip gate", { scene = slot.sceneNumber }), 0)
+  end
+  self.skipEligible = true
+end
+
+-- Flags the pending movie finish.
+---@param self HgssOpeningMovie
+local function applyFinish(self)
+  self.pendingFinish = true
+end
+
+---@type table<string, fun(self: HgssOpeningMovie, slot: OpeningMovieSlot, event: table<string, unknown>)>
+local APPLY_HANDLERS = {
+  setLayer = applySetLayer,
+  setPalette = applySetPalette,
+  setScroll = applySetScroll,
+  setBlend = applySetBlend,
+  window = applyWindow,
+  setWindowSecondary = applySetWindowSecondary,
+  setWindowVisible = applySetWindowVisible,
+  setModelVisible = applySetModelVisible,
+  circleWipe = applyCircleWipe,
+  shutterFade = applyShutterFade,
+  setSpriteClip = applySetSpriteClip,
+  spriteVisible = applySpriteVisible,
+  setModelClip = applySetModelClip,
+  setCamera = applySetCamera,
+  setLighting = applySetLighting,
+  startEmitters = applyStartEmitters,
+  setScreenMapping = applySetScreenMapping,
+  setScrollPosition = applySetScrollPosition,
+  setBrightness = applySetBrightness,
+  setFade = applySetFade,
+  waitTicks = applyWaitTicks,
+  enableSkip = applyEnableSkip,
+  finish = applyFinish,
+}
+
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot
 ---@param event table<string, unknown> authored timeline event
 local function applyEvent(self, slot, event)
   local op = event.op
-  if op == "setLayer" then
-    local engineLayers = slot.backgrounds[event.engine]
-    local background = engineLayers ~= nil and engineLayers[event.bgSlot] or nil
-    if background == nil then
-      error(
-        invalid("opening scene layer names no compiled background slot", {
-          scene = slot.sceneNumber,
-          engine = event.engine,
-          bgSlot = event.bgSlot,
-        }),
-        0
-      )
-    end
-    background.image = event.image
-    background.visible = event.visible
-    background.priority = event.priority
-    -- The sampled image and its native dimensions change atomically:
-    -- later viewport math follows the newly selected art, never extents
-    -- inherited from the previous image.
-    local extents = slot.imageExtents ~= nil and slot.imageExtents[event.image] or nil
-    if extents == nil then
-      error(
-        invalid("opening scene layer points outside its compiled slot images", {
-          scene = slot.sceneNumber,
-          engine = event.engine,
-          bgSlot = event.bgSlot,
-        }),
-        0
-      )
-    end
-    background.width = extents.width
-    background.height = extents.height
-  elseif op == "setPalette" then
-    slot.palette = event
-  elseif op == "setScroll" then
-    -- A slot scroll pans one compiled background by an absolute source
-    -- displacement, never a per-tick speed. A target scroll names a
-    -- sprite group instead of a slot; no current program emits one, so only
-    -- its named effect starts while no displacement is recorded.
-    if event.engine ~= nil then
-      local engineLayers = slot.backgrounds[event.engine]
-      local background = engineLayers ~= nil and engineLayers[event.bgSlot] or nil
-      if background == nil then
-        error(
-          invalid("opening scene scroll names no compiled background slot", {
-            scene = slot.sceneNumber,
-            engine = event.engine,
-            bgSlot = event.bgSlot,
-          }),
-          0
-        )
-      end
-      -- Zero-duration displacements land at once, negative durations drift
-      -- every source tick, and positive durations interpolate from the
-      -- staged origin. A later start on the same engine slot replaces the
-      -- running program; immediate starts schedule no effect wait.
-      local key = event.engine .. ":" .. event.bgSlot
-      if event.ticks == 0 then
-        background.scrollX = background.scrollX + event.dx
-        background.scrollY = background.scrollY + event.dy
-        slot.scrolls[key] = nil
-      elseif event.ticks == -1 then
-        slot.scrolls[key] = {
-          ticks = -1,
-          dx = event.dx,
-          dy = event.dy,
-          background = background,
-        }
-      else
-        slot.scrolls[key] = {
-          ticks = event.ticks,
-          elapsed = 0,
-          originX = background.scrollX,
-          originY = background.scrollY,
-          dx = event.dx,
-          dy = event.dy,
-          background = background,
-        }
-        startTimedEffect(slot, event.effect, event.ticks)
-      end
-    else
-      startTimedEffect(slot, event.effect, event.ticks)
-    end
-  elseif op == "setBlend" then
-    -- One alpha program per source engine carries the six-bit first and
-    -- second plane masks, the direction, and the elapsed source ticks. A
-    -- later start on the same engine replaces the running program while
-    -- the named effect gates its own wait; starts on the other engine
-    -- never touch this slot. A zero-duration start restores the constant
-    -- source register weights at once and starts no timed program.
-    if event.ticks == 0 then
-      slot.blendPrograms[event.engine] = {
-        firstMask = event.firstMask,
-        secondMask = event.secondMask,
-        direction = event.direction,
-        ticks = 0,
-        elapsed = 0,
-        eva = event.eva,
-        evb = event.evb,
-      }
-    else
-      slot.blendPrograms[event.engine] = {
-        firstMask = event.firstMask,
-        secondMask = event.secondMask,
-        direction = event.direction,
-        ticks = event.ticks,
-        elapsed = 0,
-      }
-      startTimedEffect(slot, event.effect, event.ticks)
-    end
-  elseif op == "window" then
-    startWindowProgram(slot, event)
-  elseif op == "setWindowSecondary" then
-    -- A direct second-register override replaces only the second rectangle
-    -- and its mask on the same engine; the running first-window program and
-    -- the outside mask stay exactly as the source left them.
-    local state = windowState(slot, event.engine)
-    state.win1Rect = copyWindowRect(event.rect)
-    state.win1InsideMask = event.insideMask --[[@as integer]]
-  elseif op == "setWindowVisible" then
-    -- A retail visible-window mask: positions and masks survive the
-    -- toggle either way, and a cleared bit retires its stale register
-    -- instead of clipping through it.
-    windowState(slot, event.engine).visibleMask = event.mask
-  elseif op == "setModelVisible" then
-    -- The town meshes and renderer stay staged until the slot retires;
-    -- only the draw contribution stops here.
-    slot.townVisible = event.visible
-  elseif op == "circleWipe" then
-    -- One active scanline wipe program per slot carries its owning source
-    -- engine, kind, and elapsed source ticks. A new start replaces the
-    -- running program; the source programs never overlap two wipes, so a
-    -- single program plus its engine tag is the whole state. An opening
-    -- wipe resets its own engine to neutral at the source start, releasing
-    -- any white or black hold a close kind left behind.
-    slot.wipe = { engine = event.engine, kind = event.kind, ticks = event.ticks, elapsed = 0 }
-    if event.kind == 0 or event.kind == 2 then
-      if slot.wipeHold == nil then
-        slot.wipeHold = { main = nil, sub = nil }
-      end
-      slot.wipeHold[event.engine] = nil
-      -- An opening wipe releases the hold on its owning engine; the
-      -- staged sprite and layer state stays.
-      releaseEngineHold(slot, event.engine)
-    end
-    startTimedEffect(slot, event.effect, event.ticks)
-  elseif op == "shutterFade" then
-    -- One ordered line shutter per slot: both engine row masks start
-    -- masked black with the main fade active; the source tick hands the
-    -- sub fade its first step only after the main reveal and cleanup.
-    -- The validated event pins the order, patterns, color, steps, and
-    -- cadence, so the runtime keeps no retail fade-type knowledge.
-    slot.shutter = {
-      active = "main",
-      effect = event.effect,
-      steps = event.steps,
-      framesPerStep = event.framesPerStep,
-      main = { elapsed = 0, clean = 0 },
-      sub = { elapsed = 0, clean = 0 },
-    }
-    -- The ordered shutter covers both engines, so both entry holds retire
-    -- with its masks rather than painting over the reveal.
-    releaseEngineHold(slot, "main")
-    releaseEngineHold(slot, "sub")
-    slot.effects[event.effect] = { started = true, done = false }
-  elseif op == "setSpriteClip" then
-    local instance = slot.spriteInstances[event.instanceId]
-    if instance == nil then
-      instance = { tick = 0, visible = false, quads = {} }
-      slot.spriteInstances[event.instanceId] = instance
-      slot.spriteOrder[#slot.spriteOrder + 1] = event.instanceId
-    end
-    instance.engine = event.engine
-    instance.x = event.x
-    instance.y = event.y
-    instance.drawOrder = event.drawOrder
-    instance.objPriority = event.objPriority
-    instance.clipId = event.clipId
-    instance.animate = event.animate
-    instance.tick = 0
-    instance.quads = {}
-    local clip = slot.clipIds[event.clipId]
-    if clip ~= nil then
-      -- A fresh assignment restarts the sequence from the clip loop
-      -- start; the reset cell shows until the first source advance.
-      local state = startPlayback(clip)
-      instance.playback = state
-      instance.displayFrame = state.cell
-    else
-      instance.playback = nil
-      instance.displayFrame = 1
-    end
-    slot.clipStarts[event.clipId] = slot.sceneTick
-  elseif op == "spriteVisible" then
-    local instance = slot.spriteInstances[event.instanceId]
-    if instance == nil then
-      instance = { tick = 0, visible = event.visible, quads = {} }
-      slot.spriteInstances[event.instanceId] = instance
-      slot.spriteOrder[#slot.spriteOrder + 1] = event.instanceId
-    end
-    instance.engine = event.engine
-    instance.x = event.x
-    instance.y = event.y
-    instance.drawOrder = event.drawOrder
-    instance.visible = event.visible
-  elseif op == "setModelClip" then
-    slot.activeTown = event.model
-    slot.townClipTicks[event.model] = 0
-    slot.townVisible = true
-  elseif op == "setCamera" then
-    slot.cameraDistance = event.distance
-  elseif op == "setLighting" then
-    slot.lightingMap = event.map
-  elseif op == "startEmitters" then
-    startEmitters(slot, event.group, event.emitters)
-  elseif op == "setScreenMapping" then
-    slot.mainPhysical = event.mainPhysical
-  elseif op == "setScrollPosition" then
-    -- An absolute origin replaces the slot register and retires any live
-    -- program on the same slot, so later ticks hold the authored origin
-    -- instead of resuming a superseded drift.
-    local engineLayers = slot.backgrounds[event.engine]
-    local background = engineLayers ~= nil and engineLayers[event.bgSlot] or nil
-    if background == nil then
-      error(
-        invalid("opening scene position names no compiled background slot", {
-          scene = slot.sceneNumber,
-          engine = event.engine,
-          bgSlot = event.bgSlot,
-        }),
-        0
-      )
-    end
-    background.scrollX = event.x
-    background.scrollY = event.y
-    slot.scrolls[event.engine .. ":" .. event.bgSlot] = nil
-  elseif op == "setBrightness" then
-    -- An engine reset clears the staged hold on that engine plus its
-    -- fade task and hold; the other engine keeps its own hold or task.
-    -- Brightness registers are engine-bound on the hardware, so the reset
-    -- follows the named engine across physical screen flips.
-    if event.value ~= "neutral" then
-      error(
-        invalid("opening scene brightness carries no neutral reset", {
-          scene = slot.sceneNumber,
-          engine = event.engine,
-        }),
-        0
-      )
-    end
-    if event.engine ~= "main" and event.engine ~= "sub" then
-      error(
-        invalid("opening scene brightness names no source engine", {
-          scene = slot.sceneNumber,
-          engine = event.engine,
-        }),
-        0
-      )
-    end
-    local holds = assert(slot.brightness, "movie slot keeps its staged engine holds")
-    holds[event.engine] = "neutral"
-    local state = slot.fadeByEngine[event.engine]
-    assert(state ~= nil, "movie slot keeps a fade record per source engine")
-    state.task = nil
-    state.hold = nil
-  elseif op == "setFade" then
-    -- One named wait covers every selected engine while each selected
-    -- engine runs its own task and terminal hold; the other engine is
-    -- untouched. A new fade supersedes the selected engines' holds.
-    local engines
-    if event.scope == "both" then
-      engines = { "main", "sub" }
-    elseif event.scope == "main" or event.scope == "sub" then
-      engines = { event.scope }
-    else
-      error(
-        invalid("opening scene fade names no source scope", {
-          scene = slot.sceneNumber,
-          scope = event.scope,
-        }),
-        0
-      )
-    end
-    for _, engine in ipairs(engines) do
-      local state = slot.fadeByEngine[engine]
-      if state == nil then
-        error(
-          invalid("opening scene fade names no source engine", {
-            scene = slot.sceneNumber,
-            engine = engine,
-          }),
-          0
-        )
-      end
-      -- The authored fade replaces the entry hold on the engines it
-      -- drives; the fade task itself covers the transition.
-      releaseEngineHold(slot, engine)
-      state.task = {
-        mode = event.mode,
-        color = event.color,
-        direction = event.direction,
-        ticks = event.ticks,
-        elapsed = 0,
-        terminal = event.terminal,
-        shape = event.shape,
-      }
-      state.hold = nil
-    end
-    -- The named wait is retail IsPaletteFadeFinished: it trails the last
-    -- visible step by the fade cleanup update and the following call.
-    startTimedEffect(slot, event.effect, event.ticks + PALETTE_FADE_SETTLE_TICKS)
-  elseif op == "waitTicks" then
-    -- Duration steps own the wait; the event only marks the authored beat.
-    -- Guards live on the owning step record, so there is no wait-shaped
-    -- event in the grammar.
-  elseif op == "enableSkip" then
-    if slot.sceneNumber ~= 1 then
-      error(invalid("only opening scene 1 opens the movie skip gate", { scene = slot.sceneNumber }), 0)
-    end
-    self.skipEligible = true
-  elseif op == "finish" then
-    self.pendingFinish = true
-  else
+  assert(type(op) == "string", "movie events carry their string op")
+  local handler = APPLY_HANDLERS[op]
+  if handler == nil then
     error(invalid("opening scene event is outside the closed movie grammar", { op = op }), 0)
   end
+  handler(self, slot, event)
 end
 
 ---@param self HgssOpeningMovie
