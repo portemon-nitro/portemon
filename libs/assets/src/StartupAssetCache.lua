@@ -12,6 +12,12 @@ local TITLE_PATH = "data/generated/startup/title.lua"
 -- Canonical 32-choice walking pair: indices 1..16 name Ethan with each of
 -- sixteen followers in fixed order, 17..32 name Lyra with the same order.
 local FOLLOWER_SPECIES_IDS = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
+-- Follower species membership by id; the ordered list above stays the
+-- positional source for pair arithmetic.
+local FOLLOWER_SPECIES = {}
+for _, speciesId in ipairs(FOLLOWER_SPECIES_IDS) do
+  FOLLOWER_SPECIES[speciesId] = true
+end
 local EDITIONS = { heartgold = true, soulsilver = true }
 local SOURCE_FIELDS = { fileId = true, narcId = true, memberId = true }
 
@@ -2164,16 +2170,7 @@ function StartupAssetCache.loadWalker(cacheFs, versionId)
   for key, follower in pairs(followers) do
     followerCount = followerCount + 1
     local speciesId = tonumber(key)
-    local known = false
-    if speciesId ~= nil and speciesId % 1 == 0 then
-      for _, candidate in ipairs(FOLLOWER_SPECIES_IDS) do
-        if candidate == speciesId then
-          known = true
-          break
-        end
-      end
-    end
-    if not known or key ~= tostring(speciesId) then
+    if speciesId == nil or speciesId % 1 ~= 0 or not FOLLOWER_SPECIES[speciesId] or key ~= tostring(speciesId) then
       return nil, invalid("walking catalog follower key is unknown", path)
     end
     local expected = "assets/generated/startup/loader/subjects/followers/" .. key .. ".png"
