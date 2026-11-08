@@ -801,6 +801,86 @@ local function isXyz(value)
   return type(value) == "table" and isFiniteNumber(value.x) and isFiniteNumber(value.y) and isFiniteNumber(value.z)
 end
 
+-- Checks one emitter scale animation block.
+---@param scale unknown scale block under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkScaleBlock(scale, path)
+  if
+    type(scale) ~= "table"
+    or not onlyKeys(scale, { startFx = true, normalFx = true, finishFx = true, inTick = true, outTick = true })
+    or not isInteger(scale.startFx)
+    or not isInteger(scale.normalFx)
+    or not isInteger(scale.finishFx)
+    or not isNonnegativeInteger(scale.inTick)
+    or scale.inTick > 255
+    or not isNonnegativeInteger(scale.outTick)
+    or scale.outTick > 255
+  then
+    return nil, invalid("opening scene emitter scale block is malformed", path)
+  end
+  return true
+end
+
+-- Checks one emitter color animation block.
+---@param color unknown color block under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkColorBlock(color, path)
+  if
+    type(color) ~= "table"
+    or not onlyKeys(
+      color,
+      { startRgb = true, endRgb = true, inTick = true, peakTick = true, outTick = true, interpolate = true }
+    )
+    or not isRgb555Triple(color.startRgb)
+    or not isRgb555Triple(color.endRgb)
+    or not isNonnegativeInteger(color.inTick)
+    or color.inTick > 255
+    or not isNonnegativeInteger(color.peakTick)
+    or color.peakTick > 255
+    or not isNonnegativeInteger(color.outTick)
+    or color.outTick > 255
+    or type(color.interpolate) ~= "boolean"
+  then
+    return nil, invalid("opening scene emitter color block is malformed", path)
+  end
+  return true
+end
+
+-- Checks one emitter alpha animation block.
+---@param alpha unknown alpha block under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkAlphaBlock(alpha, path)
+  if
+    type(alpha) ~= "table"
+    or not onlyKeys(alpha, { start = true, normal = true, finish = true, flick = true, inTick = true, outTick = true })
+    or not isNonnegativeInteger(alpha.start)
+    or alpha.start > 31
+    or not isNonnegativeInteger(alpha.normal)
+    or alpha.normal > 31
+    or not isNonnegativeInteger(alpha.finish)
+    or alpha.finish > 31
+    or not isNonnegativeInteger(alpha.flick)
+    or alpha.flick > 255
+    or not isNonnegativeInteger(alpha.inTick)
+    or alpha.inTick > 255
+    or not isNonnegativeInteger(alpha.outTick)
+    or alpha.outTick > 255
+  then
+    return nil, invalid("opening scene emitter alpha block is malformed", path)
+  end
+  return true
+end
+
+-- Optional emitter animation blocks in validation order.
+local ANIMATION_BLOCKS = {
+  { key = "scale", check = checkScaleBlock },
+  { key = "color", check = checkColorBlock },
+  { key = "alpha", check = checkAlphaBlock },
+}
+
 ---@param animations unknown
 ---@param sceneNumber integer
 ---@return boolean|nil, Errors.Error|nil
@@ -809,65 +889,13 @@ local function validateOpeningAnimationBlocks(animations, sceneNumber)
   if type(animations) ~= "table" or not onlyKeys(animations, { scale = true, color = true, alpha = true }) then
     return nil, invalid("opening scene emitter animations are malformed", path)
   end
-  if animations.scale ~= nil then
-    local scale = animations.scale
-    if
-      type(scale) ~= "table"
-      or not onlyKeys(scale, { startFx = true, normalFx = true, finishFx = true, inTick = true, outTick = true })
-      or not isInteger(scale.startFx)
-      or not isInteger(scale.normalFx)
-      or not isInteger(scale.finishFx)
-      or not isNonnegativeInteger(scale.inTick)
-      or scale.inTick > 255
-      or not isNonnegativeInteger(scale.outTick)
-      or scale.outTick > 255
-    then
-      return nil, invalid("opening scene emitter scale block is malformed", path)
-    end
-  end
-  if animations.color ~= nil then
-    local color = animations.color
-    if
-      type(color) ~= "table"
-      or not onlyKeys(
-        color,
-        { startRgb = true, endRgb = true, inTick = true, peakTick = true, outTick = true, interpolate = true }
-      )
-      or not isRgb555Triple(color.startRgb)
-      or not isRgb555Triple(color.endRgb)
-      or not isNonnegativeInteger(color.inTick)
-      or color.inTick > 255
-      or not isNonnegativeInteger(color.peakTick)
-      or color.peakTick > 255
-      or not isNonnegativeInteger(color.outTick)
-      or color.outTick > 255
-      or type(color.interpolate) ~= "boolean"
-    then
-      return nil, invalid("opening scene emitter color block is malformed", path)
-    end
-  end
-  if animations.alpha ~= nil then
-    local alpha = animations.alpha
-    if
-      type(alpha) ~= "table"
-      or not onlyKeys(
-        alpha,
-        { start = true, normal = true, finish = true, flick = true, inTick = true, outTick = true }
-      )
-      or not isNonnegativeInteger(alpha.start)
-      or alpha.start > 31
-      or not isNonnegativeInteger(alpha.normal)
-      or alpha.normal > 31
-      or not isNonnegativeInteger(alpha.finish)
-      or alpha.finish > 31
-      or not isNonnegativeInteger(alpha.flick)
-      or alpha.flick > 255
-      or not isNonnegativeInteger(alpha.inTick)
-      or alpha.inTick > 255
-      or not isNonnegativeInteger(alpha.outTick)
-      or alpha.outTick > 255
-    then
-      return nil, invalid("opening scene emitter alpha block is malformed", path)
+  for _, block in ipairs(ANIMATION_BLOCKS) do
+    local value = animations[block.key]
+    if value ~= nil then
+      local ok, err = block.check(value, path)
+      if not ok then
+        return nil, err
+      end
     end
   end
   return true
