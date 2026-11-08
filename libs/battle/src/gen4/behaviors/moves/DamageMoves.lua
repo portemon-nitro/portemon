@@ -2062,24 +2062,27 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
       combatant = defender,
     })
   end
-  for _, event in ipairs(outcome.events) do
-    local answer = event --[[@as table<string, unknown>]]
+  local function applyAngerPoint(answer)
     if
-      answer.key == "ANGER_POINT"
-      and answer.combatant == defender
-      and answer.stat == "attack"
+      answer.stat == "attack"
       and ctx:damage(defender, 0, causeFor(frame)).after > 0
       and ctx:entryOf(defender).stages.attack < 6
     then
       ctx:changeStage(defender, "attack", 6 - ctx:entryOf(defender).stages.attack, causeFor(frame))
       announceAbility(answer.key --[[@as string]])
-    elseif answer.key == "ROUGH_SKIN" and answer.combatant == defender and userAbility ~= "MAGIC_GUARD" then
+    end
+  end
+  local function applyRoughSkin(answer)
+    if userAbility ~= "MAGIC_GUARD" then
       local maximum = ctx:entryOf(defender).maxHp
       if type(maximum) == "number" and ctx:damage(user, 0, causeFor(frame)).before > 0 then
         ctx:damage(user, math.max(1, math.floor(maximum / 8)), causeFor(frame))
         announceAbility(answer.key)
       end
-    elseif answer.key == "AFTERMATH" and answer.combatant == defender and userAbility ~= "MAGIC_GUARD" then
+    end
+  end
+  local function applyAftermath(answer)
+    if userAbility ~= "MAGIC_GUARD" then
       local damp = false
       local partners = combatOf(frame, defender).partnerAbilities --[[@as table<string, string[]>?]]
       if abilities.user == "DAMP" or abilities.foe == "DAMP" then
@@ -2098,9 +2101,11 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
         ctx:damage(user, math.max(1, math.floor(maximum / 4)), causeFor(frame))
         announceAbility(answer.key)
       end
-    elseif
-      answer.key == "COLOR_CHANGE"
-      and type(answer.becomeType) == "string"
+    end
+  end
+  local function applyColorChange(answer)
+    if
+      type(answer.becomeType) == "string"
       and power > 0
       and record.executingMove ~= "STRUGGLE"
       and record.executingMove ~= "U_TURN"
@@ -2123,47 +2128,67 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
         )
         announceAbility(answer.key)
       end
-    elseif contact and answer.combatant == defender and ctx:damage(user, 0, causeFor(frame)).before > 0 then
-      if answer.key == "CUTE_CHARM" then
-        local genders = locals.genders --[[@as table<integer, string>?]]
-        if
-          ctx:damage(defender, 0, causeFor(frame)).after > 0
-          and genders ~= nil
-          and genders[user] ~= nil
-          and genders[defender] ~= nil
-          and genders[user] ~= genders[defender]
-          and genders[user] ~= "genderless"
-          and genders[defender] ~= "genderless"
-          and not ctx:hasBattleEffect(user, "infatuation")
-          and userAbility ~= "OBLIVIOUS"
-          and stream:nextU16("contact_chance", causeFor(frame)) % 10 < 3
-        then
-          ctx:addBattleEffect(
-            NativeEffectHandlers.definitionFor("infatuation"),
-            { kind = "active", combatant = user, activation = activationOf(ctx, user) },
-            { kind = "move", combatant = defender },
-            { version = 1 }
-          )
-          announceAbility(answer.key)
+    end
+  end
+  local function applyContact(answer)
+    if answer.key == "CUTE_CHARM" then
+      local genders = locals.genders --[[@as table<integer, string>?]]
+      if
+        ctx:damage(defender, 0, causeFor(frame)).after > 0
+        and genders ~= nil
+        and genders[user] ~= nil
+        and genders[defender] ~= nil
+        and genders[user] ~= genders[defender]
+        and genders[user] ~= "genderless"
+        and genders[defender] ~= "genderless"
+        and not ctx:hasBattleEffect(user, "infatuation")
+        and userAbility ~= "OBLIVIOUS"
+        and stream:nextU16("contact_chance", causeFor(frame)) % 10 < 3
+      then
+        ctx:addBattleEffect(
+          NativeEffectHandlers.definitionFor("infatuation"),
+          { kind = "active", combatant = user, activation = activationOf(ctx, user) },
+          { kind = "move", combatant = defender },
+          { version = 1 }
+        )
+        announceAbility(answer.key)
+      end
+    else
+      local statuses = { STATIC = "paralysis", POISON_POINT = "poison", FLAME_BODY = "burn" }
+      local status = statuses[
+        answer.key --[[@as string]]
+      ] --[[@as string?]]
+      if answer.key == "EFFECT_SPORE" then
+        if stream:nextU16("contact_chance", causeFor(frame)) % 10 < 3 then
+          local choices = { "poison", "paralysis", "sleep" }
+          status = choices[(stream:nextU16("contact_status", causeFor(frame)) % #choices) + 1]
         end
-      else
-        local statuses = { STATIC = "paralysis", POISON_POINT = "poison", FLAME_BODY = "burn" }
-        local status = statuses[
-          answer.key --[[@as string]]
-        ] --[[@as string?]]
-        if answer.key == "EFFECT_SPORE" then
-          if stream:nextU16("contact_chance", causeFor(frame)) % 10 < 3 then
-            local choices = { "poison", "paralysis", "sleep" }
-            status = choices[(stream:nextU16("contact_status", causeFor(frame)) % #choices) + 1]
-          end
-        elseif status ~= nil and stream:nextU16("contact_chance", causeFor(frame)) % 10 >= 3 then
-          status = nil
+      elseif status ~= nil and stream:nextU16("contact_chance", causeFor(frame)) % 10 >= 3 then
+        status = nil
+      end
+      if status ~= nil then
+        if applySecondaryStatus(ctx, frame, user, status) then
+          announceAbility(answer.key --[[@as string]])
         end
-        if status ~= nil then
-          if applySecondaryStatus(ctx, frame, user, status) then
-            announceAbility(answer.key --[[@as string]])
-          end
-        end
+      end
+    end
+  end
+  ---@type table<string, fun(answer: table<string, unknown>)>
+  local appliers = {
+    ANGER_POINT = applyAngerPoint,
+    ROUGH_SKIN = applyRoughSkin,
+    AFTERMATH = applyAftermath,
+    COLOR_CHANGE = applyColorChange,
+  }
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if answer.combatant == defender then
+      local key = answer.key
+      local apply = type(key) == "string" and appliers[key] or nil
+      if apply ~= nil then
+        apply(answer)
+      elseif contact and ctx:damage(user, 0, causeFor(frame)).before > 0 then
+        applyContact(answer)
       end
     end
   end
