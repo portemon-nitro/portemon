@@ -2063,6 +2063,74 @@ function StartupAssetCache.loadWalker(cacheFs, versionId)
   return bundle
 end
 
+-- Validates one staged title model with its referenced art: the model
+-- carries its dynamic kind and model contract, and every referenced asset
+-- lives under the title generated root and exists on the cache.
+---@param cacheFs CacheFs staged-asset filesystem
+---@param model unknown staged model under validation
+---@param role string model role behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkStagedModel(cacheFs, model, role)
+  if type(model) ~= "table" or model.kind ~= "nitro-dynamic" or not pcall(ModelAsset.validate, model) then
+    return nil, invalid(role .. " is malformed", TITLE_PATH)
+  end
+  for _, assetPath in ipairs(ModelAsset.referencedPaths(model)) do
+    if not generatedPath(assetPath, "title") then
+      return nil, invalid(role .. " references an asset outside its generated root", assetPath)
+    end
+    if not cacheFs:exists(assetPath, "file") then
+      return nil, invalid(role .. " asset is missing", assetPath)
+    end
+  end
+  return true
+end
+
+-- Validates one staged animation-channel set against its expected
+-- category/kind pairs. Channels in the optional set may be absent (an
+-- edition whose source carries no targets omits them instead of
+-- publishing a trackless clip); every other channel is required and
+-- every present channel carries compiled tracks.
+---@param clips table<string, unknown> staged channels under validation
+---@param expected table<string, { category: string, kind: string }> required category/kind by channel
+---@param optional table<string, boolean> channels allowed to be absent
+---@param qualifier string role qualifier behind diagnostics, "" for the title model
+---@return boolean|nil, Errors.Error|nil
+local function checkClipChannels(clips, expected, optional, qualifier)
+  for name, want in pairs(expected) do
+    local clip = clips[name]
+    if clip == nil then
+      if not optional[name] then
+        return nil, invalid("title " .. qualifier .. name .. " channel is missing", TITLE_PATH)
+      end
+    elseif
+      type(clip) ~= "table"
+      or clip.category ~= want.category
+      or clip.kind ~= want.kind
+      or type(clip.compiled) ~= "table"
+      or type(clip.tracks) ~= "table"
+      or #clip.tracks == 0
+    then
+      return nil, invalid("title " .. qualifier .. name .. " channel is malformed", TITLE_PATH)
+    end
+  end
+  return true
+end
+
+-- Checks one prompt color triple against its edition RGB within tolerance.
+---@param value unknown staged color triple under validation
+---@param expectedRgb number[] edition prompt RGB behind validation
+---@return boolean
+local function isPromptRgb(value, expectedRgb)
+  return type(value) == "table"
+    and #value == 3
+    and isFiniteNumber(value[1])
+    and isFiniteNumber(value[2])
+    and isFiniteNumber(value[3])
+    and math.abs(value[1] - expectedRgb[1]) < 1e-6
+    and math.abs(value[2] - expectedRgb[2]) < 1e-6
+    and math.abs(value[3] - expectedRgb[3]) < 1e-6
+end
+
 ---@param cacheFs CacheFs
 ---@param versionId string
 ---@return table<string, unknown>|nil
@@ -2073,20 +2141,9 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
   if bundle == nil then
     return nil, err
   end
-  if
-    type(bundle.model) ~= "table"
-    or bundle.model.kind ~= "nitro-dynamic"
-    or not pcall(ModelAsset.validate, bundle.model)
-  then
-    return nil, invalid("title model is malformed", TITLE_PATH)
-  end
-  for _, assetPath in ipairs(ModelAsset.referencedPaths(bundle.model)) do
-    if not generatedPath(assetPath, "title") then
-      return nil, invalid("title model references an asset outside its generated root", assetPath)
-    end
-    if not cacheFs:exists(assetPath, "file") then
-      return nil, invalid("title model asset is missing", assetPath)
-    end
+  local okModel, modelErr = checkStagedModel(cacheFs, bundle.model, "title model")
+  if not okModel then
+    return nil, modelErr
   end
   if type(bundle.surfaces) ~= "table" or type(bundle.clips) ~= "table" or type(bundle.timeline) ~= "table" then
     return nil, invalid("title layers, clips, and timeline are required", TITLE_PATH)
@@ -2117,25 +2174,9 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
     color = { category = "material", kind = "color" },
     pattern = { category = "material", kind = "pattern" },
   }
-  for name, expected in pairs(expectedClips) do
-    local clip = bundle.clips[name]
-    if clip == nil then
-      -- Only the pattern channel may be absent: an edition whose title
-      -- PAT0 carries no targets omits it instead of publishing a
-      -- trackless clip. Every other channel is required.
-      if name ~= "pattern" then
-        return nil, invalid("title " .. name .. " channel is missing", TITLE_PATH)
-      end
-    elseif
-      type(clip) ~= "table"
-      or clip.category ~= expected.category
-      or clip.kind ~= expected.kind
-      or type(clip.compiled) ~= "table"
-      or type(clip.tracks) ~= "table"
-      or #clip.tracks == 0
-    then
-      return nil, invalid("title " .. name .. " channel is malformed", TITLE_PATH)
-    end
+  local okClips, clipsErr = checkClipChannels(bundle.clips, expectedClips, { pattern = true }, "")
+  if not okClips then
+    return nil, clipsErr
   end
   if not hasAnimationClips(bundle.model, bundle.clips) then
     return nil, invalid("title animation channels do not validate against the model contract", TITLE_PATH)
@@ -2147,36 +2188,20 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
   if
     type(bundle.sparkle) ~= "table"
     or not onlyKeys(bundle.sparkle, { model = true, clips = true })
-    or type(bundle.sparkle.model) ~= "table"
-    or bundle.sparkle.model.kind ~= "nitro-dynamic"
-    or not pcall(ModelAsset.validate, bundle.sparkle.model)
     or type(bundle.sparkle.clips) ~= "table"
     or not onlyKeys(bundle.sparkle.clips, { joint = true, pattern = true })
   then
     return nil, invalid("title sparkle model or channels are malformed", TITLE_PATH)
   end
-  for _, assetPath in ipairs(ModelAsset.referencedPaths(bundle.sparkle.model)) do
-    if not generatedPath(assetPath, "title") then
-      return nil, invalid("title sparkle model references an asset outside its generated root", assetPath)
-    end
-    if not cacheFs:exists(assetPath, "file") then
-      return nil, invalid("title sparkle model asset is missing", assetPath)
-    end
+  local okSparkle, sparkleErr = checkStagedModel(cacheFs, bundle.sparkle.model, "title sparkle model")
+  if not okSparkle then
+    return nil, sparkleErr
   end
   local sparkleExpected =
     { joint = { category = "joint", kind = "trs" }, pattern = { category = "material", kind = "pattern" } }
-  for name, expected in pairs(sparkleExpected) do
-    local clip = bundle.sparkle.clips[name]
-    if
-      type(clip) ~= "table"
-      or clip.category ~= expected.category
-      or clip.kind ~= expected.kind
-      or type(clip.compiled) ~= "table"
-      or type(clip.tracks) ~= "table"
-      or #clip.tracks == 0
-    then
-      return nil, invalid("title sparkle " .. name .. " channel is malformed", TITLE_PATH)
-    end
+  local okSparkleClips, sparkleClipsErr = checkClipChannels(bundle.sparkle.clips, sparkleExpected, {}, "sparkle ")
+  if not okSparkleClips then
+    return nil, sparkleClipsErr
   end
   if not hasAnimationClips(bundle.sparkle.model, bundle.sparkle.clips) then
     return nil, invalid("title sparkle channels do not validate against the model contract", TITLE_PATH)
@@ -2199,16 +2224,6 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
   local expectedColor = versionId == "heartgold" and { foreground = 1, shadow = 1, background = 0 }
     or { foreground = 2, shadow = 2, background = 0 }
   local expectedRgb = versionId == "heartgold" and { 27 / 31, 8 / 31, 0 } or { 0, 28 / 31, 1 }
-  local function isExpectedPromptRgb(value)
-    return type(value) == "table"
-      and #value == 3
-      and isFiniteNumber(value[1])
-      and isFiniteNumber(value[2])
-      and isFiniteNumber(value[3])
-      and math.abs(value[1] - expectedRgb[1]) < 1e-6
-      and math.abs(value[2] - expectedRgb[2]) < 1e-6
-      and math.abs(value[3] - expectedRgb[3]) < 1e-6
-  end
   if
     not onlyKeys(bundle.prompt.color, {
       foreground = true,
@@ -2220,8 +2235,8 @@ function StartupAssetCache.loadTitle(cacheFs, versionId)
     or bundle.prompt.color.foreground ~= expectedColor.foreground
     or bundle.prompt.color.shadow ~= expectedColor.shadow
     or bundle.prompt.color.background ~= expectedColor.background
-    or not isExpectedPromptRgb(bundle.prompt.color.foregroundRgb)
-    or not isExpectedPromptRgb(bundle.prompt.color.shadowRgb)
+    or not isPromptRgb(bundle.prompt.color.foregroundRgb, expectedRgb)
+    or not isPromptRgb(bundle.prompt.color.shadowRgb, expectedRgb)
   then
     return nil, invalid("title prompt palette does not match edition", TITLE_PATH)
   end
