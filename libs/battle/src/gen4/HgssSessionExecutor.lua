@@ -7497,6 +7497,113 @@ local function targetVariants(
   return variants
 end
 
+-- Projects the first live foe position, if any.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectFirstFoe(state, actorId)
+  local foes = foePositions(state, actorId)
+  if #foes > 0 then
+    return { kind = "position", position = foes[1] }, foes
+  end
+  return { kind = "none" }, {}
+end
+
+-- Projects the first live position on the striker's own side, if any.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectOwnSideMate(state, actorId)
+  local ownSide = actorSide(state, actorId)
+  local mates = ownSide ~= nil and livePositionsOnSide(state, ownSide) or {}
+  if #mates > 0 then
+    return { kind = "position", position = mates[1] }, mates
+  end
+  return { kind = "none" }, {}
+end
+
+-- Projects the striker's own position, if live.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectUser(state, actorId)
+  local userPos = userPosition(state, actorId)
+  if userPos ~= nil then
+    return { kind = "position", position = userPos }, {}
+  end
+  return { kind = "none" }, {}
+end
+
+-- Projects the striker's ally, falling back to the striker.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectAlly(state, actorId)
+  local ownSide = actorSide(state, actorId)
+  local userPos = userPosition(state, actorId)
+  if ownSide ~= nil then
+    for _, positionId in ipairs(livePositionsOnSide(state, ownSide)) do
+      if positionId ~= userPos then
+        return { kind = "position", position = positionId }, {}
+      end
+    end
+  end
+  if userPos ~= nil then
+    return { kind = "position", position = userPos }, {}
+  end
+  return { kind = "none" }, {}
+end
+
+-- Projects the striker's own side, if known.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectOwnSide(state, actorId)
+  local ownSide = actorSide(state, actorId)
+  if ownSide ~= nil then
+    return { kind = "side", side = ownSide }, {}
+  end
+  return { kind = "none" }, {}
+end
+
+-- Projects the foe side opposing the striker, if known.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param actorId integer striking combatant under projection
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectFoeSide(state, actorId)
+  local ownSide = actorSide(state, actorId)
+  local foeSide = ownSide ~= nil and opposingSide(state, ownSide) or nil
+  if foeSide ~= nil then
+    return { kind = "side", side = foeSide }, {}
+  end
+  return { kind = "none" }, {}
+end
+
+-- Projects the whole field; range-less moves need no selection.
+---@return table<string, unknown> canonical target fragment for the choice
+---@return integer[] selection candidates in battle order, empty for automatic scopes
+local function projectEntireField()
+  return { kind = "field" }, {}
+end
+
+---@type table<string, fun(state: table<string, unknown>, actorId: integer): table<string, unknown>, integer[]>
+local PROJECTIONS = {
+  selected_foe = projectFirstFoe,
+  legacy = projectFirstFoe,
+  selected_own_side = projectOwnSideMate,
+  user = projectUser,
+  ally = projectAlly,
+  own_side = projectOwnSide,
+  foe_side = projectFoeSide,
+  entire_field = projectEntireField,
+}
+
 -- Projects the canonical strike target and selection candidates for one
 -- move slot from its native scope: selected scopes name the live
 -- positions of their side (with a picker only for several), automatic
@@ -7512,69 +7619,11 @@ end
 ---@return integer[] selection candidates in battle order, empty for automatic scopes
 local function strikeProjection(state, actorId, moveName, facts, attackerTypes)
   local policy = rangePolicy(moveName, facts, attackerTypes)
-  if policy == "selected_foe" then
-    local foes = foePositions(state, actorId)
-    if #foes > 0 then
-      return { kind = "position", position = foes[1] }, foes
-    end
+  local project = type(policy) == "string" and PROJECTIONS[policy] or nil
+  if project == nil then
     return { kind = "none" }, {}
   end
-  if policy == "selected_own_side" then
-    local ownSide = actorSide(state, actorId)
-    local mates = ownSide ~= nil and livePositionsOnSide(state, ownSide) or {}
-    if #mates > 0 then
-      return { kind = "position", position = mates[1] }, mates
-    end
-    return { kind = "none" }, {}
-  end
-  if policy == "user" then
-    local userPos = userPosition(state, actorId)
-    if userPos ~= nil then
-      return { kind = "position", position = userPos }, {}
-    end
-    return { kind = "none" }, {}
-  end
-  if policy == "ally" then
-    local ownSide = actorSide(state, actorId)
-    local userPos = userPosition(state, actorId)
-    if ownSide ~= nil then
-      for _, positionId in ipairs(livePositionsOnSide(state, ownSide)) do
-        if positionId ~= userPos then
-          return { kind = "position", position = positionId }, {}
-        end
-      end
-    end
-    if userPos ~= nil then
-      return { kind = "position", position = userPos }, {}
-    end
-    return { kind = "none" }, {}
-  end
-  if policy == "own_side" then
-    local ownSide = actorSide(state, actorId)
-    if ownSide ~= nil then
-      return { kind = "side", side = ownSide }, {}
-    end
-    return { kind = "none" }, {}
-  end
-  if policy == "foe_side" then
-    local ownSide = actorSide(state, actorId)
-    local foeSide = ownSide ~= nil and opposingSide(state, ownSide) or nil
-    if foeSide ~= nil then
-      return { kind = "side", side = foeSide }, {}
-    end
-    return { kind = "none" }, {}
-  end
-  if policy == "entire_field" then
-    return { kind = "field" }, {}
-  end
-  if policy == "legacy" then
-    local foes = foePositions(state, actorId)
-    if #foes > 0 then
-      return { kind = "position", position = foes[1] }, foes
-    end
-    return { kind = "none" }, {}
-  end
-  return { kind = "none" }, {}
+  return project(state, actorId)
 end
 
 -- An option for a probed choice: enabled only when the kernel admits it,
