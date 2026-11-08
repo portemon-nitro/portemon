@@ -101,11 +101,31 @@ local function publishedSelection(bundle)
   return selected
 end
 
+-- One family compilation per version, shared by every conformance test
+-- in this file: the compile (NARC opens plus G2D decodes plus PNG encodes
+-- for the whole family) is the dominant ROM cost here, and recompiling it
+-- per test buys no new coverage. Cached bytes only; the open readers stay
+-- owned by the suite hooks.
+local compiledByVersion = {}
+---@param romFs table
+---@param versionId string
+---@return table
+local function compileFamily(romFs, versionId)
+  local cached = compiledByVersion[versionId]
+  if cached == nil then
+    local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
+    Assert.isTrue(loaded, "the pokegear family compiler must be published")
+    cached = assert(
+      PokegearAssetCompiler.compile(romFs, versionId),
+      "the pokegear family must compile from the owned dump"
+    )
+    compiledByVersion[versionId] = cached
+  end
+  return cached
+end
+
 function T.pokegear_family_accounts_for_the_full_selected_resource_closure(romFs, versionId)
-  local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
-  Assert.isTrue(loaded, "the pokegear family compiler must be published before the selected closure can be proven")
-  local bundle = PokegearAssetCompiler.compile(romFs, versionId)
-  local compiled = assert(bundle, "the pokegear family must compile from the owned dump")
+  local compiled = compileFamily(romFs, versionId)
 
   local expected, expectedCount = independentHashes(romFs)
   Assert.equal(expectedCount, EXPECTED_SELECTED_COUNT, "the research closure selects exactly 276 resources")
@@ -151,10 +171,7 @@ end
 -- and must differ from the hardware-blocked reading, or the map screen
 -- shows jumbled tiles.
 function T.pokegear_world_planes_compile_row_major(romFs, versionId)
-  local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
-  Assert.isTrue(loaded, "the pokegear family compiler must be published")
-  local bundle = PokegearAssetCompiler.compile(romFs, versionId)
-  local compiled = assert(bundle, "the pokegear family must compile from the owned dump")
+  local compiled = compileFamily(romFs, versionId)
   local manifest = assert(compiled.manifest, "the bundle carries its manifest")
   local assets = assert(compiled.assets or compiled.files, "the bundle carries its staged assets")
   local selections = assert(compiled.provenance.selections, "the bundle publishes its selections")
@@ -198,6 +215,80 @@ function T.pokegear_world_planes_compile_row_major(romFs, versionId)
     staged ~= render(nil),
     "the staged world plane differs from the hardware-blocked reading"
   )
+end
+
+-- The shell OBJ set (clock digits, colon, weekday, reception, strip
+-- corners) is skinned: character members 6+skin and palette members 0+skin
+-- share cell member 12 and animation member 13. The manifest must carry
+-- per-skin frames under sequences["shell.cursor.skins"], the skins must
+-- differ from one another, and one staged frame must match an independent
+-- render straight from the dump so writer and reader cannot share a
+-- mistake. The legacy flat shell.cursor.<id> entries keep the skin-zero
+-- frames for older readers.
+function T.pokegear_shell_cursor_compiles_per_skin(romFs, versionId)
+  local compiled = compileFamily(romFs, versionId)
+  local manifest = assert(compiled.manifest, "the bundle carries its manifest")
+  local assets = assert(compiled.assets or compiled.files, "the bundle carries its staged assets")
+  local sequences = assert(manifest.sequences, "the manifest carries its sequences")
+  local skins = assert(sequences["shell.cursor.skins"], "the shell cursor compiles its per-skin frames")
+  for skin = 0, 5 do
+    local map = assert(skins[skin], "the shell cursor carries skin " .. skin)
+    -- The runtime clock strip reads sequences 1-4 and the strip corners
+    -- read sequences 5-8; every skin carries the full set.
+    for sequenceId = 1, 8 do
+      local clip = assert(map["shell.cursor." .. sequenceId], "skin " .. skin .. " carries sequence " .. sequenceId)
+      Assert.isTrue(
+        type(clip.frames) == "table" and #clip.frames > 0,
+        "skin " .. skin .. " sequence " .. sequenceId .. " carries its frames"
+      )
+    end
+  end
+  local legacy = assert(sequences["shell.cursor.1"], "the legacy skin-zero digit strip stays published")
+  Assert.isTrue(
+    type(legacy.frames) == "table" and #legacy.frames > 0,
+    "the legacy skin-zero digit strip carries its frames"
+  )
+  local zeroFrames = assert(skins[0]["shell.cursor.1"], "skin zero carries its digit strip").frames
+  local threeFrames = assert(skins[3]["shell.cursor.1"], "skin three carries its digit strip").frames
+  Assert.equal(#zeroFrames, #threeFrames, "the digit strip keeps its frame count across skins")
+  local differs = false
+  for index, frame in ipairs(zeroFrames) do
+    local other = threeFrames[index]
+    Assert.notNil(other, "the digit strip frame " .. index .. " exists on both skins")
+    if assets[frame.image] ~= assets[other.image] then
+      differs = true
+    end
+  end
+  Assert.isTrue(differs, "the digit frames differ across skins")
+
+  local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+  local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+  local PngWriter = require("romdump.src.digest.PngEncoder")
+  local Lz10 = require("romdump.src.digest.Lz10")
+  local archive = openArchive(romFs, "a/1/4/3")
+  local function plain(memberId)
+    local bytes = assert(archive:readMember(memberId), "the shell archive carries member " .. memberId)
+    if string.byte(bytes, 1) == 0x10 then
+      return assert(Lz10.decode(bytes))
+    end
+    return bytes
+  end
+  local character = assert(G2dDecoder.decodeChar(plain(9), {}))
+  local palette = assert(G2dDecoder.decodePalette(plain(3), {}))
+  local cells = assert(G2dDecoder.decodeCell(plain(12), {}))
+  local animation = assert(G2dDecoder.decodeAnimation(plain(13), {}))
+  local sourceSequence = assert(animation.anims[1], "the cursor animation carries its digit strip")
+  local rendered = G2dRasterizer.renderAnimationFrame(
+    character,
+    palette,
+    cells,
+    sourceSequence,
+    1,
+    { role = "conformance-shell-cursor-skin-3", frame = 0 }
+  )
+  local expected = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+  local staged = assert(assets[threeFrames[1].image], "the staged assets carry the skin-three digit frame")
+  Assert.equal(staged, expected, "the staged skin-three digit frame matches the independent render")
 end
 
 local suite = RomSuite.fromFacts(T)

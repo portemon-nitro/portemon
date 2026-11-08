@@ -135,6 +135,10 @@ function T.tests.field_phonebook_preferences_and_strip_focus_persist_through_sav
     confirm(game)
     Assert.isTrue(application(game).child.menuOpen, "skin five opens its normal Configure selection menu")
     confirm(game)
+    Assert.isFalse(application(game).child.menuOpen, "the commit closes the menu before the swap fade")
+    game:advanceUntil("the skin swap fade completes", function()
+      return state:readPreferences().skin == 5
+    end, 40)
     Assert.equal(state:readPreferences().skin, 5, "the player can select skin five through production input")
     Fixture.closeGearThroughMenu(game)
     Fixture.saveAndReload(game)

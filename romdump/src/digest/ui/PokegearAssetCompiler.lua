@@ -191,6 +191,69 @@ local function renderTriple(archive, selection, role, assets, assetName, palette
   return stageVisual(assets, assetName, image)
 end
 
+-- The shell OBJ set (clock digits, colon, weekday, reception, strip
+-- corners) is skinned: character members 6+skin and palette members
+-- 0+skin share cell member 12 and animation member 13
+-- (PokegearSources.shellCursor), matching PokegearUIManager_LoadSkinGfx.
+-- Every skin compiles its own frames under sequences
+-- ["shell.cursor.skins"][skin]; the legacy flat shell.cursor.<id> entries
+-- keep the skin-zero frames so older readers and caches keep working.
+---@param archive table<string, unknown> the opened shell source NARC
+---@param assets table<string, string> the staged asset bytes by path
+---@return table<integer, table<string, unknown>> per-skin animation maps
+local function compileCursorSkinAnimations(archive, assets)
+  local cellBytes = unpackMember(archive, PokegearSources.shellCursor.cell, "shell.cursor.cell")
+  local animBytes = unpackMember(archive, PokegearSources.shellCursor.anim, "shell.cursor.animation")
+  local cells = decode("decodeCell", cellBytes, "shell.cursor.cell")
+  local animation = decode("decodeAnimation", animBytes, "shell.cursor.animation")
+  local perSkin = {}
+  for _, skin in ipairs(PokegearSources.skins) do
+    local role = "shell.cursor.skin" .. skin
+    local charBytes = unpackMember(archive, 6 + skin, role .. ".character")
+    local paletteBytes = unpackMember(archive, 0 + skin, role .. ".palette")
+    local character = decode("decodeChar", charBytes, role .. ".character")
+    local palette = decode("decodePalette", paletteBytes, role .. ".palette")
+    local map = {}
+    for animationId, sourceSequence in ipairs(animation.anims) do
+      local frames = {}
+      for frameIndex, frame in ipairs(sourceSequence.frames) do
+        local rendered = G2dRasterizer.renderAnimationFrame(
+          character,
+          palette,
+          cells,
+          sourceSequence,
+          frameIndex,
+          { role = role .. "." .. animationId, frame = frameIndex - 1 }
+        )
+        local path = PokegearCache.assetDir()
+          .. "/shell-cursor-skin-"
+          .. skin
+          .. "-"
+          .. animationId
+          .. "-"
+          .. frameIndex
+          .. ".png"
+        assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+        frames[frameIndex] = {
+          image = path,
+          width = rendered.width,
+          height = rendered.height,
+          anchorX = rendered.offset.x,
+          anchorY = rendered.offset.y,
+          duration = frame.duration,
+        }
+      end
+      map["shell.cursor." .. animationId] = {
+        frames = frames,
+        playMode = sourceSequence.playMode,
+        loopStartFrameIdx = sourceSequence.loopStartFrameIdx,
+      }
+    end
+    perSkin[skin] = map
+  end
+  return perSkin
+end
+
 local function compileCursorAnimation(archive, assets)
   local charBytes = unpackMember(archive, 6, "shell.cursor.character")
   local paletteBytes = unpackMember(archive, 0, "shell.cursor.palette")
@@ -229,6 +292,7 @@ local function compileCursorAnimation(archive, assets)
       loopStartFrameIdx = sourceSequence.loopStartFrameIdx,
     }
   end
+  sequences["shell.cursor.skins"] = compileCursorSkinAnimations(archive, assets)
   return sequences
 end
 

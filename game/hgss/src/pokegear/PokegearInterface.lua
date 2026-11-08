@@ -148,13 +148,26 @@ local function skinPath(node, skin, what)
   return assert(fallback, "the companion render needs its " .. what .. " visuals")
 end
 
----@param section unknown
----@return string? path
-local function optionalPath(section)
-  if section == nil then
+-- The shell OBJ set behind the clock strip and the strip corners: the
+-- per-skin frames when the compiled family carries them, otherwise the
+-- legacy skin-zero frames. Missing sequences stay nil so panes without
+-- compiled cursor art keep their historical behavior.
+---@param assets table<string, unknown>
+---@param skin integer
+---@return table<string, unknown>? the animation map behind the committed skin
+local function shellCursorSequences(assets, skin)
+  local sequences = assets.sequences
+  if type(sequences) ~= "table" then
     return nil
   end
-  return firstImage(section)
+  local maps = (sequences --[[@as table<string, unknown>]])["shell.cursor.skins"]
+  if type(maps) == "table" then
+    local perSkin = (maps --[[@as table<string, unknown>]])[skin]
+    if type(perSkin) == "table" then
+      return perSkin --[[@as table<string, unknown>]]
+    end
+  end
+  return sequences --[[@as table<string, unknown>]]
 end
 
 -- The four focus-corner animations of the strip cursor, or nil when the
@@ -162,10 +175,11 @@ end
 -- compiled frames so the renderer blinks on source durations instead of
 -- sticking on the opening frame.
 ---@param assets table<string, unknown>
+---@param skin integer
 ---@return table<integer, table[]>? frames top-left, bottom-left, top-right, bottom-right
-local function cursorCorners(assets)
-  local sequences = assets.sequences
-  if type(sequences) ~= "table" then
+local function cursorCorners(assets, skin)
+  local sequences = shellCursorSequences(assets, skin)
+  if sequences == nil then
     return nil
   end
   local corners = {}
@@ -184,10 +198,11 @@ end
 -- 0-9, the colon, the weekday strip (Sunday first), and the reception
 -- indicator, or nil when the compiled family carries no sequences.
 ---@param assets table<string, unknown>
+---@param skin integer
 ---@return table<string, table[]>?
-local function clockSprites(assets)
-  local sequences = assets.sequences
-  if type(sequences) ~= "table" then
+local function clockSprites(assets, skin)
+  local sequences = shellCursorSequences(assets, skin)
+  if sequences == nil then
     return nil
   end
   local sprites = {}
@@ -219,16 +234,50 @@ local function shellContent(assets, skin)
       childVisuals[tab] = firstImage(section)
     end
   end
+  -- The setup context menu frames through the shared touchscreen
+  -- list-menu tile strip, exactly like the phone and fly menus: one
+  -- staged strip plus its sixteen palette colors behind the tile frame.
+  local flySection = assets.fly
+  local menuTiles = nil ---@type string?
+  local menuPalette = nil ---@type table<string, unknown>?
+  if type(flySection) == "table" then
+    local tiles = (flySection --[[@as table<string, unknown>]]).menuTiles
+    if
+      type(tiles) == "table" and type((tiles --[[@as table<string, unknown>]]).image) == "string"
+    then
+      menuTiles = (tiles --[[@as table<string, unknown>]]).image
+    end
+    if
+      type((flySection --[[@as table<string, unknown>]]).menuPalette) == "table"
+    then
+      menuPalette = (flySection --[[@as table<string, unknown>]]).menuPalette
+    end
+  end
+  -- The setup card paints its own background plane, so its foreground and
+  -- lock patch resolve behind the committed skin exactly like the shell
+  -- planes above: a single-visual family keeps its historical path while a
+  -- per-skin family follows the swap.
+  local setupSection = configure.foreground or configure.panel
+  local setupForeground = nil
+  if setupSection ~= nil then
+    setupForeground = skinPath(setupSection, skin, "setup")
+  end
+  local setupPatch = nil
+  if configure.patch ~= nil then
+    setupPatch = skinPath(configure.patch, skin, "setup patch")
+  end
   return {
     slots = stripSlots(),
     shellForeground = skinPath(shell.foreground or shell, skin, "shell"),
     shellInformation = skinPath(shell.information or shell, skin, "shell information"),
     childVisuals = childVisuals,
-    cursorCorners = cursorCorners(assets),
-    clockSprites = clockSprites(assets),
-    configureForeground = optionalPath(configure.foreground or configure.panel) or childVisuals.configure,
-    configurePatch = optionalPath(configure.patch),
+    cursorCorners = cursorCorners(assets, skin),
+    clockSprites = clockSprites(assets, skin),
+    configureForeground = setupForeground or childVisuals.configure,
+    configurePatch = setupPatch,
     configureSprites = configure.sprites,
+    menuTiles = menuTiles,
+    menuPalette = menuPalette,
   }
 end
 

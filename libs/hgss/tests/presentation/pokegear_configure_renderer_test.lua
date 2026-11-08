@@ -22,6 +22,9 @@ local function recordingGraphics()
   }
   function graphics.setColor(_, _, _, _) end
   function graphics.rectangle(_, _, _, _, _) end
+  function graphics.newQuad(_, _, _, _, _, _)
+    return {}
+  end
   return graphics --[[@as table]]
 end
 
@@ -101,6 +104,54 @@ function T.tests.setup_cursor_answers_card_focus_not_the_card_alone()
   Assert.isTrue(cursorPaints(nil), "the shell-less setup card keeps its card-owned cursor")
   Assert.isTrue(cursorPaints({ entered = true }), "the entered setup card frames its focused cell")
   Assert.isFalse(cursorPaints({ entered = false }), "the strip-owned setup card hides its cursor")
+end
+
+-- The open context menu frames its options from the ROM list-menu tile
+-- strip with palette text, exactly like every other framed app menu,
+-- instead of invented fills and borders.
+function T.tests.setup_menu_frames_from_rom_tiles()
+  local graphics = recordingGraphics()
+  local images, content = stubImages(graphics)
+  local quadTiles = {}
+  images["test-menu-tiles"] = {
+    image = {
+      getDimensions = function()
+        return 256, 16
+      end,
+    },
+    drawQuad = function(_, _, quad, _, _)
+      quadTiles[#quadTiles + 1] = quad
+    end,
+    draw = function(_, _, _, _)
+      local records = graphics._records --[[@as table]]
+      records[#records + 1] = "test-menu-tiles"
+    end,
+  }
+  local palette = {}
+  for index = 1, 16 do
+    palette[index] = { r = index * 16, g = index * 16, b = index * 16 }
+  end
+  content.menuTiles = "test-menu-tiles"
+  content.menuPalette = palette
+  local printed = {}
+  local text = {
+    drawTextWithPalette = function(_, line, _, _, _)
+      printed[#printed + 1] = line
+    end,
+    textWidth = function(_, line)
+      return #line * 8
+    end,
+  }
+  local view = setupView()
+  view.menu = { x = 80, y = 16, width = 64, height = 56 }
+  view.frame = { x = 10, y = 2, width = 6 }
+  view.menuOptions = { labels = { "CHANGE", "QUIT" }, cursor = 0 }
+  view.spotlight = {}
+  PokegearConfigureRenderer.drawPane(graphics, images, text, content, view, { 0, 1, 2, 3, 4, 5 }, {
+    entered = true,
+  })
+  Assert.isTrue(#quadTiles > 0, "the menu frame paints from the ROM tile strip")
+  Assert.deepEqual(printed, { "CHANGE", "QUIT" }, "the menu prints its options through the palette text")
 end
 
 return T

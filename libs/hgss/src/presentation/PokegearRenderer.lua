@@ -313,6 +313,16 @@ function PokegearRenderer.draw(resources, view, plan)
           clock --[[@as table<string, unknown>]]
         )
       end
+      -- A card-owned fade (the setup skin swap) covers the whole
+      -- application, matching the source palette fade over both screens.
+      -- No current card publishes one outside its swap, so settled cards
+      -- paint uncovered exactly as before.
+      local fade = type(child) == "table" and (child --[[@as table<string, unknown>]]).fade or nil
+      if type(fade) == "number" and fade > 0 then
+        graphics.setColor(0, 0, 0, fade)
+        graphics.rectangle("fill", 0, 0, 256, 192)
+        graphics.setColor(1, 1, 1, 1)
+      end
     end)
   end
   if controls ~= nil then

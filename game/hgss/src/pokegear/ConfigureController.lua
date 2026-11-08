@@ -1,9 +1,12 @@
 -- The gear setup card's skin selection: six fixed thumbnail cells on a
 -- two-row grid, locked-cell confirmation as a no-op, a context menu that
--- spotlights its window plus the selected thumbnail, and exactly one saved
--- skin write at the confirmation boundary. Source fade and selection state
--- stay transient; the controller owns preference writes and nothing else.
--- Pure module: no love, no I/O.
+-- spotlights its window plus the selected thumbnail, exactly one saved
+-- skin write when the swap fade-out completes, and a fade-out/fade-in
+-- pair around the swap matching the source palette fade. Source fade and
+-- selection state stay transient; the controller owns preference writes
+-- and nothing else. Pure module: no love, no I/O.
+
+local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 ---@class ConfigureController
 ---@field _state table<string, unknown> the borrowed durable companion owner
@@ -13,6 +16,7 @@
 ---@field _cursor integer the focused skin, 0..5
 ---@field _menuCursor integer the focused menu option, 0 for CHANGE and 1 for QUIT
 ---@field _menuOpen boolean
+---@field _swap { stage: string, fade: StandardFade }? the active skin-swap fade
 ---@field _disposed boolean
 local ConfigureController = {}
 ConfigureController.__index = ConfigureController
@@ -237,6 +241,7 @@ function ConfigureController.new(opts)
     _cursor = cursor,
     _menuCursor = 0,
     _menuOpen = false,
+    _swap = nil,
     _disposed = false,
   }, ConfigureController)
 end
@@ -267,18 +272,47 @@ function ConfigureController:_openMenu()
   self:_play(DECIDE_SOUND)
 end
 
--- Chooses the focused menu option: CHANGE commits the focused skin,
--- QUIT returns without writing.
+-- Chooses the focused menu option: CHANGE closes the menu and latches
+-- the swap fade, QUIT returns without writing. The saved skin only moves
+-- once the fade-out completes, matching the source swap states.
+function ConfigureController:_commitSkin()
+  self._menuOpen = false
+  self._swap = { stage = "out", fade = StandardFade.new({ direction = "out" }) }
+  self:_play(DECIDE_SOUND)
+end
 
--- One fixed tick: directional input walks the six grid positions while no
--- menu is open; confirming or tapping an unlocked cell opens its CHANGE/
--- QUIT context menu; confirming CHANGE commits exactly once while QUIT,
--- cancelling, and outside taps close it without writing; every motion
--- and decision plays its source tone through the sound boundary.
+-- Advances the latched swap fade one source frame: completing the
+-- fade-out commits the focused skin, completing the fade-in releases
+-- the swap. Runs instead of input while a swap is active, matching the
+-- source swap states.
+function ConfigureController:_advanceSwap()
+  local swap = assert(self._swap, "swap advances only while latched")
+  swap.fade:updateSourceFrame()
+  if swap.fade.completed then
+    if swap.stage == "out" then
+      self._state:setPreference("skin", self._cursor)
+      self._swap = { stage = "in", fade = StandardFade.new({ direction = "in" }) }
+    else
+      self._swap = nil
+    end
+  end
+end
+
+-- One fixed tick: while no swap runs, directional input walks the six grid
+-- positions while no menu is open; confirming or tapping an unlocked cell
+-- opens its CHANGE/QUIT context menu; confirming CHANGE latches the swap
+-- fade and writes exactly once when the fade-out completes while QUIT,
+-- cancelling, and outside taps close it without writing; a latched swap
+-- advances its fade instead of answering input. Every motion and decision
+-- plays its source tone through the sound boundary.
 ---@param uiInput table[]
 function ConfigureController:updateFixed(uiInput)
   assert(not self._disposed, "a disposed setup card steps nothing")
   assert(type(uiInput) == "table", "the setup card input must be an event list")
+  if self._swap ~= nil then
+    self:_advanceSwap()
+    return
+  end
   for _, event in ipairs(uiInput) do
     if type(event) == "table" and type(event.type) == "string" then
       self:_handle(event)
@@ -288,6 +322,9 @@ end
 
 ---@param event table<string, unknown>
 function ConfigureController:_handle(event)
+  if self._swap ~= nil then
+    return
+  end
   if event.type == "navigate" and type(event.direction) == "string" then
     if self._menuOpen then
       if event.direction == "up" or event.direction == "down" then
@@ -304,10 +341,10 @@ function ConfigureController:_handle(event)
   elseif event.type == "confirm" then
     if self._menuOpen then
       if self._menuCursor == 0 then
-        self._state:setPreference("skin", self._cursor)
-        self:_play(DECIDE_SOUND)
+        self:_commitSkin()
+      else
+        self._menuOpen = false
       end
-      self._menuOpen = false
     elseif isUnlocked(self:_unlocked(), self._cursor) then
       self:_openMenu()
     end
@@ -324,10 +361,10 @@ function ConfigureController:_handle(event)
         if event.x >= row.x and event.x < row.x + row.width and event.y >= row.y and event.y < row.y + row.height then
           self._menuCursor = index
           if index == 0 then
-            self._state:setPreference("skin", self._cursor)
-            self:_play(DECIDE_SOUND)
+            self:_commitSkin()
+          else
+            self._menuOpen = false
           end
-          self._menuOpen = false
           return
         end
       end
@@ -355,10 +392,10 @@ function ConfigureController:_handle(event)
 end
 
 -- The detached selection view: all six fixed thumbnail cells at their
--- source rectangles, the semantic selected skin, and, while the menu is
--- open, the per-skin window rectangle, its CHANGE/QUIT options with the
--- focused option, plus the exact spotlight coverage. Fresh tables per
--- call.
+-- source rectangles, the semantic selected skin, the swap fade cover, and,
+-- while the menu is open, the per-skin window rectangle with its
+-- list-menu tile frame, its CHANGE/QUIT options with the focused option,
+-- plus the exact spotlight coverage. Fresh tables per call.
 ---@return table<string, unknown>
 function ConfigureController:view()
   local thumbnails = {}
@@ -368,13 +405,16 @@ function ConfigureController:view()
   local out = {
     thumbnails = thumbnails,
     selectedSkin = self._cursor,
+    fade = self._swap ~= nil and self._swap.fade.coefficient / 16 or 0,
     menu = nil,
+    frame = nil,
     menuOptions = nil,
     spotlight = nil,
   }
   if self._menuOpen then
     local menu = menuRect(self._cursor, self._labels)
     out.menu = menu
+    out.frame = { x = menu.x / 8, y = menu.y / 8, width = menu.width / 8 - 2 }
     out.menuOptions = {
       labels = { self._labels.change, self._labels.quit },
       cursor = self._menuCursor,
@@ -385,20 +425,23 @@ function ConfigureController:view()
 end
 
 -- The presentation snapshot: the card identity and lifetime flags the shell
--- routes on, the cursor and menu state, and the detached selection view.
--- Fresh tables per call; status performs no mutation.
+-- routes on, the cursor and menu state, the swap fade cover, and the
+-- detached selection view. Fresh tables per call; status performs no
+-- mutation.
 ---@return table<string, unknown>
 function ConfigureController:status()
+  local view = self:view()
   return {
     open = true,
     tab = "configure",
-    busy = false,
+    busy = self._swap ~= nil,
     dismissible = true,
     nestedCancel = self._menuOpen,
     cursor = self._cursor,
     menuOpen = self._menuOpen,
     cursorFrozen = self._menuOpen,
-    view = self:view(),
+    fade = view.fade,
+    view = view,
   }
 end
 
@@ -408,10 +451,11 @@ function ConfigureController:takeResult()
   return nil
 end
 
--- Idempotent release of the logical lifetime: closes any open menu and
--- reports nothing further.
+-- Idempotent release of the logical lifetime: closes any open menu,
+-- drops a latched swap, and reports nothing further.
 function ConfigureController:dispose()
   self._menuOpen = false
+  self._swap = nil
   self._disposed = true
 end
 

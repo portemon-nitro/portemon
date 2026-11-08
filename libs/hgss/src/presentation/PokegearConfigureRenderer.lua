@@ -1,9 +1,11 @@
 -- The gear setup card's exact frame composition: the thumbnail background
 -- with lock and selection patches, the OBJ cursor over the focused cell,
--- and the two-window dim mask behind an open context menu. Consumes the
--- controller's detached view and the plan's resolved image paths only;
--- allocates no images while drawing. Pure presentation: no love globals,
--- the host graphics namespace arrives through resources.
+-- the dim mask behind an open context menu, and the context menu itself
+-- through the shared touchscreen list-menu tile frame, exactly like every
+-- other framed app menu. Consumes the controller's detached view and the
+-- plan's resolved image paths only; allocates no images while drawing.
+-- Pure presentation: no love globals, the host graphics namespace arrives
+-- through resources.
 
 ---@class PokegearConfigureRenderer
 local PokegearConfigureRenderer = {}
@@ -20,12 +22,6 @@ local CONFIGURE_SET = "configure"
 local CURSOR_SEQUENCES = { 1, 2, 3, 4 }
 
 local DIM_ALPHA = 0.5
-
--- The CHANGE/QUIT option rows inside the menu window at the shared
--- list-menu pitch: sixteen-pixel text rows on a twenty-four pitch.
-local MENU_ROW_PITCH = 24
-local MENU_TEXT_TOP = 8
-local MENU_TEXT_HEIGHT = 16
 
 ---@param list table<integer, integer>?
 ---@return table<integer, boolean>
@@ -127,9 +123,9 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
     end
   end
   local menu = childView.menu
+  local frame = childView.frame
   local spotlight = childView.spotlight
-  if type(menu) == "table" and type(spotlight) == "table" then
-    local window = menu --[[@as table<string, number>]]
+  if type(menu) == "table" and type(frame) == "table" and type(spotlight) == "table" then
     graphics.setColor(0, 0, 0, DIM_ALPHA)
     for _, rect in
       ipairs(spotlight --[[@as table[] ]])
@@ -137,25 +133,31 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
       local dim = rect --[[@as table<string, number>]]
       graphics.rectangle("fill", dim.x, dim.y, dim.width, dim.height)
     end
-    graphics.setColor(0.12, 0.12, 0.16, 1)
-    graphics.rectangle("fill", window.x, window.y, window.width, window.height)
-    graphics.setColor(1, 1, 1, 1)
-    graphics.rectangle("line", window.x + 0.5, window.y + 0.5, window.width - 1, window.height - 1)
+    -- The context window frames through the ROM list-menu tiles with
+    -- palette text, exactly like the phone and fly menus: only the frame
+    -- follows the cursor while every entry keeps its deselected colors.
     local options = childView.menuOptions
     local labels = type(options) == "table" and options.labels or nil
     local cursorOption = type(options) == "table" and options.cursor or 0
     if type(labels) == "table" then
-      for index = 1, #labels do
-        local rowY = window.y + MENU_TEXT_TOP + MENU_ROW_PITCH * (index - 1)
-        if index - 1 == cursorOption then
-          graphics.setColor(0.12, 0.28, 0.62, 1)
-          graphics.rectangle("fill", window.x + 4, rowY - 2, window.width - 8, MENU_TEXT_HEIGHT)
-        end
-        graphics.setColor(1, 1, 1, 1)
-        if text ~= nil and type(text.drawText) == "function" then
-          text:drawText(tostring(labels[index]), window.x + 8, rowY)
-        end
-      end
+      local tiles =
+        PokegearMapLayers.imageAt(images, assert(content.menuTiles, "the setup plan resolves its list-menu tile strip"))
+      local palette = assert(content.menuPalette, "the setup plan resolves its list-menu palette")
+      local tileFrame = frame --[[@as table<string, integer>]]
+      PokegearMapLayers.drawListMenuFrame(
+        graphics,
+        tiles,
+        palette --[[@as table<integer, table<string, number>>]],
+        text,
+        {
+          x = tileFrame.x,
+          y = tileFrame.y,
+          width = tileFrame.width,
+          labels = labels --[[@as string[] ]],
+          cursor = cursorOption,
+          highlightFill = false,
+        }
+      )
     end
   end
   graphics.setColor(1, 1, 1, 1)

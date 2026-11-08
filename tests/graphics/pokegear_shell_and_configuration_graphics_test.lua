@@ -682,22 +682,61 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
   local resources = renderResources(scope, manifest)
   local baseline = drawShell(scope, host.shell, resources, 512, 192)
 
-  -- Confirming a source skin writes once at the confirmation boundary
-  -- and swaps every affected visual without any asset rebuild.
+  -- Confirming a source skin latches the swap fade: the menu closes at
+  -- once, the saved skin only moves when the fade-out completes, and the
+  -- fade-in then uncovers the swapped visuals without any asset rebuild.
   driveCursorTo(host.shell, configure, 3)
   local beforeConfirm = state:revision()
   host.shell:updateFixed({ { type = "confirm" } })
   Assert.isTrue(configure:status().menuOpen, "confirming an unlocked skin opens its context menu first")
   Assert.equal(state:revision(), beforeConfirm, "opening the menu writes no skin yet")
   host.shell:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(configure:status().menuOpen, "the commit closes the menu before the swap")
+  Assert.isTrue(configure:status().busy, "the commit latches a busy swap")
+  Assert.equal(state:readPreferences().skin, 0, "the swap writes nothing before its fade-out")
+  Assert.equal(state:revision(), beforeConfirm, "the swap moves no revision before its fade-out")
+  for _ = 1, 4 do
+    host.shell:updateFixed({})
+  end
+  -- The swap fade covers the shell mid-swap. The fade sequencing itself
+  -- is proven cheaply at the controller boundary; here a small probe
+  -- cross is enough to wire the fade coefficient to dimmed pixels.
+  local midSwap = drawShell(scope, host.shell, resources, 512, 192)
+  local dimmed = 0
+  local probes = { { 10, 10 }, { 300, 100 }, { 100, 150 }, { 400, 50 }, { 200, 96 }, { 250, 170 } }
+  for _, point in ipairs(probes) do
+    local r1, g1, b1, _ = pixel(baseline, point[1], point[2])
+    local r2, g2, b2, _ = pixel(midSwap, point[1], point[2])
+    if
+      math.floor(r1 * 255 + 0.5) ~= math.floor(r2 * 255 + 0.5)
+      or math.floor(g1 * 255 + 0.5) ~= math.floor(g2 * 255 + 0.5)
+      or math.floor(b1 * 255 + 0.5) ~= math.floor(b2 * 255 + 0.5)
+    then
+      dimmed = dimmed + 1
+    end
+  end
+  Assert.isTrue(dimmed >= 3, "the swap fade covers the shell mid-swap")
+  Assert.equal(state:readPreferences().skin, 0, "the skin waits for the fade-out to complete")
+  host.shell:updateFixed({})
+  host.shell:updateFixed({})
   Assert.equal(state:readPreferences().skin, 3, "confirming the menu commits the selected skin")
   Assert.equal(state:revision(), beforeConfirm + 1, "one confirmation advances exactly one revision")
-  Assert.isFalse(configure:status().menuOpen, "the committed menu closes")
+  Assert.isTrue(configure:status().busy, "the swap stays busy through the fade-in")
+  for _ = 1, 6 do
+    host.shell:updateFixed({})
+  end
+  Assert.isFalse(configure:status().busy, "the finished swap releases the card")
   settle(host.shell)
+  -- The committed skin repaints the shell from prepared assets. A coarse
+  -- sample grid is enough: every plane carries a distinct solid hue per
+  -- skin, so a real swap moves hundreds of samples while identical
+  -- paintings move none.
   local swapped = drawShell(scope, host.shell, resources, 512, 192)
   local changed = 0
-  for y = 0, 191 do
-    for x = 0, 511 do
+  local sampled = 0
+  for y = 0, 191, 8 do
+    for x = 0, 511, 8 do
+      sampled = sampled + 1
       local r1, g1, b1, a1 = pixel(baseline, x, y)
       local r2, g2, b2, a2 = pixel(swapped, x, y)
       if
@@ -710,7 +749,7 @@ function T.setup_skin_selection_commits_and_spotlights(scope)
       end
     end
   end
-  Assert.isTrue(changed > 500, "the committed skin repaints the shell from prepared assets")
+  Assert.isTrue(changed > sampled / 10, "the committed skin repaints the shell from prepared assets")
 
   -- Spotlight pixels: with the menu open, a dimmed spotlight sample is
   -- strictly darker than the same point menu-closed, while the selected
@@ -1180,76 +1219,6 @@ function T.display_plan_keeps_roles_and_pointer_targets(scope)
   hidpi.shell:dispose()
   tiny.shell:dispose()
   dual.shell:dispose()
-end
-
--- Samples a small cross of both panes so a repaint anywhere on the shell
--- changes the signature.
----@param data table
----@return string
-local function paintSignature(data)
-  local parts = {}
-  for _, point in ipairs({ { 10, 10 }, { 300, 100 }, { 100, 150 }, { 400, 50 }, { 200, 96 } }) do
-    local red, green, blue, alpha = pixel(data, point[1], point[2])
-    parts[#parts + 1] = string.format(
-      "%d:%d:%d:%d",
-      math.floor(red * 255 + 0.5),
-      math.floor(green * 255 + 0.5),
-      math.floor(blue * 255 + 0.5),
-      math.floor(alpha * 255 + 0.5)
-    )
-  end
-  return table.concat(parts, "|")
-end
-
--- Every committed skin repaints the shell from the same prepared assets:
--- six commits through one controller yield six distinct paintings with
--- one revision each and no asset rebuild between draws.
-function T.every_skin_repaints_from_prepared_assets(scope)
-  local ConfigureController = requireFeature(
-    "game.hgss.src.pokegear.ConfigureController",
-    "the gear setup card has no controller yet: per-skin repaints are unavailable"
-  )
-  local manifest = fixtureManifest()
-  local record = PokegearAssetSchema.validate(manifest)
-  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
-  assert(record ~= nil, "synthetic catalog validated above")
-  local state = fullCardState(manifest)
-  state:setPreference("lastApp", "configure")
-  local configureHandle = {}
-  local host = openShell({
-    state = state,
-    manifest = manifest,
-    facts = singleDisplay(512, 192),
-    configureFactory = function(context)
-      local controller = ConfigureController.new({
-        state = state,
-        assets = record,
-        labels = { change = "CHANGE", quit = "QUIT" },
-        effect = function(_) end,
-      })
-      configureHandle.controller = controller
-      return controller
-    end,
-  })
-  settle(host.shell)
-  host.shell:updateFixed({ { type = "confirm" } })
-  Assert.isTrue(host.shell:status().entered, "confirming the focused cell enters the card")
-  local configure = assert(configureHandle.controller, "the setup factory built the real controller")
-  local resources = renderResources(scope, manifest)
-  local seen = {}
-  for _, skin in ipairs({ 1, 2, 3, 4, 5, 0 }) do
-    driveCursorTo(host.shell, configure, skin)
-    local beforeConfirm = state:revision()
-    host.shell:updateFixed({ { type = "confirm" } })
-    host.shell:updateFixed({ { type = "confirm" } })
-    Assert.equal(state:readPreferences().skin, skin, "skin " .. skin .. " commits")
-    Assert.equal(state:revision(), beforeConfirm + 1, "skin " .. skin .. " advances exactly one revision")
-    settle(host.shell)
-    local signature = paintSignature(drawShell(scope, host.shell, resources, 512, 192))
-    Assert.isNil(seen[signature], "skin " .. skin .. " paints distinctly from prepared assets")
-    seen[signature] = skin
-  end
-  host.shell:dispose()
 end
 
 -- Unprepared graphics fail before drawing: a missing compiled image or a

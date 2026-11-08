@@ -1157,6 +1157,17 @@ function T.tests.close_is_reported_once_and_disposal_is_silent()
   Assert.equal(host.state:readPreferences().lastApp, entered, "a completed exit remembers the actual last card")
 end
 
+---@param controller table
+local function settleSwap(controller)
+  for _ = 1, 30 do
+    if not controller:status().busy then
+      return
+    end
+    controller:updateFixed({})
+  end
+  Assert.isFalse(controller:status().busy, "the skin swap settles within its source fade")
+end
+
 function T.tests.configuration_cursor_follows_the_source_grid()
   local ConfigureController = require("game.hgss.src.pokegear.ConfigureController")
   local record = PokegearAssetSchema.validate(fixtureManifest())
@@ -1210,14 +1221,32 @@ function T.tests.configuration_touch_opens_the_menu_and_plays_sounds()
   Assert.equal(controller:status().view.menuOptions.cursor, 0, "the menu starts on CHANGE")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(controller:status().view.menuOptions.cursor, 1, "the menu cursor reaches QUIT")
+  do
+    -- The open menu publishes the shared list-menu tile frame beside
+    -- its pixel window: the frame is the pixel rect in exact tile
+    -- units, so the renderer frames the CHANGE/QUIT options from ROM
+    -- tiles with no pixel round-trip.
+    local view = assert(controller:status().view, "the open menu exports its view")
+    local menu = assert(view.menu, "the open menu publishes its window rect")
+    local frame = assert(view.frame, "the open menu publishes its tile frame")
+    Assert.equal(frame.x, menu.x / 8, "the frame shares the window left edge in tiles")
+    Assert.equal(frame.y, menu.y / 8, "the frame shares the window top edge in tiles")
+    Assert.equal(frame.width, menu.width / 8 - 2, "the frame spans the window interior in tiles")
+    Assert.equal(frame.x % 1, 0, "the frame left lands on a tile")
+    Assert.equal(frame.y % 1, 0, "the frame top lands on a tile")
+    Assert.equal(frame.width % 1, 0, "the frame width spans whole tiles")
+  end
   controller:updateFixed({ { type = "confirm" } })
   Assert.isFalse(controller:status().menuOpen, "QUIT closes the menu")
   Assert.equal(state:readPreferences().skin, 0, "QUIT writes nothing")
   controller:updateFixed({ { type = "pointer_down", x = 208, y = 116 } })
   Assert.isTrue(controller:status().menuOpen, "a tap on skin five opens its menu")
   controller:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(controller:status().menuOpen, "committing closes the menu before the swap")
+  Assert.equal(state:readPreferences().skin, 0, "the swap writes nothing before its fade-out")
+  settleSwap(controller)
   Assert.equal(state:readPreferences().skin, 5, "CHANGE on the menu commits the tapped skin")
-  Assert.isFalse(controller:status().menuOpen, "committing closes the menu")
+  Assert.isFalse(controller:status().busy, "the finished swap releases the card")
   controller:dispose()
 end
 
@@ -1243,6 +1272,7 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   keyboard:updateFixed({ { type = "confirm" } })
   Assert.isTrue(keyboard:status().menuOpen, "keyboard focus can open the source skin five menu")
   keyboard:updateFixed({ { type = "confirm" } })
+  settleSwap(keyboard)
   Assert.equal(state:readPreferences().skin, 5, "keyboard selection persists source skin five")
   keyboard:dispose()
 
@@ -1255,6 +1285,7 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   pointer:updateFixed({ { type = "pointer_down", x = 208, y = 116 } })
   Assert.isTrue(pointer:status().menuOpen, "pointer selection opens the source skin five menu")
   pointer:updateFixed({ { type = "confirm" } })
+  settleSwap(pointer)
   Assert.equal(state:readPreferences().skin, 5, "pointer selection persists source skin five")
   pointer:dispose()
 end
@@ -1352,6 +1383,182 @@ function T.tests.small_resizes_keep_logical_state()
   Assert.isNil(host.shell:takeResult(), "a hysteresis resize publishes no result")
   Assert.equal(host.state:readPreferences().lastApp, "phone", "resizes never touch the remembered card")
   host.shell:dispose()
+end
+
+-- A skin-aware companion manifest: every shell, setup, and cursor plane
+-- carries all six source skins, so a skin swap can be proven per skin
+-- instead of assumed from the strip alone. Phone dim roles and the
+-- semantic catalog stay borrowed from the shared validating fixture.
+---@return table
+local function skinAwareManifest()
+  local function skinVisuals(prefix)
+    local visuals = {}
+    for skin = 0, 5 do
+      visuals[skin] = visualRef("assets/generated/pokegear/" .. prefix .. "-skin-" .. skin .. ".png")
+    end
+    return visuals
+  end
+  local function cursorSequence(path)
+    return {
+      frames = {
+        { image = path, width = 16, height = 16, anchorX = 0, anchorY = 0, duration = 1 },
+      },
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+    }
+  end
+  local sequences = {}
+  for _, sequenceId in ipairs({ 1, 2, 3, 4, 5, 6, 7, 8 }) do
+    sequences["shell.cursor." .. sequenceId] =
+      cursorSequence("assets/generated/pokegear/shell-cursor-" .. sequenceId .. "-1.png")
+  end
+  local skins = {}
+  for skin = 0, 5 do
+    local map = {}
+    for _, sequenceId in ipairs({ 1, 2, 3, 4, 5, 6, 7, 8 }) do
+      map["shell.cursor." .. sequenceId] =
+        cursorSequence("assets/generated/pokegear/shell-cursor-skin-" .. skin .. "-" .. sequenceId .. "-1.png")
+    end
+    skins[skin] = map
+  end
+  sequences["shell.cursor.skins"] = skins
+  local manifest = fixtureManifest()
+  manifest.shell = {
+    foreground = skinVisuals("shell-foreground"),
+    information = skinVisuals("shell-information"),
+  }
+  manifest.configure = {
+    foreground = skinVisuals("configure-foreground"),
+    patch = skinVisuals("configure-patch"),
+  }
+  manifest.sequences = sequences
+  return manifest
+end
+
+function T.tests.skin_swap_restyles_setup_plan_and_clock_font()
+  local host = openShell({ manifest = skinAwareManifest() })
+  settle(host.shell)
+  host.state:setPreference("skin", 0)
+  host.shell:updateFixed({})
+  local function content()
+    local plan = assert(host.shell:status().presentation, "the shell publishes its presentation plan")
+    return assert(plan.content, "the plan carries its payload")
+  end
+  Assert.equal(
+    content().configureForeground,
+    "assets/generated/pokegear/configure-foreground-skin-0.png",
+    "the setup card opens on the saved skin"
+  )
+  -- Committing a new skin is the ConfigureController CHANGE boundary: one
+  -- preference write, and the shell plan follows it on the next tick.
+  -- Every skin is proven, not just one hop, so the per-skin repaint loop
+  -- below needs no GPU: distinct plans over distinct prepared images
+  -- repaint distinctly once the single-skin pixel proof wires plans to
+  -- pixels.
+  for skin = 1, 5 do
+    host.state:setPreference("skin", skin)
+    host.shell:updateFixed({})
+    local restyled = content()
+    local tag = "skin " .. skin
+    Assert.equal(
+      restyled.configureForeground,
+      "assets/generated/pokegear/configure-foreground-skin-" .. skin .. ".png",
+      "the setup card follows the committed " .. tag
+    )
+    Assert.equal(
+      restyled.configurePatch,
+      "assets/generated/pokegear/configure-patch-skin-" .. skin .. ".png",
+      "the setup lock patch follows the committed " .. tag
+    )
+    Assert.equal(
+      restyled.shellForeground,
+      "assets/generated/pokegear/shell-foreground-skin-" .. skin .. ".png",
+      "the strip follows the committed " .. tag
+    )
+    Assert.equal(
+      restyled.shellInformation,
+      "assets/generated/pokegear/shell-information-skin-" .. skin .. ".png",
+      "the information plane follows the committed " .. tag
+    )
+    local digits = assert(restyled.clockSprites, "the plan carries its clock sprites").digits
+    Assert.equal(
+      digits[1].image,
+      "assets/generated/pokegear/shell-cursor-skin-" .. skin .. "-1-1.png",
+      "the clock font follows the committed " .. tag
+    )
+    local corners = assert(restyled.cursorCorners, "the plan carries its strip corners")[1]
+    Assert.equal(
+      corners[1].image,
+      "assets/generated/pokegear/shell-cursor-skin-" .. skin .. "-5-1.png",
+      "the strip corners follow the committed " .. tag
+    )
+  end
+  host.shell:dispose()
+end
+
+-- The source skin swap fades out, swaps, then fades back in: the CHANGE
+-- commit closes the menu and latches a busy swap, the saved skin only
+-- moves once the fade-out completes, and input is ignored until the
+-- fade-in finishes. Each phase is awaited, never pinned to a tick count,
+-- so the test survives fade-cadence tuning while the sequencing contract
+-- holds.
+function T.tests.configuration_change_fades_out_writes_then_fades_in()
+  local ConfigureController = require("game.hgss.src.pokegear.ConfigureController")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local state = PokegearState.new(nil, catalogRefs(record))
+  state:setPreference("skin", 0)
+  local revisionAtOpen = state:revision()
+  local controller = ConfigureController.new({
+    state = state,
+    assets = fixtureManifest(),
+    labels = { change = "CHANGE", quit = "QUIT" },
+  })
+  ---@param predicate fun(): boolean
+  ---@param what string
+  local function advanceUntil(predicate, what)
+    for _ = 1, 30 do
+      if predicate() then
+        return
+      end
+      controller:updateFixed({})
+    end
+    Assert.isTrue(predicate(), what)
+  end
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(controller:status().menuOpen, "confirming an unlocked skin opens its context menu")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(controller:status().menuOpen, "the commit closes the menu before the swap")
+  Assert.isTrue(controller:status().busy, "the commit latches a busy swap")
+  Assert.equal(controller:status().fade, 0, "the swap fade starts uncovered")
+  Assert.equal(state:readPreferences().skin, 0, "the commit writes nothing before the fade-out")
+  Assert.equal(state:revision(), revisionAtOpen, "the commit moves no revision before the fade-out")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().cursor, 1, "input is ignored while the swap runs")
+  advanceUntil(function()
+    local fade = controller:status().fade
+    return fade > 0 and fade < 1
+  end, "the fade-out covers the card mid-swap")
+  Assert.equal(state:readPreferences().skin, 0, "the skin waits for the fade-out to complete")
+  advanceUntil(function()
+    return state:readPreferences().skin == 1
+  end, "the skin commits when the fade-out completes")
+  Assert.equal(state:revision(), revisionAtOpen + 1, "the swap writes exactly once")
+  Assert.isTrue(controller:status().busy, "the swap stays busy through the fade-in")
+  Assert.equal(controller:status().fade, 1, "the fade-in starts fully covered")
+  advanceUntil(function()
+    local fade = controller:status().fade
+    return fade > 0 and fade < 1
+  end, "the fade-in uncovers the card mid-swap")
+  advanceUntil(function()
+    return not controller:status().busy
+  end, "the swap releases when the fade-in completes")
+  Assert.equal(controller:status().fade, 0, "the finished swap leaves no cover")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().cursor, 0, "input answers again after the swap")
+  controller:dispose()
 end
 
 return T
