@@ -1194,6 +1194,58 @@ local function uploadStaged(graphics, key, path, bytes)
   return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. cause
 end
 
+-- Resolves one staged image through the shared pool or a direct upload.
+-- Pool misses and upload failures latch their reason and answer nil plus
+-- the reason; a missing direct read is a legitimate wait and answers nil
+-- alone. Answers the image on success.
+local function resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, path, stagedToken)
+  if envelope._pool ~= nil then
+    local image, failure = acquirePooled(envelope, key, path, stagedToken)
+    if image == nil then
+      assert(type(failure) == "string", "staged upload failures carry their reason")
+      failures[key] = failure --[[@as string]]
+      return nil, failure
+    end
+    return image
+  end
+  local bytes = cacheFs:read(path)
+  if type(bytes) ~= "string" then
+    return nil
+  end
+  local image, failure = uploadStaged(graphics, key, path, bytes)
+  if image == nil then
+    assert(type(failure) == "string", "staged upload failures carry their reason")
+    failures[key] = failure --[[@as string]]
+    return nil, failure
+  end
+  images[key] = image
+  return image
+end
+
+-- Resolves one catalog-selected image, tolerating legitimate waits.
+-- Missing reads and pending pool borrows answer nil with no latched
+-- failure; only a reported failure latches. Answers the image on success.
+local function resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
+  local image = nil
+  local failure = nil
+  if envelope._pool ~= nil then
+    image, failure = acquirePooled(envelope, key, path)
+  else
+    local bytes = cacheFs:read(path)
+    if type(bytes) == "string" then
+      image, failure = uploadStaged(graphics, key, path, bytes)
+    end
+  end
+  if image == nil then
+    if failure ~= nil then
+      failures[key] = failure
+    end
+    return nil, failure
+  end
+  images[key] = image
+  return image
+end
+
 -- Uploads one staged effect texture descriptor through the host graphics
 -- namespace: validate the exact typed RGBA payload dimensions and byte
 -- length, expand the bytes into one nearest-filtered image, and answer
@@ -2861,36 +2913,15 @@ function FieldBattlePresentation:_preparationServices()
       -- Manifest-declared battle art borrows the shared owner when the
       -- host provides one; without a pool the envelope uploads and owns
       -- the staged bytes directly so pool-less production draws resolve.
-      if envelope._pool ~= nil then
-        -- A scene ticket enrolled at admission decodes while the required
-        -- scene demand still stages: taking it over here avoids a second
-        -- enrollment and the serial worker wait behind the build.
-        local staged = envelope._pendingSceneImage
-        local stagedToken = nil
-        if staged ~= nil and staged.path == path then
-          envelope._pendingSceneImage = nil
-          stagedToken = staged.token
-        end
-        local image, failure = acquirePooled(envelope, key, path, stagedToken)
-        if image == nil then
-          assert(type(failure) == "string", "staged upload failures carry their reason")
-          failures[key] = failure --[[@as string]]
-          return nil, failure
-        end
-        return image
+      -- A scene ticket enrolled at admission rides instead of a fresh
+      -- enrollment so the drawable awaits the shared decode.
+      local staged = envelope._pendingSceneImage
+      local stagedToken = nil
+      if staged ~= nil and staged.path == path then
+        envelope._pendingSceneImage = nil
+        stagedToken = staged.token
       end
-      local bytes = cacheFs:read(path)
-      if type(bytes) ~= "string" then
-        return nil
-      end
-      local image, failure = uploadStaged(graphics, key, path, bytes)
-      if image == nil then
-        assert(type(failure) == "string", "staged upload failures carry their reason")
-        failures[key] = failure --[[@as string]]
-        return nil, failure
-      end
-      images[key] = image
-      return image
+      return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, path, stagedToken)
     end
     local typeKey = key:match("^battle:move%-type%-icon:([a-z%-]+)$")
     if typeKey ~= nil then
@@ -2903,28 +2934,9 @@ function FieldBattlePresentation:_preparationServices()
         return nil
       end
       local artPath = assert(visual.image, "the generated move type icon names its staged image") --[[@as string]]
-      local handle = nil
-      if envelope._pool ~= nil then
-        local failure
-        handle, failure = acquirePooled(envelope, key, artPath)
-        if handle == nil then
-          assert(type(failure) == "string", "staged upload failures carry their reason")
-          failures[key] = failure
-          return nil, failure
-        end
-      else
-        local bytes = cacheFs:read(artPath)
-        if type(bytes) ~= "string" then
-          return nil
-        end
-        local failure
-        handle, failure = uploadStaged(graphics, key, artPath, bytes)
-        if handle == nil then
-          assert(type(failure) == "string", "staged upload failures carry their reason")
-          failures[key] = failure
-          return nil, failure
-        end
-        images[key] = handle
+      local handle, handleFailure = resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, artPath)
+      if handle == nil then
+        return nil, handleFailure
       end
       local drawable = {
         lease = handle,
@@ -2960,27 +2972,7 @@ function FieldBattlePresentation:_preparationServices()
       artPath = launchEvolutionArtPath(envelope, key)
     end
     if artPath ~= nil then
-      if envelope._pool ~= nil then
-        local image, failure = acquirePooled(envelope, key, artPath)
-        if image == nil then
-          assert(type(failure) == "string", "staged upload failures carry their reason")
-          failures[key] = failure --[[@as string]]
-          return nil, failure
-        end
-        return image
-      end
-      local bytes = cacheFs:read(artPath)
-      if type(bytes) ~= "string" then
-        return nil
-      end
-      local image, failure = uploadStaged(graphics, key, artPath, bytes)
-      if image == nil then
-        assert(type(failure) == "string", "staged upload failures carry their reason")
-        failures[key] = failure --[[@as string]]
-        return nil, failure
-      end
-      images[key] = image
-      return image
+      return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, artPath)
     end
     local selector = exactPortraitSelector(key)
     if selector ~= nil then
@@ -3062,24 +3054,7 @@ function FieldBattlePresentation:_preparationServices()
         end
         path = frame.image
       end
-      local image = nil
-      local failure = nil
-      if envelope._pool ~= nil then
-        image, failure = acquirePooled(envelope, key, path)
-      else
-        local bytes = cacheFs:read(path)
-        if type(bytes) == "string" then
-          image, failure = uploadStaged(graphics, key, path, bytes)
-        end
-      end
-      if image == nil then
-        if failure ~= nil then
-          failures[key] = failure
-        end
-        return nil, failure
-      end
-      images[key] = image
-      return image
+      return resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
     end
     local ballKey, ballFrameText = key:match("^battle%-ball:([%w_]+):(%d+)$")
     if ballKey ~= nil then
@@ -3092,24 +3067,7 @@ function FieldBattlePresentation:_preparationServices()
         return nil
       end
       local path = frame.image --[[@as string]]
-      local image = nil
-      local failure = nil
-      if envelope._pool ~= nil then
-        image, failure = acquirePooled(envelope, key, path)
-      else
-        local bytes = cacheFs:read(path)
-        if type(bytes) == "string" then
-          image, failure = uploadStaged(graphics, key, path, bytes)
-        end
-      end
-      if image == nil then
-        if failure ~= nil then
-          failures[key] = failure
-        end
-        return nil, failure
-      end
-      images[key] = image
-      return image
+      return resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
     end
     local particleBall, particleKind, particleTexture = key:match("^battle%-ball%-particle:([%w_]+):(%a+):(%d+)$")
     if particleBall ~= nil and (particleKind == "seal" or particleKind == "burst") then
@@ -3126,24 +3084,7 @@ function FieldBattlePresentation:_preparationServices()
       if path == nil then
         return nil
       end
-      local image = nil
-      local failure = nil
-      if envelope._pool ~= nil then
-        image, failure = acquirePooled(envelope, key, path)
-      else
-        local bytes = cacheFs:read(path)
-        if type(bytes) == "string" then
-          image, failure = uploadStaged(graphics, key, path, bytes)
-        end
-      end
-      if image == nil then
-        if failure ~= nil then
-          failures[key] = failure
-        end
-        return nil, failure
-      end
-      images[key] = image
-      return image
+      return resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
     end
     return nil
   end
