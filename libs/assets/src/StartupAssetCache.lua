@@ -378,6 +378,54 @@ local function validateTitlePrompt(prompt)
   return true
 end
 
+-- Top-level title manifest keys; the title bundle owns the default because
+-- its schema predates the keyed lookup and carries the widest shape.
+local TITLE_MANIFEST_KEYS = {
+  schema = true,
+  versionId = true,
+  generationId = true,
+  kind = true,
+  legendary = true,
+  crySpeciesId = true,
+  sequence = true,
+  menuSelectSequence = true,
+  model = true,
+  clips = true,
+  surfaces = true,
+  sparkle = true,
+  timeline = true,
+  prompt = true,
+  projection = true,
+  lighting = true,
+}
+
+-- Top-level manifest keys by closed schema.
+local MANIFEST_KEYS = {
+  [Contract.startupWalker.schema] = {
+    schema = true,
+    versionId = true,
+    generationId = true,
+    heroes = true,
+    followers = true,
+  },
+  [Contract.startupOpeningScene.schema] = {
+    schema = true,
+    versionId = true,
+    generationId = true,
+    sceneNumber = true,
+    sourceTickRate = true,
+    initialDisplay = true,
+    layers = true,
+    spriteClips = true,
+    models = true,
+    particles = true,
+    timeline = true,
+    assets = true,
+    camera = true,
+    lighting = true,
+  },
+}
+
 local function read(cacheFs, path, schema, versionId)
   assert(cacheFs and type(cacheFs.loadLua) == "function", "startup assets require a cache filesystem")
   local record, loadError = cacheFs:loadLua(path)
@@ -390,52 +438,8 @@ local function read(cacheFs, path, schema, versionId)
   if record.schema ~= schema then
     return nil, invalid("manifest schema does not match", path)
   end
-  local allowed
-  if schema == Contract.startupWalker.schema then
-    allowed = {
-      schema = true,
-      versionId = true,
-      generationId = true,
-      heroes = true,
-      followers = true,
-    }
-  elseif schema == Contract.startupOpeningScene.schema then
-    allowed = {
-      schema = true,
-      versionId = true,
-      generationId = true,
-      sceneNumber = true,
-      sourceTickRate = true,
-      initialDisplay = true,
-      layers = true,
-      spriteClips = true,
-      models = true,
-      particles = true,
-      timeline = true,
-      assets = true,
-      camera = true,
-      lighting = true,
-    }
-  else
-    allowed = {
-      schema = true,
-      versionId = true,
-      generationId = true,
-      kind = true,
-      legendary = true,
-      crySpeciesId = true,
-      sequence = true,
-      menuSelectSequence = true,
-      model = true,
-      clips = true,
-      surfaces = true,
-      sparkle = true,
-      timeline = true,
-      prompt = true,
-      projection = true,
-      lighting = true,
-    }
-  end
+  assert(type(schema) == "string", "startup manifests declare their closed schema")
+  local allowed = MANIFEST_KEYS[schema] or TITLE_MANIFEST_KEYS
   if not onlyKeys(record, allowed) then
     return nil, invalid("manifest contains an unknown field", path)
   end
