@@ -1695,6 +1695,51 @@ local COMPLETION_CHECKS = {
   effects = checkEffectsFinish,
 }
 
+-- Checks one layer event against its compiled slot images and asset index.
+---@param cacheFs CacheFs staged-asset filesystem
+---@param event table<string, unknown> timeline event under validation
+---@param sceneNumber integer scene identity behind diagnostics
+---@param slotImageSets table<string, table<string, boolean>> compiled slot images by engine slot
+---@param assetIndex table<string, boolean> staged asset index
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkLayerReference(cacheFs, event, sceneNumber, slotImageSets, assetIndex, path)
+  local slotImages = slotImageSets[event.engine .. ":" .. event.bgSlot]
+  if slotImages == nil or slotImages[event.image] ~= true then
+    return nil, invalid("opening scene layer points outside its compiled slot images", path)
+  end
+  local okImage, imageErr = checkOpeningAssetPath(cacheFs, event.image, sceneNumber, "layer art")
+  if not okImage then
+    return nil, imageErr
+  end
+  if assetIndex[event.image] ~= true then
+    return nil, invalid("opening scene layer art is missing from the asset index", path)
+  end
+  return true
+end
+
+-- Checks one sprite-clip event against its compiled clip and asset index.
+---@param cacheFs CacheFs staged-asset filesystem
+---@param event table<string, unknown> timeline event under validation
+---@param sceneNumber integer scene identity behind diagnostics
+---@param clipIds table<string, boolean> compiled sprite clip identities
+---@param assetIndex table<string, boolean> staged asset index
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkClipReference(cacheFs, event, sceneNumber, clipIds, assetIndex, path)
+  if clipIds[event.clipId] ~= true then
+    return nil, invalid("opening scene sprite clip is unknown", path)
+  end
+  local okClip, clipErr = checkOpeningAssetPath(cacheFs, event.clipId, sceneNumber, "sprite clip")
+  if not okClip then
+    return nil, clipErr
+  end
+  if assetIndex[event.clipId] ~= true then
+    return nil, invalid("opening scene sprite clip is missing from the asset index", path)
+  end
+  return true
+end
+
 local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, slotImageSets, assetIndex)
   local path = StartupAssetCache.openingScenePath(sceneNumber)
   if type(timeline) ~= "table" or type(timeline.steps) ~= "table" or type(timeline.events) ~= "table" then
@@ -1745,28 +1790,15 @@ local function validateOpeningTimeline(cacheFs, timeline, sceneNumber, clipIds, 
       shown[event.instanceId] = true
     end
     if event.op == "setLayer" then
-      local slotImages = slotImageSets[event.engine .. ":" .. event.bgSlot]
-      if slotImages == nil or slotImages[event.image] ~= true then
-        return nil, invalid("opening scene layer points outside its compiled slot images", path)
-      end
-      local okImage, imageErr = checkOpeningAssetPath(cacheFs, event.image, sceneNumber, "layer art")
-      if not okImage then
-        return nil, imageErr
-      end
-      if assetIndex[event.image] ~= true then
-        return nil, invalid("opening scene layer art is missing from the asset index", path)
+      local okLayer, layerErr = checkLayerReference(cacheFs, event, sceneNumber, slotImageSets, assetIndex, path)
+      if not okLayer then
+        return nil, layerErr
       end
     end
     if event.op == "setSpriteClip" then
-      if clipIds[event.clipId] ~= true then
-        return nil, invalid("opening scene sprite clip is unknown", path)
-      end
-      local okClip, clipErr = checkOpeningAssetPath(cacheFs, event.clipId, sceneNumber, "sprite clip")
-      if not okClip then
-        return nil, clipErr
-      end
-      if assetIndex[event.clipId] ~= true then
-        return nil, invalid("opening scene sprite clip is missing from the asset index", path)
+      local okClipRef, clipRefErr = checkClipReference(cacheFs, event, sceneNumber, clipIds, assetIndex, path)
+      if not okClipRef then
+        return nil, clipRefErr
       end
     end
   end
