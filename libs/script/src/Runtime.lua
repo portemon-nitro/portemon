@@ -2666,6 +2666,25 @@ HANDLERS.clear_flag = handleClearFlag
 HANDLERS.change_weather = handleChangeWeather
 HANDLERS.set_var = handleSetVar
 HANDLERS.copy_var = handleCopyVar
+-- Retail ScrCmd_GetStdMsgNaix (opcode 438): the destination variable
+-- receives the msgdata bank for the std index, or zero when the index falls
+-- outside the retail table. Source authority: pokeheartgold
+-- src/field/scrcmd_message.c gScriptStdMsgBanks (day-of-week siblings, field
+-- moves, Cameron the photographer, pokemart and various shops). The
+-- companion MsgBoxExtern reads the destination variable back as its message
+-- bank. Declared inline: this chunk is at LuaJIT's 200-local budget, so
+-- the handler declares no main-chunk local.
+function HANDLERS.get_std_message(node, run)
+  local banks = { [0] = 752, [1] = 211, [2] = 30, [3] = 435 }
+  local semantics = semanticsFor(run)
+  local index = semantics.evaluateValue(node.index, run)
+  local bank = banks[index]
+  if bank == nil then
+    bank = 0
+  end
+  run.services.world:setVar(semantics.resolveIdOperand(node.result, run), bank)
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.add_var = handleAddVar
 HANDLERS.sub_var = handleSubVar
 HANDLERS.set_local = handleSetLocal

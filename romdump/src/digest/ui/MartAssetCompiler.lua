@@ -541,6 +541,16 @@ local function _compile(romFs)
     assets
   )
 
+  -- Hardware OBJ palette slots 6-7 select the two banks of the SUB control
+  -- palette (a060:22) loaded at VRAM slots 6-7 via resdat67: six
+  -- single-slot palettes occupy slots 0-5, so file bank = slot - 6.
+  -- Slot 6 (restored) is the normal bank 0; slot 7 (focus/selected) is the
+  -- highlight bank 1. Banks 6-7 within the file itself are unpopulated
+  -- black, so the raw hardware slot must never rasterize directly.
+  local function controlPaletteBank(slot)
+    assert(slot == 6 or slot == 7, "mart control palette slot is a populated SUB bank")
+    return slot - 6
+  end
   local function controlVisual(cellId, name, paletteOverride)
     local cell = assert(cellData.cells[cellId + 1], "control cell exists")
     if #cell.objs == 0 then
@@ -551,7 +561,7 @@ local function _compile(romFs)
     local source = { role = name }
     local options = {}
     if paletteOverride ~= nil then
-      options.paletteOverride = paletteOverride
+      options.paletteOverride = controlPaletteBank(paletteOverride)
     end
     local rendered = G2dRasterizer.renderCell(controlChar, controlPalette, cell, source, options)
     local visual = imageAsset(rendered, name, assets)

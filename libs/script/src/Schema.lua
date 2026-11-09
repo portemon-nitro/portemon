@@ -609,6 +609,18 @@ Schema.OPERATIONS = {
       source = { type = "id_or_var", required = true },
     },
   },
+  -- Generated-only std-message bank load: lowered from HGSS
+  -- ScrCmd_GetStdMsgNaix (opcode 438). The destination variable receives
+  -- the msgdata bank for the immediate-or-variable std index, or zero when
+  -- the index falls outside the retail table. Not exposed as a public
+  -- constructor; generated scripts may use it and handwritten scripts are
+  -- warned.
+  get_std_message = {
+    fields = {
+      index = { type = "scalar_or_value", required = true },
+      result = { type = "id_or_var", required = true },
+    },
+  },
   add_var = {
     fields = {
       variable = { type = "id_or_var", required = true },

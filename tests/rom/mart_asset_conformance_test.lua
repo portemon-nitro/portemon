@@ -254,8 +254,36 @@ function T.vanilla_stock_and_animation_timelines_retain_source_identity(romFs)
   Assert.equal(manifest.feedback.dispatchTicks, 1)
 end
 
+-- Cheap smoke for the hardware-slot mapping bug: every control visual shares
+-- the compiler's slot-to-bank mapping, so one representative focus visual
+-- proving non-black pixels covers the whole family without decoding every
+-- staged image. Early-exits on the first colored pixel.
+local function assertRendersSourceColors(bundle, path, label)
+  local pngBytes = assert(bundle.assets[path], label .. " has staged PNG bytes")
+  local fileData = love.filesystem.newFileData(pngBytes, path)
+  local image = love.image.newImageData(fileData)
+  local found = false
+  for y = 0, image:getHeight() - 1 do
+    for x = 0, image:getWidth() - 1 do
+      local r, g, b, a = image:getPixel(x, y)
+      if a > 0.5 then
+        local ri, gi, bi = math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5)
+        if ri ~= 0 or gi ~= 0 or bi ~= 0 then
+          found = true
+          break
+        end
+      end
+    end
+    if found then
+      break
+    end
+  end
+  Assert.isTrue(found, label .. " renders source colors, not pitch black")
+end
+
 function T.compiled_focus_and_control_variants_preserve_their_source_roles(romFs)
-  local manifest = compile(romFs).manifest
+  local bundle = compile(romFs)
+  local manifest = bundle.manifest
   Assert.isTrue(
     type(manifest.lower.focus) == "table",
     "compiled mart manifest exposes the independent lower focus family"
@@ -291,12 +319,21 @@ function T.compiled_focus_and_control_variants_preserve_their_source_roles(romFs
       normal.image == selected.image,
       control.normalVisualKey .. " variants retain distinct rendered palette assets"
     )
+    Assert.isFalse(
+      bundle.assets[normal.image] == bundle.assets[selected.image],
+      control.normalVisualKey .. " variants render distinct palette bytes, not identical fills"
+    )
   end
 
   Assert.isFalse(
     focus.cancel.image == manifest.controls[manifest.lower.cancel.normalVisualKey].selected.image,
     "Cancel focus remains separate from Cancel control feedback art"
   )
+  -- The SUB control palette's file banks 6-7 are unpopulated black, so the
+  -- compiler maps hardware slots 6-7 to file banks 0-1. One representative
+  -- visual proves the shared mapping; the per-pair byte comparisons above
+  -- prove each feedback pair actually differs.
+  assertRendersSourceColors(bundle, manifest.lower.focus.item.image, "item focus")
 end
 
 function T.vanilla_provider_uses_the_compiled_source_catalog_without_rendering(romFs, versionId)

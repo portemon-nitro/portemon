@@ -109,6 +109,27 @@ function T.screen_shake_maps_its_four_source_operands()
   Assert.equal(varying.command, 561)
 end
 
+function T.std_message_bank_load_carries_the_source_protocol_verbatim()
+  for _, index in ipairs({ 0, 1, 2, 3 }) do
+    local node = assert(FieldHandlers[438])(instruction(438, { raw(index), raw("VAR_SPECIAL_RESULT") }))
+    Assert.deepEqual(node, {
+      op = "get_std_message",
+      index = index,
+      result = { value = "var", id = "VAR_SPECIAL_RESULT" },
+    })
+    Assert.isNil(node.command, "source opcode must not leak into semantic operations")
+  end
+  local outOfRange = assert(FieldHandlers[438])(instruction(438, { raw(9), raw("VAR_SPECIAL_RESULT") }))
+  Assert.equal(outOfRange.op, "get_std_message", "out-of-range indices ride the same operation")
+  Assert.equal(outOfRange.index, 9)
+  local varying = assert(FieldHandlers[438])(instruction(438, { raw("VAR_TEMP"), raw("VAR_SPECIAL_RESULT") }))
+  Assert.deepEqual(varying, {
+    op = "get_std_message",
+    index = { value = "var", id = "VAR_TEMP" },
+    result = { value = "var", id = "VAR_SPECIAL_RESULT" },
+  })
+end
+
 function T.whiteout_commands_share_one_blocking_semantic_operation()
   for _, opcode in ipairs({ 219, 279 }) do
     Assert.equal(ScriptCommands.byOpcode[opcode].classification, "native_wait")

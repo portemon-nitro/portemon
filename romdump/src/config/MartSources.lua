@@ -856,6 +856,9 @@ MartSources.controls = {
   invisible = { cell = 19 },
   confirm = { cell = 20 },
   quantityCancel = { cell = 22 },
+  -- Hardware OBJ palette slots from the source sprite task: the SUB control
+  -- palette (a060:22) occupies VRAM slots 6-7, so the compiler maps slot 6
+  -- to file bank 0 (restored) and slot 7 to file bank 1 (focus/selected).
   paletteOverrides = { focus = 7, selected = 7, restored = 6 },
   animations = {
     selectionEntry = 19,

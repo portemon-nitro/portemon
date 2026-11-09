@@ -506,7 +506,9 @@ DerivedAssetContract.mart = {
   catalogSchema = "g4-mart-catalog-v1",
   -- v2 removes unreachable page focus; page controls use feedback while
   -- independent focus remains on items and Cancel.
-  schema = "g4-mart-presentation-v2",
+  -- v3 maps hardware OBJ palette slots 6-7 to file banks 0-1 of the SUB
+  -- control palette; slots 6-7 within the file are unpopulated black.
+  schema = "g4-mart-presentation-v3",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the

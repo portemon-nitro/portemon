@@ -194,6 +194,16 @@ function FieldMessageCompiler.requiredBankIds()
   set[40] = true
   set[265] = true
   set[BLACKOUT_MESSAGE_BANK] = true
+  -- GetStdMsgNaix loads one of these msgdata banks by immediate std index
+  -- (day-of-week siblings, field moves, Cameron, pokemart and various
+  -- shops); the companion MsgBoxExtern then shows a message from the bank
+  -- held in the destination variable. Source authority: pokeheartgold
+  -- src/field/scrcmd_message.c gScriptStdMsgBanks. Bank 211 already rides
+  -- a member association; the rest are listed explicitly.
+  set[752] = true
+  set[211] = true
+  set[30] = true
+  set[435] = true
   -- Apricorn Box labels are addressed directly by the generated source manifest.
   set[APRICORN_BOX_MESSAGE_BANK] = true
   -- Per-caller phone greeting banks ride the same demandable pipeline as

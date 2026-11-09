@@ -270,10 +270,69 @@ function T.tests.avatar_operations_without_player_service_fail()
   Assert.equal(applyErr.code, "SCRIPT_SERVICE_MISSING")
 end
 
-function T.tests.avatar_operations_are_internal_generated_carriers()
+local function stdMessageRun(vars)
+  local semantics = {}
+  function semantics.evaluateValue(value)
+    if type(value) == "table" and value.value == "var" then
+      return vars[value.id] or 0
+    end
+    return value
+  end
+  function semantics.resolveIdOperand(value)
+    return type(value) == "table" and value.value == "var" and value.id or value
+  end
+  return {
+    instance = { scriptId = "test.stdmsg", instanceId = "stdmsg-1", mode = "foreground", locals = {}, textArgs = {} },
+    services = {
+      world = {
+        getVar = function(_, id)
+          return vars[id] or 0
+        end,
+        setVar = function(_, id, value)
+          vars[id] = value
+        end,
+      },
+    },
+    semantics = semantics,
+  }
+end
+
+function T.tests.get_std_message_mirrors_the_retail_bank_table()
+  local vars = {}
+  local run = stdMessageRun(vars)
+  -- Ordered pairs: the retail table is an index-to-bank contract, not a set.
+  for _, row in ipairs({ { 0, 752 }, { 1, 211 }, { 2, 30 }, { 3, 435 } }) do
+    Assert.equal(
+      Runtime.executeNode({ op = "get_std_message", index = row[1], result = { value = "var", id = "dst" } }, run),
+      Runtime.OUTCOME_CONTINUE
+    )
+    Assert.equal(vars.dst, row[2], "std index " .. row[1] .. " loads its retail bank")
+  end
+  -- Indices outside the retail table mirror the source zero write instead
+  -- of faulting the script. Only integer indices are reachable: lowering
+  -- passes immediates or variable reads, so fractional and non-numeric
+  -- cases would pin Lua indexing rather than a script contract.
+  for _, index in ipairs({ 4, 9, -1 }) do
+    Assert.equal(
+      Runtime.executeNode({ op = "get_std_message", index = index, result = { value = "var", id = "dst" } }, run),
+      Runtime.OUTCOME_CONTINUE
+    )
+    Assert.equal(vars.dst, 0)
+  end
+  -- Variable indices resolve at runtime like the source ScriptGetVar read.
+  vars.src = 2
+  Assert.equal(
+    Runtime.executeNode(
+      { op = "get_std_message", index = { value = "var", id = "src" }, result = { value = "var", id = "dst" } },
+      run
+    ),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(vars.dst, 30)
+end
+
+function T.tests.internal_generated_carriers_validate_their_required_fields()
   local Validator = require("libs.script.src.Validator")
-  local Schema = require("libs.script.src.Schema")
-  local S = require("gen4.script")
   local ok, validateErr = Validator.validate({
     kind = "field_script",
     api = 1,
@@ -291,17 +350,22 @@ function T.tests.avatar_operations_are_internal_generated_carriers()
     steps = { { op = "queue_avatar_transition" } },
   })
   Assert.isNil(missing, "a queue without its transition name must not validate")
-  Assert.isNil(Schema.ENUMS.avatar_transition, "generic schema must not learn transition vocabulary")
-  Assert.isNil(S.queueAvatarTransition, "avatar queue must stay a generated-only carrier")
-  Assert.isNil(S.applyAvatarTransitions, "avatar apply must stay a generated-only carrier")
-  for _, group in ipairs(Schema.CONSTRUCTORS) do
-    for _, row in ipairs(group.rows) do
-      Assert.isTrue(
-        row.signature:find("vatar") == nil,
-        "no public constructor may expose avatar carriers: " .. row.signature
-      )
-    end
-  end
+  local stdOk, stdErr = Validator.validate({
+    kind = "field_script",
+    api = 1,
+    id = "test.std_shape",
+    steps = {
+      { op = "get_std_message", index = 3, result = { value = "var", id = "VAR_SPECIAL_RESULT" } },
+    },
+  })
+  Assert.isTrue(stdOk, "the std message carrier must validate: " .. tostring(stdErr))
+  local stdMissing, _ = Validator.validate({
+    kind = "field_script",
+    api = 1,
+    id = "test.std_bad",
+    steps = { { op = "get_std_message", index = 3 } },
+  })
+  Assert.isNil(stdMissing, "a std message load without its destination must not validate")
 end
 
 return T

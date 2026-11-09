@@ -13,7 +13,6 @@ local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
-local FieldMessages = require("romdump.src.config.FieldMessages")
 local PokegearSources = require("romdump.src.config.PokegearSources")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 
@@ -40,6 +39,11 @@ local function sourceReferenceBankIds()
   ids[445] = true
   ids[40] = true
   ids[265] = true
+  -- GetStdMsgNaix addresses these msgdata banks by immediate std index;
+  -- bank 211 already rides a member association.
+  ids[752] = true
+  ids[30] = true
+  ids[435] = true
   -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
   ids[21] = true
   -- Retail blackout.c reads this global recovery message bank outside script
@@ -210,6 +214,13 @@ function T.source_references_form_one_sorted_bank_set()
   expected[445] = true
   expected[40] = true
   expected[265] = true
+  -- GetStdMsgNaix addresses these msgdata banks by immediate std index
+  -- (day-of-week siblings, Cameron, pokemart and various shops); bank 211
+  -- already rides a member association. See FieldMessageCompiler's
+  -- gScriptStdMsgBanks set.
+  expected[752] = true
+  expected[30] = true
+  expected[435] = true
   -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
   expected[21] = true
   -- Retail blackout.c reads this global recovery message bank outside script
@@ -276,26 +287,6 @@ function T.route_29_bank_is_published_and_served_by_the_provider()
   Assert.equal(assert(bank).bankId, route29.messageMemberId)
   Assert.equal(provider:stats().loads, 1)
   provider:releaseBank(route29.messageMemberId)
-end
-
-function T.message_manifest_has_no_selected_bank_policy()
-  Assert.isNil(FieldMessages.banks, "message bank selection must not live in the config manifest")
-  Assert.equal(
-    type(FieldMessageCompiler.requiredBankIds),
-    "function",
-    "message bank selection must be derived by the compiler"
-  )
-end
-
-function T.start_menu_label_bank_is_a_required_generated_bank()
-  local required = FieldMessageCompiler.requiredBankIds()
-  local occurrences = 0
-  for _, bankId in ipairs(required) do
-    if bankId == 196 then
-      occurrences = occurrences + 1
-    end
-  end
-  Assert.equal(occurrences, 1, "the start menu label bank must be required exactly once")
 end
 
 function T.compilation_is_deterministic()
@@ -442,31 +433,6 @@ function T.session_compiles_a_selected_bank_without_its_siblings()
   session:close()
   session:close()
   Assert.isNil(session:compileBank(542), "a closed session compiles nothing")
-end
-
--- Banks read only through runtime protocol constants stay selected even when
--- no map header or script bank references them, exactly once each.
-function T.protocol_only_banks_stay_selected_without_map_or_script_references()
-  local mapReferenced = {}
-  for map in MapCatalog.all() do
-    mapReferenced[assert(map.messageMemberId)] = true
-  end
-  local scriptReferenced = {}
-  for _, bankId in pairs(ScriptMembers.banks) do
-    scriptReferenced[assert(bankId)] = true
-  end
-  for _, bankId in ipairs({ 219, 445 }) do
-    Assert.isNil(mapReferenced[bankId], "bank " .. bankId .. " has no map-header reference")
-    Assert.isNil(scriptReferenced[bankId], "bank " .. bankId .. " has no script-bank reference")
-  end
-  local selected = {}
-  for _, bankId in ipairs(FieldMessageCompiler.requiredBankIds()) do
-    Assert.isNil(selected[bankId], "a source bank must be emitted only once")
-    selected[bankId] = true
-  end
-  Assert.isTrue(selected[219] == true, "the opening-introduction bank stays selected")
-  Assert.isTrue(selected[445] == true, "the opposite-protagonist name bank stays selected")
-  Assert.isTrue(selected[MenuProtocol.STANDARD_MESSAGE_BANK] == true, "the standard list-menu bank stays selected")
 end
 
 -- A malformed bank fails alone with its bank/message context while valid

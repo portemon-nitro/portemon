@@ -1394,8 +1394,19 @@ function ObjectDrawFlag.makeInvisible(ins)
   return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = false }
 end
 
-local function waitButton()
-  return "unfolded"
+-- Retail ScrCmd_GetStdMsgNaix (opcode 438): the destination variable receives
+-- the msgdata bank for the std index, or zero when the index falls outside
+-- the retail table. The get_std_message runtime operation mirrors the
+-- source's ScriptGetVar read (immediate or variable index) and its table
+-- lookup exactly; the companion MsgBoxExtern reads the destination variable
+-- back as its message bank. Source authority: pokeheartgold
+-- src/field/scrcmd_message.c gScriptStdMsgBanks.
+local function getStdMsgNaix(ins)
+  return {
+    op = "get_std_message",
+    index = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
 end
 
 local function externalMessage(ins)
@@ -1855,7 +1866,7 @@ local FieldHandlers = {
   [706] = pcHallOfFameStatus,
   [374] = ObjectDrawFlag.makeInvisible,
   [375] = ObjectDrawFlag.makeVisible,
-  [438] = waitButton,
+  [438] = getStdMsgNaix,
   [439] = externalMessage,
   [440] = externalMessageWait,
   [749] = standardMenuBegin,
