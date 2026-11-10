@@ -3287,6 +3287,15 @@ function FieldRuntime:_buildBattleScenarioFragment(request)
       live
     )
   end
+  -- Retail catching-tutorial (scrcmd_c.c ScrCmd_CatchingTutorial opcode
+  -- 251 via BattleSetup_New_Tutorial): the lesson runs its fixed Marill
+  -- and Rattata content with 20× balls behind the tutorial marker,
+  -- never live party or bag state. Map-script content owns the trigger;
+  -- a test-only launch without the script still builds the same lesson
+  -- through this seam.
+  if request.kind == "tutorial" then
+    return HgssBattleScenarioFactory.fromTutorial(request.payload --[[@as table<string, unknown>]] or {}, live)
+  end
   return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
 end
 

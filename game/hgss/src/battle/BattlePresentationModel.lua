@@ -12,6 +12,7 @@ local BattleProtocol = require("libs.battle.src.BattleProtocol")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
 local MonCache = require("libs.assets.src.MonCache")
+local MonStats = require("libs.mons.src.gen4.MonStats")
 local Personality = require("libs.mons.src.gen4.Personality")
 local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 
@@ -108,6 +109,85 @@ local function combatLevel(deps, mon, species)
   return level --[[@as integer]]
 end
 
+-- The summary page reads the ability behind its staged ability name:
+-- the live mon carries its catalog key, while anything else stays
+-- silent instead of inventing an ability.
+---@param mon table<string, unknown> battle-local mon record under inspection
+---@return string? ability key, nil when the record names none
+local function combatAbility(mon)
+  if type(mon.ability) == "string" and mon.ability ~= "" then
+    return mon.ability --[[@as string]]
+  end
+  return nil
+end
+
+-- The summary page reads the computed battle stats behind its staged
+-- stat values (retail ROM CalcMonStats): level from the growth curve
+-- and stats from the exact stat formula through the shared derivation.
+-- Anything unanswerable stays silent instead of inventing numbers.
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@param mon table<string, unknown> battle-local mon record under inspection
+---@return MonStats.Facts? derived battle stats, nil when the record or catalog cannot answer
+local function combatStats(deps, mon)
+  if type(deps) ~= "table" then
+    return nil
+  end
+  local catalog = (deps --[[@as table<string, unknown>]]).catalog --[[@as table<string, unknown>?]]
+  if type(catalog) ~= "table" then
+    return nil
+  end
+  local ok, facts = pcall(MonStats.derive, mon, catalog)
+  if not ok or type(facts) ~= "table" then
+    return nil
+  end
+  return facts --[[@as MonStats.Facts]]
+end
+
+-- The summary page reads the remaining experience behind its staged
+-- next-experience value (PrintLevelAndNextExp): the next growth-curve
+-- entry minus the stored experience, zero at the level cap. Anything
+-- unanswerable stays silent instead of inventing progress.
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@param mon table<string, unknown> battle-local mon record under inspection
+---@param species table<string, unknown>? species record carrying the growth curve
+---@param level integer? resolved battle level
+---@return integer? remaining experience to the next level, nil when unanswerable
+local function combatNextExp(deps, mon, species, level)
+  if type(level) ~= "number" then
+    return nil
+  end
+  if level >= 100 then
+    return 0
+  end
+  if type(mon.experience) ~= "number" then
+    return nil
+  end
+  if type(deps) ~= "table" or species == nil then
+    return nil
+  end
+  local catalog = (deps --[[@as table<string, unknown>]]).catalog --[[@as table<string, unknown>?]]
+  if type(catalog) ~= "table" then
+    return nil
+  end
+  local curveKey = species.growthCurve --[[@as string?]]
+  if type(curveKey) ~= "string" then
+    return nil
+  end
+  local curveOf = catalog.growthCurve --[[@as fun(self: table<string, unknown>, key: string): table<integer, integer>?]]
+  if type(curveOf) ~= "function" then
+    return nil
+  end
+  local ok, curve = pcall(curveOf, catalog, curveKey)
+  if not ok or type(curve) ~= "table" then
+    return nil
+  end
+  local okExp, remaining = pcall(Experience.expFor, curve, level + 1)
+  if not okExp or type(remaining) ~= "number" then
+    return nil
+  end
+  return remaining - mon.experience --[[@as integer]]
+end
+
 ---@param deps table<string, unknown>? model dependencies carrying the mon catalog
 ---@param move string move identity under display
 ---@param entry table<string, unknown> battle-local move entry carrying power points
@@ -132,6 +212,17 @@ local function moveFacts(deps, move, entry)
           end
           if type(record.moveType) == "string" then
             display.type = record.moveType
+          end
+          -- The move-detail page prints power, accuracy, and class from
+          -- the catalog move facts, like the names and types above.
+          if type(record.power) == "number" then
+            display.power = record.power
+          end
+          if type(record.accuracy) == "number" then
+            display.accuracy = record.accuracy
+          end
+          if type(record.category) == "string" then
+            display.category = record.category
           end
           if type(record.basePp) == "number" then
             local ups = entry.ppUps
@@ -364,6 +455,26 @@ local function combatantRecord(deps, snapshot, id, own)
   if type(origin) == "table" and type(origin.ball) == "string" then
     record.ballKey = origin.ball
   end
+  -- Retail party-menu embargo (battle_party_menu.c TryUseItemOnMon msg 95):
+  -- the chosen mon is refused while its field slot carries Embargo.
+  -- The flag rides the detached roster beside the slot facts so the
+  -- item-target seam can refuse without resealing.
+  local effects = snapshot.effects --[[@as table<integer, table<string, unknown>>?]]
+  if type(effects) == "table" and type(combatant.active) == "table" then
+    local token = (combatant.active --[[@as table<string, unknown>]]).activation
+    for _, effect in ipairs(effects) do
+      if type(effect) == "table" and effect.key == "embargo" then
+        local scope = effect.scope --[[@as table<string, unknown>?]]
+        if type(scope) == "table" and scope.combatant == id then
+          local effectToken = scope.activation
+          if effectToken == nil or effectToken == token then
+            record.embargoed = true
+            break
+          end
+        end
+      end
+    end
+  end
   if own then
     -- The owning side reads its own roster in full: party-slot mapping,
     -- move power points, progression, and holdings. Opponents never
@@ -378,6 +489,25 @@ local function combatantRecord(deps, snapshot, id, own)
     end
     if type(mon.heldItem) == "string" then
       record.heldItem = mon.heldItem
+    end
+    -- The summary page reads the ability, battle stats, and remaining
+    -- experience beside the slot facts above: each stays absent when
+    -- its source facts cannot answer, never an invented value.
+    local ability = combatAbility(mon)
+    if ability ~= nil then
+      record.ability = ability
+    end
+    local stats = combatStats(deps, mon)
+    if stats ~= nil then
+      record.attack = stats.attack
+      record.defense = stats.defense
+      record.speed = stats.speed
+      record.specialAttack = stats.specialAttack
+      record.specialDefense = stats.specialDefense
+    end
+    local nextExp = combatNextExp(deps, mon, species, record.level)
+    if nextExp ~= nil then
+      record.nextExp = nextExp
     end
   end
   return record

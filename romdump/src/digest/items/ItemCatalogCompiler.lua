@@ -139,6 +139,10 @@ function ItemCatalogCompiler.decodeItemData(member, context)
     -- selecting the battle pockets the item appears in. The mask travels
     -- for the battle bag producer; grouping follows sBattleBagPocketOrder.
     battlePocket = math.floor(word / battlePocketShift) % (ItemSources.ITEM_DATA_BATTLE_POCKET_MASK + 1),
+    -- Retail battle use-function (ITEMATTR_BATTLEUSEFUNC): balls ride 1,
+    -- servings 2, escape dolls 3, battle-only stat items 0. TryUseItem
+    -- gates embargo and trainer escapes on it (battle_bag_menu.c).
+    battleUseFunc = string.byte(member, ItemSources.ITEM_DATA_BATTLE_USE_FUNC_OFFSET + 1),
     partyUse = string.byte(member, ItemSources.ITEM_DATA_PARTY_USE_OFFSET + 1) == 1,
     party = {
       slpHeal = has(0, 0),
@@ -714,6 +718,8 @@ function ItemCatalogCompiler.compileCatalog(romFs, opts)
         pocket = pocketKey,
         -- Retail battle bag grouping mask for the battle pockets.
         battlePocket = assert(decoded.battlePocket, "item decode carries its battle pocket mask"),
+        -- Retail battle use-function for TryUseItem gating.
+        battleUseFunc = assert(decoded.battleUseFunc, "item decode carries its battle use function"),
         preventToss = decoded.preventToss,
         selectable = decoded.selectable,
         isBall = ItemSources.ballItemIds[nativeId] == true,

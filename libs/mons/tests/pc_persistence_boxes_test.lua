@@ -11,6 +11,27 @@ local function boxesModule()
   return result
 end
 
+-- PC room reports whether a caught mon has somewhere to go: empty boxes
+-- read as room, while every slot filled reads as full for the battle
+-- throw gate.
+function T.box_room_tracks_empty_slots()
+  local Boxes = boxesModule()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local single = Boxes.new(nil, { configuredCount = 1 })
+  Assert.isTrue(single:hasSpace(), "empty boxes read as room")
+  local mon = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 5 }))
+  local updates = {}
+  for slot = 0, Boxes.SLOTS_PER_BOX - 1 do
+    updates[#updates + 1] = { box = 0, slot = slot, mon = mon }
+  end
+  local filled = single:prepareChanges(single:revision(), { updates = updates })
+  Assert.isTrue(filled.isCurrent())
+  filled.publish()
+  Assert.isFalse(single:hasSpace(), "a box with every slot filled reads as full")
+end
+
 function T.retail_capacity_and_expansion_survive_reopen()
   local Boxes = boxesModule()
   local catalog = CatalogFixture.makeCatalog()

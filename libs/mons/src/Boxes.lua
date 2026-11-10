@@ -163,6 +163,21 @@ end
 function Boxes:count()
   return #self._boxes
 end
+
+-- Reports whether any box holds an empty slot for a caught mon: retail
+-- PCStorage_FindFirstBoxWithEmptySlot refuses throws only when every box
+-- is full (battle_bag_menu.c msg 45 alongside a full party).
+---@return boolean true while at least one box slot is empty
+function Boxes:hasSpace()
+  for _, record in ipairs(self._boxes) do
+    for slot = 1, Boxes.SLOTS_PER_BOX do
+      if record.slots[slot] == false then
+        return true
+      end
+    end
+  end
+  return false
+end
 ---@return integer
 function Boxes:revision()
   return self._revision

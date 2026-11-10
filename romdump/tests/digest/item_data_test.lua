@@ -103,6 +103,25 @@ function T.decodes_fling_and_natural_gift_throw_facts()
   Assert.equal(decoded.fieldPocket, 4)
 end
 
+function T.decodes_battle_use_function_for_try_use_item_gating()
+  -- Escape-doll shape (battle_bag_menu.c TryUseItem): the battle
+  -- use-function byte at offset 11 rides 3 while the field function at
+  -- offset 10 stays 0.
+  local member = string.char(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0)
+    .. string.rep("\0", 20)
+  Assert.equal(#member, 34)
+  local decoded = assert(compiler().decodeItemData(member, {
+    archive = "item_data",
+    memberId = 63,
+  }))
+  Assert.equal(decoded.battleUseFunc, 3)
+  local plain = assert(compiler().decodeItemData(memberWith(0, 0), {
+    archive = "item_data",
+    memberId = 17,
+  }))
+  Assert.equal(plain.battleUseFunc, 0)
+end
+
 function T.rejects_malformed_item_members()
   local _, sizeErr = compiler().decodeItemData(string.rep("\0", 33), {
     archive = "item_data",

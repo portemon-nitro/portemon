@@ -50,6 +50,9 @@ local ITEM_FIELDS = {
   -- selecting the battle pockets the item appears in via
   -- sBattleBagPocketOrder). Producer-side source fact for retail grouping.
   battlePocket = true,
+  -- Retail battle use-function (ITEMATTR_BATTLEUSEFUNC) for TryUseItem
+  -- gating: balls 1, servings 2, escape dolls 3, battle-only stats 0.
+  battleUseFunc = true,
   preventToss = true,
   selectable = true,
   isBall = true,
@@ -348,6 +351,12 @@ local function assertItem(key, record, context)
   -- fail closed without inventing a pocket.
   if record.battlePocket ~= nil then
     checkInteger(record.battlePocket, context, "ITEM_CATALOG_INVALID", "item " .. key .. " battlePocket", 0, 31)
+  end
+  -- Retail battle use-function is optional for catalogs produced before
+  -- the TryUseItem import; battle children require it when present and
+  -- fail closed without inventing a function.
+  if record.battleUseFunc ~= nil then
+    checkInteger(record.battleUseFunc, context, "ITEM_CATALOG_INVALID", "item " .. key .. " battleUseFunc", 0, 255)
   end
   checkBoolean(record.isBall, context, "ITEM_CATALOG_INVALID", "item " .. key .. " isBall")
   checkBoolean(record.friendshipBoost, context, "ITEM_CATALOG_INVALID", "item " .. key .. " friendshipBoost")

@@ -22,8 +22,9 @@ local MonCache = require("libs.assets.src.MonCache")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
-local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
+local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
+local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
@@ -48,6 +49,8 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _battleAudio BattleAudio launch-scoped voice operations over the sound boundary
 ---@field _legacyAudio boolean true while the sink voices string roles without a cry port
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind cry identities, move names, and experience spans
+---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind pocket mapping
+---@field _bagCursor table<string, unknown>? borrowed runtime-only field bag cursor behind the last-used shortcut
 ---@field _monIconProvider table<string, unknown>? borrowed field icon page provider behind the command icon
 ---@field _battleMenus table<string, unknown>? borrowed native battle menu renderers and manifests
 ---@field _summary table<string, unknown>? field-owned SummaryScreenState dependencies for evolution learning
@@ -65,6 +68,8 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _subflows BattleSubflows battle-local child coordinator
 ---@field _partySnapshot table<integer, table<string, unknown>>? latest detached own-party facts
 ---@field _inventorySnapshot table<string, integer>? latest detached battle stock
+---@field _sealedBagPocket integer? battle pocket behind the last sealed bag item
+---@field _bagSlotOrder string[]? latest detached bag slot order behind battle-bag listing
 ---@field _mode string closed controller mode
 ---@field _selection string? highlighted semantic identity
 ---@field _commandX integer source main-menu cursor column behind keypad focus
@@ -106,6 +111,7 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _terminalRequest table<string, unknown>? mirrored terminal request identity behind the completion barrier
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
+---@field _tutorial boolean true while the scripted lesson auto-plays its bag behind the tutorial finger
 ---@field _sceneKey string staged battle scene identity behind the launch
 ---@field _encounterSourceKey string? staged scene identity behind the installed encounter source, nil while unstaged
 ---@field _encounterPaletteRestoreType string? accepted native palette restore class for this launch
@@ -117,6 +123,8 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _cursorTick integer keypad corner animation clock in presentation ticks
 ---@field _cursorWasVisible boolean whether the previous published cursor was visible
 ---@field _cursorSelection string? selection owning the current corner animation
+---@field _bagCursorTick integer battle-bag corner shimmer clock in presentation ticks
+---@field _bagCursorIdentity string? focused bag page and control owning the current shimmer
 ---@field _activeEffectTick integer active player bob clock in presentation ticks
 ---@field _activeEffectRunning boolean whether the player selection bob is active
 ---@field _sourceAccum number accepted seconds banked toward the next source tick
@@ -207,8 +215,8 @@ local KIND_MENU_MODE = {
 -- the four native commands. Safari and pal-park throw balls, bait, and
 -- mud instead of fighting with moves; bug-contest fights normally but
 -- throws contest balls from the bag slot. The catching tutorial only
--- reaches its scripted fight-then-bag sequence, and frontier
--- facilities disallow fleeing, so neither offers the full ordinary set.
+-- reaches its scripted fight-then-bag sequence, and frontier and link
+-- battles disallow fleeing, so none offers the full ordinary set.
 -- Unknown launch kinds keep the ordinary surface they always showed.
 local KIND_COMMANDS = {
   safari = { "safari-ball", "safari-bait", "safari-mud", "run" },
@@ -216,6 +224,7 @@ local KIND_COMMANDS = {
   ["bug-contest"] = { "fight", "bug-contest-ball", "pokemon", "run" },
   tutorial = { "fight", "bag" },
   frontier = { "fight", "bag", "pokemon" },
+  link = { "fight", "bag", "pokemon" },
 }
 
 local ORDINARY_COMMANDS = { "fight", "bag", "pokemon", "run" }
@@ -367,6 +376,51 @@ local function resolveBattleText(screen, key, substitutions)
   return stagedBattleText(screen._manifest, key, substitutions)
 end
 
+-- Maps one consumed battle item key to the first battle pocket holding
+-- it, for the last-used shortcut the browser validates: pocket order
+-- follows the shared pocket table, so single-pocket items land exactly
+-- and multi-pocket items land deterministically. Unknown or pocketless
+-- items map to nothing instead of naming an unstockable shortcut.
+---@param screen BattleScreenState screen owning the borrowed item catalog
+---@param itemKey string consumed battle item key under mapping
+---@return integer? zero-based battle pocket index, nil without a pocket
+local function lastUsedPocket(screen, itemKey)
+  local catalog = screen._itemCatalog --[[@as table<string, unknown>?]]
+  if type(catalog) ~= "table" then
+    return nil
+  end
+  local lookup = catalog.item --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>?]]
+  if type(lookup) ~= "function" then
+    return nil
+  end
+  local ok, definition = pcall(lookup, catalog, itemKey)
+  if not ok or type(definition) ~= "table" then
+    return nil
+  end
+  local mask = tonumber(definition.battlePocket) --[[@as integer?]]
+  if mask == nil then
+    return nil
+  end
+  local pockets = BattleBagPockets.pocketsForMask(mask)
+  return pockets[1]
+end
+
+-- Reads the zero-based battle pocket off a sealed browser exit cursor:
+-- the pocket the item was actually used from. Anything else seals
+-- without one, and the shortcut falls back to catalog order.
+---@param cursor unknown sealed cursor snapshot under reading
+---@return integer? battle pocket behind the seal, nil without one
+local function sealedBagPocket(cursor)
+  if type(cursor) ~= "table" then
+    return nil
+  end
+  local pocket = (cursor --[[@as table<string, unknown>]]).pocket
+  if type(pocket) == "number" and pocket % 1 == 0 and pocket >= 0 and pocket <= 3 then
+    return pocket
+  end
+  return nil
+end
+
 ---@param screen BattleScreenState screen owning the verified evolution text
 ---@param completion table<string, unknown> open evolution completion
 ---@param effect table<string, unknown> staged evolution message request
@@ -430,6 +484,7 @@ end
 ---@field registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
+---@field bagCursor table<string, unknown>? borrowed runtime-only field bag cursor behind the last-used shortcut
 ---@field monIconProvider table<string, unknown>? borrowed field icon page provider for presented battle composition
 ---@field battleMenus table<string, unknown>? borrowed field-owned native menu renderers and manifests
 ---@field summary table<string, unknown>? borrowed field Summary application dependencies for evolution learning
@@ -1104,6 +1159,20 @@ local function nativeEffectsFor(screen)
   return { start = start, status = status, cancel = cancel, retire = retire }
 end
 
+-- Borrows the staged battle-bag cursor frame durations behind the
+-- corner shimmer. The manifest owns the records; the snapshot only
+-- borrows them like every other shared core section.
+---@return table<string, table<integer, table<string, unknown>>>? staged corner frames by corner, nil without staged cursor art
+function BattleScreenState:_bagCursorFrames()
+  local manifest = self._manifest --[[@as table<string, unknown>?]]
+  local bag = type(manifest) == "table" and manifest.bag or nil
+  local cursor = type(bag) == "table" and bag.cursor or nil
+  if type(cursor) ~= "table" then
+    return nil
+  end
+  return cursor --[[@as table<string, table<integer, table<string, unknown>>>]]
+end
+
 ---@param opts BattleScreenState.Options
 ---@return BattleScreenState
 function BattleScreenState.new(opts)
@@ -1125,6 +1194,13 @@ function BattleScreenState.new(opts)
   end
   if opts.monIconProvider ~= nil then
     assert(type(opts.monIconProvider) == "table", "the icon provider arrives as a record")
+  end
+  if opts.bagCursor ~= nil then
+    assert(type(opts.bagCursor) == "table", "the bag cursor arrives as a record")
+    assert(
+      type(opts.bagCursor.battleLastUsedItem) == "function" and type(opts.bagCursor.setBattleLastUsedItem) == "function",
+      "the bag cursor tracks the battle last-used item"
+    )
   end
   local overrides = opts.overrides or {}
   assert(type(overrides) == "table", "per-instance inputs arrive as a record")
@@ -1167,7 +1243,9 @@ function BattleScreenState.new(opts)
     _battleAudio = BattleAudio.new({ sink = opts.audio, launchId = opts.launchId }),
     _legacyAudio = type(opts.audio.playCry) ~= "function",
     _monCatalog = opts.monCatalog,
+    _itemCatalog = opts.itemCatalog,
     _monIconProvider = opts.monIconProvider,
+    _bagCursor = opts.bagCursor,
     _battleMenus = opts.battleMenus,
     _summary = opts.summary,
     _assets = BattlePresentationAssets.new({
@@ -1199,6 +1277,8 @@ function BattleScreenState.new(opts)
     }),
     _partySnapshot = nil,
     _inventorySnapshot = nil,
+    _bagSlotOrder = nil,
+    _sealedBagPocket = nil,
     _mode = "preparing",
     _selection = "fight",
     _commandX = 0,
@@ -1239,6 +1319,7 @@ function BattleScreenState.new(opts)
     _terminalRequest = nil,
     _introBuilt = false,
     _kind = "wild",
+    _tutorial = false,
     _queue = {},
     _notice = nil,
     _showTimelineMessage = false,
@@ -1249,6 +1330,8 @@ function BattleScreenState.new(opts)
     _cursorTick = 0,
     _cursorWasVisible = false,
     _cursorSelection = nil,
+    _bagCursorTick = 0,
+    _bagCursorIdentity = nil,
     _activeEffectTick = 0,
     _activeEffectRunning = false,
     _sourceAccum = 0,
@@ -1417,6 +1500,25 @@ function BattleScreenState.new(opts)
     end)
     self._signature = (measurement --[[@as table<string, unknown>]]).signature --[[@as string?]]
   end
+  -- Wire battle-local children to staged audio/messages: menu confirms
+  -- and cursor moves voice DECIDE/SELECT through the launch voice
+  -- operations while refusals resolve through the staged manifest.
+  -- Controllers stay silent so one edge voices exactly once.
+  self._subflows:dispose()
+  local function subflowAudioEffect(symbol)
+    self._battleAudio:playEffect(symbol)
+  end
+  local function subflowResolveMessage(key, subs)
+    return resolveBattleText(self, key, subs or {})
+  end
+  self._subflows = BattleSubflows.new({
+    launchId = opts.launchId,
+    itemCatalog = opts.itemCatalog,
+    monCatalog = opts.monCatalog,
+    battleMenus = opts.battleMenus,
+    audioEffect = subflowAudioEffect,
+    resolveMessage = subflowResolveMessage,
+  })
   return self
 end
 
@@ -2512,6 +2614,8 @@ function BattleScreenState:_snapshot(borrowStatic)
     selection = self._selection,
     cursorVisible = self._keyboardFocus and self._mode ~= "child",
     cursorTick = self._cursorTick,
+    bagCursorTick = self._bagCursorTick,
+    bagCursorFrames = self:_bagCursorFrames(),
     armed = armed ~= nil and { scope = armed.scope, id = armed.id } or nil,
     buttonFeedback = buttonFeedback,
     touchFeedback = self._armed ~= nil and self._armed.id == "dialogue" and self._armed.pointerId ~= nil or false,
@@ -2562,6 +2666,8 @@ function BattleScreenState:_snapshot(borrowStatic)
       narration = self._manifest.messages.roles.narration.palette,
       hud = self._manifest.messages.roles.hud.palette,
       menu = self._manifest.messages.roles.menu.palette,
+      bag = self._manifest.messages.roles.bag.palette,
+      party = self._manifest.messages.roles.party.palette,
     },
     gaugePatchTiles = gaugePatchTiles,
     commands = self:_commands(),
@@ -2688,6 +2794,11 @@ end
 
 ---@return string[] command identities offered by the launch kind in slot order
 function BattleScreenState:_surfaceIds()
+  -- The catching tutorial reaches only its scripted fight-then-bag
+  -- sequence behind the scripted kind with the tutorial marker.
+  if self._kind == "scripted" and self._tutorial == true then
+    return KIND_COMMANDS.tutorial
+  end
   local ids = KIND_COMMANDS[self._kind]
   if type(ids) == "table" then
     return ids
@@ -4159,6 +4270,13 @@ function BattleScreenState:_portEnter(plan)
   if type(plan) == "table" and type(plan.kind) == "string" then
     self._kind = plan.kind --[[@as string]]
   end
+  -- The catching-tutorial marker arrives on the entry plan, or as the
+  -- tutorial kind itself in fixture-driven launches: the lesson keeps
+  -- its scripted kind with the tutorial command surface and an
+  -- auto-played bag, never a new runtime launch kind.
+  if type(plan) == "table" and (plan.tutorial == true or plan.kind == "tutorial") then
+    self._tutorial = true
+  end
   if type(plan) == "table" and plan.encounterPaletteRestoreType ~= nil then
     local restoreType = plan.encounterPaletteRestoreType
     assert(
@@ -4455,6 +4573,11 @@ function BattleScreenState:_portPresent(packet)
   end
   if type(packet.inventory) == "table" then
     self._inventorySnapshot = copyValue(packet.inventory)
+  end
+  if type(packet.bagSlotOrder) == "table" then
+    self._bagSlotOrder = copyValue(packet.bagSlotOrder)
+  else
+    self._bagSlotOrder = nil
   end
   self._pendingFinal = copyValue(packet.after)
 end
@@ -4866,8 +4989,11 @@ function BattleScreenState:_soundCueComplete(cue)
 end
 
 -- Records one menu-cancel feedback voice behind the backing-out edge.
+-- Retail bag/party cancels voice DECIDE (battle_bag_menu.c and
+-- battle_party_menu.c cancel paths); the menu slide-in cue stays staged
+-- but unused by these child paths.
 function BattleScreenState:_playCancelFeedback()
-  self:_playCue({ kind = "effect", symbol = BattleAudio.SINK_SOUNDS.slide })
+  self:_playCue({ kind = "effect", symbol = BattleAudio.SINK_SOUNDS.decide })
 end
 
 ---@param fragment table<string, unknown> prepared choice fragment under staging
@@ -4898,6 +5024,32 @@ function BattleScreenState:_seal(fragment)
   end
   self._actorIndex = pending
   self:_enterActorPrompt()
+end
+
+-- Records the battle-consumed item behind the bag last-used shortcut:
+-- the first sealed item choice names the cursor entry, exactly like the
+-- retail battle consume paths. Non-item replies and a missing cursor
+-- record nothing.
+---@param choices table<integer, table<string, unknown>> accepted staged choices under scan
+---@param pocket integer? zero-based battle pocket behind the consume, nil when unknown
+function BattleScreenState:_recordBattleLastUsed(choices, pocket)
+  local cursor = self._bagCursor --[[@as table<string, unknown>?]]
+  if type(cursor) ~= "table" then
+    return
+  end
+  local record = cursor.setBattleLastUsedItem --[[@as fun(self: table<string, unknown>, key: string?, pocket: integer?)?]]
+  if type(record) ~= "function" then
+    return
+  end
+  for _, fragment in ipairs(choices) do
+    if type(fragment) == "table" and fragment.kind == "item" then
+      local payload = fragment.payload --[[@as table<string, unknown>?]]
+      if type(payload) == "table" and type(payload.item) == "string" and payload.item ~= "" then
+        record(cursor, payload.item --[[@as string]], pocket)
+        return
+      end
+    end
+  end
 end
 
 -- Submits the completed staged choices once in kernel request order. A refusal
@@ -4939,6 +5091,8 @@ function BattleScreenState:_submitStaged()
     self:_enterActorPrompt()
     return
   end
+  self:_recordBattleLastUsed(choices, self._sealedBagPocket)
+  self._sealedBagPocket = nil
   self._notice = nil
   -- The answered request is no longer open; its options stay cached
   -- for display until the next delivery replaces them.
@@ -5298,7 +5452,7 @@ function BattleScreenState:_childIntent(kind, purpose, cancellable)
     kind = self._options.kind,
     actors = { narrowed },
   } --[[@as table<string, unknown>]]
-  return {
+  local intent = {
     kind = kind,
     purpose = purpose,
     launchId = self._launchId,
@@ -5310,7 +5464,113 @@ function BattleScreenState:_childIntent(kind, purpose, cancellable)
     options = options,
     party = copyValue(self._partySnapshot or {}),
     inventory = copyValue(self._inventorySnapshot or {}),
-  }
+  } --[[@as table<string, unknown>]]
+  -- The saved-bag slot order rides the bag intent beside its stock so
+  -- the browser lists in bag order, never catalog order.
+  if kind == "bag" and type(self._bagSlotOrder) == "table" then
+    intent.slotOrder = copyValue(self._bagSlotOrder)
+  end
+  if kind == "bag" then
+    local lastUsed = self:_bagLastUsed()
+    if lastUsed ~= nil then
+      intent.lastUsed = lastUsed
+    end
+    -- The retail cursor rides the bag intent beside the stock: the
+    -- browser reopens on its saved pocket, pages, and cells
+    -- (battle_bag_menu.c Create over BagCursor_Battle_*).
+    local remembered = self:_battleCursorSnapshot()
+    if remembered ~= nil then
+      intent.battleCursor = remembered
+    end
+    -- The trainer-escape refusal names the player (battle_bag_menu.c
+    -- BufferPlayersName for msg bank 0040 id 37); the intent carries the
+    -- retained trainer name beside the stock so the message resolves.
+    if type(self._lastPlayerName) == "string" and self._lastPlayerName ~= "" then
+      intent.playerName = self._lastPlayerName
+    end
+    -- The catching-tutorial marker rides the bag intent beside the
+    -- last-used shortcut: the browser auto-plays behind the tutorial
+    -- finger instead of taking input (battle_bag_menu.c RunTutorial).
+    if self._tutorial == true then
+      intent.isTutorial = true
+    end
+  end
+  return intent
+end
+
+-- Reads the runtime battle-bag cursor for the next bag intent: the
+-- last sealed pocket with each pocket's page and cell. A missing cursor
+-- reader opens the bag cleared.
+---@return BagBattleCursor? battle cursor snapshot, nil without a cursor reader
+function BattleScreenState:_battleCursorSnapshot()
+  local cursor = self._bagCursor --[[@as table<string, unknown>?]]
+  if type(cursor) ~= "table" then
+    return nil
+  end
+  local read = cursor.battleCursor --[[@as fun(self: table<string, unknown>): table?]]
+  if type(read) ~= "function" then
+    return nil
+  end
+  local snapshot = read(cursor)
+  if type(snapshot) ~= "table" then
+    return nil
+  end
+  return snapshot
+end
+
+-- Stores the sealed browser exit cursor for the next opening (retail
+-- BattleBagMenu_Exit writes cursor state only when an item was
+-- chosen): cancelling the browser stores nothing.
+---@param snapshot unknown sealed cursor snapshot under storing
+function BattleScreenState:_writeBattleCursor(snapshot)
+  if type(snapshot) ~= "table" then
+    return
+  end
+  local cursor = self._bagCursor --[[@as table<string, unknown>?]]
+  if type(cursor) ~= "table" then
+    return
+  end
+  local record = cursor.setBattleCursor --[[@as fun(self: table<string, unknown>, snapshot: table)?]]
+  if type(record) ~= "function" then
+    return
+  end
+  record(cursor, snapshot --[[@as table]])
+end
+
+-- Reads the bag last-used shortcut for the next bag intent: the
+-- cursor-recorded item with the pocket it was consumed from, falling
+-- back to its first battle pocket, validated by the browser against
+-- live stock on open. Anything unrecorded or pocketless leaves the
+-- shortcut disabled.
+---@return table<string, unknown>? last-used item and battle pocket for the intent
+function BattleScreenState:_bagLastUsed()
+  local cursor = self._bagCursor --[[@as table<string, unknown>?]]
+  if type(cursor) ~= "table" then
+    return nil
+  end
+  local read = cursor.battleLastUsedItem --[[@as fun(self: table<string, unknown>): string?]]
+  if type(read) ~= "function" then
+    return nil
+  end
+  local item = read(cursor)
+  if type(item) ~= "string" or item == "" then
+    return nil
+  end
+  local pocket = nil
+  local readPocket = cursor.battleLastUsedPocket --[[@as fun(self: table<string, unknown>): integer?]]
+  if type(readPocket) == "function" then
+    local stored = readPocket(cursor)
+    if type(stored) == "number" and stored % 1 == 0 and stored >= 0 and stored <= 3 then
+      pocket = stored
+    end
+  end
+  if pocket == nil then
+    pocket = lastUsedPocket(self, item)
+  end
+  if pocket == nil then
+    return nil
+  end
+  return { item = item, pocket = pocket }
 end
 
 ---@param entry table<string, unknown> acting entry options under masking
@@ -5478,10 +5738,11 @@ function BattleScreenState:_activateCommand(id)
     self._menuGateTicks = 1
     self._notice = nil
   elseif id == "bag" then
-    -- Frontier facilities refuse bag items natively with msg_0197_00593
-    -- (battle_input.c BATTLE_INPUT_BAG with BATTLE_TYPE_FRONTIER prints
-    -- via EmitPrintSelectionMessage) instead of opening a usable bag.
-    if self._kind == "frontier" then
+    -- Frontier facilities and link battles refuse bag items natively
+    -- with msg_0197_00593 (battle_input.c BATTLE_INPUT_BAG with
+    -- BATTLE_TYPE_FRONTIER|BATTLE_TYPE_LINK prints via
+    -- EmitPrintSelectionMessage) instead of opening a usable bag.
+    if self._kind == "frontier" or self._kind == "link" then
       self:_refuse(resolveBattleText(self, "battle/narration/item-could-not-be-used", {}))
       return
     end
@@ -5825,6 +6086,11 @@ function BattleScreenState:_pollChild()
       end
       return
     end
+    self:_writeBattleCursor(result.cursor)
+    -- The sealed browser exit pocket rides to the submit beside the
+    -- staged fragment so the last-used shortcut records the pocket the
+    -- item was actually used from.
+    self._sealedBagPocket = sealedBagPocket(result.cursor)
     self:_seal(copyValue(fragment))
     if self._mode == "awaiting_resolution" or self._mode == "command" then
       self._subflows:closeChild()
@@ -7812,15 +8078,11 @@ function BattleScreenState:updateFixed(dt)
   if self._mode == "child" and self._subflows:status().active then
     self._subflows:tick()
     self:_pollChild()
-    local menus = self._battleMenus
-    local child = self._subflows:status().childView
-    if type(menus) == "table" and type(child) == "table" and child.kind == "bag" then
-      local bag = menus.bag --[[@as table<string, unknown>?]]
-      local native = child.native
-      if type(bag) == "table" and type(bag.renderer) == "table" and type(native) == "table" then
-        bag.renderer:prepare(native)
-      end
-    end
+    -- The battle bag is the retail battle browser: its native status
+    -- names battle pockets and pages, never a field-bag presentation,
+    -- so it prepares nothing through the borrowed field bag renderer.
+    -- Its paint path owns its staged pages and shared item icons
+    -- without field-bag leases.
   end
   -- The parent timeline advances exactly once above before the card is
   -- polled or stepped; no battle choice or other subflow advances while
@@ -7851,6 +8113,23 @@ function BattleScreenState:updateFixed(dt)
   else
     self._cursorTick = self._cursorTick + sourceTicks
   end
+  -- The battle-bag d-pad cursor shimmers while active and restarts
+  -- on every focus move or page turn (BattleDpadCursor_SetRect
+  -- reseats the corner animation through BattleCursor_SetCorners).
+  local bagChild = self._mode == "child" and self._subflows:status().childView or nil
+  local bagIdentity = nil
+  if type(bagChild) == "table" and bagChild.kind == "bag" then
+    local native = bagChild.native
+    if type(native) == "table" and native.cursorActive == true then
+      bagIdentity = tostring(bagChild.bagPage) .. "|" .. tostring(bagChild.focusId)
+    end
+  end
+  if bagIdentity == nil or bagIdentity ~= self._bagCursorIdentity then
+    self._bagCursorTick = 0
+  else
+    self._bagCursorTick = self._bagCursorTick + sourceTicks
+  end
+  self._bagCursorIdentity = bagIdentity
   self._cursorWasVisible = cursorVisible
   self._cursorSelection = cursorVisible and self._selection or nil
   -- Palette-dependent images materialize once after the fixed tick has

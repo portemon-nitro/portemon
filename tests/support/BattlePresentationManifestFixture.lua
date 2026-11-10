@@ -410,6 +410,8 @@ local function fullManifest()
       trainerNarration = { font = "data/generated/field/font/font-0.lua", palette = printerPalette(1) },
       hud = { font = "data/generated/field/font/font-0.lua", palette = printerPalette(1) },
       menu = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(7) },
+      bag = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(12) },
+      party = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(1) },
       bugContest = { font = "data/generated/field/font/font-0.lua" },
       recorderFeedback = { font = "data/generated/field/font/font-0.lua" },
     },
@@ -608,6 +610,13 @@ local function fullManifest()
   old.images["assets/generated/battle/trainer-front-YOUNGSTER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-front-LEADER_FALKNER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"] = { width = 80, height = 80 }
+  old.images["assets/generated/battle/bag-page-1.png"] = { width = 256, height = 192 }
+  old.images["assets/generated/battle/bag-page-2.png"] = { width = 256, height = 192 }
+  old.images["assets/generated/battle/bag-page-3.png"] = { width = 256, height = 192 }
+  old.images["assets/generated/battle/battle-finger.png"] = { width = 16, height = 16 }
+  for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
+    old.images["assets/generated/battle/battle-cursor-" .. corner .. ".png"] = { width = 16, height = 16 }
+  end
   local function addSubObjSourceIndices(section)
     local image = assert(old.images[section.image], "source-indexed HUD images are inventoried")
     section.sourceIndices = {
@@ -1119,6 +1128,145 @@ local function fullManifest()
       },
       runLabelSelector = { cancel = "label/cancel", ordinary = "label/run" },
     },
+    bag = {
+      pages = {
+        {
+          image = "assets/generated/battle/bag-page-1.png",
+          x = 0,
+          y = 0,
+          width = 256,
+          height = 192,
+        },
+        {
+          image = "assets/generated/battle/bag-page-2.png",
+          x = 256,
+          y = 0,
+          width = 256,
+          height = 192,
+        },
+        {
+          image = "assets/generated/battle/bag-page-3.png",
+          x = 0,
+          y = 256,
+          width = 256,
+          height = 192,
+        },
+      },
+      windows = {
+        message = { { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 } },
+        useItem = {
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+        },
+        pocketMenu = {
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+          { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 },
+        },
+        itemList = (function()
+          local windows = {}
+          for _ = 1, 26 do
+            windows[#windows + 1] =
+              { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 }
+          end
+          return windows
+        end)(),
+      },
+      hitboxes = {
+        pocketMenu = {
+          { top = 8, bottom = 79, left = 0, right = 127 },
+          { top = 80, bottom = 151, left = 0, right = 127 },
+          { top = 8, bottom = 79, left = 128, right = 255 },
+          { top = 80, bottom = 151, left = 128, right = 255 },
+          { top = 152, bottom = 191, left = 0, right = 207 },
+          { top = 152, bottom = 191, left = 216, right = 255 },
+        },
+        itemList = {
+          { top = 8, bottom = 55, left = 0, right = 127 },
+          { top = 8, bottom = 55, left = 128, right = 255 },
+          { top = 56, bottom = 103, left = 0, right = 127 },
+          { top = 56, bottom = 103, left = 128, right = 255 },
+          { top = 104, bottom = 151, left = 0, right = 127 },
+          { top = 104, bottom = 151, left = 128, right = 255 },
+          { top = 152, bottom = 191, left = 216, right = 255 },
+          { top = 152, bottom = 191, left = 0, right = 39 },
+          { top = 152, bottom = 191, left = 40, right = 79 },
+        },
+        useItem = {
+          { top = 152, bottom = 191, left = 0, right = 207 },
+          { top = 152, bottom = 191, left = 216, right = 255 },
+        },
+      },
+      entryIds = {
+        name = { 9 },
+        quantity = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+      },
+      icons = {
+        list = {
+          { x = 44, y = 45 },
+          { x = 172, y = 45 },
+          { x = 44, y = 93 },
+          { x = 172, y = 93 },
+          { x = 44, y = 141 },
+          { x = 172, y = 141 },
+        },
+        lastUsed = { x = 24, y = 178 },
+        useItem = { x = 40, y = 44 },
+      },
+      tutorialFinger = {
+        { x = 192, y = 24 },
+        { x = 64, y = 16 },
+        { x = 104, y = 152 },
+      },
+      finger = {
+        image = "assets/generated/battle/battle-finger.png",
+        width = 16,
+        height = 16,
+      },
+      cursor = {
+        tl = {
+          image = "assets/generated/battle/battle-cursor-tl.png",
+          width = 16,
+          height = 16,
+          frames = {
+            { duration = 6, x = 0, y = 0 },
+            { duration = 6, x = -1, y = -1 },
+          },
+        },
+        tr = {
+          image = "assets/generated/battle/battle-cursor-tr.png",
+          width = 16,
+          height = 16,
+          frames = {
+            { duration = 6, x = 0, y = 0 },
+            { duration = 6, x = -1, y = -1 },
+          },
+        },
+        bl = {
+          image = "assets/generated/battle/battle-cursor-bl.png",
+          width = 16,
+          height = 16,
+          frames = {
+            { duration = 6, x = 0, y = 0 },
+            { duration = 6, x = -1, y = -1 },
+          },
+        },
+        br = {
+          image = "assets/generated/battle/battle-cursor-br.png",
+          width = 16,
+          height = 16,
+          frames = {
+            { duration = 6, x = 0, y = 0 },
+            { duration = 6, x = -1, y = -1 },
+          },
+        },
+      },
+      buttons = {},
+    },
     messages = {
       roles = old.textRoles,
       banks = {
@@ -1347,6 +1495,14 @@ local function fullManifest()
         ["battle/bag/message/no-aim-hidden"] = messageRecord({
           "It’s no good! It’s impossible to aim\nat a Pokémon that’s not in sight!",
         }),
+        ["battle/bag/message/no-aim-hidden-foe"] = messageRecord({
+          "It’s no good! It’s impossible to aim\nat a Pokémon that’s not in sight!",
+        }),
+        ["battle/bag/message/no-stealing"] = messageRecord({
+          "Oak’s words echoed...\n",
+          false,
+          "! There’s a time and\fplace for everything! But not now.",
+        }),
         -- Retail battle party prompts, buttons, and refusals (msg 0006).
         ["battle/party/prompt/choose"] = messageRecord({ "Choose a Pokémon." }),
         ["battle/party/prompt/use"] = messageRecord({ "Use on which Pokémon?" }),
@@ -1368,6 +1524,55 @@ local function fullManifest()
         ["battle/party/message/no-effect"] = messageRecord({ "It won’t have any effect." }),
         ["battle/party/message/already-selected"] = messageRecord({ false, " has already been\nselected." }),
         ["battle/party/message/embargo"] = messageRecord({ false, "’s effect prevents\nthe item’s use on ", false, "!" }),
+        -- Retail party summary/move words painted on the wrapper rows.
+        ["battle/party/stat/hp"] = messageRecord({ "HP" }),
+        ["battle/party/stat/hp-current"] = messageRecord({ false }),
+        ["battle/party/stat/hp-max"] = messageRecord({ false }),
+        ["battle/party/stat/hp-slash"] = messageRecord({ "/" }),
+        ["battle/party/stat/attack"] = messageRecord({ "ATTACK" }),
+        ["battle/party/stat/attack-value"] = messageRecord({ false }),
+        ["battle/party/stat/defense"] = messageRecord({ "DEFENSE" }),
+        ["battle/party/stat/defense-value"] = messageRecord({ false }),
+        ["battle/party/stat/sp-attack"] = messageRecord({ "SP. ATK" }),
+        ["battle/party/stat/sp-attack-value"] = messageRecord({ false }),
+        ["battle/party/stat/sp-defense"] = messageRecord({ "SP. DEF" }),
+        ["battle/party/stat/sp-defense-value"] = messageRecord({ false }),
+        ["battle/party/stat/speed"] = messageRecord({ "SPEED" }),
+        ["battle/party/stat/speed-value"] = messageRecord({ false }),
+        ["battle/party/stat/level"] = messageRecord({ "Lv." }),
+        ["battle/party/stat/level-value"] = messageRecord({ false }),
+        ["battle/party/stat/exp"] = messageRecord({ "NEXT LV" }),
+        ["battle/party/stat/exp-value"] = messageRecord({ false }),
+        ["battle/party/mon-name/0"] = messageRecord({ false }),
+        ["battle/party/mon-name/1"] = messageRecord({ false }),
+        ["battle/party/mon-name/2"] = messageRecord({ false }),
+        ["battle/party/mon-name/3"] = messageRecord({ false }),
+        ["battle/party/mon-name/4"] = messageRecord({ false }),
+        ["battle/party/mon-name/5"] = messageRecord({ false }),
+        ["battle/party/gender/male"] = messageRecord({ "♂" }),
+        ["battle/party/gender/female"] = messageRecord({ "♀" }),
+        ["battle/party/ability/name"] = messageRecord({ false }),
+        ["battle/party/item/name"] = messageRecord({ false }),
+        ["battle/party/item/none"] = messageRecord({ "No item held" }),
+        ["battle/party/move/pp"] = messageRecord({ "PP" }),
+        ["battle/party/move/pp-label"] = messageRecord({ "PP" }),
+        ["battle/party/move/pp-current"] = messageRecord({ false }),
+        ["battle/party/move/pp-max"] = messageRecord({ false }),
+        ["battle/party/move/pp-slash"] = messageRecord({ "/" }),
+        ["battle/party/move/power"] = messageRecord({ "POWER" }),
+        ["battle/party/move/power-value"] = messageRecord({ false }),
+        ["battle/party/move/no-value"] = messageRecord({ "---" }),
+        ["battle/party/move/accuracy"] = messageRecord({ "ACCURACY" }),
+        ["battle/party/move/accuracy-value"] = messageRecord({ false }),
+        ["battle/party/move/category"] = messageRecord({ "CATEGORY" }),
+        ["battle/party/move/category-physical"] = messageRecord({ "PHYSICAL" }),
+        ["battle/party/move/category-status"] = messageRecord({ "STATUS" }),
+        ["battle/party/move/category-special"] = messageRecord({ "SPECIAL" }),
+        ["battle/party/move-name/0"] = messageRecord({ false }),
+        ["battle/party/move-name/1"] = messageRecord({ false }),
+        ["battle/party/move-name/2"] = messageRecord({ false }),
+        ["battle/party/move-name/3"] = messageRecord({ false }),
+        ["battle/party/move-name/4"] = messageRecord({ false }),
         ["battle/narration/bag-woke-up"] = messageRecord({ false, " woke up." }),
         ["battle/narration/bag-cured-poison"] = messageRecord({ false, " was cured of its poisoning." }),
         ["battle/narration/bag-cured-paralysis"] = messageRecord({ false, " was cured of paralysis." }),

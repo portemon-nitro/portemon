@@ -374,6 +374,7 @@ local function foeAccuracy(ctx, frame, defender)
     accuracyStage = 0,
     evasionStage = 0,
     skipCheck = skipCheck,
+    tutorial = ctx:isTutorial(),
   }, stream)
   if resolution.kind == "hit" or (forceHit and resolution.kind ~= "protected") then
     return true

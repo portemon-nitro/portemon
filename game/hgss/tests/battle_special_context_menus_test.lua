@@ -300,6 +300,26 @@ function T.tutorial_presentation_restricts_its_command_family()
   fixture.screen:dispose()
 end
 
+-- The scripted lesson reaches the same tutorial surface behind its
+-- marker: a scripted launch carrying the tutorial flag offers only
+-- fight and bag, never a new launch kind.
+function T.scripted_tutorial_marker_reaches_the_lesson_surface()
+  local fixture = openScreen("special-context-scripted-tutorial")
+  Assert.isTrue(
+    fixture.port.enter({ launchId = fixture.launchId, kind = "scripted", tutorial = true }),
+    "setup: the marked scripted launch enters"
+  )
+  presentCommandPacket(fixture, ordinaryChoices())
+  local status = driveToCommand(fixture, "scripted-tutorial")
+  Assert.equal(status.mode, "command", "setup: the marked fixture rests on the command view")
+  local ids = commandIds(fixture.screen:view())
+  Assert.isTrue(ids.fight == true, "the lesson offers its scripted fight")
+  Assert.isTrue(ids.bag == true, "the lesson offers its scripted bag")
+  Assert.isTrue(ids.pokemon == nil, "the lesson never offers party selection")
+  Assert.isTrue(ids.run == nil, "the lesson never offers flight")
+  fixture.screen:dispose()
+end
+
 -- A frontier-facility presentation keeps its facility restrictions on
 -- the command view instead of silently running ordinary rules.
 function T.frontier_facility_presentation_keeps_facility_restrictions()
@@ -317,46 +337,50 @@ function T.frontier_facility_presentation_keeps_facility_restrictions()
   fixture.screen:dispose()
 end
 
--- Frontier facilities refuse bag items with the retail message
--- (battle_input.c BATTLE_INPUT_BAG with BATTLE_TYPE_FRONTIER prints
--- msg_0197_00593 via EmitPrintSelectionMessage) instead of an invented
--- banner. The command stays open for another selection.
-function T.frontier_bag_refuses_with_its_retail_message()
-  local fixture = openScreen("special-context-frontier-bag")
-  Assert.isTrue(
-    fixture.port.enter({ launchId = fixture.launchId, kind = "frontier" }),
-    "setup: the frontier launch enters"
-  )
-  presentCommandPacket(fixture, ordinaryChoices())
-  driveToCommand(fixture, "frontier-bag")
-  -- The first edge reveals the keyboard cursor without moving; the
-  -- second steps down from Fight to Bag on the native 3x2 grid.
-  fixture.screen:input({ { type = "navigate", direction = "left" } })
-  for _ = 1, 10 do
-    fixture.screen:updateFixed(TICK)
+-- Restricted facilities refuse bag items with the retail message
+-- (battle_input.c BATTLE_INPUT_BAG prints msg_0197_00593 via
+-- EmitPrintSelectionMessage) instead of an invented banner. Frontier and
+-- link share the gate; one journey per kind proves the command stays
+-- open for another selection.
+function T.restricted_bags_refuse_with_their_retail_message()
+  for _, case in ipairs({
+    { fixture = "special-context-frontier-bag", kind = "frontier", label = "frontier" },
+    { fixture = "special-context-link-bag", kind = "link", label = "link" },
+  }) do
+    local fixture = openScreen(case.fixture)
+    Assert.isTrue(
+      fixture.port.enter({ launchId = fixture.launchId, kind = case.kind }),
+      "setup: the " .. case.label .. " launch enters"
+    )
+    presentCommandPacket(fixture, ordinaryChoices())
+    driveToCommand(fixture, case.label .. "-bag")
+    fixture.screen:input({ { type = "navigate", direction = "left" } })
+    for _ = 1, 10 do
+      fixture.screen:updateFixed(TICK)
+    end
+    fixture.screen:input({ { type = "navigate", direction = "down" } })
+    for _ = 1, 10 do
+      fixture.screen:updateFixed(TICK)
+    end
+    Assert.equal(
+      fixture.screen:view().selection,
+      "bag",
+      "setup: the " .. case.label .. " cursor rests on Bag"
+    )
+    fixture.screen:input({ { type = "confirm" } })
+    for _ = 1, 10 do
+      fixture.screen:updateFixed(TICK)
+    end
+    local statusAfter = fixture.screen:status()
+    local view = fixture.screen:view()
+    Assert.equal(statusAfter.mode, "command", "the refused Bag keeps the command open (" .. case.label .. ")")
+    Assert.equal(
+      view.message,
+      "Items can’t be used here.",
+      "the " .. case.label .. " Bag refuses with its asset-derived retail message"
+    )
+    fixture.screen:dispose()
   end
-  fixture.screen:input({ { type = "navigate", direction = "down" } })
-  for _ = 1, 10 do
-    fixture.screen:updateFixed(TICK)
-  end
-  Assert.equal(
-    fixture.screen:view().selection,
-    "bag",
-    "setup: the frontier cursor rests on Bag"
-  )
-  fixture.screen:input({ { type = "confirm" } })
-  for _ = 1, 10 do
-    fixture.screen:updateFixed(TICK)
-  end
-  local statusAfter = fixture.screen:status()
-  local view = fixture.screen:view()
-  Assert.equal(statusAfter.mode, "command", "the refused Bag keeps the command open")
-  Assert.equal(
-    view.message,
-    "Items can’t be used here.",
-    "the frontier Bag refuses with its asset-derived retail message"
-  )
-  fixture.screen:dispose()
 end
 
 return { tests = T }

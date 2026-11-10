@@ -2060,6 +2060,8 @@ local function checkTextRoles(roles, context, code, field)
     trainerNarration = true,
     menu = true,
     hud = true,
+    bag = true,
+    party = true,
     bugContest = true,
     recorderFeedback = true,
   }, context, code, field)
@@ -3358,6 +3360,7 @@ local function checkManifestHeader(manifest, context)
     hud = true,
     pictures = true,
     menus = true,
+    bag = true,
     messages = true,
     transitions = true,
     audioRoles = true,
@@ -3696,6 +3699,220 @@ local function checkMenus(manifest, context)
     checkMenuSection(menus[name], context, CODE_MANIFEST, "manifest menus." .. name)
   end
   checkLowerMenu(menus.lower, menus.images, context)
+  -- Retail battle-bag screen (battle_bag_menu.c
+  -- BattleBagMenu_LoadBgGraphics plus the overlay-8 window, hitbox, and
+  -- entry-id tables): three SetPageBgOffset page slices with their staged
+  -- images, the transcribed window templates and touchscreen hitboxes in
+  -- Handle input order, the item entry message ids, and the
+  -- center-anchored item icon spots.
+  local bag = manifest.bag
+  local bagImages = menus.images
+  SchemaCheck.checkRecord(bag, {
+    pages = true,
+    windows = true,
+    hitboxes = true,
+    entryIds = true,
+    icons = true,
+    tutorialFinger = true,
+    finger = true,
+    cursor = true,
+    buttons = true,
+  }, context, CODE_MANIFEST, "manifest bag")
+  if not Validate.isArray(bag.pages) or #bag.pages ~= 3 then
+    fail(CODE_MANIFEST, "manifest bag.pages must carry its three SetPageBgOffset pages", context)
+  end
+  local bagPageOrigins = { { x = 0, y = 0 }, { x = 256, y = 0 }, { x = 0, y = 256 } }
+  for index, page in ipairs(bag.pages) do
+    local pageField = "manifest bag.pages[" .. index .. "]"
+    SchemaCheck.checkRecord(page, {
+      image = true,
+      x = true,
+      y = true,
+      width = true,
+      height = true,
+    }, context, CODE_MANIFEST, pageField)
+    checkImageRef(bagImages, page.image, context, pageField .. ".image")
+    local origin = bagPageOrigins[index]
+    if page.x ~= origin.x or page.y ~= origin.y then
+      fail(CODE_MANIFEST, pageField .. " rides its SetPageBgOffset origin", context)
+    end
+    checkInt(page.width, 256, 256, context, CODE_MANIFEST, pageField .. ".width")
+    checkInt(page.height, 192, 192, context, CODE_MANIFEST, pageField .. ".height")
+  end
+  SchemaCheck.checkRecord(bag.windows, {
+    message = true,
+    useItem = true,
+    pocketMenu = true,
+    itemList = true,
+  }, context, CODE_MANIFEST, "manifest bag.windows")
+  for key, count in pairs({ message = 1, useItem = 4, pocketMenu = 5, itemList = 26 }) do
+    local windows = bag.windows[key]
+    local windowsField = "manifest bag.windows." .. key
+    if not Validate.isArray(windows) or #windows ~= count then
+      fail(CODE_MANIFEST, windowsField .. " keeps its transcribed count", context)
+    end
+    for windowIndex, window in ipairs(windows) do
+      SchemaCheck.checkRecord(window, {
+        bgId = true,
+        left = true,
+        top = true,
+        width = true,
+        height = true,
+        palette = true,
+        baseTile = true,
+      }, context, CODE_MANIFEST, windowsField .. "[" .. windowIndex .. "]")
+    end
+  end
+  SchemaCheck.checkRecord(bag.hitboxes, {
+    pocketMenu = true,
+    itemList = true,
+    useItem = true,
+  }, context, CODE_MANIFEST, "manifest bag.hitboxes")
+  for key, count in pairs({ pocketMenu = 6, itemList = 9, useItem = 2 }) do
+    local hitboxes = bag.hitboxes[key]
+    local hitboxField = "manifest bag.hitboxes." .. key
+    if not Validate.isArray(hitboxes) or #hitboxes ~= count then
+      fail(CODE_MANIFEST, hitboxField .. " keeps its Handle input order", context)
+    end
+    for boxIndex, box in ipairs(hitboxes) do
+      SchemaCheck.checkRecord(box, {
+        top = true,
+        bottom = true,
+        left = true,
+        right = true,
+      }, context, CODE_MANIFEST, hitboxField .. "[" .. boxIndex .. "]")
+    end
+  end
+  SchemaCheck.checkRecord(bag.entryIds, {
+    name = true,
+    quantity = true,
+  }, context, CODE_MANIFEST, "manifest bag.entryIds")
+  if not Validate.isArray(bag.entryIds.name) or #bag.entryIds.name ~= 1 then
+    fail(CODE_MANIFEST, "manifest bag.entryIds.name carries its single name template", context)
+  end
+  if bag.entryIds.name[1] ~= 9 then
+    fail(CODE_MANIFEST, "manifest bag.entryIds.name stages msg 9", context)
+  end
+  if not Validate.isArray(bag.entryIds.quantity) or #bag.entryIds.quantity ~= 12 then
+    fail(CODE_MANIFEST, "manifest bag.entryIds.quantity carries its twelve slots", context)
+  end
+  SchemaCheck.checkRecord(bag.icons, {
+    list = true,
+    lastUsed = true,
+    useItem = true,
+  }, context, CODE_MANIFEST, "manifest bag.icons")
+  if not Validate.isArray(bag.icons.list) or #bag.icons.list ~= 6 then
+    fail(CODE_MANIFEST, "manifest bag.icons.list carries its six list spots", context)
+  end
+  for spotIndex, spot in ipairs(bag.icons.list) do
+    local spotField = "manifest bag.icons.list[" .. spotIndex .. "]"
+    SchemaCheck.checkRecord(spot, {
+      x = true,
+      y = true,
+    }, context, CODE_MANIFEST, spotField)
+    checkInt(spot.x, 0, 255, context, CODE_MANIFEST, spotField .. ".x")
+    checkInt(spot.y, 0, 191, context, CODE_MANIFEST, spotField .. ".y")
+  end
+  for _, key in ipairs({ "lastUsed", "useItem" }) do
+    local spot = bag.icons[key]
+    local spotField = "manifest bag.icons." .. key
+    SchemaCheck.checkRecord(spot, {
+      x = true,
+      y = true,
+    }, context, CODE_MANIFEST, spotField)
+    checkInt(spot.x, 0, 255, context, CODE_MANIFEST, spotField .. ".x")
+    checkInt(spot.y, 0, 191, context, CODE_MANIFEST, spotField .. ".y")
+  end
+  -- Catching-tutorial finger spots: one center-anchored spot per browser
+  -- page (pocket menu, item list, use item) for the auto-play finger.
+  if not Validate.isArray(bag.tutorialFinger) or #bag.tutorialFinger ~= 3 then
+    fail(CODE_MANIFEST, "manifest bag.tutorialFinger carries its three page spots", context)
+  end
+  for spotIndex, spot in ipairs(bag.tutorialFinger) do
+    local spotField = "manifest bag.tutorialFinger[" .. spotIndex .. "]"
+    SchemaCheck.checkRecord(spot, {
+      x = true,
+      y = true,
+    }, context, CODE_MANIFEST, spotField)
+    checkInt(spot.x, 0, 255, context, CODE_MANIFEST, spotField .. ".x")
+    checkInt(spot.y, 0, 191, context, CODE_MANIFEST, spotField .. ".y")
+  end
+  -- Catching-tutorial finger art (BattleFinger_LoadResources from
+  -- NARC_a_1_6_4): the idle frame the renderer centers on its per-page
+  -- spot while the tutorial auto-plays.
+  SchemaCheck.checkRecord(bag.finger, {
+    image = true,
+    width = true,
+    height = true,
+  }, context, CODE_MANIFEST, "manifest bag.finger")
+  checkImageRef(bagImages, bag.finger.image, context, "manifest bag.finger.image")
+  checkInt(bag.finger.width, 1, 128, context, CODE_MANIFEST, "manifest bag.finger.width")
+  checkInt(bag.finger.height, 1, 128, context, CODE_MANIFEST, "manifest bag.finger.height")
+  -- Battle d-pad cursor corners (BattleCursor_LoadResources from
+  -- NARC_a_0_0_8): the base raster of each corner sequence plus every
+  -- frame's duration with its x/y translate pulse, centered on the
+  -- focused box corners while the cursor is active and advanced by
+  -- tick like BattleCursor_Update.
+  SchemaCheck.checkRecord(bag.cursor, {
+    tl = true,
+    tr = true,
+    bl = true,
+    br = true,
+  }, context, CODE_MANIFEST, "manifest bag.cursor")
+  for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
+    local record = bag.cursor[corner]
+    local cornerField = "manifest bag.cursor." .. corner
+    SchemaCheck.checkRecord(record, {
+      image = true,
+      width = true,
+      height = true,
+      frames = true,
+    }, context, CODE_MANIFEST, cornerField)
+    checkImageRef(bagImages, record.image, context, cornerField .. ".image")
+    checkInt(record.width, 1, 128, context, CODE_MANIFEST, cornerField .. ".width")
+    checkInt(record.height, 1, 128, context, CODE_MANIFEST, cornerField .. ".height")
+    if not Validate.isArray(record.frames) or #record.frames < 1 then
+      fail(CODE_MANIFEST, cornerField .. " stages at least one corner frame", context)
+    end
+    for frameIndex, frame in ipairs(record.frames) do
+      local frameField = cornerField .. ".frames[" .. frameIndex .. "]"
+      SchemaCheck.checkRecord(frame, {
+        duration = true,
+        x = true,
+        y = true,
+      }, context, CODE_MANIFEST, frameField)
+      checkInt(frame.duration, 0, 255, context, CODE_MANIFEST, frameField .. ".duration")
+      if type(frame.x) ~= "number" or type(frame.y) ~= "number" then
+        fail(CODE_MANIFEST, frameField .. " stages its translate offset", context)
+      end
+    end
+  end
+  -- Battle-bag button faces (StoreButtonTilemaps atlas rects through
+  -- each staged palette bank): press frames repaint the pressed
+  -- button, disabled frame 3 repaints empty controls. Rest frames ride
+  -- the staged page raster and never stage here.
+  if not Validate.isArray(bag.buttons) then
+    fail(CODE_MANIFEST, "manifest bag.buttons stages its face inventory", context)
+  end
+  local stagedFaces = {}
+  for faceIndex, face in ipairs(bag.buttons) do
+    local faceField = "manifest bag.buttons[" .. faceIndex .. "]"
+    SchemaCheck.checkRecord(face, {
+      button = true,
+      frame = true,
+      bank = true,
+      image = true,
+    }, context, CODE_MANIFEST, faceField)
+    checkInt(face.button, 0, 16, context, CODE_MANIFEST, faceField .. ".button")
+    checkInt(face.frame, 1, 3, context, CODE_MANIFEST, faceField .. ".frame")
+    checkInt(face.bank, 0, 15, context, CODE_MANIFEST, faceField .. ".bank")
+    checkImageRef(bagImages, face.image, context, faceField .. ".image")
+    local faceKey = face.button .. ":" .. face.frame .. ":" .. face.bank
+    if stagedFaces[faceKey] ~= nil then
+      fail(CODE_MANIFEST, faceField .. " stages its face twice", context)
+    end
+    stagedFaces[faceKey] = true
+  end
 end
 
 local function checkHealthBox(section, context, field)

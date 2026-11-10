@@ -672,4 +672,565 @@ function T.one_move_pp_servings_select_their_move()
   session:dispose()
 end
 
+-- Retail TryUseItem embargo (battle_bag_menu.c msg 46): servings from an
+-- embargoed holder refuse with the embargo reason while Guard Spec and
+-- escape dolls (battleUseFunc 3) stay selectable. The embargo lands
+-- through the real EMBARGO strike, so the gate reads the live effect
+-- bag like execution does.
+function T.embargoed_servings_refuse_with_embargo_reason()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  lead.mon.condition.currentHp = 1
+  local foe = leveledCombatant(2, 41, "EEVEE", 20)
+  foe.mon.moves = { { move = "EMBARGO", pp = 15, ppUps = 0 }, { move = "GROWL", pp = 40, ppUps = 0 } }
+  local pack = SessionFixture.inventory("party", { 1 }, { POTION = 1, GUARD_SPEC = 1 })
+  local facts = {
+    POTION = { partyUse = medicineFacts({ kind = "fixed", amount = 20 }, noCures()), battleUseFunc = 2 },
+    GUARD_SPEC = guardServingFacts().GUARD_SPEC,
+  }
+  local scenario =
+    itemScenario({ lead }, { foe, leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts)
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  scenario.moveFacts.GROWL = catalog:move("GROWL")
+  local embargoFacts = {}
+  for key, value in pairs(scenario.moveFacts.GROWL) do
+    embargoFacts[key] = value
+  end
+  scenario.moveFacts.EMBARGO = embargoFacts
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  local foeActor = assert(beta.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(alpha, {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)),
+    })),
+    "the opening strike is accepted"
+  )
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(1)),
+    })),
+    "the embargo strike is accepted"
+  )
+  local nextFrame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(nextFrame.status, "waiting", "the embargoed turn asks for decisions")
+  local embargoed = requestFor(nextFrame, "alpha")
+  local options = session:decisionOptions(embargoed.requestId)
+  local actorOptions = assert(options.actors[1], "the embargoed request addresses its lead")
+  local potionOption, guardOption = nil, nil
+  for _, option in ipairs(actorOptions.choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and targetsHolder(payload.target, 1) then
+      if payload.item == "POTION" then
+        potionOption = option
+      elseif payload.item == "GUARD_SPEC" then
+        guardOption = option
+      end
+    end
+  end
+  Assert.notNil(potionOption, "the embargoed holder still lists its serving")
+  Assert.isFalse(potionOption.enabled == true, "the embargoed serving stays disabled")
+  Assert.equal(potionOption.reason, "embargo", "the embargoed serving names its gate")
+  Assert.notNil(guardOption, "guard spec still lists under embargo")
+  Assert.isTrue(guardOption.enabled == true, "the embargo exception stays selectable")
+  local refused, replyErr = session:submit(SessionFixture.replyFor(embargoed, { bagChoice(actor, "POTION", 1) }))
+  Assert.isFalse(refused, "the embargoed serving is refused at submission")
+  Assert.notNil(replyErr, "the refusal carries its input error")
+  session:dispose()
+end
+
+-- Retail TryUseItem trainer escapes (battle_bag_menu.c battleUseFunc 3,
+-- msg bank 0040 id 37): escape dolls refuse in trainer battles with the
+-- stealing reason and stay usable in the wild.
+function T.trainer_escape_dolls_refuse_with_stealing_reason()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local facts = {
+    POKE_DOLL = { partyUse = { kind = "none" }, pocket = "items", battleUseFunc = 3 },
+  }
+  local function dollScenario(kind)
+    local scenario = itemScenario(
+      { leveledCombatant(1, 23, "EEVEE", 20) },
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      SessionFixture.inventory("party", { 1 }, { POKE_DOLL = 1 }),
+      facts
+    )
+    scenario.kind = kind
+    return scenario
+  end
+  local wild = contracts.Battle.newSession(dollScenario(nil), content)
+  local wildFrame = SessionFixture.driveUntilSettled(wild)
+  local wildRequest = requestFor(wildFrame, "alpha")
+  local wildOptions = wild:decisionOptions(wildRequest.requestId)
+  local wildReason = nil
+  for _, option in ipairs(wildOptions.actors[1].choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == "POKE_DOLL" then
+      wildReason = option.enabled == true and "enabled" or option.reason
+      break
+    end
+  end
+  Assert.isTrue(wildReason ~= "no_stealing", "the wild doll never reports the trainer gate")
+  wild:dispose()
+  local trainer = contracts.Battle.newSession(dollScenario("trainer"), content)
+  local trainerFrame = SessionFixture.driveUntilSettled(trainer)
+  local trainerRequest = requestFor(trainerFrame, "alpha")
+  local trainerOptions = trainer:decisionOptions(trainerRequest.requestId)
+  local dollOption = nil
+  for _, option in ipairs(trainerOptions.actors[1].choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == "POKE_DOLL" then
+      dollOption = option
+      break
+    end
+  end
+  Assert.notNil(dollOption, "the trainer battle lists the stocked doll")
+  Assert.isFalse(dollOption.enabled == true, "the trainer doll stays disabled")
+  Assert.equal(dollOption.reason, "no_stealing", "the trainer doll names its gate")
+  local actor = assert(trainerRequest.actors[1], "the trainer request addresses its lead")
+  local refused, replyErr =
+    trainer:submit(SessionFixture.replyFor(trainerRequest, { bagChoice(actor, "POKE_DOLL", 2) }))
+  Assert.isFalse(refused, "the trainer doll is refused at submission")
+  Assert.notNil(replyErr, "the refusal carries its input error")
+  trainer:dispose()
+end
+
+-- Retail TryUseItem doubles aim (battle_bag_menu.c msg 44): balls refuse
+-- while both foes stand, regardless of per-foe cover.
+function T.doubled_foes_refuse_balls_with_doubles_reason()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 11, "EEVEE", 20)
+  local ally = leveledCombatant(3, 31, "EEVEE", 20)
+  local foeLead = leveledCombatant(2, 23, "EEVEE", 20)
+  local foeAlly = leveledCombatant(4, 41, "EEVEE", 20)
+  local seeds = { lead, ally, foeLead, foeAlly }
+  local pack = SessionFixture.inventory("party", { 1 }, { POKE_BALL = 2 })
+  local player = SessionFixture.participant(1, 1, "alpha", { lead, ally })
+  player.inventoryId = pack.id
+  local scenario = {
+    ruleset = executorOwner().RULESET,
+    format = "doubles",
+    kind = "trainer",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = { player, SessionFixture.participant(2, 2, "beta", { foeLead, foeAlly }) },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 1, { 1 }, 3),
+      SessionFixture.position(3, 2, { 2 }, 2),
+      SessionFixture.position(4, 2, { 2 }, 4),
+    },
+    inventories = { pack },
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+    itemFacts = {},
+  }
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the doubles opener asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local options = session:decisionOptions(alpha.requestId)
+  local balls = 0
+  for _, actorOptions in ipairs(options.actors) do
+    for _, option in ipairs(actorOptions.choices) do
+      local choice = option.choice --[[@as table<string, unknown>]]
+      local payload = choice.payload --[[@as table<string, unknown>]]
+      if choice.kind == "item" and payload.item == "POKE_BALL" then
+        balls = balls + 1
+        Assert.isFalse(option.enabled == true, "doubled throws stay disabled")
+        Assert.equal(option.reason, "no_aim_doubles", "doubled throws name the aim gate")
+      end
+    end
+  end
+  Assert.isTrue(balls > 0, "the doubles battle lists its stocked balls")
+  session:dispose()
+end
+
+-- Retail TryUseItem PC room (battle_bag_menu.c msg 45): balls refuse only
+-- while the party is full and every PC box is full. Box room rides the
+-- scenario from the live storage owner; absent box facts keep offering.
+function T.full_party_and_boxes_refuse_balls_with_room_reason()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local function fullAlpha()
+    local seeds = {}
+    for index = 0, 5 do
+      seeds[#seeds + 1] = leveledCombatant(1 + index * 2, 11 + index, "EEVEE", 20)
+    end
+    return seeds
+  end
+  local function roomScenario(boxHasSpace)
+    local alpha = fullAlpha()
+    local scenario = itemScenario(
+      alpha,
+      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+      SessionFixture.inventory("party", { 1 }, { POKE_BALL = 1 }),
+      {}
+    )
+    if boxHasSpace ~= nil then
+      scenario.boxHasSpace = boxHasSpace
+    end
+    return scenario
+  end
+  local offered = contracts.Battle.newSession(roomScenario(nil), content)
+  local offeredFrame = SessionFixture.driveUntilSettled(offered)
+  local offeredRequest = requestFor(offeredFrame, "alpha")
+  local offeredOptions = offered:decisionOptions(offeredRequest.requestId)
+  local offeredBall = nil
+  for _, option in ipairs(offeredOptions.actors[1].choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == "POKE_BALL" then
+      offeredBall = option
+      break
+    end
+  end
+  Assert.notNil(offeredBall, "the full party still lists its stocked ball")
+  Assert.isTrue(offeredBall.enabled == true, "absent box facts keep offering the throw")
+  offered:dispose()
+  local refused = contracts.Battle.newSession(roomScenario(false), content)
+  local refusedFrame = SessionFixture.driveUntilSettled(refused)
+  local refusedRequest = requestFor(refusedFrame, "alpha")
+  local refusedOptions = refused:decisionOptions(refusedRequest.requestId)
+  local refusedBall = nil
+  for _, option in ipairs(refusedOptions.actors[1].choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == "POKE_BALL" then
+      refusedBall = option
+      break
+    end
+  end
+  Assert.notNil(refusedBall, "the boxed-in party still lists its stocked ball")
+  Assert.isFalse(refusedBall.enabled == true, "the boxed-in throw stays disabled")
+  Assert.equal(refusedBall.reason, "no_room", "the boxed-in throw names its gate")
+  refused:dispose()
+end
+
+-- Retail TryUseItem hidden-foe aim (battle_bag_menu.c msgs 47-48): balls
+-- refuse while the lone foe rides its semi-invulnerable charge or hides
+-- behind a substitute. Both covers land through the real strikes, so the
+-- gates read live battle state like the select-item packet does.
+function T.hidden_foes_refuse_balls_with_hidden_reasons()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local function coverScenario(coverMove)
+    local lead = leveledCombatant(1, 23, "EEVEE", 20)
+    -- The opener only lowers attack: a damaging strike would shatter the
+    -- fresh cover the same turn it lands.
+    lead.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 }, { move = "GROWL", pp = 40, ppUps = 0 } }
+    local foe = leveledCombatant(2, 41, "EEVEE", 20)
+    foe.mon.moves = { { move = coverMove, pp = 15, ppUps = 0 } }
+    local scenario = itemScenario(
+      { lead },
+      { foe, leveledCombatant(4, 43, "EEVEE", 5) },
+      SessionFixture.inventory("party", { 1 }, { POKE_BALL = 1 }),
+      {}
+    )
+    scenario.moveFacts[coverMove] = catalog:move("GROWL")
+    scenario.moveFacts.GROWL = catalog:move("GROWL")
+    return scenario
+  end
+  local function ballReason(scenario, coverSlot)
+    local session = contracts.Battle.newSession(scenario, content)
+    local opening = SessionFixture.driveUntilSettled(session)
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+    local foeActor = assert(beta.actors[1], "the opposing request addresses its lead")
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(alpha, {
+        SessionFixture.attackChoice(actor, 1, SessionFixture.positionTarget(2)),
+      })),
+      "the opening growl is accepted"
+    )
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(beta, {
+        SessionFixture.attackChoice(foeActor, coverSlot, SessionFixture.positionTarget(1)),
+      })),
+      "the cover move is accepted"
+    )
+    local nextFrame = SessionFixture.driveUntilSettled(session)
+    Assert.equal(nextFrame.status, "waiting", "the covered turn asks for decisions")
+    local covered = requestFor(nextFrame, "alpha")
+    local options = session:decisionOptions(covered.requestId)
+    local reason = nil
+    for _, option in ipairs(options.actors[1].choices) do
+      local choice = option.choice --[[@as table<string, unknown>]]
+      local payload = choice.payload --[[@as table<string, unknown>]]
+      if choice.kind == "item" and payload.item == "POKE_BALL" then
+        reason = option.enabled == true and "enabled" or option.reason
+        break
+      end
+    end
+    session:dispose()
+    return reason
+  end
+  local subReason = ballReason(coverScenario("SUBSTITUTE"), 0)
+  Assert.equal(subReason, "no_aim_hidden_foe", "the substitute hides the foe, got " .. tostring(subReason))
+  local flyReason = ballReason(coverScenario("FLY"), 0)
+  Assert.equal(flyReason, "no_aim_hidden", "the semi-invulnerable charge hides the foe, got " .. tostring(flyReason))
+end
+
+-- Retail escape dolls (battle_controller_player.c ~1747,
+-- BATTLE_SUBSCRIPT_ESCAPE_ITEM): wild use consumes one unit and flees
+-- outright with the fled event carrying the item for the
+-- fled-with-item narration. Trainer use stays refused at submission.
+function T.wild_escape_dolls_consume_and_flee()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local facts = {
+    POKE_DOLL = { partyUse = { kind = "none" }, pocket = "items", battleUseFunc = 3 },
+  }
+  local scenario = itemScenario(
+    { leveledCombatant(1, 23, "EEVEE", 20) },
+    { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+    SessionFixture.inventory("party", { 1 }, { POKE_DOLL = 1 }),
+    facts
+  )
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local options = session:decisionOptions(alpha.requestId)
+  local dollOption = nil
+  for _, option in ipairs(options.actors[1].choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == "POKE_DOLL" then
+      dollOption = option
+      break
+    end
+  end
+  Assert.notNil(dollOption, "the wild battle lists its stocked doll")
+  Assert.isTrue(dollOption.enabled == true, "the wild doll stays selectable")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POKE_DOLL", 1) })),
+    "the wild doll seals"
+  )
+  local beta = requestFor(opening, "beta")
+  local foeActor = assert(beta.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(1)),
+    })),
+    "the opposing strike is accepted"
+  )
+  local turn = session:advance(64)
+  local fled = nil
+  for _, event in ipairs(turn.events or {}) do
+    if event.kind == "flee" then
+      fled = event
+    end
+  end
+  Assert.notNil(fled, "the doll announces its flight")
+  local payload = fled.payload --[[@as table<string, unknown>]]
+  Assert.isTrue(payload.escaped == true, "the doll flees outright")
+  local source = payload.escapeSource --[[@as table<string, unknown>]]
+  Assert.notNil(source, "the flight carries its item source for the fled-with-item narration")
+  Assert.equal(source.kind, "item", "the flight names its item source")
+  Assert.equal(source.key, "POKE_DOLL", "the flight names the consumed doll")
+  local settled = session:capture()
+  Assert.equal(settled.inventories.party.quantities.POKE_DOLL, 0, "exactly one doll leaves the stock")
+  Assert.equal(#settled.ledger, 1, "the doll writes exactly one ledger delta")
+  Assert.equal(settled.ledger[1].item, "POKE_DOLL", "the delta names the doll")
+  Assert.equal(settled.ledger[1].delta, -1, "the delta consumes exactly one unit")
+  Assert.equal(turn.status, "ended", "the doll ends the battle")
+  Assert.equal(turn.outcome.kind, "escaped", "the terminal outcome names the escape")
+  session:dispose()
+end
+
+-- Escape dolls bypass trapping like retail (TryUseItem pocket 3 has no
+-- trap gate): a trapped holder still seals its doll and flees, while
+-- ordinary runs answer through the existing Escape trap law.
+function T.trapped_dolls_bypass_the_trap_gate()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local facts = {
+    POKE_DOLL = { partyUse = { kind = "none" }, pocket = "items", battleUseFunc = 3 },
+  }
+  local scenario = itemScenario(
+    { leveledCombatant(1, 23, "EEVEE", 20) },
+    { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+    SessionFixture.inventory("party", { 1 }, { POKE_DOLL = 1 }),
+    facts
+  )
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  -- Seed the retail trap beside the live entry like Mean Look would:
+  -- the ordinary run gate already refuses trapped flight, so the doll
+  -- proves it carries no new trap of its own by still fleeing.
+  local live = session._state --[[@as table<string, unknown>]]
+  assert(type(live) == "table", "the session keeps its live battle state")
+  local combatants = (live --[[@as table<string, unknown>]]).combatants --[[@as table<integer, table<string, unknown>>]]
+  combatants[1].trap = { held = true }
+  local Escape = SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "trapping owns leaving battle")
+  local gate = Escape.canRun({ battleKind = "wild", trapped = { held = true }, guaranteed = false, attempts = 0 })
+  Assert.isFalse(gate.ok, "the existing trap law still holds ordinary runs")
+  local alpha = requestFor(opening, "alpha")
+  local options = session:decisionOptions(alpha.requestId)
+  local dollOption = nil
+  for _, option in ipairs(options.actors[1].choices) do
+    local choice = option.choice --[[@as table<string, unknown>]]
+    local payload = choice.payload --[[@as table<string, unknown>]]
+    if choice.kind == "item" and payload.item == "POKE_DOLL" then
+      dollOption = option
+      break
+    end
+  end
+  Assert.notNil(dollOption, "the trapped battle still lists its doll")
+  Assert.isTrue(dollOption.enabled == true, "trapping never disables the doll option")
+  local actor = assert(alpha.actors[1], "the owning request addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POKE_DOLL", 1) })),
+    "the trapped doll still seals"
+  )
+  local beta = requestFor(opening, "beta")
+  local foeActor = assert(beta.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(beta, {
+      SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(1)),
+    })),
+    "the opposing strike is accepted"
+  )
+  local turn = session:advance(64)
+  local fled = nil
+  for _, event in ipairs(turn.events or {}) do
+    if event.kind == "flee" then
+      fled = event
+    end
+  end
+  Assert.notNil(fled, "the trapped doll still announces its flight")
+  Assert.isTrue((fled.payload --[[@as table<string, unknown>]]).escaped == true, "the trapped doll flees")
+  session:dispose()
+end
+
+-- Builds one tutorial scenario (scripted kind with the lesson marker)
+-- carrying the fixed Marill/Rattata content and 20 balls for the
+-- throw gate. The kernel derives its wild-like capture policy from
+-- the tutorial flag, not the scripted kind.
+local function tutorialScenario(pack, itemFacts)
+  local Executor = executorOwner()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local foe = leveledCombatant(2, 41, "EEVEE", 5)
+  local seeds = { lead, foe }
+  local alphaSpec = SessionFixture.participant(1, 1, "alpha", { lead })
+  alphaSpec.inventoryId = (pack --[[@as table<string, unknown>]]).id
+  return {
+    ruleset = Executor.RULESET,
+    format = WILD_FORMAT,
+    kind = "scripted",
+    tutorial = true,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = { alphaSpec, SessionFixture.participant(2, 2, "beta", { foe }) },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, lead.id),
+      SessionFixture.position(2, 2, { 2 }, foe.id),
+    },
+    inventories = { pack },
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+    itemFacts = itemFacts,
+    boxHasSpace = true,
+  }
+end
+-- Retail lessons skip their rolls (battle_controller_player.c:2425 and
+-- battle_command.c:7185 under TUTORIAL): throws always catch without
+-- spending stock, shakes, or draws, and strikes always miss without
+-- spending accuracy or critical draws. One lesson scenario proves both
+-- halves without building the native content twice.
+function T.tutorial_lessons_skip_their_rolls_and_spend_nothing()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  do
+    local pack = SessionFixture.inventory("party", { 1 }, { POKE_BALL = 20 })
+    local scenario = tutorialScenario(pack, {})
+    local session = contracts.Battle.newSession(scenario, content)
+    local opening = SessionFixture.driveUntilSettled(session)
+    Assert.equal(opening.status, "waiting", "the lesson asks for decisions")
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    local actor = assert(alpha.actors[1], "the lesson addresses its lead")
+    local foeActor = assert(beta.actors[1], "the lesson addresses its foe")
+    local before = session:capture()
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POKE_BALL", 2) })),
+      "the lesson throw seals"
+    )
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(beta, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(1)),
+      })),
+      "the lesson foe strikes"
+    )
+    local turn = session:advance(64)
+    local caught = nil
+    for _, event in ipairs(turn.events or {}) do
+      if event.kind == "caught" then
+        caught = event
+      end
+    end
+    Assert.notNil(caught, "the lesson throw catches")
+    local settled = session:capture()
+    Assert.equal(settled.inventories.party.quantities.POKE_BALL, 20, "the lesson spends no ball")
+    Assert.deepEqual(settled.ledger, {}, "the lesson ledgers no consumption")
+    Assert.equal(settled.rng.calls, before.rng.calls, "the lesson spends no shake draw")
+    Assert.equal(turn.status, "ended", "the lesson ends on its catch")
+    session:dispose()
+  end
+  do
+    local pack = SessionFixture.inventory("party", { 1 }, {})
+    local scenario = tutorialScenario(pack, {})
+    local session = contracts.Battle.newSession(scenario, content)
+    local opening = SessionFixture.driveUntilSettled(session)
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    local actor = assert(alpha.actors[1], "the lesson addresses its lead")
+    local foeActor = assert(beta.actors[1], "the lesson addresses its foe")
+    local before = session:capture()
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(alpha, {
+        SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)),
+      })),
+      "the lesson strike seals"
+    )
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(beta, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(1)),
+      })),
+      "the lesson foe strikes"
+    )
+    local turn = session:advance(64)
+    local struck = false
+    for _, event in ipairs(turn.events or {}) do
+      if event.kind == "struck" then
+        struck = true
+      end
+    end
+    Assert.isFalse(struck, "the lesson strikes never land")
+    local settled = session:capture()
+    Assert.equal(settled.combatants[1].hp, before.combatants[1].hp, "the lesson deals no damage")
+    Assert.equal(settled.rng.calls, before.rng.calls + 4, "the lesson spends no accuracy or critical draws")
+    session:dispose()
+  end
+end
+
 return { tests = T }

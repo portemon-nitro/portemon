@@ -915,6 +915,165 @@ BattlePresentationSources.BUG_CONTEST_SPRITES = {
   bugNet = { x = 88, y = 8, palette = 4, animation = 1 },
 }
 
+-- Retail battle-bag screen (battle_bag_menu.c BattleBagMenu_LoadBgGraphics):
+-- character, screen, button-tilemap screen, and palette members of
+-- NARC_a_0_7_7. Page offsets ride the BG position (page 0 at (0,0),
+-- page 1 at (0x100,0), page 2 at (0,0x100)); the use-item page repaints
+-- two tilemap rects with the pocket palette (retail palette slots 8-11).
+-- Fonts print through the shared graphic/font bank; the user frame rides
+-- the dialogue frame members exactly like field windows.
+BattlePresentationSources.BAG_SCREEN = {
+  archive = "NARC_a_0_7_7",
+  character = 2,
+  screen = 0,
+  buttonScreen = 1,
+  palette = 3,
+  paletteBytes = 0x180,
+  font = { archive = "NARC_graphic_font", member = 8 },
+}
+
+-- Retail battle-bag window templates and touchscreen hitboxes transcribed
+-- from battle_menu_data.s (WindowTemplate is 8 bytes: bgId, left, top,
+-- width, height, palette, baseTile u16; hitbox rects are 4 bytes:
+-- top, bottom, left, right, terminated by 0xFF). Indices match the Handle
+-- input orders exactly. Overlay 8 carries battle_menu_data.o.
+BattlePresentationSources.BAG_WINDOWS = {
+  cpu = "arm9",
+  overlayId = 8,
+  message = { address = 0x02225B90, count = 1 },
+  useItem = { address = 0x02225B98, count = 4 },
+  pocketMenu = { address = 0x02225BB8, count = 5 },
+  itemList = { address = 0x02225C10, count = 26 },
+  structBytes = 8,
+}
+BattlePresentationSources.BAG_HITBOXES = {
+  cpu = "arm9",
+  overlayId = 8,
+  pocketMenu = { address = 0x02225B4C, count = 6 },
+  itemList = { address = 0x02225B68, count = 9 },
+  useItem = { address = 0x02225ADC, count = 2 },
+  structBytes = 4,
+}
+
+-- Retail battle-bag item entry message ids (sBattleBagItemEntryMsgIds and
+-- sBattleBagItemEntryQuantityMsgIds): name and quantity templates per
+-- entry slot. Overlay 8 carries battle_menu_data.o; u32 LE each.
+BattlePresentationSources.BAG_ITEM_ENTRY_IDS = {
+  cpu = "arm9",
+  overlayId = 8,
+  name = { address = 0x02225BE0, count = 1 },
+  quantity = { address = 0x02225BE4, count = 12 },
+  structBytes = 4,
+}
+
+-- Retail battle-bag item icon spots (battle_bag_menu.c ShowPageSprites
+-- family): six center-anchored list positions from sBattleBagItemListIconPos
+-- (s32 LE pairs) with the two fixed sprite spots from ShowLastUsedItemIcon
+-- (24,178) and ShowUseItemIcon (40,44). Overlay 8 carries
+-- battle_menu_data.o. Sprites center on these spots (code_entry.c seats
+-- its button sprites at hitbox midpoints through the same ManagedSprite
+-- positioning).
+BattlePresentationSources.BAG_ICON_POSITIONS = {
+  cpu = "arm9",
+  overlayId = 8,
+  list = { address = 0x02225D74, count = 6 },
+  lastUsed = { x = 24, y = 178 },
+  useItem = { x = 40, y = 44 },
+  structBytes = 8,
+}
+
+-- Retail catching-tutorial finger spots (battle_bag_menu.c
+-- UpdateTutorialFinger reading sBattleBagTutorialFingerPos[page][0] and
+-- sBattleBagTutorialFingerPosY[page][0]): three s32 LE pairs from
+-- 0x02225D2C — pocket menu over the balls button, item list over the
+-- first cell, use item over USE. Overlay 8 carries battle_menu_data.o.
+BattlePresentationSources.BAG_TUTORIAL_FINGER = {
+  cpu = "arm9",
+  overlayId = 8,
+  fingers = { address = 0x02225D2C, count = 3 },
+  structBytes = 8,
+}
+
+-- Retail catching-tutorial finger art (battle_bag_menu.c
+-- BattleFinger_LoadResources from NARC_a_1_6_4): character member 0,
+-- palette member 1, cell member 2, animation member 3. The finger
+-- centers on its per-page spot while the tutorial auto-plays.
+BattlePresentationSources.BATTLE_FINGER = {
+  archive = "NARC_a_1_6_4",
+  character = 0,
+  palette = 1,
+  cell = 2,
+  animation = 3,
+}
+
+-- Retail battle d-pad cursor art (battle_cursor.c
+-- BattleCursor_LoadResources from NARC_a_0_0_8): character member 250,
+-- palette member 80, cell member 251, animation member 252. Four corner
+-- sprites (animations 0-3: top-left, top-right, bottom-left,
+-- bottom-right) frame the focused cursor box while the cursor is
+-- active; a fifth extra sprite stays hidden on the bag pages.
+BattlePresentationSources.BATTLE_CURSOR = {
+  archive = "NARC_a_0_0_8",
+  character = 250,
+  palette = 80,
+  cell = 251,
+  animation = 252,
+}
+
+-- Retail battle-bag button faces (battle_bag_menu.c
+-- BattleBagMenu_StoreButtonTilemaps cutting NARC_a_0_7_7 member 1,
+-- BattleBagMenu_BuildButtonTilemap, BattleBagMenu_GetButtonPalette):
+-- per-family atlas rects in tiles with per-frame strides, the pocket
+-- icon overlay behind pocket buttons 0-3, and the staged
+-- button/frame/bank inventory. Rest frames ride the staged page
+-- raster; press frames 1-2 and disabled frame 3 repaint over it.
+-- Banks mirror GetButtonPalette: pockets 0, last-used 3, cancels and
+-- steppers 2, item cells and USE the pocket bank (pocket + 8), frame 3
+-- always bank 5.
+BattlePresentationSources.BAG_BUTTON_FACES = {
+  archive = "NARC_a_0_7_7",
+  character = 2,
+  atlasScreen = 1,
+  palette = 3,
+  families = {
+    pocket = { buttons = { 0, 1, 2, 3 }, source = { x = 0, y = 0 }, w = 16, h = 9, frames = 3, strideY = 9, icons = true },
+    lastUsed = { buttons = { 4, 15 }, source = { x = 0, y = 27 }, w = 26, h = 5, frames = 4, strideY = 5 },
+    cancel = { buttons = { 5, 14, 16 }, source = { x = 0, y = 57 }, w = 5, h = 5, frames = 3, strideX = 5 },
+    item = { buttons = { 6, 7, 8, 9, 10, 11 }, source = { x = 16, y = 0 }, w = 16, h = 6, frames = 4, strideY = 6 },
+    prevPage = { buttons = { 12 }, source = { x = 0, y = 47 }, w = 5, h = 5, frames = 4, strideX = 5 },
+    nextPage = { buttons = { 13 }, source = { x = 0, y = 52 }, w = 5, h = 5, frames = 4, strideX = 5 },
+  },
+  icons = { source = { x = 20, y = 47 }, w = 4, h = 4, frames = 3, strideX = 4, strideY = 4, atX = 6, atY = 0 },
+  staged = {
+    { button = 0, frames = { 1, 2 }, banks = { 0 } },
+    { button = 1, frames = { 1, 2 }, banks = { 0 } },
+    { button = 2, frames = { 1, 2 }, banks = { 0 } },
+    { button = 3, frames = { 1, 2 }, banks = { 0 } },
+    { button = 4, frames = { 1, 2 }, banks = { 3 } },
+    { button = 4, frames = { 3 }, banks = { 5 } },
+    { button = 5, frames = { 1, 2 }, banks = { 2 } },
+    { button = 6, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 6, frames = { 3 }, banks = { 5 } },
+    { button = 7, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 7, frames = { 3 }, banks = { 5 } },
+    { button = 8, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 8, frames = { 3 }, banks = { 5 } },
+    { button = 9, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 9, frames = { 3 }, banks = { 5 } },
+    { button = 10, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 10, frames = { 3 }, banks = { 5 } },
+    { button = 11, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 11, frames = { 3 }, banks = { 5 } },
+    { button = 12, frames = { 1, 2 }, banks = { 2 } },
+    { button = 12, frames = { 3 }, banks = { 5 } },
+    { button = 13, frames = { 1, 2 }, banks = { 2 } },
+    { button = 13, frames = { 3 }, banks = { 5 } },
+    { button = 14, frames = { 1, 2 }, banks = { 2 } },
+    { button = 15, frames = { 1, 2 }, banks = { 8, 9, 10, 11 } },
+    { button = 16, frames = { 1, 2 }, banks = { 2 } },
+  },
+}
+
 -- BallThrow loads four G2D resources selected by BallAnim_GetSpriteResource
 -- from sBallSpriteResources in battle_anim_data.s.  The table is indexed by
 -- ballId - 1 for IDs 1..24; each family advances its member IDs by the
@@ -1024,6 +1183,30 @@ BattlePresentationSources.TEXT_PALETTES = {
   narration = { narc = "NARC_graphic_font", member = 8, banks = 1 },
   hud = { narc = "NARC_a_0_0_8", member = 71, banks = 1 },
   menu = { narc = "NARC_a_0_0_8", member = 72, banks = 7 },
+  -- Retail battle-bag window palette (battle_bag_menu.c
+  -- LoadBgGraphics): the bag screen member's twelve sixteen-color
+  -- banks behind MAKE_TEXT_COLOR prints; window templates select the
+  -- bank while fonts 4 and 0 ride the existing menu and hud roles.
+  bag = { narc = "NARC_a_0_7_7", member = 3, banks = 12 },
+  -- Retail battle-party window palette (battle_party_menu.c
+  -- BattlePartyMenu_LoadBgGraphics): the font member behind SUB_BG bank
+  -- 13, the bank every summary/check-moves/move-detail window template
+  -- selects (palette 0x0D). The loader patches four slots from the
+  -- party screen member ("background palette 13: the window frame
+  -- palette with two colours from palette 9"): u16 indices 0x9A/0x9C
+  -- are colors 154-157 of the screen member, landing on font slots 7/8
+  -- and 3/4. The patch carries the gender-symbol colors the font alone
+  -- cannot supply, so the staged palette transcribes it exactly.
+  party = {
+    narc = "NARC_graphic_font",
+    member = 7,
+    banks = 1,
+    patch = {
+      archive = "NARC_a_0_7_1",
+      member = 23,
+      slots = { [3] = 156, [4] = 157, [7] = 154, [8] = 155 },
+    },
+  },
 }
 BattlePresentationSources.TRANSITION_MESSAGE_MEMBER = 189
 BattlePresentationSources.TRANSITION_MESSAGE_ID = 0
@@ -1104,6 +1287,10 @@ BattlePresentationSources.MESSAGE_BANKS = {
   attackMessage = 3,
   itemFeedback = 5,
   partyResult = 6,
+  -- Retail trainer-escape refusal (BattleBagMenu_TryUseItem battleUseFunc
+  -- 3 in trainer battles, msg_0040 id 37): a different bank from the bag
+  -- feedback bank, staged beside it.
+  noStealing = 40,
   frontierTrainerProfileZero = 723,
   frontierTrainerProfileFallback = 724,
   trainerPairLookup = 728,
@@ -1141,6 +1328,7 @@ BattlePresentationSources.MESSAGE_BANK_RESOURCE_KEYS = {
   attackMessage = "message-bank/attack-message",
   itemFeedback = "message-bank/battle-item-feedback",
   partyResult = "message-bank/battle-party-result",
+  noStealing = "message-bank/battle-no-stealing",
   frontierTrainerProfileZero = "message-bank/trainer-profile-zero",
   frontierTrainerProfileFallback = "message-bank/trainer-profile-fallback",
   trainerPairLookup = "message-bank/trainer-pair-lookup",
@@ -1667,12 +1855,22 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/bag/list-pocket/healers"] = { bank = "itemFeedback", messageId = 25 },
   ["battle/bag/list-pocket/balls"] = { bank = "itemFeedback", messageId = 26 },
   ["battle/bag/list-pocket/battle-items"] = { bank = "itemFeedback", messageId = 27 },
+  -- Retail battle bag page number (BattleBagMenu_PrintPageNumber): the
+  -- slash and the last/current counters from msg 0005.
+  ["battle/bag/page/slash"] = { bank = "itemFeedback", messageId = 28 },
+  ["battle/bag/page/last"] = { bank = "itemFeedback", messageId = 29 },
+  ["battle/bag/page/current"] = { bank = "itemFeedback", messageId = 30 },
   -- Retail battle bag failure messages (BattleBagMenu_TryUseItem):
   -- doubles aim, full PC, embargo, and hidden-foe blocks from msg 0005.
+  -- ballBlocked[2] is the second hidden-foe block (msg 48).
   ["battle/bag/message/no-aim-doubles"] = { bank = "itemFeedback", messageId = 44 },
   ["battle/bag/message/no-room"] = { bank = "itemFeedback", messageId = 45 },
   ["battle/bag/message/embargo"] = { bank = "itemFeedback", messageId = 46 },
   ["battle/bag/message/no-aim-hidden"] = { bank = "itemFeedback", messageId = 47 },
+  ["battle/bag/message/no-aim-hidden-foe"] = { bank = "itemFeedback", messageId = 48 },
+  -- Retail trainer-escape refusal (TryUseItem battleUseFunc 3, msg 0040
+  -- id 37): Oak's rebuke naming the player, from its own bank.
+  ["battle/bag/message/no-stealing"] = { bank = "noStealing", messageId = 37 },
   -- Retail battle party screen prompts and buttons (battle_party_menu.c):
   -- choose/use prompts, SHIFT/SUMMARY/CHECK MOVES, FORGET/CANCEL, and
   -- the HM refusal from msg 0006. Titles 6/7/94 already stage as child keys.
@@ -1694,6 +1892,64 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/party/message/no-effect"] = { bank = "partyResult", messageId = 81 },
   ["battle/party/message/already-selected"] = { bank = "partyResult", messageId = 93 },
   ["battle/party/message/embargo"] = { bank = "partyResult", messageId = 95 },
+  -- Retail party summary/move words painted on the wrapper rows
+  -- (battle_party_menu.c PrintMonName/PrintAbilityName/PrintHeldItemName
+  -- and the PrintLevelAndNextExp/PrintHPStat/DEFINE_PRINT_STAT families):
+  -- the full msg 0006 label and value set the paired summary, move-list,
+  -- and move-detail rows resolve. Mon names index the roster slot through
+  -- sBattlePartyMonNameMsgIds (0x02224FF4) and move names index the held
+  -- move slot through sBattlePartyMoveNameMsgIds (0x02224FE0). Msg 47
+  -- stays unstaged (no party-menu printer reads it) and msg 57 stays
+  -- unstaged (contest-forget only: PrintContestForgetMovePage, never a
+  -- battle wrapper page).
+  ["battle/party/stat/hp"] = { bank = "partyResult", messageId = 28 },
+  ["battle/party/stat/hp-current"] = { bank = "partyResult", messageId = 29 },
+  ["battle/party/stat/hp-max"] = { bank = "partyResult", messageId = 30 },
+  ["battle/party/stat/hp-slash"] = { bank = "partyResult", messageId = 31 },
+  ["battle/party/stat/attack"] = { bank = "partyResult", messageId = 32 },
+  ["battle/party/stat/attack-value"] = { bank = "partyResult", messageId = 33 },
+  ["battle/party/stat/defense"] = { bank = "partyResult", messageId = 34 },
+  ["battle/party/stat/defense-value"] = { bank = "partyResult", messageId = 35 },
+  ["battle/party/stat/sp-attack"] = { bank = "partyResult", messageId = 36 },
+  ["battle/party/stat/sp-attack-value"] = { bank = "partyResult", messageId = 37 },
+  ["battle/party/stat/sp-defense"] = { bank = "partyResult", messageId = 38 },
+  ["battle/party/stat/sp-defense-value"] = { bank = "partyResult", messageId = 39 },
+  ["battle/party/stat/speed"] = { bank = "partyResult", messageId = 40 },
+  ["battle/party/stat/speed-value"] = { bank = "partyResult", messageId = 41 },
+  ["battle/party/stat/level"] = { bank = "partyResult", messageId = 23 },
+  ["battle/party/stat/level-value"] = { bank = "partyResult", messageId = 24 },
+  ["battle/party/stat/exp"] = { bank = "partyResult", messageId = 25 },
+  ["battle/party/stat/exp-value"] = { bank = "partyResult", messageId = 26 },
+  ["battle/party/mon-name/0"] = { bank = "partyResult", messageId = 0 },
+  ["battle/party/mon-name/1"] = { bank = "partyResult", messageId = 1 },
+  ["battle/party/mon-name/2"] = { bank = "partyResult", messageId = 2 },
+  ["battle/party/mon-name/3"] = { bank = "partyResult", messageId = 3 },
+  ["battle/party/mon-name/4"] = { bank = "partyResult", messageId = 4 },
+  ["battle/party/mon-name/5"] = { bank = "partyResult", messageId = 5 },
+  ["battle/party/gender/male"] = { bank = "partyResult", messageId = 16 },
+  ["battle/party/gender/female"] = { bank = "partyResult", messageId = 17 },
+  ["battle/party/ability/name"] = { bank = "partyResult", messageId = 8 },
+  ["battle/party/item/name"] = { bank = "partyResult", messageId = 9 },
+  ["battle/party/item/none"] = { bank = "partyResult", messageId = 20 },
+  ["battle/party/move/pp"] = { bank = "partyResult", messageId = 43 },
+  ["battle/party/move/pp-label"] = { bank = "partyResult", messageId = 14 },
+  ["battle/party/move/pp-current"] = { bank = "partyResult", messageId = 44 },
+  ["battle/party/move/pp-max"] = { bank = "partyResult", messageId = 45 },
+  ["battle/party/move/pp-slash"] = { bank = "partyResult", messageId = 46 },
+  ["battle/party/move/power"] = { bank = "partyResult", messageId = 48 },
+  ["battle/party/move/power-value"] = { bank = "partyResult", messageId = 49 },
+  ["battle/party/move/no-value"] = { bank = "partyResult", messageId = 50 },
+  ["battle/party/move/accuracy"] = { bank = "partyResult", messageId = 51 },
+  ["battle/party/move/accuracy-value"] = { bank = "partyResult", messageId = 52 },
+  ["battle/party/move/category"] = { bank = "partyResult", messageId = 53 },
+  ["battle/party/move/category-physical"] = { bank = "partyResult", messageId = 54 },
+  ["battle/party/move/category-status"] = { bank = "partyResult", messageId = 55 },
+  ["battle/party/move/category-special"] = { bank = "partyResult", messageId = 56 },
+  ["battle/party/move-name/0"] = { bank = "partyResult", messageId = 61 },
+  ["battle/party/move-name/1"] = { bank = "partyResult", messageId = 64 },
+  ["battle/party/move-name/2"] = { bank = "partyResult", messageId = 67 },
+  ["battle/party/move-name/3"] = { bank = "partyResult", messageId = 70 },
+  ["battle/party/move-name/4"] = { bank = "partyResult", messageId = 73 },
   ["battle/narration/transformed"] = { bank = "scriptController", messageId = 345 },
   ["battle/narration/foretold/own"] = { bank = "scriptController", messageId = 472 },
   ["battle/narration/foretold/wild"] = { bank = "scriptController", messageId = 473 },

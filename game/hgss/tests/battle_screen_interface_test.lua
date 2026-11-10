@@ -15,6 +15,7 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local BagCursor = require("libs.hgss.src.items.BagCursor")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -1118,6 +1119,7 @@ local function openChildRig(opts)
       return rig.measurement
     end,
     itemCatalog = ItemFixture.makeCatalog(),
+    bagCursor = opts.bagCursor,
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -1178,6 +1180,13 @@ local function press(rig, event)
   rig.pump(1)
 end
 
+-- Settles one gated bag press (WaitButtonAnim): frame 1 rebounds to
+-- frame 2, then the deferred page transition applies.
+---@param rig table live screen rig under test driving
+local function settlePress(rig)
+  rig.pump(2)
+end
+
 -- Terminal leave carries an explicit final-page acknowledgment: while
 -- narration plays, one genuine confirm through the real screen path
 -- advances it exactly as a player would, so the battle can settle.
@@ -1206,17 +1215,16 @@ end
 
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToMedicineFirstCell(rig)
-  press(rig, { type = "navigate", direction = "up" })
-  press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  settlePress(rig)
+  settlePress(rig)
 end
 
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToBallsFirstCell(rig)
-  press(rig, { type = "navigate", direction = "up" })
   press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  settlePress(rig)
 end
 
 ---@param rig table live screen rig under test driving
@@ -1264,18 +1272,21 @@ end
 ---@param rig table live screen rig under test driving
 ---@return boolean sealed true once the native selection sealed a reply
 local function tapSealsBagReply(rig)
-  local function tap(rect)
-    local x = rect.x + rect.width / 2
-    local y = rect.y + rect.height / 2 + (rig.layout == "paired" and 192 or 0)
-    local pointerId = "touch:native-bag"
+  local function tap(top, bottom, left, right)
+    local x = (left + right) / 2
+    local y = (top + bottom) / 2 + (rig.layout == "paired" and 192 or 0)
+    local pointerId = "touch:battle-bag"
     rig.screen:input({ { type = "pointer_down", pointerId = pointerId, x = x, y = y } })
     rig.screen:input({ { type = "pointer_up", pointerId = pointerId, x = x, y = y } })
     rig.pump(1)
   end
-  local interactive = rig.bagManifest.interactive
-  tap(interactive.itemSlots.slots[1].rect)
+  -- Retail battle hitboxes (battle_menu_data.s): pocket-menu BALLS is
+  -- index 2, item-list cell 0 is index 0, USE is use-item index 0.
+  tap(8, 79, 128, 255)
   rig.pump(2)
-  tap(interactive.overlays.actionMenu.slots[1].hitRect)
+  tap(8, 55, 0, 127)
+  rig.pump(2)
+  tap(152, 191, 0, 207)
   rig.pump(8)
   return #rig.submits > 0
 end
@@ -1318,20 +1329,16 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     Assert.isTrue(#enabledPotions >= 1, "the stocked healing stays selectable" .. tag)
     openBagFromCommand(rig)
     rig.screen:draw({ graphics = FakeGraphics.new({}) })
-    Assert.equal(rig.screen:status().mode, "child", "drawing the borrowed native renderer keeps the Bag open" .. tag)
-    local paneFrame = assert(rig.bagPlacement, "the open Bag draws through the borrowed renderer" .. tag).frame
-    Assert.deepEqual(
-      { paneFrame.x, paneFrame.y, paneFrame.width, paneFrame.height },
-      layout == "compact" and { 0, 0, 256, 192 } or { 0, 192, 256, 192 },
-      "the Bag draws inside the battle interaction pane" .. tag
-    )
+    Assert.equal(rig.screen:status().mode, "child", "drawing the battle bag keeps the Bag open" .. tag)
     walkToMedicineFirstCell(rig)
     press(rig, { type = "cancel" })
+    settlePress(rig)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "leaving the medicine pocket returns to command" .. tag)
     openBagFromCommand(rig)
     walkToBallsFirstCell(rig)
     press(rig, { type = "cancel" })
+    settlePress(rig)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "leaving the pockets returns to command" .. tag)
     Assert.equal(#rig.submits, 0, "browsing the pockets seals no reply" .. tag)
@@ -1339,6 +1346,7 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     openBagFromCommand(rig)
     walkToMedicineFirstCell(rig)
     press(rig, { type = "confirm" })
+    settlePress(rig)
     Assert.equal(#rig.submits, 0, "staging the serving seals no reply" .. tag)
     Assert.equal(rig.screen:status().mode, "child", "staging keeps the child open" .. tag)
     rig.pump(1)
@@ -1348,12 +1356,16 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "child", "target cancel returns to the retained bag" .. tag)
     press(rig, { type = "cancel" })
+    Assert.equal(rig.screen:status().mode, "child", "list cancel returns to the pocket menu" .. tag)
+    settlePress(rig)
+    press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "bag cancel returns to command" .. tag)
     Assert.equal(rig.bag:revision(), revision, "bag browsing moves no stock" .. tag)
     Assert.equal(rig.bag:quantity("POTION"), 5, "staging a serving takes no stock" .. tag)
     openBagFromCommand(rig)
     walkToMedicineFirstCell(rig)
     press(rig, { type = "confirm" })
+    settlePress(rig)
     rig.pump(1)
     press(rig, { type = "confirm" })
     rig.pump(8)
@@ -1444,33 +1456,48 @@ function T.stocked_bag_lists_pockets_and_tap_throws_the_visible_ball()
   end
 end
 
-function T.native_battle_bag_draws_under_the_battle_pane_placement()
-  local graphics = FakeGraphics.new()
-  local received
-  local bagRenderer = {
-    draw = function(_, _, plan)
-      received = plan.panes[1].placement
-      LogicalSurface.draw(graphics, received, function() end)
-    end,
-  }
-  local placement = {
-    frame = { x = 0, y = 192, width = 256, height = 192 },
-    origin = { x = 0, y = 192 },
-    scale = 1,
-    logicalWidth = 256,
-    logicalHeight = 192,
-    clipRect = { x = 0, y = 192, width = 256, height = 192 },
-  }
-  local handled = BattleRenderer.drawNativeChild({
-    battleMenus = { bag = { renderer = bagRenderer, icons = {} } },
-  }, {
-    kind = "bag",
-    native = { open = true, layout = {} },
-  }, placement)
-
-  Assert.isTrue(handled, "the native bag child is rendered")
-  Assert.isTrue(received == placement, "the bag draws under the battle pane placement")
-  Assert.equal(graphics:pushDepth(), 0, "the native placement completes its logical drawing scope")
+-- The battle bag never paints through the field bag renderer: its native
+-- status carries battle pockets and pages but no field-bag layout, so the
+-- native paint path declines it and the authentic battle-bag page painter
+-- (paired drawChild, compact drawChildModal) owns the draw instead.
+-- Sealing a battle item stores the browser exit cursor on the runtime
+-- cursor for the next opening (BattleBagMenu_Exit writes cursor state on
+-- selection), while pure browsing stores nothing.
+function T.sealed_battle_items_store_the_browser_exit_cursor()
+  local cursor = BagCursor.new()
+  local rig = openChildRig({
+    layout = "paired",
+    launchId = "launch-bag-cursor-store",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+      { key = "POKE_BALL", qty = 5 },
+    },
+    bagCursor = cursor,
+  })
+  Assert.equal(cursor:battleCursor().pocket, 0, "setup: the cursor opens cleared")
+  openBagFromCommand(rig)
+  walkToBallsFirstCell(rig)
+  press(rig, { type = "cancel" })
+  settlePress(rig)
+  press(rig, { type = "cancel" })
+  Assert.equal(rig.screen:status().mode, "command", "setup: browsing back out returns to command")
+  Assert.equal(cursor:battleCursor().pocket, 0, "browsing without sealing stores no cursor")
+  openBagFromCommand(rig)
+  walkToBallsFirstCell(rig)
+  Assert.isTrue(tapSealsBagReply(rig), "a tap on the visible ball throws it")
+  Assert.deepEqual(cursor:battleCursor(), {
+    pocket = 2,
+    pages = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
+    positions = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
+  }, "the sealed throw stores the balls pocket cursor")
+  Assert.equal(cursor:battleLastUsedItem(), "POKE_BALL", "the sealed throw records its item")
+  Assert.equal(cursor:battleLastUsedPocket(), 2, "the sealed throw records its pocket")
+  rig.screen:dispose()
+  rig.battle:dispose()
 end
 
 function T.native_battle_party_waits_for_its_icon_pages()

@@ -24,6 +24,7 @@ local StatStages = require("libs.battle.src.gen4.StatStages")
 ---@field skipCheck boolean?
 ---@field accuracyStage integer? signed battle-local accuracy stage of the user
 ---@field evasionStage integer? signed battle-local evasion stage of the target
+---@field tutorial boolean? true while the scripted lesson forces its strikes to miss
 
 ---@class HitResolution
 ---@field kind "hit"|"miss"|"protected"|"immune"|"unreachable"|"failed"
@@ -65,6 +66,13 @@ end
 function Accuracy.resolve(query, stream)
   requireQuery(query)
   assert(type(stream) == "table" and type(stream.nextU16) == "function", "rolled checks draw from the battle stream")
+  -- Retail lesson strikes never hit (battle_controller_player.c:2425,
+  -- BattleSystem_CheckMoveHit under BATTLE_TYPE_TUTORIAL returns FALSE):
+  -- the tutorial misses without spending its accuracy draw, so lesson
+  -- odds stay untouched like the retail early return.
+  if query.tutorial == true then
+    return { kind = "miss", reason = "tutorial", target = query.target, cause = query.cause }
+  end
   if query.protected == true then
     return { kind = "protected", reason = "protection", target = query.target, cause = query.cause }
   end

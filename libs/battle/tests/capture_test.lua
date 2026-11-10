@@ -667,4 +667,23 @@ function T.safari_balls_name_their_missing_stage()
   Assert.isTrue(Context.validate(staged), "a staged safari throw validates")
 end
 
+-- Retail tutorial throws always catch with no stock spend
+-- (battle_controller_player.c ~1755 skips Bag_TakeItem under
+-- TRAINER|TUTORIAL, battle_command.c:7185 returns BALL_SHAKE_MAX under
+-- TUTORIAL): the lesson succeeds without spending its shake draws or
+-- its ball.
+function T.tutorial_throws_always_catch_without_stock_or_draws()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local mon = wildMon(37)
+  local battle = wildBattle(mon, "POKE_BALL", 1)
+  battle.tutorial = true
+  local stream = scriptedStream({ 0, 0, 0, 0 })
+  local outcome = Capture.execute(wildAttempt("POKE_BALL"), battle, stream)
+  Assert.isTrue(outcome.result.success, "the lesson throw lands")
+  Assert.equal(outcome.result.shakes, Capture.MAX_SHAKES, "the lesson shakes its max")
+  Assert.equal(battle.inventories.party.quantities.POKE_BALL, 1, "the lesson spends no ball")
+  Assert.deepEqual(battle.ledger, {}, "the lesson ledgers no consumption")
+  Assert.deepEqual(stream:capture(), { used = 0 }, "the lesson spends no shake draw")
+end
+
 return { tests = T }

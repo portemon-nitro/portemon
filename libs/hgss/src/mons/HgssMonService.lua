@@ -260,6 +260,14 @@ function HgssMonService:boxSnapshot()
   return self._boxes:capture()
 end
 
+-- Reports whether any PC box holds an empty slot for a caught mon.
+-- The battle scenario owner reads this once at launch for the TryUseItem
+-- PC-room gate (battle_bag_menu.c msg 45).
+---@return boolean true while at least one box slot is empty
+function HgssMonService:boxHasSpace()
+  return self._boxes:hasSpace()
+end
+
 ---@return integer
 function HgssMonService:partyCount()
   return self._party:count()

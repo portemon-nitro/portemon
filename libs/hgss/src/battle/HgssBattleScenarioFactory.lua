@@ -17,6 +17,7 @@
 -- a missing level or party is malformed input and fails here.
 
 local Mon = require("libs.mons.src.Mon")
+local BagSave = require("libs.hgss.src.save.BagSave")
 
 ---@class HgssBattleScenarioFactory
 local HgssBattleScenarioFactory = {}
@@ -289,44 +290,54 @@ end
 -- internal invariant breach because live storage keeps one stack per item.
 ---@param bag unknown live bag service under projection
 ---@return table<string, integer> detached positive battle stock by semantic item key
+---@return string[] stocked item keys in saved-bag slot order
 local function flattenBag(bag)
   local stock = {} ---@type table<string, integer>
+  local order = {} ---@type string[]
   if type(bag) ~= "table" then
-    return stock
+    return stock, order
   end
   local service = bag --[[@as table<string, unknown>]]
   if type(service.capture) ~= "function" then
-    return stock
+    return stock, order
   end
   local captured = service:capture()
   assert(type(captured) == "table", "bag projection reads the detached capture")
   local pockets = (captured --[[@as table<string, unknown>]]).pockets
   assert(type(pockets) == "table", "bag captures carry their pockets")
-  for _, slots in
-    pairs(pockets --[[@as table<string, table>]])
-  do
-    assert(type(slots) == "table", "bag pockets carry their stacks")
-    for _, slot in ipairs(slots) do
-      assert(type(slot) == "table", "bag pocket slots stay records")
-      local entry = slot --[[@as table<string, unknown>]]
-      assert(type(entry.item) == "string" and entry.item ~= "", "bag stacks name their item")
-      assert(
-        type(entry.quantity) == "number" and entry.quantity % 1 == 0 and entry.quantity >= 1,
-        "bag stacks carry positive quantities"
-      )
-      if
+  -- Retail battle pockets list in saved-bag slot order
+  -- (SortItemsIntoPockets appends in bag-slot order): pockets walk the
+  -- eight native pockets in order with slots in order, so the detached
+  -- order matches the field bag exactly.
+  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+    local slots = pockets[pocketKey] --[[@as table<string, table>?]]
+    -- Minimal bag doubles stage only their stocked pockets; an absent
+    -- pocket contributes no stock like a live empty pocket.
+    if slots ~= nil then
+      assert(type(slots) == "table", "bag captures carry their pockets")
+      for _, slot in ipairs(slots) do
+        assert(type(slot) == "table", "bag pocket slots stay records")
+        local entry = slot --[[@as table<string, unknown>]]
+        assert(type(entry.item) == "string" and entry.item ~= "", "bag stacks name their item")
+        assert(
+          type(entry.quantity) == "number" and entry.quantity % 1 == 0 and entry.quantity >= 1,
+          "bag stacks carry positive quantities"
+        )
+        if
+          stock[
+            entry.item --[[@as string]]
+          ] ~= nil
+        then
+          error("bag captures carry one stack per item: " .. tostring(entry.item), 0)
+        end
         stock[
           entry.item --[[@as string]]
-        ] ~= nil
-      then
-        error("bag captures carry one stack per item: " .. tostring(entry.item), 0)
+        ] = entry.quantity --[[@as integer]]
+        order[#order + 1] = entry.item --[[@as string]]
       end
-      stock[
-        entry.item --[[@as string]]
-      ] = entry.quantity --[[@as integer]]
     end
   end
-  return stock
+  return stock, order
 end
 
 -- Counts one trainer's finite carried list into battle stock, preserving
@@ -474,7 +485,37 @@ local function kernelShape(fragment)
     mon = fragment.mon,
     trainer = fragment.trainer,
     playerContext = copyValue(fragment.playerContext),
+    -- Catching-tutorial marker for the scripted lesson battle: the bag
+    -- auto-plays behind the tutorial finger instead of taking input
+    -- (battle_bag_menu.c RunTutorial). Closed boolean, production
+    -- fragments set it, staged fights may author it.
+    tutorial = fragment.tutorial == true,
+    -- PC box room for the TryUseItem PC-room gate (battle_bag_menu.c
+    -- msg 45): true while a caught mon has somewhere to go. Absent box
+    -- facts keep historical behavior in the kernel.
+    boxHasSpace = fragment.boxHasSpace,
   }
+end
+
+-- Reads PC box room once at launch for the scenario: true while any box
+-- holds an empty slot. Owners without the query keep historical behavior
+-- (room assumed) so headless staged drivers stay valid.
+---@param context table<string, unknown> scenario context carrying the live party owner
+---@return boolean true while a caught mon has box room
+local function captureBoxRoom(context)
+  local party = context.party
+  if type(party) ~= "table" then
+    return true
+  end
+  local query = (party --[[@as table<string, unknown>]]).boxHasSpace
+  if type(query) ~= "function" then
+    return true
+  end
+  local ok, room = pcall(query, party)
+  if not ok or type(room) ~= "boolean" then
+    return true
+  end
+  return room --[[@as boolean]]
 end
 
 ---@param payload table<string, unknown>
@@ -547,6 +588,7 @@ local function assemble(payload, heart)
     mon = heart.mon,
     trainer = heart.trainer,
     playerContext = heart.playerContext,
+    boxHasSpace = heart.boxHasSpace,
   })
 end
 
@@ -607,10 +649,12 @@ function HgssBattleScenarioFactory.fromEncounter(payload, ctx)
   local playerInventoryId = nil ---@type string?
   if snapshot ~= nil then
     playerInventoryId = HgssBattleScenarioFactory.PLAYER_INVENTORY_ID
+    local stock, order = flattenBag(context.bag)
     inventories[#inventories + 1] = {
       id = playerInventoryId,
       owners = { 1 },
-      quantities = flattenBag(context.bag),
+      quantities = stock,
+      slotOrder = order,
     }
   end
   return assemble(payload, {
@@ -629,6 +673,7 @@ function HgssBattleScenarioFactory.fromEncounter(payload, ctx)
     },
     mon = copyValue(enemy),
     trainer = nil,
+    boxHasSpace = captureBoxRoom(context),
   })
 end
 
@@ -682,10 +727,12 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
   local playerInventoryId = nil ---@type string?
   if snapshot ~= nil then
     playerInventoryId = HgssBattleScenarioFactory.PLAYER_INVENTORY_ID
+    local stock, order = flattenBag(context.bag)
     inventories[#inventories + 1] = {
       id = playerInventoryId,
       owners = { 1 },
-      quantities = flattenBag(context.bag),
+      quantities = stock,
+      slotOrder = order,
     }
   end
   local enemies = {}
@@ -797,6 +844,65 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     enemies = enemies,
     mon = nil,
     trainer = copyValue(trainers),
+    boxHasSpace = captureBoxRoom(context),
+  })
+end
+
+-- Builds the scripted catching-tutorial fragment (battle_setup.c
+-- BattleSetup_New_Tutorial, scrcmd_c.c ScrCmd_CatchingTutorial opcode 251):
+-- the lesson runs its fixed content regardless of live party or bag —
+-- player Marill L5, enemy Rattata L2, 20× POKE_BALL granted — with the
+-- scripted kind and the tutorial marker so the lesson command surface
+-- auto-plays its bag behind the finger. The rival-gendered author name
+-- resolves through the staged tutorial/author bank via the
+-- battle/tutorial-author route (playerGender xor one), so the scenario
+-- keeps the player context for that input instead of inventing a name.
+---@param payload table<string, unknown>? opcode-251 payload carrying no operands
+---@param ctx table<string, unknown>? scenario context carrying live field sources
+---@return table<string, unknown> detached tutorial scenario fragment
+function HgssBattleScenarioFactory.fromTutorial(payload, ctx)
+  local context = ctx or {}
+  assert(type(context) == "table", "scenario context stays a record")
+  local playerMon = descriptorMon({ species = "MARILL", level = 5 })
+  local enemyMon = descriptorMon({ species = "RATTATA", level = 2 })
+  local playerSeed = { id = 1, mon = playerMon, source = { kind = "tutorial", owner = "player", key = "lesson" } }
+  local foeSeed = { id = 2, mon = enemyMon, source = { kind = "tutorial", owner = "enemy", key = "lesson" } }
+  local playerInventoryId = HgssBattleScenarioFactory.PLAYER_INVENTORY_ID
+  return kernelShape({
+    attemptId = type(payload) == "table" and (payload.attemptId or payload.id) or nil,
+    kind = "scripted",
+    format = "single",
+    sides = { { id = 1, participants = { 1 } }, { id = 2, participants = { 2 } } },
+    participants = {
+      {
+        id = 1,
+        side = 1,
+        controller = HgssBattleScenarioFactory.PLAYER_CONTROLLER,
+        roster = { playerSeed },
+        context = playerRewardContext(context, false),
+        inventoryId = playerInventoryId,
+      },
+      {
+        id = 2,
+        side = 2,
+        controller = HgssBattleScenarioFactory.WILD_CONTROLLER,
+        roster = { foeSeed },
+        context = {},
+      },
+    },
+    positions = {
+      { id = 1, side = 1, eligibleParticipants = { 1 }, occupant = 1 },
+      { id = 2, side = 2, eligibleParticipants = { 2 }, occupant = 2 },
+    },
+    inventories = { { id = playerInventoryId, owners = { 1 }, quantities = { POKE_BALL = 20 } } },
+    environment = { weather = "none" },
+    random = { seed = scenarioSeed(type(payload) == "table" and payload or { id = "tutorial" }) },
+    formatState = {},
+    mon = copyValue(enemyMon),
+    trainer = nil,
+    playerContext = playerRewardContext(context, false),
+    boxHasSpace = true,
+    tutorial = true,
   })
 end
 
@@ -830,6 +936,8 @@ function HgssBattleScenarioFactory.fromScript(payload, ctx)
     formatState = copyValue(payload.formatState) or {},
     mon = copyValue(payload.mon),
     trainer = copyValue(payload.trainer),
+    boxHasSpace = payload.boxHasSpace == nil and captureBoxRoom(context) or payload.boxHasSpace == true,
+    tutorial = payload.tutorial == true,
   })
 end
 

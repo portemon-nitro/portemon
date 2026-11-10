@@ -1,7 +1,8 @@
 -- Private battle child composition module. Builds the concrete child
 -- applications behind the battle-local selection barrier with battle-local
 -- data and command adapters, delegating to the real application mechanisms:
--- the native Bag application in its battle context, the native Party
+-- the retail battle-bag browser (pocket menu, item list, use-item pages)
+-- over detached stock, the native Party
 -- application in its pick and item-target contexts, the native
 -- summary/move-selection presentation in move-pick mode, the existing
 -- naming screen controller, and the native evolution presentation state.
@@ -19,11 +20,7 @@
 -- barrier still binds kernel fragments, and native controller intents are
 -- drained as evidence, never as acceptance.
 
-local BagController = require("libs.hgss.src.ui.BagController")
-local BagCursor = require("libs.hgss.src.items.BagCursor")
-local BagLayout = require("libs.hgss.src.ui.BagLayout")
-local BagModel = require("libs.hgss.src.ui.BagModel")
-local BagSave = require("libs.hgss.src.save.BagSave")
+local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local MonCache = require("libs.assets.src.MonCache")
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
@@ -33,17 +30,16 @@ local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local BattleChildApplications = {}
 
--- Canonical battle child hit geometry: the six list rows, the footer
--- Back, and the bag pocket steppers share one coordinate space with the
--- rows the battle renderer paints and the battle session hit-tests, so a
--- tap and its paint resolve through the same regions. Row identities stay
--- stable (party:N, bag:N, learn:N, learn:decline); geometry depends only on
--- the row index, never on row content.
+-- Canonical battle child hit geometry: the six list rows and the footer
+-- Back share one coordinate space with the rows the battle renderer
+-- paints and the battle session hit-tests for party, move, and learn
+-- children, so a tap and its paint resolve through the same regions.
+-- Row identities stay stable (party:N, move:N, learn:N, learn:decline);
+-- geometry depends only on the row index, never on row content. Bag taps
+-- ride the transcribed retail hitboxes through BattleBagPockets instead.
 local CHILD_ROW = { x = 8, y = 32, width = 240, height = 20 }
 local CHILD_BACK = { x = 8, y = 152, width = 80, height = 40 }
 local CHILD_LEARN_BACK = { x = 8, y = 172, width = 240, height = 20 }
-local CHILD_POCKET_PREV = { x = 96, y = 152, width = 76, height = 40 }
-local CHILD_POCKET_NEXT = { x = 176, y = 152, width = 72, height = 40 }
 
 ---@param rect table<string, number> canonical hit rectangle under testing
 ---@param x number tap horizontal position under testing
@@ -93,10 +89,23 @@ local function battlePartyHit(x, y)
 end
 
 local function fallbackPartyLayout(cancellable)
+  -- Linear mon-menu neighbors behind the fallback layout: the native
+  -- cursor boxes stay undecoded, so the menu walks its entries in order
+  -- (up/down) instead of inventing grid links. Production layouts carry
+  -- the generated source neighbor map and ignore this fallback.
   local function menuLayout(_, count)
     local rows = {}
     for index = 1, count do
-      rows[index] = { x = 0, y = index - 1, width = 1, height = 1 }
+      rows[index] = {
+        x = 0,
+        y = index - 1,
+        width = 1,
+        height = 1,
+        up = math.max(1, index - 1),
+        down = math.min(count, index + 1),
+        left = index,
+        right = index,
+      }
     end
     return rows
   end
@@ -109,42 +118,6 @@ local function fallbackPartyLayout(cancellable)
     menuLayout = menuLayout,
     menuHit = menuHit,
   }
-end
-
--- Resolves one native battle-bag hit target over the canonical modal
--- rows: visible cells name their visible cell, the footer cancels, and
--- the pocket steppers name the neighboring pocket.
----@param x number tap horizontal position under hit-testing
----@param y number tap vertical position under hit-testing
----@param status table<string, unknown> native bag status under hit-testing
----@return table<string, unknown>? native hit target, nil outside every control
-local function battleBagHit(x, y, status)
-  for cell = 0, 5 do
-    if hitContains(rowRect(cell + 1), x, y) then
-      return { kind = "item", visibleIndex = cell }
-    end
-  end
-  if hitContains(CHILD_BACK, x, y) then
-    return { kind = "cancel" }
-  end
-  local order = BagSave.POCKET_ORDER
-  local at = nil
-  if type(status) == "table" then
-    for position, pocketKey in ipairs(order) do
-      if pocketKey == status.pocket then
-        at = position
-      end
-    end
-  end
-  if at ~= nil then
-    if hitContains(CHILD_POCKET_PREV, x, y) then
-      return { kind = "pocket", pocket = order[((at - 2) % #order) + 1] }
-    end
-    if hitContains(CHILD_POCKET_NEXT, x, y) then
-      return { kind = "pocket", pocket = order[(at % #order) + 1] }
-    end
-  end
-  return nil
 end
 
 -- Resolves one native learning hit target over the canonical modal rows:
@@ -191,9 +164,10 @@ end
 ---@param kind string composed child kind under mapping
 ---@param id string stable row/control identity under mapping
 ---@param layout table<string, unknown>? native resolved hit geometry
----@param menus table<string, unknown>? borrowed menu renderers and manifests
+---@param _menus table<string, unknown>? borrowed menu renderers and manifests (reserved for native layouts)
 ---@return table<string, number>? tap center, nil for unknown identities
-local function battleTapPoint(kind, id, layout, menus)
+local function battleTapPoint(kind, id, layout, _menus)
+  local _ = _menus
   if kind == "party" or kind == "target" then
     local slot = tonumber(id:match("^party:(%d+)$") or "")
     if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 5 then
@@ -211,29 +185,31 @@ local function battleTapPoint(kind, id, layout, menus)
     return nil
   end
   if kind == "bag" then
-    local cell = tonumber(id:match("^bag:(%d+)$") or "")
-    if cell ~= nil and cell % 1 == 0 and cell >= 0 and cell <= 5 then
-      local manifest = type(menus) == "table" and menus.manifest or nil
-      local interactive = type(manifest) == "table" and manifest.interactive or nil
-      local slots = type(interactive) == "table" and interactive.itemSlots and interactive.itemSlots.slots or nil
-      if type(slots) == "table" then
-        return rectCenter(assert(slots[cell + 1].rect, "native bag slot carries its hit rectangle"))
+    -- Retail bag taps ride the transcribed touchscreen hitboxes
+    -- (battle_bag_menu.c CheckTouchHitbox): each stable control
+    -- identity centers on its hit region so pointer synthesis and
+    -- paint resolve through the same decomp geometry. Unknown pages
+    -- fall back to the item list order like hitRegions.
+    local page = "item_list"
+    if id == "use" or id == "back" then
+      page = "use_item"
+    elseif id:match("^bagpocket:") ~= nil or id == "last_used" then
+      page = "pocket_menu"
+    end
+    for _, region in ipairs(BattleBagPockets.hitRegions(page)) do
+      if region.id == id then
+        return { x = region.x + region.w / 2, y = region.y + region.h / 2 }
       end
-      return rectCenter(rowRect(math.floor(cell) + 1))
     end
-    if id == "back" then
-      local manifest = type(menus) == "table" and menus.manifest or nil
-      local interactive = type(manifest) == "table" and manifest.interactive or nil
-      if type(interactive) == "table" then
-        return rectCenter(assert(interactive.cancel.rect, "native bag carries its cancel rectangle"))
+    -- The use-item info row (bag:0) carries no hitbox (retail prints
+    -- it through windows, not buttons): synthesize its tap at the USE
+    -- button so a foreign info tap can never arm controller state.
+    if id == "bag:0" then
+      for _, region in ipairs(BattleBagPockets.hitRegions("use_item")) do
+        if region.id == "use" then
+          return { x = region.x + region.w / 2, y = region.y + region.h / 2 }
+        end
       end
-      return rectCenter(CHILD_BACK)
-    end
-    if id == "pocket_prev" then
-      return rectCenter(CHILD_POCKET_PREV)
-    end
-    if id == "pocket_next" then
-      return rectCenter(CHILD_POCKET_NEXT)
     end
     return nil
   end
@@ -455,38 +431,6 @@ local function enabledItemTargets(options, key)
   return found
 end
 
----@param options table<string, unknown> decision options under projection
----@param key string stocked item identity under projection
----@return boolean legal true while a native choice can execute the item
----@return string? first native refusal reason, nil while selectable
-local function itemLegality(options, key)
-  local reason = nil
-  if type(options.actors) ~= "table" then
-    return false, nil
-  end
-  for _, actor in ipairs(options.actors) do
-    if type(actor) == "table" and type(actor.choices) == "table" then
-      for _, choice in ipairs(actor.choices) do
-        if
-          type(choice) == "table"
-          and type(choice.choice) == "table"
-          and choice.choice.kind == "item"
-          and type(choice.choice.payload) == "table"
-          and choice.choice.payload.item == key
-        then
-          if choice.enabled == true then
-            return true, nil
-          end
-          if reason == nil and type(choice.reason) == "string" then
-            reason = choice.reason
-          end
-        end
-      end
-    end
-  end
-  return false, reason
-end
-
 ---@param options table<string, unknown> decision options under target explanation
 ---@param key string staged item identity under explanation
 ---@param combatant integer addressed target under explanation
@@ -518,58 +462,6 @@ local function itemTargetReason(options, key, combatant)
     end
   end
   return nil
-end
-
--- Battle-local bag service over the detached stock: pocket reads project
--- the detached inventory through the borrowed item catalog, the revision
--- stays fixed for the child lifetime, and registrations are empty because
--- battle browsing never claims a registration slot.
----@param inventory table<string, integer> detached battle stock under projection
----@param itemCatalog table<string, unknown>? borrowed immutable item catalog
----@return table<string, unknown> battle-local bag service
-local function battleBagService(inventory, itemCatalog)
-  assert(type(inventory) == "table", "the battle bag reads its detached stock")
-  local service = {}
-  function service:catalog()
-    return assert(itemCatalog, "the stocked bag needs its item catalog")
-  end
-  function service:revision()
-    return 1
-  end
-  function service:registeredItems()
-    return {}
-  end
-  function service:pocketItems(pocket)
-    local catalog = self:catalog()
-    local out = {}
-    for key, quantity in pairs(inventory) do
-      if type(quantity) == "number" and quantity >= 1 then
-        local lookup = catalog.item --[[@as fun(collab: table<string, unknown>, key: string): table<string, unknown>]]
-        assert(type(lookup) == "function", "the item catalog answers item records")
-        local definition = lookup(catalog, key)
-        assert(type(definition) == "table", "stocked items resolve through the catalog")
-        if definition.pocket == pocket then
-          out[#out + 1] = { item = key, quantity = quantity }
-        end
-      end
-    end
-    table.sort(out, function(a, b)
-      return a.item < b.item
-    end)
-    return out
-  end
-  return service
-end
-
--- Battle-local bag mutation commands: battle children stage reply fragments
--- and never mutate stock, so every mutation entry fails loudly instead of
--- reaching a live owner. The failure itself is the isolation proof.
----@return table<string, fun(...): boolean> refusing battle-local bag commands
-local function refusingBagCommands()
-  local function refuse()
-    error("battle children never mutate live stock", 0)
-  end
-  return { toss = refuse, move = refuse, register = refuse, unregister = refuse }
 end
 
 -- Battle-local party facts model over the detached roster: slot occupancy
@@ -616,6 +508,8 @@ local function battlePartyModel(roster, eligible)
           status = status,
           iconKey = iconKey,
           genderSymbol = record.gender,
+          isEgg = record.isEgg == true,
+          moves = record.moves,
         }
       end
     end
@@ -823,6 +717,815 @@ local function composeRestorePicker(record)
   return controller
 end
 
+-- Retail battle-bag browser over detached stock (battle_bag_menu.c pages
+-- 0 pocket menu, 1 item list, 2 use-item, plus the TryUseItem message).
+-- Groups field stock into the four battle pockets via BattleBagPockets
+-- (bit mask through sBattleBagPocketOrder) in saved-bag slot order,
+-- pages six cells per pocket, and stages battle_select intents on USE.
+-- Empty cells never stage. Last-used selects its item directly when
+-- present and still stocked; otherwise the option stays disabled
+-- without sound. Tutorial finger paths stay gated behind
+-- intent.isTutorial. The browser stays silent; the subflows barrier
+-- owns DECIDE/SELECT.
+--
+---@param inventory table<string, integer> detached battle stock under grouping
+---@param catalog table<string, unknown>? borrowed immutable item catalog
+---@param intent table<string, unknown> validated bag intent (lastUsed/isTutorial/slotOrder/battleCursor optional)
+---@return table<string, unknown>? browser controller
+---@return string? failure cause
+local function newBattleBagBrowser(inventory, catalog, intent)
+  if catalog == nil then
+    return nil, "the stocked bag needs its item catalog"
+  end
+  local groups = BattleBagPockets.group(inventory, catalog, intent.slotOrder)
+  local browser = {
+    _groups = groups,
+    _pages = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
+    _positions = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
+    _page = "pocket_menu",
+    _menuFocus = 0,
+    _pocket = nil,
+    _useCell = nil,
+    -- Item-list d-pad cursor box behind the saved cell: retail keeps the
+    -- BattleDpadCursor position apart from pocketPositions, so the cursor
+    -- roams the six cells and the seventh Back box freely (even onto
+    -- empty cells) while the saved cell only moves on a stocked confirm.
+    -- 6 focuses Back; confirming it returns to the pocket menu.
+    _cursor = 0,
+    _message = nil,
+    _intent = nil,
+    _result = nil,
+    _disposed = false,
+    _lastUsed = nil,
+    -- The catching-tutorial marker: the browser auto-plays behind the
+    -- lesson finger instead of taking input (battle_bag_menu.c
+    -- RunTutorial via BattleBagContext.isTutorial).
+    _tutorial = intent.isTutorial == true,
+    -- D-pad cursor visibility (BattleDpadCursor active flag): set by
+    -- the first key press (TryActivate), cleared by touch
+    -- (DeactivateCursor), and kept between openings
+    -- (BattleBagContext.cursorActive). Fresh browsers start hidden.
+    _cursorActive = intent.cursorActive == true,
+    -- Press animation gate (WaitButtonAnim): the staged button and
+    -- phase while the press dip shows, with the deferred page
+    -- transition. Edges in between are dropped. USE stages its intent
+    -- immediately and animates fire-and-forget (pending nil).
+    _anim = nil,
+    _pending = nil,
+  }
+  local lastUsed = intent.lastUsed
+  if type(lastUsed) == "table" and type(lastUsed.item) == "string" then
+    local pocket = tonumber(lastUsed.pocket)
+    if pocket ~= nil and pocket % 1 == 0 and pocket >= 0 and pocket <= 3 then
+      local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+      for _, entry in ipairs(groups[key]) do
+        if entry.item == lastUsed.item then
+          browser._lastUsed = { item = lastUsed.item, pocket = pocket }
+          break
+        end
+      end
+    end
+  end
+  -- Retail cursor memory (BattleBagMenu_Create reads BagCursor battle
+  -- positions, pages, pocket, and last-used): the menu reopens on its
+  -- saved pocket with each pocket's page and cell restored.
+  local saved = intent.battleCursor
+  if type(saved) == "table" then
+    local pocket = tonumber(saved.pocket)
+    if pocket ~= nil and pocket % 1 == 0 and pocket >= 0 and pocket <= 3 then
+      browser._menuFocus = pocket --[[@as integer]]
+    end
+    if type(saved.pages) == "table" then
+      for index = 0, 3 do
+        local page = tonumber(saved.pages[index])
+        if page ~= nil and page % 1 == 0 and page >= 0 then
+          browser._pages[index] = page
+        end
+      end
+    end
+    if type(saved.positions) == "table" then
+      for index = 0, 3 do
+        local position = tonumber(saved.positions[index])
+        if position ~= nil and position % 1 == 0 and position >= 0 then
+          browser._positions[index] = position
+        end
+      end
+    end
+    if saved.cursorActive == true then
+      browser._cursorActive = true
+    end
+  end
+  ---@param pocket integer zero-based battle pocket under counting
+  ---@return integer page count, at least 1
+  local function pageCount(pocket)
+    local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+    local count = #groups[key]
+    if count == 0 then
+      return 1
+    end
+    return math.floor((count - 1) / 6) + 1
+  end
+  -- Restored pages clamp to the stocked page count on setup
+  -- (SortItemsIntoPockets clamps pocketPages the same way).
+  for index = 0, 3 do
+    local count = pageCount(index)
+    if browser._pages[index] >= count then
+      browser._pages[index] = count - 1
+    end
+  end
+  ---@param pocket integer zero-based battle pocket under clamping
+  ---@return nil
+  local function clampPage(pocket)
+    -- SortItemsIntoPockets clamps only the page on setup: the saved
+    -- cell reopens raw like the retail cursor, so an empty cell simply
+    -- stages nothing.
+    local pages = browser._pages
+    local count = pageCount(pocket)
+    if pages[pocket] < 0 then
+      pages[pocket] = 0
+    elseif pages[pocket] >= count then
+      pages[pocket] = count - 1
+    end
+  end
+  ---@param pocket integer zero-based battle pocket under entry
+  ---@return nil
+  local function enterPocket(pocket)
+    browser._pocket = pocket
+    browser._page = "item_list"
+    -- Entering the list seats the cursor on the saved cell
+    -- (ShowItemListPage seats the cursor at pocketPositions).
+    browser._cursor = browser._positions[pocket]
+    clampPage(pocket)
+  end
+  -- Stages one button press behind the animation gate
+  -- (BattleBagMenu_StartButtonAnim + WaitButtonAnim): the dip shows
+  -- frames 1 then 2 while the deferred transition waits; every edge
+  -- in between is dropped. A nil pending transition animates
+  -- fire-and-forget behind the running USE page instead.
+  ---@param button integer retail button identity under animation
+  ---@param pending function? deferred page transition, nil for fire-and-forget
+  ---@return nil
+  local function startPress(button, pending)
+    browser._anim = { button = button, phase = 1 }
+    browser._pending = pending
+  end
+  -- Advances the staged press dip once per tick: frame 1 rebounds to
+  -- frame 2, then the deferred transition applies and the gate lifts.
+  -- Fire-and-forget presses simply clear after their rebound.
+  ---@return nil
+  local function advanceAnim()
+    local anim = browser._anim
+    if anim == nil then
+      return
+    end
+    if anim.phase == 1 then
+      anim.phase = 2
+      return
+    end
+    local pending = browser._pending
+    browser._anim = nil
+    browser._pending = nil
+    if pending ~= nil then
+      pending()
+    end
+  end
+  ---@param focus integer pocket-menu focus under motion
+  ---@param direction string D-pad direction under motion
+  ---@return integer settled pocket-menu focus
+  local function moveMenuFocus(focus, direction)
+    -- Neighbors ride the transcribed page-0 cursor boxes
+    -- (sBattleBagPage0CursorBoxes) so motion and paint share one table.
+    local boxes = BattleBagPockets.CURSOR_BOXES.pocket_menu
+    local row = boxes[focus + 1] or boxes[1]
+    local neighbor = row[direction]
+    if type(neighbor) ~= "number" then
+      return focus
+    end
+    return neighbor
+  end
+  -- Moves the item-list d-pad cursor across its static boxes: the six
+  -- cells roam freely (even onto empty cells) with Back as box 6 below
+  -- the bottom row, and edge motion against a multi-page pocket turns
+  -- the page instead. Plain motion applies at once; the edge turn only
+  -- reports its direction so the caller can stage the stepper dip
+  -- behind the animation gate (HandleItemListInput animates buttons 12
+  -- and 13 through WaitButtonAnim). Page turns reset only the saved
+  -- cell (ChangeItemPage clears pocketPositions); the cursor keeps its box.
+  ---@param pocket integer zero-based battle pocket under motion
+  ---@param direction string D-pad direction under motion
+  ---@return integer? page-turn delta, nil for plain cursor motion
+  local function moveListCursor(pocket, direction)
+    local cursor = browser._cursor
+    if cursor == 6 then
+      -- Up from Back returns to the bottom-right cell; every other edge
+      -- keeps it (Page1CursorBoxes cancel neighbors).
+      if direction == "up" then
+        browser._cursor = 5
+      end
+      return nil
+    end
+    local col = cursor % 2
+    local row = math.floor(cursor / 2)
+    if direction == "left" then
+      if col == 0 then
+        if pageCount(pocket) > 1 then
+          return -1
+        end
+        return nil
+      end
+      browser._cursor = row * 2
+    elseif direction == "right" then
+      if col == 1 then
+        if pageCount(pocket) > 1 then
+          return 1
+        end
+        return nil
+      end
+      browser._cursor = row * 2 + 1
+    elseif direction == "up" then
+      if row == 0 then
+        return nil
+      end
+      browser._cursor = (row - 1) * 2 + col
+    elseif direction == "down" then
+      if row == 2 then
+        browser._cursor = 6
+        return nil
+      end
+      browser._cursor = (row + 1) * 2 + col
+    end
+    return nil
+  end
+  -- Retail tutorial auto-play (battle_bag_menu.c RunTutorial): the
+  -- lesson finger owns the bag, so finger touches advance pocket 2
+  -- Retail tutorial auto-play (battle_bag_menu.c RunTutorial): the
+  -- lesson finger owns the bag (BattleFinger_HasTouched), so only
+  -- finger touches advance pocket 2 (balls) → first cell → USE while
+  -- every other edge is ignored and cancel never leaves. Confirm keys,
+  -- D-pad motion, and pointer topology stay with the barrier: retail
+  -- never reads gSystem.newKeys behind the tutorial, only the finger.
+  -- Button-press motion rides the shared tick sounds behind the page turns.
+  -- Page changes wait out the press dip behind the same gate as the
+  -- interactive browser; USE fires its intent at once.
+  ---@param event table<string, unknown> semantic input under tutorial stepping
+  local function tutorialEvent(event)
+    if browser._pending ~= nil then
+      return
+    end
+    local kind = event.type
+    if kind == "tap" and type(event.id) == "string" then
+      local id = event.id --[[@as string]]
+      if browser._page == "pocket_menu" and id == "bagpocket:2" then
+        browser._menuFocus = 2
+        browser._pocket = 2
+        startPress(2, function()
+          enterPocket(2)
+        end)
+      elseif browser._page == "item_list" and id == "bag:0" and browser._pocket ~= nil then
+        local pocket = browser._pocket --[[@as integer]]
+        local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+        browser._positions[pocket] = 0
+        browser._cursor = 0
+        if groups[key][browser._pages[pocket] * 6 + 1] ~= nil then
+          startPress(6, function()
+            browser._useCell = 0
+            browser._page = "use_item"
+            browser._useFocus = "use"
+          end)
+        end
+      elseif browser._page == "use_item" and id == "use" then
+        browser._useFocus = "use"
+        if browser._pocket ~= nil then
+          local key = BattleBagPockets.POCKET_KEYS[browser._pocket + 1]
+          local entry = groups[key][browser._pages[browser._pocket] * 6 + (browser._useCell or 0) + 1]
+          if entry ~= nil then
+            browser._intent = { kind = "battle_select", item = entry.item }
+            startPress(15, nil)
+          end
+        end
+      elseif browser._page == "message" and (id == "back" or id == "use") then
+        browser._page = "use_item"
+        browser._message = nil
+      end
+    elseif kind == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
+      local px, py = event.x, event.y
+      if browser._page == "pocket_menu" then
+        if BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.pocketMenu, px, py) == 2 then
+          browser._menuFocus = 2
+          browser._pocket = 2
+          startPress(2, function()
+            enterPocket(2)
+          end)
+        end
+      elseif browser._page == "item_list" and browser._pocket ~= nil then
+        if BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.itemList, px, py) == 0 then
+          local pocket = browser._pocket --[[@as integer]]
+          local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+          browser._positions[pocket] = 0
+          browser._cursor = 0
+          if groups[key][browser._pages[pocket] * 6 + 1] ~= nil then
+            startPress(6, function()
+              browser._useCell = 0
+              browser._page = "use_item"
+              browser._useFocus = "use"
+            end)
+          end
+        end
+      elseif browser._page == "use_item" then
+        if BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.useItem, px, py) == 0 then
+          browser._useFocus = "use"
+          if browser._pocket ~= nil then
+            local key = BattleBagPockets.POCKET_KEYS[browser._pocket + 1]
+            local entry = groups[key][browser._pages[browser._pocket] * 6 + (browser._useCell or 0) + 1]
+            if entry ~= nil then
+              browser._intent = { kind = "battle_select", item = entry.item }
+              startPress(15, nil)
+            end
+          end
+        end
+      elseif browser._page == "message" then
+        browser._page = "use_item"
+        browser._message = nil
+      end
+    end
+    -- Navigate, cancel, and pointer topology stay with the barrier:
+    -- the lesson finger alone advances the auto-play.
+  end
+  ---@param events table<integer, table<string, unknown>> semantic input batch under stepping
+  function browser:updateFixed(events)
+    if browser._disposed then
+      return
+    end
+    local animAtStart = browser._anim ~= nil
+    for _, event in ipairs(events) do
+      if type(event) ~= "table" or type(event.type) ~= "string" then
+        break
+      end
+      if browser._tutorial == true then
+        -- The lesson finger alone advances the auto-play; shared
+        -- interactive input never runs behind it.
+        tutorialEvent(event)
+      elseif browser._pending ~= nil then
+        -- The press dip gates input (WaitButtonAnim): edges in
+        -- between are dropped, never queued.
+      else
+        local kind = event.type
+        if kind == "tap" and type(event.id) == "string" then
+          -- Touch deactivates the d-pad cursor (DeactivateCursor)
+          -- while the tap resolves through the hitboxes below.
+          browser._cursorActive = false
+          browser:handleTap(event.id)
+        elseif kind == "navigate" and type(event.direction) == "string" then
+          browser._cursorActive = true
+          if browser._page == "pocket_menu" then
+            browser._menuFocus = moveMenuFocus(browser._menuFocus --[[@as integer]], event.direction)
+          elseif browser._page == "item_list" and browser._pocket ~= nil then
+            local pocket = browser._pocket --[[@as integer]]
+            local turn = moveListCursor(pocket, event.direction)
+            if turn ~= nil then
+              local button = turn < 0 and 12 or 13
+              startPress(button, function()
+                local count = pageCount(pocket)
+                browser._pages[pocket] = (browser._pages[pocket] + turn) % count
+                -- Turning the page resets the saved cell
+                -- (ChangeItemPage clears pocketPositions); the cursor
+                -- keeps its box.
+                browser._positions[pocket] = 0
+                clampPage(pocket)
+              end)
+            end
+          elseif browser._page == "use_item" then
+            -- Retail use-item cursor (sBattleBagPage2CursorBoxes): USE
+            -- holds up/down (0,0) and Back holds up/down (1,1); only
+            -- left/right toggles. An up/down press keeps the focus.
+            if event.direction == "left" or event.direction == "right" then
+              browser._useFocus = browser._useFocus == "use" and "back" or "use"
+            end
+          end
+        elseif kind == "confirm" then
+          browser._cursorActive = true
+          if browser._page == "pocket_menu" then
+            local focus = browser._menuFocus
+            if focus >= 0 and focus <= 3 then
+              startPress(focus, function()
+                enterPocket(focus)
+              end)
+            elseif focus == 4 then
+              if browser._lastUsed ~= nil then
+                startPress(4, function()
+                  browser._pocket = browser._lastUsed.pocket
+                  browser._page = "item_list"
+                  clampPage(browser._pocket --[[@as integer]])
+                  local key = BattleBagPockets.POCKET_KEYS[browser._pocket + 1]
+                  for index, entry in ipairs(groups[key]) do
+                    if entry.item == browser._lastUsed.item then
+                      browser._pages[browser._pocket] = math.floor((index - 1) / 6)
+                      browser._positions[browser._pocket] = (index - 1) % 6
+                      break
+                    end
+                  end
+                  browser._useCell = browser._positions[browser._pocket]
+                  browser._page = "use_item"
+                  browser._useFocus = "use"
+                end)
+              end
+            elseif focus == 5 then
+              browser._result = { kind = "closed" }
+            end
+          elseif browser._page == "item_list" and browser._pocket ~= nil then
+            local pocket = browser._pocket --[[@as integer]]
+            if browser._cursor == 6 then
+              -- Confirming Back returns to the pocket menu with the
+              -- pocket focused (ShowPocketMenuPage seats the cursor at
+              -- the pocket).
+              startPress(14, function()
+                browser._page = "pocket_menu"
+                browser._menuFocus = pocket
+              end)
+            else
+              local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+              local entry = groups[key][browser._pages[pocket] * 6 + browser._cursor + 1]
+              if entry ~= nil then
+                local cell = browser._cursor
+                startPress(6 + cell, function()
+                  browser._positions[pocket] = cell
+                  browser._useCell = cell
+                  browser._page = "use_item"
+                  browser._useFocus = "use"
+                end)
+              end
+            end
+          elseif browser._page == "use_item" then
+            if browser._useFocus == "use" and browser._pocket ~= nil then
+              local key = BattleBagPockets.POCKET_KEYS[browser._pocket + 1]
+              local entry = groups[key][browser._pages[browser._pocket] * 6 + (browser._useCell or 0) + 1]
+              if entry ~= nil then
+                browser._intent = { kind = "battle_select", item = entry.item }
+                startPress(15, nil)
+              end
+            else
+              startPress(16, function()
+                browser._page = "item_list"
+              end)
+            end
+          elseif browser._page == "message" then
+            browser._page = "use_item"
+            browser._message = nil
+          end
+        elseif kind == "cancel" then
+          browser._cursorActive = true
+          if browser._page == "pocket_menu" then
+            browser._result = { kind = "closed" }
+          elseif browser._page == "item_list" then
+            local pocket = browser._pocket --[[@as integer]]
+            startPress(14, function()
+              browser._page = "pocket_menu"
+              browser._menuFocus = pocket
+            end)
+          elseif browser._page == "use_item" then
+            startPress(16, function()
+              browser._page = "item_list"
+            end)
+          elseif browser._page == "message" then
+            browser._page = "use_item"
+            browser._message = nil
+          end
+        elseif kind == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
+          browser._cursorActive = false
+          local px, py = event.x, event.y
+          if browser._page == "pocket_menu" then
+            local hit = BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.pocketMenu, px, py)
+            if hit ~= nil then
+              if hit >= 0 and hit <= 3 then
+                browser._menuFocus = hit
+                local pocket = hit
+                startPress(pocket, function()
+                  enterPocket(pocket)
+                end)
+              elseif hit == 4 then
+                browser:handleTap("last_used")
+              elseif hit == 5 then
+                browser:handleTap("back")
+              end
+            end
+          elseif browser._page == "item_list" and browser._pocket ~= nil then
+            local hit = BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.itemList, px, py)
+            if hit ~= nil then
+              if hit >= 0 and hit <= 5 then
+                browser:handleTap("bag:" .. tostring(hit))
+              elseif hit == 6 then
+                browser:handleTap("back")
+              elseif hit == 7 then
+                browser:handleTap("page_prev")
+              elseif hit == 8 then
+                browser:handleTap("page_next")
+              end
+            end
+          elseif browser._page == "use_item" then
+            local hit = BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.useItem, px, py)
+            if hit == 0 then
+              browser:handleTap("use")
+            elseif hit == 1 then
+              browser:handleTap("back")
+            end
+          elseif browser._page == "message" then
+            browser._page = "use_item"
+            browser._message = nil
+          end
+        elseif kind == "pointer_down" or kind == "pointer_cancel" then
+          -- Press topology stays with the barrier; release resolves above.
+        end
+      end
+    end
+    if animAtStart then
+      advanceAnim()
+    end
+  end
+  ---@param id string stable row/control identity under activation
+  function browser:handleTap(id)
+    if browser._disposed then
+      return
+    end
+    if browser._page == "pocket_menu" then
+      local pocket = tonumber(id:match("^bagpocket:(%d+)$") or "")
+      if pocket ~= nil and pocket % 1 == 0 and pocket >= 0 and pocket <= 3 then
+        pocket = math.floor(pocket)
+        browser._menuFocus = pocket
+        startPress(pocket, function()
+          enterPocket(pocket)
+        end)
+        return
+      end
+      if id == "last_used" then
+        -- A disabled shortcut is ignored without moving focus
+        -- (HandlePocketMenuInput breaks when lastUsedItem is none).
+        if browser._lastUsed == nil then
+          return
+        end
+        browser._menuFocus = 4
+        local savedPocket = browser._lastUsed.pocket
+        startPress(4, function()
+          browser._pocket = savedPocket
+          browser._page = "item_list"
+          clampPage(savedPocket)
+          local key = BattleBagPockets.POCKET_KEYS[savedPocket + 1]
+          for index, entry in ipairs(groups[key]) do
+            if entry.item == browser._lastUsed.item then
+              browser._pages[savedPocket] = math.floor((index - 1) / 6)
+              browser._positions[savedPocket] = (index - 1) % 6
+              break
+            end
+          end
+          browser._useCell = browser._positions[savedPocket]
+          browser._page = "use_item"
+          browser._useFocus = "use"
+        end)
+        return
+      end
+      if id == "back" then
+        browser._menuFocus = 5
+        browser._result = { kind = "closed" }
+        return
+      end
+      return
+    end
+    if browser._page == "item_list" and browser._pocket ~= nil then
+      local pocket = browser._pocket --[[@as integer]]
+      local cell = tonumber(id:match("^bag:(%d+)$") or "")
+      if cell ~= nil and cell % 1 == 0 and cell >= 0 and cell <= 5 then
+        cell = math.floor(cell)
+        local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+        local entry = groups[key][browser._pages[pocket] * 6 + cell + 1]
+        -- Empty cells are ignored without moving the d-pad cursor
+        -- (HandleItemListInput breaks when GetItemOnPage is none).
+        if entry == nil then
+          return
+        end
+        browser._cursor = cell
+        browser._positions[pocket] = cell
+        startPress(6 + cell, function()
+          browser._useCell = cell
+          browser._page = "use_item"
+          browser._useFocus = "use"
+        end)
+        return
+      end
+      if id == "back" then
+        startPress(14, function()
+          browser._page = "pocket_menu"
+          browser._menuFocus = pocket
+        end)
+        return
+      end
+      if id == "page_prev" or id == "page_next" then
+        local count = pageCount(pocket)
+        if count > 1 then
+          local button = id == "page_prev" and 12 or 13
+          startPress(button, function()
+            local page = browser._pages[pocket]
+            if id == "page_prev" then
+              browser._pages[pocket] = (page - 1) % count
+            else
+              browser._pages[pocket] = (page + 1) % count
+            end
+            -- Turning the page resets the saved cell
+            -- (ChangeItemPage clears pocketPositions); the cursor keeps
+            -- its box.
+            browser._positions[pocket] = 0
+            clampPage(pocket)
+          end)
+        end
+        return
+      end
+      return
+    end
+    if browser._page == "use_item" then
+      if id == "use" then
+        browser._useFocus = "use"
+        if browser._pocket ~= nil then
+          local key = BattleBagPockets.POCKET_KEYS[browser._pocket + 1]
+          local entry = groups[key][browser._pages[browser._pocket] * 6 + (browser._useCell or 0) + 1]
+          if entry ~= nil then
+            browser._intent = { kind = "battle_select", item = entry.item }
+            startPress(15, nil)
+          end
+        end
+        return
+      end
+      if id == "back" then
+        startPress(16, function()
+          browser._page = "item_list"
+        end)
+        return
+      end
+      return
+    end
+    if browser._page == "message" then
+      if id == "back" or id == "use" then
+        browser._page = "use_item"
+        browser._message = nil
+      end
+      return
+    end
+  end
+  ---@return table<string, unknown> drawable battle-bag record (renderer-agnostic data)
+  function browser:status()
+    if browser._disposed then
+      return { open = false }
+    end
+    local pockets = {}
+    for index, key in ipairs(BattleBagPockets.POCKET_KEYS) do
+      pockets[index] = { pocket = key }
+    end
+    local stock = 0
+    for _, key in pairs(inventory) do
+      if type(key) == "number" then
+        stock = stock + 1
+      end
+    end
+    local record = {
+      open = true,
+      bagPage = browser._page,
+      state = browser._page,
+      pockets = pockets,
+      stock = stock,
+      message = browser._message,
+      -- The tutorial marker rides the status so the finger projection
+      -- and the message-page producer read the same auto-play source.
+      tutorial = browser._tutorial == true,
+      -- D-pad cursor visibility (BattleDpadCursor active flag) and the
+      -- staged press dip (button + frame) ride the status so paint and
+      -- taps resolve through the same focus the browser owns.
+      cursorActive = browser._cursorActive == true,
+      anim = browser._anim ~= nil and { button = browser._anim.button, frame = browser._anim.phase } or nil,
+    } --[[@as table<string, unknown>]]
+    if browser._page == "pocket_menu" then
+      record.pocket = nil
+      record.page = { current = 1, count = 1 }
+      record.focusedMenuIndex = browser._menuFocus
+      if browser._menuFocus >= 0 and browser._menuFocus <= 3 then
+        record.focusedPocket = browser._menuFocus
+      end
+      record.lastUsed = browser._lastUsed
+      return record
+    end
+    local pocket = assert(browser._pocket, "listing pages carry their pocket") --[[@as integer]]
+    local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
+    local list = groups[key]
+    local count = pageCount(pocket)
+    local page = browser._pages[pocket]
+    record.pocket = key
+    record.pocketIndex = pocket
+    record.page = { current = page + 1, count = count }
+    if browser._page == "item_list" then
+      local cells = {}
+      for cell = 0, 5 do
+        local entry = list[page * 6 + cell + 1]
+        if entry ~= nil then
+          local definition = catalog.item(catalog, entry.item)
+          cells[cell + 1] = {
+            item = entry.item,
+            quantity = entry.quantity,
+            name = type(definition) == "table" and definition.name or entry.item,
+          }
+        else
+          cells[cell + 1] = { empty = true }
+        end
+      end
+      record.slots = list
+      record.visibleSlots = cells
+      if browser._cursor == 6 then
+        record.focusedVisibleIndex = nil
+        record.focus = "cancel"
+      else
+        record.focusedVisibleIndex = browser._cursor
+        record.focus = nil
+      end
+      return record
+    end
+    local cell = browser._useCell or 0
+    local entry = list[page * 6 + cell + 1]
+    if entry ~= nil then
+      local definition = catalog.item(catalog, entry.item)
+      record.useCell = cell
+      record.useItem = {
+        item = entry.item,
+        quantity = entry.quantity,
+        name = type(definition) == "table" and definition.name or entry.item,
+        description = type(definition) == "table" and definition.description or nil,
+      }
+      record.visibleSlots = {
+        { item = entry.item, quantity = entry.quantity, name = record.useItem.name },
+      }
+      record.slots = list
+    else
+      record.visibleSlots = {}
+      record.slots = list
+    end
+    record.focusedVisibleIndex = cell
+    record.useFocus = browser._useFocus or "use"
+    if browser._useFocus == "back" then
+      record.focus = "cancel"
+    end
+    return record
+  end
+  ---@return table<string, unknown>? drained battle selection intent
+  function browser:takeIntent()
+    local stashed = browser._intent
+    browser._intent = nil
+    return stashed
+  end
+  ---@return table<string, unknown>? drained browser close
+  function browser:takeResult()
+    local stashed = browser._result
+    browser._result = nil
+    return stashed
+  end
+  -- Snapshots the retail exit cursor: the current pocket with every
+  -- pocket's page and saved cell, plus the d-pad cursor visibility,
+  -- for the barrier to store behind a sealed item (BattleBagMenu_Exit
+  -- writes cursor state only when an item was chosen).
+  ---@return BagBattleCursor battle cursor snapshot with zero-based pocket, pages, and cells
+  function browser:cursorSnapshot()
+    local pages = {}
+    local positions = {}
+    for pocket = 0, 3 do
+      pages[pocket] = browser._pages[pocket]
+      positions[pocket] = browser._positions[pocket]
+    end
+    return {
+      pocket = browser._pocket,
+      pages = pages,
+      positions = positions,
+      cursorActive = browser._cursorActive == true,
+    }
+  end
+  -- Shows the retail TryUseItem refusal on the message page
+  -- (ShowMessage, nextState 8): the use-item confirmation keeps its
+  -- pocket, focus, and counts while the notice explains the refusal.
+  -- Confirm or cancel returns to the use-item page.
+  ---@param text string staged refusal text under display
+  function browser:showMessage(text)
+    assert(type(text) == "string" and text ~= "", "refusals carry their staged text")
+    browser._message = text
+    browser._page = "message"
+  end
+  -- Returns the browser to its resting item list after target selection
+  -- closes: the use-item confirmation served its staging purpose.
+  function browser:backToList()
+    if browser._page == "use_item" or browser._page == "message" then
+      browser._page = "item_list"
+      browser._message = nil
+    end
+  end
+  function browser:dispose()
+    browser._disposed = true
+    browser._intent = nil
+    browser._result = nil
+  end
+  return browser
+end
+
 -- Composes the native Bag application in its battle context over the
 -- detached stock. The kernel item policy drives the native refusal path;
 -- stock mutation entries refuse loudly. Target selection composes the
@@ -838,53 +1541,20 @@ local function openBagChild(intent, services)
   assert(type(intent.inventory) == "table", "bag children carry their detached stock")
   assert(type(intent.options) == "table", "bag children carry their decision options")
   local options = intent.options --[[@as table<string, unknown>]]
-  local service = battleBagService(intent.inventory --[[@as table<string, integer>]], services.itemCatalog)
-  local cursor = BagCursor.new()
-  local function refreshModel()
-    return BagModel.build(service, cursor, services.monCatalog)
+  local browser, browserErr =
+    newBattleBagBrowser(intent.inventory --[[@as table<string, integer>]], services.itemCatalog, intent)
+  if browser == nil then
+    return nil, tostring(browserErr)
   end
-  local model = { refresh = refreshModel }
-  local function policyEnabled(itemKey)
-    local legal, _ = itemLegality(options, itemKey)
-    return legal
-  end
-  local function policyReason(itemKey)
-    local _, reason = itemLegality(options, itemKey)
-    return reason
-  end
-  local policy = { isEnabled = policyEnabled, reason = policyReason }
-  local battleMenus = type(services.battleMenus) == "table" and services.battleMenus or nil
-  local bagMenus = battleMenus ~= nil and battleMenus.bag or nil
-  local bagManifest = type(bagMenus) == "table" and bagMenus.manifest or nil
-  local nativeBagLayout = type(bagManifest) == "table"
-      and BagLayout.resolve({ manifest = bagManifest, heroVisible = false })
-    or nil
-  local function emptyLayout()
-    return nativeBagLayout or { hitTest = battleBagHit }
-  end
-  local function noBattleActions()
-    return {}
-  end
-  local ok, controller = pcall(BagController.new, {
-    model = model,
-    cursor = cursor,
-    resolveLayout = emptyLayout,
-    commands = refusingBagCommands(),
-    resolveActions = noBattleActions,
-    context = "battle",
-    battlePolicy = policy,
-  })
-  if not ok then
-    return nil, tostring(controller)
-  end
+  local controller = browser
   local identity = childIdentity("bag", intent)
   local child = {
     _kind = "bag",
     _identity = identity,
     _application = BattleChildApplications.RECEIPTS.bag,
     _controller = controller,
-    _layout = nativeBagLayout,
-    _menus = bagMenus,
+    _layout = nil,
+    _menus = nil,
     _options = options,
     _party = intent.party,
     _target = nil,
@@ -994,6 +1664,19 @@ local function openBagChild(intent, services)
     end
     self._targetIntent = nil
     self._targetResult = nil
+    local bagBrowser = self._controller
+    if type(bagBrowser) == "table" and type(bagBrowser.backToList) == "function" then
+      bagBrowser:backToList()
+    end
+  end
+  -- Refuses one item-target choice with retail text over the list
+  -- (battle_party_menu.c TryUseItemOnMon msg 95): the picker shows
+  -- the message and restores its origin instead of sealing.
+  ---@param text string visible refusal text under display
+  function child:refuseTarget(text)
+    assert(type(text) == "string" and text ~= "", "target refusals carry their text")
+    local target = assert(self._target, "target refusals keep their picker")
+    target:completeAction({ kind = "refused", text = text })
   end
   ---@param events table<integer, table<string, unknown>> semantic input batch under routing
   function child:input(events)
@@ -1008,7 +1691,7 @@ local function openBagChild(intent, services)
       self._targetIntent = drainIntent(targetController) or self._targetIntent
       self._targetResult = drainResult(targetController) or self._targetResult
     else
-      self._controller:updateFixed(expandTaps("bag", events, self._layout, self._menus))
+      self._controller:updateFixed(events)
       harvest(self, self._controller)
     end
     self._inputApplied = true
@@ -1072,13 +1755,16 @@ local function openBagChild(intent, services)
     local stashed = self._nativeIntent
     self._nativeIntent = nil
     if type(stashed) == "table" and stashed.kind == "battle_select" and type(stashed.item) == "string" then
+      local bagBrowser = self._controller
+      if type(bagBrowser) == "table" and type(bagBrowser.cursorSnapshot) == "function" then
+        stashed.cursor = bagBrowser:cursorSnapshot()
+      end
       return stashed
     end
     return nil
   end
   -- Drains one native browser close without sealing: a closed empty or
-  -- cancelled browser reports its navigation cancellation exactly once.
-  ---@return table<string, unknown>? browser close report, nil while the browser stays open
+  -- cancelled browser reports its navigation cancellation exactly once.  ---@return table<string, unknown>? browser close report, nil while the browser stays open
   function child:takeBagClose()
     harvest(self, self._controller)
     local result = self._nativeResult
@@ -1087,6 +1773,13 @@ local function openBagChild(intent, services)
       return { kind = "closed" }
     end
     return nil
+  end
+  -- Shows the retail TryUseItem refusal on the browser message page:
+  -- the barrier resolved the staged text, the browser owns the page.
+  ---@param text string staged refusal text under display
+  function child:showMessage(text)
+    local bagBrowser = assert(self._controller, "refusals keep their browser")
+    bagBrowser:showMessage(text)
   end
   -- Drains one native item-target outcome without sealing: a compatible
   -- target reports its slot and item while a cancelled picker reports
@@ -1142,6 +1835,18 @@ local function openBagChild(intent, services)
   return child
 end
 
+---@param services table<string, unknown> borrowed battle services under composition
+---@param key string staged message key under resolution
+---@param fallback string current English text while no resolver is borrowed
+---@return string resolved retail text or its fallback
+local function resolveBattleLabel(services, key, fallback)
+  local resolve = type(services) == "table" and services.resolveMessage or nil
+  if type(resolve) == "function" then
+    return resolve(key, {})
+  end
+  return fallback
+end
+
 -- Composes one native Party target picker in its item-target context over
 -- the detached roster. The kernel item fragments for the staged serving
 -- own eligibility through the injected action policy; the picker stages
@@ -1164,7 +1869,10 @@ function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, ser
     end
     local reason = itemTargetReason(options, itemKey, record.combatant)
     if reason == "no_effect" or reason == "invalid_target" then
-      return { compatible = false, note = "It won’t do any good to use that!" }
+      return {
+        compatible = false,
+        note = resolveBattleLabel(services, "battle/narration/item-no-effect", "It won’t do any good to use that!"),
+      }
     end
     return { compatible = false, note = "That choice is unavailable." }
   end
@@ -1272,16 +1980,26 @@ local function openPartyChild(intent, services)
     assert(initialFocus ~= nil, "reserve pickers focus an eligible reserve")
   end
   -- Retail battle party mon menu (battle_party_menu.c PrintMonMenuPage
-  -- with msg_0006_00015 SHIFT): selecting the mon offers SHIFT to switch
-  -- and cancelling returns to the list. SUMMARY (msg_0006_00018) and
-  -- CHECK MOVES (msg_0006_00019) inspect in retail but need the summary
-  -- and move pages; they stay out until those pages land. Labels name the
-  -- retail roles; asset-derived text resolution travels with the manifest.
-  local function menuFor(_)
-    return {
-      { kind = "switch", label = "SHIFT" },
-      { kind = "quit", label = "QUIT" },
+  -- with msg_0006_00015 SHIFT): selecting the mon offers SHIFT to switch,
+  -- SUMMARY (00018) and CHECK MOVES (00019) for non-eggs (eggs hide the
+  -- latter two, matching IsSelectedMonEgg guards), and cancelling
+  -- returns to the list. Labels resolve through the borrowed staged
+  -- messages when the barrier lends them.
+  local function menuFor(slotFacts)
+    local entries = {
+      { kind = "switch", label = resolveBattleLabel(services, "battle/party/button/shift", "SHIFT") },
     }
+    if type(slotFacts) ~= "table" or slotFacts.isEgg ~= true then
+      entries[#entries + 1] =
+        { kind = "summary", label = resolveBattleLabel(services, "battle/party/button/summary", "SUMMARY") }
+      entries[#entries + 1] = {
+        kind = "check_moves",
+        label = resolveBattleLabel(services, "battle/party/button/check-moves", "CHECK MOVES"),
+      }
+    end
+    entries[#entries + 1] =
+      { kind = "quit", label = resolveBattleLabel(services, "battle/party/button/cancel", "QUIT") }
+    return entries
   end
   local function submenuFor(_, kind)
     error("battle party selection has no " .. tostring(kind) .. " submenu", 2)
@@ -1311,14 +2029,235 @@ local function openPartyChild(intent, services)
     _inputApplied = false,
     _taken = false,
     _disposed = false,
+    _page = nil,
+    _pageSlot = nil,
+    _pageMove = nil,
+    _pageFocus = nil,
   }
+  -- Retail battle summary/move pages (battle_party_menu.c pages 2-4)
+  -- over the detached roster: simplified rows with the same
+  -- mon-menu/summary/check-moves navigation (DECIDE on every confirm
+  -- and back, SELECT on cursor moves via the owning barrier). Pages
+  -- never seal; only the list SHIFT seals its kernel fragment.
+  ---@param slot integer roster slot under lookup
+  ---@return table<string, unknown>? detached roster record
+  local function rosterRecord(slot)
+    for _, record in
+      ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(record) == "table" and record.slot == slot then
+        return record
+      end
+    end
+    return nil
+  end
+  ---@return table<integer, integer> occupied roster slots in ascending order
+  local function occupiedSlots()
+    local found = {}
+    for _, record in
+      ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(record) == "table" and type(record.slot) == "number" then
+        found[#found + 1] = record.slot
+      end
+    end
+    table.sort(found)
+    return found
+  end
+  ---@param slot integer displayed roster slot under stepping
+  ---@param delta integer step direction under stepping
+  ---@return integer neighboring occupied slot, staying put without one
+  local function neighborSlot(slot, delta)
+    local slots = occupiedSlots()
+    local at = nil
+    for index, candidate in ipairs(slots) do
+      if candidate == slot then
+        at = index
+        break
+      end
+    end
+    if at == nil then
+      return slot
+    end
+    local nextIndex = math.min(math.max(at + delta, 1), #slots)
+    return slots[nextIndex]
+  end
+  ---@param slot integer roster slot behind the summary page
+  ---@return nil
+  local function openSummary(slot)
+    assert(rosterRecord(slot) ~= nil, "summary pages name an occupied slot")
+    child._page = "summary"
+    child._pageSlot = slot
+    child._pageMove = nil
+    child._pageFocus = "summary:moves"
+  end
+  ---@param slot integer roster slot behind the move list
+  ---@return nil
+  local function openMoves(slot)
+    assert(rosterRecord(slot) ~= nil, "move pages name an occupied slot")
+    child._page = "moves"
+    child._pageSlot = slot
+    child._pageMove = nil
+    child._pageFocus = "move:0"
+  end
+  -- Drains one navigation intent from the native mon menu: SUMMARY and
+  -- CHECK MOVES open their wrapper page while the controller returns
+  -- to its menu; anything else stays stashed for the barrier.
+  local function drainPageIntent()
+    local stashed = child._nativeIntent
+    if type(stashed) ~= "table" then
+      return
+    end
+    if stashed.kind == "summary" and type(stashed.slot) == "number" then
+      child._nativeIntent = nil
+      child._controller:completeAction({ kind = "no_op" })
+      openSummary(stashed.slot)
+    elseif stashed.kind == "check_moves" and type(stashed.slot) == "number" then
+      child._nativeIntent = nil
+      child._controller:completeAction({ kind = "no_op" })
+      openMoves(stashed.slot)
+    end
+  end
+  ---@param id string stable page control identity under activation
+  ---@return nil
+  local function pageTap(id)
+    local page = child._page
+    if page == "summary" then
+      if id == "summary:prev" then
+        child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), -1)
+      elseif id == "summary:next" then
+        child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), 1)
+      elseif id == "summary:moves" then
+        openMoves(assert(child._pageSlot, "summary pages name their mon"))
+      elseif id == "back" then
+        child._page = nil
+        child._pageSlot = nil
+        child._pageFocus = nil
+      end
+      return
+    end
+    if page == "moves" then
+      local slot = tonumber(id:match("^move:(%d+)$") or "")
+      if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 3 then
+        child._page = "move_detail"
+        child._pageMove = math.floor(slot)
+        child._pageFocus = "back"
+        return
+      end
+      if id == "moves:prev" then
+        child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), -1)
+      elseif id == "moves:next" then
+        child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), 1)
+      elseif id == "moves:summary" then
+        openSummary(assert(child._pageSlot, "move pages name their mon"))
+      elseif id == "back" then
+        child._page = nil
+        child._pageSlot = nil
+        child._pageFocus = nil
+      end
+      return
+    end
+    if page == "move_detail" then
+      if id == "back" then
+        openMoves(assert(child._pageSlot, "move detail names its mon"))
+      end
+      return
+    end
+  end
+  ---@param events table<integer, table<string, unknown>> semantic input batch under page routing
+  ---@return nil
+  local function pageInput(events)
+    for _, event in ipairs(events) do
+      if type(event) ~= "table" or type(event.type) ~= "string" then
+        break
+      end
+      if event.type == "tap" and type(event.id) == "string" then
+        pageTap(event.id)
+      elseif event.type == "navigate" and type(event.direction) == "string" then
+        local page = child._page
+        local direction = event.direction
+        if page == "summary" then
+          if direction == "left" then
+            child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), -1)
+          elseif direction == "right" then
+            child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), 1)
+          elseif direction == "up" or direction == "down" then
+            if child._pageFocus == "summary:moves" then
+              child._pageFocus = "back"
+            else
+              child._pageFocus = "summary:moves"
+            end
+          end
+        elseif page == "moves" then
+          local move = tonumber((child._pageFocus or ""):match("^move:(%d+)$") or "")
+          if direction == "up" then
+            if move == nil then
+              child._pageFocus = "move:3"
+            elseif move > 0 then
+              child._pageFocus = "move:" .. tostring(move - 1)
+            end
+          elseif direction == "down" then
+            if move == nil then
+              child._pageFocus = "move:0"
+            elseif move < 3 then
+              child._pageFocus = "move:" .. tostring(move + 1)
+            end
+          elseif direction == "left" then
+            child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), -1)
+          elseif direction == "right" then
+            child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), 1)
+          end
+        end
+      elseif event.type == "confirm" then
+        local page = child._page
+        if page == "summary" then
+          if child._pageFocus == "summary:moves" then
+            openMoves(assert(child._pageSlot, "summary pages name their mon"))
+          elseif child._pageFocus == "back" then
+            child._page = nil
+            child._pageSlot = nil
+            child._pageFocus = nil
+          else
+            child._pageFocus = "summary:moves"
+          end
+        elseif page == "moves" then
+          local move = tonumber((child._pageFocus or ""):match("^move:(%d+)$") or "")
+          if move ~= nil then
+            child._page = "move_detail"
+            child._pageMove = move
+            child._pageFocus = "back"
+          else
+            child._pageFocus = "move:0"
+          end
+        elseif page == "move_detail" then
+          openMoves(assert(child._pageSlot, "move detail names its mon"))
+        end
+      elseif event.type == "cancel" then
+        local page = child._page
+        if page == "summary" or page == "moves" then
+          child._page = nil
+          child._pageSlot = nil
+          child._pageMove = nil
+          child._pageFocus = nil
+        elseif page == "move_detail" then
+          openMoves(assert(child._pageSlot, "move detail names its mon"))
+        end
+      end
+    end
+  end
   ---@param events table<integer, table<string, unknown>> semantic input batch under routing
   function child:input(events)
     if self._disposed or self._taken then
       return
     end
+    if self._page ~= nil then
+      pageInput(events)
+      self._inputApplied = true
+      return
+    end
     self._controller:updateFixed(expandTaps("party", events, self._layout, self._menus))
     harvest(self, self._controller)
+    drainPageIntent()
     self._inputApplied = true
   end
   ---@param _ integer source ticks under stepping
@@ -1327,8 +2266,12 @@ local function openPartyChild(intent, services)
       self._inputApplied = false
       return
     end
+    if self._page ~= nil then
+      return
+    end
     self._controller:updateFixed({})
     harvest(self, self._controller)
+    drainPageIntent()
   end
   ---@param _ table<string, unknown>? borrowed display facts (the returned record is renderer-agnostic data)
   ---@return table<string, unknown> drawable party record from the native application
@@ -1337,6 +2280,12 @@ local function openPartyChild(intent, services)
     assert(type(view) == "table", "the native party projects its drawable record")
     local nativeView = copyValue(view) --[[@as table<string, unknown>]]
     nativeView.layout = self._layout
+    if self._page ~= nil then
+      nativeView.page = self._page
+      nativeView.pageSlot = self._pageSlot
+      nativeView.pageMove = self._pageMove
+      nativeView.pageFocus = self._pageFocus
+    end
     return nativeView
   end
   ---@return string native application receipt
@@ -1393,6 +2342,10 @@ local function openPartyChild(intent, services)
   end
   ---@return table<string, unknown>? bound result, exactly once
   function child:takeResult()
+    if self._page ~= nil then
+      harvest(self, self._controller)
+      return nil
+    end
     harvest(self, self._controller)
     local result = self._nativeResult
     if type(result) ~= "table" then

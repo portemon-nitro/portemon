@@ -316,6 +316,7 @@ function FieldState.new(game, options)
       pokedex = self.presentationResources:pokedex(),
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
+      bagCursor = runtime.bagCursor,
       fieldRenderer = assert(self.presentationResources.renderer, "field transition borrows the field compositor"),
       fieldCamera = currentFieldCamera,
       captureFieldLayers = captureFieldLayers,

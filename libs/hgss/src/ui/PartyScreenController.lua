@@ -1118,6 +1118,13 @@ function PartyScreenController:_confirmMenuEntry()
     self:_emitIntent({ kind = "summary", slot = slot, partyRevision = revision })
     return
   end
+  if entry.kind == "check_moves" then
+    -- Retail battle mon menu (battle_party_menu.c HandleMonMenuInput
+    -- case 2): CHECK MOVES opens the move-list page without sealing.
+    ---@cast slot integer
+    self:_emitIntent({ kind = "check_moves", slot = slot, partyRevision = revision })
+    return
+  end
   if entry.kind == "field_move" then
     ---@cast slot integer
     self:_emitIntent({

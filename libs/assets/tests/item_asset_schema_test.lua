@@ -28,10 +28,10 @@ function T.catalogs_require_exact_item_identity_coverage()
   -- Dataless source identities carry an empty description: the schema
   -- accepts the empty string while still rejecting a missing field.
   local blank = validRoot()
-  blank.items["ITEM_55"].description = ""
+  blank.items["ITEM_56"].description = ""
   Assert.isTrue(ItemAssetSchema.isValidCatalog(blank))
   local missing = validRoot()
-  missing.items["ITEM_55"] = nil
+  missing.items["ITEM_56"] = nil
   Assert.isFalse(ItemAssetSchema.isValidCatalog(missing))
   local duplicated = validRoot()
   duplicated.items["ITEM_17_AGAIN"] = {
@@ -67,7 +67,7 @@ function T.catalogs_reject_malformed_item_records()
   }
   for name, patch in pairs(variants) do
     local root = validRoot()
-    local record = root.items["ITEM_55"]
+    local record = root.items["ITEM_56"]
     for key, value in pairs(patch) do
       record[key] = value
     end
@@ -77,7 +77,7 @@ function T.catalogs_reject_malformed_item_records()
   -- required fields are dropped explicitly.
   for _, key in ipairs({ "friendshipBoost", "icon", "price" }) do
     local root = validRoot()
-    root.items["ITEM_55"][key] = nil
+    root.items["ITEM_56"][key] = nil
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "missing item field must be rejected: " .. key)
   end
 end
@@ -85,7 +85,7 @@ end
 function T.catalogs_reject_malformed_pocket_records()
   local ItemAssetSchema = schema()
   local badPocketKey = validRoot()
-  badPocketKey.items["ITEM_55"].pocket = "sack"
+  badPocketKey.items["ITEM_56"].pocket = "sack"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badPocketKey))
   local badCapacity = validRoot()
   badCapacity.pockets.medicine.capacity = 41
@@ -187,14 +187,14 @@ function T.catalogs_require_held_item_action_metadata()
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
     local root = validRoot()
-    root.items["ITEM_55"][key] = nil
+    root.items["ITEM_56"][key] = nil
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "missing held-item metadata must be rejected: " .. key)
   end
   local badEffect = validRoot()
-  badEffect.items["ITEM_55"].heldFormEffect = "miracle"
+  badEffect.items["ITEM_56"].heldFormEffect = "miracle"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badEffect))
   local badHold = validRoot()
-  badHold.items["ITEM_55"].canHold = "yes"
+  badHold.items["ITEM_56"].canHold = "yes"
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badHold))
   local oldSchema = validRoot()
   oldSchema.schema = "g4-item-catalog-v3"
@@ -267,10 +267,10 @@ function T.catalogs_require_party_use_metadata()
   local ItemAssetSchema = schema()
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   local missing = validRoot()
-  missing.items["ITEM_55"].partyUse = nil
+  missing.items["ITEM_56"].partyUse = nil
   Assert.isFalse(ItemAssetSchema.isValidCatalog(missing), "missing party-use metadata must be rejected")
   local unknownKind = validRoot()
-  unknownKind.items["ITEM_55"].partyUse = { kind = "miracle" }
+  unknownKind.items["ITEM_56"].partyUse = { kind = "miracle" }
   Assert.isFalse(ItemAssetSchema.isValidCatalog(unknownKind), "an unknown effect kind must be rejected")
   local badAmount = validRoot()
   badAmount.items.POTION.partyUse = {
@@ -360,7 +360,7 @@ end
 function T.catalogs_accept_battle_only_records_with_complete_battle_use()
   local ItemAssetSchema = schema()
   local root = validRoot()
-  makeBattleOnly(root.items["ITEM_55"]).battleUse = completeBattleUse()
+  makeBattleOnly(root.items["ITEM_56"]).battleUse = completeBattleUse()
   local guard = makeBattleOnly(root.items["ITEM_56"])
   guard.battleUse = {
     cures = { confusion = true, infatuation = true },
@@ -383,8 +383,8 @@ end
 function T.catalogs_reject_battle_only_records_missing_battle_use()
   local ItemAssetSchema = schema()
   local root = validRoot()
-  makeBattleOnly(root.items["ITEM_55"])
-  assertRejectsNamingItem(ItemAssetSchema, root, "ITEM_55", "battle-only records without battle use must be rejected")
+  makeBattleOnly(root.items["ITEM_56"])
+  assertRejectsNamingItem(ItemAssetSchema, root, "ITEM_56", "battle-only records without battle use must be rejected")
 end
 
 function T.catalogs_reject_battle_use_outside_battle_only_records()
@@ -396,13 +396,13 @@ function T.catalogs_reject_battle_use_outside_battle_only_records()
   berry.items["SITRUS_BERRY"].battleUse = completeBattleUse()
   assertRejectsNamingItem(ItemAssetSchema, berry, "SITRUS_BERRY", "berry medicine must not carry battle use")
   local mail = validRoot()
-  mail.items["ITEM_55"].partyUse = { kind = "deferred", reason = "mail" }
-  mail.items["ITEM_55"].battleUse = completeBattleUse()
-  assertRejectsNamingItem(ItemAssetSchema, mail, "ITEM_55", "deferred mail must not carry battle use")
+  mail.items["ITEM_56"].partyUse = { kind = "deferred", reason = "mail" }
+  mail.items["ITEM_56"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(ItemAssetSchema, mail, "ITEM_56", "deferred mail must not carry battle use")
   local evolution = validRoot()
-  evolution.items["ITEM_55"].partyUse = { kind = "deferred", reason = "evolution" }
-  evolution.items["ITEM_55"].battleUse = completeBattleUse()
-  assertRejectsNamingItem(ItemAssetSchema, evolution, "ITEM_55", "deferred evolution must not carry battle use")
+  evolution.items["ITEM_56"].partyUse = { kind = "deferred", reason = "evolution" }
+  evolution.items["ITEM_56"].battleUse = completeBattleUse()
+  assertRejectsNamingItem(ItemAssetSchema, evolution, "ITEM_56", "deferred evolution must not carry battle use")
 end
 
 function T.catalogs_reject_malformed_battle_use()
@@ -471,7 +471,7 @@ function T.catalogs_reject_malformed_battle_use()
     -- Malformed riders attach to a battle-only parent so the failure
     -- exercises the battle-use shape check rather than a cross-field
     -- rejection for carrying riders on ordinary medicine.
-    makeBattleOnly(root.items["ITEM_55"]).battleUse = battleUse
+    makeBattleOnly(root.items["ITEM_56"]).battleUse = battleUse
     Assert.isFalse(ItemAssetSchema.isValidCatalog(root), "malformed battle use must be rejected: " .. name)
   end
 end

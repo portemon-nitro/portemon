@@ -47,4 +47,21 @@ function BattleHandlers.checkBattleWon(ins)
   return { op = "battle_result", result = Operands.varRef(ins.operands[1]) }
 end
 
+-- Retail catching-tutorial (scrcmd_c.c ScrCmd_CatchingTutorial opcode 251,
+-- SetupAndStartTutorialBattle via BattleSetup_New_Tutorial): the lesson
+-- runs its fixed Marill/Rattata content with 20× balls behind the
+-- tutorial marker, never live party or bag operands. The opcode carries
+-- no operands, so the launch details stay empty and the field host
+-- builds the lesson verbatim.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.catchingTutorial(ins)
+  assert(#ins.operands == 0, "catching tutorials carry no operands")
+  return {
+    op = "battle_launch",
+    kind = "tutorial",
+    details = {},
+  }
+end
+
 return BattleHandlers

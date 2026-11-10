@@ -10,6 +10,7 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 
 ---@class BattleScreenInterface
@@ -37,12 +38,23 @@ local function hitRegion(regions, x, y)
   return nil
 end
 
+-- Retail bag hit regions behind the current browser page resolve
+-- through the shared transcribed hitbox order (BattleBagPockets); unknown
+-- pages fall back to no regions rather than inventing geometry.
+---@param child table<string, unknown> detached bag child view under mapping
+---@return table<integer, table<string, unknown>>? child hit regions, nil while the page is unknown
+local function retailBagHitRegions(child)
+  local page = type(child.bagPage) == "string" and child.bagPage or "item_list"
+  return BattleBagPockets.hitRegions(page)
+end
+
 -- Battle child hit regions inside one 256x192 interaction surface.
--- Row numbers match the paired child modal paint geometry, so a
--- painted row and its tap target always agree. Footer controls expose
--- Back, learning Confirm, and bag pocket stepping with stable ids.
+-- Bag regions follow the retail hitbox order above so paint and taps
+-- agree with the decomp geometry; party rows keep the paired modal
+-- paint geometry (bag pocket stepping is retired: pockets change through
+-- the pocket menu). Footer controls expose Back and learning Confirm.
 ---@param child table<string, unknown>? detached child view under mapping
----@return table<string, unknown>? child hit regions, nil while the child is not interactive
+---@return table<integer, table<string, unknown>>? child hit regions, nil while the child is not interactive
 local function childRegions(child)
   if type(child) ~= "table" or child.interactive ~= true then
     return nil
@@ -57,6 +69,9 @@ local function childRegions(child)
   end
   if child.kind == "learn" and type(child.confirmation) == "table" then
     return BattleMenuRegions.forLayout("two-option")
+  end
+  if child.kind == "bag" and child.empty ~= true then
+    return retailBagHitRegions(child)
   end
   local regions = {}
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
@@ -79,10 +94,6 @@ local function childRegions(child)
   end
   if child.kind == "learn" and type(child.confirmation) == "table" then
     regions[#regions + 1] = { id = "confirm", x = 8, y = 152, w = 240, h = 20 }
-  end
-  if child.kind == "bag" and child.empty ~= true then
-    regions[#regions + 1] = { id = "pocket_prev", x = 96, y = 152, w = 76, h = 40 }
-    regions[#regions + 1] = { id = "pocket_next", x = 176, y = 152, w = 72, h = 40 }
   end
   return regions
 end
@@ -209,7 +220,7 @@ local function targetRegions(view)
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under mapping
----@return table<string, unknown>? active hit regions, nil while no layout owns input
+---@return table<integer, table<string, unknown>>? active hit regions, nil while no layout owns input
 local function regionsFor(view)
   local mode = view.mode
   if mode == "command" then

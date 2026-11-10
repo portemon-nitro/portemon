@@ -556,4 +556,182 @@ function T.ball_particles_stage_for_every_reproducible_ball(romFs, versionId)
   )
 end
 
+-- Retail battle-bag screen (battle_bag_menu.c LoadBgGraphics plus the
+-- overlay-8 window, hitbox, and entry-id tables): members decode through
+-- the production G2D path, tables match their transcribed counts, and
+-- the item-name template is msg 9 with twelve quantity slots.
+function T.battle_bag_screen_decodes_from_source_members(romFs, versionId)
+  local compiler = requireBoundary("romdump.src.digest.battle.BattlePresentationCompiler", "compiler loads")
+  local ok, screen = pcall(compiler.compileBagScreen, romFs, { versionId = versionId })
+  Assert.isTrue(ok, versionId .. ": the battle bag screen compiles (" .. tostring(screen) .. ")")
+  assert(type(screen) == "table", "the battle bag screen compiled")
+  Assert.equal(screen.rasterWidth, 512, versionId .. ": the bag screen tiles its three pages")
+  Assert.equal(screen.rasterHeight, 512, versionId .. ": the bag screen tiles its three pages")
+  Assert.isTrue(#screen.rasterPixels > 0, versionId .. ": the bag screen rasters pixels")
+  Assert.isTrue(#screen.buttonTilemapBytes > 0, versionId .. ": the bag button tilemap stages")
+  for key, count in pairs({ message = 1, useItem = 4, pocketMenu = 5, itemList = 26 }) do
+    Assert.equal(#screen.windows[key], count, versionId .. ": bag window " .. key .. " keeps its count")
+  end
+  for key, count in pairs({ pocketMenu = 6, itemList = 9, useItem = 2 }) do
+    Assert.equal(#screen.hitboxes[key], count, versionId .. ": bag hitbox " .. key .. " keeps its order")
+  end
+  Assert.deepEqual(screen.entryIds.name, { 9 }, versionId .. ": the item-name template is msg 9")
+  Assert.equal(#screen.entryIds.quantity, 12, versionId .. ": twelve quantity slots stage")
+  local first = screen.hitboxes.pocketMenu[1]
+  Assert.deepEqual(
+    { first.top, first.bottom, first.left, first.right },
+    { 8, 79, 0, 127 },
+    versionId .. ": the pocket-menu hit order matches retail"
+  )
+end
+
+-- Counts the substitution slots in one staged message entry: template
+-- keys expand exactly their source placeholders, labels carry none.
+---@param entries table<string, table<string, unknown>> staged message entries under test
+---@param key string semantic message key under test
+---@return integer staged substitution slot count
+local function stagedSubstitutions(entries, key)
+  local entry = assert(entries[key], "the catalog stages " .. key)
+  local tokens = assert(entry.tokens, key .. " carries its token stream") --[[@as table<integer, table<string, unknown>>]]
+  local count = 0
+  for _, token in ipairs(tokens) do
+    if type(token) == "table" and token.kind == "substitution" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- Compiles the global catalog once for the message families below:
+-- every wrapper key decodes from its staged result bank.
+---@param romFs table open dump under test
+---@param versionId string game version under test
+---@return table<string, table<string, unknown>> staged message entries
+local function partyMessageEntries(romFs, versionId)
+  local compiler, _ = presentationBoundary(romFs, versionId)
+  local ok, bundle, compileErr = pcall(compiler.compileGlobal, romFs, { versionId = versionId })
+  Assert.isTrue(ok, versionId .. ": the global catalog compiles (" .. tostring(compileErr) .. ")")
+  assert(bundle ~= nil, "the global catalog compiled")
+  return assert(bundle.manifest.messages.entries, versionId .. ": the catalog stages message entries")
+end
+
+-- Retail battle-bag screen and its widgets stage together: three
+-- SetPageBgOffset pages with staged images and provenance, the overlay-8
+-- window/hitbox/entry-id tables, six list icon spots plus the fixed
+-- last-used and use-item sprites, one tutorial finger spot per page with
+-- its staged art, four cursor corners with advancing shimmer frames, one
+-- button face per staged triple with inventoried dimensions, and the bag
+-- and party printer palettes. One global compile proves the whole
+-- browser bundle instead of one compile per widget.
+function T.battle_bag_screen_and_widgets_stage_into_the_global_bundle(romFs, versionId)
+  local compiler, _ = presentationBoundary(romFs, versionId)
+  local Schema = requireBoundary(
+    "libs.assets.src.battle.BattlePresentationSchema",
+    versionId .. ": no battle presentation schema validates the staged manifest"
+  )
+  local Sources = requireBoundary(
+    "romdump.src.config.BattlePresentationSources",
+    versionId .. ": no battle sources name the bag tables"
+  )
+  local ok, bundle, compileErr = pcall(compiler.compileGlobal, romFs, { versionId = versionId })
+  Assert.isTrue(ok, versionId .. ": the global catalog compiles (" .. tostring(compileErr) .. ")")
+  assert(bundle ~= nil, "the global catalog compiled")
+  local bag = assert(bundle.manifest.bag, versionId .. ": the global bundle stages the retail bag screen")
+  local pages = assert(bag.pages, versionId .. ": the bag stages its pages")
+  Assert.equal(#pages, 3, versionId .. ": the bag stages its three SetPageBgOffset pages")
+  local images = assert(bundle.manifest.menus.images, versionId .. ": the catalog stages its menu image inventory")
+  for index, page in ipairs(pages) do
+    Assert.notNil(images[page.image], versionId .. ": bag page " .. index .. " stages its image")
+  end
+  for key, count in pairs({ message = 1, useItem = 4, pocketMenu = 5, itemList = 26 }) do
+    Assert.equal(#(assert(bag.windows, "the bag stages its windows")[key]), count, versionId .. ": staged bag window " .. key .. " keeps its count")
+  end
+  for key, count in pairs({ pocketMenu = 6, itemList = 9, useItem = 2 }) do
+    Assert.equal(#(assert(bag.hitboxes, "the bag stages its hitboxes")[key]), count, versionId .. ": staged bag hitbox " .. key .. " keeps its order")
+  end
+  Assert.deepEqual(assert(bag.entryIds, "the bag stages its entry ids").name, { 9 }, versionId .. ": the staged item-name template is msg 9")
+  Assert.equal(#bag.entryIds.quantity, 12, versionId .. ": twelve staged quantity slots stage")
+  local list = assert(assert(bag.icons, versionId .. ": the bag stages its item icon spots").list, versionId .. ": the bag stages its list icon spots")
+  Assert.equal(#list, 6, versionId .. ": the bag stages six list icon spots")
+  Assert.deepEqual({ list[1].x, list[1].y }, { 44, 45 }, versionId .. ": the first list icon spot matches retail")
+  Assert.deepEqual({ list[6].x, list[6].y }, { 172, 141 }, versionId .. ": the last list icon spot matches retail")
+  Assert.deepEqual({ bag.icons.lastUsed.x, bag.icons.lastUsed.y }, { 24, 178 }, versionId .. ": the last-used spot matches retail")
+  Assert.deepEqual({ bag.icons.useItem.x, bag.icons.useItem.y }, { 40, 44 }, versionId .. ": the use-item spot matches retail")
+  local fingers = assert(bag.tutorialFinger, versionId .. ": the bag stages its tutorial finger spots")
+  Assert.equal(#fingers, 3, versionId .. ": the bag stages one finger spot per browser page")
+  Assert.deepEqual({ fingers[1].x, fingers[1].y }, { 192, 24 }, versionId .. ": the pocket-menu finger spot matches retail")
+  local finger = assert(bag.finger, versionId .. ": the global bundle stages the finger art")
+  Assert.isTrue(type(finger.image) == "string", versionId .. ": the finger stages its image")
+  Assert.notNil(images[finger.image], versionId .. ": the finger image is inventoried")
+  local cursor = assert(bag.cursor, versionId .. ": the global bundle stages the cursor corners")
+  for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
+    local record = assert(cursor[corner], versionId .. ": the cursor stages its " .. corner .. " corner")
+    Assert.notNil(images[record.image], versionId .. ": the " .. corner .. " corner image is inventoried")
+    Assert.isTrue(#assert(record.frames, "the corner stages frames") >= 1, versionId .. ": the " .. corner .. " corner stages at least one frame")
+  end
+  local faces = assert(bag.buttons, versionId .. ": the bag stages its button faces")
+  local expected = {}
+  for _, staged in ipairs(Sources.BAG_BUTTON_FACES.staged) do
+    for _, frame in ipairs(staged.frames) do
+      for _, bank in ipairs(staged.banks) do
+        expected[staged.button .. ":" .. frame .. ":" .. bank] = true
+      end
+    end
+  end
+  Assert.equal(#faces, 0 + (function()
+    local n = 0
+    for _ in pairs(expected) do
+      n = n + 1
+    end
+    return n
+  end)(), versionId .. ": every staged button face stages exactly once")
+  local roles = assert(bundle.manifest.messages.roles, versionId .. ": the catalog stages its text roles")
+  Assert.equal(#assert(roles.bag.palette.colors), 192, versionId .. ": the bag palette stages twelve sixteen-color banks")
+  Assert.equal(#assert(roles.party.palette.colors), 16, versionId .. ": the party palette stages one sixteen-color bank")
+  Assert.equal(bundle.provenance.bag.archive, "NARC_a_0_7_7", versionId .. ": the bag names its screen archive")
+  local valid, schemaErr = Schema.isValidManifest(bundle.manifest)
+  Assert.isTrue(valid, versionId .. ": the global manifest validates (" .. tostring(schemaErr) .. ")")
+end
+
+-- Retail battle-bag and battle-party words stage with their source
+-- placeholders: pocket names, list headers, USE, page templates, every
+-- TryUseItem refusal, and the party summary/move families. One global
+-- compile proves the whole message bundle instead of one compile per
+-- word family.
+function T.battle_bag_and_party_messages_stage_with_source_placeholders(romFs, versionId)
+  local entries = partyMessageEntries(romFs, versionId)
+  for _, key in ipairs({
+    "battle/bag/pocket/hp-pp",
+    "battle/bag/use",
+    "battle/bag/page/slash",
+    "battle/bag/message/embargo",
+    "battle/bag/message/no-stealing",
+    "battle/party/stat/hp",
+    "battle/party/move/pp",
+    "battle/party/ability/name",
+    "battle/party/item/name",
+    "battle/party/stat/level-value",
+    "battle/party/stat/exp-value",
+    "battle/party/stat/hp-current",
+    "battle/party/stat/attack-value",
+    "battle/party/move/pp-current",
+    "battle/party/move/power-value",
+  }) do
+    Assert.notNil(entries[key], versionId .. ": " .. key .. " stages from its source bank")
+  end
+  Assert.equal(stagedSubstitutions(entries, "battle/bag/message/no-aim-doubles"), 0, versionId .. ": doubles aim carries no placeholder")
+  Assert.equal(stagedSubstitutions(entries, "battle/bag/message/embargo"), 2, versionId .. ": embargo names its move and mon")
+  Assert.equal(stagedSubstitutions(entries, "battle/bag/message/no-stealing"), 1, versionId .. ": trainer escapes name the player")
+  for slot = 0, 5 do
+    Assert.equal(stagedSubstitutions(entries, "battle/party/mon-name/" .. slot), 1, versionId .. ": mon-name " .. slot .. " carries its nickname")
+  end
+  for slot = 0, 4 do
+    Assert.equal(stagedSubstitutions(entries, "battle/party/move-name/" .. slot), 1, versionId .. ": move-name " .. slot .. " carries its name")
+  end
+  Assert.equal(stagedSubstitutions(entries, "battle/party/gender/male"), 0, versionId .. ": the male symbol carries no placeholder")
+  Assert.equal(stagedSubstitutions(entries, "battle/party/stat/level"), 0, versionId .. ": the level label carries no placeholder")
+  Assert.equal(stagedSubstitutions(entries, "battle/party/stat/hp-slash"), 0, versionId .. ": the HP slash carries no placeholder")
+  Assert.equal(stagedSubstitutions(entries, "battle/party/move/pp-slash"), 0, versionId .. ": the PP slash carries no placeholder")
+end
+
 return RomSuite.fromFacts(T)

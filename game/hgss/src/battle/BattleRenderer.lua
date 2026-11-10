@@ -11,6 +11,7 @@
 ---@class BattleRenderer
 local BattleRenderer = {}
 
+local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
@@ -367,6 +368,29 @@ local function stripHeightOf(art)
     return nil
   end
   return art.height
+end
+
+-- Measures one resolved bag drawable: the staged extents behind
+-- getDimensions when the handle publishes them (owned images, test
+-- stand-ins), else the validated strip extents (pool leases borrow
+-- their image without a dimensions method). Anything unmeasurable
+-- answers nil so callers keep their item-icon-sized fallback instead
+-- of parking art at a guessed size.
+---@param art table<string, unknown> resolved drawable handle under drawing
+---@return number?, number? width and height in pixels, nil when unmeasurable
+local function drawableDims(art)
+  if type(art.getDimensions) == "function" then
+    local width, height = art:getDimensions()
+    if type(width) == "number" and type(height) == "number" then
+      return width, height
+    end
+  end
+  local width = stripWidthOf(art)
+  local height = stripHeightOf(art)
+  if type(width) == "number" and type(height) == "number" then
+    return width, height
+  end
+  return nil, nil
 end
 
 -- Reused source-strip viewports: one viewport per graphics namespace and
@@ -2205,23 +2229,43 @@ local function drawTabularRow(text, child, box, index, y)
 end
 
 -- The modal footer: Back on learning and cancellable children, the
--- forced-choice notice on party and target children, bag pocket
--- stepping, and the notice or guidance caption outside learning.
+-- forced-choice notice on party and target children, and the notice or
+-- guidance caption outside learning. Bag paging and cancel ride the
+-- retail hitboxes painted with their rows, never separate steppers. The
+-- bag message page paints its refusal through the narration role
+-- (battle_bag_menu.c ShowMessage prints font 1 with fg 1/bg 15/shadow 2
+-- into the palette-15 message window) at the established notice origin.
 ---@param text table<string, unknown> borrowed text services
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param child table<string, unknown> detached child view under drawing
-local function drawChildFooter(text, child)
+local function drawChildFooter(text, view, child)
   if child.kind == "learn" then
     text.drawText("BACK", CHILD_NOTICE.x, CHILD_NOTICE.y)
+    return
+  end
+  if child.kind == "bag" then
+    -- Retail bag pages carry no modal footer: the pocket titles and
+    -- page counter ride their item-list windows, and the refusal
+    -- rides the palette-15 message window (16,152). Other bag pages
+    -- paint no notice; the page art owns the titles.
+    if child.bagPage == "message" then
+      local notice = child.notice
+      if type(notice) ~= "string" or notice == "" then
+        return
+      end
+      local ink = sourcePalette(view, "narration", 0, 1, 2, 15)
+      -- Retail wraps the refusal across its 27x4-tile window
+      -- (PrintMessage with AB speedup), never truncates the player
+      -- name away: paint the staged notice whole at the window
+      -- origin so the rebuke keeps its placeholder.
+      drawRoleText(text, "narration", tostring(notice), 16, 152, ink)
+    end
     return
   end
   if child.cancellable == true then
     text.drawText("BACK", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
   elseif child.kind == "party" or child.kind == "target" then
     text.drawText("No retreat!", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
-  end
-  if child.kind == "bag" and child.empty ~= true then
-    text.drawText("<", 100, CHILD_BACK_LABEL.y)
-    text.drawText(">", 232, CHILD_BACK_LABEL.y)
   end
   local notice = child.notice
   if type(notice) ~= "string" or notice == "" then
@@ -2230,24 +2274,571 @@ local function drawChildFooter(text, child)
   text.drawText(fitLabel(text, notice, CHILD_NOTICE.maxWidth), CHILD_NOTICE.x, CHILD_NOTICE.y)
 end
 
+-- Draws the open battle bag over its staged retail page so paint and
+-- taps agree with the decomp geometry: the SetPageBgOffset slice for the
+-- visible browser page composites first, disabled button faces repaint
+-- over empty controls (DrawPageButtons frame 3) and the staged press
+-- dip repaints the pressed button (UpdateButtonAnim frames 1-2) ahead
+-- of the row text. Item icons ride their center-anchored spots, the
+-- lesson finger and the d-pad cursor corners ride their spots while
+-- active, then each projected row paints its label through its retail
+-- font and window colors. List names ride font 4 MAKE_TEXT_COLOR(3,2,1) centered on their button with quantities in
+-- font 0 MAKE_TEXT_COLOR(1,2,0) at the template slot right of the icon
+-- (PrintItemListEntry y=7/y=4); pocket-menu and USE rows center font 4
+-- (3,2,1) in their buttons (PrintPocketMenuPage y=7/23, PrintCenteredText
+-- y=5 for USE); the use-item info row has no button and paints its name
+-- (font 0, x=0 y=0), quantity (font 0, y=0), and description (font 0,
+-- x=4 y=0) through the use-item windows instead of a hit region.
+-- Empty cells paint nothing like the cleared retail windows, and illegal
+-- stock paints its plain label: retail shows every stocked cell
+-- identically and refuses on USE through the message page, never with
+-- an inline mark. Focus shows through the staged BattleCursor corners
+-- around the focused box (only while the cursor is active: set by keys,
+-- cleared by touch), never through a text marker. A missing staged
+-- page, icon, finger, cursor, or face draws the remaining layers under
+-- the existing pending path, never substitutes.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached bag child view under drawing
+local function drawBagChild(resources, view, child)
+  local graphics = assert(resources.graphics, "the battle bag borrows its host graphics")
+  local assets = assert(resources.assets, "the battle bag borrows its asset holder")
+  local text = assert(resources.text, "the battle bag borrows its text services")
+  local bagPage = type(child.bagPage) == "string" and child.bagPage or "item_list"
+  local screenIndex = 2
+  if bagPage == "pocket_menu" then
+    screenIndex = 1
+  elseif bagPage == "use_item" or bagPage == "message" then
+    screenIndex = 3
+  end
+  local art = assets:drawable("bag:screen:" .. screenIndex)
+  if art ~= nil then
+    drawArtwork(graphics, art, nil, 0, 0)
+  end
+  local native = child.native --[[@as table<string, unknown>?]]
+  local pocket = type(native) == "table"
+      and (tonumber(native.pocketIndex) or BattleBagPockets.pocketIndex(
+        type(native.pocket) == "string" and native.pocket or nil
+      ))
+    or nil
+  local anim = type(native) == "table" and native.anim or nil --[[@as table<string, unknown>?]]
+  local animButton = type(anim) == "table" and tonumber(anim.button) or nil
+  local animFrame = type(anim) == "table" and tonumber(anim.frame) or nil
+  -- The press dip shifts the pressed control's text and icon together
+  -- (ScrollButtonWindows + OffsetButtonSprite): frame 1 lifts 4 pixels,
+  -- frame 2 settles 2 back; frame 0 rests unshifted.
+  local animOffset = 0
+  if animButton ~= nil and (animFrame == 1 or animFrame == 2) then
+    animOffset = animFrame == 1 and -4 or -2
+  else
+    animButton = nil
+  end
+  -- Button faces paint page-relative (BUTTON_RECTS ride the 512x512
+  -- screen map; subtract the visible page origin).
+  local origin = BattleBagPockets.PAGE_ORIGINS[bagPage] or { x = 0, y = 0 }
+  local function drawButtonFace(button, frame, bank)
+    local rect = BattleBagPockets.BUTTON_RECTS[button + 1]
+    if rect == nil then
+      return
+    end
+    local face = assets:drawable("bag:button:" .. button .. ":" .. frame .. ":" .. bank)
+    if face ~= nil then
+      drawArtwork(graphics, face, nil, rect.x * 8 - origin.x, rect.y * 8 - origin.y)
+    end
+  end
+  -- Disabled faces (DrawPageButtons frame 3 through palette bank 5):
+  -- the pocket shortcut with no last-used item, empty item cells,
+  -- and steppers on a single page.
+  if bagPage == "pocket_menu" then
+    local lastUsed = type(native) == "table" and native.lastUsed or nil
+    if type(lastUsed) ~= "table" or type(lastUsed.item) ~= "string" then
+      drawButtonFace(4, 3, 5)
+    end
+  elseif bagPage == "item_list" then
+    local cells = type(native) == "table" and native.visibleSlots or nil
+    for cell = 0, 5 do
+      local entry = type(cells) == "table" and cells[cell + 1] or nil
+      if type(entry) ~= "table" or entry.empty == true then
+        drawButtonFace(6 + cell, 3, 5)
+      end
+    end
+    local page = type(native) == "table" and native.page or nil
+    local count = type(page) == "table" and tonumber(page.count) or 1
+    if (count or 1) <= 1 then
+      drawButtonFace(12, 3, 5)
+      drawButtonFace(13, 3, 5)
+    end
+  end
+  -- Pressed face (UpdateButtonAnim frames 1-2) over the staged page.
+  -- Item cells and USE ride their pocket bank; every other button
+  -- rides its fixed bank (buttonBank mirrors GetButtonPalette).
+  if animButton ~= nil and animFrame ~= nil then
+    local pressBank = nil
+    if (animButton >= 6 and animButton <= 11) or animButton == 15 then
+      if pocket ~= nil then
+        pressBank = pocket + 8
+      end
+    else
+      pressBank = BattleBagPockets.buttonBank(animButton, 0)
+    end
+    if pressBank ~= nil then
+      drawButtonFace(animButton, animFrame, pressBank)
+    end
+  end
+  -- The pressed button's item icon dips with its face: the last-used
+  -- icon, the pressed list cell, or the use-item icon.
+  local pressedSpot = nil
+  if animButton == 4 then
+    pressedSpot = BattleBagPockets.ICON_SPOTS.lastUsed
+  elseif animButton ~= nil and animButton >= 6 and animButton <= 11 then
+    pressedSpot = BattleBagPockets.ICON_SPOTS.list[animButton - 6 + 1]
+  elseif animButton == 15 then
+    pressedSpot = BattleBagPockets.ICON_SPOTS.useItem
+  end
+  -- Item icons ride the shared field atlas through the transcribed
+  -- center-anchored spots, ahead of the row text like the retail sprites
+  -- above the BG. A missing staged icon draws nothing under the existing
+  -- pending path, never a substitute.
+  for _, icon in ipairs(BattleBagPockets.iconDraws(native)) do
+    local iconArt = assets:drawable("battle:item-icon:" .. icon.key)
+    if iconArt ~= nil then
+      local width, height = drawableDims(iconArt)
+      if type(width) ~= "number" or type(height) ~= "number" then
+        width, height = 32, 32
+      end
+      local dy = 0
+      if pressedSpot ~= nil and icon.x == pressedSpot.x and icon.y == pressedSpot.y then
+        dy = animOffset
+      end
+      drawArtwork(graphics, iconArt, nil, icon.x - math.floor(width / 2), icon.y + dy - math.floor(height / 2))
+    end
+  end
+  -- The lesson finger centers on its per-page spot while the tutorial
+  -- auto-plays (battle_bag_menu.c UpdateTutorialFinger, staged like the
+  -- item spots). A missing staged finger draws nothing under the
+  -- existing pending path, never a substitute.
+  local finger = BattleBagPockets.fingerDraw(native)
+  if finger ~= nil then
+    local fingerArt = assets:drawable(finger.key)
+    if fingerArt ~= nil then
+      local width, height = drawableDims(fingerArt)
+      if type(width) ~= "number" or type(height) ~= "number" then
+        width, height = 32, 32
+      end
+      drawArtwork(graphics, fingerArt, nil, finger.x - math.floor(width / 2), finger.y - math.floor(height / 2))
+    end
+  end
+  -- D-pad cursor corners frame the focused box while the cursor is
+  -- active (BattleDpadCursor_SetRect over the page cursor boxes; set by
+  -- keys, cleared by touch). Sprites center on the corners like the
+  -- item spots. A missing staged corner draws nothing under the
+  -- existing pending path, never a substitute or a text marker.
+  local bagTick = view.bagCursorTick --[[@as integer?]] or 0
+  for _, corner in ipairs(BattleBagPockets.cursorDraws(native, bagPage, child.focusId, bagTick, view.bagCursorFrames)) do
+    local cornerArt = assets:drawable(corner.key)
+    if cornerArt ~= nil then
+      local width, height = drawableDims(cornerArt)
+      if type(width) ~= "number" or type(height) ~= "number" then
+        width, height = 32, 32
+      end
+      drawArtwork(graphics, cornerArt, nil, corner.x - math.floor(width / 2), corner.y - math.floor(height / 2))
+    end
+  end
+  -- Window template palettes behind each page (battle_menu_data.s):
+  -- pocket-menu windows all ride palette 0; item-list name windows
+  -- ride palette 0 while quantity windows 1/3/5/7/9/11 plus the
+  -- bottom-bar windows 24/25 ride palette 4; use-item windows 0-2
+  -- ride palette 4 while the USE window 3 rides palette 0.
+  -- Message text rides the font palette through the narration role
+  -- instead, so it keeps the established default treatment here.
+  local bank = 0
+  if bagPage == "use_item" or bagPage == "message" then
+    bank = 4
+  end
+  -- Palettes resolve on first paint: synthetic views without staged
+  -- rows (the encounter fade census draws an empty bag) carry no text
+  -- palettes, and an empty bag paints no text to need them with.
+  local namePalette = nil ---@type table<string, table<string, number>>?
+  local listQtyPalette = nil ---@type table<string, table<string, number>>?
+  local usePalette = nil ---@type table<string, table<string, number>>?
+  local function bagNamePalette()
+    if namePalette == nil then
+      namePalette = sourcePalette(view, "bag", bank, 3, 2, 1)
+    end
+    return namePalette
+  end
+  local function bagListQtyPalette()
+    if listQtyPalette == nil then
+      listQtyPalette = sourcePalette(view, "bag", 4, 1, 2, 0)
+    end
+    return listQtyPalette
+  end
+  local function bagUsePalette()
+    if usePalette == nil then
+      usePalette = sourcePalette(view, "bag", 0, 3, 2, 1)
+    end
+    return usePalette
+  end
+  local regions = {}
+  for _, region in ipairs(BattleBagPockets.hitRegions(bagPage)) do
+    regions[region.id] = region
+  end
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  -- The pressed row's text dips with its face (ScrollButtonWindows):
+  -- rows behind other buttons paint unshifted.
+  local pressedRowIds = nil
+  if animButton ~= nil then
+    pressedRowIds = {}
+    local controls = BattleBagPockets.BUTTON_FOR[bagPage]
+    if type(controls) == "table" then
+      for id, button in pairs(controls) do
+        if button == animButton then
+          pressedRowIds[id] = true
+        end
+      end
+    end
+  end
+  if type(rows) == "table" then
+    for _, row in ipairs(rows) do
+      if type(row) == "table" and type(row.id) == "string" then
+        local region = regions[row.id]
+        local rowDy = (pressedRowIds ~= nil and pressedRowIds[row.id] == true) and animOffset or 0
+        -- The use-item info row rides windows, not a button: paint its
+        -- staged name, quantity, and description at their retail
+        -- window slots (PrintUseItemPage) instead of a hit region.
+        if (bagPage == "use_item" or bagPage == "message") and row.id == "bag:0" and row.empty ~= true then
+          -- Retail use-item info windows (sBattleBagUseItemWindows):
+          -- name window 0 at (56,32), quantity window 1 at (160,32),
+          -- description window 2 at (16,72) with text at x+4.
+          local infoPalette = sourcePalette(view, "bag", 4, 1, 2, 0)
+          local itemName = tostring(row.label or "")
+          if itemName ~= "" then
+            drawRoleText(text, "hud", fitLabel(text, itemName, 96), 56, 32 + rowDy, infoPalette)
+          end
+          if type(row.sub) == "string" and row.sub ~= "" then
+            drawRoleText(text, "hud", fitLabel(text, row.sub, 32), 160, 32 + rowDy, infoPalette)
+          end
+          if type(row.detail) == "string" and row.detail ~= "" then
+            drawRoleText(text, "hud", fitLabel(text, row.detail, 220), 20, 72 + rowDy, infoPalette)
+          end
+        elseif region ~= nil and row.empty ~= true then
+          local name = tostring(row.label or "")
+          if bagPage == "item_list" and type(row.sub) == "string" and row.sub ~= "" then
+            local nameText = fitLabel(text, name, 112)
+            local nameWidth = measureRoleText(text, "menu", nameText)
+            drawRoleText(
+              text,
+              "menu",
+              nameText,
+              region.x + 64 - math.floor(nameWidth / 2),
+              region.y + 7 + rowDy,
+              bagNamePalette()
+            )
+            drawRoleText(
+              text,
+              "hud",
+              fitLabel(text, row.sub, 32),
+              region.x + 64,
+              region.y + 28 + rowDy,
+              bagListQtyPalette()
+            )
+          else
+            -- Pocket-menu names and the USE row center in their
+            -- buttons (PrintCenteredText): measure the marked label
+            -- and center it horizontally, seated at the retail
+            -- window-relative row (y=7 for single-line buttons).
+            -- The cancel Back button carries no retail text (it is a
+            -- graphic X in the page art): its accessibility label
+            -- paints nothing here while its hit region still cancels.
+            -- Only the HP/PP and STATUS pockets carry a two-line
+            -- retail subtitle (PrintPocketMenuPage y=7/y=23); every
+            -- other pocket-menu row (balls, battle items, last-used)
+            -- paints its single centered line like the USE button.
+            if row.id == "back" then
+              -- Graphic-only cancel: no retail text to paint.
+            elseif row.id == "last_used" then
+              -- Retail last-used shortcut (PrintPocketMenuPage window
+              -- 4 at (40,160) 160 wide): left-aligned at x=40 y=165,
+              -- never centered like the pocket buttons.
+              local labelText = fitLabel(text, name, 160)
+              drawRoleText(text, "menu", labelText, 40, 160 + 5 + rowDy, bagNamePalette())
+            elseif row.id == "use" then
+              -- Retail USE button (PrintCenteredText over window 3 at
+              -- (64,160) 80 wide, palette 0): centered at y=165.
+              local labelText = fitLabel(text, name, 80)
+              local labelWidth = measureRoleText(text, "menu", labelText)
+              drawRoleText(
+                text,
+                "menu",
+                labelText,
+                64 + math.floor((80 - labelWidth) / 2),
+                160 + 5 + rowDy,
+                bagUsePalette()
+              )
+            elseif
+              (row.id == "bagpocket:0" or row.id == "bagpocket:1")
+              and type(row.sub) == "string"
+              and row.sub ~= ""
+            then
+              -- Two-line pocket names (PrintPocketMenuPage windows 0-1
+              -- at (16,32) and (16,104), 96 wide): centered at y+7/+23.
+              local windowX = 16
+              local windowY = row.id == "bagpocket:0" and 32 or 104
+              local titleText = fitLabel(text, name, 96)
+              local titleWidth = measureRoleText(text, "menu", titleText)
+              drawRoleText(
+                text,
+                "menu",
+                titleText,
+                windowX + math.floor((96 - titleWidth) / 2),
+                windowY + 7 + rowDy,
+                bagNamePalette()
+              )
+              local subText = fitLabel(text, row.sub, 96)
+              local subWidth = measureRoleText(text, "menu", subText)
+              drawRoleText(
+                text,
+                "menu",
+                subText,
+                windowX + math.floor((96 - subWidth) / 2),
+                windowY + 23 + rowDy,
+                bagNamePalette()
+              )
+            elseif row.id == "bagpocket:2" or row.id == "bagpocket:3" then
+              -- Single-line pockets (windows 2-3 at (144,40) and
+              -- (144,112), 96 wide): centered at y+7.
+              local windowX = 144
+              local windowY = row.id == "bagpocket:2" and 40 or 112
+              local labelText = fitLabel(text, name, 96)
+              local labelWidth = measureRoleText(text, "menu", labelText)
+              drawRoleText(
+                text,
+                "menu",
+                labelText,
+                windowX + math.floor((96 - labelWidth) / 2),
+                windowY + 7 + rowDy,
+                bagNamePalette()
+              )
+            else
+              local labelText = fitLabel(text, name, 96)
+              local labelWidth = measureRoleText(text, "menu", labelText)
+              drawRoleText(
+                text,
+                "menu",
+                labelText,
+                region.x + math.floor((region.w - labelWidth) / 2),
+                region.y + 7 + rowDy,
+                bagNamePalette()
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+  -- Retail item-list bottom bar (PrintPocketName + PrintPageNumber):
+  -- the pocket title rides window 24 (two lines at y=4/y=20, single
+  -- at y=12) and the page counter rides window 25 (slash centered at
+  -- y=4 with current before and last after), both in font 0
+  -- MAKE_TEXT_COLOR(1,2,0) apart from the cells.
+  if bagPage == "item_list" then
+    local lines = child.pocketLines --[[@as table<integer, string>?]]
+    -- The bottom bar rides the staged list header: synthetic child
+    -- views without a projected pocket title paint no bar, so footer
+    -- censuses keep proving only battlefield health beside occupancy.
+    if type(lines) == "table" and #lines > 0 then
+      if #lines >= 2 then
+        for index = 1, 2 do
+          local lineText = fitLabel(text, tostring(lines[index] or ""), 80)
+          local lineWidth = measureRoleText(text, "hud", lineText)
+          drawRoleText(
+            text,
+            "hud",
+            lineText,
+            88 + math.floor((80 - lineWidth) / 2),
+            152 + (index == 1 and 4 or 20),
+            bagListQtyPalette()
+          )
+        end
+      else
+        local lineText = fitLabel(text, tostring(lines[1] or ""), 80)
+        local lineWidth = measureRoleText(text, "hud", lineText)
+        drawRoleText(text, "hud", lineText, 88 + math.floor((80 - lineWidth) / 2), 152 + 12, bagListQtyPalette())
+      end
+      local page = child.page --[[@as table<string, unknown>?]]
+      if type(page) == "table" then
+        -- Retail page counter (PrintPageNumber window 25 at
+        -- (176,160) 32 wide): the slash centers at y+4 with the
+        -- current page right-aligned before it and the last page
+        -- left-aligned after it, never one combined string.
+        -- The slash glyph rides msg 0005/00028; the staged page
+        -- numbers ride its 00030/00029 templates around it.
+        local slashText = fitLabel(text, "/", 32)
+        local slashWidth = measureRoleText(text, "hud", slashText)
+        local slashX = 176 + math.floor((32 - slashWidth) / 2)
+        local currentText = fitLabel(text, tostring(page.current or 1), 32)
+        local lastText = fitLabel(text, tostring(page.count or 1), 32)
+        local currentWidth = measureRoleText(text, "hud", currentText)
+        drawRoleText(text, "hud", slashText, slashX, 160 + 4, bagListQtyPalette())
+        drawRoleText(text, "hud", currentText, slashX - currentWidth, 160 + 4, bagListQtyPalette())
+        drawRoleText(text, "hud", lastText, slashX + slashWidth, 160 + 4, bagListQtyPalette())
+      end
+    end
+  end
+end
+
+-- Retail ink behind battle wrapper rows (battle_party_menu.c Print*
+-- family): content labels print font 0 MAKE_TEXT_COLOR(15,14,0) while
+-- their values print font 0 MAKE_TEXT_COLOR(1,2,0) out of the staged
+-- party window bank. The level value keeps the label slots (15,14,0)
+-- (PrintLevelAndNextExp), like the move-list PP (PrintMoveListPP) and
+-- the move-detail PP (PrintMovePP). Check-moves move names and the
+-- navigation buttons print font 4 MAKE_TEXT_COLOR(7,8,9); gender
+-- symbols print font 0 MAKE_TEXT_COLOR(7,8,0)/(3,4,0). Origins reuse
+-- the paired modal columns so paint and taps keep agreeing; only the
+-- fits widen so the staged words paint whole.
+local PARTY_PAGE_LABEL_X = 44
+local PARTY_PAGE_SUB_X = 116
+local PARTY_PAGE_DETAIL_X = 156
+
+---@param id string stable wrapper row identity under drawing
+---@return boolean true for the font-4 navigation and move-name rows
+local function partyPageMenuRow(id)
+  if id == "back" then
+    return true
+  end
+  if id == "summary:prev" or id == "summary:next" or id == "summary:moves" then
+    return true
+  end
+  if id == "moves:prev" or id == "moves:next" or id == "moves:summary" then
+    return true
+  end
+  return id:match("^move:%d+$") ~= nil
+end
+
+---@param page string wrapper page under drawing
+---@param id string stable wrapper row identity under drawing
+---@return integer, integer, integer value foreground, shadow, and background slots
+local function partyPageValueSlots(page, id)
+  if id == "summary:level" or id == "move_detail:pp" or page == "moves" then
+    return 15, 14, 0
+  end
+  return 1, 2, 0
+end
+
+---@param text table<string, unknown> borrowed text services
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
+---@param row table<string, unknown> projected wrapper row under drawing
+---@param y number row top under drawing
+local function drawPartyPageRow(text, view, child, row, y)
+  local page = child.partyPage --[[@as string]]
+  local id = row.id --[[@as string]]
+  local marker = child.focusId == id and "> " or "  "
+  if partyPageMenuRow(id) then
+    local palette = sourcePalette(view, "party", 0, 7, 8, 9)
+    drawRoleText(
+      text,
+      "menu",
+      marker .. fitLabel(text, tostring(row.label or ""), 160, "menu"),
+      PARTY_PAGE_LABEL_X,
+      y,
+      palette
+    )
+  else
+    local labelPalette = sourcePalette(view, "party", 0, 15, 14, 0)
+    drawRoleText(
+      text,
+      "hud",
+      marker .. fitLabel(text, tostring(row.label or ""), 160, "hud"),
+      PARTY_PAGE_LABEL_X,
+      y,
+      labelPalette
+    )
+  end
+  local sub = row.sub --[[@as string?]]
+  if type(sub) == "string" and sub ~= "" then
+    local subPalette = nil
+    if sub == "♂" then
+      subPalette = sourcePalette(view, "party", 0, 7, 8, 0)
+    elseif sub == "♀" then
+      subPalette = sourcePalette(view, "party", 0, 3, 4, 0)
+    else
+      local foreground, shadow, background = partyPageValueSlots(page, id)
+      subPalette = sourcePalette(view, "party", 0, foreground, shadow, background)
+    end
+    drawRoleText(text, "hud", sub, PARTY_PAGE_SUB_X, y, subPalette)
+  end
+  local detail = row.detail --[[@as string?]]
+  if type(detail) == "string" and detail ~= "" then
+    local foreground, shadow, background = partyPageValueSlots(page, id)
+    local detailPalette = sourcePalette(view, "party", 0, foreground, shadow, background)
+    drawRoleText(text, "hud", detail, PARTY_PAGE_DETAIL_X, y, detailPalette)
+  end
+end
+
+-- Draws one battle summary, move-list, or move-detail wrapper page over
+-- the paired modal: every projected row paints through its retail font
+-- and window colors behind the staged party bank. Rows past the sixth
+-- stay unpainted like every other modal page, so paint and taps keep
+-- agreeing; keyboard navigation still reaches the actions underneath.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
+local function drawPartyPageChild(resources, view, child)
+  local text = assert(resources.text, "the battle wrapper borrows its text services")
+  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  if type(rows) ~= "table" then
+    return
+  end
+  for index, row in ipairs(rows) do
+    if index > 6 then
+      break
+    end
+    if type(row) == "table" and type(row.id) == "string" and row.empty ~= true then
+      drawPartyPageRow(text, view, child, row, CHILD_ROW_Y0 + (index - 1) * CHILD_ROW_H + 4)
+    end
+  end
+end
+
 -- Draws the open child as a battle-local modal over the lower pane: the
 -- title, every projected row with its focus and disabled marks, and the
 -- permitted Back and pocket controls. A staged learning confirmation
 -- draws the two-option menu instead. Upper-battlefield drawing is
 -- untouched.
 ---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param child table<string, unknown> detached child view under drawing
-local function drawChild(resources, child)
+local function drawChild(resources, view, child)
   local text = assert(resources.text, "the battle render borrows its text services")
   local windows = assert(resources.windows, "the battle render borrows its window services")
   windows.drawWindow({ x = 0, y = 0, width = 256, height = 192 }, resources.frameKey, { 0, 0, 0 })
+  -- Retail bag pages carry no modal chrome: the page art, its button
+  -- faces, and its windows own every title. Other children keep the
+  -- shared title, occupancy, and footer.
+  if child.kind == "bag" then
+    -- Retail never blacks out an empty pocket: the item-list page
+    -- composites with cleared cells, disabled faces, its pocket
+    -- title, and its 1/1 counter even when no cell stages stock.
+    drawBagChild(resources, view, child)
+    drawChildFooter(text, view, child)
+    return
+  end
   text.drawText(fitLabel(text, BattleChildText.title(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
   local occupancy = BattleChildText.occupancy(child)
   if occupancy ~= nil then
     text.drawText(occupancy, 216, CHILD_TITLE.y)
   end
-  if child.kind == "bag" and type(child.stock) == "number" then
-    text.drawText("Stock: " .. tostring(child.stock), 184, CHILD_TITLE.y)
+  -- Summary, move-list, and move-detail wrapper pages paint through
+  -- their retail fonts and window colors; the list and mon-menu pages
+  -- keep the established tabular treatment.
+  if (child.kind == "party" or child.kind == "target") and type(child.partyPage) == "string" then
+    local wrapper = child.partyPage --[[@as string]]
+    if wrapper == "summary" or wrapper == "moves" or wrapper == "move_detail" then
+      drawPartyPageChild(resources, view, child)
+      drawChildFooter(text, view, child)
+      return
+    end
   end
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
   if type(rows) == "table" then
@@ -2259,39 +2850,23 @@ local function drawChild(resources, child)
       drawRow(text, child, row, index, CHILD_ROW_Y0 + (index - 1) * CHILD_ROW_H)
     end
   end
-  drawChildFooter(text, child)
+  drawChildFooter(text, view, child)
 end
 
--- Battle borrows the field session's native application renderers for
--- bag and party children. Their controller status and generated geometry
--- travel together from the same child composition.
+-- Battle borrows the field session's native application renderer for
+-- party children. Their controller status and generated geometry travel
+-- together from the same child composition. The battle bag never paints
+-- here: its native status carries no field-bag layout, and the authentic
+-- battle-bag page painter owns its staged pages and shared item icons.
 ---@param resources table<string, unknown>
 ---@param child table<string, unknown>
----@param placement LayoutGeometry.Placement resolved placement of the 256x192 pane the child covers
+---@param _ LayoutGeometry.Placement resolved placement of the 256x192 pane the child covers (unused: the party renderer carries its own layout)
 ---@return boolean handled
-function BattleRenderer.drawNativeChild(resources, child, placement)
+function BattleRenderer.drawNativeChild(resources, child, _)
   local menus = resources.battleMenus
   local native = child.native
   if type(menus) ~= "table" or type(native) ~= "table" or native.open == false then
     return false
-  end
-  if child.kind == "bag" then
-    local bag = menus.bag --[[@as table<string, unknown>?]]
-    if type(bag) ~= "table" or type(bag.renderer) ~= "table" then
-      return false
-    end
-    local content = assert(native.layout, "the battle bag shares its native generated layout")
-    bag.renderer:draw(native, {
-      content = content,
-      panes = {
-        {
-          id = "interaction",
-          placement = placement,
-          interactive = true,
-        },
-      },
-    }, { icons = assert(bag.icons, "the native bag borrows field item icons") })
-    return true
   end
   if child.kind == "party" or child.kind == "target" then
     local party = menus.party --[[@as table<string, unknown>?]]
@@ -2359,7 +2934,7 @@ local function drawInteraction(resources, view, content, placement)
     if child.kind == "learn" and type(child.confirmation) == "table" then
       drawTwoOptionConfirmation(resources, view, child)
     else
-      drawChild(resources, child)
+      drawChild(resources, view, child)
     end
     return
   end

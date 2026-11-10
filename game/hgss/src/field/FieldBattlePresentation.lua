@@ -30,6 +30,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the registration card
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
+---@field _bagCursor table<string, unknown>? borrowed runtime-only field bag cursor behind the last-used shortcut
 ---@field _monIconProvider table<string, unknown>? field-owned icon page provider borrowed for battle command icons
 ---@field _battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
 ---@field _summary table<string, unknown>? field-owned Summary application dependencies
@@ -108,6 +109,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
+---@field bagCursor table<string, unknown>? borrowed runtime-only field bag cursor behind the last-used shortcut
 ---@field monIconProvider table<string, unknown>? borrowed field icon page provider for the active command icon
 ---@field battleMenus table<string, unknown> borrowed field-owned bag and party presentation services
 ---@field summary table<string, unknown>? borrowed field SummaryScreenState dependencies for evolution move replacement
@@ -171,6 +173,7 @@ end
 ---@field trainerPictures { entries: table<string, table<string, unknown>> }
 ---@field battleBalls { entries: table<string, table<string, unknown>> }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
+---@field bag { pages: { image: string, x: integer, y: integer, width: integer, height: integer }[], finger: { image: string, width: integer, height: integer }, cursor: table<string, { image: string, width: integer, height: integer }>, buttons: table<integer, { button: integer, frame: integer, bank: integer, image: string }> }
 ---@field messages { roles: table<string, { font: string }> }
 ---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
 
@@ -956,6 +959,7 @@ function FieldBattlePresentation.new(opts)
     _graphics = opts.graphics,
     _itemCatalog = opts.itemCatalog,
     _monCatalog = opts.monCatalog,
+    _bagCursor = opts.bagCursor,
     _monIconProvider = opts.monIconProvider,
     _battleMenus = opts.battleMenus,
     _summary = opts.summary,
@@ -1576,6 +1580,15 @@ local function stagedArtPath(manifest, key)
     local section = menuSection(manifest, layout)
     local screen = section ~= nil and section.screens[tonumber(screenIndex)] or nil
     return screen ~= nil and screenArt(screen, suffix) or nil
+  end
+  -- Retail battle-bag pages (battle_bag_menu.c SetPageBgOffset): the bare
+  -- page index rides its staged slice; suffixed background variants do
+  -- not exist for the bag palette, so they resolve to nothing.
+  local bagScreenIndex = key:match("^bag:screen:(%d+)$")
+  if bagScreenIndex ~= nil then
+    local pages = manifest.bag ~= nil and manifest.bag.pages or nil
+    local page = type(pages) == "table" and pages[tonumber(bagScreenIndex)] or nil
+    return type(page) == "table" and page.image or nil
   end
   local feedbackLayout, controlId, state = key:match("^menu:([%a%-]+):feedback:(.+):(%a+)$")
   if feedbackLayout ~= nil then
@@ -2643,6 +2656,89 @@ function FieldBattlePresentation:_preparationServices()
         return handle:drawQuad(drawGraphics, quad, x, y, ...)
       end
       return drawable
+    end
+    -- Battle-bag item icons ride the shared field item atlas through the
+    -- borrowed field bag icons: one staged quad per semantic item key,
+    -- never a second battle atlas. Unknown item keys raise through the
+    -- provider like any other programming error, never a blank icon.
+    local itemIconKey = tostring(key):match("^battle:item%-icon:(.+)$")
+    if itemIconKey ~= nil then
+      local bagMenus = assert(envelope._battleMenus, "battle bag icons borrow the field bag services")
+      local bag = assert(bagMenus.bag, "battle bag icons borrow the field bag renderer")
+      local items = assert(bag.icons, "battle bag icons borrow the field item icon provider")
+      local dimensions = items:dimensions(itemIconKey)
+      local atlas = items:handle()
+      local quad = items:quadFor(itemIconKey)
+      local drawable = { width = dimensions.width, height = dimensions.height }
+      function drawable:getDimensions()
+        return self.width, self.height
+      end
+      function drawable:draw(drawGraphics, x, y, ...)
+        if atlas ~= nil then
+          return atlas:drawQuad(drawGraphics, quad, x, y, ...)
+        end
+        return drawGraphics.draw(items:image(), quad, x, y, ...)
+      end
+      function drawable:drawQuad(drawGraphics, _, x, y, ...)
+        if atlas ~= nil then
+          return atlas:drawQuad(drawGraphics, quad, x, y, ...)
+        end
+        return drawGraphics.draw(items:image(), quad, x, y, ...)
+      end
+      return drawable
+    end
+    -- Catching-tutorial finger art (battle_bag_menu.c
+    -- BattleFinger_LoadResources from NARC_a_1_6_4): the staged idle
+    -- frame centers on its per-page spot while the tutorial auto-plays.
+    -- Missing staged art keeps the page under the existing pending path.
+    if key == "battle:finger" then
+      local staged = stagedManifest(envelope._manifest)
+      local bag = staged ~= nil and staged.bag or nil
+      local finger = type(bag) == "table" and bag.finger or nil
+      if type(finger) ~= "table" or type(finger.image) ~= "string" then
+        return nil
+      end
+      return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, finger.image --[[@as string]])
+    end
+    -- Battle d-pad cursor corners (battle_cursor.c
+    -- BattleCursor_LoadResources from NARC_a_0_0_8): the staged corner
+    -- frames center on the focused box corners while the cursor is
+    -- active, advanced by tick like BattleCursor_Update. Missing
+    -- staged art keeps the rows under the existing pending path.
+    local cursorCorner = tostring(key):match("^battle:cursor%-(tl|tr|bl|br)$")
+    if cursorCorner ~= nil then
+      local staged = stagedManifest(envelope._manifest)
+      local bag = staged ~= nil and staged.bag or nil
+      local cursor = type(bag) == "table" and bag.cursor or nil
+      local corner = type(cursor) == "table" and cursor[cursorCorner] or nil
+      if type(corner) ~= "table" or type(corner.image) ~= "string" then
+        return nil
+      end
+      return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, corner.image --[[@as string]])
+    end
+    -- Battle-bag button faces (GetButtonTilemap/GetButtonPalette
+    -- rest frames ride the staged page raster): the staged press and
+    -- disabled patches repaint the pressed or empty button. Missing
+    -- staged art keeps the page under the existing pending path.
+    local faceButton, faceFrame, faceBank = tostring(key):match("^bag:button:(%d+):(%d+):(%d+)$")
+    if faceButton ~= nil then
+      local staged = stagedManifest(envelope._manifest)
+      local bag = staged ~= nil and staged.bag or nil
+      local buttons = type(bag) == "table" and bag.buttons or nil
+      if type(buttons) == "table" then
+        local button = tonumber(faceButton)
+        local frame = tonumber(faceFrame)
+        local bank = tonumber(faceBank)
+        for _, entry in ipairs(buttons) do
+          if type(entry) == "table" and entry.button == button and entry.frame == frame and entry.bank == bank then
+            if type(entry.image) == "string" then
+              return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, entry.image)
+            end
+            return nil
+          end
+        end
+      end
+      return nil
     end
     -- Production drawables are real owned handles, legitimate waits, or
     -- terminal failures: staged bytes that fail decoding or GPU upload
@@ -3952,6 +4048,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     audio = self._screenAudio,
     itemCatalog = self._itemCatalog,
     monCatalog = self._monCatalog,
+    bagCursor = self._bagCursor,
     monIconProvider = self._monIconProvider,
     battleMenus = self._battleMenus,
     summary = self._summary,

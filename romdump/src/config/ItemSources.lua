@@ -683,6 +683,8 @@ ItemSources.HOLD_EFFECT_MONEY_UP = 58
 -- low/medium/high friendship parameters, and two padding bytes.
 ItemSources.ITEM_DATA_SIZE = 34
 ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET = 2
+ItemSources.ITEM_DATA_FIELD_USE_FUNC_OFFSET = 10
+ItemSources.ITEM_DATA_BATTLE_USE_FUNC_OFFSET = 11
 ItemSources.ITEM_DATA_PARTY_USE_OFFSET = 12
 ItemSources.ITEM_DATA_PARTY_PARAM_OFFSET = 14
 

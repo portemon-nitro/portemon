@@ -1913,6 +1913,7 @@ local FieldHandlers = {
   [213] = BattleHandlers.trainerBattle,
   [220] = BattleHandlers.checkBattleWon,
   [589] = BattleHandlers.wildBattle,
+  [251] = BattleHandlers.catchingTutorial,
   [219] = FieldServiceHandlers.whiteout,
   [279] = FieldServiceHandlers.whiteout,
   [810] = FieldServiceHandlers.celebiTimeTravel,

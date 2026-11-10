@@ -605,12 +605,20 @@ function T.session_item_facts_project_exactly_the_referenced_party_use()
   local catalog = party:catalog()
   Assert.deepEqual(
     facts.POTION,
-    { partyUse = catalog:item("POTION").partyUse, pocket = "medicine" },
+    {
+      partyUse = catalog:item("POTION").partyUse,
+      pocket = "medicine",
+      battleUseFunc = catalog:item("POTION").battleUseFunc,
+    },
     "the repeated key projects its generated party use once"
   )
   Assert.deepEqual(
     facts.CHERI_BERRY,
-    { partyUse = catalog:item("CHERI_BERRY").partyUse, pocket = "berries" },
+    {
+      partyUse = catalog:item("CHERI_BERRY").partyUse,
+      pocket = "berries",
+      battleUseFunc = catalog:item("CHERI_BERRY").battleUseFunc,
+    },
     "the berry key projects its generated party use"
   )
   local projected = 0

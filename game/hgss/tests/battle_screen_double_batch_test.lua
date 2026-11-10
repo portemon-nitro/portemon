@@ -521,9 +521,8 @@ end
 
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToMedicineFirstCell(rig)
-  press(rig, { type = "navigate", direction = "up" })
-  press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  rig.pump(2)
 end
 
 ---@param rig table live screen rig under test driving
@@ -612,6 +611,9 @@ local function cancelChildToCommand(rig)
       return
     end
     press(rig, { type = "cancel" })
+    -- List and use-item cancels wait out their press dip before the
+    -- next edge can travel.
+    rig.pump(2)
   end
   Assert.equal(rig.screen:status().mode, "command", "cancelling the child returns to command")
 end

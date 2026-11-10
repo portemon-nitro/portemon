@@ -471,13 +471,14 @@ function T.screen_yes_opens_the_shift_party_child_and_seals_the_reserve()
   Assert.notNil(childView, "the offer carries its child view")
   Assert.equal(childView.kind, "party", "Yes opens the existing party picker")
   Assert.equal(childView.purpose, "shift", "the picker runs in the shift purpose")
+  -- The shift picker opens focused on its eligible reserve with Switch
+  -- first in the mon menu, so confirming twice seals without moving.
   local submitsBefore = #rig.submits
-  for _ = 1, 6 do
+  for _ = 1, 10 do
     press(rig, { type = "confirm" })
     if #rig.submits > submitsBefore then
       break
     end
-    press(rig, { type = "navigate", direction = "down" })
   end
   Assert.equal(#rig.submits, submitsBefore + 1, "the reserve seals exactly one reply")
   local sealed = rig.submits[#rig.submits]

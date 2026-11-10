@@ -510,6 +510,10 @@ function BattleSession:applyJoin(staged)
       id = inventory.id,
       owners = copyValue(inventory.owners),
       quantities = copyValue(inventory.quantities),
+      -- The detached bag slot order rides beside its quantities for
+      -- presentation consumers (the battle bag lists in bag order);
+      -- the kernel consumes quantities only and never reads it.
+      slotOrder = copyValue(inventory.slotOrder),
     }
   end
   local context = BattleContext.wrap(state)

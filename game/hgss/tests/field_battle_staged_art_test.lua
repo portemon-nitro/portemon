@@ -143,9 +143,10 @@ local function recordingPool()
 end
 
 ---@param staged table<string, unknown>? staged manifest the cache answers, nil for the planning inventory
+---@param battleMenus table<string, unknown>? borrowed field bag and party services behind icon keys
 ---@return FieldBattlePresentation
 ---@return table<string, unknown> recording pool
-local function envelopeFor(staged, headless)
+local function envelopeFor(staged, headless, battleMenus)
   local cacheFs = { versionId = "staged-art-probe" }
   function cacheFs:loadLua(path)
     if path == BattlePresentationCache.manifestPath() then
@@ -180,6 +181,7 @@ local function envelopeFor(staged, headless)
     end,
     graphics = graphics,
     imagePool = pool,
+    battleMenus = battleMenus,
   })
   return envelope, pool
 end
@@ -236,6 +238,9 @@ function T.staged_keys_resolve_to_their_verified_manifest_paths()
     ["menu:moves:move-button:1:empty"] = button.empty,
     ["menu:moves:move-button:1:fire:normal"] = button.types.fire.normal,
     ["menu:moves:move-button:1:fire:pressed"] = button.types.fire.pressed,
+    ["bag:screen:1"] = manifest.bag.pages[1].image,
+    ["bag:screen:2"] = manifest.bag.pages[2].image,
+    ["bag:screen:3"] = manifest.bag.pages[3].image,
   }
   for key, path in pairs(expected) do
     Assert.equal(resolvedPath(envelope, pool, key), path, "staged key resolves its manifest path: " .. key)
@@ -253,8 +258,50 @@ function T.staged_keys_resolve_to_their_verified_manifest_paths()
     "menu:moves:move-button:1:water:normal",
     "hud:doubles",
     "gauges",
+    "bag:screen:0",
+    "bag:screen:4",
+    "bag:screen:1@general",
+    "bag:bogus",
+    "bag",
   }) do
     Assert.isNil(resolvedPath(envelope, pool, key), "key without staged art resolves to nothing: " .. key)
+  end
+  envelope:dispose()
+end
+
+-- Battle-bag item icons resolve through the shared field item atlas
+-- behind the borrowed field bag icons, never a second battle atlas:
+-- one staged quad per semantic item key with its 32-pixel extent, while
+-- malformed icon keys resolve to nothing like any other unknown
+-- decorative key.
+function T.battle_item_icons_resolve_through_the_shared_provider()
+  local manifest = stagedManifest()
+  local fakeIcons = {}
+  function fakeIcons:dimensions(_)
+    return { width = 32, height = 32 }
+  end
+  function fakeIcons:handle()
+    return nil
+  end
+  function fakeIcons:image()
+    return { atlas = true }
+  end
+  function fakeIcons:quadFor(key)
+    return { quad = key }
+  end
+  local envelope, _ = envelopeFor(manifest, false, { bag = { icons = fakeIcons } })
+  local handle, failure = envelope._services.drawable("battle:item-icon:POTION")
+  Assert.isNil(failure, "bag icon resolution never fails")
+  Assert.notNil(handle, "the shared atlas answers the stocked item")
+  assert(handle ~= nil, "the bag icon resolved")
+  local width, height = handle:getDimensions()
+  Assert.equal(width, 32, "bag icons keep their staged width")
+  Assert.equal(height, 32, "bag icons keep their staged height")
+  for _, key in ipairs({ "battle:item-icon:", "battle:item-icon", "battle:bogus:POTION" }) do
+    Assert.isNil(
+      envelope._services.drawable(key),
+      "a malformed icon key resolves to nothing: " .. key
+    )
   end
   envelope:dispose()
 end
@@ -621,6 +668,43 @@ function T.planning_inventory_resolves_no_staged_art()
   }) do
     Assert.isNil(resolvedPath(envelope, pool, key), "a planning inventory stages nothing: " .. key)
   end
+  envelope:dispose()
+end
+
+-- Retail catching-tutorial finger art (BattleFinger_LoadResources from
+-- NARC_a_1_6_4): the staged idle frame resolves through battle:finger
+-- while the auto-play finger centers on its per-page spot. Missing
+-- staged art keeps the page under the existing pending path.
+function T.tutorial_finger_resolves_its_staged_image()
+  local manifest = stagedManifest()
+  manifest.bag.finger = {
+    image = stageImage(manifest, ART .. "battle-finger.png", 16, 32),
+    width = 16,
+    height = 32,
+  }
+  BattlePresentationSchema.assertManifest(manifest)
+  local envelope, pool = envelopeFor(manifest)
+  Assert.equal(
+    resolvedPath(envelope, pool, "battle:finger"),
+    manifest.bag.finger.image,
+    "the lesson finger resolves its staged image"
+  )
+  -- During the tutorial auto-play the pocket menu centers the finger
+  -- on its staged spot behind the same drawable demand the renderer
+  -- consumes: the browser projects the key and the envelope resolves
+  -- it instead of nil-matching.
+  local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
+  local native = { open = true, tutorial = true, bagPage = "pocket_menu" }
+  local finger = assert(
+    BattleBagPockets.fingerDraw(native),
+    "the lesson auto-play projects its finger"
+  )
+  Assert.equal(finger.key, "battle:finger", "the auto-play finger names its drawable")
+  Assert.deepEqual({ finger.x, finger.y }, { 192, 24 }, "the auto-play finger centers on its balls spot")
+  Assert.notNil(
+    envelope._services.drawable(finger.key),
+    "the auto-play finger demand resolves instead of nil-matching"
+  )
   envelope:dispose()
 end
 

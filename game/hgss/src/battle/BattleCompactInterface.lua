@@ -14,6 +14,7 @@
 -- semantic controls.
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
@@ -452,24 +453,36 @@ local function compactDoublesHudBox(battler, fallback, origin, position, side)
 end
 
 -- Canonical child plan content with the same row numbers the modal
--- paint uses: six rows, a footer Back, and bag pocket stepping. Draw
--- and input mapping consume these same rects.
+-- paint uses: six rows, a footer Back, and bag page stepping. Draw
+-- and input mapping consume these same rects. Battle bag rows paint
+-- inside their retail hitboxes so compact paint and taps agree with
+-- the decomp geometry exactly like the paired case.
 ---@param child table<string, unknown> detached child view under resolution
 ---@return table<string, unknown> canonical child plan content
 local function childContent(child)
   local twoOption = child.kind == "learn" and type(child.confirmation) == "table"
   local rows = {}
   local source = child.rows --[[@as table<integer, table<string, unknown>>?]]
+  local bagRegions = nil
+  if child.kind == "bag" and child.empty ~= true and not twoOption then
+    bagRegions = {}
+    for _, region in
+      ipairs(BattleBagPockets.hitRegions(type(child.bagPage) == "string" and child.bagPage or "item_list"))
+    do
+      bagRegions[region.id] = region
+    end
+  end
   if not twoOption and type(source) == "table" then
     for index, row in ipairs(source) do
       if index <= 6 then
         local box = row --[[@as table<string, unknown>]]
+        local rect = bagRegions ~= nil and type(box.id) == "string" and bagRegions[box.id] or nil
         rows[#rows + 1] = {
           id = box.id,
-          x = 8,
-          y = 32 + (index - 1) * 20,
-          width = 240,
-          height = 20,
+          x = rect ~= nil and rect.x or 8,
+          y = rect ~= nil and rect.y or (32 + (index - 1) * 20),
+          width = rect ~= nil and rect.w or 240,
+          height = rect ~= nil and rect.h or 20,
           label = box.label,
           sub = box.sub,
           detail = box.detail,
@@ -488,9 +501,10 @@ local function childContent(child)
     focusId = child.focusId,
     title = BattleChildText.title(child),
     rows = rows,
+    bagPage = type(child.bagPage) == "string" and child.bagPage or nil,
     hasBack = not twoOption and (child.cancellable == true or child.kind == "learn"),
     twoOption = twoOption,
-    hasPocketNav = child.kind == "bag" and child.empty ~= true,
+    hasPocketNav = false,
     back = backRect,
     pocketPrev = { x = 96, y = 152, width = 76, height = 40 },
     pocketNext = { x = 176, y = 152, width = 72, height = 40 },
@@ -717,13 +731,29 @@ local function hitRegion(regions, x, y)
 end
 
 -- Child hit regions from the same canonical rows the modal paints,
--- plus the footer Back and bag pocket stepping; a staged learning
--- confirmation maps its two source options.
+-- plus the footer Back; battle bag pages resolve through the shared
+-- retail hitbox order so compact taps agree with the decomp geometry
+-- exactly like the paired case. A staged learning confirmation maps
+-- its two source options.
 ---@param child table<string, unknown>? canonical child plan content under mapping
 ---@return table<integer, table<string, unknown>>? active hit regions with their scopes
 local function childRegions(child)
   if type(child) ~= "table" then
     return nil
+  end
+  if child.kind == "bag" and type(child.bagPage) == "string" then
+    local regions = {}
+    for _, region in ipairs(BattleBagPockets.hitRegions(child.bagPage)) do
+      regions[#regions + 1] = {
+        id = region.id,
+        x = region.x,
+        y = region.y,
+        width = region.w,
+        height = region.h,
+        scope = "child",
+      }
+    end
+    return regions
   end
   if child.twoOption == true then
     return {
@@ -1760,6 +1790,66 @@ local function drawChildModal(resources, view, content, placement)
     return
   end
   fillBox(resources.graphics, background, { x = 0, y = 0, width = 256, height = 192 })
+  -- The open battle bag composites its staged retail page behind the
+  -- compact rows: the SetPageBgOffset slice for the visible browser page
+  -- covers the modal fill, then item icons ride their center-anchored
+  -- spots through the shared atlas, then rows paint over in the compact
+  -- tabular layout. Missing staged art keeps the fill under the existing
+  -- pending path, never substitutes.
+  if type(childView) == "table" and childView.kind == "bag" and childView.empty ~= true then
+    local assets = assert(resources.assets, "the compact bag borrows its asset holder")
+    local bagPage = type(childView.bagPage) == "string" and childView.bagPage or "item_list"
+    local screenIndex = 2
+    if bagPage == "pocket_menu" then
+      screenIndex = 1
+    elseif bagPage == "use_item" or bagPage == "message" then
+      screenIndex = 3
+    end
+    local pageArt = assets:drawable("bag:screen:" .. screenIndex)
+    if pageArt ~= nil then
+      if type(pageArt.draw) == "function" then
+        pageArt:draw(resources.graphics, 0, 0)
+      else
+        resources.graphics.draw(pageArt, 0, 0)
+      end
+    end
+    for _, icon in ipairs(BattleBagPockets.iconDraws(childView.native)) do
+      local iconArt = assets:drawable("battle:item-icon:" .. icon.key)
+      if iconArt ~= nil then
+        local width, height = 32, 32
+        if type(iconArt.getDimensions) == "function" then
+          width, height = iconArt:getDimensions()
+        end
+        local iconX = icon.x - math.floor(width / 2)
+        local iconY = icon.y - math.floor(height / 2)
+        if type(iconArt.draw) == "function" then
+          iconArt:draw(resources.graphics, iconX, iconY)
+        else
+          resources.graphics.draw(iconArt, iconX, iconY)
+        end
+      end
+    end
+    -- The lesson finger centers on its per-page spot while the tutorial
+    -- auto-plays (battle_bag_menu.c UpdateTutorialFinger). Missing
+    -- staged art keeps the page under the existing pending path.
+    local finger = BattleBagPockets.fingerDraw(childView.native)
+    if finger ~= nil then
+      local fingerArt = assets:drawable(finger.key)
+      if fingerArt ~= nil then
+        local width, height = 32, 32
+        if type(fingerArt.getDimensions) == "function" then
+          width, height = fingerArt:getDimensions()
+        end
+        local fingerX = finger.x - math.floor(width / 2)
+        local fingerY = finger.y - math.floor(height / 2)
+        if type(fingerArt.draw) == "function" then
+          fingerArt:draw(resources.graphics, fingerX, fingerY)
+        else
+          resources.graphics.draw(fingerArt, fingerX, fingerY)
+        end
+      end
+    end
+  end
   drawLabel(text, fitText(text, tostring(childPlan.title or ""), 200), 12, 10)
   if type(childView) == "table" then
     local occupancy = BattleChildText.occupancy(childView)

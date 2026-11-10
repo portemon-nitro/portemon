@@ -62,6 +62,7 @@ local RewardExperience = require("libs.battle.src.gen4.Experience")
 local Stats = require("libs.mons.src.gen4.Stats")
 local Status = require("libs.battle.src.gen4.Status")
 local Switching = require("libs.battle.src.gen4.Switching")
+local SequenceMoveState = require("libs.battle.src.gen4.SequenceMoveState")
 local Targeting = require("libs.battle.src.gen4.Targeting")
 local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
@@ -4988,7 +4989,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   local function executeBall(state, context, action, plan, choice, ordinal, cause)
     local actor = action.actor --[[@as table<string, unknown>]]
     local target = choice.target --[[@as table<string, unknown>]]
-    if battleKind ~= "wild" then
+    -- Retail tutorial throws are not deflected like trainer throws
+    -- (battle_controller_player.c ~1755 only skips stock under
+    -- TRAINER|TUTORIAL, and battle_command.c:7185 always catches under
+    -- TUTORIAL): the lesson captures with no stock spend through the
+    -- Capture tutorial early return, never the blocked trainer path.
+    if battleKind ~= "wild" and state.tutorial ~= true then
       -- BtlCmd_ThrowPokeball deflects the ball off a trainer's Pokemon,
       -- and the player's ball selection skips Bag_TakeItem in trainer
       -- battles: the throw takes the turn but spends no stock, rolls
@@ -5068,6 +5074,36 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     if CaptureContext.isBall(plan.item) then
       executeBall(state, context, action, plan, choice, ordinal, cause)
+      return
+    end
+    -- Retail escape dolls (battle_controller_player.c ~1747,
+    -- BATTLE_SUBSCRIPT_ESCAPE_ITEM): one unit is consumed and the
+    -- player flees outright without odds, trapping, or a second flight
+    -- path. Escape ownership stays in Escape.attempt/executeRun; the
+    -- doll only needs the guaranteed outcome, so trapping never holds
+    -- it like ordinary flight.
+    local isDoll = false
+    for _, operation in
+      ipairs(plan.effectOperations --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(operation) == "table" and operation.kind == "flee" then
+        isDoll = true
+        break
+      end
+    end
+    if isDoll then
+      local dollOutcome = ItemUse.execute(plan, state, state.rng --[[@as table<string, unknown>]])
+      assert(dollOutcome.fled == true, "escape dolls flee once consumed")
+      local fled = context:emit("flee", cause, {
+        combatant = actor.combatant,
+        activation = actor.activation,
+        escaped = true,
+        reason = "item",
+        attempts = state.escapeAttempts,
+        escapeSource = { kind = "item", key = payload.item },
+      })
+      fled.actionId = ordinal
+      endBattleEarly(state, { kind = "escaped", rounds = state.round })
       return
     end
     local holderState = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
@@ -6317,6 +6353,7 @@ local function checkItemEntries(facts, raise)
         and field ~= "heldBehavior"
         and field ~= "lowHpOnly"
         and field ~= "pocket"
+        and field ~= "battleUseFunc"
       then
         error(raise("session item facts carry only their generated facts", { item = tostring(key) }))
       end
@@ -6532,6 +6569,25 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   local itemFacts = checkItemFacts(validated)
   local moneyUpItems = checkMoneyUpItems(validated)
   local live = BattleState.create(validated)
+  -- PC box room rides the live state from the scenario: the field owner
+  -- computes it once at launch (party full and every box full refuses
+  -- throws, battle_bag_menu.c msg 45) and it stays fixed for the battle.
+  -- Absent box facts keep historical behavior for older scenarios.
+  if validated.boxHasSpace == false then
+    live.boxHasSpace = false
+  else
+    live.boxHasSpace = true
+  end
+  -- Catching-tutorial marker rides the live state from the scenario
+  -- (battle_bag_menu.c RunTutorial, battle_setup.c BattleSetup_New_Tutorial):
+  -- lesson strikes never hit, tutorial ball stock is never consumed,
+  -- and tutorial throws always catch. Closed boolean, absent keeps
+  -- historical behavior for older scenarios.
+  if validated.tutorial == true then
+    live.tutorial = true
+  else
+    live.tutorial = false
+  end
   live.rng = BattleRng.new(validated
     .random --[[@as table<string, unknown>]]
     .seed --[[@as integer]])
@@ -7266,6 +7322,68 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     if okChoice == nil then
       local reason = refusal ~= nil and refusal.code or "refused"
       return BattleErrors.input("the battle item choice is refused", { reason = reason })
+    end
+    -- Retail TryUseItem gates (battle_bag_menu.c) refuse before execution
+    -- with pocket-specific messages: pocket-3 servings check embargo and
+    -- trainer escapes, pocket-2 balls check aim (doubles, hidden,
+    -- substitute) then PC room. Check order matches retail so a doubles
+    -- foe under Fly reports no-aim-doubles, not no-aim-hidden.
+    local facts = assert(itemFacts, "item choices gate against the session item facts")
+    local gateEntry = (facts --[[@as table<string, table<string, unknown>>]])[
+      payload.item --[[@as string]]
+    ]
+    local useFunc = type(gateEntry) == "table" and (gateEntry --[[@as table<string, unknown>]]).battleUseFunc or nil
+    if
+      CaptureContext.isBall(payload.item --[[@as string]])
+    then
+      local userSide = actorSide(state, actor.combatant --[[@as integer]])
+      local foes = {} ---@type integer[]
+      if userSide ~= nil then
+        for _, id in
+          ipairs(state.combatantOrder --[[@as integer[] ]])
+        do
+          local candidate = (state.combatants --[[@as table<integer, table<string, unknown>>]])[id]
+          if
+            type(candidate) == "table"
+            and candidate.active ~= nil
+            and actorSide(state, id --[[@as integer]]) ~= userSide
+          then
+            foes[#foes + 1] = id --[[@as integer]]
+          end
+        end
+      end
+      if #foes >= 2 then
+        return BattleErrors.input("the battle item choice is refused", { reason = "no_aim_doubles" })
+      end
+      if #foes == 1 then
+        local foe = foes[1] --[[@as integer]]
+        if SequenceMoveState.semiInvulnerable(state, foe) ~= nil then
+          return BattleErrors.input("the battle item choice is refused", { reason = "no_aim_hidden" })
+        end
+        if NativePassiveBridge.wrap(state):hasVolatile(foe, "substitute") then
+          return BattleErrors.input("the battle item choice is refused", { reason = "no_aim_hidden_foe" })
+        end
+      end
+      local owner = BattleState.participant(state, combatant.participant --[[@as integer]])
+      local roster = owner.roster --[[@as table<integer, unknown>]]
+      -- Retail PARTY_SIZE is 6: a full party with no empty PC box refuses
+      -- the throw (msg 45). Box fullness rides the scenario from the
+      -- live storage owner; absent box facts keep historical behavior.
+      if type(roster) == "table" and #roster >= 6 and state.boxHasSpace == false then
+        return BattleErrors.input("the battle item choice is refused", { reason = "no_room" })
+      end
+    else
+      local isGuardSpec = payload.item == "GUARD_SPEC" or payload.item == "GUARD_SPEC_"
+      if
+        NativePassiveBridge.wrap(state):embargoed(actor.combatant --[[@as integer]])
+        and not isGuardSpec
+        and useFunc ~= 3
+      then
+        return BattleErrors.input("the battle item choice is refused", { reason = "embargo" })
+      end
+      if useFunc == 3 and battleKind ~= "wild" then
+        return BattleErrors.input("the battle item choice is refused", { reason = "no_stealing" })
+      end
     end
   elseif choice.kind == "run" then
     local allowed = false
@@ -8440,6 +8558,8 @@ function HgssSessionExecutor:capture()
   -- interprets it.
   return BattleSnapshot.capture(state, {
     queue = state.queue,
+    boxHasSpace = state.boxHasSpace ~= false,
+    tutorial = state.tutorial == true,
     schedule = state.schedule,
     faints = state.faints,
     progressionChildren = state.progressionChildren,

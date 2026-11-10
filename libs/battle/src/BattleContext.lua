@@ -53,6 +53,14 @@ function BattleContext:moveScope()
   return self._moveScope
 end
 
+-- Reads the scripted lesson marker for strike law (battle_setup.c
+-- BattleSetup_New_Tutorial, battle_controller_player.c:2425): lesson
+-- strikes never hit while ordinary battles roll their accuracy.
+---@return boolean true while the live battle runs its catching tutorial
+function BattleContext:isTutorial()
+  return self._state.tutorial == true
+end
+
 ---@param kind string
 ---@param cause table<string, unknown>
 ---@param payload table<string, unknown>

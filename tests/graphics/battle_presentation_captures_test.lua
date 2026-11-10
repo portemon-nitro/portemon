@@ -23,7 +23,9 @@ local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local Hashing = require("romdump.src.digest.Hashing")
+local ItemCache = require("libs.assets.src.ItemCache")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local MonCache = require("libs.assets.src.MonCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local PngWriter = require("libs.assets.src.PngWriter")
@@ -362,6 +364,59 @@ local function captureServices(scope, cacheFs, versionId)
     assert(manifest.menus.lower.pulseMask, versionId .. " carries the menu pulse mask"),
     versionId .. " menu pulse mask"
   )
+  -- Battle-bag pages composite through the same staged slices
+  -- production resolves: the SetPageBgOffset page behind the open
+  -- browser, never a mocked allocation. A stale bundle without the bag
+  -- section fails here instead of rendering a fill-only browser.
+  do
+    local bag = assert(manifest.bag, versionId .. " stages the retail battle-bag screen")
+    local pages = assert(bag.pages, versionId .. " stages the bag pages")
+    Assert.equal(#pages, 3, versionId .. " stages the three bag pages")
+    for index, page in ipairs(pages) do
+      images["bag:screen:" .. tostring(index)] = stagedImage(
+        scope,
+        cacheFs,
+        assert(page.image, versionId .. " carries bag page " .. tostring(index)),
+        versionId .. " bag page " .. tostring(index)
+      )
+    end
+    -- The lesson finger centers on its per-page spot while the tutorial
+    -- auto-plays: stage its idle frame through the same slice the
+    -- production envelope resolves for battle:finger.
+    local finger = assert(bag.finger, versionId .. " stages the lesson finger")
+    images["battle:finger"] = stagedImage(
+      scope,
+      cacheFs,
+      assert(finger.image, versionId .. " carries the lesson finger"),
+      versionId .. " lesson finger"
+    )
+    -- Battle d-pad cursor corners frame the focused box while the
+    -- cursor is active (BattleDpadCursor_SetRect): the renderer
+    -- resolves battle:cursor-tl/tr/bl/br through the staged corner
+    -- art, exactly like production. Missing staged corners would
+    -- leave keyboard focus with no indicator.
+    local cursor = assert(bag.cursor, versionId .. " stages the battle cursor corners")
+    for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
+      local record = assert(cursor[corner], versionId .. " stages the " .. corner .. " corner")
+      images["battle:cursor-" .. corner] = stagedImage(
+        scope,
+        cacheFs,
+        assert(record.image, versionId .. " carries the " .. corner .. " corner"),
+        versionId .. " cursor " .. corner
+      )
+    end
+    -- Retail button faces repaint the pressed or disabled button
+    -- (GetButtonTilemap/GetButtonPalette frames 1-2/3): stage every
+    -- face the renderer resolves through bag:button:<b>:<f>:<bank>.
+    for _, face in ipairs(assert(bag.buttons, versionId .. " stages the bag button faces")) do
+      images["bag:button:" .. face.button .. ":" .. face.frame .. ":" .. face.bank] = stagedImage(
+        scope,
+        cacheFs,
+        assert(face.image, versionId .. " carries face " .. face.button .. ":" .. face.frame .. ":" .. face.bank),
+        versionId .. " button face " .. face.button .. ":" .. face.frame .. ":" .. face.bank
+      )
+    end
+  end
   -- Native menu routes draw through per-screen artwork with per-control
   -- feedback variants, never the bare group image: stage every screen
   -- and feedback image the renderers resolve through the same
@@ -551,6 +606,33 @@ local function captureServices(scope, cacheFs, versionId)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
     services.drawableKeys[#services.drawableKeys + 1] = key
     local stored = images[key]
+    -- Battle-bag item icons ride the shared field item atlas staged
+    -- from the derived cache, exactly like production: one real quad
+    -- per semantic item key, never a mocked allocation.
+    local itemIconKey = tostring(key):match("^battle:item%-icon:(.+)$")
+    if itemIconKey ~= nil then
+      if services.itemIcons == nil then
+        services.itemIcons = ItemIconAssetProvider.new(cacheFs)
+        Assert.notNil(
+          cacheFs:loadLua(ItemCache.iconManifestPath()),
+          versionId .. " stages the shared item icon manifest"
+        )
+      end
+      local provider = assert(services.itemIcons, versionId .. " stages the shared item icons")
+      local quad = provider:quadFor(itemIconKey)
+      local dims = provider:dimensions(itemIconKey)
+      local drawable = { width = dims.width, height = dims.height }
+      function drawable:getDimensions()
+        return self.width, self.height
+      end
+      function drawable:draw(drawGraphics, x, y)
+        drawGraphics.draw(provider:image(), quad, x, y)
+      end
+      function drawable:drawQuad(drawGraphics, _, x, y)
+        drawGraphics.draw(provider:image(), quad, x, y)
+      end
+      return drawable
+    end
     if stored == nil then
       return nil
     end

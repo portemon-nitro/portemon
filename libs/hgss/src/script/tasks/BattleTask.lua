@@ -31,7 +31,7 @@ BattleTask.version = 1
 BattleTask.SOURCE_WON = 1
 BattleTask.SOURCE_NOT_WON = 0
 
-BattleTask.KINDS = { wild = true, trainer = true, scripted = true, scenario = true }
+BattleTask.KINDS = { wild = true, trainer = true, scripted = true, scenario = true, tutorial = true }
 
 -- Outcome words the host may report. They match the shared battle outcome
 -- vocabulary; "pending" and "unresolved" are task-level reads, never host

@@ -138,4 +138,12 @@ function T.whiteout_commands_share_one_blocking_semantic_operation()
   end
 end
 
+-- Retail catching-tutorial (scrcmd_c.c ScrCmd_CatchingTutorial opcode 251):
+-- the lesson launches its fixed tutorial battle with no operands.
+function T.catching_tutorial_lowers_to_its_tutorial_launch()
+  local node = assert(FieldHandlers[251])(instruction(251, {}))
+  Assert.deepEqual(node, { op = "battle_launch", kind = "tutorial", details = {} })
+  Assert.isNil(node.command, "source opcode must not leak into semantic operations")
+end
+
 return { tests = T }

@@ -94,6 +94,7 @@ local function snapshot(mode, overrides)
       narration = manifest.messages.roles.narration.palette,
       hud = manifest.messages.roles.hud.palette,
       menu = manifest.messages.roles.menu.palette,
+      bag = manifest.messages.roles.bag.palette,
     },
     menuText = { pp = "PP", cancel = "CANCEL" },
     effectInstances = {},
@@ -1009,11 +1010,22 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
     end
     if case.title ~= nil then
       Assert.isTrue(compactInk[case.title] ~= nil, "the compact modal titles its child" .. tag)
-      Assert.isTrue(pairedInk[case.title] ~= nil, "the paired modal titles its child identically" .. tag)
+      if case.name == "bag" then
+        -- Retail paired bag carries no modal chrome: the page art
+        -- and its windows own every title, so the paired modal
+        -- paints no BAG header while compact keeps its adaptation.
+        Assert.isNil(pairedInk[case.title], "the paired bag paints no modal title" .. tag)
+      else
+        Assert.isTrue(pairedInk[case.title] ~= nil, "the paired modal titles its child identically" .. tag)
+      end
     end
     if case.caption ~= nil then
       Assert.isTrue(compactInk[case.caption] ~= nil, "the compact modal guides its child" .. tag)
-      Assert.isTrue(pairedInk[case.caption] ~= nil, "the paired modal guides its child identically" .. tag)
+      if case.name == "bag" then
+        Assert.isNil(pairedInk[case.caption], "the paired bag paints no footer guidance" .. tag)
+      else
+        Assert.isTrue(pairedInk[case.caption] ~= nil, "the paired modal guides its child identically" .. tag)
+      end
     else
       for _, wording in ipairs(captions) do
         Assert.isNil(compactInk[wording], "the compact modal carries no footer guidance" .. tag)

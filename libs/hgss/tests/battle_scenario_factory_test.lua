@@ -235,6 +235,15 @@ function T.production_scenarios_carry_the_full_eligible_roster_with_a_conscious_
     local stock = inventoryOf(scenario, assert(player.inventoryId, "the player draws on its battle stock"))
     Assert.deepEqual(stock.owners, { 1 }, "the player stock is owned by the player participant")
     Assert.deepEqual(stock.quantities, { POTION = 3, POKE_BALL = 2 }, "the player stock mirrors the live bag")
+    -- Retail battle pockets list in saved-bag slot order
+    -- (SortItemsIntoPockets appends in bag-slot order): the player
+    -- stock carries that order beside its quantities so the battle bag
+    -- lists medicine before balls exactly like the field bag.
+    Assert.deepEqual(
+      stock.slotOrder,
+      { "POTION", "POKE_BALL" },
+      "the player stock carries its bag slot order"
+    )
   end
   Assert.equal(
     trainer.participants[2].roster[1].id,
@@ -724,6 +733,54 @@ function T.scripted_inventories_pass_through_without_projection()
   }, { party = mixedParty(), bag = stockedBag() })
   Assert.deepEqual(scenario.inventories, staged, "staged fights keep their authored stock")
   Assert.equal(#scenario.participants[1].roster, 1, "staged fights gain no live reserves")
+end
+
+-- PC box room rides the scenario from the live storage owner for the
+-- battle throw gate: staged fights keep their authored flag while
+-- production fragments read the live boxes (empty here, so room).
+function T.scenarios_carry_pc_box_room_for_the_throw_gate()
+  local sides = { { id = 1, participants = { 1 } }, { id = 2, participants = { 2 } } }
+  local participants = {
+    { id = 1, side = 1, controller = "player", roster = { { id = 1, mon = fullRecord() } }, context = {} },
+    { id = 2, side = 2, controller = "scripted", roster = { { id = 2, mon = fullRecord() } }, context = {} },
+  }
+  local positions = {
+    { id = 1, side = 1, eligibleParticipants = { 1 }, occupant = 1 },
+    { id = 2, side = 2, eligibleParticipants = { 2 }, occupant = 2 },
+  }
+  local full = ScenarioFactory.fromScript({
+    attemptId = "room-full",
+    sides = sides,
+    participants = participants,
+    positions = positions,
+    boxHasSpace = false,
+  }, {})
+  Assert.isFalse(full.boxHasSpace == true, "staged fights keep their authored box flag")
+  local live = ScenarioFactory.fromScript({
+    attemptId = "room-live",
+    sides = sides,
+    participants = participants,
+    positions = positions,
+  }, { party = mixedParty(), bag = stockedBag() })
+  Assert.isTrue(live.boxHasSpace == true, "live boxes with empty slots read as room")
+end
+
+-- Retail catching-tutorial content (battle_setup.c BattleSetup_New_Tutorial):
+-- player Marill L5, enemy Rattata L2, 20× POKE_BALL granted, scripted
+-- kind with the tutorial marker and box room for the throw gate.
+function T.tutorial_lessons_carry_their_fixed_content()
+  local scenario = ScenarioFactory.fromTutorial({}, {})
+  Assert.equal(scenario.kind, "scripted", "the lesson keeps its scripted kind")
+  Assert.isTrue(scenario.tutorial == true, "the lesson marks its tutorial")
+  Assert.isTrue(scenario.boxHasSpace == true, "the lesson keeps room for its throw")
+  Assert.equal(#scenario.participants, 2, "the lesson fields both sides")
+  local player = scenario.participants[1]
+  Assert.equal(player.roster[1].mon.species, "MARILL", "the lesson fields Marill")
+  Assert.equal(player.roster[1].mon.level, 5, "Marill fields at level 5")
+  local foe = scenario.participants[2]
+  Assert.equal(foe.roster[1].mon.species, "RATTATA", "the lesson fields Rattata")
+  Assert.equal(foe.roster[1].mon.level, 2, "Rattata fields at level 2")
+  Assert.equal(scenario.inventories[1].quantities.POKE_BALL, 20, "the lesson grants 20 balls")
 end
 
 return { tests = T }

@@ -576,6 +576,28 @@ function BattleRuntime:_answerOwned(request)
   return session:answerTrainer(request)
 end
 
+---@param snapshot table<string, unknown> detached battle snapshot under order projection
+---@return string[]? detached player inventory slot order for the next decision, nil without one
+local function playerInventorySlotOrderOf(snapshot)
+  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>?]]
+  local inventories = snapshot.inventories --[[@as table<string, table<string, unknown>>?]]
+  if type(participants) ~= "table" or type(inventories) ~= "table" then
+    return nil
+  end
+  for _, participant in pairs(participants) do
+    if type(participant) == "table" and participant.controller == BattleRuntime.PLAYER_CONTROLLER then
+      local inventoryId = participant.inventoryId --[[@as string?]]
+      if type(inventoryId) == "string" then
+        local inventory = inventories[inventoryId] --[[@as table<string, unknown>?]]
+        if type(inventory) == "table" and type(inventory.slotOrder) == "table" then
+          return copyValue(inventory.slotOrder)
+        end
+      end
+    end
+  end
+  return nil
+end
+
 ---@param snapshot table<string, unknown> detached battle snapshot under inventory projection
 ---@return table<string, unknown>? detached player inventory quantities for the next decision
 local function playerInventoryOf(snapshot)
@@ -665,6 +687,13 @@ function BattleRuntime:_publishFrame(frame, exposed)
     if inventory ~= nil then
       context.inventory = inventory
     end
+    -- The detached bag slot order rides beside its quantities so the
+    -- battle bag lists in saved-bag order; decisions consume the
+    -- quantities map only.
+    local slotOrder = playerInventorySlotOrderOf(snapshot)
+    if slotOrder ~= nil then
+      context.bagSlotOrder = slotOrder
+    end
     self._publishedRequest = key
   end
   if terminal then
@@ -743,6 +772,11 @@ function BattleRuntime:_enterPresentation()
   local plan = { launchId = self._request.id, kind = self._request.kind }
   if self._encounterPaletteRestoreType ~= nil then
     plan.encounterPaletteRestoreType = self._encounterPaletteRestoreType
+  end
+  -- The scripted catching-tutorial marker rides the entry plan so the
+  -- screen offers the lesson command surface and auto-plays its bag.
+  if type(self._scenario) == "table" and self._scenario.tutorial == true then
+    plan.tutorial = true
   end
   return self._presentation.enter(plan) == true
 end
@@ -1062,6 +1096,12 @@ function BattleRuntime:_sessionItemFacts(record)
                 if type(definition.battleUse) == "table" then
                   projected.battleUse = copyValue(definition.battleUse)
                 end
+                -- Retail TryUseItem gates embargo and trainer escapes on
+                -- the battle use-function (battle_bag_menu.c): balls 1,
+                -- servings 2, escape dolls 3, battle-only stats 0.
+                if type(definition.battleUseFunc) == "number" then
+                  projected.battleUseFunc = definition.battleUseFunc
+                end
                 -- Canonical held behavior rides beside the use facts so
                 -- trainer switch and item checks can inspect held effects
                 -- through this same map instead of a second catalog.
@@ -1114,6 +1154,9 @@ function BattleRuntime:_sessionItemFacts(record)
                     end
                     if type(resolved.battleUse) == "table" and projected.battleUse == nil then
                       projected.battleUse = copyValue(resolved.battleUse)
+                    end
+                    if type(resolved.battleUseFunc) == "number" and projected.battleUseFunc == nil then
+                      projected.battleUseFunc = resolved.battleUseFunc
                     end
                     if type(resolved.naturalGift) == "table" and projected.naturalGift == nil then
                       projected.naturalGift = copyValue(resolved.naturalGift)

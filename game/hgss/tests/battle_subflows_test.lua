@@ -13,11 +13,17 @@ local T = {}
 local BattleSubflows = nil
 
 ---@return table<string, unknown> the child coordinator under test preparation
-local function coordinator(catalog)
+local function coordinator(catalog, opts)
   if BattleSubflows == nil then
     BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
   end
-  return BattleSubflows.new({ launchId = "launch-child-unit", itemCatalog = catalog })
+  local args = { launchId = "launch-child-unit", itemCatalog = catalog }
+  if type(opts) == "table" then
+    for key, value in pairs(opts) do
+      args[key] = value
+    end
+  end
+  return BattleSubflows.new(args)
 end
 
 ---@param reserve integer stable combatant identity of the eligible reserve
@@ -89,10 +95,17 @@ local function drive(flows, event)
   flows:tick()
 end
 
+-- Settles one gated button press (WaitButtonAnim): frame 1 rebounds
+-- to frame 2, then the deferred page transition applies.
+local function settlePress(flows)
+  flows:tick()
+  flows:tick()
+end
+
 ---@param flows table<string, unknown> coordinator waiting on a bag selection
 local function useBagItem(flows)
   drive(flows, { type = "confirm" })
-  flows:tick()
+  settlePress(flows)
   drive(flows, { type = "confirm" })
   for _ = 1, 8 do
     flows:tick()
@@ -103,6 +116,7 @@ end
 local function tapBagItem(flows)
   Assert.isTrue(flows:activateControl("bag:0"), "the serving cell takes its native-layout tap")
   flows:tick()
+  settlePress(flows)
   flows:tick()
   drive(flows, { type = "confirm" })
   for _ = 1, 8 do
@@ -316,18 +330,24 @@ local function bagIntent(inventory, options)
 end
 
 ---@param flows table<string, unknown> coordinator resting on the open bag child
+---@param index integer zero-based battle pocket under opening
+local function openBattlePocket(flows, index)
+  Assert.isTrue(
+    flows:activateControl("bagpocket:" .. tostring(index)),
+    "the battle pocket takes its tap"
+  )
+  flows:tick()
+  settlePress(flows)
+end
+
+---@param flows table<string, unknown> coordinator resting on the open bag child
 local function walkToMedicine(flows)
-  drive(flows, { type = "navigate", direction = "up" })
-  drive(flows, { type = "navigate", direction = "right" })
-  drive(flows, { type = "navigate", direction = "down" })
+  openBattlePocket(flows, 0)
 end
 
 ---@param flows table<string, unknown> coordinator resting on the open bag child
 local function walkToBalls(flows)
-  drive(flows, { type = "navigate", direction = "up" })
-  drive(flows, { type = "navigate", direction = "right" })
-  drive(flows, { type = "navigate", direction = "right" })
-  drive(flows, { type = "navigate", direction = "down" })
+  openBattlePocket(flows, 2)
 end
 
 function T.bag_healing_stages_its_target_and_cancels_back_to_the_bag()
@@ -347,6 +367,11 @@ function T.bag_healing_stages_its_target_and_cancels_back_to_the_bag()
   drive(flows, { type = "cancel" })
   Assert.isNil(flows:takeResult(), "target cancel seals no reply")
   Assert.equal(flows:status().stagedItem, nil, "target cancel drops the staging")
+  Assert.equal(flows:status().childView.bagPage, "item_list", "target cancel returns to the item list")
+  drive(flows, { type = "cancel" })
+  Assert.isNil(flows:takeResult(), "list cancel returns to the pocket menu")
+  settlePress(flows)
+  Assert.equal(flows:status().childView.bagPage, "pocket_menu", "list cancel returns to the pocket menu")
   drive(flows, { type = "cancel" })
   local result = flows:takeResult()
   Assert.notNil(result, "bag cancel stages a result")
@@ -468,17 +493,167 @@ function T.bag_refused_rows_explain_themselves_without_sealing()
   local refused = itemChoice("POKE_BALL", 1, false)
   Assert.isTrue(flows:open(bagIntent({ POKE_BALL = 5 }, itemOptions({ refused }))), "the stocked bag opens")
   walkToBalls(flows)
+  -- The item-list projection carries the refusal: the focused row stays
+  -- disabled and names its kernel-projected reason.
+  local listedView = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(listedView.bagPage, "item_list", "the balls pocket lists")
+  Assert.equal(listedView.focusId, "bag:0", "the refused cell keeps its focus")
+  local listedRows = listedView.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(listedRows[1].id, "bag:0", "the refused cell still lists first")
+  Assert.isFalse(listedRows[1].enabled == true, "the refused cell stays disabled")
+  Assert.equal(listedRows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
   useBagItem(flows)
   Assert.isNil(flows:takeResult(), "confirming a refused ball seals no reply")
   Assert.isTrue(flows:status().active, "the refusal keeps the child")
-  -- The native projection carries the refusal: the focused row stays
-  -- disabled and names its kernel-projected reason.
-  local refusedView = flows:status().childView --[[@as table<string, unknown>]]
-  Assert.equal(refusedView.focusId, "bag:0", "the refused cell keeps its focus")
-  local refusedRows = refusedView.rows --[[@as table<integer, table<string, unknown>>]]
-  Assert.equal(refusedRows[1].id, "bag:0", "the refused cell still lists first")
-  Assert.isFalse(refusedRows[1].enabled == true, "the refused cell stays disabled")
-  Assert.equal(refusedRows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
+  -- Retail TryUseItem answers USE on a refused item with its message
+  -- page (ShowMessage, nextState 8), never the use-item confirmation.
+  Assert.equal(flows:status().childView.bagPage, "message", "the refusal opens the message page")
+  Assert.equal(
+    flows:status().childView.notice,
+    "the attendant blocks its use",
+    "the message names its kernel reason"
+  )
+  flows:dispose()
+end
+
+-- Retail TryUseItem refusals resolve their staged message keys with
+-- their source substitution counts: aim/room blocks carry none, the
+-- embargo rebuke names the move and the holder, and the trainer-escape
+-- rebuke names the player. USE on a refused item opens the message page
+-- with that text; acknowledging it returns to the use-item page.
+---@param view table<string, unknown> detached bag child view under indexing
+---@return table<string, table<string, unknown>> projected rows by stable row identity
+local function refusalRowsById(view)
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  local byId = {} ---@type table<string, table<string, unknown>>
+  for _, row in ipairs(rows) do
+    byId[tostring(row.id)] = row
+  end
+  return byId
+end
+function T.bag_try_use_item_refusals_resolve_their_staged_keys()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog, {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local function refusedChoice(key, holder, reason)
+    return {
+      id = "item:" .. key .. ":" .. tostring(holder),
+      role = "item",
+      enabled = false,
+      reason = reason,
+      display = { item = key },
+      choice = {
+        actor = { combatant = 1, activation = 5 },
+        kind = "item",
+        payload = { item = key, target = { kind = "combatant", combatant = holder } },
+      },
+    }
+  end
+  local options = itemOptions({
+    refusedChoice("POKE_BALL", 3, "no_aim_doubles"),
+    refusedChoice("GREAT_BALL", 3, "no_room"),
+    refusedChoice("LUXURY_BALL", 3, "no_aim_hidden"),
+    refusedChoice("MASTER_BALL", 3, "no_aim_hidden_foe"),
+    refusedChoice("POTION", 1, "embargo"),
+    refusedChoice("POKE_DOLL", 1, "no_stealing"),
+  })
+  local intent = bagIntent({
+    POKE_BALL = 1,
+    GREAT_BALL = 1,
+    LUXURY_BALL = 1,
+    MASTER_BALL = 1,
+    POTION = 1,
+    POKE_DOLL = 1,
+  }, options)
+  intent.playerName = "RED"
+  Assert.isTrue(flows:open(intent), "the refused bag opens")
+  walkToBalls(flows)
+  local ballView = flows:status().childView --[[@as table<string, unknown>]]
+  -- Cells sort by native identity, so expectations map by label.
+  local ballReasons = {} ---@type table<string, string?>
+  for _, row in ipairs(ballView.rows) do
+    ballReasons[tostring(row.label)] = row.reason
+  end
+  Assert.equal(
+    ballReasons.POKE_BALL,
+    "MARKER:battle/bag/message/no-aim-doubles#0",
+    "doubles aim resolves its staged key"
+  )
+  Assert.equal(ballReasons.GREAT_BALL, "MARKER:battle/bag/message/no-room#0", "PC room resolves its staged key")
+  Assert.equal(
+    ballReasons.LUXURY_BALL,
+    "MARKER:battle/bag/message/no-aim-hidden#0",
+    "hidden aim resolves its staged key"
+  )
+  Assert.equal(
+    ballReasons.MASTER_BALL,
+    "MARKER:battle/bag/message/no-aim-hidden-foe#0",
+    "hidden-foe aim resolves its staged key"
+  )
+  useBagItem(flows)
+  Assert.isNil(flows:takeResult(), "the refused USE seals no reply")
+  Assert.equal(flows:status().childView.bagPage, "message", "the refused USE opens the message page")
+  Assert.equal(
+    flows:status().childView.notice,
+    "MARKER:battle/bag/message/no-room#0",
+    "the message names the focused refusal"
+  )
+  drive(flows, { type = "confirm" })
+  Assert.equal(flows:status().childView.bagPage, "use_item", "acknowledging returns to the use item page")
+  drive(flows, { type = "cancel" })
+  settlePress(flows)
+  drive(flows, { type = "cancel" })
+  settlePress(flows)
+  walkToMedicine(flows)
+  local medicineView = flows:status().childView --[[@as table<string, unknown>]]
+  local medicineReason = refusalRowsById(medicineView)["bag:0"]
+  Assert.equal(
+    medicineReason ~= nil and medicineReason.reason or nil,
+    "MARKER:battle/bag/message/embargo#2",
+    "embargo resolves its staged key with its move and holder, got " .. tostring(medicineReason ~= nil and medicineReason.reason or "no-row")
+  )
+  drive(flows, { type = "cancel" })
+  settlePress(flows)
+  openBattlePocket(flows, 3)
+  local battleItemsView = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(
+    refusalRowsById(battleItemsView)["bag:0"].reason,
+    "MARKER:battle/bag/message/no-stealing#1",
+    "trainer escapes resolve their staged key with the player"
+  )
+  flows:dispose()
+end
+
+-- The trainer-escape rebuke names the player, so an intent without one
+-- fails loudly instead of printing a nameless rebuke.
+function T.bag_stealing_refusal_without_a_player_fails_closed()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog)
+  local options = itemOptions({
+    {
+      id = "item:POKE_DOLL:1",
+      role = "item",
+      enabled = false,
+      reason = "no_stealing",
+      display = { item = "POKE_DOLL" },
+      choice = {
+        actor = { combatant = 1, activation = 5 },
+        kind = "item",
+        payload = { item = "POKE_DOLL", target = { kind = "combatant", combatant = 1 } },
+      },
+    },
+  })
+  Assert.isTrue(flows:open(bagIntent({ POKE_DOLL = 1 }, options)), "the refused bag opens")
+  openBattlePocket(flows, 3)
+  local ok, failure = pcall(useBagItem, flows)
+  Assert.isFalse(ok == true, "the nameless rebuke never prints")
+  Assert.isTrue(
+    tostring(failure):find("stealing refusals name the player", 1, true) ~= nil,
+    "the failure names its missing player"
+  )
   flows:dispose()
 end
 
@@ -869,38 +1044,43 @@ function T.bag_pocket_tabs_match_between_keys_and_pointer()
   Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys open the stocked bag")
   local opened = keyed:status().childView --[[@as table<string, unknown>]]
   Assert.isTrue(opened.interactive == true, "the bag answers with no waiting")
-  local openedRows = opened.rows --[[@as table<integer, table<string, unknown>>]]
-  Assert.equal(#openedRows, 6, "the bag shows its six visible cells")
-  for cell = 0, 5 do
-    Assert.equal(openedRows[cell + 1].id, "bag:" .. tostring(cell), "cells keep their stable rows")
-  end
-  local openedPage = opened.page --[[@as table<string, integer>]]
+  Assert.equal(opened.bagPage, "pocket_menu", "the bag opens on its pocket menu")
+  Assert.deepEqual(
+    opened.pockets,
+    { "hp_pp", "status", "balls", "battle_items" },
+    "the menu lists the four retail battle pockets"
+  )
+  Assert.equal(#opened.rows, 6, "the menu shows four pockets plus last-used and back")
+  Assert.equal(opened.rows[1].id, "bagpocket:0", "pocket options keep stable rows")
+  Assert.equal(opened.focusId, "bagpocket:0", "the menu opens on the first pocket")
+  -- Keys open the crowded HP/PP pocket through the menu.
+  drive(keyed, { type = "confirm" })
+  settlePress(keyed)
+  local listed = keyed:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(listed.bagPage, "item_list", "confirming a pocket opens its item list")
+  Assert.equal(listed.currentPocket, "hp_pp", "the first pocket holds the servings")
+  local openedPage = listed.page --[[@as table<string, integer>]]
   Assert.equal(openedPage.count, 2, "the crowded pocket spans two pages")
-  -- Keys scroll onto the second page with no clock step of their own.
-  for _ = 1, 12 do
-    local view = keyed:status().childView --[[@as table<string, unknown>]]
-    local page = view.page --[[@as table<string, integer>]]
-    if page.current == 2 then
-      break
-    end
-    drive(keyed, { type = "navigate", direction = "down" })
-  end
-  local scrolled = keyed:status().childView --[[@as table<string, unknown>]]
-  local scrolledPage = scrolled.page --[[@as table<string, integer>]]
-  Assert.equal(scrolledPage.current, 2, "keys scroll onto the second page")
-  keyed:closeChild()
-  -- Keys hop one pocket over through the tabs.
-  Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys reopen the bag")
-  drive(keyed, { type = "navigate", direction = "up" })
+  -- Keys turn the page at the right edge behind the stepper dip.
   drive(keyed, { type = "navigate", direction = "right" })
+  drive(keyed, { type = "navigate", direction = "right" })
+  settlePress(keyed)
+  local turned = keyed:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(turned.page.current, 2, "right at the edge turns the page")
+  keyed:closeChild()
+  -- Keys hop one pocket over through the menu; pointer takes the same hop.
+  Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys reopen the bag")
   drive(keyed, { type = "navigate", direction = "down" })
+  drive(keyed, { type = "confirm" })
+  settlePress(keyed)
   local keyedView = keyed:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(keyedView.currentPocket, "status", "keys reach the status pocket")
   keyed:dispose()
-  -- Pointer takes the same hop through the next tab.
   local tapped = coordinator(catalog)
   Assert.isTrue(tapped:open(bagIntent(variedStock(), twoTargetServingOptions())), "taps open the bag")
-  Assert.isTrue(tapped:activateControl("pocket_next"), "the next tab takes the tap")
+  Assert.isTrue(tapped:activateControl("bagpocket:1"), "the status pocket takes its tap")
   tapped:tick()
+  settlePress(tapped)
   local tappedView = tapped:status().childView --[[@as table<string, unknown>]]
   Assert.equal(tappedView.currentPocket, keyedView.currentPocket, "both modes land in the same pocket")
   Assert.deepEqual(rowLabels(tappedView), rowLabels(keyedView), "both modes list the same cells")
@@ -912,18 +1092,17 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   local flows = coordinator(catalog)
   local options = twoTargetServingOptions()
   Assert.isTrue(flows:open(bagIntent(variedStock(), options)), "the stocked bag opens")
-  for _ = 1, 8 do
-    if flows:status().childView.currentPocket == "medicine" then
-      break
-    end
-    Assert.isTrue(flows:activateControl("pocket_next"), "tabs keep answering")
-    flows:tick()
-  end
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap")
+  flows:tick()
+  settlePress(flows)
   local resting = flows:status().childView --[[@as table<string, unknown>]]
-  Assert.equal(resting.currentPocket, "medicine", "the browse reaches the serving pocket")
+  Assert.equal(resting.currentPocket, "hp_pp", "the browse reaches the serving pocket")
+  -- The crowded pocket sorts by native id; walk down to the serving.
+  drive(flows, { type = "navigate", direction = "down" })
+  resting = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(resting.focusId, "bag:2", "the serving cell takes focus")
   local restingPage = resting.page --[[@as table<string, integer>]]
-  -- The lone serving stages straight from its cell through the tap lane.
-  tapBagItem(flows)
+  useBagItem(flows)
   Assert.equal(flows:status().stagedItem, "POTION", "the serving stages")
   Assert.isNil(flows:takeResult(), "staging seals no reply")
   flows:update({ { type = "cancel" } })
@@ -931,7 +1110,7 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   Assert.isNil(flows:takeResult(), "target cancel seals no reply")
   Assert.isNil(flows:status().stagedItem, "target cancel drops the staging")
   local returned = flows:status().childView --[[@as table<string, unknown>]]
-  Assert.equal(returned.currentPocket, "medicine", "cancel keeps the pocket")
+  Assert.equal(returned.currentPocket, "hp_pp", "cancel keeps the pocket")
   Assert.equal(returned.focusId, resting.focusId, "cancel keeps the focus")
   local returnedPage = returned.page --[[@as table<string, integer>]]
   Assert.equal(returnedPage.current, restingPage.current, "cancel keeps the page")
@@ -947,7 +1126,7 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   end
   Assert.isTrue(foundServing, "the serving still lists after cancel")
   -- Staging again and accepting seals the exact projected serving.
-  tapBagItem(flows)
+  useBagItem(flows)
   for _ = 1, 10 do
     local view = flows:status().childView --[[@as table<string, unknown>]]
     if view.focusId == "party:0" then
@@ -972,21 +1151,21 @@ function T.refused_throws_and_empty_bags_close_without_hidden_screens()
   local refused = itemChoice("POKE_BALL", 1, false)
   Assert.isTrue(flows:open(bagIntent({ POKE_BALL = 5 }, itemOptions({ refused }))), "the stocked bag opens")
   Assert.isTrue(flows:status().childView.interactive == true, "the bag answers with no waiting")
+  Assert.equal(flows:status().childView.bagPage, "pocket_menu", "the bag opens on its pocket menu")
   walkToBalls(flows)
+  local listedView = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.isFalse(listedView.rows[1].enabled == true, "the refused cell stays disabled")
+  Assert.equal(listedView.rows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
   drive(flows, { type = "confirm" })
-  Assert.isNil(flows:takeResult(), "the refused throw seals no reply")
-  -- The native projection carries the refusal: the focused row stays
-  -- disabled and names its kernel-projected reason.
-  local thrownView = flows:status().childView --[[@as table<string, unknown>]]
-  Assert.equal(thrownView.focusId, "bag:0", "the refused cell keeps its focus")
-  local thrownRows = thrownView.rows --[[@as table<integer, table<string, unknown>>]]
-  Assert.isFalse(thrownRows[1].enabled == true, "the refused cell stays disabled")
-  Assert.equal(thrownRows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
+  Assert.isNil(flows:takeResult(), "selecting the refused cell seals no reply")
+  settlePress(flows)
+  Assert.equal(flows:status().childView.bagPage, "use_item", "selecting opens the use-item page")
   flows:closeChild()
   flows:dispose()
   local empty = coordinator(catalog)
-  Assert.isTrue(empty:open(bagIntent({}, itemOptions({}))), "the empty bag opens on its catalog browser")
-  Assert.equal(empty:status().childView.focusId, "back", "the empty bag rests on its way out")
+  Assert.isTrue(empty:open(bagIntent({}, itemOptions({}))), "the empty bag opens on its pocket menu")
+  Assert.equal(empty:status().childView.bagPage, "pocket_menu", "the empty bag opens on its pocket menu")
+  Assert.equal(empty:status().childView.focusId, "bagpocket:0", "the empty menu opens on the first pocket")
   drive(empty, { type = "cancel" })
   local result = empty:takeResult()
   Assert.notNil(result, "empty cancel stages a result")
@@ -1084,6 +1263,524 @@ function T.closed_children_drop_stale_pointer_edges()
   Assert.isFalse(flows:activateControl("party:1"), "taps miss the closed child")
   Assert.isTrue(flows:open(partyIntent({ requestId = 8, epoch = 9 })), "the replacement child opens")
   Assert.isTrue(flows:status().active, "the fresh child owns input")
+  flows:dispose()
+end
+
+function T.audio_effect_voices_select_on_focus_moves_and_decide_on_seals()
+  local catalog = ItemFixture.makeCatalog()
+  local plays = {}
+  local function audioEffect(symbol)
+    plays[#plays + 1] = symbol
+  end
+  local flows = coordinator(catalog, { audioEffect = audioEffect })
+  Assert.isTrue(flows:open(partyIntent({})), "the party child opens")
+  local before = flows:status().childView.focusId
+  drive(flows, { type = "navigate", direction = "down" })
+  local after = flows:status().childView.focusId
+  Assert.isTrue(before ~= after, "navigation moves the focus")
+  Assert.equal(plays[1], "SEQ_SE_DP_SELECT", "cursor moves voice select")
+  switchPartyMon(flows, 1)
+  Assert.notNil(flows:takeResult(), "the reserve seals")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "sealing voices decide")
+  flows:dispose()
+end
+
+function T.resolve_message_replaces_hardcoded_refusals_with_markers()
+  local catalog = ItemFixture.makeCatalog()
+  local function resolveMessage(key)
+    return "MARKER:" .. tostring(key)
+  end
+  local flows = coordinator(catalog, { resolveMessage = resolveMessage })
+  local fainted = {
+    { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 0, maxHp = 30 },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+  local options = switchOptions(2)
+  Assert.isTrue(flows:open(partyIntent({ party = fainted, options = options })), "the fainted roster opens")
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(rows[1].reason, "MARKER:battle/party/message/no-energy", "fainted rows resolve their retail message")
+  flows:dispose()
+  local refused = coordinator(catalog, { resolveMessage = resolveMessage })
+  local noEffectOptions = itemOptions({
+    {
+      id = "item:POTION:1",
+      role = "item",
+      enabled = false,
+      reason = "no_effect",
+      display = { item = "POTION" },
+      choice = {
+        actor = { combatant = 1, activation = 5 },
+        kind = "item",
+        payload = { item = "POTION", target = { kind = "combatant", combatant = 1 } },
+      },
+    },
+  })
+  Assert.isTrue(refused:open(bagIntent({ POTION = 5 }, noEffectOptions)), "the refused bag opens")
+  walkToMedicine(refused)
+  local bagView = refused:status().childView --[[@as table<string, unknown>]]
+  local bagRows = bagView.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(
+    bagRows[1].reason,
+    "MARKER:battle/narration/item-no-effect",
+    "refused servings resolve their retail message"
+  )
+  refused:dispose()
+end
+
+---@return table<integer, table<string, unknown>> roster with moves on the reserve
+local function moveRoster()
+  return {
+    { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+    {
+      combatant = 2,
+      slot = 1,
+      name = "BACK",
+      level = 5,
+      hp = 10,
+      maxHp = 18,
+      moves = {
+        { move = "TACKLE", name = "Tackle", pp = 5, maxPp = 35 },
+        { move = "GROWL", name = "Growl", pp = 40, maxPp = 40 },
+      },
+    },
+  }
+end
+
+---@return table<integer, table<string, unknown>> roster with summary facts on the lead
+local function summaryRoster()
+  return {
+    {
+      combatant = 1,
+      slot = 0,
+      name = "LEAD",
+      level = 20,
+      hp = 30,
+      maxHp = 30,
+      gender = "male",
+      ability = "RUN_AWAY",
+      heldItem = "POTION",
+      attack = 12,
+      defense = 10,
+      speed = 11,
+      specialAttack = 9,
+      specialDefense = 10,
+      nextExp = 37,
+      moves = {
+        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical" },
+      },
+    },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+end
+
+---@param flows table<string, unknown> coordinator under test driving
+---@return table<string, unknown> open summary page view
+local function openLeadSummary(flows)
+  Assert.isTrue(
+    flows:open(partyIntent({ party = summaryRoster(), options = switchOptions(2) })),
+    "the party opens"
+  )
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  Assert.equal(flows:status().childView.partyPage, "mon_menu", "selecting a mon opens its menu")
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(view.partyPage, "summary", "SUMMARY opens the summary page")
+  return view
+end
+
+---@param view table<string, unknown> projected child view under inspection
+---@return table<string, table<string, unknown>> projected rows by stable identity
+local function rowsById(view)
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  local byId = {} ---@type table<string, table<string, unknown>>
+  for _, row in ipairs(rows) do
+    byId[tostring(row.id)] = row
+  end
+  return byId
+end
+
+-- The summary page shows its staged stat block: mon name and gender,
+-- level, remaining experience, HP, the five battle stats, ability, and
+-- held item resolve through their msg 0006 keys in retail order ahead of
+-- the existing navigation rows.
+-- The summary page shows its staged stat block: mon name and gender,
+-- level, remaining experience, HP, the five battle stats, ability, and
+-- held item resolve through their msg 0006 keys in retail order ahead of
+-- the existing navigation rows. The counting resolver pins the exact
+-- substitution count behind every template key.
+function T.party_summary_shows_its_staged_stat_block()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog, {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local view = openLeadSummary(flows)
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  local ids = {}
+  for _, row in ipairs(rows) do
+    ids[#ids + 1] = row.id
+  end
+  Assert.deepEqual(ids, {
+    "summary:mon",
+    "summary:level",
+    "summary:exp",
+    "summary:hp",
+    "summary:attack",
+    "summary:defense",
+    "summary:speed",
+    "summary:sp-attack",
+    "summary:sp-defense",
+    "summary:ability",
+    "summary:item",
+    "summary:prev",
+    "summary:next",
+    "summary:moves",
+    "back",
+  }, "the summary page carries its stat block in retail order")
+  local byId = rowsById(view)
+  Assert.equal(
+    byId["summary:mon"].label,
+    "MARKER:battle/party/mon-name/0#1",
+    "the mon row resolves its staged name template with its nickname"
+  )
+  Assert.equal(
+    byId["summary:mon"].sub,
+    "MARKER:battle/party/gender/male#0",
+    "the mon row resolves its staged gender symbol"
+  )
+  Assert.equal(
+    byId["summary:level"].label,
+    "MARKER:battle/party/stat/level#0",
+    "level resolves its label"
+  )
+  Assert.equal(
+    byId["summary:level"].detail,
+    "MARKER:battle/party/stat/level-value#1",
+    "level resolves its value with its count"
+  )
+  Assert.equal(
+    byId["summary:exp"].label,
+    "MARKER:battle/party/stat/exp#0",
+    "remaining experience resolves its label"
+  )
+  Assert.equal(
+    byId["summary:exp"].detail,
+    "MARKER:battle/party/stat/exp-value#1",
+    "remaining experience resolves its value with its count"
+  )
+  Assert.equal(
+    byId["summary:hp"].label,
+    "MARKER:battle/party/stat/hp#0",
+    "HP resolves its label"
+  )
+  Assert.equal(
+    byId["summary:hp"].detail,
+    "MARKER:battle/party/stat/hp-current#1MARKER:battle/party/stat/hp-slash#0MARKER:battle/party/stat/hp-max#1",
+    "HP resolves its current, slash, and maximum parts"
+  )
+  Assert.equal(
+    byId["summary:attack"].label,
+    "MARKER:battle/party/stat/attack#0",
+    "attack resolves its staged label"
+  )
+  Assert.equal(
+    byId["summary:attack"].detail,
+    "MARKER:battle/party/stat/attack-value#1",
+    "attack resolves its staged value with its stat"
+  )
+  Assert.equal(
+    byId["summary:speed"].detail,
+    "MARKER:battle/party/stat/speed-value#1",
+    "speed resolves its staged value with its stat"
+  )
+  Assert.equal(
+    byId["summary:ability"].label,
+    "MARKER:battle/party/ability/name#1",
+    "ability resolves its staged template with its name"
+  )
+  Assert.equal(
+    byId["summary:item"].label,
+    "MARKER:battle/party/item/name#1",
+    "the held item resolves its staged template with its name"
+  )
+  flows:dispose()
+end
+
+-- Without a borrowed message resolver the summary rows keep their
+-- English fallbacks: names and numbers stay readable while the suite
+-- proves the row structure.
+function T.party_summary_falls_back_without_a_resolver()
+  local flows = coordinator(ItemFixture.makeCatalog())
+  local view = openLeadSummary(flows)
+  local byId = rowsById(view)
+  Assert.equal(byId["summary:mon"].label, "LEAD", "the mon row falls back to its name")
+  Assert.equal(byId["summary:mon"].sub, "♂", "the mon row falls back to its gender symbol")
+  Assert.equal(byId["summary:level"].label, "Lv.", "level falls back to its retail label")
+  Assert.equal(byId["summary:level"].detail, "20", "level falls back to its number")
+  Assert.equal(byId["summary:exp"].label, "NEXT LV", "remaining experience falls back to its label")
+  Assert.equal(byId["summary:exp"].detail, "37", "remaining experience falls back to its count")
+  Assert.equal(byId["summary:hp"].detail, "30/30", "HP falls back to its counts")
+  Assert.equal(byId["summary:attack"].label, "ATTACK", "attack falls back to its label")
+  Assert.equal(byId["summary:attack"].detail, "12", "attack falls back to its number")
+  Assert.equal(byId["summary:sp-defense"].detail, "10", "special defense falls back to its number")
+  Assert.equal(byId["summary:ability"].label, "RUN_AWAY", "ability falls back to its key")
+  -- The unit coordinator borrows the item catalog but no mon catalog:
+  -- the held item resolves through the catalog while the ability keeps
+  -- its key.
+  Assert.equal(byId["summary:item"].label, "Potion", "the held item resolves through the item catalog")
+  flows:dispose()
+end
+
+-- The move list names its entries through their staged per-slot
+-- templates while keeping the existing PP facts.
+function T.party_move_list_labels_resolve_their_staged_names()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog, {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local view = openLeadSummary(flows)
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  local byId = rowsById(moves)
+  Assert.equal(
+    byId["move:0"].label,
+    "MARKER:battle/party/move-name/0#1",
+    "the move resolves its staged per-slot template with its name"
+  )
+  Assert.equal(
+    byId["move:0"].sub,
+    "MARKER:battle/party/move/pp#0 35/35",
+    "the move keeps its staged PP facts"
+  )
+  flows:dispose()
+end
+
+-- The move-detail page shows its staged words: mon name, move name,
+-- power, accuracy, category, and the PP parts through their msg 0006
+-- keys.
+function T.party_move_detail_shows_its_staged_words()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog, {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local view = openLeadSummary(flows)
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
+  flows:tick()
+  local detail = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(detail.partyPage, "move_detail", "a move opens its detail")
+  local byId = rowsById(detail)
+  Assert.equal(
+    byId["move_detail:mon"].label,
+    "MARKER:battle/party/mon-name/0#1",
+    "the detail resolves its staged mon-name template"
+  )
+  Assert.equal(
+    byId["move_detail:move"].label,
+    "MARKER:battle/party/move-name/0#1",
+    "the detail resolves its staged move-name template with its name"
+  )
+  Assert.equal(
+    byId["move_detail:power"].label,
+    "MARKER:battle/party/move/power#0",
+    "power resolves its staged label"
+  )
+  Assert.equal(
+    byId["move_detail:power"].detail,
+    "MARKER:battle/party/move/power-value#1",
+    "power resolves its staged value with its count"
+  )
+  Assert.equal(
+    byId["move_detail:accuracy"].detail,
+    "MARKER:battle/party/move/accuracy-value#1",
+    "accuracy resolves its staged value with its count"
+  )
+  Assert.equal(
+    byId["move_detail:category"].detail,
+    "MARKER:battle/party/move/category-physical#0",
+    "the category resolves its staged physical word"
+  )
+  Assert.equal(
+    byId["move_detail:pp"].label,
+    "MARKER:battle/party/move/pp-label#0",
+    "the detail PP resolves its staged header"
+  )
+  Assert.equal(
+    byId["move_detail:pp"].detail,
+    "MARKER:battle/party/move/pp-current#1MARKER:battle/party/move/pp-slash#0MARKER:battle/party/move/pp-max#1",
+    "the detail PP resolves its current, slash, and maximum parts"
+  )
+  flows:dispose()
+end
+
+-- The last-used shortcut honors the intent: a stocked last-used item
+-- enables its row with its icon demand, while an absent or unstocked
+-- one stays disabled without sound.
+function T.bag_last_used_shortcut_honors_its_intent()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog)
+  local intent = bagIntent({ POTION = 5 }, itemOptions({}))
+  intent.lastUsed = { item = "POTION", pocket = 0 }
+  Assert.isTrue(flows:open(intent), "the stocked last-used bag opens")
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  local lastUsed = nil
+  for _, row in ipairs(rows) do
+    if row.id == "last_used" then
+      lastUsed = row
+    end
+  end
+  Assert.notNil(lastUsed, "the pocket menu carries its last-used row")
+  assert(lastUsed ~= nil, "the last-used row resolved")
+  Assert.isTrue(lastUsed.enabled, "the stocked shortcut enables its row")
+  Assert.isNil(lastUsed.empty, "the stocked shortcut paints its row")
+  flows:dispose()
+  local bare = coordinator(catalog)
+  Assert.isTrue(bare:open(bagIntent({ POTION = 5 }, itemOptions({}))), "the plain bag opens")
+  local bareView = bare:status().childView --[[@as table<string, unknown>]]
+  local bareRows = bareView.rows --[[@as table<integer, table<string, unknown>>]]
+  for _, row in ipairs(bareRows) do
+    if row.id == "last_used" then
+      Assert.isFalse(row.enabled == true, "no source keeps the shortcut disabled")
+    end
+  end
+  bare:dispose()
+end
+
+function T.party_summary_and_check_moves_navigate_without_sealing()
+  local catalog = ItemFixture.makeCatalog()
+  local plays = {}
+  local flows = coordinator(catalog, {
+    audioEffect = function(symbol)
+      plays[#plays + 1] = symbol
+    end,
+  })
+  Assert.isTrue(flows:open(partyIntent({ party = moveRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:1"), "the reserve takes its tap")
+  flows:tick()
+  Assert.isNil(flows:takeResult(), "opening the mon menu seals nothing")
+  local menu = flows:status().childView
+  Assert.equal(menu.partyPage, "mon_menu", "selecting a mon opens its menu")
+  -- SUMMARY is the second mon-menu entry for non-eggs. The menu press
+  -- gate arms and dispatches across ticks, like the native Switch press.
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  Assert.isNil(flows:takeResult(), "SUMMARY seals no reply")
+  Assert.equal(flows:status().childView.partyPage, "summary", "SUMMARY opens the summary page")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "opening summary voices decide")
+  -- Prev/next mon steps across occupied slots without sealing.
+  drive(flows, { type = "navigate", direction = "left" })
+  Assert.isNil(flows:takeResult(), "summary paging seals no reply")
+  Assert.equal(flows:status().childView.pageSlot, 0, "left steps to the lead mon")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "summary paging voices decide")
+  drive(flows, { type = "navigate", direction = "right" })
+  Assert.equal(flows:status().childView.pageSlot, 1, "right steps back to the reserve")
+  -- CHECK MOVES from the summary page opens the move list.
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  Assert.isNil(flows:takeResult(), "CHECK MOVES seals no reply")
+  Assert.equal(flows:status().childView.partyPage, "moves", "moves opens the move list")
+  -- Move detail opens from the move list without sealing.
+  Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
+  flows:tick()
+  Assert.isNil(flows:takeResult(), "move detail seals no reply")
+  Assert.equal(flows:status().childView.partyPage, "move_detail", "a move opens its detail")
+  drive(flows, { type = "cancel" })
+  Assert.equal(flows:status().childView.partyPage, "moves", "detail back returns to the move list")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "detail back voices decide")
+  Assert.isTrue(flows:activateControl("moves:summary"), "the moves summary button takes its tap")
+  flows:tick()
+  Assert.equal(flows:status().childView.partyPage, "summary", "moves summary returns to summary")
+  drive(flows, { type = "cancel" })
+  Assert.equal(flows:status().childView.partyPage, "mon_menu", "summary back returns to the mon menu")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "summary back voices decide")
+  flows:dispose()
+end
+
+function T.party_eggs_offer_only_shift_and_back()
+  local flows = coordinator()
+  local roster = {
+    { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+    { combatant = 2, slot = 1, name = "EGG", level = 5, hp = 10, maxHp = 18, isEgg = true },
+  }
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = switchOptions(2) })), "the egg roster opens")
+  Assert.isTrue(flows:activateControl("party:1"), "the egg takes its tap")
+  flows:tick()
+  local menu = flows:status().childView
+  Assert.equal(menu.partyPage, "mon_menu", "selecting the egg opens its menu")
+  local labels = {}
+  for _, row in ipairs(menu.rows) do
+    labels[#labels + 1] = row.id
+  end
+  Assert.deepEqual(labels, { "switch", "back" }, "eggs hide summary and check-moves")
+  flows:dispose()
+end
+
+-- Retail party-target embargo (battle_party_menu.c TryUseItemOnMon msg 95,
+-- battle/party/message/embargo): the chosen mon is refused while its
+-- field slot carries Embargo, resetting the selection instead of
+-- sealing, while a healthy holder still seals. Subs name the Embargo
+-- move and the holder nickname like the bag embargo message.
+function T.item_target_embargo_refuses_its_slot_while_healthy_seals()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog, {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local options = itemOptions({ itemChoice("POTION", 1, true), itemChoice("POTION", 2, true) })
+  local roster = {
+    { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30, embargoed = true },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+  local intent = bagIntent({ POTION = 5 }, options)
+  intent.party = roster
+  Assert.isTrue(flows:open(intent), "the stocked bag opens")
+  walkToMedicine(flows)
+  useBagItem(flows)
+  Assert.equal(flows:status().kind, "target", "the serving opens its target list")
+  -- The embargoed lead refuses with its staged party message instead
+  -- of sealing: the picker shows the text over the list and keeps the
+  -- target open.
+  Assert.isTrue(flows:activateControl("party:0"), "the embargoed slot takes its tap")
+  flows:tick()
+  flows:tick()
+  Assert.isNil(flows:takeResult(), "the embargoed slot seals no reply")
+  local refused = flows._composed._target._controller:status()
+  Assert.equal(
+    refused.message,
+    "MARKER:battle/party/message/embargo#2",
+    "the embargoed slot names its staged party key with move and holder"
+  )
+  -- Dismiss the refusal back to the target list, like retail resetting
+  -- selectedMon to 6 instead of sealing.
+  drive(flows, { type = "confirm" })
+  flows:tick()
+  -- A healthy holder still seals its kernel fragment.
+  Assert.isTrue(flows:activateControl("party:1"), "the healthy slot takes its tap")
+  flows:tick()
+  flows:tick()
+  local result = flows:takeResult()
+  Assert.notNil(result, "the healthy slot seals its reply")
+  Assert.equal(result.kind, "choice", "the healthy slot stages a choice")
+  Assert.equal(result.reply.choices[1].payload.target.combatant, 2, "the healthy fragment names its holder")
   flows:dispose()
 end
 

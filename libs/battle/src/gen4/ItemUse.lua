@@ -37,7 +37,7 @@ ItemUse.CONSUMPTION_CHECKPOINT = "item_use"
 ---@field moveSlot integer? zero-based move slot for PP use
 
 ---@class BattleItemEffectOperation
----@field kind string operation vocabulary, restore and cure for servings and capture for thrown balls
+---@field kind string operation vocabulary, restore and cure for servings, capture for thrown balls, flee for escape dolls
 ---@field amount integer? computed restoration of restore operations, nil otherwise
 ---@field slot integer? zero-based move slot for PP restoration
 ---@field maximum integer? maximum PP for PP restoration
@@ -216,6 +216,7 @@ local function semanticEntry(item, itemFacts)
       and key ~= "naturalGift"
       and key ~= "fling"
       and key ~= "lowHpOnly"
+      and key ~= "battleUseFunc"
       and key ~= "pocket"
     then
       error(BattleErrors.missingBehavior("battle item facts carry only their generated facts", {
@@ -648,18 +649,28 @@ function ItemUse.plan(choice, view, itemFacts, moveFacts)
   if CaptureContext.isBall(item) then
     operations[#operations + 1] = { kind = "capture", target = copyTarget(target) }
   else
-    local moveSlot = type(named) == "table" and (named --[[@as BattleItemChoice]]).moveSlot or nil
-    operations =
-      planServing(item --[[@as string]], target --[[@as BattleItemTarget]], view, itemFacts, moveFacts, moveSlot)
-    if #operations == 0 then
-      return {
-        item = item,
-        inventoryId = inventoryId,
-        target = target,
-        effectOperations = {},
-        consumptionCheckpoint = ItemUse.CONSUMPTION_CHECKPOINT,
-        failureReason = "no_effect",
-      }
+    -- Retail escape dolls (battle_controller_player.c ~1747,
+    -- BATTLE_SUBSCRIPT_ESCAPE_ITEM): wild use consumes one unit and
+    -- flees outright. The generated battle use-function names them
+    -- (dolls ride 3, servings 2, battle-only stats 0); party use stays
+    -- "none" so only this branch classifies them.
+    local entry = semanticEntry(item --[[@as string]], itemFacts)
+    if entry.battleUseFunc == 3 then
+      operations[#operations + 1] = { kind = "flee", target = copyTarget(target) }
+    else
+      local moveSlot = type(named) == "table" and (named --[[@as BattleItemChoice]]).moveSlot or nil
+      operations =
+        planServing(item --[[@as string]], target --[[@as BattleItemTarget]], view, itemFacts, moveFacts, moveSlot)
+      if #operations == 0 then
+        return {
+          item = item,
+          inventoryId = inventoryId,
+          target = target,
+          effectOperations = {},
+          consumptionCheckpoint = ItemUse.CONSUMPTION_CHECKPOINT,
+          failureReason = "no_effect",
+        }
+      end
     end
   end
   return {
@@ -905,6 +916,15 @@ function ItemUse.execute(plan, battle, rng)
   if CaptureContext.isBall(executable.item) then
     executable.executed = true
     return { consumed = true, result = { ball = executable.item, target = target.combatant } }
+  end
+  for _, operation in
+    ipairs(executable.effectOperations --[[@as BattleItemEffectOperation[] ]])
+  do
+    local effect = operation --[[@as BattleItemEffectOperation]]
+    if effect.kind == "flee" then
+      executable.executed = true
+      return { consumed = true, fled = true, target = copyTarget(target) }
+    end
   end
   local restored, restoredPp = applyServing(executable, battle, holder)
   if

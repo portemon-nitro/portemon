@@ -236,13 +236,18 @@ function T.bag_child_stages_value_only_intents_over_detached_stock()
   assert(child ~= nil, "the bag child composes")
   Assert.equal(child:application(), "bag", "the bag child carries its native receipt")
   Assert.isNil(child:takeResult(), "opening consumes the initiating edge: nothing is staged")
-  child:input({ { type = "navigate", direction = "up" } })
-  child:input({ { type = "navigate", direction = "right" } })
-  child:input({ { type = "navigate", direction = "down" } })
+  Assert.equal(child:draw().bagPage, "pocket_menu", "the bag opens on its pocket menu")
+  child:input({ { type = "tap", id = "bagpocket:0" } })
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  Assert.equal(child:draw().bagPage, "item_list", "selecting a pocket opens its item list")
   child:input({ { type = "confirm" } })
   child:stepSourceTick(1)
   child:stepSourceTick(1)
-  Assert.equal(child:draw().state, "action_menu", "selecting a cell opens the native Use action")
+  child:stepSourceTick(1)
+  Assert.equal(child:draw().state, "use_item", "selecting a cell opens the use-item page")
+  Assert.equal(child:draw().bagPage, "use_item", "selecting a cell opens the use-item page")
   child:input({ { type = "confirm" } })
   for _ = 1, 8 do
     child:stepSourceTick(1)
@@ -264,8 +269,18 @@ function T.empty_stock_composes_a_resting_browser_without_sealing()
   Assert.notNil(child, "the empty bag composes: " .. tostring(openErr))
   assert(child ~= nil, "the empty bag child composes")
   Assert.equal(child:application(), "bag", "the resting browser carries its native receipt")
+  Assert.equal(child:draw().bagPage, "pocket_menu", "the empty bag opens on its pocket menu")
   child:input({ { type = "confirm" } })
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  Assert.equal(child:draw().bagPage, "item_list", "confirming an empty pocket lists nothing")
   Assert.isNil(child:takeResult(), "confirming an empty browser stages nothing")
+  child:input({ { type = "cancel" } })
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  child:stepSourceTick(1)
+  Assert.equal(child:draw().bagPage, "pocket_menu", "list cancel returns to the pocket menu")
   child:input({ { type = "cancel" } })
   local result = child:takeResult()
   Assert.notNil(result, "cancelling the empty browser answers")
@@ -565,8 +580,8 @@ function T.naming_cancel_reports_once_without_sealing_text()
 end
 
 -- Native Bag authority behind the battle barrier: navigation edges wait for
--- the accepted source tick, an empty-cell tap moves the native focus
--- without staging, a ball binds its projected foe target, a refused item
+-- the accepted source tick, an empty-cell tap stages nothing and moves no
+-- focus, a ball binds its projected foe target, a refused item
 -- never consumes stock, and target cancel restores the resting browse.
 function T.native_bag_focus_and_target_continuation()
   local catalog = ItemFixture.makeCatalog()
@@ -613,33 +628,36 @@ function T.native_bag_focus_and_target_continuation()
     Assert.notNil(view, "the open child projects its view")
     return assert(view.focusId, "the bag projects its focus")
   end
-  step({ { type = "navigate", direction = "up" } })
-  step({ { type = "navigate", direction = "right" } })
-  step({ { type = "navigate", direction = "down" } })
-  Assert.equal(flows:status().childView.currentPocket, "medicine", "keys reach the serving pocket")
+  Assert.equal(flows:status().childView.bagPage, "pocket_menu", "the bag opens on its pocket menu")
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  Assert.equal(flows:status().childView.currentPocket, "hp_pp", "taps reach the serving pocket")
   Assert.equal(focusId(), "bag:0", "the serving cell owns the opening focus")
   -- A bare input moves no focus: edges wait for the accepted tick.
   flows:update({ { type = "navigate", direction = "down" } })
   Assert.equal(focusId(), "bag:0", "the navigation edge waits for the accepted source tick")
   flows:tick()
-  Assert.equal(focusId(), "bag:2", "the accepted tick applies the buffered edge once")
-  step({ { type = "navigate", direction = "up" } })
-  Assert.equal(focusId(), "bag:0", "the return edge restores the serving focus")
-  -- Tapping an empty cell moves the native focus without staging.
+  Assert.equal(focusId(), "bag:2", "the cursor roams onto the empty cell")
+  -- The d-pad cursor roams freely, even onto empty cells: only a stocked
+  -- cell stages. Touch never moves the dpad cursor
+  -- (battle_bag_menu.c cursor boxes versus CheckTouchHitbox).
   Assert.isTrue(flows:activateControl("bag:1"), "the empty cell tap belongs to the open child")
   flows:tick()
-  Assert.equal(focusId(), "bag:1", "the tap moves the native focus onto the empty cell")
-  Assert.isNil(flows:takeResult(), "focusing the empty cell stages nothing")
-  Assert.isTrue(flows:activateControl("bag:0"), "the serving cell tap belongs to the open child")
-  flows:tick()
-  Assert.equal(focusId(), "bag:0", "the tap returns the native focus to the serving cell")
-  -- The source bag opens its Use action after selecting a cell. The
-  -- battle barrier must wait for that action before opening a target.
+  Assert.equal(focusId(), "bag:2", "the empty tap moves no cursor and stages nothing")
+  Assert.isNil(flows:takeResult(), "the empty tap stages nothing")
+  step({ { type = "navigate", direction = "up" } })
+  Assert.equal(focusId(), "bag:0", "keys return the cursor to the serving cell")
+  -- Selecting a cell opens the use-item page. The battle barrier must
+  -- wait for USE before opening a target.
   step({ { type = "confirm" } })
   flows:tick()
+  flows:tick()
+  flows:tick()
   Assert.equal(flows:status().kind, "bag", "selecting an item keeps the native bag open")
-  Assert.equal(flows:status().childView.native.state, "action_menu", "item selection opens the native Use menu")
-  Assert.isNil(flows:takeResult(), "opening the Use menu stages no battle intent")
+  Assert.equal(flows:status().childView.bagPage, "use_item", "item selection opens the use-item page")
+  Assert.isNil(flows:takeResult(), "opening the use-item page stages no battle intent")
   step({ { type = "confirm" } })
   for _ = 1, 8 do
     flows:tick()
@@ -653,9 +671,13 @@ function T.native_bag_focus_and_target_continuation()
   )
   step({ { type = "cancel" } })
   Assert.equal(flows:status().kind, "bag", "target cancel reactivates the bag")
-  Assert.equal(flows:status().childView.currentPocket, "medicine", "target cancel keeps the resting pocket")
+  Assert.equal(flows:status().childView.currentPocket, "hp_pp", "target cancel keeps the resting pocket")
   Assert.equal(focusId(), "bag:0", "target cancel keeps the serving focus")
   Assert.isNil(flows:takeResult(), "target cancel seals no reply")
+  step({ { type = "cancel" } })
+  flows:tick()
+  flows:tick()
+  Assert.equal(flows:status().childView.bagPage, "pocket_menu", "list cancel returns to the pocket menu")
   step({ { type = "cancel" } })
   local cancelled = flows:takeResult()
   Assert.notNil(cancelled, "bag cancel answers")
@@ -686,16 +708,13 @@ function T.native_bag_focus_and_target_continuation()
   }
   local thrown = BattleSubflows.new({ launchId = "launch-native-bag", itemCatalog = catalog })
   Assert.isTrue(thrown:open(healingIntent({ POKE_BALL = 5 }, ballActors)), "the ball bag opens")
-  thrown:update({ { type = "navigate", direction = "up" } })
+  Assert.isTrue(thrown:activateControl("bagpocket:2"), "the BALLS pocket takes its tap")
   thrown:tick()
-  thrown:update({ { type = "navigate", direction = "right" } })
   thrown:tick()
-  thrown:update({ { type = "navigate", direction = "right" } })
   thrown:tick()
-  thrown:update({ { type = "navigate", direction = "down" } })
-  thrown:tick()
-  Assert.equal(thrown:status().childView.currentPocket, "balls", "keys reach the ball pocket")
+  Assert.equal(thrown:status().childView.currentPocket, "balls", "taps reach the ball pocket")
   thrown:update({ { type = "confirm" } })
+  thrown:tick()
   thrown:tick()
   thrown:tick()
   thrown:update({ { type = "confirm" } })
@@ -714,6 +733,206 @@ function T.native_bag_focus_and_target_continuation()
   )
   Assert.isNil(thrown:takeResult(), "the throw reports exactly once")
   thrown:dispose()
+end
+-- Retail bag navigation edges (battle_bag_menu.c states 2 and 7): turning
+-- the item-list page resets the cell to the first slot, a disabled
+-- last-used touch is ignored without moving focus, and the d-pad walks
+-- down from the bottom row onto Back, which returns to the pocket menu.
+function T.battle_bag_retail_navigation_edges()
+  local catalog = ItemFixture.makeCatalog()
+  local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
+  local stock = {
+    ITEM_1 = 1,
+    ITEM_2 = 1,
+    ITEM_5 = 1,
+    ITEM_6 = 1,
+    ITEM_8 = 1,
+    ITEM_9 = 1,
+    ITEM_10 = 1,
+    ITEM_12 = 1,
+  }
+  local flows = BattleSubflows.new({ launchId = "launch-composer-child", itemCatalog = catalog })
+  Assert.isTrue(flows:open(bagIntent(stock)), "the crowded bag opens")
+  local function step(events)
+    flows:update(events)
+    flows:tick()
+  end
+  local function focusId()
+    local view = flows:status().childView
+    Assert.notNil(view, "the open child projects its view")
+    return assert(view.focusId, "the bag projects its focus")
+  end
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  Assert.equal(focusId(), "bag:0", "the pocket opens on its first cell")
+  -- A disabled last-used touch is ignored without moving focus
+  -- (HandlePocketMenuInput breaks when lastUsedItem is none).
+  step({ { type = "cancel" } })
+  flows:tick()
+  flows:tick()
+  Assert.equal(flows:status().childView.bagPage, "pocket_menu", "setup: list cancel returns to the pocket menu")
+  Assert.isTrue(flows:activateControl("last_used"), "the disabled shortcut takes its tap")
+  flows:tick()
+  Assert.equal(focusId(), "bagpocket:0", "the disabled shortcut keeps the pocket focus")
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap again")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  step({ { type = "navigate", direction = "down" } })
+  step({ { type = "navigate", direction = "down" } })
+  Assert.equal(focusId(), "bag:4", "setup: keys walk to the bottom row")
+  -- Turning the page resets the saved cell (ChangeItemPage clears
+  -- pocketPositions) while the cursor keeps its box: re-entering the
+  -- pocket lands on the first cell.
+  Assert.isTrue(flows:activateControl("page_next"), "the next-page stepper takes its tap")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  local turned = flows:status().childView
+  Assert.notNil(turned, "the turned page projects its view")
+  Assert.equal(turned.bagPage, "item_list", "the page turn stays on the list")
+  Assert.equal(turned.page.current, 2, "the stepper advances the page")
+  Assert.equal(focusId(), "bag:4", "the cursor keeps its box across the turn")
+  Assert.isTrue(flows:activateControl("back"), "the list Back takes its tap")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap again")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  Assert.equal(focusId(), "bag:0", "re-entering the pocket lands on the reset cell")
+  flows:dispose()
+  -- The d-pad walks down from the bottom row onto Back (the seventh
+  -- item-list cursor box), and confirming Back returns to the pocket
+  -- menu like the retail cancel button.
+  local short = BattleSubflows.new({ launchId = "launch-composer-child", itemCatalog = catalog })
+  local shortStock = { ITEM_1 = 1, ITEM_2 = 1, ITEM_5 = 1, ITEM_6 = 1, ITEM_8 = 1, POTION = 1 }
+  Assert.isTrue(short:open(bagIntent(shortStock)), "the single-page bag opens")
+  local function shortStep(events)
+    short:update(events)
+    short:tick()
+  end
+  local function shortFocus()
+    local view = short:status().childView
+    Assert.notNil(view, "the open child projects its view")
+    return assert(view.focusId, "the bag projects its focus")
+  end
+  Assert.isTrue(short:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap")
+  short:tick()
+  short:tick()
+  short:tick()
+  shortStep({ { type = "navigate", direction = "down" } })
+  Assert.equal(shortFocus(), "bag:2", "setup: keys walk to the middle row")
+  shortStep({ { type = "navigate", direction = "down" } })
+  Assert.equal(shortFocus(), "bag:4", "setup: keys walk to the bottom row")
+  shortStep({ { type = "navigate", direction = "down" } })
+  Assert.equal(shortFocus(), "back", "down from the bottom row focuses Back")
+  shortStep({ { type = "confirm" } })
+  short:tick()
+  short:tick()
+  Assert.equal(short:status().childView.bagPage, "pocket_menu", "confirming Back returns to the pocket menu")
+  short:dispose()
+end
+-- Retail battle cursor memory (battle_bag_menu.c Create/Exit): the bag
+-- reopens on its last pocket with each pocket's page and cell restored,
+-- and sealing an item carries the new cursor for the next opening.
+function T.battle_bag_restores_and_reports_its_cursor()
+  local catalog = ItemFixture.makeCatalog()
+  local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
+  local stock = {
+    ITEM_1 = 1,
+    ITEM_2 = 1,
+    ITEM_5 = 1,
+    ITEM_6 = 1,
+    ITEM_8 = 1,
+    ITEM_9 = 1,
+    ITEM_10 = 1,
+    ITEM_12 = 1,
+    POKE_BALL = 3,
+  }
+  local intent = bagIntent(stock)
+  intent.battleCursor = {
+    pocket = 2,
+    pages = { [0] = 1, [1] = 0, [2] = 0, [3] = 0 },
+    positions = { [0] = 3, [1] = 0, [2] = 0, [3] = 0 },
+  }
+  local flows = BattleSubflows.new({ launchId = "launch-composer-child", itemCatalog = catalog })
+  Assert.isTrue(flows:open(intent), "the bag opens behind its saved cursor")
+  local view = flows:status().childView
+  Assert.notNil(view, "the open bag projects its view")
+  Assert.equal(view.focusId, "bagpocket:2", "the pocket menu reopens on the saved pocket")
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  local listed = flows:status().childView
+  Assert.notNil(listed, "the pocket projects its view")
+  Assert.equal(listed.page.current, 2, "the pocket reopens on its saved page")
+  Assert.equal(listed.focusId, "bag:3", "the pocket reopens on its saved cell")
+  flows:dispose()
+  -- Sealing an item reports the new cursor with the sealed pocket.
+  local ballChoice = itemChoice("POKE_BALL", 9)
+  ballChoice.choice.payload.target = { kind = "combatant", combatant = 9 }
+  local ballIntent = bagIntent({ POKE_BALL = 3 })
+  ballIntent.options = {
+    requestId = 7,
+    epoch = 3,
+    controller = "player",
+    kind = "action",
+    actors = { { combatant = 1, activation = 5, kind = "action", choices = { ballChoice } } },
+  }
+  ballIntent.battleCursor = {
+    pocket = 0,
+    pages = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
+    positions = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
+  }
+  local thrown = BattleSubflows.new({ launchId = "launch-composer-child", itemCatalog = catalog })
+  Assert.isTrue(thrown:open(ballIntent), "the ball bag opens")
+  Assert.isTrue(thrown:activateControl("bagpocket:2"), "the BALLS pocket takes its tap")
+  thrown:tick()
+  thrown:tick()
+  thrown:tick()
+  thrown:update({ { type = "confirm" } })
+  thrown:tick()
+  thrown:tick()
+  thrown:tick()
+  thrown:update({ { type = "confirm" } })
+  thrown:tick()
+  for _ = 1, 8 do
+    thrown:tick()
+  end
+  local sealed = thrown:takeResult()
+  Assert.notNil(sealed, "the throw seals its reply")
+  assert(sealed ~= nil, "the sealed throw seals")
+  Assert.equal(sealed.kind, "choice", "the throw stages a choice")
+  local cursor = assert(sealed.cursor, "the sealed choice carries the new cursor") --[[@as table<string, unknown>]]
+  Assert.equal(cursor.pocket, 2, "the sealed cursor names the thrown pocket")
+  thrown:dispose()
+end
+-- The carried bag slot order reaches the browser listing: pockets list
+-- in saved-bag order instead of native-id order.
+function T.battle_bag_lists_in_carried_slot_order()
+  local catalog = ItemFixture.makeCatalog()
+  local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
+  local intent = bagIntent({ SITRUS_BERRY = 1, POTION = 1, ETHER = 1 })
+  intent.slotOrder = { "SITRUS_BERRY", "ETHER", "POTION" }
+  local flows = BattleSubflows.new({ launchId = "launch-composer-child", itemCatalog = catalog })
+  Assert.isTrue(flows:open(intent), "the ordered bag opens")
+  Assert.isTrue(flows:activateControl("bagpocket:0"), "the HP/PP pocket takes its tap")
+  flows:tick()
+  flows:tick()
+  flows:tick()
+  local native = flows:status().childView.native
+  Assert.notNil(native, "the pocket projects its native record")
+  local keys = {}
+  for _, entry in ipairs(native.slots) do
+    keys[#keys + 1] = entry.item
+  end
+  Assert.deepEqual(keys, { "SITRUS_BERRY", "ETHER", "POTION" }, "the pocket lists in bag order")
+  flows:dispose()
 end
 function T.target_picker_disposes_alone_behind_the_retained_browser()
   local catalog = ItemFixture.makeCatalog()

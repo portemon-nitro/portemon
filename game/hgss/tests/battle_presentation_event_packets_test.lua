@@ -1055,4 +1055,74 @@ function T.presentation_view_carries_semantic_foe_trainer_identity()
   Assert.isNil(absent.followMonSlot, "launches without a follower carry no slot")
 end
 
+-- The summary page reads its stat block from the presentation view: an
+-- own combatant record carries its ability, derived battle stats, and
+-- remaining experience beside the existing level and move facts, while a
+-- thin record without those source facts carries no invented values.
+function T.presentation_view_projects_own_summary_facts()
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x44444444, catalog)
+  local mon =
+    tackleOnly(factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 20, ability = "RUN_AWAY" })))
+  local snapshot = {
+    combatants = {
+      [1] = {
+        participant = 1,
+        mon = mon,
+        hp = 30,
+        maxHp = 30,
+        active = { position = 0, activation = 5 },
+        source = { kind = "party", slot = 1 },
+      },
+    },
+    combatantOrder = { 1 },
+    participants = { [1] = { controller = "player", side = 1 } },
+  }
+  local deps = { catalog = catalog }
+  local view = BattlePresentationModel.view(snapshot, {}, deps)
+  local own = assert(view.own[1], "the view carries its own record")
+  Assert.equal(own.ability, "RUN_AWAY", "the own record carries its ability")
+  local MonStats = require("libs.mons.src.gen4.MonStats")
+  local derived = MonStats.derive(mon, catalog)
+  Assert.equal(own.attack, derived.attack, "the own record carries its derived attack")
+  for _, stat in ipairs({ "defense", "speed", "specialAttack", "specialDefense" }) do
+    local value = own[stat]
+    Assert.isTrue(type(value) == "number" and value > 0, "the own record carries a positive " .. stat)
+  end
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local species = catalog:species("EEVEE")
+  local curve = assert(catalog:growthCurve(species.growthCurve), "the catalog carries the growth curve")
+  Assert.equal(
+    own.nextExp,
+    Experience.expFor(curve, 21) - mon.experience,
+    "the own record carries its remaining experience"
+  )
+  local move = assert(own.moves[1], "the own record carries its move")
+  local facts = catalog:move("TACKLE")
+  Assert.equal(move.power, facts.power, "the move carries its power")
+  Assert.equal(move.accuracy, facts.accuracy, "the move carries its accuracy")
+  Assert.equal(move.category, facts.category, "the move carries its category")
+  -- A thin record without source facts stays silent instead of
+  -- inventing ability, stats, or progression.
+  local thinMon = { species = "EEVEE", form = 0 }
+  local thin = BattlePresentationModel.view({
+    combatants = {
+      [1] = {
+        participant = 1,
+        mon = thinMon,
+        hp = 30,
+        maxHp = 30,
+        active = { position = 0, activation = 5 },
+        source = { kind = "party", slot = 1 },
+      },
+    },
+    combatantOrder = { 1 },
+    participants = { [1] = { controller = "player", side = 1 } },
+  }, {}, deps)
+  local thinOwn = assert(thin.own[1], "the view carries its thin record")
+  Assert.isNil(thinOwn.ability, "records without abilities carry none")
+  Assert.isNil(thinOwn.attack, "records without stats carry no attack")
+  Assert.isNil(thinOwn.nextExp, "records without progression carry no remaining experience")
+end
+
 return { tests = T }

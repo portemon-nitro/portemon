@@ -1710,6 +1710,12 @@ end
 ---@param stream BattleRng battle stream owned by the caller
 ---@return CriticalResult staged critical outcome for the strike
 local function strikeCritical(ctx, frame, user, defender, params, stream)
+  -- Retail lesson crits never happen (battle_command.c:1213,
+  -- BtlCmd_CalcCrit under BATTLE_TYPE_TUTORIAL sets multiplier 1): the
+  -- tutorial skips its critical draw like the accuracy early return.
+  if ctx:isTutorial() then
+    return { critical = false, multiplier = 1, stage = 0, divisor = 16, raw = 0 }
+  end
   local controls = params or {}
   local stage = controls.critStage or 0
   if ctx:hasBattleEffect(user, "focusenergy") then
@@ -2568,12 +2574,14 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   end
   local skipCheck = accuracy == nil or accuracy == 0
   local resolution
+  local tutorial = ctx:isTutorial()
   if skipCheck then
     resolution = Accuracy.resolve({
       target = { kind = "combatant" },
       cause = causeFor(frame),
       protected = protected,
       skipCheck = true,
+      tutorial = tutorial,
     }, stream)
   else
     resolution = Accuracy.resolve({
@@ -2583,6 +2591,7 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       protected = protected,
       accuracyStage = 0,
       evasionStage = 0,
+      tutorial = tutorial,
     }, stream)
   end
   if resolution.kind == "hit" or (forceHit and resolution.kind ~= "protected") then
@@ -2895,6 +2904,7 @@ local function runFriendship(ctx, frame, power)
     target = { kind = "combatant" },
     cause = causeFor(record),
     protected = false,
+    tutorial = ctx:isTutorial(),
   }
   local targets = record.targets --[[@as table<integer, unknown>]]
   local connected = false

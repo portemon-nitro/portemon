@@ -98,7 +98,7 @@ Schema.ENUMS = {
   -- Battle launch kinds: wild encounters, trainer battles, staged script
   -- fights, and fully explicit scenarios. Numeric source codes never
   -- appear at runtime (lowering converts them).
-  battle_kind = { "wild", "trainer", "scripted", "scenario" },
+  battle_kind = { "wild", "trainer", "scripted", "scenario", "tutorial" },
   -- Battle result read contexts: the ordinary won check and the static
   -- wild won-or-caught check.
   battle_result_context = { "battle_won", "static_wild_won_or_caught" },

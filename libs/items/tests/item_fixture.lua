@@ -35,18 +35,26 @@ ItemFixture.POCKET_NAMES = {
 -- placeholder below.
 local KNOWN = {
   NONE = { nativeId = 0, pocket = "items", battlePocket = 0 },
-  POKE_BALL = { nativeId = 4, pocket = "balls", isBall = true, battlePocket = 1 },
-  GREAT_BALL = { nativeId = 3, pocket = "balls", isBall = true, battlePocket = 1 },
-  LUXURY_BALL = { nativeId = 11, pocket = "balls", isBall = true, battlePocket = 1 },
+  POKE_BALL = { nativeId = 4, pocket = "balls", isBall = true, battlePocket = 1, battleUseFunc = 1 },
+  GREAT_BALL = { nativeId = 3, pocket = "balls", isBall = true, battlePocket = 1, battleUseFunc = 1 },
+  LUXURY_BALL = { nativeId = 11, pocket = "balls", isBall = true, battlePocket = 1, battleUseFunc = 1 },
   -- The wild-capture scenario stocks this ball. The synthetic identity
   -- avoids displacing the ITEM_1 placeholder other suites stock; battle capture keys balls by semantic key, so no
   -- behavior depends on it. Production catalogs carry the retail identity.
-  MASTER_BALL = { nativeId = 7, pocket = "balls", isBall = true, battlePocket = 1 },
-  SMOKE_BALL = { nativeId = 228, pocket = "items", name = "Smoke Ball", battlePocket = 2 },
+  MASTER_BALL = { nativeId = 7, pocket = "balls", isBall = true, battlePocket = 1, battleUseFunc = 1 },
+  SMOKE_BALL = { nativeId = 228, pocket = "items", name = "Smoke Ball", battlePocket = 2, battleUseFunc = 0 },
+  -- Retail escape dolls (ITEMATTR_BATTLEUSEFUNC 3): trainer battles refuse
+  -- them with the no-stealing message, wild battles consume them to flee.
+  POKE_DOLL = { nativeId = 63, pocket = "items", name = "Poke Doll", battlePocket = 2, battleUseFunc = 3 },
+  FLUFFY_TAIL = { nativeId = 64, pocket = "items", name = "Fluffy Tail", battlePocket = 2, battleUseFunc = 3 },
+  -- Retail embargo exception (battle_bag_menu.c TryUseItem): guard spec
+  -- bypasses embargo even though its battle use-function is 0.
+  GUARD_SPEC = { nativeId = 55, pocket = "items", name = "Guard Spec.", battlePocket = 2, battleUseFunc = 0 },
   POTION = {
     nativeId = 17,
     pocket = "medicine",
     battlePocket = 4,
+    battleUseFunc = 2,
     name = "Potion",
     partyUse = {
       kind = "medicine",
@@ -69,6 +77,7 @@ local KNOWN = {
     nativeId = 49,
     pocket = "medicine",
     battlePocket = 4,
+    battleUseFunc = 2,
     name = "Ether",
     partyUse = { kind = "pp", target = "one", restore = 10, mood = 0 },
   },
@@ -92,6 +101,7 @@ local KNOWN = {
     nativeId = 149,
     pocket = "berries",
     battlePocket = 8,
+    battleUseFunc = 2,
     berryNameSingular = "Cheri Berry",
     berryNamePlural = "Cheri Berries",
     partyUse = {
@@ -111,6 +121,7 @@ local KNOWN = {
     nativeId = 158,
     pocket = "berries",
     battlePocket = 4,
+    battleUseFunc = 2,
     berryNameSingular = "Sitrus Berry",
     berryNamePlural = "Sitrus Berries",
     partyUse = {
@@ -160,6 +171,9 @@ local function placeholder(nativeId, key)
     -- placeholders appear in the HP/PP battle pocket (bit2) so crowded
     -- pocket paging stays exercisable without ROM data.
     battlePocket = 4,
+    -- Retail battle use-function defaults to 0 (battle-only stat items)
+    -- for synthetic placeholders; known records override above.
+    battleUseFunc = 0,
   }
   if nativeId >= 328 and nativeId <= 427 then
     record.pocket = "tmhm"
@@ -210,6 +224,7 @@ function ItemFixture.buildAssetRoot()
         description = (known.name or key) .. " description",
         pocket = known.pocket,
         battlePocket = known.battlePocket or 0,
+        battleUseFunc = known.battleUseFunc or 0,
         preventToss = known.preventToss or false,
         selectable = known.selectable or false,
         isBall = known.isBall or false,

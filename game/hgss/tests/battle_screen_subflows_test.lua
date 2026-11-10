@@ -201,6 +201,10 @@ local function openRig(opts)
   function rig.text.drawText(content, x, y)
     rig.text.draws[#rig.text.draws + 1] = { content = tostring(content), x = x, y = y }
   end
+  function rig.text.drawTextForRole(role, content, x, y, palette)
+    rig.text.draws[#rig.text.draws + 1] =
+      { role = tostring(role), content = tostring(content), x = x, y = y, palette = palette }
+  end
   function rig.windows.drawWindow(box, frameKey, background)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
@@ -326,6 +330,7 @@ local function openRig(opts)
     -- item catalog so its bag child can group stocked items by pocket.
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    bagCursor = opts.bagCursor,
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -406,10 +411,17 @@ local function press(rig, event)
   rig.pump(1)
 end
 
+-- Settles one gated bag press (WaitButtonAnim): frame 1 rebounds to
+-- frame 2, then the deferred page transition applies.
+---@param rig table live screen rig under test driving
+local function settlePress(rig)
+  rig.pump(2)
+end
+
 ---@param rig table live screen rig under test driving
 local function useNativeBattleBagItem(rig)
   press(rig, { type = "confirm" })
-  rig.pump(1)
+  settlePress(rig)
   press(rig, { type = "confirm" })
   rig.pump(8)
 end
@@ -458,23 +470,19 @@ local function openBagFromCommand(rig)
   Assert.equal(rig.screen:status().mode, "child", "the Bag command opens the bag child (" .. rig.layout .. ")")
 end
 
--- Pocket tabs step through the pocket order with wraparound while the top
--- grid row reaches the active tab and a tab returns to the remembered
--- cell, so from the opening cell the medicine first cell is up, right,
--- down and the balls first cell is one more tab right.
+-- The pocket menu opens on HP/PP; BALLS sits one step right in the top
+-- row. Confirming a pocket opens its item list on the remembered cell.
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToMedicineFirstCell(rig)
-  press(rig, { type = "navigate", direction = "up" })
-  press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  settlePress(rig)
 end
 
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToBallsFirstCell(rig)
-  press(rig, { type = "navigate", direction = "up" })
   press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  settlePress(rig)
 end
 
 ---@param rig table live screen rig under test driving
@@ -886,6 +894,9 @@ function T.bag_selection_consumes_only_through_native_execution()
     Assert.equal(healing.screen:status().mode, "child", "target cancel returns to the retained bag" .. tag)
     Assert.equal(#healing.submits, 0, "target cancel seals no reply" .. tag)
     press(healing, { type = "cancel" })
+    Assert.equal(healing.screen:status().mode, "child", "list cancel returns to the pocket menu" .. tag)
+    settlePress(healing)
+    press(healing, { type = "cancel" })
     Assert.equal(healing.screen:status().mode, "command", "bag cancel returns to command" .. tag)
     Assert.equal(
       openScreenRequest(healing).requestId,
@@ -1295,7 +1306,7 @@ function T.children_keep_exclusive_input_and_release_once()
     openBagFromCommand(rig)
     press(rig, { type = "navigate", direction = "up" })
     press(rig, { type = "navigate", direction = "down" })
-    press(rig, { type = "navigate", direction = "left" })
+    press(rig, { type = "navigate", direction = "up" })
     Assert.equal(rig.screen:status().mode, "child", "stray navigation never leaves the active child" .. tag)
     Assert.equal(#rig.submits, 0, "stray navigation seals no reply" .. tag)
     Assert.equal(
@@ -1314,6 +1325,9 @@ function T.children_keep_exclusive_input_and_release_once()
     Assert.equal(#rig.submits, 0, "the inert bag seals no reply" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "child", "target cancel reactivates the bag" .. tag)
+    press(rig, { type = "cancel" })
+    Assert.equal(rig.screen:status().mode, "child", "list cancel returns to the pocket menu" .. tag)
+    settlePress(rig)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "bag cancel returns to command" .. tag)
     Assert.equal(#rig.submits, 0, "leaving the nested children seals no reply" .. tag)
@@ -1636,6 +1650,635 @@ local function drawnBagHeader(rig)
   return nil
 end
 
+-- The open bag composites its staged retail page behind its rows: the
+-- SetPageBgOffset slice for the visible browser page draws once per
+-- frame. Rows without their plane would prove the simplified backdrop,
+-- never the staged raster.
+---@param rig table live screen rig under test driving
+---@return string? staged bag page key drawn behind the open browser
+local function drawnBagBackdrop(rig)
+  local graphics = FakeGraphics.new({})
+  rig.screen:draw({ graphics = graphics })
+  for _, drawn in ipairs(graphics.draws) do
+    local image = drawn.image
+    if type(image) == "table" and type(image.handle) == "string" then
+      if image.handle:match("^bag:screen:[123]$") ~= nil then
+        return image.handle
+      end
+    end
+  end
+  return nil
+end
+
+-- The open bag draws one shared-atlas icon per stocked visible cell:
+-- list cells ride their retail spots, the use-item page its fixed spot.
+-- Icons prove the shared item atlas reaches the browser, never a second
+-- battle atlas.
+---@param rig table live screen rig under test driving
+---@return string[] requested shared item icon keys in draw order
+local function drawnBagIcons(rig)
+  local graphics = FakeGraphics.new({})
+  rig.screen:draw({ graphics = graphics })
+  local keys = {}
+  for _, drawn in ipairs(graphics.draws) do
+    local image = drawn.image
+    if type(image) == "table" and type(image.handle) == "string" then
+      local key = image.handle:match("^battle:item%-icon:(.+)$")
+      if key ~= nil then
+        keys[#keys + 1] = key
+      end
+    end
+  end
+  return keys
+end
+
+-- Battle-bag rows print through their retail fonts and window colors:
+-- list names ride font 4 MAKE_TEXT_COLOR(3,2,1) with quantities in font
+-- 0 MAKE_TEXT_COLOR(1,2,0) out of the staged bag bank behind the visible
+-- page, the quantity riding its template slot right of the icon. The
+-- compact modal keeps its adapted dialogue treatment, so this pins the
+-- retail paired layout only.
+function T.bag_rows_print_their_retail_fonts_and_window_colors()
+  local tag = " (paired)"
+  requireChildOwner("battle bag selection")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-bag-ink-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+      { key = "POKE_BALL", qty = 5 },
+    },
+  })
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  walkToMedicineFirstCell(rig)
+  renderedContents(rig)
+  local function findDraw(match)
+    for _, drawn in ipairs(rig.text.draws) do
+      if match(drawn) then
+        return drawn
+      end
+    end
+    return nil
+  end
+  -- printerPalette(12): colors[i] = { r = i % 256, g = (7i) % 256, b = (13i) % 256 }.
+  local function bankSlot(bank, slot)
+    local index = bank * 16 + slot + 1
+    return { r = index % 256, g = (index * 7) % 256, b = (index * 13) % 256 }
+  end
+  local name = findDraw(function(drawn)
+    return drawn.role == "menu" and tostring(drawn.content):upper():find("PO", 1, true) ~= nil
+  end)
+  Assert.notNil(name, "the stocked name prints through the name font" .. tag)
+  assert(name ~= nil, "the name draw resolved")
+  Assert.deepEqual(name.palette.foreground, bankSlot(0, 3), "names ride slot 3" .. tag)
+  Assert.deepEqual(name.palette.shadow, bankSlot(0, 2), "names ride slot 2" .. tag)
+  Assert.deepEqual(name.palette.background, bankSlot(0, 1), "names ride slot 1" .. tag)
+  -- Retail name windows are 112px wide (14 tiles): the staged name
+  -- paints whole, centered in its window. The rig measures eight
+  -- pixels per glyph; production measures through its staged font.
+  Assert.equal(tostring(name.content):upper(), "POTION", "names paint whole in their 112px window" .. tag)
+  Assert.equal(
+    name.x,
+    0 + 64 - math.floor((#name.content * 8) / 2),
+    "names center on their template" .. tag
+  )
+  Assert.equal(name.y, 8 + 7, "names ride their template row" .. tag)
+  local quantity = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.content == "x5"
+  end)
+  Assert.notNil(quantity, "the quantity prints through the quantity font" .. tag)
+  assert(quantity ~= nil, "the quantity draw resolved")
+  Assert.deepEqual(quantity.palette.foreground, bankSlot(4, 1), "quantities ride slot 1 out of bank 4" .. tag)
+  Assert.deepEqual(quantity.palette.shadow, bankSlot(4, 2), "quantities ride slot 2 out of bank 4" .. tag)
+  Assert.deepEqual(
+    quantity.palette.background,
+    { r = 0, g = 0, b = 0, a = 0 },
+    "quantities ride transparent slot 0" .. tag
+  )
+  Assert.equal(quantity.x, 0 + 64, "quantities ride their template slot" .. tag)
+  Assert.equal(quantity.y, 8 + 28, "quantities ride their template row" .. tag)
+  -- Retail bottom bar (PrintPocketName + PrintPageNumber): the pocket
+  -- title rides window 24 in the quantity ink, the page counter rides
+  -- window 25 beside it.
+  local title = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.y == 152 + 4
+  end)
+  Assert.notNil(title, "the pocket title prints through the quantity ink" .. tag)
+  assert(title ~= nil, "the title draw resolved")
+  Assert.deepEqual(title.palette.foreground, bankSlot(4, 1), "titles ride slot 1 out of bank 4" .. tag)
+  Assert.equal(title.x, 88 + math.floor((80 - #title.content * 8) / 2), "titles center in their window" .. tag)
+  -- Retail page counter (PrintPageNumber window 25 at (176,160) 32
+  -- wide): the slash centers at y+4 with current right-aligned
+  -- before it and last left-aligned after it.
+  local slash = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.y == 160 + 4 and tostring(drawn.content) == "/"
+  end)
+  Assert.notNil(slash, "the page slash centers in its window" .. tag)
+  assert(slash ~= nil, "the slash draw resolved")
+  local slashWidth = #slash.content * 8
+  Assert.equal(slash.x, 176 + math.floor((32 - slashWidth) / 2), "slashes center in their window" .. tag)
+  Assert.deepEqual(slash.palette.foreground, bankSlot(4, 1), "slashes ride slot 1 out of bank 4" .. tag)
+  local current = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.y == 160 + 4 and drawn.x == slash.x - 8
+  end)
+  Assert.notNil(current, "the current page rides before the slash" .. tag)
+  local last = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.y == 160 + 4 and drawn.x == slash.x + slashWidth
+  end)
+  Assert.notNil(last, "the last page rides after the slash" .. tag)
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Drives the paired party list to the reserve mon's summary page: taps
+-- the reserve row in the lower interaction pane, steps the mon menu to
+-- SUMMARY, confirms through the native press gate, and settles on the
+-- wrapper page.
+---@param rig table live screen rig under test driving
+local function openReserveSummary(rig)
+  openPartyFromCommand(rig)
+  -- Canonical modal rows paint at y = 32 + (index - 1) * 20 inside the
+  -- lower 256x192 pane; the reserve is the second row.
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:summary", x = 128, y = 254 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:summary", x = 128, y = 254 } })
+  rig.pump(1)
+  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  rig.pump(8)
+  Assert.equal(
+    rig.screen:status().mode,
+    "child",
+    "SUMMARY keeps the party child (" .. rig.layout .. ")"
+  )
+end
+
+-- The summary page shows its staged words and live facts on the paired
+-- layout: the mon name, level, remaining experience, HP, battle stats,
+-- ability, and held item resolve through their msg 0006 keys with the
+-- live roster's numbers.
+function T.party_summary_shows_its_staged_words_and_facts()
+  local tag = " (paired)"
+  requireChildOwner("battle party summary")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-summary-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", heldItem = "POTION" },
+    },
+    bag = {},
+  })
+  driveToMode(rig, "command")
+  openReserveSummary(rig)
+  local ink = renderedContents(rig)
+  -- Wrapper labels paint with their focus marker; strip it so the
+  -- assertions pin the staged wording underneath.
+  local words = {}
+  for content, _ in pairs(ink) do
+    local text = tostring(content):gsub("^[> ] ", "")
+    words[text] = true
+  end
+  local catalog = CatalogFixture.makeCatalog()
+  local live = rig.party:partyMon(1)
+  local Mon = require("libs.mons.src.Mon")
+  local displayName = Mon.displayName(live, catalog)
+  Assert.isTrue(
+    words[displayName] == true or words[displayName .. " ♂"] == true or words[displayName .. " ♀"] == true,
+    "the summary names its mon" .. tag
+  )
+  local MonStats = require("libs.mons.src.gen4.MonStats")
+  local derived = MonStats.derive(live, catalog)
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local species = catalog:species("EEVEE")
+  local curve = assert(catalog:growthCurve(species.growthCurve), "the catalog carries its growth curve")
+  local level = Experience.level(curve, live.experience)
+  -- The paired modal paints the first six rows; the remaining stat
+  -- block rows prove through the projection suites and the move pages
+  -- below.
+  local expected = {
+    ["Lv."] = true,
+    ["NEXT LV"] = true,
+    ["HP"] = true,
+    ["ATTACK"] = true,
+    ["DEFENSE"] = true,
+    [tostring(level)] = true,
+    [tostring(Experience.expFor(curve, level + 1) - live.experience)] = true,
+    [tostring(live.condition.currentHp) .. "/" .. tostring(derived.maxHp)] = true,
+    [tostring(derived.attack)] = true,
+    [tostring(derived.defense)] = true,
+  }
+  for wording, _ in pairs(expected) do
+    Assert.notNil(words[wording], "the summary paints " .. tostring(wording) .. tag)
+  end
+  -- Representative ink: stat labels ride the label slots while values
+  -- ride the value slots out of the staged party bank.
+  local inks = {}
+  for _, drawn in ipairs(rig.text.draws) do
+    inks[tostring(drawn.content):gsub("^[> ] ", "")] = drawn
+  end
+  local attackLabel = inks["ATTACK"]
+  Assert.notNil(attackLabel, "the attack label prints" .. tag)
+  if attackLabel ~= nil then
+    Assert.equal(attackLabel.role, "hud", "the attack label rides its retail font" .. tag)
+  end
+  local attackValue = inks[tostring(derived.attack)]
+  Assert.notNil(attackValue, "the attack value prints" .. tag)
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Pocket-menu names and the USE row center vertically in their retail
+-- hit regions on the paired layout: the retail printers paint at
+-- window-relative rows (battle_bag_menu.c PrintCenteredText y=7/23/5),
+-- not at the region top, so the rows ride the region center instead of
+-- the established top offset. Every other row keeps its origin.
+function T.bag_pocket_menu_and_use_rows_center_in_their_regions()
+  local tag = " (paired)"
+  requireChildOwner("battle bag row centering")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-bag-center-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+      { key = "POKE_BALL", qty = 5 },
+    },
+  })
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  renderedContents(rig)
+  local function findDraw(match)
+    for _, drawn in ipairs(rig.text.draws) do
+      if match(drawn) then
+        return drawn
+      end
+    end
+    return nil
+  end
+  -- Retail pocket windows are 96px wide: names paint whole,
+  -- centered in their window. The match pins the staged wording;
+  -- the origins and ink carry the contract.
+  local pocket = findDraw(function(drawn)
+    return drawn.role == "menu" and tostring(drawn.content):find("HP", 1, true) ~= nil
+  end)
+  Assert.notNil(pocket, "the pocket name prints" .. tag)
+  assert(pocket ~= nil, "the pocket draw resolved")
+  -- Retail centers the pocket title in its window (PrintCenteredText
+  -- y=7 over window 0 at (16,32) 96 wide): HP/PP titles ride y=39.
+  -- No text marker frames the focus: the staged cursor corners do.
+  Assert.equal(pocket.y, 32 + 7, "pocket names ride their window row" .. tag)
+  Assert.equal(
+    pocket.x,
+    16 + math.floor((96 - #pocket.content * 8) / 2),
+    "pocket names center in their window" .. tag
+  )
+  Assert.isTrue(tostring(pocket.content):sub(1, 1) ~= ">", "pocket names paint no marker" .. tag)
+  local function bankSlot(bank, slot)
+    local index = bank * 16 + slot + 1
+    return { r = index % 256, g = (index * 7) % 256, b = (index * 13) % 256 }
+  end
+  Assert.deepEqual(pocket.palette.foreground, bankSlot(0, 3), "pocket names ride slot 3 out of bank 0" .. tag)
+  walkToMedicineFirstCell(rig)
+  press(rig, { type = "confirm" })
+  rig.pump(8)
+  Assert.equal(
+    drawnBagBackdrop(rig),
+    "bag:screen:3",
+    "the use-item page composites its staged slice" .. tag
+  )
+  renderedContents(rig)
+  local use = findDraw(function(drawn)
+    return drawn.role == "menu" and drawn.y == 160 + 5
+  end)
+  if use == nil then
+    local dump = {}
+    for _, drawn in ipairs(rig.text.draws) do
+      dump[#dump + 1] = tostring(drawn.role) .. "@" .. tostring(drawn.x) .. "," .. tostring(drawn.y) .. ":" .. tostring(drawn.content)
+    end
+    Assert.notNil(use, "the USE row prints (draws: " .. table.concat(dump, " | ") .. ")" .. tag)
+  end
+  assert(use ~= nil, "the USE draw resolved")
+  -- Retail centers USE in window 3 (PrintCenteredText y=5 over
+  -- window 3 at (64,160) 80 wide): y=165.
+  Assert.equal(use.y, 160 + 5, "the USE row rides its window row" .. tag)
+  Assert.equal(
+    use.x,
+    64 + math.floor((80 - #use.content * 8) / 2),
+    "the USE row centers in its window" .. tag
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Retail use-item windows (battle_bag_menu.c PrintUseItemPage): the
+-- item name rides window 0 (56,32) left-aligned, the quantity rides
+-- window 1 (160,32), the description rides window 2 (20,72 with x+4),
+-- and USE centers in window 3 (64,160 80 wide) at y=165. The pocket
+-- shortcut prints left-aligned at (40,165) in window 4 (40,160 160
+-- wide), never centered. The message page prints at (16,152) in the
+-- palette-15 message window (16,152 216 wide), never at the modal
+-- notice origin. The bag carries no modal title, occupancy, Stock, or
+-- footer notice: the page art and its windows own the titles.
+function T.bag_use_page_paints_through_its_retail_windows()
+  local tag = " (paired)"
+  requireChildOwner("battle bag retail windows")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-bag-windows-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+      { key = "POKE_BALL", qty = 5 },
+    },
+  })
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  walkToMedicineFirstCell(rig)
+  press(rig, { type = "confirm" })
+  rig.pump(8)
+  local opened = rig.screen:view().childView
+  Assert.notNil(opened, "confirming a stocked cell keeps the child" .. tag)
+  assert(opened ~= nil, "the use page resolved")
+  Assert.equal(opened.bagPage, "use_item", "confirming a stocked cell opens the use page" .. tag)
+  renderedContents(rig)
+  local function findDraw(match)
+    for _, drawn in ipairs(rig.text.draws) do
+      if match(drawn) then
+        return drawn
+      end
+    end
+    return nil
+  end
+  local infoName = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.x == 56 and drawn.y == 32
+  end)
+  Assert.notNil(infoName, "the use-item name rides window 0 at (56,32)" .. tag)
+  local infoQty = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.x == 160 and drawn.y == 32
+  end)
+  Assert.notNil(infoQty, "the use-item quantity rides window 1 at (160,32)" .. tag)
+  local infoDesc = findDraw(function(drawn)
+    return drawn.role == "hud" and drawn.x == 20 and drawn.y == 72
+  end)
+  Assert.notNil(infoDesc, "the use-item description rides window 2 at (20,72)" .. tag)
+  local function bankSlot(bank, slot)
+    local index = bank * 16 + slot + 1
+    return { r = index % 256, g = (index * 7) % 256, b = (index * 13) % 256 }
+  end
+  assert(infoName ~= nil, "the info name resolved")
+  Assert.deepEqual(infoName.palette.foreground, bankSlot(4, 1), "use names ride slot 1 out of bank 4" .. tag)
+  assert(infoDesc ~= nil, "the info description resolved")
+  Assert.deepEqual(infoDesc.palette.foreground, bankSlot(4, 1), "descriptions ride slot 1 out of bank 4" .. tag)
+  local use = findDraw(function(drawn)
+    return drawn.role == "menu" and drawn.y == 160 + 5
+  end)
+  Assert.notNil(use, "USE rides window 3 at y=165" .. tag)
+  assert(use ~= nil, "the USE draw resolved")
+  Assert.equal(use.x, 64 + math.floor((80 - #use.content * 8) / 2), "USE centers in its 80px window" .. tag)
+  Assert.deepEqual(use.palette.foreground, bankSlot(0, 3), "USE rides slot 3 out of bank 0" .. tag)
+  Assert.deepEqual(use.palette.shadow, bankSlot(0, 2), "USE rides slot 2 out of bank 0" .. tag)
+  Assert.deepEqual(use.palette.background, bankSlot(0, 1), "USE rides slot 1 out of bank 0" .. tag)
+  local ink = renderedContents(rig)
+  for content, _ in pairs(ink) do
+    local text = tostring(content)
+    Assert.isFalse(text:match("^BAG: ") ~= nil, "the bag paints no modal title" .. tag)
+    Assert.isFalse(text:match("^Stock:") ~= nil, "the bag paints no Stock caption" .. tag)
+  end
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Retail d-pad cursor (BattleDpadCursor_SetRect): four staged corners
+-- frame the focused box while the cursor is active. Fresh browsers
+-- hide it; the first key shows it; touch clears it again.
+function T.bag_cursor_corners_frame_the_focused_box()
+  local tag = " (paired)"
+  requireChildOwner("battle bag cursor")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-cursor-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+      { key = "POKE_BALL", qty = 5 },
+    },
+  })
+  local function cursorDraws()
+    local graphics = FakeGraphics.new({})
+    rig.screen:draw({ graphics = graphics })
+    local found = {}
+    for _, drawn in ipairs(graphics.draws) do
+      local image = drawn.image
+      if type(image) == "table" and type(image.handle) == "string" and image.handle:match("^battle:cursor%-") ~= nil then
+        found[#found + 1] = { handle = image.handle, x = drawn.x, y = drawn.y }
+      end
+    end
+    return found
+  end
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  Assert.equal(#cursorDraws(), 0, "fresh browsers hide the cursor" .. tag)
+  press(rig, { type = "navigate", direction = "right" })
+  local corners = cursorDraws()
+  Assert.equal(#corners, 4, "the first key frames the focused box" .. tag)
+  -- Right from pocket 0 focuses the balls box (136,16,112,56); the
+  -- rig fakes 80x80 corners, so each centers 40 above-left of its spot.
+  Assert.deepEqual(corners[1], { handle = "battle:cursor-tl", x = 136 - 40, y = 16 - 40 })
+  Assert.deepEqual(corners[2], { handle = "battle:cursor-tr", x = 248 - 40, y = 16 - 40 })
+  Assert.deepEqual(corners[3], { handle = "battle:cursor-bl", x = 136 - 40, y = 72 - 40 })
+  Assert.deepEqual(corners[4], { handle = "battle:cursor-br", x = 248 - 40, y = 72 - 40 })
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Retail disabled faces (DrawPageButtons frame 3): the pocket shortcut
+-- with no last-used item, empty item cells, and steppers on a single
+-- page repaint through the disabled bank.
+function T.bag_disabled_faces_repaint_empty_controls()
+  local tag = " (paired)"
+  requireChildOwner("battle bag disabled faces")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-disabled-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+    },
+  })
+  local function faceDraws()
+    local graphics = FakeGraphics.new({})
+    rig.screen:draw({ graphics = graphics })
+    local found = {}
+    for _, drawn in ipairs(graphics.draws) do
+      local image = drawn.image
+      if type(image) == "table" and type(image.handle) == "string" and image.handle:match("^bag:button:") ~= nil then
+        found[#found + 1] = { handle = image.handle, x = drawn.x, y = drawn.y }
+      end
+    end
+    return found
+  end
+  local function hasFace(faces, handle, x, y)
+    for _, face in ipairs(faces) do
+      if face.handle == handle and face.x == x and face.y == y then
+        return true
+      end
+    end
+    return false
+  end
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  local pocketFaces = faceDraws()
+  Assert.isTrue(
+    hasFace(pocketFaces, "bag:button:4:3:5", 0, 152),
+    "the shortcut paints disabled with no last-used item" .. tag
+  )
+  walkToMedicineFirstCell(rig)
+  local listFaces = faceDraws()
+  Assert.isTrue(
+    hasFace(listFaces, "bag:button:7:3:5", 128, 8),
+    "empty cells repaint through the disabled bank" .. tag
+  )
+  Assert.isTrue(
+    hasFace(listFaces, "bag:button:12:3:5", 0, 152),
+    "single-page steppers repaint disabled" .. tag
+  )
+  Assert.isTrue(
+    hasFace(listFaces, "bag:button:13:3:5", 40, 152),
+    "both steppers repaint disabled" .. tag
+  )
+  Assert.isFalse(
+    hasFace(listFaces, "bag:button:6:3:8", 0, 8),
+    "the stocked cell keeps its enabled face" .. tag
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Retail empty pockets still composite their item-list page: six
+-- cleared cells with disabled faces, the pocket title, and the 1/1
+-- counter — never a pitch-black modal. A pocket holding nothing
+-- stages no selection, but Back still cancels to the pocket menu.
+function T.bag_empty_pocket_renders_its_list_page()
+  local tag = " (paired)"
+  requireChildOwner("battle bag empty pocket")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-empty-pocket-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY", currentHp = 10 },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+    },
+  })
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  walkToBallsFirstCell(rig)
+  local childView = rig.screen:view().childView
+  Assert.notNil(childView, "the empty pocket keeps the child" .. tag)
+  assert(childView ~= nil, "the empty view resolved")
+  Assert.equal(childView.bagPage, "item_list", "the empty pocket lists its page" .. tag)
+  Assert.isNil(childView.empty, "the empty pocket is not a black modal" .. tag)
+  Assert.equal(drawnBagBackdrop(rig), "bag:screen:2", "the empty list composites its staged page" .. tag)
+  renderedContents(rig)
+  local title = nil
+  for _, drawn in ipairs(rig.text.draws) do
+    -- Single-line pockets (BALLS) ride y=152+12; two-line pockets
+    -- ride y=152+4/152+20. Either proves the bottom bar survived.
+    if drawn.role == "hud" and (drawn.y == 152 + 12 or drawn.y == 152 + 4 or drawn.y == 152 + 20) then
+      title = drawn
+      break
+    end
+  end
+  Assert.notNil(title, "the empty list still prints its pocket title" .. tag)
+  local graphics = FakeGraphics.new({})
+  rig.screen:draw({ graphics = graphics })
+  local disabled = 0
+  for _, drawn in ipairs(graphics.draws) do
+    local image = drawn.image
+    if type(image) == "table" and type(image.handle) == "string" and image.handle:match("^bag:button:%d+:3:5$") ~= nil then
+      disabled = disabled + 1
+    end
+  end
+  Assert.isTrue(disabled >= 6, "empty cells repaint disabled, never black" .. tag)
+  press(rig, { type = "cancel" })
+  settlePress(rig)
+  Assert.equal(rig.screen:status().mode, "child", "list cancel returns to the pocket menu" .. tag)
+  Assert.equal(rig.screen:view().childView.bagPage, "pocket_menu", "Back leaves the empty list" .. tag)
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- Consuming a battle item arms the last-used shortcut: using a potion
+-- through the native serving, target, and execution flow records it,
+-- and reopening the bag offers it back with its icon on the paired
+-- layout. The shortcut stays disabled until a real battle consume.
+function T.battle_last_used_shortcut_reopens_the_consumed_item()
+  local tag = " (paired)"
+  requireChildOwner("battle last-used shortcut")
+  local BagCursor = require("libs.hgss.src.items.BagCursor")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-local-last-used-paired",
+    bagCursor = BagCursor.new(),
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333, currentHp = 10 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+    },
+    bag = {
+      { key = "POTION", qty = 5 },
+      { key = "POKE_BALL", qty = 5 },
+    },
+  })
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  walkToMedicineFirstCell(rig)
+  useNativeBattleBagItem(rig)
+  if #rig.submits == 0 and rig.screen:status().mode == "child" then
+    press(rig, { type = "confirm" })
+  end
+  Assert.equal(#rig.submits, 1, "accepting the serving seals exactly one reply" .. tag)
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  Assert.deepEqual(
+    drawnBagIcons(rig),
+    { "POTION" },
+    "the reopened bag shortcuts the consumed item" .. tag
+  )
+  renderedContents(rig)
+  local shortcut = nil
+  for _, drawn in ipairs(rig.text.draws) do
+    -- Retail last-used shortcut (PrintPocketMenuPage window 4 at
+    -- (40,160) 160 wide): left-aligned at x=40 y=165, never
+    -- centered. (The rig truncates the label to its 30-pixel fit,
+    -- so the match pins the row position rather than full wording.)
+    if drawn.role == "menu" and drawn.y == 160 + 5 and drawn.x == 40 then
+      shortcut = drawn
+    end
+  end
+  Assert.notNil(shortcut, "the last-used row left-aligns in its window" .. tag)
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 -- Six-slot voluntary party plus multi-pocket bag stay identical across
 -- keyboard and pointer on both display cases: stable row identities,
 -- cancel and reopen over the same request, one sealed native fragment
@@ -1735,17 +2378,59 @@ function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
     local revision = bagged.bag:revision()
     openBagFromCommand(bagged)
     local openingHeader = drawnBagHeader(bagged)
-    Assert.isTrue(
-      type(openingHeader) == "string" and openingHeader:match("^BAG: %S+ 1/1$") ~= nil,
-      "the bag names its pocket and page" .. tag
+    if layout == "paired" then
+      -- Retail pocket menu carries no modal title: the page art and
+      -- its windows own the pocket names.
+      Assert.isNil(openingHeader, "the paired bag paints no modal title" .. tag)
+    else
+      Assert.isTrue(
+        type(openingHeader) == "string" and openingHeader:match("^BAG: %S+ 1/1$") ~= nil,
+        "the bag names its pocket and page" .. tag
+      )
+    end
+    Assert.equal(
+      drawnBagBackdrop(bagged),
+      "bag:screen:1",
+      "the open pocket menu composites its staged page" .. tag
     )
     walkToMedicineFirstCell(bagged)
-    Assert.equal(drawnBagHeader(bagged), "BAG: medicine 1/1", "keys reach the serving pocket" .. tag)
-    useNativeBattleBagItem(bagged)
+    if layout == "paired" then
+      Assert.isNil(drawnBagHeader(bagged), "the paired list paints no modal title" .. tag)
+    else
+      Assert.equal(drawnBagHeader(bagged), "BAG: hp_pp 1/1", "keys reach the serving pocket" .. tag)
+    end
+    Assert.equal(
+      drawnBagBackdrop(bagged),
+      "bag:screen:2",
+      "the open item list composites its staged page" .. tag
+    )
+    Assert.deepEqual(
+      drawnBagIcons(bagged),
+      { "POTION" },
+      "stocked list cells draw their shared atlas icons" .. tag
+    )
+    press(bagged, { type = "confirm" })
+    settlePress(bagged)
+    bagged.pump(1)
+    Assert.equal(
+      drawnBagBackdrop(bagged),
+      "bag:screen:3",
+      "the use-item page composites its staged page" .. tag
+    )
+    Assert.deepEqual(
+      drawnBagIcons(bagged),
+      { "POTION" },
+      "the use-item page keeps the chosen icon" .. tag
+    )
+    press(bagged, { type = "confirm" })
+    bagged.pump(8)
     Assert.equal(#bagged.submits, 0, "staging seals no reply" .. tag)
     Assert.equal(bagged.screen:status().mode, "child", "staging keeps the child" .. tag)
     press(bagged, { type = "cancel" })
     Assert.equal(bagged.screen:status().mode, "child", "target cancel returns to the bag" .. tag)
+    press(bagged, { type = "cancel" })
+    Assert.equal(bagged.screen:status().mode, "child", "list cancel returns to the pocket menu" .. tag)
+    settlePress(bagged)
     press(bagged, { type = "cancel" })
     Assert.equal(bagged.screen:status().mode, "command", "bag cancel returns to command" .. tag)
     Assert.equal(bagged.bag:revision(), revision, "browsing moves no stock" .. tag)
@@ -1790,31 +2475,39 @@ function T.crowded_browse_pages_and_restores_after_target_cancel()
     })
     driveToMode(scroller, "command")
     openBagFromCommand(scroller)
-    -- The crowded pocket may not be current on open, so step the
-    -- tabs until a two-page header paints.
-    press(scroller, { type = "navigate", direction = "up" })
-    local crowdedHeader = nil
-    for _ = 1, 8 do
-      local header = drawnBagHeader(scroller)
-      if type(header) == "string" and header:match(" 1/2$") ~= nil then
-        crowdedHeader = header
-        break
-      end
-      press(scroller, { type = "navigate", direction = "right" })
+    -- The HP/PP pocket holds the crowded stock; confirm it from the menu.
+    press(scroller, { type = "confirm" })
+    settlePress(scroller)
+    if layout == "paired" then
+      local crowdedView = scroller.screen:view().childView
+      Assert.notNil(crowdedView, "the crowded pocket opens" .. tag)
+      assert(crowdedView ~= nil, "the crowded view resolved")
+      Assert.equal(crowdedView.page.current, 1, "the crowded pocket opens on page 1" .. tag)
+      Assert.equal(crowdedView.page.count, 2, "the crowded pocket spans two pages" .. tag)
+    else
+      local crowdedHeader = drawnBagHeader(scroller)
+      Assert.isTrue(
+        type(crowdedHeader) == "string" and crowdedHeader:match("hp_pp 1/2$") ~= nil,
+        "the crowded pocket spans two pages" .. tag
+      )
     end
-    Assert.isTrue(crowdedHeader ~= nil, "the crowded pocket spans two pages" .. tag)
-    for _ = 1, 12 do
-      local header = drawnBagHeader(scroller)
-      if type(header) == "string" and header:match(" 2/2$") ~= nil then
-        break
-      end
-      press(scroller, { type = "navigate", direction = "down" })
+    press(scroller, { type = "navigate", direction = "right" })
+    press(scroller, { type = "navigate", direction = "right" })
+    settlePress(scroller)
+    if layout == "paired" then
+      local scrolledView = scroller.screen:view().childView
+      Assert.notNil(scrolledView, "the turned pocket stays open" .. tag)
+      assert(scrolledView ~= nil, "the scrolled view resolved")
+      Assert.equal(scrolledView.page.current, 2, "keys turn onto the second page" .. tag)
+    else
+      local scrolledHeader = drawnBagHeader(scroller)
+      Assert.isTrue(
+        type(scrolledHeader) == "string" and scrolledHeader:match(" 2/2$") ~= nil,
+        "keys turn onto the second page" .. tag
+      )
     end
-    local scrolledHeader = drawnBagHeader(scroller)
-    Assert.isTrue(
-      type(scrolledHeader) == "string" and scrolledHeader:match(" 2/2$") ~= nil,
-      "keys scroll onto the second page" .. tag
-    )
+    press(scroller, { type = "cancel" })
+    settlePress(scroller)
     press(scroller, { type = "cancel" })
     Assert.equal(scroller.screen:status().mode, "command", "paging cancel returns to command" .. tag)
     scroller.screen:dispose()
@@ -1850,7 +2543,11 @@ function T.crowded_browse_pages_and_restores_after_target_cancel()
     openBagFromCommand(healing)
     walkToMedicineFirstCell(healing)
     local restingHeader = drawnBagHeader(healing)
-    Assert.equal(restingHeader, "BAG: medicine 1/1", "the browse rests on the serving page" .. tag)
+    if layout == "paired" then
+      Assert.isNil(restingHeader, "the paired browse paints no modal title" .. tag)
+    else
+      Assert.equal(restingHeader, "BAG: hp_pp 1/1", "the browse rests on the serving page" .. tag)
+    end
     useNativeBattleBagItem(healing)
     Assert.equal(#healing.submits, 0, "staging seals no reply" .. tag)
     press(healing, { type = "cancel" })
@@ -2141,5 +2838,60 @@ function T.native_party_focus_and_fragment_authority()
     forced.screen:dispose()
     forced.battle:dispose()
   end
+end
+
+-- The trainer doll refusal reaches its staged message page through the
+-- live kernel: a trainer battle refuses the escape doll with Oak's
+-- rebuke on the message page, seals no reply, and paints the notice
+-- through the narration role in the palette-15 message window
+-- (battle_bag_menu.c ShowMessage window at (16,152)).
+function T.trainer_doll_refusal_shows_its_staged_message_page()
+  local tag = " (paired)"
+  requireChildOwner("battle bag refusal")
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-refusal-doll-paired",
+    party = {
+      { species = "EEVEE", level = 20, seed = 0x33333333 },
+      { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+    },
+    bag = {
+      { key = "POKE_DOLL", qty = 1 },
+    },
+    trainer = true,
+  })
+  driveToMode(rig, "command")
+  openBagFromCommand(rig)
+  -- Pocket menu opens on HP/PP; BATTLE ITEMS sits right-down in the
+  -- grid, so right then down focuses it before confirming its list.
+  press(rig, { type = "navigate", direction = "right" })
+  press(rig, { type = "navigate", direction = "down" })
+  press(rig, { type = "confirm" })
+  settlePress(rig)
+  rig.pump(1)
+  useNativeBattleBagItem(rig)
+  Assert.equal(#rig.submits, 0, "the refused doll seals no reply" .. tag)
+  local childView = rig.screen:view().childView
+  Assert.notNil(childView, "the refusal keeps the child" .. tag)
+  assert(childView ~= nil, "the refusal keeps its child view")
+  Assert.equal(childView.bagPage, "message", "the refused doll opens the message page" .. tag)
+  Assert.isTrue(
+    tostring(childView.notice):find("MINT", 1, true) ~= nil,
+    "the rebuke names the player" .. tag
+  )
+  renderedContents(rig)
+  local inked = nil
+  for _, drawn in ipairs(rig.text.draws) do
+    if drawn.role == "narration" and tostring(drawn.content):find("MINT", 1, true) ~= nil then
+      inked = drawn
+      break
+    end
+  end
+  Assert.notNil(inked, "the message paints through the narration role" .. tag)
+  assert(inked ~= nil, "the narration draw resolved")
+  Assert.equal(inked.x, 16, "the message rides its window column" .. tag)
+  Assert.equal(inked.y, 152, "the message rides its window row" .. tag)
+  rig.screen:dispose()
+  rig.battle:dispose()
 end
 return { tests = T }

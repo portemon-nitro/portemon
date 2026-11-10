@@ -2686,6 +2686,29 @@ local function compileTextPalettes(romFs)
       assert(color ~= nil, role .. " text palette carries its source banks")
       colors[index] = { r = color.r, g = color.g, b = color.b }
     end
+    -- A patched role transcribes the loader's bank edit exactly (see
+    -- TEXT_PALETTES.party): the named source slots replace the base
+    -- font slots, keeping the staged bank pixel-identical to runtime.
+    if type(source.patch) == "table" then
+      local patchSource = source.patch --[[@as table<string, unknown>]]
+      local patchArchive = openArchive(
+        romFs,
+        assert(patchSource.archive, role .. " text palette patch names its archive"),
+        role .. " text palette patch"
+      )
+      local patchMember = assert(patchSource.member, role .. " text palette patch names its member")
+      local patched = decodePalette(patchArchive, patchMember, role .. " text palette patch")
+      local slots = assert(patchSource.slots, role .. " text palette patch names its slots")
+      for slot, sourceIndex in pairs(slots) do
+        assert(
+          type(slot) == "number" and slot % 1 == 0 and slot >= 0 and slot < source.banks * 16,
+          role .. " text palette patch stays inside its staged banks"
+        )
+        local replacement =
+          assert(patched.colors[sourceIndex + 1], role .. " text palette patch carries its source color")
+        colors[slot + 1] = { r = replacement.r, g = replacement.g, b = replacement.b }
+      end
+    end
     textPalettes[role] = { colors = colors }
   end
   return textPalettes
@@ -3367,6 +3390,464 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
       particleMembers = { seal = particleSource.sealMember, burst = particleSource.burstMember },
     },
     catalogIdentity = versionId .. ":" .. metadata.sha1,
+  }
+end
+
+-- Reads one overlay table of fixed-size records (battle_menu_data.s
+-- transcription): window templates are 8 bytes (bgId, left, top, width,
+-- height, palette, baseTile u16 LE); hitbox rects are 4 bytes (top,
+-- bottom, left, right); entry ids are u32 LE.
+---@param romFs RomFs
+---@param source { cpu: string, overlayId: integer, address: integer, count: integer } table location
+---@param structBytes integer record size under reading
+---@param label string diagnostic label
+---@return string raw table bytes
+local function readOverlayTable(romFs, source, structBytes, label)
+  local bytes, info = romFs:readOverlay(source.cpu, source.overlayId)
+  if bytes == nil then
+    error(info, 0)
+  end
+  assert(info ~= nil, "overlay reads describe their image")
+  local offset = source.address - info.ramAddress --[[@as integer]]
+  if offset < 0 or offset + source.count * structBytes > #bytes then
+    error(Errors.new("BATTLE_SOURCE_UNEXPECTED", label .. " lies outside its overlay", {}), 0)
+  end
+  return string.sub(bytes, offset + 1, offset + source.count * structBytes)
+end
+
+---@param bytes string raw window template table under decoding
+---@param count integer template count under decoding
+---@return table<integer, table<string, integer>> window templates in source order
+local function decodeWindowTemplates(bytes, count)
+  local out = {}
+  for index = 0, count - 1 do
+    local base = index * 8
+    local bgId, left, top, width, height, palette = string.byte(bytes, base + 1, base + 6)
+    local low, high = string.byte(bytes, base + 7, base + 8)
+    out[index + 1] = {
+      bgId = bgId,
+      left = left,
+      top = top,
+      width = width,
+      height = height,
+      palette = palette,
+      baseTile = low + high * 0x100,
+    }
+  end
+  return out
+end
+
+---@param bytes string raw hitbox table under decoding
+---@param count integer hitbox count under decoding
+---@return table<integer, table<string, integer>> hitbox rects in Handle input order
+local function decodeHitboxes(bytes, count)
+  local out = {}
+  for index = 0, count - 1 do
+    local base = index * 4
+    local top, bottom, left, right = string.byte(bytes, base + 1, base + 4)
+    out[index + 1] = { top = top, bottom = bottom, left = left, right = right }
+  end
+  return out
+end
+
+---@param bytes string raw u32 table under decoding
+---@param count integer entry count under decoding
+---@return table<integer, integer> message ids in source order
+local function decodeU32Table(bytes, count)
+  local out = {}
+  for index = 0, count - 1 do
+    local base = index * 4
+    local b1, b2, b3, b4 = string.byte(bytes, base + 1, base + 4)
+    out[index + 1] = b1 + b2 * 0x100 + b3 * 0x10000 + b4 * 0x1000000
+  end
+  return out
+end
+
+-- Compiles the retail battle-bag screen (battle_bag_menu.c
+-- BattleBagMenu_LoadBgGraphics): the NARC_a_0_7_7 character, screen,
+-- button-tilemap screen, and palette members plus the overlay-8 window
+-- templates, touchscreen hitboxes, and item entry message ids. Returns
+-- decoded records with the rasterized screen; staging into the global
+-- manifest rides the menu slice pattern when the renderer consumes it.
+---@param romFs RomFs
+---@param opts { versionId: string }? compile options
+---@return table<string, unknown> compiled battle-bag screen records
+function BattlePresentationCompiler.compileBagScreen(romFs, opts)
+  opts = opts or {}
+  local versionId = opts.versionId or romFs:version()
+  checkVersion(versionId)
+  local source = Sources.BAG_SCREEN
+  local archive = openArchive(romFs, source.archive, "battle bag screen")
+  local label = "battle bag screen"
+  local charData = decodeChars(archive, source.character, label .. " characters")
+  local screenData = decodeScreen(archive, source.screen, label .. " screen")
+  -- The screen file tiles all three pages (page 0 at (0,0), page 1 at
+  -- (0x100,0), page 2 at (0,0x100) per SetPageBgOffset).
+  checkScreenSize(screenData, 512, 512, "Battle bag screen")
+  local buttonBytes = decodeMember(archive, source.buttonScreen, label .. " button tilemap")
+  local paletteData = decodePalette(archive, source.palette, label .. " palette")
+  local raster = G2dRasterizer.renderScreen(charData, paletteData, screenData, {
+    asset = source.archive,
+    role = "Battle bag screen",
+  })
+  local windows = {}
+  for key, entry in pairs(Sources.BAG_WINDOWS) do
+    if type(entry) == "table" and type(entry.address) == "number" then
+      local raw = readOverlayTable(romFs, {
+        cpu = Sources.BAG_WINDOWS.cpu,
+        overlayId = Sources.BAG_WINDOWS.overlayId,
+        address = entry.address,
+        count = entry.count,
+      }, Sources.BAG_WINDOWS.structBytes, "battle bag window " .. tostring(key))
+      windows[key] = decodeWindowTemplates(raw, entry.count)
+    end
+  end
+  local hitboxes = {}
+  for key, entry in pairs(Sources.BAG_HITBOXES) do
+    if type(entry) == "table" and type(entry.address) == "number" then
+      local raw = readOverlayTable(romFs, {
+        cpu = Sources.BAG_HITBOXES.cpu,
+        overlayId = Sources.BAG_HITBOXES.overlayId,
+        address = entry.address,
+        count = entry.count,
+      }, Sources.BAG_HITBOXES.structBytes, "battle bag hitbox " .. tostring(key))
+      hitboxes[key] = decodeHitboxes(raw, entry.count)
+    end
+  end
+  local entryIds = {}
+  for key, entry in pairs(Sources.BAG_ITEM_ENTRY_IDS) do
+    if type(entry) == "table" and type(entry.address) == "number" then
+      local raw = readOverlayTable(romFs, {
+        cpu = Sources.BAG_ITEM_ENTRY_IDS.cpu,
+        overlayId = Sources.BAG_ITEM_ENTRY_IDS.overlayId,
+        address = entry.address,
+        count = entry.count,
+      }, Sources.BAG_ITEM_ENTRY_IDS.structBytes, "battle bag entry ids " .. tostring(key))
+      entryIds[key] = decodeU32Table(raw, entry.count)
+    end
+  end
+  return {
+    characterMember = source.character,
+    screenMember = source.screen,
+    buttonScreenMember = source.buttonScreen,
+    paletteMember = source.palette,
+    buttonTilemapBytes = buttonBytes,
+    rasterWidth = raster.width,
+    rasterHeight = raster.height,
+    rasterPixels = raster.pixels,
+    windows = windows,
+    hitboxes = hitboxes,
+    entryIds = entryIds,
+    provenance = {
+      archive = source.archive,
+      overlayId = Sources.BAG_WINDOWS.overlayId,
+    },
+  }
+end
+
+-- Compiles the retail battle-bag screen for the global bundle (shared
+-- with compileBagScreen's leaf path): the NARC_a_0_7_7 character, screen,
+-- and palette members plus the overlay-8 window templates, touchscreen
+-- hitboxes, and item entry message ids. Pages ride the BG position (page
+-- 0 at (0,0), page 1 at (0x100,0), page 2 at (0,0x100) per
+-- SetPageBgOffset); each staged page crops its 256x192 sub-screen view
+-- from the 512x512 raster for the renderer to composite. Returns the
+-- manifest section plus its archive provenance entry.
+---@param romFs RomFs
+---@param stageSlice fun(name: string, pixels: string, width: integer, height: integer)
+---@return table<string, unknown> bagScreens manifest section
+---@return table<string, unknown> bagProvenance archive provenance entry
+function BattlePresentationCompiler.compileBagScreens(romFs, stageSlice)
+  local bagSource = Sources.BAG_SCREEN
+  local bagArchive = openArchive(romFs, bagSource.archive, "battle bag screen")
+  local bagChars = decodeChars(bagArchive, bagSource.character, "battle bag screen characters")
+  local bagScreenData = decodeScreen(bagArchive, bagSource.screen, "battle bag screen")
+  checkScreenSize(bagScreenData, 512, 512, "Battle bag screen")
+  local bagPalette = decodePalette(bagArchive, bagSource.palette, "battle bag screen palette")
+  local bagRaster = G2dRasterizer.renderScreen(bagChars, bagPalette, bagScreenData, {
+    asset = bagSource.archive,
+    role = "Battle bag screen",
+  })
+  local bagWindows = {}
+  for key, entry in pairs(Sources.BAG_WINDOWS) do
+    if type(entry) == "table" and type(entry.address) == "number" then
+      local raw = readOverlayTable(romFs, {
+        cpu = Sources.BAG_WINDOWS.cpu,
+        overlayId = Sources.BAG_WINDOWS.overlayId,
+        address = entry.address,
+        count = entry.count,
+      }, Sources.BAG_WINDOWS.structBytes, "battle bag window " .. tostring(key))
+      bagWindows[key] = decodeWindowTemplates(raw, entry.count)
+    end
+  end
+  local bagHitboxes = {}
+  for key, entry in pairs(Sources.BAG_HITBOXES) do
+    if type(entry) == "table" and type(entry.address) == "number" then
+      local raw = readOverlayTable(romFs, {
+        cpu = Sources.BAG_HITBOXES.cpu,
+        overlayId = Sources.BAG_HITBOXES.overlayId,
+        address = entry.address,
+        count = entry.count,
+      }, Sources.BAG_HITBOXES.structBytes, "battle bag hitbox " .. tostring(key))
+      bagHitboxes[key] = decodeHitboxes(raw, entry.count)
+    end
+  end
+  local bagEntryIds = {}
+  for key, entry in pairs(Sources.BAG_ITEM_ENTRY_IDS) do
+    if type(entry) == "table" and type(entry.address) == "number" then
+      local raw = readOverlayTable(romFs, {
+        cpu = Sources.BAG_ITEM_ENTRY_IDS.cpu,
+        overlayId = Sources.BAG_ITEM_ENTRY_IDS.overlayId,
+        address = entry.address,
+        count = entry.count,
+      }, Sources.BAG_ITEM_ENTRY_IDS.structBytes, "battle bag entry ids " .. tostring(key))
+      bagEntryIds[key] = decodeU32Table(raw, entry.count)
+    end
+  end
+  local bagPageOrigins = { { x = 0, y = 0 }, { x = 256, y = 0 }, { x = 0, y = 256 } }
+  local bagPages = {}
+  for index, origin in ipairs(bagPageOrigins) do
+    local name = "bag-page-" .. index
+    local rows = {}
+    for row = 0, 191 do
+      local start = ((origin.y + row) * bagRaster.width + origin.x) * 4 + 1
+      rows[#rows + 1] = string.sub(bagRaster.pixels, start, start + 256 * 4 - 1)
+    end
+    stageSlice(name, table.concat(rows), 256, 192)
+    bagPages[index] = {
+      image = BattlePresentationCache.globalImagePath(name),
+      x = origin.x,
+      y = origin.y,
+      width = 256,
+      height = 192,
+    }
+  end
+  -- Center-anchored item icon spots (sBattleBagItemListIconPos, s32 LE
+  -- pairs) with the fixed last-used and use-item sprite spots. Sprites
+  -- center on these spots per the ManagedSprite positioning convention.
+  local bagIconSource = Sources.BAG_ICON_POSITIONS
+  local iconRaw = readOverlayTable(romFs, {
+    cpu = bagIconSource.cpu,
+    overlayId = bagIconSource.overlayId,
+    address = bagIconSource.list.address,
+    count = bagIconSource.list.count,
+  }, bagIconSource.structBytes, "battle bag icon positions")
+  local function toCoordinate(low, midLow, midHigh, high)
+    local unsigned = low + midLow * 0x100 + midHigh * 0x10000 + high * 0x1000000
+    if unsigned >= 0x80000000 then
+      return unsigned - 0x100000000
+    end
+    return unsigned
+  end
+  local iconList = {}
+  for iconIndex = 0, bagIconSource.list.count - 1 do
+    local base = iconIndex * bagIconSource.structBytes
+    local x1, x2, x3, x4 = string.byte(iconRaw, base + 1, base + 4)
+    local y1, y2, y3, y4 = string.byte(iconRaw, base + 5, base + 8)
+    iconList[iconIndex + 1] = {
+      x = toCoordinate(x1, x2, x3, x4),
+      y = toCoordinate(y1, y2, y3, y4),
+    }
+  end
+  local bagIcons = {
+    list = iconList,
+    lastUsed = { x = bagIconSource.lastUsed.x, y = bagIconSource.lastUsed.y },
+    useItem = { x = bagIconSource.useItem.x, y = bagIconSource.useItem.y },
+  }
+  -- Catching-tutorial finger spots (sBattleBagTutorialFingerPos pairs):
+  -- one center-anchored spot per browser page for the auto-play finger.
+  local fingerSource = Sources.BAG_TUTORIAL_FINGER
+  local fingerRaw = readOverlayTable(romFs, {
+    cpu = fingerSource.cpu,
+    overlayId = fingerSource.overlayId,
+    address = fingerSource.fingers.address,
+    count = fingerSource.fingers.count,
+  }, fingerSource.structBytes, "battle bag tutorial finger positions")
+  local tutorialFinger = {}
+  for fingerIndex = 0, fingerSource.fingers.count - 1 do
+    local base = fingerIndex * fingerSource.structBytes
+    local x1, x2, x3, x4 = string.byte(fingerRaw, base + 1, base + 4)
+    local y1, y2, y3, y4 = string.byte(fingerRaw, base + 5, base + 8)
+    tutorialFinger[fingerIndex + 1] = {
+      x = toCoordinate(x1, x2, x3, x4),
+      y = toCoordinate(y1, y2, y3, y4),
+    }
+  end
+  -- Catching-tutorial finger art (BattleFinger_LoadResources from
+  -- NARC_a_1_6_4 members 0/1/2/3): the first idle frame centers on its
+  -- per-page spot while the tutorial auto-plays. Decoded through the
+  -- shared G2D path; the renderer draws it like the item spots.
+  local fingerArt = Sources.BATTLE_FINGER
+  local fingerArchive = openArchive(romFs, fingerArt.archive, "battle finger")
+  local fingerChars = decodeChars(fingerArchive, fingerArt.character, "battle finger characters")
+  local fingerPalette = decodePalette(fingerArchive, fingerArt.palette, "battle finger palette")
+  local fingerCells = decodeCells(fingerArchive, fingerArt.cell, "battle finger cells")
+  local fingerAnims = decodeAnimation(fingerArchive, fingerArt.animation, "battle finger animation")
+  local fingerAnim = assert(fingerAnims.anims[1], "the battle finger stages its idle sequence")
+  local fingerRaster = G2dRasterizer.renderAnimationFrame(
+    fingerChars,
+    fingerPalette,
+    fingerCells,
+    fingerAnim,
+    1,
+    { asset = fingerArt.archive, role = "Battle finger" }
+  )
+  stageSlice("battle-finger", fingerRaster.pixels, fingerRaster.width, fingerRaster.height)
+  local finger = {
+    image = BattlePresentationCache.globalImagePath("battle-finger"),
+    width = fingerRaster.width,
+    height = fingerRaster.height,
+  }
+  -- Battle d-pad cursor corners (battle_cursor.c
+  -- BattleCursor_LoadResources from NARC_a_0_0_8): character member
+  -- 250, palette member 80, cell member 251, animation member 252.
+  -- Animations 0-3 drive the top-left, top-right, bottom-left, and
+  -- bottom-right corner sprites framing the focused cursor box; retail
+  -- ticks every sprite each task (BattleCursor_Update) through a
+  -- per-frame translate pulse, so the base raster stages once and each
+  -- frame stages its duration with its x/y offset for the renderer to
+  -- apply by tick.
+  -- Decoded through the shared G2D path; the renderer centers each
+  -- corner on its box corner like the item spots.
+  local cursorArt = Sources.BATTLE_CURSOR
+  local cursorArchive = openArchive(romFs, cursorArt.archive, "battle cursor")
+  local cursorChars = decodeChars(cursorArchive, cursorArt.character, "battle cursor characters")
+  local cursorPalette = decodePalette(cursorArchive, cursorArt.palette, "battle cursor palette")
+  local cursorCells = decodeCells(cursorArchive, cursorArt.cell, "battle cursor cells")
+  local cursorAnims = decodeAnimation(cursorArchive, cursorArt.animation, "battle cursor animation")
+  local cursorNames = { "tl", "tr", "bl", "br" }
+  local cursorCorners = {}
+  for corner = 1, 4 do
+    local cornerAnim = assert(cursorAnims.anims[corner], "the battle cursor stages its corner sequences")
+    assert(#cornerAnim.frames >= 1, "the battle cursor stages at least one corner frame")
+    local cornerRaster = G2dRasterizer.renderAnimationFrame(
+      cursorChars,
+      cursorPalette,
+      cursorCells,
+      cornerAnim,
+      1,
+      { asset = cursorArt.archive, role = "Battle cursor" }
+    )
+    local cornerName = "battle-cursor-" .. cursorNames[corner]
+    stageSlice(cornerName, cornerRaster.pixels, cornerRaster.width, cornerRaster.height)
+    local stagedFrames = {}
+    for frameIndex, frame in ipairs(cornerAnim.frames) do
+      stagedFrames[frameIndex] = {
+        duration = tonumber(frame.duration) or 0,
+        x = tonumber(frame.translateX) or 0,
+        y = tonumber(frame.translateY) or 0,
+      }
+    end
+    cursorCorners[cursorNames[corner]] = {
+      image = BattlePresentationCache.globalImagePath(cornerName),
+      width = cornerRaster.width,
+      height = cornerRaster.height,
+      frames = stagedFrames,
+    }
+  end
+  -- Battle-bag button faces (BattleBagMenu_StoreButtonTilemaps cutting
+  -- the member-1 tilemap atlas, GetButtonTilemap, GetButtonPalette,
+  -- CopyPocketIconTiles): each staged patch re-renders one atlas rect
+  -- through its retail palette bank with the pocket icon composited
+  -- for pocket buttons, positioned at runtime through the transcribed
+  -- button tile rects. Rest frames ride the staged page raster; only
+  -- press frames 1-2 and disabled frame 3 stage here.
+  local faceSource = Sources.BAG_BUTTON_FACES
+  local atlasScreen = decodeScreen(bagArchive, faceSource.atlasScreen, "battle bag button atlas")
+  local atlasColumns = atlasScreen.width / 8
+  assert(atlasColumns == 32, "the button atlas spans the 32-tile tilemap stride")
+  local function atlasEntry(sx, sy)
+    return assert(atlasScreen.entries[sy * atlasColumns + sx + 1], "button atlas rects stay inside the tilemap")
+  end
+  local function faceFamily(button)
+    for _, family in pairs(faceSource.families) do
+      for _, member in ipairs(family.buttons) do
+        if member == button then
+          return family
+        end
+      end
+    end
+    return assert(nil, "every staged button belongs to a tilemap family")
+  end
+  local bagFaces = {}
+  for _, staged in ipairs(faceSource.staged) do
+    local family = faceFamily(staged.button)
+    for _, frame in ipairs(staged.frames) do
+      local sx = family.source.x + (family.strideX or 0) * frame
+      local sy = family.source.y + (family.strideY or 0) * frame
+      for _, bank in ipairs(staged.banks) do
+        local entries = {}
+        for ty = 0, family.h - 1 do
+          for tx = 0, family.w - 1 do
+            local source = atlasEntry(sx + tx, sy + ty)
+            entries[#entries + 1] = {
+              tile = source.tile,
+              flipH = source.flipH,
+              flipV = source.flipV,
+              palette = bank,
+            }
+          end
+        end
+        if family.icons == true then
+          local iconSource = faceSource.icons
+          local iconSx = iconSource.source.x + iconSource.strideX * frame
+          local iconSy = iconSource.source.y + iconSource.strideY * staged.button
+          for ty = 0, iconSource.h - 1 do
+            for tx = 0, iconSource.w - 1 do
+              local source = atlasEntry(iconSx + tx, iconSy + ty)
+              local at = (iconSource.atY + ty) * family.w + (iconSource.atX + tx) + 1
+              entries[at] = {
+                tile = source.tile,
+                flipH = source.flipH,
+                flipV = source.flipV,
+                palette = bank,
+              }
+            end
+          end
+        end
+        local faceRaster = G2dRasterizer.renderScreen(bagChars, bagPalette, {
+          width = family.w * 8,
+          height = family.h * 8,
+          entries = entries,
+        }, {
+          asset = faceSource.archive,
+          role = "Battle bag button face",
+        })
+        local faceName = "bag-button-" .. staged.button .. "-" .. frame .. "-" .. bank
+        stageSlice(faceName, faceRaster.pixels, faceRaster.width, faceRaster.height)
+        bagFaces[#bagFaces + 1] = {
+          button = staged.button,
+          frame = frame,
+          bank = bank,
+          image = BattlePresentationCache.globalImagePath(faceName),
+        }
+      end
+    end
+  end
+  return {
+    pages = bagPages,
+    windows = bagWindows,
+    hitboxes = bagHitboxes,
+    entryIds = bagEntryIds,
+    icons = bagIcons,
+    tutorialFinger = tutorialFinger,
+    finger = finger,
+    cursor = cursorCorners,
+    buttons = bagFaces,
+  }, {
+    archive = bagSource.archive,
+    character = bagSource.character,
+    screen = bagSource.screen,
+    palette = bagSource.palette,
+    overlayId = Sources.BAG_WINDOWS.overlayId,
+    windows = Sources.BAG_WINDOWS,
+    hitboxes = Sources.BAG_HITBOXES,
+    entryIds = Sources.BAG_ITEM_ENTRY_IDS,
+    iconPositions = Sources.BAG_ICON_POSITIONS,
+    tutorialFinger = Sources.BAG_TUTORIAL_FINGER,
+    finger = Sources.BATTLE_FINGER,
+    cursor = Sources.BATTLE_CURSOR,
+    buttonFaces = Sources.BAG_BUTTON_FACES,
   }
 end
 
@@ -4446,6 +4927,11 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       sprites = Sources.BUG_CONTEST_SPRITES,
     }
 
+    -- Retail battle-bag screen (battle_bag_menu.c
+    -- BattleBagMenu_LoadBgGraphics): staged page slices plus the
+    -- transcribed overlay-8 tables for the renderer to composite.
+    local bagScreens, bagProvenanceEntry = BattlePresentationCompiler.compileBagScreens(romFs, stageSlice)
+
     local pictureAttributes, pictureSelectors = compilePictureAttributes(romFs)
 
     local menuSelectors = {}
@@ -4598,12 +5084,19 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         runtimeContexts = menuRuntimeContexts,
         contexts = menuContexts,
       },
+      bag = bagScreens,
       messages = {
         roles = {
           narration = { font = narrationFont, palette = textPalettes.narration },
           trainerNarration = { font = narrationFont, palette = textPalettes.narration },
           hud = { font = FieldFontCache.defPath(Sources.HUD_MESSAGE_FONT_ID), palette = textPalettes.hud },
           menu = { font = FieldFontCache.defPath(Sources.MENU_TEXT_FONT_ID), palette = textPalettes.menu },
+          -- Bag window text draws through the menu and hud font roles
+          -- while its colors ride this window palette. Party wrapper
+          -- rows use the same two font roles while their colors ride the
+          -- transcribed party window bank.
+          bag = { font = FieldFontCache.defPath(Sources.MENU_TEXT_FONT_ID), palette = textPalettes.bag },
+          party = { font = FieldFontCache.defPath(Sources.MENU_TEXT_FONT_ID), palette = textPalettes.party },
           bugContest = { font = FieldFontCache.defPath(Sources.BUG_CONTEST_FONT_ID) },
           recorderFeedback = { font = FieldFontCache.defPath(Sources.RECORDER_FEEDBACK_FONT_ID) },
         },
@@ -4694,6 +5187,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       menuTilemaps = menuTilemapProvenance,
       menuLayouts = menuLayoutProvenance,
       menuLayerIndices = menuLayerIndices,
+      bag = bagProvenanceEntry,
       hudComponents = {
         source = Sources.HUD_COMPONENTS.source,
         contentIdentity = Hashing.sha1hex(componentBytes),

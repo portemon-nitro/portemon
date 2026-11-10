@@ -489,6 +489,13 @@ end
 ---@param policy CapturePolicy effective mode policy paying for the throw
 ---@param attempt CaptureAttempt throw paying for its ball
 local function spendThrow(spent, policy, attempt)
+  -- Retail tutorial ball stock is never consumed
+  -- (battle_controller_player.c ~1755, Bag_TakeItem skipped under
+  -- TRAINER|TUTORIAL): lesson throws take the turn but spend no stock
+  -- and ledger no consumption.
+  if spent.tutorial == true then
+    return
+  end
   local ball = attempt.ball --[[@as string]]
   if policy.counter ~= nil and policy.specialBall == ball then
     local counter = policy.counter --[[@as string]]
@@ -556,7 +563,16 @@ function Capture.execute(attempt, battle, stream)
   assert(type(stream) == "table", "shake checks spend labeled draws")
   local context, policy, targetId, combatant = stageThrow(attempt, battle)
   spendThrow(battle, policy, attempt)
-  local calculation = Capture.calculate(attempt, context, stream)
+  -- Retail tutorial throws always catch (battle_command.c:7185,
+  -- BattleSystem_CalculateBallShakes under PAL_PARK|TUTORIAL returns
+  -- BALL_SHAKE_MAX): the lesson succeeds without spending its shake
+  -- draws, so odds stay untouched like the retail early return.
+  local calculation
+  if battle.tutorial == true then
+    calculation = { success = true, shakes = Capture.MAX_SHAKES, reason = "tutorial", odds = Capture.GUARANTEED_ODDS }
+  else
+    calculation = Capture.calculate(attempt, context, stream)
+  end
   local ball = attempt.ball --[[@as string]]
   local mon = combatant.mon --[[@as table<string, unknown>]]
   local sequence = battle.captureSeq --[[@as integer?]] or 0
