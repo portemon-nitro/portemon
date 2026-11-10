@@ -2332,7 +2332,113 @@ function T.pooled_portrait_cells_submit_their_frame_window()
   Assert.isTrue(picture.palette == pagePalette, "the submitted picture carries the page palette for indexed sampling")
 end
 
--- Repeated draws without a fixed update reuse one published paint view:
+-- Baked motion deltas compose into the submitted picture: the motion
+-- channels shift the center, affine scales ride the shared slots, the
+-- motion rotation rides its slot, and the motion blend overrides the
+-- ball fade.
+function T.baked_motion_deltas_shift_the_submitted_picture_center()
+  local modules = battleScreenModules("baked motion reaches the picture pass", RENDERER_MODULE)
+  local BattleRenderer = modules.renderer
+  local submitted = {}
+  local assets = stubAssets({})
+  assets.images = {
+    ["mon:LEADMON"] = { frames = { fakeDrawable("lead-frame") } },
+    ["scene:test"] = fakeDrawable("scene:test"),
+    ["shadow"] = fakeDrawable("shadow"),
+  }
+  function assets.drawable(_, key)
+    return assets.images[key]
+  end
+  function assets.renderPictures(_, _, pictures)
+    for _, picture in ipairs(pictures) do
+      submitted[#submitted + 1] = picture
+    end
+    return { drawn = "layer" }
+  end
+  function assets.shadowRegion(_)
+    return { x = 0, y = 0, width = 64, height = 16 }
+  end
+  local view = {
+    mode = "message",
+    battlers = {
+      {
+        combatant = 0,
+        side = 1,
+        position = 0,
+        active = true,
+        visible = true,
+        hudVisible = false,
+        portraitSelector = "LEADMON",
+        pictureVisible = false,
+        height = 0,
+        sourceHeight = 0,
+        motionDx = 8,
+        motionDy = -4,
+        affineMode = true,
+        affineWidth = 288,
+        affineHeight = 224,
+        rotationZ = 16384,
+        motionBlend = { applied = true, targetColor = 31, intensity = 8 },
+        paletteFade = { applied = true, targetColor = 0, intensity = 16 },
+      },
+    },
+    slotGeometry = {
+      { sideType = 0, settledX = 64, settledY = 112, depth = 0, hudX = 192, hudY = 116 },
+    },
+    hudSections = {},
+    effectInstances = {},
+  }
+  local graphics = FakeGraphics.new({})
+  BattleRenderer.drawPane({
+    graphics = graphics,
+    text = {},
+    windows = {},
+    assets = assets,
+    sceneImageKey = "scene:test",
+  }, view, "detail", {}, nil)
+  local picture = nil
+  for _, entry in ipairs(submitted) do
+    if entry.image ~= nil and entry.kind ~= "shadow" then
+      picture = entry
+    end
+  end
+  Assert.notNil(picture, "the motion battler submits its picture")
+  assert(picture ~= nil, "the motion battler submits its picture")
+  Assert.equal(picture.centerX, 64 + 8, "the motion channel shifts the picture center horizontally")
+  Assert.equal(picture.centerY, 112 - 4, "the motion channel shifts the picture center vertically")
+  Assert.equal(picture.width, 90, "the motion affine stretches the picture width")
+  Assert.equal(picture.height, 70, "the motion affine squashes the picture height")
+  Assert.equal(picture.rotationZ, 16384, "the motion rotation rides the native slot")
+  Assert.deepEqual(
+    picture.paletteFade,
+    { applied = true, targetColor = 31, intensity = 8 },
+    "the motion blend overrides the ball fade"
+  )
+end
+
+-- The screen supplies staged motion facts to the cue player: the foe
+-- reads the front header while the player reads the back header, and
+-- unknown species resolve to no motion instead of failing the battle.
+function T.screen_supplies_motion_facts_from_the_staged_manifest()
+  local modules = battleScreenModules("motion facts ride the staged manifest", STATE_MODULE)
+  local rig = openWildRig(
+    modules,
+    "launch-motion-facts",
+    { species = "EEVEE", level = 20, seed = 0x33333333, ability = "RUN_AWAY" },
+    { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+    foeRecord("EEVEE", 20, 0x5EED0002)
+  )
+  local facts = rig.screen._timeline._motionFacts
+  Assert.isTrue(type(facts) == "function", "the cue player receives the motion facts provider")
+  Assert.deepEqual(
+    facts("EEVEE", true),
+    { totalTicks = 1, cryDelay = 0 },
+    "the foe header resolves through the staged front track"
+  )
+  Assert.isNil(facts("EEVEE", false), "the staged manifest names no back header in this fixture")
+  Assert.isNil(facts("MISSINGNO", true), "unknown species stage no motion")
+end
+
 -- the first draw builds the detached opening and manifest copies once,
 -- later draws reuse them with identical pixels, and trainer slide
 -- offsets never accumulate on the retained view.

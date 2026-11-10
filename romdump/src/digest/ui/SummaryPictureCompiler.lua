@@ -42,6 +42,33 @@ local Hashing = require("romdump.src.digest.Hashing")
 local bit = require("bit")
 
 ---@class SummaryPictureCompiler
+---@class SummaryPictureCompiler.BattleFrameStep one authored frame-script record
+---@field next integer successor record index, -1 when the lane retires
+---@field duration integer hold ticks before advancing
+---@field xOffset integer horizontal picture offset in native pixels
+---@class SummaryPictureCompiler.BattleFacingRecord battle-facing animation record
+---@field cryDelay integer cry start delay in ticks
+---@field program integer motion program identity
+---@field motionDelay integer motion start delay in ticks
+---@field script SummaryPictureCompiler.BattleFrameStep[] ten authored frame-script records
+---@field placement { offsetX: integer, offsetY: integer } species picture placement offsets
+---@class SummaryPictureCompiler.BattleMotionSample one run-length motion program delta
+---@field durationTicks integer hold ticks for this delta
+---@field dx number horizontal delta in native pixels
+---@field dy number vertical delta in native pixels
+---@field scaleX number horizontal affine scale factor
+---@field scaleY number vertical affine scale factor
+---@field rotationTurns number rotation in full turns
+---@field visible boolean whether the picture renders on this delta
+---@field paletteBlend? { target: { r: integer, g: integer, b: integer }, coefficient: integer } active palette blend, absent when unblended
+---@class SummaryPictureCompiler.BattleMotionTrack baked battle track with motion-only samples
+---@field samples SummaryPictureCompiler.BattleMotionSample[] run-length motion deltas in order
+---@field endTick integer combined hold span including the frame lane
+---@field delay integer motion start delay in ticks
+---@field cryDelay integer cry start delay in ticks
+---@class SummaryPictureCompiler.BattleMotionProgram baked motion program without delay lanes
+---@field samples SummaryPictureCompiler.BattleMotionSample[] run-length motion deltas in order
+---@field endTick integer motion-only hold span
 local SummaryPictureCompiler = {}
 
 SummaryPictureCompiler.ERROR = {
@@ -181,14 +208,18 @@ local function readWords(member, role)
   return words
 end
 
-local function decodeRecord(member, species, role)
+local function decodeRecordAt(member, species, entryIndex, role)
   if #member ~= RECORD_COUNT * RECORD_SIZE then
     sourceError("the picture metadata has an unexpected size", { role = role, bytes = #member })
   end
   if species < 0 or species >= RECORD_COUNT then
     sourceError("the species selects no metadata record", { role = role, species = species })
   end
-  local base = species * RECORD_SIZE
+  if entryIndex ~= 0 and entryIndex ~= 1 then
+    sourceError("the facing selects no metadata entry", { role = role, entry = entryIndex })
+  end
+  local speciesBase = species * RECORD_SIZE
+  local base = speciesBase + entryIndex * ENTRY_SIZE
   local entry = member:sub(base + 1, base + ENTRY_SIZE)
   local header = { string.byte(entry, 1), string.byte(entry, 2), string.byte(entry, 3) }
   local script = {}
@@ -200,7 +231,7 @@ local function decodeRecord(member, species, role)
       xOffset = s8(string.byte(entry, offset + 3)),
     }
   end
-  local tail = member:sub(base + ENTRY_SIZE * 2 + 1, base + RECORD_SIZE)
+  local tail = member:sub(speciesBase + ENTRY_SIZE * 2 + 1, speciesBase + RECORD_SIZE)
   return {
     cryDelay = header[1],
     program = header[2],
@@ -208,6 +239,20 @@ local function decodeRecord(member, species, role)
     script = script,
     placement = { offsetX = s8(string.byte(tail, 1)), offsetY = s8(string.byte(tail, 2)) },
   }
+end
+
+local function decodeRecord(member, species, role)
+  return decodeRecordAt(member, species, 0, role)
+end
+
+-- Battle send-out playback reads either facing entry: front (index 0)
+-- for the foe picture, back (index 1) for the player picture.
+---@param member string 89-byte metadata records
+---@param species integer zero-based species identity
+---@param entryIndex integer 0 front, 1 back
+---@return SummaryPictureCompiler.BattleFacingRecord battle-facing animation record
+function SummaryPictureCompiler.decodeBattleRecord(member, species, entryIndex)
+  return decodeRecordAt(member, species, entryIndex, "battle motion")
 end
 
 -- Attribute numbers transcribe the POKEPIC_* enum order in
@@ -1278,6 +1323,194 @@ local function simulate(words, record)
       return { samples = samples, terminal = {} }
     end
   end
+end
+
+-- Motion-only sample for battle send-out playback: program deltas
+-- relative to the picture anchor, without the cell-frame selection the
+-- live cell task already drives.
+local function motionSampleOf(machine)
+  local sample = {
+    durationTicks = 1,
+    dx = (machine.attrs[ATTR_X] or ANCHOR_X) - ANCHOR_X,
+    dy = (machine.attrs[ATTR_Y] or 0) - ANCHOR_Y,
+    scaleX = (machine.attrs[ATTR_AFFINEW] or AFFINE_UNIT) / AFFINE_UNIT,
+    scaleY = (machine.attrs[ATTR_AFFINEH] or AFFINE_UNIT) / AFFINE_UNIT,
+    rotationTurns = (machine.attrs[ATTR_ZROT] or 0) / ROTATION_UNIT,
+    visible = (machine.attrs[ATTR_VISIBLE] or 0) ~= 0,
+  }
+  local blend = machine.lastBlend
+  if blend ~= nil and blend.coefficient ~= 0 then
+    sample.paletteBlend = {
+      target = { r = blend.target.r, g = blend.target.g, b = blend.target.b },
+      coefficient = blend.coefficient,
+    }
+  end
+  return sample
+end
+
+local function motionSamplesEqual(left, right)
+  if
+    left.dx ~= right.dx
+    or left.dy ~= right.dy
+    or left.scaleX ~= right.scaleX
+    or left.scaleY ~= right.scaleY
+    or left.rotationTurns ~= right.rotationTurns
+    or left.visible ~= right.visible
+  then
+    return false
+  end
+  local leftBlend, rightBlend = left.paletteBlend, right.paletteBlend
+  if (leftBlend == nil) ~= (rightBlend == nil) then
+    return false
+  end
+  if leftBlend ~= nil and rightBlend ~= nil then
+    return leftBlend.coefficient == rightBlend.coefficient
+      and leftBlend.target.r == rightBlend.target.r
+      and leftBlend.target.g == rightBlend.target.g
+      and leftBlend.target.b == rightBlend.target.b
+  end
+  return true
+end
+
+-- Machine-only cycle key: the frame lane advances independently, so a
+-- repeated machine state proves a non-terminating program.
+local function motionStateKey(machine)
+  local parts = {
+    "pc=" .. machine.pc,
+    "delay=" .. machine.delay,
+    "loop=" .. tostring(machine.loopStart) .. ":" .. machine.loopCount .. ":" .. machine.loopTotal,
+    "flags=" .. tostring(machine.restoreFlag) .. "," .. machine.fadeMode .. "," .. tostring(machine.fadeWait),
+    "regs=" .. table.concat(machine.regs, ","),
+    "acc="
+      .. machine.acc[0x60]
+      .. ","
+      .. machine.acc[0x64]
+      .. ","
+      .. machine.acc[0x68]
+      .. ","
+      .. machine.acc[0x6C]
+      .. ","
+      .. machine.acc[0x70]
+      .. ","
+      .. machine.acc[0x74]
+      .. ","
+      .. machine.acc[0x78],
+    "attrs=" .. tostring(machine.attrs[ATTR_X]) .. "," .. tostring(machine.attrs[ATTR_Y]) .. "," .. tostring(
+      machine.attrs[ATTR_ZROT]
+    ) .. "," .. tostring(machine.attrs[ATTR_AFFINEW]) .. "," .. tostring(machine.attrs[ATTR_AFFINEH]) .. "," .. tostring(
+      machine.attrs[ATTR_VISIBLE]
+    ),
+    "fade="
+      .. tostring(machine.fade.active)
+      .. ","
+      .. machine.fade.cur
+      .. ","
+      .. machine.fade.endValue
+      .. ","
+      .. machine.fade.counter
+      .. ","
+      .. machine.fade.length
+      .. ","
+      .. machine.fade.target,
+  }
+  for index = 1, 4 do
+    local channel = machine.channels[index]
+    if channel == nil or channel.active == false then
+      parts[#parts + 1] = "ch" .. index .. "=-"
+    else
+      parts[#parts + 1] = "ch"
+        .. index
+        .. "="
+        .. channel.kind
+        .. ":"
+        .. channel.count
+        .. ":"
+        .. channel.delay
+        .. ":"
+        .. channel.output
+        .. ":"
+        .. table.concat(channel.params, ",")
+    end
+  end
+  return table.concat(parts, "|")
+end
+
+-- Ticks the frame script alone to its terminal record.
+local function frameEndTick(script)
+  local state = newFrameState(script)
+  local tick = 0
+  while state.active do
+    if tick >= SummaryPictureCompiler.TICK_BUDGET then
+      malformed("the frame script exceeds its tick budget", { ticks = tick })
+    end
+    frameTick(state)
+    tick = tick + 1
+  end
+  return tick
+end
+
+-- Runs the motion and fade lanes alone to teardown, without the frame
+-- lane. Delays ride the machine exactly like the source task countdown.
+local function runMotionOnly(words, motionDelay)
+  local machine = newMachine(words, { motionDelay = motionDelay })
+  local samples = {}
+  local seen = {}
+  local tick = 0
+  while true do
+    if tick >= SummaryPictureCompiler.TICK_BUDGET then
+      malformed("the motion program exceeds its tick budget", { ticks = tick })
+    end
+    local key = motionStateKey(machine)
+    if seen[key] ~= nil then
+      malformed("the motion program cycles", { ticks = tick })
+    end
+    seen[key] = true
+    motionTick(machine)
+    fadeTick(machine)
+    local sample = motionSampleOf(machine)
+    local previous = samples[#samples]
+    if previous ~= nil and motionSamplesEqual(previous, sample) then
+      previous.durationTicks = previous.durationTicks + 1
+    else
+      samples[#samples + 1] = sample
+    end
+    tick = tick + 1
+    if machine.destroyed and not machine.fade.active then
+      break
+    end
+  end
+  return samples, tick
+end
+
+-- Simulates one battle send-out track: motion-only samples for runtime
+-- playback plus the combined hold span. The motion, fade, and frame
+-- lanes advance on the same source tick from the same start, so the
+-- task ends exactly when the longest lane retires.
+---@param words integer[] motion program word stream
+---@param record SummaryPictureCompiler.BattleFacingRecord facing record with motionDelay, cryDelay, and script
+---@return SummaryPictureCompiler.BattleMotionTrack baked battle track with samples, endTick, delay, and cryDelay
+function SummaryPictureCompiler.simulateBattleMotion(words, record)
+  assert(type(words) == "table" and #words >= 1, "battle motion simulates a word stream")
+  assert(type(record) == "table", "battle motion simulates a facing record")
+  assert(type(record.script) == "table", "battle motion simulates a frame script")
+  local samples, motionEnd = runMotionOnly(words, record.motionDelay or 0)
+  local total = math.max(motionEnd, frameEndTick(record.script))
+  return {
+    samples = samples,
+    endTick = total,
+    delay = record.motionDelay or 0,
+    cryDelay = record.cryDelay or 0,
+  }
+end
+
+-- Bakes one motion program without delay or frame lanes: programs are
+-- shared across species while delays and totals stay per-species.
+---@param words integer[] motion program word stream
+---@return SummaryPictureCompiler.BattleMotionProgram program samples with the motion-only end tick
+function SummaryPictureCompiler.simulateBattleMotionSamples(words)
+  assert(type(words) == "table" and #words >= 1, "battle motion simulates a word stream")
+  local samples, motionEnd = runMotionOnly(words, 0)
+  return { samples = samples, endTick = motionEnd }
 end
 
 ---@param romFs table<string, unknown>

@@ -136,6 +136,8 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _menuPulseDirection 0|1 source palette pulse direction
 ---@field _iconAnimationTick integer mon icon animation clock in source ticks
 ---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
+---@field _pictureAnimSeqSeen table<string, integer> last restarted picture-animation sequence by activation identity
+---@field _battleAnimationsOn boolean false while the launch disables battle animations
 ---@field _encounterParticles BattleEncounterParticles encounter terrain particle systems driven by the opening animation
 ---@field _ballParticles BattleBallParticles ball send-out and capture particle systems driven by the cue timeline
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
@@ -1342,6 +1344,7 @@ function BattleScreenState.new(opts)
     _menuPulseDirection = 0,
     _iconAnimationTick = 0,
     _scene = BattleScene.new(),
+    _pictureAnimSeqSeen = {},
     _encounterParticles = BattleEncounterParticles.new(),
     _ballParticles = BattleBallParticles.new(),
     _gaugeVisuals = {},
@@ -1458,6 +1461,23 @@ function BattleScreenState.new(opts)
     local entry = assert(battleBalls["ball:" .. ballKey], "recall and send-out balls are in the ball inventory")
     return entry.fadeColor
   end
+  -- The cue player times the send-out hold and cry delay from the staged
+  -- motion headers: the foe reads the front header while the player
+  -- reads the back header. Unknown species stage no motion and keep the
+  -- established poof timing with the default cry delay.
+  local function motionFactsFor(speciesKey, foe)
+    local pictures = manifest.pictures
+    local motion = type(pictures) == "table" and pictures.motion or nil
+    if type(motion) ~= "table" then
+      return nil
+    end
+    local facing = foe and "front" or "back"
+    local header = type(motion.species) == "table" and motion.species[speciesKey .. "/" .. facing] or nil
+    if type(header) ~= "table" then
+      return nil
+    end
+    return { totalTicks = header.totalTicks, cryDelay = header.cryDelay }
+  end
   -- gBattleEncounterFadeColors is black for the three cave backgrounds.
   local background = assert(BattlePresentationCache.parseSceneKey(sceneKey), "the scene key was validated").background
   -- The frozen launch scene choice rides into the cue player: previous
@@ -1467,6 +1487,7 @@ function BattleScreenState.new(opts)
     launchScene = true
   end
   assert(type(launchScene) == "boolean", "the battle screen carries its launch scene choice")
+  self._battleAnimationsOn = launchScene
   self._timeline = BattleTimeline.new({
     encounterFadeColor = background:match("^cave_") and "black" or "white",
     ballFadeColor = ballFadeColor,
@@ -1479,6 +1500,7 @@ function BattleScreenState.new(opts)
     messageTextContext = self,
     textSpeed = opts.textSpeed or "mid",
     battleScene = launchScene,
+    motionFacts = motionFactsFor,
     effects = effects,
     faintAppearance = faintAppearance,
   })
@@ -1632,6 +1654,77 @@ local function applyBlendAlpha(battler, order, blendSlots, coefficients)
   end
 end
 
+-- Resolves the baked send-out motion behind one battler: the program
+-- header rides the species/facing motion table while the program track
+-- carries the shared samples. Absent motion (planning manifests) plays
+-- nothing instead of failing the snapshot; the schema gate keeps staged
+-- manifests complete.
+---@param self BattleScreenState
+---@param battler table<string, unknown> displayed battler facts under enriching
+---@return table<string, unknown>? motion header with program, delay, cryDelay, and totalTicks
+---@return table<string, unknown>? motion program with run-length samples
+local function motionTrackFor(self, battler)
+  if type(battler.species) ~= "string" then
+    return nil
+  end
+  local pictures = self._manifest.pictures
+  local motion = type(pictures) == "table" and pictures.motion or nil
+  if type(motion) ~= "table" then
+    return nil
+  end
+  local facing = battler.side == 1 and "back" or "front"
+  local header = type(motion.species) == "table" and motion.species[battler.species .. "/" .. facing] or nil
+  if type(header) ~= "table" then
+    return nil
+  end
+  local program = type(motion.programs) == "table" and motion.programs[header.program] or nil
+  if type(program) ~= "table" then
+    return nil
+  end
+  return header, program
+end
+
+-- Starts the baked program behind one send-out edge.
+---@param self BattleScreenState
+---@param battler table<string, unknown> displayed battler identity starting its motion
+local function startPictureMotion(self, battler)
+  local header, program = motionTrackFor(self, battler)
+  if header ~= nil and program ~= nil then
+    self._scene:startPictureMotion(battler, program, header.delay)
+  end
+end
+
+-- Applies the current baked motion deltas to one battler. Position rides
+-- its own motion channels beside travel and shake; affine and rotation
+-- ride the shared slots exactly while the motion runs, and the motion
+-- blend overrides the ball fade exactly while a motion fade sample
+-- applies. A retired or never-started motion publishes nothing, so the
+-- live defaults resume without stale slots.
+---@param self BattleScreenState
+---@param battler table<string, unknown> displayed battler facts under enriching
+local function applyPictureMotion(self, battler)
+  local sample = self._scene:motionPose(battler)
+  if sample == nil then
+    return
+  end
+  battler.motionDx = sample.dx
+  battler.motionDy = sample.dy
+  battler.affineMode = true
+  battler.affineWidth = math.floor(sample.scaleX * 0x100 + 0.5)
+  battler.affineHeight = math.floor(sample.scaleY * 0x100 + 0.5)
+  battler.rotationZ = math.floor(sample.rotationTurns * 0x10000 + 0.5) % 0x10000
+  if sample.paletteBlend ~= nil then
+    local target = sample.paletteBlend.target
+    battler.motionBlend = {
+      applied = true,
+      targetColor = target.r + target.g * 32 + target.b * 1024,
+      intensity = sample.paletteBlend.coefficient,
+    }
+  else
+    battler.motionBlend = nil
+  end
+end
+
 ---@param self BattleScreenState
 ---@param battlers table<integer, table<string, unknown>> displayed battler facts under enriching
 local function enrichScene(self, battlers)
@@ -1691,7 +1784,32 @@ local function enrichScene(self, battlers)
             end
           end
           battler.pictureAnimation = pictureAttributes.animation
-          local pose = self._scene:picturePose(battler, pictureAttributes.animation)
+          -- PlayMonAnimAndCry restarts the cell task at each send-out and
+          -- encounter arrival: the timeline publishes a per-activation
+          -- sequence that bumps exactly at that source event, and the
+          -- screen restarts the task on its edge. Without the restart a
+          -- lazily started task runs out during the slide or poof growth
+          -- and the mon stands on its stopped frame from its reveal on.
+          -- With battle animations off the source never starts the task,
+          -- so the picture holds its stopped frame instead of animating.
+          local animSeq = battler.pictureAnimSeq
+          local pose = nil
+          if self._battleAnimationsOn == false then
+            pose = { frame = 0, xOffset = 0, active = false }
+          else
+            if type(animSeq) == "number" then
+              local seen = self._pictureAnimSeqSeen
+              local animKey = tostring(battler.combatant) .. ":" .. tostring(battler.activation)
+              if seen[animKey] ~= animSeq then
+                seen[animKey] = animSeq
+                pose = self._scene:startPictureAnimation(battler, pictureAttributes.animation)
+                startPictureMotion(self, battler)
+              end
+            end
+            if pose == nil then
+              pose = self._scene:picturePose(battler, pictureAttributes.animation)
+            end
+          end
           battler.pictureFrame = pose.frame
           -- The idle animation pose rides on top of travel: the foe
           -- encounter slide (and any reentry displacement) already sits
@@ -1699,6 +1817,7 @@ local function enrichScene(self, battlers)
           local travel = type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0
           battler.pictureXOffset = travel + pose.xOffset
           battler.pictureAnimationActive = pose.active
+          applyPictureMotion(self, battler)
         end
       end
       local order = nil
@@ -4953,9 +5072,10 @@ function BattleScreenState:_playCryCue(cue)
     volume = defaults.volume,
     pitch = defaults.pitch,
   })
-  -- Tracked send-out cries stage the same single-voice slot without
-  -- gating the queue: the post-box hold polls the slot until the voice
-  -- finishes, absorbing long cries exactly like the script's final Wait.
+  -- Tracked send-out cries publish their handle into the shared
+  -- single-voice slot without gating the queue: the cry overlaps
+  -- whatever follows, like the source PlayMonAnimAndCry voice, and the
+  -- slot only holds cues that explicitly wait on a voice.
   if cue.waitForVoice == true or cue.trackVoice == true then
     self._waitingCueVoice = handle
   end

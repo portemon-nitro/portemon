@@ -1268,7 +1268,7 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         startPress(4, function()
           browser._pocket = savedPocket
           browser._page = "item_list"
-          clampPage(savedPocket)
+          clampPage(savedPocket --[[@as integer]])
           local key = BattleBagPockets.POCKET_KEYS[savedPocket + 1]
           for index, entry in ipairs(groups[key]) do
             if entry.item == browser._lastUsed.item then

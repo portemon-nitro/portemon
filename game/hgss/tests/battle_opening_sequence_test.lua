@@ -437,44 +437,59 @@ function T.wild_doubles_player_go_stays_singular()
   Assert.isTrue(lines[1]:find(" and") == nil, "the wild Go! stays singular: " .. lines[1])
 end
 
-function T.send_out_holds_on_unfinished_send_out_voices()
+-- subscript_0000_StartEncounter never waits for a cry: the wild foe's
+-- encounter task retires once its mon animation starts playing
+-- (Task_PokemonEncounter waits only for anim state 1, still unfinished)
+-- while PlayMonAnimAndCry's delayed cry overlaps the box slide and the
+-- encounter line. The encounter line and the handoff therefore proceed
+-- with an unfinished foe cry, and no acknowledgement is required
+-- anywhere in the intro: both waits are timed and skippable.
+function T.wild_intro_overlaps_unfinished_cries_without_acknowledgement()
   local timeline = BattleTimelineFixture.new({})
   local view = openingView()
   timeline:reset(view)
   timeline:intro(view, true)
-  local voiceDone = false
   local function soundComplete(_)
-    return voiceDone
+    return false
   end
+  local sawEncounter = false
+  local sawGo = false
   local settled = false
-  for _ = 1, 300 do
+  for _ = 1, 3000 do
     timeline:update(TICK, function(_)
       return true
     end, soundComplete)
+    local message = timeline:message()
+    if type(message) == "string" and message:find("appeared!", 1, true) ~= nil then
+      sawEncounter = true
+    end
+    if type(message) == "string" and message:find("Go!", 1, true) ~= nil then
+      sawGo = true
+    end
     if timeline:settled() then
       settled = true
       break
     end
   end
-  Assert.isFalse(settled, "unfinished send-out voices hold the intro open")
-  Assert.equal(timeline:message(), "", "the encounter line waits for the foe voice")
-  local boxed = false
-  for _, battler in ipairs(timeline:battlers()) do
-    if battler.combatant == 3 and battler.hudVisible == true and battler.hudOffsetX == 0 then
-      boxed = true
+  Assert.isTrue(sawEncounter, "the encounter line prints with the foe cry still unfinished")
+  Assert.isTrue(sawGo, "Go! follows the encounter line with an unfinished player cry")
+  Assert.isTrue(settled, "the intro reaches its handoff with every voice still unfinished")
+  Assert.isTrue(
+    (timeline:message():find("Go!", 1, true) ~= nil),
+    "the handoff keeps the Go! line up: " .. timeline:message()
+  )
+  local foeCries, ownCries = 0, 0
+  for _, cue in ipairs(timeline:drainSounds()) do
+    if type(cue) == "table" and cue.kind == "cry" then
+      if cue.foe == true then
+        foeCries = foeCries + 1
+      else
+        ownCries = ownCries + 1
+      end
     end
   end
-  Assert.isTrue(boxed, "the hold lands after the foe box arrives, like the script's final Wait")
-  voiceDone = true
-  for _ = 1, 3000 do
-    timeline:update(TICK, function(_)
-      return true
-    end, soundComplete)
-    if timeline:settled() then
-      break
-    end
-  end
-  Assert.isTrue(timeline:settled(), "finished voices release the intro")
+  Assert.equal(foeCries, 1, "the wild foe still cries once, overlapping the line")
+  Assert.equal(ownCries, 1, "the player lead still cries once, overlapping the handoff")
 end
 
 -- Retail follow-mon openings (OpponentData_ThrowPokeball with a set
@@ -683,7 +698,21 @@ function T.follower_partner_waits_twelve_ticks_before_sliding()
   end
   Assert.isTrue(settled ~= nil and settled.visible == true, "the partner stays out after its slide")
   Assert.isNil(settled ~= nil and settled.pictureXOffset or nil, "the slide settles exactly on its row")
-  Assert.isTrue(reveal.cryEmitted == true, "the partner still cries with its reveal")
+  Assert.isTrue(reveal.animStarted == true, "the partner still starts its animation with its reveal")
+  -- The cry voices after the default species delay through the
+  -- side-channel countdown, even past the short slide reveal.
+  for _ = 1, 8 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+  end
+  local cried = false
+  for _, cue in ipairs(timeline:drainSounds()) do
+    if type(cue) == "table" and cue.kind == "cry" then
+      cried = true
+    end
+  end
+  Assert.isTrue(cried, "the partner still cries after its delay")
 end
 
 return { tests = T }

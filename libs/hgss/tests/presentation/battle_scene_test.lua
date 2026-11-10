@@ -603,6 +603,98 @@ function T.picture_animation_uses_source_tick_countdown_loop_and_stop_rules()
   }, "the stop sentinel resets the frame and horizontal offset")
 end
 
+function T.picture_animation_restarts_from_its_first_step_on_demand()
+  local scene = BattleScene.new()
+  local battler = { combatant = 1, activation = 7 }
+  local animation = {
+    steps = {
+      { next = 1, duration = 2, xOffset = -4, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+      { next = -1, duration = 0, xOffset = 0, auxiliary = 0 },
+    },
+  }
+  -- The lazy start is covered next door; here it only stages the task
+  -- the restart must replay after the stop sentinel retires it.
+  Assert.isTrue(
+    scene:picturePose(battler, animation).active,
+    "the task runs before its stop sentinel retires it"
+  )
+  for _ = 1, 3 do
+    scene:stepSourceTick()
+  end
+  Assert.isFalse(
+    scene:picturePose(battler, animation).active,
+    "the short animation retires to its stop sentinel"
+  )
+  local restarted = scene:startPictureAnimation(battler, animation)
+  Assert.deepEqual(restarted, {
+    frame = 1,
+    xOffset = -4,
+    active = true,
+    step = 0,
+    delay = 2,
+  }, "an explicit Pokepic_StartAnim replays the first authored step from its delay")
+  Assert.deepEqual(
+    scene:picturePose(battler, animation),
+    restarted,
+    "the restarted task stays installed until the source clock advances it"
+  )
+end
+
+function T.picture_motion_replays_baked_samples_from_its_delay_and_holds_terminal()
+  local scene = BattleScene.new()
+  local battler = { combatant = 1, activation = 9 }
+  Assert.isNil(scene:motionPose(battler), "no motion plays before its send-out start")
+  local program = {
+    samples = {
+      { durationTicks = 2, dx = 0, dy = 0, scaleX = 1, scaleY = 1, rotationTurns = 0, visible = true },
+      {
+        durationTicks = 1,
+        dx = 8,
+        dy = -4,
+        scaleX = 1.125,
+        scaleY = 0.875,
+        rotationTurns = 0.25,
+        visible = true,
+        paletteBlend = { target = { r = 31, g = 31, b = 31 }, coefficient = 8 },
+      },
+    },
+  }
+  scene:startPictureMotion(battler, program, 2)
+  local held = assert(scene:motionPose(battler), "the motion holds its anchor through the delay")
+  Assert.equal(held.dx, 0, "the delay publishes no drift")
+  Assert.equal(held.scaleX, 1, "the delay publishes unit scale")
+  scene:stepSourceTick()
+  scene:stepSourceTick()
+  held = assert(scene:motionPose(battler), "the program opens after its delay")
+  Assert.equal(held.dx, 0, "the first sample holds the anchor")
+  Assert.equal(held.durationTicks, 2, "the first sample keeps its span")
+  scene:stepSourceTick()
+  scene:stepSourceTick()
+  held = assert(scene:motionPose(battler), "the second sample poses the lunge")
+  Assert.equal(held.dx, 8, "the program drifts horizontally")
+  Assert.equal(held.dy, -4, "the program lifts vertically")
+  Assert.equal(held.scaleX, 1.125, "the program stretches horizontally")
+  Assert.equal(held.rotationTurns, 0.25, "the program carries its quarter turn")
+  Assert.deepEqual(
+    assert(held.paletteBlend).target,
+    { r = 31, g = 31, b = 31 },
+    "the program carries its fade target"
+  )
+  scene:stepSourceTick()
+  scene:stepSourceTick()
+  held = assert(scene:motionPose(battler), "the terminal sample holds past its end")
+  Assert.equal(held.dx, 8, "the terminal pose holds its drift")
+  Assert.equal(held.durationTicks, 1, "the terminal sample keeps its span")
+end
+
 function T.health_gauge_tasks_step_on_source_ticks_with_native_integer_and_subpixel_rounding()
   local scene = BattleScene.new()
   scene:startGaugeTask("normal", { maximum = 100, current = 21, delta = 1, tiles = 6 })

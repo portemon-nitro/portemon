@@ -28,6 +28,7 @@ local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalog
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local SplEmitterCompiler = require("romdump.src.digest.particle.SplEmitterCompiler")
 local Rgb555 = require("libs.codec.src.Rgb555")
+local PictureMotion = require("romdump.src.digest.ui.SummaryPictureCompiler")
 local bit = require("bit")
 
 ---@class BattlePresentationCompiler
@@ -49,6 +50,14 @@ local BattlePresentationCompiler = {}
 ---@field resourcePayloads table<string, table<string, unknown>> decoded payloads keyed by cache-relative path; build-only
 ---@field provenance table<string, unknown> producer-only physical source selections
 ---@field requiredContext table<string, string|number|boolean> typed context parameters
+
+---@class BattlePresentationCompiler.PictureMotionHeader per-species send-out motion header
+---@field program integer motion program identity
+---@field delay integer motion start delay in ticks
+---@field cryDelay integer cry start delay in ticks
+---@field totalTicks integer combined hold span including the frame lane
+---@class BattlePresentationCompiler.PictureMotionProgram shared baked motion program track
+---@field samples SummaryPictureCompiler.BattleMotionSample[] run-length motion deltas in order
 
 local provenanceRoles
 
@@ -389,6 +398,114 @@ local function compilePictureAttributes(romFs)
     end
   end
   return pictureAttributes, pictureSelectors
+end
+
+-- Reads the motion word streams behind the shared program bake.
+---@param archive Narc source motion archive
+---@param programId integer motion program identity
+---@return integer[] motion program word stream
+local function readMotionWords(archive, programId)
+  local member = decodeMember(archive, programId, "picture motion program")
+  if #member % 4 ~= 0 then
+    error(
+      Errors.new("BATTLE_PICTURE_MOTION_INVALID", "picture motion program is not a word stream", {
+        program = programId,
+        size = #member,
+      }),
+      0
+    )
+  end
+  local words = {}
+  for offset = 1, #member, 4 do
+    local unsigned = string.byte(member, offset)
+      + string.byte(member, offset + 1) * 256
+      + string.byte(member, offset + 2) * 65536
+      + string.byte(member, offset + 3) * 16777216
+    words[#words + 1] = unsigned >= 0x80000000 and unsigned - 0x100000000 or unsigned
+  end
+  return words
+end
+
+-- Stages the per-species motion headers and shared program tracks from
+-- their source archives.
+---@param romFs RomFs source archive reader
+---@return table<string, BattlePresentationCompiler.PictureMotionHeader> species motion headers by "SPECIES/facing"
+---@return table<integer, BattlePresentationCompiler.PictureMotionProgram> program tracks by program id
+function BattlePresentationCompiler.stagePictureMotions(romFs)
+  local animationArchive = openArchive(romFs, Sources.PICTURE_ANIMATION_NARC, "picture animation attributes")
+  local animationBytes =
+    decodeMember(animationArchive, Sources.PICTURE_ANIMATION_MEMBER, "picture animation attributes")
+  local motionArchive = openArchive(romFs, Sources.PICTURE_MOTION_NARC, "picture motion programs")
+  local memberCount = motionArchive:memberCount()
+  local motionWords = {}
+  for programId = 0, memberCount - 1 do
+    motionWords[programId] = readMotionWords(motionArchive, programId)
+  end
+  return BattlePresentationCompiler.compilePictureMotions(animationBytes, motionWords)
+end
+
+-- Compile the send-out motion programs into per-species headers and
+-- shared program tracks. Headers carry the source-selected program with
+-- the motion and cry delays plus the combined hold span; programs bake
+-- once without delay or frame lanes. Physical member identities remain
+-- in the source selector and never enter the manifest.
+---@param animationBytes string 89-byte picture metadata records
+---@param motionWords table<integer, integer[]> motion program word streams by program id
+---@return table<string, BattlePresentationCompiler.PictureMotionHeader> species motion headers by "SPECIES/facing"
+---@return table<integer, BattlePresentationCompiler.PictureMotionProgram> program tracks by program id
+function BattlePresentationCompiler.compilePictureMotions(animationBytes, motionWords)
+  if type(animationBytes) ~= "string" then
+    error(Errors.new("BATTLE_PICTURE_MOTION_INVALID", "picture motion needs its metadata bytes", {}), 0)
+  end
+  if #animationBytes ~= 494 * Sources.PICTURE_ANIMATION_RECORD_SIZE then
+    error(
+      Errors.new("BATTLE_PICTURE_MOTION_INVALID", "picture motion metadata has an unexpected size", {
+        size = #animationBytes,
+      }),
+      0
+    )
+  end
+  if type(motionWords) ~= "table" then
+    error(Errors.new("BATTLE_PICTURE_MOTION_INVALID", "picture motion needs its program words", {}), 0)
+  end
+  local programs = {}
+  local speciesTracks = {}
+  for speciesId = 1, MonSources.MAX_SPECIES do
+    local speciesKey = MonSources.speciesKeys[speciesId]
+    if speciesKey ~= nil then
+      for _, facing in ipairs({ 0, 2 }) do
+        local entryIndex = facing == 2 and 0 or 1
+        local record = PictureMotion.decodeBattleRecord(animationBytes, speciesId, entryIndex)
+        local programId = record.program
+        if programId >= Sources.PICTURE_MOTION_FALLBACK_LIMIT then
+          programId = 0
+        end
+        local words = motionWords[programId]
+        if type(words) ~= "table" then
+          error(
+            Errors.new("BATTLE_PICTURE_MOTION_INVALID", "picture motion program is missing", {
+              species = speciesKey,
+              facing = facing == 2 and "front" or "back",
+              program = programId,
+            }),
+            0
+          )
+        end
+        if programs[programId] == nil then
+          programs[programId] = { samples = PictureMotion.simulateBattleMotionSamples(words).samples }
+        end
+        local baked = PictureMotion.simulateBattleMotion(words, record)
+        local facingKey = facing == 2 and "front" or "back"
+        speciesTracks[speciesKey .. "/" .. facingKey] = {
+          program = programId,
+          delay = baked.delay,
+          cryDelay = baked.cryDelay,
+          totalTicks = baked.endTick,
+        }
+      end
+    end
+  end
+  return speciesTracks, programs
 end
 
 -- Pokepic's shadow NCGR is the same scanned 6,400-byte row surface used by
@@ -4933,6 +5050,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local bagScreens, bagProvenanceEntry = BattlePresentationCompiler.compileBagScreens(romFs, stageSlice)
 
     local pictureAttributes, pictureSelectors = compilePictureAttributes(romFs)
+    local pictureMotionSpecies, pictureMotionPrograms = BattlePresentationCompiler.stagePictureMotions(romFs)
 
     local menuSelectors = {}
     local menuSelectorProvenance = {}
@@ -5051,6 +5169,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       pictures = {
         attributes = pictureAttributes,
         selectors = pictureSelectors,
+        motion = { species = pictureMotionSpecies, programs = pictureMotionPrograms },
         shadow = {
           image = BattlePresentationCache.globalImagePath("pokepic-shadow"),
           width = shadowRaster.width,

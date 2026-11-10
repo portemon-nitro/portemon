@@ -287,4 +287,110 @@ function T.every_failure_mode_reports_its_owner()
   fails(divZero, { { key = "x", species = 1 } }, compiler.ERROR.EVALUATION_FAILED)
 end
 
+local function stoppedScript()
+  local script = {}
+  for _ = 1, 10 do
+    script[#script + 1] = { next = -1, duration = 0, xOffset = 0 }
+  end
+  return script
+end
+
+local function frameScript(records)
+  local script = {}
+  for _, record in ipairs(records) do
+    script[#script + 1] = { next = record.next, duration = record.duration, xOffset = record.x or 0 }
+  end
+  while #script < 10 do
+    script[#script + 1] = { next = -1, duration = 0, xOffset = 0 }
+  end
+  return script
+end
+
+local function wordArray(encoded)
+  assert(#encoded % 4 == 0, "motion words arrive whole")
+  local out = {}
+  for offset = 1, #encoded, 4 do
+    local unsigned = string.byte(encoded, offset)
+      + string.byte(encoded, offset + 1) * 256
+      + string.byte(encoded, offset + 2) * 65536
+      + string.byte(encoded, offset + 3) * 16777216
+    out[#out + 1] = unsigned >= 2147483648 and unsigned - 4294967296 or unsigned
+  end
+  return out
+end
+
+local function metadataEntry(spec)
+  local parts = { string.char(spec.cry % 256, spec.program % 256, spec.delay % 256) }
+  parts[#parts + 1] = frameBytes(spec.frames or {})
+  return table.concat(parts)
+end
+
+-- Battle send-out playback reads the back-facing record: the second
+-- 43-byte entry decodes its own header and frame script.
+function T.battle_back_entry_decodes_the_second_facing_record()
+  local compiler = requireCompiler()
+  local frontFrames = { { next = 0, duration = 1, x = 0 } }
+  local backFrames = { { next = 1, duration = 2, x = -4 } }
+  local records = {}
+  for species = 0, 493 do
+    local front = { cry = 1, program = 2, delay = 3, frames = species == 1 and frontFrames or {} }
+    local back = { cry = 7, program = 9, delay = 5, frames = species == 1 and backFrames or {} }
+    records[#records + 1] = metadataEntry(front) .. metadataEntry(back) .. string.char(0, 0, 0)
+  end
+  local member = table.concat(records)
+  local front = compiler.decodeBattleRecord(member, 1, 0)
+  Assert.equal(front.cryDelay, 1, "the front entry keeps its cry delay")
+  Assert.equal(front.program, 2, "the front entry keeps its program")
+  Assert.equal(front.motionDelay, 3, "the front entry keeps its motion delay")
+  Assert.equal(front.script[1].next, 0, "the front entry keeps its frame script")
+  local back = compiler.decodeBattleRecord(member, 1, 1)
+  Assert.equal(back.cryDelay, 7, "the back entry keeps its cry delay")
+  Assert.equal(back.program, 9, "the back entry keeps its program")
+  Assert.equal(back.motionDelay, 5, "the back entry keeps its motion delay")
+  Assert.equal(back.script[1].next, 1, "the back entry keeps its frame script")
+  Assert.equal(back.script[1].xOffset, -4, "the back entry keeps its frame offset")
+end
+
+-- Battle motion playback bakes program deltas without cell frames: the
+-- counted loop accumulates fifteen horizontally, restores to the anchor,
+-- and names no frame selection. Programs bake once per program identity
+-- while delays and totals stay per-species headers, so both entry points
+-- agree on the same samples.
+function T.battle_motion_bakes_program_deltas_once_without_cell_frames()
+  local compiler = requireCompiler()
+  local programWords = wordArray(words({ 4, 0, 5, 11, 3, 19, 0, 8, 12, 21, 1, 0 }))
+  local record = { cryDelay = 0, program = 0, motionDelay = 0, script = stoppedScript() }
+  local baked = compiler.simulateBattleMotion(programWords, record)
+  local samples = compiler.simulateBattleMotionSamples(programWords)
+  Assert.deepEqual(samples.samples, baked.samples, "both entry points bake the same program samples")
+  Assert.equal(#baked.samples, 2, "two runs: the pose and its restore")
+  Assert.equal(baked.samples[1].dx, 15, "three iterations accumulate fifteen")
+  Assert.equal(baked.samples[1].dy, 0, "the untouched vertical lane stays put")
+  Assert.equal(baked.samples[1].durationTicks, 1, "the pose holds its tick")
+  Assert.isNil(baked.samples[1].frameIndex, "motion samples name no cell frame")
+  Assert.equal(baked.samples[2].dx, 0, "the end operation restores the anchor")
+  Assert.equal(baked.endTick, 2, "the yield splits the burst across two ticks")
+  Assert.equal(baked.delay, 0, "the header motion delay survives")
+  Assert.equal(baked.cryDelay, 0, "the header cry delay survives")
+end
+
+-- Battle motion totals cover the whole send-out task: the motion delay
+-- and program run while the cell script finishes later, so the hold
+-- spans the longest lane.
+function T.battle_motion_total_covers_delay_frame_and_fade_end()
+  local compiler = requireCompiler()
+  local record = {
+    cryDelay = 4,
+    program = 0,
+    motionDelay = 2,
+    script = frameScript({ { next = 0, duration = 4, x = 0 } }),
+  }
+  local baked = compiler.simulateBattleMotion(wordArray(words({ 0 })), record)
+  Assert.equal(baked.samples[1].dx, 0, "the delay holds the anchor")
+  Assert.equal(baked.samples[1].durationTicks, 3, "the delay plus the bare end tick compress")
+  Assert.equal(baked.endTick, 5, "the five-tick cell lane outlasts the delayed motion")
+  Assert.equal(baked.delay, 2, "the header motion delay survives")
+  Assert.equal(baked.cryDelay, 4, "the header cry delay survives")
+end
+
 return { tests = T }

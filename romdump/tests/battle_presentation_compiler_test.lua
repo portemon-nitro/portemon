@@ -1257,4 +1257,44 @@ function T.selective_leaf_lowerings_compile_one_selector_without_sibling_sweep()
   Assert.isTrue(type(compiler.stageEvolution) == "function", "evolution stages through its own owned root")
 end
 
+-- Picture motion tracks join per-species headers with shared programs:
+-- headers carry the program, delays, and hold span while programs bake
+-- once, with out-of-range programs falling back to program zero.
+function T.picture_motion_tracks_join_headers_with_shared_programs()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local MonSources = require("romdump.src.config.MonSources")
+  Assert.equal(type(compiler.compilePictureMotions), "function", "motion tracks compile from their sources")
+  local stopped = string.rep(string.char(255, 0, 0, 0), 10)
+  local function blankRecord()
+    return string.char(0, 0, 0) .. stopped .. string.char(0, 0, 0) .. stopped .. string.char(0, 0, 0)
+  end
+  local record = {}
+  for _ = 0, 493 do
+    record[#record + 1] = blankRecord()
+  end
+  -- Record 1 is species 1: front header cry 4, program 3, motion delay 2.
+  record[2] = string.char(4, 3, 2) .. stopped .. string.char(0, 0, 0) .. stopped .. string.char(0, 0, 0)
+  -- Record 2 is species 2: front header program 200 (out of range).
+  record[3] = string.char(0, 200, 0) .. stopped .. string.char(0, 0, 0) .. stopped .. string.char(0, 0, 0)
+  local animationBytes = table.concat(record)
+  local motionWords = { [0] = { 0 }, [3] = { 0 } }
+  local speciesTracks, programTracks = compiler.compilePictureMotions(animationBytes, motionWords)
+  local key = MonSources.speciesKeys[1] .. "/front"
+  local header = assert(speciesTracks[key], "the front header resolves: " .. key)
+  Assert.equal(header.program, 3, "the header keeps its program")
+  Assert.equal(header.delay, 2, "the header keeps its motion delay")
+  Assert.equal(header.cryDelay, 4, "the header keeps its cry delay")
+  Assert.equal(header.totalTicks, 3, "the hold spans the delay plus the bare end tick")
+  local program = assert(programTracks[3], "the program bakes once")
+  Assert.equal(#program.samples, 1, "the bare end holds one identity sample")
+  Assert.equal(program.samples[1].durationTicks, 1, "program samples exclude the header delay")
+  Assert.equal(program.samples[1].dx, 0, "the bare end holds the anchor")
+  local back = assert(speciesTracks[MonSources.speciesKeys[1] .. "/back"], "the back header resolves")
+  Assert.equal(back.program, 0, "unstaged back headers keep program zero")
+  Assert.equal(back.totalTicks, 1, "the bare back track holds its end tick")
+  local ranged = assert(speciesTracks[MonSources.speciesKeys[2] .. "/front"], "the out-of-range header resolves")
+  Assert.equal(ranged.program, 0, "program 200 falls back to program zero")
+  Assert.notNil(programTracks[0], "the fallback program bakes")
+end
+
 return { tests = T }

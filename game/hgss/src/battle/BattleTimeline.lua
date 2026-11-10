@@ -21,6 +21,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, round, action, effect key, and source phase
 ---@field _announced table<string, boolean> narrated attack occurrences by the same occurrence identity
 ---@field _battleScene boolean frozen launch scene choice; false omits optional move-animation roots
+---@field _motionFacts (fun(species: string, foe: boolean): { totalTicks: integer, cryDelay: integer }?)? staged send-out motion hold and cry delay by species, absent without staged motion data
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
 ---@field _battlers table<integer, table<string, unknown>> displayed facts by combatant identity
 ---@field _order integer[] player-first combatant identities for view order
@@ -41,7 +42,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _encounterPalette BattleEncounterPalette? per-battle source palette evaluator, nil while no source art is staged
 ---@field _encounterAnimation { elapsed: integer, phase: "init"|"fade"|"wait", secondStarted: boolean, secondActive: boolean, lateArmed: boolean }? Task_PlayEncounterAnimation state, nil while no animation runs
 ---@field _encounterWild boolean? wild encounter behind the installed opening, set with the opening
----@field _wildIntroTracks table<integer, { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer }> source timing tracks for the wild foe entrances
+---@field _wildIntroTracks table<integer, { combatant: integer, delay: integer, elapsed: integer, x: integer, targetX: integer, speed: integer, arrived: boolean, fadeElapsed: integer, cryLeft?: integer }> source timing tracks for the wild foe entrances
 ---@field _throwRelease { x: integer, y: integer }? stashed ball release point behind doubles arcs
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _addressing table<integer, "own"|"wild"|"foe"> source nickname-tag variant by combatant identity
@@ -220,6 +221,7 @@ end
 ---@field encounterFadeColor "white"|"black" gBattleEncounterFadeColors entry of the scene background
 ---@field encounterSource BattleEncounterPalette.Source? staged source palette buffers and fill behind the encounter evaluator, absent without staged art
 ---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
+---@field motionFacts (fun(species: string, foe: boolean): { totalTicks: integer, cryDelay: integer }?)? staged send-out motion hold and cry delay by species, absent without staged motion data
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
 ---@field messageText fun(context: unknown, key: string, substitutions: string[]): string staged retail battle message resolver
@@ -261,8 +263,10 @@ function BattleTimeline.new(opts)
     _messageTextContext = opts.messageTextContext,
     _revealPolicy = revealPolicy,
     _battleScene = sceneOn,
+    _motionFacts = opts.motionFacts,
     _effects = opts.effects,
     _ballParticleStarts = {},
+    _pendingCries = {},
     _nativeSeen = {},
     _announced = {},
     _pendingSounds = {},
@@ -494,6 +498,7 @@ function BattleTimeline:reset(view)
   self._encounterPalette = nil
   self._encounterWild = nil
   self._ballParticleStarts = {}
+  self._pendingCries = {}
   self._captureBall = nil
   -- A fresh opening starts new actions: occurrence and narration claims
   -- never leak from the previous launch into the next one.
@@ -2185,6 +2190,29 @@ local function ballFadeColorOf(self, combatant)
 end
 
 ---@param self BattleTimeline
+---@param combatant integer combatant under motion lookup
+---@return { totalTicks: integer, cryDelay: integer }? staged motion hold and cry delay, nil without staged motion data
+local function motionFactsFor(self, combatant)
+  if self._motionFacts == nil then
+    return nil
+  end
+  local species = speciesOf(self, combatant)
+  if type(species) ~= "string" or species == "" then
+    return nil
+  end
+  local foe = self._addressing[combatant] ~= "own"
+  local facts = self._motionFacts(species, foe)
+  if type(facts) ~= "table" then
+    return nil
+  end
+  local totalTicks = facts.totalTicks
+  local cryDelay = facts.cryDelay
+  if type(totalTicks) ~= "number" or type(cryDelay) ~= "number" then
+    return nil
+  end
+  return { totalTicks = totalTicks, cryDelay = cryDelay }
+end
+
 ---@param combatant integer combatant to reveal
 ---@param holdHud boolean? keep the health box hidden for a later slide-in
 ---@param sendOutCry table<string, unknown>? tracked send-out cry voiced when the poof finishes growing
@@ -2225,6 +2253,24 @@ local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, 
     end
     duration = leadTicks + BattleTimeline.FOLLOW_SLIDE_TICKS
   end
+  -- PlayMonAnimAndCry starts the cell and scripted motion tasks where the
+  -- poof finishes growing (or the follower slide lands) and voices the
+  -- cry after the species cry delay; the reveal covers the whole task
+  -- instead of the poof alone. Raw cry delays of zero voice after eight
+  -- source ticks. Scene Off plays no animation but keeps the delayed cry.
+  local motion = motionFactsFor(self, combatant)
+  local totalTicks = motion ~= nil and motion.totalTicks or 0
+  local cryDelay = motion ~= nil and motion.cryDelay or 0
+  if cryDelay == 0 then
+    cryDelay = 8
+  end
+  local animationAt = slideOffset ~= nil and duration or BattleTimeline.BALL_SCALE_TICKS + 1
+  -- The reveal covers the whole task instead of the poof alone. The
+  -- delayed cry voices through the side-channel countdown even past a
+  -- short reveal, like the scheduled source cry.
+  if self._battleScene ~= false and totalTicks > 0 then
+    duration = math.max(duration, animationAt + totalTicks)
+  end
   enqueue(self, {
     kind = "reveal",
     combatant = combatant,
@@ -2235,6 +2281,8 @@ local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, 
     duration = duration,
     requiresImage = self:_imageKeyFor(combatant),
     sendOutCry = sendOutCry,
+    cryDelay = cryDelay,
+    animationAt = animationAt,
   })
   return duration
 end
@@ -2385,8 +2433,11 @@ function enqueueSendOut(self, incoming, event, switching)
     end
   end
   -- The cry voices from the reveal once the poof finishes growing (the
-  -- source plays the mon animation and cry at affine completion); the
-  -- tracked voice lets the post-box hold absorb long cries.
+  -- source plays the mon animation and cry at affine completion) and
+  -- overlaps the settle, the box slide, and the hazards check:
+  -- Task_PokemonSendOut retires once the mon animation starts playing,
+  -- and subscript_0009 counts only its WaitTime 72, so no script wait
+  -- gates on the cry.
   local sendOutCry = nil
   local species, form = speciesOf(self, incoming)
   if species ~= nil then
@@ -2399,12 +2450,14 @@ function enqueueSendOut(self, incoming, event, switching)
     -- once (Task_PokemonSendOut runs while the script holds); the
     -- trainerless ball arc runs without a trainer mid-battle, so the
     -- hold keeps the scripted settle minus the visuals the serial
-    -- player already ran above.
-    enqueue(self, { kind = "wait", duration = BattleTimeline.SWITCH_SETTLE_TICKS - throwTicks - revealTicks })
-    enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
-    if sendOutCry ~= nil then
-      enqueue(self, { kind = "voice-hold", waitForVoice = true })
+    -- player already ran above. A long send-out motion outlasts the
+    -- settle the source task waits out, so the hold clamps at zero.
+    local settleTicks = BattleTimeline.SWITCH_SETTLE_TICKS - throwTicks - revealTicks
+    if settleTicks < 0 then
+      settleTicks = 0
     end
+    enqueue(self, { kind = "wait", duration = settleTicks })
+    enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
   end
 end
 
@@ -2414,8 +2467,9 @@ end
 -- then per-mon health-box slides. Retail emits one Throw/SlideIn per
 -- battler concurrently and counts WaitTime once; the serial player runs the
 -- visuals back-to-back, so the hold keeps the scripted settle minus their
--- total, clamped at zero for doubles players whose two arcs cannot fit
--- inside WaitTime 96 (documented serial cost: the box lands late there).
+-- total, clamped at zero when the visuals outlast it (doubles arcs that
+-- cannot fit inside WaitTime 96, or a long send-out motion the source
+-- task waits out before retiring). The box lands late in those cases.
 ---@param self BattleTimeline
 ---@param combatants integer[] arriving combatant identities in send-out order
 ---@param settleTicks integer scripted WaitTime between the slide-ins and the box slides
@@ -2481,7 +2535,6 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
     end
   end
   local visualTicks = 0
-  local cries = {}
   for _, incoming in ipairs(combatants) do
     visualTicks = visualTicks + enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
     -- The follower slides in with no ball at all: Task_FollowMonSlideIn
@@ -2507,11 +2560,13 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
     local sendOutCry = nil
     if species ~= nil then
       -- The cry voices from the reveal once the poof finishes growing
-      -- (source plays the mon animation and cry at affine completion);
-      -- tracking it lets the post-box hold absorb long cries.
+      -- (source plays the mon animation and cry at affine completion)
+      -- and overlaps the settle, the box slide, and whatever follows:
+      -- Task_PokemonSlideIn retires once the mon animation starts
+      -- playing, and subscript_0000 counts only its WaitTime, so no
+      -- script wait gates on the cry.
       sendOutCry = cryCue(species, form, not ownSide)
       sendOutCry.trackVoice = true
-      cries[#cries + 1] = sendOutCry
     end
     -- Task_FollowMonSlideIn holds a doubles second-slot follower twelve
     -- ticks before placing it; every other send-out slides at once.
@@ -2523,15 +2578,15 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
   end
   local waitTicks = settleTicks - visualTicks
   if waitTicks < 0 then
-    assert(#combatants > 1, "single send-out settles outlast their visuals")
+    -- Task_PokemonSendOut retires only after both picture tasks, so a
+    -- long send-out motion outlasts the scripted settle and the box
+    -- lands late; the serial hold keeps the scripted settle minus the
+    -- visuals it already ran, clamped at zero like the doubles arc cost.
     waitTicks = 0
   end
   enqueue(self, { kind = "wait", duration = waitTicks })
   for _, incoming in ipairs(combatants) do
     enqueue(self, { kind = "hud-slide", combatant = incoming, direction = "in" })
-  end
-  if #cries > 0 then
-    enqueue(self, { kind = "voice-hold", waitForVoice = true })
   end
 end
 
@@ -3914,7 +3969,6 @@ function BattleTimeline:intro(view, wild)
     assert(#wildFoes >= 1, "wild openings carry at least one foe")
     assert(#wildFoes <= 2, "HGSS fields at most two wild foes")
     local wildNames = {}
-    local wildCry = false
     for foeIndex, wildFoe in ipairs(wildFoes) do
       local foeCombatant = wildFoe.combatant --[[@as integer]]
       if type(wildFoe.name) == "string" then
@@ -3942,18 +3996,16 @@ function BattleTimeline:intro(view, wild)
       end
     end
     enqueue(self, { kind = "wait", duration = 61 })
-    for _, wildFoe in ipairs(wildFoes) do
-      if type(wildFoe.species) == "string" then
-        local foeCry = cryCue(wildFoe.species, type(wildFoe.form) == "number" and wildFoe.form or nil, true)
-        foeCry.trackVoice = true
-        enqueue(self, { kind = "sound", cue = foeCry, duration = 0 })
-        wildCry = true
-      end
-    end
-    -- WaitTime 122 runs from the script's first tick; HealthbarSlideInDelay
-    -- slides the foe box in and the encounter line prints after that slide.
-    -- Sound cues voice without consuming a source tick, so both halves
-    -- hold their full waits to complete the 122-tick script hold.
+    -- The foe cries from the encounter task at its slide landing through
+    -- the side-channel countdown (species cry delay included), never
+    -- from this queue: Task_PokemonEncounter retires once the mon
+    -- animation starts playing, while PlayMonAnimAndCry's delayed cry
+    -- overlaps the box slide and the encounter line, so no script wait
+    -- gates on the cry. WaitTime 122 runs from the script's first tick;
+    -- HealthbarSlideInDelay slides the foe box in and the encounter line
+    -- prints after that slide. Sound cues voice without consuming a
+    -- source tick, so both halves hold their full waits to complete the
+    -- 122-tick script hold.
     enqueue(self, { kind = "wait", duration = 61 })
     for _, wildFoe in ipairs(wildFoes) do
       enqueue(self, {
@@ -3961,9 +4013,6 @@ function BattleTimeline:intro(view, wild)
         combatant = wildFoe.combatant --[[@as integer]],
         direction = "in",
       })
-    end
-    if wildCry then
-      enqueue(self, { kind = "voice-hold", waitForVoice = true })
     end
     if #wildNames > 1 then
       enqueueEncounterMessage(self, true, wildNames[1], wildNames[2])
@@ -4251,6 +4300,22 @@ local function tickWildIntro(self)
   for _, track in ipairs(self._wildIntroTracks) do
     local shown = self:_shown(track.combatant)
     assert(shown ~= nil, "the wild intro track keeps its foe installed")
+    -- Side-channel cry countdown runs first so the arrival tick only
+    -- arms it: the cry voices cryDelay ticks after the slide lands.
+    if track.cryLeft ~= nil then
+      if track.cryLeft > 0 then
+        track.cryLeft = track.cryLeft - 1
+      end
+      if track.cryLeft == 0 then
+        track.cryLeft = nil
+        local species, form = speciesOf(self, track.combatant)
+        if type(species) == "string" and species ~= "" then
+          local cry = cryCue(species, form, true)
+          cry.trackVoice = true
+          emitSound(self, cry)
+        end
+      end
+    end
     if not track.arrived then
       if track.elapsed < track.delay then
         track.elapsed = track.elapsed + 1
@@ -4260,6 +4325,18 @@ local function tickWildIntro(self)
         if track.x == track.targetX then
           track.arrived = true
           track.fadeElapsed = 0
+          -- BattleControllerOpponent_PlayMonAnimAndCry at the encounter
+          -- slide landing: restart the animation alongside the delayed
+          -- cry. Scene Off plays no animation but keeps the delayed cry.
+          if self._battleScene ~= false then
+            shown.pictureAnimSeq = (type(shown.pictureAnimSeq) == "number" and shown.pictureAnimSeq or 0) + 1
+          end
+          local facts = motionFactsFor(self, track.combatant)
+          local cryDelay = facts ~= nil and facts.cryDelay or 0
+          if cryDelay == 0 then
+            cryDelay = 8
+          end
+          track.cryLeft = cryDelay
         end
       end
     elseif track.fadeElapsed < 8 then
@@ -4367,11 +4444,29 @@ local function tickEncounterAnimation(self)
   presentation.encounterLower = { whiteCoefficient = remaining }
 end
 
+-- Advances armed send-out cries by one accepted source tick: each
+-- voices once its species delay elapses, independent of the reveal cue
+-- that armed it, like the scheduled source cry.
+---@param self BattleTimeline
+local function tickPendingCries(self)
+  for index = #self._pendingCries, 1, -1 do
+    local pending = self._pendingCries[index]
+    if pending.left > 0 then
+      pending.left = pending.left - 1
+    end
+    if pending.left == 0 then
+      table.remove(self._pendingCries, index)
+      emitSound(self, pending.cry)
+    end
+  end
+end
+
 ---@param self BattleTimeline
 local function tickOpeningTracks(self)
   tickTerrainSlides(self)
   tickWildIntro(self)
   tickEncounterAnimation(self)
+  tickPendingCries(self)
 end
 
 ---@param self BattleTimeline
@@ -5188,19 +5283,6 @@ local function tickWaitCue(_, cue)
   return elapsed >= duration
 end
 
-local function tickVoiceHoldCue(_, cue, deps)
-  -- Holds the queue until the tracked send-out cry finishes: the script's
-  -- post-box Wait absorbs the send-out task remainder (Task_PokemonSlideIn
-  -- and Task_PokemonEncounter retire on their entrance animation, which
-  -- runs about as long as the cry voice). The hold polls the screen's
-  -- single tracked-voice slot through the usual completion probe, so
-  -- above single rate it releases at once while the cry keeps playing.
-  if deps.soundComplete ~= nil and not deps.soundComplete(cue) then
-    return false
-  end
-  return true
-end
-
 local function tickHpCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
   local from = cue.from --[[@as integer]]
@@ -5344,21 +5426,37 @@ local function tickRevealCue(self, cue)
   elseif shown ~= nil and cue.fadeColor ~= nil then
     tickBallPoof(self, cue, shown, true)
   end
-  -- Send-out cries voice where the source starts them: as the poof
-  -- finishes growing (Task_PokemonSlideIn plays the mon animation and
-  -- cry once the affine scale completes), or as the follower slide
-  -- lands (Task_FollowMonSlideIn/SendOut cries once move anim 41
-  -- retires), never over the throw. The voice is tracked so the
-  -- post-box hold can absorb long cries.
-  local cryAt = cue.slideOffset ~= nil and cue.duration --[[@as integer]] or BattleTimeline.BALL_SCALE_TICKS + 1
+  -- Send-out animation starts where the source starts it: as the poof
+  -- finishes growing (Task_PokemonSlideIn plays the mon animation once
+  -- the affine scale completes), or as the follower slide lands
+  -- (Task_FollowMonSlideIn cries once move anim 41 retires), never over
+  -- the throw. The cry is armed here but voices after its species delay
+  -- through the side-channel countdown, even past a short reveal, like
+  -- the scheduled source cry. Scene Off plays no animation but keeps
+  -- the delayed cry.
+  local animationAt = cue.animationAt
+  if type(animationAt) ~= "number" then
+    animationAt = cue.slideOffset ~= nil and cue.duration --[[@as integer]] or BattleTimeline.BALL_SCALE_TICKS + 1
+  end
   if
-    cue.sendOutCry ~= nil
-    and cue.cryEmitted ~= true
+    cue.animStarted ~= true
     and cue.elapsed --[[@as integer]]
-      >= cryAt
+      >= animationAt
   then
-    cue.cryEmitted = true
-    emitSound(self, cue.sendOutCry --[[@as table<string, unknown>]])
+    cue.animStarted = true
+    -- Restart the cell and scripted tasks here so the screen replays
+    -- them on arrival instead of running a lazily started task out
+    -- during the poof or slide.
+    if self._battleScene ~= false and shown ~= nil then
+      shown.pictureAnimSeq = (type(shown.pictureAnimSeq) == "number" and shown.pictureAnimSeq or 0) + 1
+    end
+    if cue.sendOutCry ~= nil then
+      local cryDelay = cue.cryDelay
+      if type(cryDelay) ~= "number" then
+        cryDelay = 8
+      end
+      self._pendingCries[#self._pendingCries + 1] = { cry = cue.sendOutCry, left = cryDelay }
+    end
   end
   if
     cue.elapsed --[[@as integer]]
@@ -5419,7 +5517,6 @@ local TICK_CUE_HANDLERS = {
   ["ball-throw"] = tickBallThrowCue,
   ["ball-flight"] = tickBallFlightCue,
   ["wait"] = tickWaitCue,
-  ["voice-hold"] = tickVoiceHoldCue,
   ["hp"] = tickHpCue,
   ["hit"] = tickHitCue,
   ["faint"] = tickFaintCue,

@@ -340,7 +340,7 @@ local function fullManifest()
     evolutionEmitters[#evolutionEmitters + 1] = emitter
   end
   local old = {
-    schema = "g4-battle-presentation-v12",
+    schema = "g4-battle-presentation-v13",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -822,6 +822,26 @@ local function fullManifest()
     pictures = {
       attributes = old.pictureAttributes,
       selectors = pictureSelectors,
+      motion = {
+        species = {
+          ["EEVEE/front"] = { program = 0, delay = 0, cryDelay = 0, totalTicks = 1 },
+        },
+        programs = {
+          [0] = {
+            samples = {
+              {
+                durationTicks = 1,
+                dx = 0,
+                dy = 0,
+                scaleX = 1,
+                scaleY = 1,
+                rotationTurns = 0,
+                visible = true,
+              },
+            },
+          },
+        },
+      },
       shadow = {
         image = "assets/generated/battle/pokepic-shadow.png",
         width = 64,

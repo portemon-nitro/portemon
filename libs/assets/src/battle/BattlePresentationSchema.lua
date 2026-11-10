@@ -4054,13 +4054,92 @@ local function checkPictures(manifest, context)
   local pictures = manifest.pictures
   SchemaCheck.checkRecord(
     pictures,
-    { attributes = true, selectors = true, shadow = true },
+    { attributes = true, selectors = true, motion = true, shadow = true },
     context,
     CODE_MANIFEST,
     "manifest pictures"
   )
   checkPictureAttributes(pictures.attributes, context, CODE_MANIFEST, "manifest pictures.attributes")
   checkCatalogTable(pictures.selectors, context, CODE_MANIFEST, "manifest pictures.selectors")
+  local motion = pictures.motion
+  local motionField = "manifest pictures.motion"
+  SchemaCheck.checkRecord(motion, { species = true, programs = true }, context, CODE_MANIFEST, motionField)
+  checkCatalogTable(motion.species, context, CODE_MANIFEST, motionField .. ".species")
+  for key, header in pairs(motion.species) do
+    checkString(key, context, CODE_MANIFEST, motionField .. ".species key")
+    if key:match("^[A-Z0-9_]+/front$") == nil and key:match("^[A-Z0-9_]+/back$") == nil then
+      fail(CODE_MANIFEST, motionField .. ".species carries a malformed semantic key: " .. key, context)
+    end
+    local headerPath = motionField .. ".species[" .. key .. "]"
+    SchemaCheck.checkRecord(
+      header,
+      { program = true, delay = true, cryDelay = true, totalTicks = true },
+      context,
+      CODE_MANIFEST,
+      headerPath
+    )
+    checkInt(header.program, 0, 142, context, CODE_MANIFEST, headerPath .. ".program")
+    checkInt(header.delay, 0, 255, context, CODE_MANIFEST, headerPath .. ".delay")
+    checkInt(header.cryDelay, 0, 255, context, CODE_MANIFEST, headerPath .. ".cryDelay")
+    checkInt(header.totalTicks, 1, 65536, context, CODE_MANIFEST, headerPath .. ".totalTicks")
+  end
+  checkCatalogTable(motion.programs, context, CODE_MANIFEST, motionField .. ".programs")
+  for programId, program in pairs(motion.programs) do
+    if type(programId) ~= "number" or programId % 1 ~= 0 or programId < 0 or programId > 142 then
+      fail(CODE_MANIFEST, motionField .. ".programs carries a malformed program identity", context)
+    end
+    local programPath = motionField .. ".programs[" .. programId .. "]"
+    SchemaCheck.checkRecord(program, { samples = true }, context, CODE_MANIFEST, programPath)
+    if not Validate.isArray(program.samples) or #program.samples < 1 then
+      fail(CODE_MANIFEST, programPath .. ".samples carries at least one sample", context)
+    end
+    for index, sample in ipairs(program.samples) do
+      local samplePath = programPath .. ".samples[" .. index .. "]"
+      SchemaCheck.checkRecord(sample, {
+        durationTicks = true,
+        dx = true,
+        dy = true,
+        scaleX = true,
+        scaleY = true,
+        rotationTurns = true,
+        visible = true,
+        paletteBlend = true,
+      }, context, CODE_MANIFEST, samplePath)
+      checkInt(sample.durationTicks, 1, 65536, context, CODE_MANIFEST, samplePath .. ".durationTicks")
+      checkInt(sample.dx, -256, 256, context, CODE_MANIFEST, samplePath .. ".dx")
+      checkInt(sample.dy, -256, 256, context, CODE_MANIFEST, samplePath .. ".dy")
+      if type(sample.scaleX) ~= "number" or type(sample.scaleY) ~= "number" then
+        fail(CODE_MANIFEST, samplePath .. " carries numeric motion scales", context)
+      end
+      if type(sample.rotationTurns) ~= "number" then
+        fail(CODE_MANIFEST, samplePath .. " carries a numeric motion rotation", context)
+      end
+      if type(sample.visible) ~= "boolean" then
+        fail(CODE_MANIFEST, samplePath .. " carries a motion visibility flag", context)
+      end
+      if sample.paletteBlend ~= nil then
+        SchemaCheck.checkRecord(
+          sample.paletteBlend,
+          { target = true, coefficient = true },
+          context,
+          CODE_MANIFEST,
+          samplePath
+        )
+        local blendPath = samplePath .. ".paletteBlend"
+        SchemaCheck.checkRecord(
+          sample.paletteBlend.target,
+          { r = true, g = true, b = true },
+          context,
+          CODE_MANIFEST,
+          blendPath
+        )
+        checkInt(sample.paletteBlend.target.r, 0, 31, context, CODE_MANIFEST, blendPath .. ".r")
+        checkInt(sample.paletteBlend.target.g, 0, 31, context, CODE_MANIFEST, blendPath .. ".g")
+        checkInt(sample.paletteBlend.target.b, 0, 31, context, CODE_MANIFEST, blendPath .. ".b")
+        checkInt(sample.paletteBlend.coefficient, 1, 16, context, CODE_MANIFEST, blendPath .. ".coefficient")
+      end
+    end
+  end
   checkPictureShadow(pictures.shadow, manifest.menus.images, context)
 end
 

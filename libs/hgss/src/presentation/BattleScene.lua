@@ -24,6 +24,7 @@
 ---@field _introRasterizer table<string, unknown>? battle-start unbaked intro plane for palette fades, nil without staged base characters
 ---@field _backgroundLayers table<integer, BattleScene.BackgroundLayer> replacement BG3 states, newest active until removed
 ---@field _pictureAnimations table<string, table<string, unknown>> native Pokepic tasks by activation
+---@field _pictureMotions table<string, BattleScene.PictureMotionTask> baked send-out motion cursors by activation
 ---@field _pictureStates table<string, { base: table<string, unknown>, current: table<string, unknown>, animation?: table<string, unknown> }> activation-scoped appearance, transform and animation snapshot
 ---@field _taskPicturePatches table<string, { owner: integer|table<string, unknown>, patch: table<string, unknown> }> task-owned transient picture overlays by activation
 ---@field _taskScalarPatches table<table<string, unknown>, table<string, unknown>> task-owned transient hardware register overlays by owning task
@@ -82,6 +83,7 @@ function BattleScene.new()
     _introRasterizer = nil,
     _backgroundLayers = {},
     _pictureAnimations = {},
+    _pictureMotions = {},
     _pictureStates = {},
     _taskPicturePatches = {},
     _taskScalarPatches = {},
@@ -1145,6 +1147,149 @@ function BattleScene:picturePose(battler, animation)
   }
 end
 
+-- Restarts the native Pokepic task exactly like Pokepic_StartAnim: the
+-- loop counters clear and the task replays the first authored step from
+-- its full delay. Retail calls this at each send-out and encounter
+-- arrival alongside the scripted motion and cry; the cell task alone
+-- never self-restarts once its stop sentinel retires it.
+---@param battler table<string, unknown> displayed battler identity
+---@param animation table<string, unknown> ten source PokepicAnimScript records
+---@return { frame: integer, xOffset: integer, active: boolean, step: integer, delay: integer } restarted pose
+function BattleScene:startPictureAnimation(battler, animation)
+  assert(not self._released, "released scenes start no picture task")
+  assert(type(battler) == "table" and type(battler.combatant) == "number", "picture tasks use an activation identity")
+  assert(
+    type(animation) == "table" and type(animation.steps) == "table" and #animation.steps == 10,
+    "picture tasks use ten source steps"
+  )
+  local key = entryKey(battler)
+  local first = animation.steps[1]
+  local stopped = first.next == -1
+  local task = {
+    animation = animation,
+    step = 0,
+    frame = stopped and 0 or first.next,
+    delay = stopped and 0 or first.duration,
+    xOffset = stopped and 0 or first.xOffset,
+    active = not stopped,
+    loops = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+  }
+  self._pictureAnimations[key] = task
+  return {
+    frame = task.frame,
+    xOffset = task.xOffset,
+    active = task.active,
+    step = task.step,
+    delay = task.delay,
+  }
+end
+
+-- Starts the baked send-out motion for an appearance: the program cursor
+-- replays from its first sample after the header delay. Retail starts the
+-- scripted Pokepic motion alongside the cell task and cry at each
+-- send-out and encounter arrival; the short task always runs to its
+-- terminal sample, which the pose keeps holding like the restored
+-- picture origin.
+---@class BattleScene.PictureMotionSample one run-length send-out motion delta
+---@field durationTicks integer hold ticks for this delta
+---@field dx number horizontal delta in native pixels
+---@field dy number vertical delta in native pixels
+---@field scaleX number horizontal affine scale factor
+---@field scaleY number vertical affine scale factor
+---@field rotationTurns number rotation in full turns
+---@field visible boolean whether the picture renders on this delta
+---@field paletteBlend? { target: { r: integer, g: integer, b: integer }, coefficient: integer } active palette blend, absent when unblended
+---@class BattleScene.PictureMotionProgram baked motion program with run-length samples
+---@field samples BattleScene.PictureMotionSample[] run-length motion deltas in order
+---@class BattleScene.PictureMotionTask live send-out motion cursor over a baked program
+---@field samples BattleScene.PictureMotionSample[] run-length motion deltas in order
+---@field index integer one-based cursor into the samples
+---@field remaining integer unconsumed ticks on the current sample
+---@field delayLeft integer header motion delay ticks before the first sample
+---@field active boolean false once the task retires on its terminal sample
+---@param battler table<string, unknown> displayed battler identity
+---@param program BattleScene.PictureMotionProgram baked motion program with run-length samples
+---@param delay integer header motion delay ticks before the first sample
+---@return table<string, unknown> initial motion pose
+function BattleScene:startPictureMotion(battler, program, delay)
+  assert(not self._released, "released scenes start no motion task")
+  assert(type(battler) == "table" and type(battler.combatant) == "number", "motion tasks use an activation identity")
+  assert(
+    type(program) == "table" and type(program.samples) == "table" and #program.samples >= 1,
+    "motion tasks play baked program samples"
+  )
+  assert(type(delay) == "number" and delay % 1 == 0 and delay >= 0, "motion tasks count a header delay")
+  local key = entryKey(battler)
+  self._pictureMotions[key] = {
+    samples = program.samples,
+    index = 1,
+    remaining = assert(program.samples[1].durationTicks, "motion samples carry a positive duration"),
+    delayLeft = delay,
+    active = true,
+  }
+  return assert(self:motionPose(battler), "started motions publish their anchor")
+end
+
+-- Reads the current baked motion deltas for one activation, or nil when
+-- no send-out motion ever started there. The terminal sample keeps
+-- publishing after the task retires, matching the restored origin the
+-- source end operation leaves behind.
+---@param battler table<string, unknown> displayed battler identity
+---@return table<string, unknown>? motion deltas with durationTicks, dx, dy, scaleX, scaleY, rotationTurns, visible, and paletteBlend
+function BattleScene:motionPose(battler)
+  assert(not self._released, "released scenes expose no motion pose")
+  assert(type(battler) == "table" and type(battler.combatant) == "number", "motion tasks use an activation identity")
+  local task = self._pictureMotions[entryKey(battler)]
+  if task == nil then
+    return nil
+  end
+  if task.delayLeft > 0 then
+    return { durationTicks = 1, dx = 0, dy = 0, scaleX = 1, scaleY = 1, rotationTurns = 0, visible = true }
+  end
+  local sample = assert(task.samples[task.index], "motion cursors stay inside their samples")
+  local pose = {
+    durationTicks = sample.durationTicks,
+    dx = sample.dx,
+    dy = sample.dy,
+    scaleX = sample.scaleX,
+    scaleY = sample.scaleY,
+    rotationTurns = sample.rotationTurns,
+    visible = sample.visible,
+  }
+  if sample.paletteBlend ~= nil then
+    pose.paletteBlend = {
+      target = {
+        r = sample.paletteBlend.target.r,
+        g = sample.paletteBlend.target.g,
+        b = sample.paletteBlend.target.b,
+      },
+      coefficient = sample.paletteBlend.coefficient,
+    }
+  end
+  return pose
+end
+
+---@param task table<string, unknown> native motion task under stepping
+local function stepPictureMotion(task)
+  if task.active ~= true then
+    return
+  end
+  if task.delayLeft > 0 then
+    task.delayLeft = task.delayLeft - 1
+    return
+  end
+  task.remaining = task.remaining - 1
+  if task.remaining > 0 then
+    return
+  end
+  if task.index < #task.samples then
+    task.index = task.index + 1
+    task.remaining = assert(task.samples[task.index].durationTicks, "motion samples carry a positive duration")
+  else
+    task.active = false
+  end
+end
+
 ---@param task table<string, unknown> native picture task under stepping
 local function stepPictureTask(task)
   if task.active ~= true then
@@ -1239,6 +1384,9 @@ function BattleScene:stepSourceTick()
   end
   for _, task in pairs(self._pictureAnimations) do
     stepPictureTask(task)
+  end
+  for _, task in pairs(self._pictureMotions) do
+    stepPictureMotion(task)
   end
   for _, state in pairs(self._pictureStates) do
     local fade = state.current.paletteFade
@@ -1882,6 +2030,7 @@ function BattleScene:remove(combatant, activation)
   assert(type(combatant) == "number", "removal takes its combatant")
   self._entries[tostring(combatant) .. ":" .. tostring(activation)] = nil
   self._pictureAnimations[tostring(combatant) .. ":" .. tostring(activation)] = nil
+  self._pictureMotions[tostring(combatant) .. ":" .. tostring(activation)] = nil
   self._pictureStates[tostring(combatant) .. ":" .. tostring(activation)] = nil
   self._healthBoxModes[tostring(combatant) .. ":" .. tostring(activation)] = nil
 end

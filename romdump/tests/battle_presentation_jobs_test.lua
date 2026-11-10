@@ -89,6 +89,9 @@ function T.global_build_keeps_detached_families_behind_safe_keyed_leaf_receipts(
       memberReads[key] = (memberReads[key] or 0) + 1
       return archive:readMember(memberId)
     end
+    function counted:memberCount()
+      return archive:memberCount()
+    end
     return counted
   end
 

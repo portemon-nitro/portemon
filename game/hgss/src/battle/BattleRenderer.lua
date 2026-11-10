@@ -714,11 +714,15 @@ local function shadowPicture(assets, battler, row)
   if shadow == nil then
     return nil
   end
-  local pictureCenterX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0)
+  local pictureCenterX = row.settledX
+    + numberOr(battler.entryDx, 0)
+    + numberOr(battler.shakeDx, 0)
+    + numberOr(battler.motionDx, 0)
   local pictureCenterY = row.settledY
     + numberOr(battler.height, 0)
     + numberOr(battler.sourceHeight, 0)
     + numberOr(battler.entryDy, 0)
+    + numberOr(battler.motionDy, 0)
   local shadowX = battler.shadowAdjustX == false
       and assert(type(battler.shadowX) == "number" and battler.shadowX, "fixed shadows carry their source X")
     or pictureCenterX + numberOr(battler.pictureXOffset, 0) + numberOr(battler.shadowOffsetX, 0)
@@ -745,7 +749,7 @@ local function shadowPicture(assets, battler, row)
     tintG = tintG,
     tintB = tintB,
     alpha = numberOr(battler.polygonAlpha, 31) / 31,
-    paletteFade = battler.paletteFade,
+    paletteFade = battler.motionBlend or battler.paletteFade,
   }
 end
 
@@ -812,8 +816,11 @@ local function battlerPicture(assets, battler, row)
   local picture = {
     image = image.image,
     imageKind = image.imageKind,
-    centerX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0),
-    centerY = row.settledY + sourceHeight + numberOr(battler.entryDy, 0),
+    centerX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0) + numberOr(
+      battler.motionDx,
+      0
+    ),
+    centerY = row.settledY + sourceHeight + numberOr(battler.entryDy, 0) + numberOr(battler.motionDy, 0),
     zCenter = row.depth,
     frameX = frameX,
     frameY = frameY,
@@ -831,7 +838,7 @@ local function battlerPicture(assets, battler, row)
     tintG = tintG,
     tintB = tintB,
     alpha = numberOr(battler.polygonAlpha, 31) / 31 * tintA,
-    paletteFade = battler.paletteFade,
+    paletteFade = battler.motionBlend or battler.paletteFade,
   }
   for field, fact in pairs(PICTURE_OFFSETS) do
     picture[field] = numberOr(battler[fact], 0)
@@ -2380,7 +2387,7 @@ local function drawBagChild(resources, view, child)
         pressBank = pocket + 8
       end
     else
-      pressBank = BattleBagPockets.buttonBank(animButton, 0)
+      pressBank = BattleBagPockets.buttonBank(animButton --[[@as integer]], 0)
     end
     if pressBank ~= nil then
       drawButtonFace(animButton, animFrame, pressBank)

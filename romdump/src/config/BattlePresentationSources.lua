@@ -31,6 +31,11 @@ BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC = "NARC_poketool_pokegra_hei
 BattlePresentationSources.PICTURE_ANIMATION_NARC = "NARC_a_1_8_0"
 BattlePresentationSources.PICTURE_ANIMATION_MEMBER = 0
 BattlePresentationSources.PICTURE_ANIMATION_RECORD_SIZE = 89
+-- Send-out motion programs live in NARC_a_0_9_0, read by word stream
+-- through PokepicAnimManager_StartAnim; out-of-range programs fall back
+-- to program zero like the source index guard.
+BattlePresentationSources.PICTURE_MOTION_NARC = "NARC_a_0_9_0"
+BattlePresentationSources.PICTURE_MOTION_FALLBACK_LIMIT = 143
 
 -- EvolutionScene loads resource 0 from NARC_a_1_1_9 and creates emitter
 -- IDs 0 through 12 across its particle phases.

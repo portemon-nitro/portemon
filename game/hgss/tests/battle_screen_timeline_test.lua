@@ -1057,10 +1057,15 @@ function T.wild_intro_slides_the_dark_foe_in_before_cry_and_fades_it_at_arrival(
     8,
     "the fade begins at full darkening when the slide arrives: " .. tostring(foe.paletteFade.intensity)
   )
-  Assert.equal(sounds.countCry("EEVEE", true), 1, "the foe cries on the arrival tick")
-  for _ = 1, 8 do
+  -- PlayMonAnimAndCry voices the cry after the species cry delay
+  -- (raw zero defaults to eight source ticks), never on the landing.
+  Assert.equal(sounds.countCry("EEVEE", true), 0, "the cry waits for its species delay")
+  for _ = 1, 7 do
     advance(timeline, TICK)
   end
+  Assert.equal(sounds.countCry("EEVEE", true), 0, "the cry still waits one tick out")
+  advance(timeline, TICK)
+  Assert.equal(sounds.countCry("EEVEE", true), 1, "the foe cries after its delay")
   foe = battler(timeline:battlers(), 3)
   Assert.equal(foe.paletteFade.intensity, 0, "the source palette fade completes in eight ticks")
   Assert.isFalse(foe.hudVisible == true, "the foe HUD waits for the script's WaitTime 122 and its slide")
@@ -1069,6 +1074,35 @@ function T.wild_intro_slides_the_dark_foe_in_before_cry_and_fades_it_at_arrival(
   end
   foe = battler(timeline:battlers(), 3)
   Assert.isTrue(foe.hudVisible, "the foe HUD slides in after the 122-tick hold")
+end
+
+function T.wild_intro_signals_picture_animation_at_slide_arrival()
+  local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
+  Assert.isNil(
+    battler(timeline:battlers(), 3).pictureAnimSeq,
+    "the wild foe carries no animation start before its slide arrives"
+  )
+  local arrivedAt = nil
+  local seqAtArrival = nil
+  for tick = 1, 200 do
+    advance(timeline, TICK)
+    local foe = battler(timeline:battlers(), 3)
+    if foe.pictureXOffset == 0 and arrivedAt == nil then
+      arrivedAt = tick
+      seqAtArrival = foe.pictureAnimSeq
+    end
+  end
+  Assert.notNil(arrivedAt, "the wild foe slide reaches its settled position")
+  Assert.notNil(seqAtArrival, "the slide arrival restarts the Pokepic animation like PlayMonAnimAndCry")
+  local foe = battler(timeline:battlers(), 3)
+  Assert.equal(
+    foe.pictureAnimSeq,
+    seqAtArrival,
+    "the arrival signal fires once instead of every source tick"
+  )
 end
 
 function T.intro_slides_both_terrain_bases_after_the_source_delay()
@@ -1827,6 +1861,156 @@ end
 -- faint cue, the partner never moves, and the reserve walks out at the
 -- vacated slot with its own portrait while the retired record stays
 -- hidden. Both foes share one species yet stay two combatants.
+-- The send-out reveal covers the baked motion task and delays its cry:
+-- the animation restarts at affine completion like PlayMonAnimAndCry,
+-- the cry voices one species delay after that restart, and the reveal
+-- spans the whole task instead of the poof alone. Scene Off keeps the
+-- delayed cry but never restarts the picture task and spans the poof.
+local function knockoutReserveSetup(battleScene, motionFacts, packetId)
+  local sounds = sink()
+  local timelineOpts = {
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    -- The staged fade color stands in for the production ball inventory:
+    -- without it every reveal degrades to the unfaded vanish.
+    ballFadeColor = function(_)
+      return 0
+    end,
+    motionFacts = motionFacts,
+  }
+  if battleScene == false then
+    timelineOpts.battleScene = false
+  end
+  local timeline = BattleTimeline.new(timelineOpts)
+  local opening = doubleOpeningView()
+  opening.foeTrainers = { { classKey = "YOUNGSTER", name = "TRAINER" } }
+  opening.foes[2] = doubleRecord(4, 4, 14, false, "BIDOOF", "FOE-B", 5, 30, 33)
+  timeline:reset(opening)
+  local after = doubleOpeningView()
+  after.foeTrainers = { { classKey = "YOUNGSTER", name = "TRAINER" } }
+  after.foes[1] = doubleRecord(3, 3, 13, false, "BIDOOF", "FOE-A", 4, 45, 45)
+  after.foes[2] = doubleRecord(5, 4, 15, false, "PICHU", "FOE-C", 5, 33, 33)
+  local health = {
+    [1] = { position = 1, side = 1, hp = 40, maxHp = 40 },
+    [2] = { position = 2, side = 1, hp = 35, maxHp = 38 },
+    [3] = { position = 3, side = 2, hp = 45, maxHp = 45 },
+    [4] = { position = 4, side = 2, hp = 0, maxHp = 33 },
+    [5] = { position = 4, side = 2, hp = 33, maxHp = 33 },
+  }
+  local strike = doubleEvent("struck", { target = 4, damage = 30, hitIndex = 1 }, health)
+  strike.actors = { { combatant = 1, activation = 11 } }
+  strike.targets = { { combatant = 4, activation = 14 } }
+  Assert.isTrue(
+    timeline:present(doublePacket(packetId, {
+      strike,
+      doubleEvent("faint", { combatant = 4, activation = 14, position = 4 }, health),
+      doubleEvent("switch", { from = 4, incoming = 5 }, health),
+    }, after)),
+    "the knockout packet is accepted"
+  )
+  return timeline, sounds
+end
+
+-- Drives one reserve send-out to rest, reporting its reveal start, its
+-- animation restart, its delayed cry, and its observed reveal cue span.
+local function drainReserveSendOut(timeline, sounds)
+  local observed = { animated = false }
+  for tick = 1, 3000 do
+    advance(timeline, TICK)
+    local shown = nil
+    for _, entry in ipairs(timeline:battlers()) do
+      if entry.combatant == 5 then
+        shown = entry
+      end
+    end
+    if shown ~= nil and observed.revealStart == nil then
+      observed.revealStart = tick
+    end
+    if shown ~= nil and shown.pictureAnimSeq ~= nil then
+      observed.animated = true
+      if observed.animTick == nil then
+        observed.animTick = tick
+      end
+    end
+    if sounds.countCry("PICHU", true) == 1 and observed.cryTick == nil then
+      observed.cryTick = tick
+    end
+    local active = timeline._active
+    if type(active) == "table" and active.kind == "reveal" and active.combatant == 5 then
+      if observed.first == nil then
+        observed.first = tick
+      end
+      observed.last = tick
+    end
+    if timeline:settled() then
+      observed.settledTick = tick
+      break
+    end
+  end
+  return observed
+end
+
+function T.send_out_reveal_covers_the_baked_motion_span_with_a_delayed_cry()
+  local motionFacts = function(species, foe)
+    if species == "PICHU" and foe then
+      return { totalTicks = 40, cryDelay = 5 }
+    end
+    return nil
+  end
+  local core = BattleTimelineCore
+  local affineCompletion = core.BALL_SCALE_TICKS + 1
+
+  local timeline, sounds = knockoutReserveSetup(true, motionFacts, 1)
+  local on = drainReserveSendOut(timeline, sounds)
+  Assert.notNil(on.revealStart, "the reserve reveal starts")
+  Assert.notNil(on.animTick, "the animation restarts on the reveal")
+  Assert.notNil(on.cryTick, "the reserve cries")
+  Assert.notNil(on.settledTick, "the switch drains fully")
+  Assert.equal(
+    on.animTick - on.revealStart,
+    -- The presence observation trails the cue start by one tick while
+    -- the restart fires at cue-relative affine completion, so the
+    -- observed gap matches the ball scale span exactly.
+    core.BALL_SCALE_TICKS,
+    "the animation restarts at affine completion"
+  )
+  Assert.equal(on.cryTick - on.animTick, 5, "the cry voices one species delay after the restart")
+  Assert.equal(sounds.countCry("PICHU", true), 1, "the delayed cry voices exactly once")
+  -- The completing tick retires the cue before the post-tick
+  -- observation, so the observed span runs one short of the duration.
+  Assert.equal(
+    on.last - on.first + 2,
+    affineCompletion + 40,
+    "the reveal covers the baked span instead of the poof alone"
+  )
+
+  local offTimeline, offSounds = knockoutReserveSetup(false, motionFacts, 2)
+  local off = drainReserveSendOut(offTimeline, offSounds)
+  Assert.notNil(off.revealStart, "the scene-off reveal starts")
+  Assert.notNil(off.cryTick, "the reserve cries with the scene off")
+  Assert.isFalse(off.animated, "scene off never restarts the picture task")
+  Assert.equal(
+    off.cryTick - off.revealStart,
+    on.cryTick - on.revealStart,
+    "the cry keeps its species delay with the scene off"
+  )
+  Assert.notNil(off.first, "the scene-off reveal runs")
+  Assert.equal(
+    off.last - off.first + 2,
+    core.BALL_SCALE_TICKS + core.BALL_FADE_TICKS,
+    "the reveal spans the poof alone with the scene off"
+  )
+
+  local bareTimeline, bareSounds = knockoutReserveSetup(true, nil, 3)
+  local bare = drainReserveSendOut(bareTimeline, bareSounds)
+  Assert.isTrue(
+    (on.last - on.first) > (bare.last - bare.first),
+    "staged motion stretches the reveal past the poof alone"
+  )
+end
+
+
 function T.knockout_reveal_keeps_vacated_slot_and_leaves_partner_alone()
   local opening = doubleOpeningView()
   opening.foeTrainers = { { classKey = "YOUNGSTER", name = "TRAINER" } }
@@ -3215,7 +3399,12 @@ end
 function T.wild_opening_follows_the_source_encounter_order()
   local sounds = sink()
   local timeline = BattleTimeline.new({ sound = sounds.sound })
-  timeline:intro(openingView(), true)
+  -- Production resets the launch view before the intro: the encounter
+  -- task slides a real foe in, so the side-channel cry has an owner.
+  -- An intro without its reset stages no battlers and no encounter cry.
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
   Assert.deepEqual(transcript(timeline, sounds), {
     "effect:SEQ_SE_DP_PASA2",
     "effect:SEQ_SE_DP_PASA3",
@@ -3589,7 +3778,19 @@ function T.follower_switch_in_rides_no_ball_and_slides_home()
   local shown = battler(timeline:battlers(), 2)
   Assert.isTrue(shown.visible == true, "the follower stays out after its slide")
   Assert.isNil(shown.pictureXOffset, "the slide settles exactly on its row")
-  Assert.isTrue(reveal.cryEmitted == true, "the follower still cries with its reveal")
+  Assert.isTrue(reveal.animStarted == true, "the follower still starts its animation with its reveal")
+  -- The cry voices after the default species delay through the
+  -- side-channel countdown, even past the short slide reveal.
+  for _ = 1, 8 do
+    advance(timeline, TICK)
+  end
+  local cried = false
+  for _, cue in ipairs(timeline:drainSounds()) do
+    if type(cue) == "table" and cue.kind == "cry" and cue.species == "EEVEE" and not cue.foe then
+      cried = true
+    end
+  end
+  Assert.isTrue(cried, "the follower still cries after its delay")
 end
 
 -- Drains one full wild opening so later packets run behind a settled
