@@ -1428,7 +1428,7 @@ end
 function T.semantic_animation_roots_include_native_move_and_named_category_routes()
   local Sources = require("romdump.src.config.BattleAnimationSources")
   local roots = Sources.listSemanticRoots()
-  Assert.equal(#roots, 505, "source roots are the 467 move IDs and 38 named non-move categories")
+  Assert.equal(#roots, 507, "source roots are the 467 move IDs and 40 named non-move categories")
   local move = Sources.resolveSemanticRoute("TACKLE")
   Assert.equal(move.kind, "move")
   Assert.equal(move.archiveSymbol, "NARC_a_0_1_0")
@@ -3116,24 +3116,23 @@ function T.configure_from_script_callbacks_consume_their_inline_config()
 end
 
 function T.clear_background_plane_with_trailing_45_keeps_cursor_aligned()
-  -- ClearBattlerBg normally takes one source word, but a trailing 45
-  -- extends the frame by one word (observed once: EXTRASENSORY member 326
-  -- lowers [32,0,45] with the third word consumed). Without consuming it
-  -- the decoder misreads the 45 as an opcode and desyncs into its
-  -- operands; the following interpreter-state branch (JumpIfContextField01
-  -- reads an uninitialized field, so its taken arm is never evaluated and
-  -- discovery follows only the fall-through) then queues a garbage target
-  -- and the member fails to compile.
-  local words = { u32(32), u32(0), u32(45), u32(33), u32(5), u32(4) }
-  local program = assert(compiler().compile({ key = "clear-plane-trailing-45", stream = table.concat(words) }))
-  Assert.equal(#program.instructions, 3, "every word lands on an instruction boundary")
+  -- ClearBattlerBg consumes exactly one operand word: the word after it
+  -- is the next command, never a second operand. A trailing CallFunc
+  -- therefore decodes in place with its own selector, count and values.
+  local words = { u32(32), u32(7), u32(45), u32(6), u32(1), u32(100) }
+  local program = assert(compiler().compile({
+    key = "clear-plane-trailing-45",
+    stream = table.concat(words),
+    callbacks = { [6] = "probe-callback" },
+  }))
+  Assert.equal(#program.instructions, 2, "every word lands on an instruction boundary")
   Assert.equal(program.instructions[1].op, "clear-background-plane", "the plane word keeps its operation")
-  Assert.equal(program.instructions[2].op, "branch-on-interpreter-state", "the following branch decodes in place")
   Assert.equal(
-    program.instructions[3].op,
-    "reset-battle-presentation",
-    "the continuation past the branch stays reachable"
+    program.instructions[2].op,
+    "replace-parameters-and-call",
+    "the word after the single operand decodes as a callback"
   )
+  Assert.deepEqual(program.sourceOffsets, { 0, 8 }, "the command after one operand starts at byte 8")
 end
 
 function T.every_dispatch_entry_has_a_source_framed_decode_or_a_source_failure()
@@ -3572,12 +3571,12 @@ function T.side_equality_and_battle_flag_branches_keep_distinct_cursor_destinati
 
   local flagProgram = assert(compiler().compile({
     key = "battle-state-flag-cursor-branch",
-    stream = table.concat({ u32(87), u32(0), u32(2), u32(54), u32(54), u32(54) }),
+    stream = table.concat({ u32(87), u32(1), u32(0), u32(4) }),
   }))
   Assert.equal(flagProgram.instructions[1].op, "branch-on-battle-flag", "opcode 87 tests battle-state bit 1")
   Assert.deepEqual(flagProgram.instructions[1].values, { 2 }, "state flag mask remains semantic")
-  Assert.equal(flagProgram.instructions[1].alternateTarget, 2, "clear flag consumes the branch count word")
-  Assert.equal(flagProgram.instructions[1].branchTarget, 3, "set flag follows the count-derived destination")
+  Assert.equal(flagProgram.instructions[1].alternateTarget, 2, "clear flag falls through past one offset word")
+  Assert.equal(flagProgram.instructions[1].branchTarget, 2, "the offset word bases the taken destination")
 end
 
 function T.cry_wait_preserves_the_finished_and_unfinished_cursor_paths()
@@ -3708,18 +3707,18 @@ end
 function T.side_mask_branch_preserves_each_source_table_destination()
   local program = assert(compiler().compile({
     key = "side-mask-cursor-branches",
-    stream = table.concat({ u32(70), u32(1), u32(1), u32(1), u32(1), u32(1), u32(1), u32(54) }),
+    stream = table.concat({ u32(70), u32(1), u32(1), u32(1), u32(1), u32(1), u32(1), u32(0), u32(9) }),
   }))
   local branch = program.instructions[1]
-  Assert.equal(branch.op, "branch-on-side-mask", "opcode 70 branches from its active-side mask")
+  Assert.equal(branch.op, "branch-on-weather-condition", "opcode 70 branches on its named weather selection")
   Assert.deepEqual(branch.branchCases, {
-    { sideMask = 0, target = 2 },
-    { sideMask = 3, target = 3 },
-    { sideMask = 12, target = 4 },
-    { sideMask = 48, target = 5 },
-    { sideMask = 192, target = 6 },
-    { otherwise = true, target = 7 },
-  }, "each source mask-table match retains its count-derived destination")
+    { condition = "clear", target = 2 },
+    { condition = "rain", target = 3 },
+    { condition = "sand", target = 4 },
+    { condition = "sun", target = 5 },
+    { condition = "hail", target = 6 },
+    { condition = "other", target = 7 },
+  }, "each source weather match names its condition and retains its own-word destination")
   Assert.isTrue(
     require("libs.assets.src.battle.BattleAnimationSchema").assertProgram({
       entry = program.entry,
@@ -3863,7 +3862,7 @@ end
 function T.effect_and_cry_handlers_lower_their_source_side_effects()
   local program = assert(compiler().compile({
     key = "effect-and-cry-lifecycle",
-    stream = table.concat({ u32(53), u32(2), u32(65), u32(0x1234), u32(0xfffffffe), u32(7), u32(67), u32(0) }),
+    stream = table.concat({ u32(53), u32(2), u32(65), u32(0x1234), u32(0xfffffffe), u32(7), u32(67) }),
   }))
   Assert.equal(program.instructions[1].op, "destroy-battler-effect", "opcode 53 destroys its indexed effect")
   Assert.deepEqual(program.instructions[1].values, { 2 }, "effect index remains the semantic operand")

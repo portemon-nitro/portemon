@@ -476,23 +476,29 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
     },
   }
   local function manifestFor(schema, pageImage, pageWidth, pageHeight, cell)
+    local portrait = schema == MonCache.PORTRAIT_MANIFEST_SCHEMA
+    local page = { pageId = 0, image = pageImage, width = pageWidth, height = pageHeight }
+    local entry = { x = 0, y = 0, width = cell, height = cell, pageId = 0 }
+    if portrait then
+      page.indexed = {
+        indices = "assets/generated/mon/portraits/0.indices.r8",
+        palettes = "assets/generated/mon/portraits/0.palettes.rgb555",
+        paletteCount = 1,
+      }
+      entry.frames = {
+        { x = 0, y = 0, width = cell, height = cell },
+        { x = cell, y = 0, width = cell, height = cell },
+      }
+      entry.paletteIndex = 0
+    else
+      entry.frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } }
+    end
     return {
       schema = schema,
       version = { id = "heartgold", language = "english" },
-      pages = {
-        [0] = { pageId = 0, image = pageImage, width = pageWidth, height = pageHeight },
-      },
+      pages = { [0] = page },
       pageIds = { 0 },
-      entries = {
-        ["K/f0"] = {
-          x = 0,
-          y = 0,
-          width = cell,
-          height = cell,
-          frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } },
-          pageId = 0,
-        },
-      },
+      entries = { ["K/f0"] = entry },
       representative = { "K/f0" },
     }
   end
@@ -571,6 +577,9 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
       width = 640,
       height = 320,
       pixels = string.rep("\0", 640 * 320 * 4),
+      indicesR8 = string.rep("\0", 640 * 320),
+      basePalettesRgb555 = string.rep("\0", 32),
+      paletteCount = 1,
       marker = portraitMarker,
     })
   )

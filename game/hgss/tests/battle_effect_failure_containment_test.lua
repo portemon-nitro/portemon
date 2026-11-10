@@ -174,6 +174,7 @@ function T.mid_run_resource_and_voice_failures_fail_loudly_and_stay_live()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
   local failure = nil
@@ -787,6 +788,7 @@ function T.faulted_occurrences_keep_provenance_until_the_owner_releases_them()
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local retired = {}
   local admitted = nil

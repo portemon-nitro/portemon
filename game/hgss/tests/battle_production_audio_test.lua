@@ -414,10 +414,44 @@ local function stageBattlePresentation(cache)
       },
     }
   end
-  cache:writeLua(MonCache.portraitManifestPath(), { entries = entries })
+  -- Portrait pages stage their CPU source sidecars beside the raster
+  -- page, and every staged entry carries its palette slot with both
+  -- authored 80x80 frames, exactly what the portrait manifest and the
+  -- CPU source reader require of a staged page.
+  for _, entry in pairs(entries) do
+    entry.width = 80
+    entry.height = 80
+    entry.paletteIndex = 0
+    entry.frames = {
+      { x = 0, y = 0, width = 80, height = 80, duration = 6 },
+      { x = 80, y = 0, width = 80, height = 80, duration = 6 },
+    }
+  end
+  cache:writeLua(MonCache.portraitManifestPath(), {
+    schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = {
+        pageId = 0,
+        image = MonCache.portraitPagePath(0),
+        width = 160,
+        height = 80,
+        indexed = {
+          indices = MonCache.portraitIndexPagePath(0),
+          palettes = MonCache.portraitPalettePagePath(0),
+          paletteCount = 1,
+        },
+      },
+    },
+    pageIds = { 0 },
+    entries = entries,
+    representative = { LEAD_SPECIES .. "/f0/male/plain/back" },
+  })
   cache:writeLua(MonCache.indexPath(), { portraitPages = { "portrait-marker-0" } })
   cache:write(MonCache.pageMarkerPath("portraits", 0), "portrait-marker-0")
-  cache:write(MonCache.pageImagePath("portraits", 0), solidPng(64, 64))
+  cache:write(MonCache.pageImagePath("portraits", 0), solidPng(160, 80))
+  cache:write(MonCache.portraitIndexPagePath(0), string.rep("\0", 160 * 80))
+  cache:write(MonCache.portraitPalettePagePath(0), string.rep("\0", 32))
 end
 
 -- The stubbed presentation runtime a real FieldState boot reads, carrying
@@ -437,6 +471,13 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
     monService = {
       partyCount = function()
         return 1
+      end,
+      -- The field envelope captures the detached visual launch seed
+      -- from the live mon-service generator at launch admission, so
+      -- the stub lends a fixed generator capture behind the same seam.
+      capture = function()
+        local Lcrng = require("libs.mons.src.gen4.Lcrng")
+        return { rng = Lcrng.new(0):capture() }
       end,
     },
     input = FieldInput.new(),
@@ -564,6 +605,10 @@ local function bootFieldState(cache, audio, itemCatalog, monCatalog)
   end
   local game = { saveId = "save-00000001", versionId = "heartgold" }
   local ok, state = pcall(FieldState.new, game, {
+    -- The headless boot lends the shared visual-launch stream record
+    -- exactly like the production App boot does, so the battle screen
+    -- borrows one continuous stream instead of a fresh private one.
+    splRandomState = { state = 0 },
     topologyProvider = function()
       return ScreenTopology.oneDisplay({
         id = "main",

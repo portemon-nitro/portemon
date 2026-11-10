@@ -428,23 +428,29 @@ end
 local function publishMonFamily(cache, marker)
   local PngWriter = require("tests.support.PngEncoder")
   local function manifestFor(schema, pageImage, pageWidth, pageHeight, cell)
+    local portrait = schema == MonCache.PORTRAIT_MANIFEST_SCHEMA
+    local page = { pageId = 0, image = pageImage, width = pageWidth, height = pageHeight }
+    local entry = { x = 0, y = 0, width = cell, height = cell, pageId = 0 }
+    if portrait then
+      page.indexed = {
+        indices = MonCache.portraitIndexPagePath(0),
+        palettes = MonCache.portraitPalettePagePath(0),
+        paletteCount = 1,
+      }
+      entry.frames = {
+        { x = 0, y = 0, width = cell, height = cell },
+        { x = cell, y = 0, width = cell, height = cell },
+      }
+      entry.paletteIndex = 0
+    else
+      entry.frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } }
+    end
     return {
       schema = schema,
       version = { id = "heartgold", language = "english" },
-      pages = {
-        [0] = { pageId = 0, image = pageImage, width = pageWidth, height = pageHeight },
-      },
+      pages = { [0] = page },
       pageIds = { 0 },
-      entries = {
-        ["K/f0"] = {
-          x = 0,
-          y = 0,
-          width = cell,
-          height = cell,
-          frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } },
-          pageId = 0,
-        },
-      },
+      entries = { ["K/f0"] = entry },
       representative = { "K/f0" },
     }
   end
@@ -458,6 +464,8 @@ local function publishMonFamily(cache, marker)
   local portraitPng = PngWriter.encode(640, 320, portraitPixels)
   cache:write(MonCache.iconPagePath(0), iconPng)
   cache:write(MonCache.portraitPagePath(0), portraitPng)
+  cache:write(MonCache.portraitIndexPagePath(0), string.rep("\0", 640 * 320))
+  cache:write(MonCache.portraitPalettePagePath(0), string.rep("\0", 32))
   local Contract = require("libs.assets.src.DerivedAssetContract")
   local iconMarker = MonCache.marker("test-rom", "icons-0")
   local portraitMarker = MonCache.marker("test-rom", "portraits-0")

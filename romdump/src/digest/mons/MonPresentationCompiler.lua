@@ -385,6 +385,30 @@ end
 -- of frame cells. Missing cells (a final partial page) stay transparent.
 -- Returns the image buffer; every rect assignment elsewhere derives from
 -- the same column-major cell numbering.
+-- Pack one-byte-per-pixel index cells into the page-sized R8 plane using
+-- the same cell geometry as the RGBA page, so index coordinates match
+-- the raster page exactly. Unoccupied pixels stay index zero.
+---@param cells string[] one 80x80 index cell per staged frame, in order
+---@param cellSize integer frame cell edge in pixels
+---@param width integer page width in pixels
+---@param height integer page height in pixels
+---@return string R8 plane of width*height bytes
+local function packIndexPage(cells, cellSize, width, height)
+  local dest = ffi.new("uint8_t[?]", width * height)
+  ffi.fill(dest, width * height, 0)
+  local cols = math.floor(width / cellSize)
+  for index, cell in ipairs(cells) do
+    assert(#cell == cellSize * cellSize, "index cells carry exactly one frame cell")
+    local source = ffi.cast("const uint8_t *", cell)
+    local col = (index - 1) % cols
+    local row = math.floor((index - 1) / cols)
+    for y = 0, cellSize - 1 do
+      ffi.copy(dest + ((row * cellSize + y) * width + col * cellSize), source + y * cellSize, cellSize)
+    end
+  end
+  return ffi.string(dest, width * height)
+end
+
 local function packPage(cells, cellSize)
   local cols = PAGE_COLUMNS
   local rows = (VISUALS_PER_PAGE * 2) / cols
@@ -639,6 +663,52 @@ local function decodeIndexedPortrait(archives, combo)
     colors = pal.colors,
     dependencies = { narc = combo.narc, charMemberId = combo.charMemberId, palMemberId = combo.palMemberId },
   }
+end
+
+-- Extract one portrait visual's two exact 80x80 R8 index frames from the
+-- unscanned 160x80 4bpp surface: frame 0 reads row bytes 0..39, frame 1
+-- reads bytes 40..79, low nibble first. Unoccupied pixels stay index 0;
+-- duplicate RGB colors keep their distinct indices.
+---@param unscanned string 160x80 4bpp unscanned surface
+---@return string, string two 6400-byte index planes
+local function portraitIndexFrames(unscanned)
+  local frames = {}
+  for frame = 0, 1 do
+    local parts = {}
+    for y = 0, 79 do
+      local rowBase = y * 80 + frame * 40
+      for byteX = 0, 39 do
+        local byte = string.byte(unscanned, rowBase + byteX + 1) or 0
+        parts[#parts + 1] = string.char(byte % 16, math.floor(byte / 16))
+      end
+    end
+    frames[#frames + 1] = table.concat(parts)
+  end
+  return frames[1], frames[2]
+end
+
+-- Encode one decoded 16-color palette into exact RGB555 words with the
+-- round-trip check: duplicate RGB colors keep their indices because the
+-- words are ordered by slot, and index zero keeps its original word.
+---@param colors { r: integer, g: integer, b: integer }[] decoded source colors
+---@param label string provenance label
+---@return integer[]|nil, Errors.Error|nil
+local function portraitBasePalette(colors, label)
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local words = {}
+  for index, color in ipairs(colors) do
+    local r = math.floor((color.r * 31 + 127) / 255)
+    local g = math.floor((color.g * 31 + 127) / 255)
+    local b = math.floor((color.b * 31 + 127) / 255)
+    local word = Rgb555.encode(r, g, b)
+    local decoded = Rgb555.decode(word)
+    if decoded.r ~= color.r or decoded.g ~= color.g or decoded.b ~= color.b then
+      return nil,
+        Errors.new("MON_IMAGE_BAD_PALETTE", label .. " palette word " .. index .. " loses its source color", {})
+    end
+    words[#words + 1] = word
+  end
+  return words
 end
 
 -- Raster one portrait visual's two frames: the character member unscanned
@@ -1090,6 +1160,12 @@ local function buildLayout(
   end
   local entries = {}
   local pagePlans = {}
+  local portrait = schema == MonCache.PORTRAIT_MANIFEST_SCHEMA
+  -- Front-Spinda selectors keep the source personalization mark: the
+  -- front spelling carries no facing suffix while backs end in "/back".
+  local function frontSpinda(selector)
+    return type(selector) == "string" and selector:sub(1, 7) == "SPINDA/" and selector:sub(-5) ~= "/back"
+  end
   for comboIndex, combo in ipairs(combos) do
     local pageId = math.floor((comboIndex - 1) / VISUALS_PER_PAGE)
     local slot = (comboIndex - 1) % VISUALS_PER_PAGE
@@ -1113,7 +1189,7 @@ local function buildLayout(
         frames[#frames + 1] = frameOf(x, y, frame)
       end
       local first = frames[1]
-      entries[selector] = {
+      local entry = {
         x = first.x,
         y = first.y,
         width = cellSize,
@@ -1121,6 +1197,13 @@ local function buildLayout(
         frames = frames,
         pageId = pageId,
       }
+      if portrait then
+        entry.paletteIndex = slot
+        if frontSpinda(selector) then
+          entry.personalization = "spinda"
+        end
+      end
+      entries[selector] = entry
     end
   end
   for _, selector in ipairs(representative) do
@@ -1145,18 +1228,37 @@ local function buildLayout(
   end
   for pageId = 0, pageCount - 1 do
     assert(pagePlans[pageId] ~= nil, "page plans are consecutive from zero")
-    pages[pageId] = { pageId = pageId, image = pagePathOf(pageId), width = pageWidth, height = pageHeight }
+    local page = { pageId = pageId, image = pagePathOf(pageId), width = pageWidth, height = pageHeight }
+    if portrait then
+      -- plan performs no pixel decode: paths, counts and palette slots
+      -- are layout facts, filled from the same deterministic combo order
+      -- compilePage stages.
+      page.indexed = {
+        indices = MonCache.portraitIndexPagePath(pageId),
+        palettes = MonCache.portraitPalettePagePath(pageId),
+        paletteCount = #pagePlans[pageId].combos,
+      }
+    end
+    pages[pageId] = page
     pageIds[#pageIds + 1] = pageId
   end
-  return {
+  local manifest = {
     schema = schema,
     version = { id = version.id, language = version.language },
     pages = pages,
     pageIds = pageIds,
     entries = entries,
     representative = representative,
-  },
-    pagePlans
+  }
+  if portrait then
+    manifest.personalizations = {
+      spinda = {
+        spotRows = MonSources.SPINDA_SPOT_ROWS,
+        secondFrameXOffset = MonSources.SPINDA_SECOND_FRAME_X_OFFSET,
+      },
+    }
+  end
+  return manifest, pagePlans
 end
 
 -- Plan the complete selector layout without decoding pixel payloads:
@@ -1231,7 +1333,7 @@ end
 ---@param romFs RomFs
 ---@param kind "icons"|"portraits" presentation kind
 ---@param pagePlan table<string, unknown> producer-private page source plan from plan
----@return { kind: string, pageId: integer, width: integer, height: integer, pixels: string }|nil, Errors.Error|string|nil
+---@return { kind: string, pageId: integer, width: integer, height: integer, pixels: string, indicesR8: string?, basePalettesRgb555: string?, paletteCount: integer? }|nil, Errors.Error|string|nil
 function MonPresentationCompiler.compilePage(romFs, kind, pagePlan)
   if kind ~= "icons" and kind ~= "portraits" then
     return nil, Errors.new("MON_PAGE_BAD_KIND", "mon page kind must be icons or portraits", { kind = kind })
@@ -1302,10 +1404,24 @@ function MonPresentationCompiler.compilePage(romFs, kind, pagePlan)
       )
     end
     local cells = {}
+    -- The bounded portrait-page job decodes each combo once and derives
+    -- RGBA and R8 from that one decode, so both planes agree exactly.
+    local indexCells = {}
+    local paletteWords = {}
     for _, combo in ipairs(combos) do
-      local frames = must(rasterPortraitCombo(archives, combo))
+      local decoded = must(decodeIndexedPortrait(archives, combo))
+      local label = combo.narc .. " char " .. combo.charMemberId
+      local expansions = must(byteExpansions(decoded.colors, label))
+      local frames = must(rasterizePortraitFrames(decoded.unscanned, expansions, label))
       cells[#cells + 1] = frames[1]
       cells[#cells + 1] = frames[2]
+      local frame0, frame1 = portraitIndexFrames(decoded.unscanned)
+      indexCells[#indexCells + 1] = frame0
+      indexCells[#indexCells + 1] = frame1
+      local words = must(portraitBasePalette(decoded.colors, label))
+      for _, word in ipairs(words) do
+        paletteWords[#paletteWords + 1] = word
+      end
     end
     local page = packPage(cells, PORTRAIT_CELL)
     for _, check in ipairs(pagePlan.representative or {}) do
@@ -1322,7 +1438,21 @@ function MonPresentationCompiler.compilePage(romFs, kind, pagePlan)
         )
       end
     end
-    return { kind = "portraits", pageId = pageId, width = page.width, height = page.height, pixels = page.pixels }
+    local indicesR8 = packIndexPage(indexCells, PORTRAIT_CELL, page.width, page.height)
+    local paletteBytes = {}
+    for _, word in ipairs(paletteWords) do
+      paletteBytes[#paletteBytes + 1] = string.char(word % 256, math.floor(word / 256) % 256)
+    end
+    return {
+      kind = "portraits",
+      pageId = pageId,
+      width = page.width,
+      height = page.height,
+      pixels = page.pixels,
+      indicesR8 = indicesR8,
+      basePalettesRgb555 = table.concat(paletteBytes),
+      paletteCount = #combos,
+    }
   end)
   if not ok then
     if Errors.is(result) then

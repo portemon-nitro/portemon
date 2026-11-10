@@ -185,6 +185,7 @@ function T.cancel_from_every_phase_releases_only_its_own_holdings()
     audio = first.audio,
     resources = first.resources,
     tasks = first.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local preparing = assert(player:start(playbackPacket(), program))
   player:cancel(preparing, "preparation")
@@ -199,6 +200,7 @@ function T.cancel_from_every_phase_releases_only_its_own_holdings()
     audio = second.audio,
     resources = second.resources,
     tasks = second.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local voiced = assert(voicePlayer:start(playbackPacket(), program))
   for _ = 1, 5 do
@@ -219,6 +221,7 @@ function T.cancel_from_every_phase_releases_only_its_own_holdings()
     audio = fresh.audio,
     resources = fresh.resources,
     tasks = fresh.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local nextHandle = assert(runner:start(playbackPacket(), program))
   for _ = 1, 20 do

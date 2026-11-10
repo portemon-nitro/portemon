@@ -50,6 +50,7 @@ local BattlePresentationCompiler = {}
 ---@field resourcePayloads table<string, table<string, unknown>> decoded payloads keyed by cache-relative path; build-only
 ---@field provenance table<string, unknown> producer-only physical source selections
 ---@field requiredContext table<string, string|number|boolean> typed context parameters
+---@field displayPolicy table<string, boolean> immutable root display policy
 
 ---@class BattlePresentationCompiler.PictureMotionHeader per-species send-out motion header
 ---@field program integer motion program identity
@@ -6944,6 +6945,87 @@ local function collectRequiredContext(requiredContext, instruction)
   end
 end
 
+-- Root display policy behind one feedback member: source
+-- MoveAnim_GetDisplayFlags arms for the auxiliary archive members
+-- (src/battle/battle_controller_opponent.c). Weather continuations,
+-- nightmare, leech seed, wrap, fire spin, clamp, and sand tomb
+-- suspend healthbar updates without battler G3 updates; magma storm
+-- and whirlpool suspend with G3 updates; every other feedback member
+-- (including follower entry/recall) changes neither. Runtime reads
+-- only the two named booleans, never member IDs.
+local FEEDBACK_DISPLAY_POLICY = {
+  [18] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [19] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [20] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [21] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [22] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [31] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [32] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [34] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [35] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [36] = { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+  [37] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+  [38] = { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+  [39] = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+}
+
+-- Reads the immutable root display policy behind one routed effect:
+-- ordinary moves decode their source move-table flags (MOVEATTR_UNK9
+-- is the flags byte; bit 0x40 keeps healthbar updates live, bit 0x80
+-- arms battler G3 updates), feedback members read the source feedback
+-- switch above. The first field suspends source healthbar updates;
+-- it never hides the HUD.
+---@param romFs RomFs
+---@param route table<string, unknown> resolved semantic root
+---@return table<string, boolean> detached root display policy
+local function rootDisplayPolicy(romFs, route)
+  if route.kind == "battle-animation" then
+    local memberId = route.animationCategory --[[@as integer]]
+    local policy = FEEDBACK_DISPLAY_POLICY[memberId]
+    if policy ~= nil then
+      return {
+        suspendHealthbarUpdates = policy.suspendHealthbarUpdates,
+        updateBattlerG3 = policy.updateBattlerG3,
+      }
+    end
+    return { suspendHealthbarUpdates = false, updateBattlerG3 = false }
+  end
+  assert(route.kind == "move", "display policy resolves its semantic root kind")
+  local moveId = route.moveId --[[@as integer]]
+  assert(
+    type(moveId) == "number" and moveId % 1 == 0 and moveId >= 1 and moveId <= 467,
+    "ordinary display policy reads its source move identity"
+  )
+  local archive = openArchive(romFs, "NARC_poketool_waza_waza_tbl", "move display flags")
+  -- Move-table members are raw 16-byte entries, never LZ streams: a
+  -- first byte of 0x10 is an ordinary effect low byte, not an LZ10
+  -- tag, so the shared compressed-member decoder must not touch them.
+  local rawMember, rawErr = archive:readMember(moveId)
+  if rawMember == nil then
+    if Errors.is(rawErr) then
+      error(rawErr, 0)
+    end
+    error(
+      Errors.new("BATTLE_MEMBER_MISSING", "move display flags member " .. moveId .. " is absent", {
+        member = moveId,
+        label = "move display flags",
+      }),
+      0
+    )
+  end
+  local member = rawMember --[[@as string]]
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
+  local decoded, decodeErr = MonCatalogCompiler.decodeMove(member, { archive = "moves", memberId = moveId })
+  if decoded == nil then
+    error(decodeErr, 0)
+  end
+  local flags = decoded.flags --[[@as integer]]
+  return {
+    suspendHealthbarUpdates = flags % 128 < 64,
+    updateBattlerG3 = flags % 256 >= 128,
+  }
+end
+
 -- Validates the semantic effect key and reads its routed source stream.
 ---@param romFs RomFs
 ---@param sources table<string, unknown> BattleAnimationSources
@@ -7259,6 +7341,7 @@ local function validateEffect(effect, sourceOffsets)
     dependencies = effect.dependencies,
     resources = effect.resources,
     requiredContext = effect.requiredContext,
+    displayPolicy = effect.displayPolicy,
   })
   if valid then
     return
@@ -7385,6 +7468,7 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
     resources = state.resolvedResources,
     requiredContext = requiredContext,
     resourcePayloads = state.resourcePayloads,
+    displayPolicy = rootDisplayPolicy(romFs, route),
     provenance = {
       archiveSymbol = route.archiveSymbol,
       memberId = route.memberId,
@@ -7437,6 +7521,7 @@ function BattlePresentationCompiler.stageEffect(artifact, effect, marker)
     dependencies = effect.dependencies,
     resources = effect.resources,
     requiredContext = effect.requiredContext,
+    displayPolicy = effect.displayPolicy,
   })
   stage:write(BattlePresentationCache.effectMarkerPath(effect.key), marker)
   return marker
@@ -7459,6 +7544,7 @@ function BattlePresentationCompiler.effectMarker(romSha1, effect)
       dependencies = effect.dependencies,
       resources = effect.resources,
       requiredContext = effect.requiredContext,
+      displayPolicy = effect.displayPolicy,
       payloads = payloadHashes,
     })
   )

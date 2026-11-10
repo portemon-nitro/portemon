@@ -66,6 +66,7 @@ function Fixture.effectRecord(key, resources)
     dependencies = dependencies,
     resources = named,
     requiredContext = {},
+    displayPolicy = { suspendHealthbarUpdates = false, updateBattlerG3 = false },
   }
 end
 

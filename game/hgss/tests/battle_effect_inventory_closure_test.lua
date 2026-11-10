@@ -223,6 +223,16 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+          scene:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
   }))
   for _, program in ipairs({ contact, projectile }) do
     local handle = assert(player:start(playbackPacket(), program))

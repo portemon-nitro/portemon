@@ -120,7 +120,7 @@ local function playerModule()
   return Player
 end
 
-function T.branch_call_zero_wait_and_two_tasks_keep_their_normalized_form()
+function T.branch_call_zero_wait_and_terminal_reset_keep_their_normalized_form()
   local program = lowered("branch-call-form", {
     30,
     1,
@@ -189,6 +189,7 @@ function T.branch_call_zero_wait_and_two_tasks_keep_their_normalized_form()
     audio = audio,
     resources = resources,
     tasks = taskFactory(log),
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
   local trace = {}
@@ -205,7 +206,7 @@ function T.branch_call_zero_wait_and_two_tasks_keep_their_normalized_form()
     end
   end
   Assert.equal(trace[#trace], "complete", "the branched program with its call block runs to completion")
-  Assert.equal(#log.created, 2, "both scheduled tasks are created in order")
+  Assert.equal(#log.created, 1, "the terminal reset ends the stream after the first schedule")
   Assert.equal(player:status(handle), "complete", "reaching the end state is stable")
 end
 

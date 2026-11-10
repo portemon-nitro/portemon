@@ -1330,7 +1330,9 @@ function T.alternating_scroll_without_compiled_phases_stays_loud()
   )
 end
 
-function T.scanline_sine_sweep_moves_the_viewport_and_restores()
+function T.scanline_sine_sweep_writes_per_row_offsets_and_cleans_up()
+  -- Source wave offsets are per scanline, never a whole-screen sine
+  -- shift: the viewport stays untouched while rows carry the wave.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
   local task = assert(BattleEffectTasks.create("battle-background-scanline-sine-wave-transition", {
@@ -1349,16 +1351,14 @@ function T.scanline_sine_sweep_moves_the_viewport_and_restores()
   end
   Assert.equal(task:status(), "complete", "the sine sweep completes at its compiled duration")
   Assert.equal(#seen, 12, "the sine sweep spans its twelve compiled ticks")
-  local moved = false
-  for _, frame in ipairs(seen) do
-    if frame ~= "0,0" then
-      moved = true
-    end
+  for index, frame in ipairs(seen) do
+    Assert.equal(frame, "0,0", "a scanline wave never shifts the whole viewport on tick " .. index)
   end
-  Assert.isTrue(moved, "the sine sweep owns a viewport change instead of idling on a timer")
   local settled = scene:scroll()
-  Assert.equal(settled.x, 0, "completion restores the saved horizontal viewport")
-  Assert.equal(settled.y, 0, "completion restores the saved vertical viewport")
+  Assert.equal(settled.x, 0, "the untouched horizontal viewport stays saved")
+  Assert.equal(settled.y, 0, "the untouched vertical viewport stays saved")
+  local cleared = scene:animationFrame()
+  Assert.equal(#cleared.scanlines, 192, "completion frees the wave back to a full zeroed buffer")
   task:dispose()
   task:cancel("late")
   Assert.equal(task:status(), "complete", "completion survives late cancellation")
@@ -1434,8 +1434,18 @@ function T.overlapping_background_sweeps_restore_only_owned_viewport()
       verticalOffset = 0,
     },
   }, occurrenceContext(), firstServices))
-  local second = assert(BattleEffectTasks.create("battle-background-scanline-sine-wave-transition", {
-    parameters = { backgroundLayer = "battle-background-layer-3", durationTicks = 4 },
+  -- The surviving sweep below must own viewport writes for the overlap
+  -- to be observable: the scanline wave writes per-row offsets instead
+  -- of the viewport, so the overlap pair uses two viewport sweeps with
+  -- distinct reaches.
+  local second = assert(BattleEffectTasks.create("battle-background-alternating-scroll-transition", {
+    parameters = {
+      backgroundLayer = "battle-background-layer-3",
+      ticksPerDirection = 2,
+      directionChanges = 2,
+      horizontalOffset = 12,
+      verticalOffset = 0,
+    },
   }, occurrenceContext(), secondServices))
   first:stepSourceTick({ tick = 1 })
   second:stepSourceTick({ tick = 1 })
@@ -1562,6 +1572,7 @@ local function backgroundPlayback(scene, journal, attackerSide, defenderSide, ar
         return BattleEffectTasks.create(kind, args, context, collaborators)
       end,
     },
+    services = { onNativeFrame = function() end },
   }))
   local program = {
     entry = "main",
@@ -1678,6 +1689,7 @@ function T.native_background_selection_persists_until_cleanup_and_rejects_missin
         return BattleEffectTasks.create(kind, args, context, collaborators)
       end,
     },
+    services = { onNativeFrame = function() end },
   }))
   local malformedHandle = assert(malformedPlayer:start({
     launchId = "background-missing-defender",

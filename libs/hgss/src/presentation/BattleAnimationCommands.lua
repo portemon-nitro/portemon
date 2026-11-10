@@ -127,8 +127,8 @@ function BattleAnimationCommands.admit(instruction, index, count)
   end
   if op == "reserve-loop-slot" then
     local values = instruction.values
-    if type(values) ~= "table" or type(values[1]) ~= "number" or values[1] % 1 ~= 0 or values[1] < 1 then
-      return false, "loop slots reserve a positive iteration count"
+    if type(values) ~= "table" or type(values[1]) ~= "number" or values[1] % 1 ~= 0 or values[1] < 0 then
+      return false, "loop slots reserve an unsigned iteration count"
     end
   end
   local spawnersRequiringKind = {
@@ -202,7 +202,8 @@ local function successors(instructions, index)
   if op == "source-assertion" then
     return next
   end
-  local isJump = op == "skip-words" or (op == "reset-battle-presentation" and type(instruction.target) == "number")
+  -- End is terminal: it never falls through to the following arm.
+  local isJump = op == "skip-words" or op == "reset-battle-presentation"
   if op ~= "call-subprogram" and not isJump then
     link(index + 1)
   end
@@ -302,7 +303,9 @@ local function executeTickWait(exec, instruction, index)
     exec.advance()
     return "continue"
   end
-  return exec.park({ kind = "tick", index = index, remaining = values[1] })
+  -- A positive Wait(N) issued at T resumes its chain at T+N+2: the
+  -- parking tick plus N decrements and one runner-only switch tick.
+  return exec.park({ kind = "tick", index = index, remaining = values[1] + 2 })
 end
 
 local function executeStagingWait(exec, instruction, index)
@@ -586,6 +589,42 @@ local function handleBranchOnSideMask(exec, instruction, index)
 end
 Handlers["branch-on-side-mask"] = handleBranchOnSideMask
 
+-- Weather selection behind the six-arm conditional: an explicit
+-- no-field-conditions flag selects clear, the effective weather selects
+-- its own arm, and any other condition selects the final arm.
+local function handleBranchOnWeatherCondition(exec, instruction, index)
+  local _ = index
+  local context = nil
+  if type(exec.battleContext) == "function" then
+    local ok, resolved = pcall(exec.battleContext)
+    if ok and type(resolved) == "table" then
+      context = resolved --[[@as table<string, unknown>]]
+    end
+  end
+  if type(context) ~= "table" then
+    return failContextField(exec, "weather selection branches")
+  end
+  local selected = "other"
+  if context.noFieldConditions == true then
+    selected = "clear"
+  elseif type(context.effectiveWeather) == "string" and context.effectiveWeather ~= "none" then
+    selected = context.effectiveWeather --[[@as string]]
+  end
+  local cases = instruction.branchCases --[[@as table<integer, table<string, unknown>>?]]
+  if type(cases) ~= "table" then
+    exec.fail("weather selection branches carry no named selections")
+    return "done"
+  end
+  for _, case in ipairs(cases) do
+    if type(case) == "table" and case.condition == selected then
+      exec.jump(case.target)
+      return "continue"
+    end
+  end
+  return failContextField(exec, "weather selection branches")
+end
+Handlers["branch-on-weather-condition"] = handleBranchOnWeatherCondition
+
 -- Native side classes behind ov07_0223192C: an even native battler
 -- position (the player side) reads class 3, an odd position (the foe
 -- side) reads class 4. The locked event topology already carries the
@@ -801,18 +840,12 @@ local function handleSourceAssertion(exec, instruction, index)
 end
 Handlers["source-assertion"] = handleSourceAssertion
 
-local function handleResetBattlePresentation(exec, instruction, index)
-  -- The normalized reset applies presentation-state restoration inline.
-  -- Most resets fall through to the following instruction; a reset that
-  -- closes a contest-branch fallthrough arm carries its stream-end target
-  -- and drains there instead of falling through into the exclusive
-  -- contest arm.
+local function handleResetBattlePresentation(exec, _, index)
+  -- End is terminal at its program counter: no following arm ever runs.
+  -- The first poll parks one source invocation; later polls drain
+  -- particle, visual, sound and voice work before completing.
   exec.note({ op = "reset-battle-presentation", index = index })
-  if type(instruction.target) == "number" then
-    exec.jump(instruction.target)
-  else
-    exec.advance()
-  end
+  exec.finishStream()
   return "continue"
 end
 Handlers["reset-battle-presentation"] = handleResetBattlePresentation
@@ -929,8 +962,20 @@ local function handleScheduleBattleTask(exec, instruction, index)
 end
 Handlers["schedule-battle-task"] = handleScheduleBattleTask
 
+-- Resource staging helpers behind the visual task opcode stay outside
+-- the visual counter: their completion is observed through the
+-- background loaded/switch state, never the interpreter counter. Every
+-- other visual transition counts like native visual work.
+local UNCOUNTED_VISUAL_TASK_KINDS = {
+  ["battle-background-resource-load"] = true,
+  ["battle-presentation-resource-cleanup"] = true,
+}
+
 local function handleStartVisualTask(exec, instruction, index)
-  return spawnRaw(exec, instruction, index, "raw")
+  if UNCOUNTED_VISUAL_TASK_KINDS[instruction.taskKind] == true then
+    return spawnRaw(exec, instruction, index, "raw")
+  end
+  return spawnRaw(exec, instruction, index, "general")
 end
 Handlers["start-visual-task"] = handleStartVisualTask
 

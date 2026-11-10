@@ -116,6 +116,133 @@ function MonCache.pageImagePath(kind, pageId)
   end
   return MonCache.portraitPagePath(pageId)
 end
+
+---@param pageId integer zero-based portrait page identity
+---@return string cache-relative decoded index plane path
+function MonCache.portraitIndexPagePath(pageId)
+  return ASSET_DIR .. "/portraits/" .. checkPageId(pageId) .. ".indices.r8"
+end
+
+---@param pageId integer zero-based portrait page identity
+---@return string cache-relative base palette path
+function MonCache.portraitPalettePagePath(pageId)
+  return ASSET_DIR .. "/portraits/" .. checkPageId(pageId) .. ".palettes.rgb555"
+end
+
+-- Narrow CPU source reader behind native copy operations: crops the two
+-- exact 80x80 index frames using the validated manifest rectangles and
+-- reads the sixteen untouched base RGB555 words by palette slot. It
+-- returns immutable source data, never personalized instance pixels.
+-- Errors identify the selector and sidecar path.
+---@param cacheFs CacheFs cache filesystem behind the staged sidecars
+---@param manifest table<string, unknown> validated portrait manifest
+---@param selector string canonical portrait selector
+---@return table<string, unknown>|nil source width, height, index frames, base palette and personalization
+---@return string? cause diagnostic cause when no source is available
+function MonCache.loadPortraitSource(cacheFs, manifest, selector)
+  if type(cacheFs) ~= "table" then
+    return nil, "portrait source reads through a cache filesystem"
+  end
+  if type(manifest) ~= "table" then
+    return nil, "portrait source reads through a portrait manifest"
+  end
+  if type(selector) ~= "string" or selector == "" then
+    return nil, "portrait source names its canonical selector"
+  end
+  local entries = manifest.entries
+  if type(entries) ~= "table" then
+    return nil, "portrait manifest carries its entries for selector " .. selector
+  end
+  local entry = entries[selector]
+  if type(entry) ~= "table" then
+    return nil, "portrait manifest has no entry for selector " .. selector
+  end
+  local pages = manifest.pages
+  if type(pages) ~= "table" then
+    return nil, "portrait manifest carries its pages for selector " .. selector
+  end
+  local page = pages[entry.pageId]
+  if type(page) ~= "table" then
+    return nil, "portrait manifest has no page for selector " .. selector
+  end
+  local indexed = page.indexed
+  if type(indexed) ~= "table" then
+    return nil, "portrait page " .. tostring(entry.pageId) .. " publishes no index plane"
+  end
+  local paletteCount = indexed.paletteCount
+  if type(paletteCount) ~= "number" or paletteCount % 1 ~= 0 or paletteCount < 1 or paletteCount > 16 then
+    return nil, "portrait page " .. tostring(entry.pageId) .. " names its palette count"
+  end
+  local paletteIndex = entry.paletteIndex
+  if type(paletteIndex) ~= "number" or paletteIndex % 1 ~= 0 or paletteIndex < 0 or paletteIndex >= paletteCount then
+    return nil, "portrait entry " .. selector .. " names its palette slot"
+  end
+  local frames = entry.frames
+  if type(frames) ~= "table" or type(frames[1]) ~= "table" or type(frames[2]) ~= "table" then
+    return nil, "portrait entry " .. selector .. " carries both frame rectangles"
+  end
+  local indices = cacheFs:read(indexed.indices)
+  if type(indices) ~= "string" then
+    return nil, "portrait index plane is missing at " .. tostring(indexed.indices)
+  end
+  if #indices ~= page.width * page.height then
+    return nil, "portrait index plane has no full page at " .. tostring(indexed.indices)
+  end
+  local palettes = cacheFs:read(indexed.palettes)
+  if type(palettes) ~= "string" then
+    return nil, "portrait base palettes are missing at " .. tostring(indexed.palettes)
+  end
+  if #palettes ~= paletteCount * 32 then
+    return nil, "portrait base palettes mismatch their page count at " .. tostring(indexed.palettes)
+  end
+  local function cropFrame(rect)
+    if
+      type(rect.x) ~= "number"
+      or type(rect.y) ~= "number"
+      or type(rect.width) ~= "number"
+      or type(rect.height) ~= "number"
+      or rect.width ~= 80
+      or rect.height ~= 80
+    then
+      return nil
+    end
+    local parts = {}
+    for row = 0, 79 do
+      local base = (rect.y + row) * page.width + rect.x + 1
+      parts[#parts + 1] = string.sub(indices, base, base + 79)
+    end
+    return table.concat(parts)
+  end
+  local frame0 = cropFrame(frames[1])
+  local frame1 = cropFrame(frames[2])
+  if frame0 == nil or frame1 == nil or #frame0 ~= 6400 or #frame1 ~= 6400 then
+    return nil, "portrait entry " .. selector .. " crops two 80x80 index frames"
+  end
+  local palette = {}
+  for word = 0, 15 do
+    local at = math.floor(paletteIndex) * 32 + word * 2 + 1
+    local lo = string.byte(palettes, at) or 0
+    local hi = string.byte(palettes, at + 1) or 0
+    palette[#palette + 1] = lo + hi * 256
+  end
+  local personalization = nil
+  if entry.personalization == "spinda" then
+    local definitions = manifest.personalizations
+    local spinda = type(definitions) == "table" and definitions.spinda or nil
+    if type(spinda) ~= "table" then
+      return nil, "portrait entry " .. selector .. " names its personalization rows"
+    end
+    personalization = { kind = "spinda", spotRows = spinda.spotRows, secondFrameXOffset = -14 }
+  end
+  return {
+    width = 80,
+    height = 80,
+    indexFrames = { frame0, frame1 },
+    basePaletteRgb555 = palette,
+    personalization = personalization,
+  },
+    nil
+end
 function MonCache.provenancePath()
   return DATA_DIR .. "/provenance.lua"
 end
@@ -209,8 +336,39 @@ function MonCache.isPageReady(cacheFs, kind, pageId, expectedMarker)
   if cacheFs:read(MonCache.pageMarkerPath(kind, pageId)) ~= expectedMarker then
     return false
   end
-  local width = PngWriter.completeDimensions(cacheFs:read(MonCache.pageImagePath(kind, pageId)))
-  return width ~= nil
+  local image = cacheFs:read(MonCache.pageImagePath(kind, pageId))
+  local width, height = PngWriter.completeDimensions(image)
+  if width == nil or height == nil then
+    return false
+  end
+  if kind == "icons" then
+    return true
+  end
+  -- A portrait page is cold without its exact CPU source sidecars: the
+  -- index plane must cover the full page, every index must be a palette
+  -- slot, and the palette payload must hold whole 16-word RGB555 banks.
+  local indices = cacheFs:read(MonCache.portraitIndexPagePath(pageId))
+  if type(indices) ~= "string" or #indices ~= width * height then
+    return false
+  end
+  for position = 1, #indices do
+    local index = string.byte(indices, position) or 255
+    if index > 15 then
+      return false
+    end
+  end
+  local palettes = cacheFs:read(MonCache.portraitPalettePagePath(pageId))
+  if type(palettes) ~= "string" or #palettes < 32 or #palettes > 512 or #palettes % 32 ~= 0 then
+    return false
+  end
+  for position = 1, #palettes, 2 do
+    local lo = string.byte(palettes, position) or 0
+    local hi = string.byte(palettes, position + 1) or 0
+    if lo + hi * 256 > 32767 then
+      return false
+    end
+  end
+  return true
 end
 
 -- True only when the layout manifest is loadable and every icon page it

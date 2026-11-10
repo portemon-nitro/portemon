@@ -12,7 +12,9 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattleAnimationSchema
 local BattleAnimationSchema = {}
 
-BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v4"
+-- The effect schema follows the central contract revision: no second
+-- version literal lives beside the shared generation.
+BattleAnimationSchema.EFFECT_SCHEMA = require("libs.assets.src.DerivedAssetContract").battlePresentation.effectSchema
 
 local CODE_EFFECT = "BATTLE_EFFECT_INVALID"
 
@@ -1222,6 +1224,15 @@ local ENUM_FIELDS = {
 }
 
 local SIDE_MASK_BRANCH_FIELDS = { sideMask = true, otherwise = true, target = true }
+local WEATHER_BRANCH_FIELDS = { condition = true, target = true }
+local WEATHER_CONDITIONS = {
+  clear = true,
+  rain = true,
+  sand = true,
+  sun = true,
+  hail = true,
+  other = true,
+}
 local MOVE_POWER_PROFILE_FIELDS = { movePower = true, profile = true }
 local NO_PARAMETERS = {}
 
@@ -1612,6 +1623,27 @@ local function checkSideMaskBranches(instruction, context, code, field)
   end
 end
 
+local function checkWeatherBranches(instruction, context, code, field)
+  local branchCases = instruction.branchCases
+  if branchCases == nil then
+    return
+  end
+  if not Validate.isArray(branchCases) then
+    fail(code, field .. ".branchCases must be an array", context)
+  end
+  if #branchCases ~= 6 then
+    fail(code, field .. ".branchCases must carry all six weather selections", context)
+  end
+  for index, branchCase in ipairs(branchCases) do
+    local branchField = field .. ".branchCases[" .. index .. "]"
+    SchemaCheck.checkRecord(branchCase, WEATHER_BRANCH_FIELDS, context, code, branchField)
+    if WEATHER_CONDITIONS[branchCase.condition] ~= true then
+      fail(code, branchField .. ".condition must name its weather selection", context)
+    end
+    checkInt(branchCase.target, context, code, branchField .. ".target")
+  end
+end
+
 ---@alias BattleAnimationInstructionCheck fun(instruction: table<string, unknown>, context: table<string, unknown>, code: string, field: string)
 
 -- One closed operation. `values` is its required operand count, or true for
@@ -1737,6 +1769,7 @@ local OPERATIONS = {
   ["submit-presentation-layout"] = { values = true },
   ["submit-presentation-update"] = { values = true },
   ["branch-on-side-mask"] = { fields = { "branchCases" }, check = checkSideMaskBranches },
+  ["branch-on-weather-condition"] = { fields = { "branchCases" }, check = checkWeatherBranches },
   ["branch-on-side-predicate"] = { values = true, fields = { "branchTarget", "alternateTarget" } },
   ["branch-on-side-equality"] = { values = true, fields = { "branchTarget", "alternateTarget" } },
   ["load-sprite-character"] = { values = 1, resourceSlots = { "character" } },
@@ -1920,6 +1953,20 @@ local function checkResources(resources, context, code, field)
   end
 end
 
+local function checkDisplayPolicy(displayPolicy, context, code, field)
+  SchemaCheck.checkRecord(displayPolicy, {
+    suspendHealthbarUpdates = true,
+    updateBattlerG3 = true,
+  }, context, code, field)
+  if type(displayPolicy.suspendHealthbarUpdates) ~= "boolean" then
+    fail(code, field .. ".suspendHealthbarUpdates stays a boolean", context)
+  end
+  if type(displayPolicy.updateBattlerG3) ~= "boolean" then
+    fail(code, field .. ".updateBattlerG3 stays a boolean", context)
+  end
+  checkNoNativeKeys(displayPolicy, context, code, field)
+end
+
 local function checkRequiredContext(requiredContext, context, code, field)
   if type(requiredContext) ~= "table" then
     fail(code, field .. " must be a record", context)
@@ -2056,6 +2103,7 @@ function BattleAnimationSchema.assertEffect(effect)
     dependencies = true,
     resources = true,
     requiredContext = true,
+    displayPolicy = true,
   }, context, CODE_EFFECT, "effect")
   if effect.schema ~= BattleAnimationSchema.EFFECT_SCHEMA then
     fail(CODE_EFFECT, "effect schema must be " .. BattleAnimationSchema.EFFECT_SCHEMA, context)
@@ -2070,6 +2118,7 @@ function BattleAnimationSchema.assertEffect(effect)
   checkResources(effect.resources, context, CODE_EFFECT, "effect resources")
   checkProgramResourceClosure(effect.program, effect.dependencies, effect.resources, context, CODE_EFFECT)
   checkRequiredContext(effect.requiredContext, context, CODE_EFFECT, "effect requiredContext")
+  checkDisplayPolicy(effect.displayPolicy, context, CODE_EFFECT, "effect displayPolicy")
   if anyNested(effect.program, needsSpriteContextTable) and effect.requiredContext.spriteContextTable == nil then
     fail(CODE_EFFECT, "effect requiredContext omitted spriteContextTable", context)
   end

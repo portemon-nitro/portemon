@@ -76,6 +76,7 @@ local function startNew(program, parts)
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = player:start(packet(), program)
   return player, handle, helpers
@@ -92,6 +93,7 @@ function T.admission_refuses_malformed_programs_without_raising()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   Assert.isNil(player:start(packet(), nil), "no program never admits")
   Assert.isNil(player:start(nil, programOf({ { op = "reset-blend-alpha" } })), "no playback never admits")
@@ -117,13 +119,58 @@ function T.admission_refuses_malformed_programs_without_raising()
     player:start(packet(), programOf({ { op = "branch-on-parameter", values = { 1, 2 }, branchTarget = 99 } })),
     "destinations past the stream end never admit"
   )
-  Assert.isNil(
-    player:start(
-      packet(),
-      programOf({ { op = "reserve-loop-slot", values = { 0 }, branchTarget = 1, resumeTarget = 1 } })
-    ),
-    "empty loops never admit"
+  local wrapped, wrapReason = player:start(
+    packet(),
+    programOf({ { op = "reserve-loop-slot", values = { 0 }, branchTarget = 1, resumeTarget = 1 } })
   )
+  Assert.notNil(wrapped, "empty loops admit and wrap their unsigned counter: " .. tostring(wrapReason))
+end
+
+function T.opening_origin_playback_admits_without_a_packet_identity()
+  local helpers = collaborators()
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  -- Opening calls happen before the first delivery, so they carry no
+  -- per-launch packet identity: the packet number stays an optional
+  -- diagnostic and must never be fabricated for opening feedback.
+  local opening = {
+    launchId = "owner-probe",
+    identity = {
+      launchId = "owner-probe",
+      origin = "opening",
+      combatant = 1,
+      activation = 1,
+      entryStage = "before-cry",
+      ordinal = 1,
+    },
+  }
+  local program = programOf({ { op = "reset-blend-alpha" } })
+  local handle, refusal = player:start(opening, program)
+  Assert.notNil(handle, "opening playback admits with no packet identity: " .. tostring(refusal))
+  for _, bad in ipairs({ 0, -1, 1.5, "1", true }) do
+    local refused, cause = player:start({ launchId = "owner-probe", packetId = bad }, program)
+    Assert.isNil(refused, "a present packet identity stays a positive integer")
+    Assert.isTrue(type(cause) == "string" and cause ~= "", "a present malformed packet names its cause")
+  end
+end
+
+function T.fresh_occurrences_default_all_systems_to_perspective_projection()
+  local player, handle = startNew(programOf({ { op = "reset-blend-alpha" } }))
+  Assert.notNil(handle, "the probe occurrence admits")
+  local occurrence = player._occurrences[#player._occurrences]
+  Assert.notNil(occurrence, "the admitted occurrence is retained")
+  for slot = 0, 15 do
+    Assert.equal(
+      occurrence.particles.perspective[slot],
+      1,
+      "logical system " .. slot .. " requests perspective projection until explicitly set"
+    )
+  end
 end
 
 function T.tick_waits_count_exact_source_ticks()
@@ -134,13 +181,17 @@ function T.tick_waits_count_exact_source_ticks()
   }))
   Assert.equal(player:status(handle), "preparing", "admitted occurrences open preparing")
   player:stepSourceTick({ tick = 1 })
-  Assert.equal(#helpers.log.played, 0, "the countdown holds its first tick")
+  Assert.equal(#helpers.log.played, 0, "the native delay holds its first tick")
   player:stepSourceTick({ tick = 2 })
-  Assert.equal(#helpers.log.played, 0, "the countdown holds its second tick")
+  Assert.equal(#helpers.log.played, 0, "the native delay holds its second tick")
   player:stepSourceTick({ tick = 3 })
-  Assert.equal(#helpers.log.played, 1, "the drained countdown releases in its own tick")
-  helpers.audio.done["counted-cue"] = true
+  Assert.equal(#helpers.log.played, 0, "the native delay holds its third tick")
   player:stepSourceTick({ tick = 4 })
+  Assert.equal(#helpers.log.played, 0, "the native delay holds its fourth tick")
+  player:stepSourceTick({ tick = 5 })
+  Assert.equal(#helpers.log.played, 1, "a two-frame wait releases on its fifth tick")
+  helpers.audio.done["counted-cue"] = true
+  player:stepSourceTick({ tick = 6 })
   Assert.equal(player:status(handle), "complete", "the released stream completes")
 end
 
@@ -221,6 +272,7 @@ function T.loops_execute_bounded_bodies_inline()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -376,6 +428,7 @@ function T.stream_end_with_unfinished_voices_fails_loudly()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(packet(), programOf({
     { op = "play-sound", sound = "lingering-cue" },
@@ -549,6 +602,7 @@ function T.occurrences_step_in_stable_admission_order()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local first = assert(player:start(
     packet("first"),
@@ -625,6 +679,7 @@ function T.construction_failures_release_every_acquisition_once()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -677,6 +732,7 @@ function T.task_step_failures_fail_the_occurrence()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -712,6 +768,7 @@ function T.unknown_task_states_fail_closed()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -740,6 +797,7 @@ function T.malformed_factory_products_fail_admission_work()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -766,6 +824,7 @@ function T.resource_failures_fail_before_side_effects()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -796,6 +855,7 @@ function T.stuck_voices_fail_loudly_instead_of_escaping()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -872,6 +932,7 @@ function T.particle_creation_repeats_once_per_loop_visit()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     packet(),
@@ -939,6 +1000,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
     audio = throwing.audio,
     resources = throwing.resources,
     tasks = throwing.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local failed = assert(failPlayer:start(
     packet(),
@@ -968,6 +1030,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
     audio = exploding.audio,
     resources = exploding.resources,
     tasks = exploding.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local burst = assert(burstPlayer:start(
     packet(),
@@ -995,6 +1058,7 @@ function T.parked_creation_cancels_and_fails_without_leaking()
     audio = hollow.audio,
     resources = hollow.resources,
     tasks = hollow.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local hollowHandle = assert(hollowPlayer:start(
     packet(),
@@ -1035,6 +1099,7 @@ local function startWithSides(program, attacker, targets)
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(sidePacket(attacker, targets), program))
   return player, handle, helpers
@@ -1058,6 +1123,7 @@ function T.positioned_sound_pan_follows_both_battler_sides()
       audio = parts.audio,
       resources = parts.resources,
       tasks = parts.tasks,
+      services = { onNativeFrame = function() end },
     }))
     local handle = assert(
       player:start(
@@ -1082,6 +1148,7 @@ function T.animation_cry_carries_source_parameters_and_attacker()
     audio = parts.audio,
     resources = parts.resources,
     tasks = parts.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(
     player:start(
@@ -1286,6 +1353,7 @@ local function startFlagged(program, playback)
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playback, program))
   for _ = 1, 3 do
@@ -1324,6 +1392,7 @@ function T.serial_completed_occurrences_leave_no_retained_records()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local started = {}
   local retired = {}
@@ -1513,6 +1582,7 @@ function T.interpreter_state_contest_indicator_falls_through_to_the_battle_half(
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(
     playbackWithPhase("charge"),
@@ -1551,6 +1621,7 @@ function T.carved_out_context_families_stay_loud_on_any_phase()
     audio = helpers.audio,
     resources = helpers.resources,
     tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
   Assert.isNil(player:start(playbackWithPhase("charge"), refused), "the no-values interpreter-state form never admits")
   local ops = {

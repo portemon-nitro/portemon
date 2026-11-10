@@ -51,6 +51,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _warmFailure string? last attributable idle warmup diagnostic, never raised into field update
 ---@field _manifestDocs table<string, table<string, unknown>> parsed staged documents by cache-relative path
 ---@field _launchManifest table<string, unknown>? shallow per-launch battle view over the verified core
+---@field _portraitSources table<string, table<string, unknown>>? per-selector immutable CPU portrait sources behind single sidecar reads
 ---@field _launchLeafRecords { trainerPictures: table<string, table<string, unknown>>, battleBalls: table<string, table<string, unknown>>, evolution: table<string, unknown>? } per-launch staged leaf entries, released with the launch
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -77,6 +78,8 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _musicBankIds integer[]? admission snapshot behind the gated music start, refreshed while empty
 ---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
+---@field _captureAnimationRng (fun(): table<string, unknown>) | nil detached visual-launch capture closure behind the shared seed
+---@field _animationRngState { state: integer, calls: number }? captured visual-launch generator state behind the shared seed
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
 ---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
 ---@field _warmParticles table<string, FieldBattlePresentation.ParticleEntry[]> encounter particle textures each scene group holding or acquiring pins must carry
@@ -117,6 +120,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field fieldRenderer table<string, unknown>? field-local native plane compositor
 ---@field fieldCamera fun(): table<string, unknown>? current field camera provider
 ---@field captureFieldLayers fun(): table<string, unknown>? fresh launch-owned native field planes
+---@field captureAnimationRng (fun(): table<string, unknown>) | nil detached visual-launch capture closure behind the shared seed
 ---@field overrides table<string, unknown>? per-instance scene, frame, and case inputs
 
 ---@class FieldBattlePresentation.PooledHandle
@@ -948,6 +952,9 @@ function FieldBattlePresentation.new(opts)
   if opts.summary ~= nil then
     assert(type(opts.summary) == "table", "battle evolution borrows the composed Summary application")
   end
+  if opts.captureAnimationRng ~= nil then
+    assert(type(opts.captureAnimationRng) == "function", "the visual launch seed arrives as a detached capture closure")
+  end
   local envelope = setmetatable({
     _cacheFs = opts.cacheFs,
     _text = opts.text,
@@ -986,6 +993,8 @@ function FieldBattlePresentation.new(opts)
     _musicBankIds = nil,
     _musicRole = nil,
     _resultMusicPlayed = false,
+    _captureAnimationRng = opts.captureAnimationRng,
+    _animationRngState = nil,
     _fieldRenderer = opts.fieldRenderer,
     _fieldCamera = opts.fieldCamera,
     _captureFieldLayers = opts.captureFieldLayers,
@@ -1010,6 +1019,7 @@ function FieldBattlePresentation.new(opts)
     _launchLeafRecords = { trainerPictures = {}, battleBalls = {}, evolution = nil },
     _pool = opts.imagePool,
     _leases = {},
+    _portraitSources = {},
     _warmParticles = {},
   }, FieldBattlePresentation)
   -- Pool interface validation stays at composition: graphical resolution
@@ -1284,6 +1294,35 @@ local function uploadEffectTexture(graphics, effectKey, resourceKey, path, paylo
   return invalid(ok and "empty image handle" or tostring(imageOrErr))
 end
 
+-- Loads one portrait's exact CPU source beside its raster, cached per
+-- selector so preparation reads each sidecar once and host drawing never
+-- touches the disk. A missing or malformed sidecar fails the portrait
+-- with the selector and sidecar path instead of staging guessed pixels.
+---@param envelope FieldBattlePresentation envelope carrying the versioned derived cache
+---@param selector string canonical staged portrait selector
+---@return table<string, unknown>? immutable CPU source record
+---@return string? terminal failure naming the selector and sidecar path
+local function portraitCpuSource(envelope, selector)
+  local cached = envelope._portraitSources
+  if cached == nil then
+    cached = {}
+    envelope._portraitSources = cached
+  end
+  if cached[selector] ~= nil then
+    return cached[selector]
+  end
+  local portraits = stagedDoc(envelope, MonCache.portraitManifestPath())
+  if type(portraits) ~= "table" then
+    return nil, "battle image mon:" .. tostring(selector) .. " source read failed: portrait manifest is missing"
+  end
+  local source, cause = MonCache.loadPortraitSource(envelope._cacheFs, portraits, selector)
+  if source == nil then
+    return nil, "battle image mon:" .. tostring(selector) .. " source read failed: " .. tostring(cause)
+  end
+  cached[selector] = source
+  return source
+end
+
 -- Uploads one staged portrait cell for a canonical portrait selector:
 -- decode the owning atlas page, crop exactly the staged cell, then
 -- build and configure the owned image. Success answers the owned
@@ -1339,6 +1378,11 @@ local function uploadPortraitCell(graphics, envelope, selector)
     return { frames = frames }
   end)
   if ok and handleOrErr ~= nil then
+    local source, sourceCause = portraitCpuSource(envelope, selector)
+    if source == nil then
+      return nil, tostring(sourceCause)
+    end
+    handleOrErr.source = source
     return handleOrErr
   end
   local cause = ok and "empty portrait handle" or tostring(handleOrErr)
@@ -1438,8 +1482,16 @@ local function borrowPortraitCell(envelope, graphics, key, selector)
   end
   -- Battler portraits stay launch-owned: pages vary per battle while
   -- the shared owner keeps idle pages resident under its own budget,
-  -- so no envelope pin grows without bound here.
-  envelope._leases[key] = { lease = lease, handle = { frames = frames } }
+  -- so no envelope pin grows without bound here. The handle keeps the
+  -- exact CPU source beside its frames for native copy operations.
+  local source, sourceCause = portraitCpuSource(envelope, selector)
+  if source == nil then
+    return nil,
+      "battle image mon:" .. tostring(selector) .. " " .. tostring(pagePath) .. " upload failed: " .. tostring(
+        sourceCause
+      )
+  end
+  envelope._leases[key] = { lease = lease, handle = { frames = frames, source = source } }
   return envelope._leases[key].handle
 end
 
@@ -3768,6 +3820,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
     local screen = self._screen
     self._screen = nil
     self._innerPort = nil
+    self._animationRngState = nil
     if screen ~= nil then
       local _, _ = pcall(function()
         return screen:dispose()
@@ -3998,6 +4051,17 @@ function FieldBattlePresentation:_buildPort(descriptor)
   assert(not self._disposed, "the presented battle envelope is disposed")
   assert(self._launchId == descriptor.launchId, "the envelope builds only its admitted launch")
   assert(self._screen == nil, "the envelope builds one screen per launch")
+  -- The detached visual launch seed is captured exactly once per launch
+  -- admission, before deferred preparation can advance the live owner:
+  -- frozen first-launch state cannot shift while resources prepare.
+  if self._animationRngState == nil and type(self._captureAnimationRng) == "function" then
+    local captured = self._captureAnimationRng()
+    assert(
+      type(captured) == "table" and type(captured.state) == "number",
+      "the launch capture carries its detached generator state"
+    )
+    self._animationRngState = { state = math.floor(captured.state), calls = captured.calls or 0 }
+  end
   local environment = descriptor.environment --[[@as table<string, unknown>]]
   local sceneKey = environment.sceneKey
   assert(type(sceneKey) == "string" and sceneKey ~= "", "launch environments resolve their scene identity")
@@ -4028,7 +4092,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
   local function onResultMusic(word)
     return envelope:_startResultMusic(word)
   end
-  local screen = BattleScreenState.new({
+  local screenOpts = {
     launchId = descriptor.launchId,
     manifest = manifest,
     model = BattlePresentationModel,
@@ -4053,7 +4117,11 @@ function FieldBattlePresentation:_buildPort(descriptor)
     battleMenus = self._battleMenus,
     summary = self._summary,
     overrides = { sceneKey = sceneKey },
-  })
+  }
+  if self._animationRngState ~= nil then
+    screenOpts.animationRngState = self._animationRngState
+  end
+  local screen = BattleScreenState.new(screenOpts)
   self._screen = screen
   return screen:presentationPort()
 end

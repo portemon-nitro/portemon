@@ -151,6 +151,7 @@ function T.construction_failure_releases_every_acquisition_once_and_stays_silent
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
   for _ = 1, 10 do

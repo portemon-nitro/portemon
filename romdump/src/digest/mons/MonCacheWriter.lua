@@ -619,7 +619,7 @@ function MonCacheWriter.isLayoutSourceReady(cacheFs, generationId, layoutMarker)
 end
 
 ---@param bundle unknown
----@return { kind: "icons"|"portraits", pageId: integer, width: integer, height: integer, pixels: string, marker: string }
+---@return { kind: "icons"|"portraits", pageId: integer, width: integer, height: integer, pixels: string, marker: string, indicesR8: string?, basePalettesRgb555: string?, paletteCount: integer? }
 local function checkPageBundle(bundle)
   if type(bundle) ~= "table" then
     fail("MON_WRITER_BAD_BUNDLE", "mon page bundle must be a record", {})
@@ -640,19 +640,53 @@ local function checkPageBundle(bundle)
   if type(bundle.pixels) ~= "string" or #bundle.pixels ~= bundle.width * bundle.height * 4 then
     fail("MON_WRITER_BAD_BUNDLE", "mon page bundle pixels must be width*height*4 bytes", {})
   end
+  if bundle.kind == "portraits" then
+    if type(bundle.indicesR8) ~= "string" or #bundle.indicesR8 ~= bundle.width * bundle.height then
+      fail("MON_WRITER_BAD_BUNDLE", "portrait page bundle indices must be width*height bytes", {})
+    end
+    for position = 1, #bundle.indicesR8 do
+      if (string.byte(bundle.indicesR8, position) or 255) > 15 then
+        fail("MON_WRITER_BAD_BUNDLE", "portrait page bundle indices must be palette slots", {})
+      end
+    end
+    if
+      type(bundle.basePalettesRgb555) ~= "string"
+      or type(bundle.paletteCount) ~= "number"
+      or bundle.paletteCount % 1 ~= 0
+      or bundle.paletteCount < 1
+      or bundle.paletteCount > 16
+      or #bundle.basePalettesRgb555 ~= bundle.paletteCount * 32
+    then
+      fail("MON_WRITER_BAD_BUNDLE", "portrait page bundle palettes must be paletteCount*32 bytes", {})
+    end
+  elseif bundle.indicesR8 ~= nil or bundle.basePalettesRgb555 ~= nil or bundle.paletteCount ~= nil then
+    fail("MON_WRITER_BAD_BUNDLE", "only portrait page bundles stage index planes", {})
+  end
   checkMarker(bundle.marker, "page")
-  return bundle --[[@as { kind: "icons"|"portraits", pageId: integer, width: integer, height: integer, pixels: string, marker: string }]]
+  return bundle --[[@as { kind: "icons"|"portraits", pageId: integer, width: integer, height: integer, pixels: string, marker: string, indicesR8: string?, basePalettesRgb555: string?, paletteCount: integer? }]]
 end
 
 local function persistPage(stage, bundle)
   local owned = checkPageBundle(bundle)
   local png = PngEncoder.encode(owned.width, owned.height, owned.pixels)
   stage:write(MonCache.pageImagePath(owned.kind, owned.pageId), png)
+  if owned.kind == "portraits" then
+    stage:write(MonCache.portraitIndexPagePath(owned.pageId), owned.indicesR8)
+    stage:write(MonCache.portraitPalettePagePath(owned.pageId), owned.basePalettesRgb555)
+  end
   stage:write(MonCache.pageMarkerPath(owned.kind, owned.pageId), owned.marker)
   local width, height =
     PngWriter.completeDimensions(assert(stage:read(MonCache.pageImagePath(owned.kind, owned.pageId))))
   if width ~= owned.width or height ~= owned.height then
     fail("MON_WRITER_PNG_UNREADABLE", "staged page dimensions mismatch", {})
+  end
+  if owned.kind == "portraits" then
+    if stage:read(MonCache.portraitIndexPagePath(owned.pageId)) ~= owned.indicesR8 then
+      fail("MON_WRITER_MARKER_READBACK_FAILED", "portrait index plane readback failed", {})
+    end
+    if stage:read(MonCache.portraitPalettePagePath(owned.pageId)) ~= owned.basePalettesRgb555 then
+      fail("MON_WRITER_MARKER_READBACK_FAILED", "portrait palette readback failed", {})
+    end
   end
   if stage:read(MonCache.pageMarkerPath(owned.kind, owned.pageId)) ~= owned.marker then
     fail("MON_WRITER_MARKER_READBACK_FAILED", "page marker readback failed", {})
@@ -672,16 +706,25 @@ function MonCacheWriter.stagePage(artifact, bundle)
   assert(artifact and artifact.stageFs, "page staging requires a PreparedArtifact")
   local owned = checkPageBundle(bundle)
   artifact:addOwnedRoot(MonCache.pageImagePath(owned.kind, owned.pageId))
+  if owned.kind == "portraits" then
+    artifact:addOwnedRoot(MonCache.portraitIndexPagePath(owned.pageId))
+    artifact:addOwnedRoot(MonCache.portraitPalettePagePath(owned.pageId))
+  end
   artifact:addOwnedRoot(MonCache.pageMarkerPath(owned.kind, owned.pageId))
   return persistPage(artifact:stageFs(), owned)
 end
 
 function MonCacheWriter.writePage(cacheFs, bundle)
   local owned = checkPageBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "mon-page", {
+  local paths = {
     MonCache.pageImagePath(owned.kind, owned.pageId),
     MonCache.pageMarkerPath(owned.kind, owned.pageId),
-  })
+  }
+  if owned.kind == "portraits" then
+    paths[#paths + 1] = MonCache.portraitIndexPagePath(owned.pageId)
+    paths[#paths + 1] = MonCache.portraitPalettePagePath(owned.pageId)
+  end
+  local tx = ArtifactPublisher.begin(cacheFs, "mon-page", paths)
   local ok, result = pcall(persistPage, tx.stage, owned)
   if not ok then
     tx:abort()

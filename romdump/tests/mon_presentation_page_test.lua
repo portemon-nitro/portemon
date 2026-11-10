@@ -780,6 +780,9 @@ function T.partial_page_sets_report_staged_readiness_levels()
     width = portraitPage.width,
     height = portraitPage.height,
     pixels = portraitPage.pixels,
+    indicesR8 = assert(portraitPage.indicesR8, "compiled portrait pages carry their index plane"),
+    basePalettesRgb555 = assert(portraitPage.basePalettesRgb555, "compiled portrait pages carry base palettes"),
+    paletteCount = assert(portraitPage.paletteCount, "compiled portrait pages carry their palette count"),
     marker = MonCache.marker("synthetic-rom-sha", "portrait-page-0"),
   }
   local portraitPageId = portraitBundle.pageId or 0

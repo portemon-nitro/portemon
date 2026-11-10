@@ -1370,4 +1370,72 @@ function T.transient_picture_effect_views_are_detached_and_source_ticked()
   scene:release()
 end
 
+-- Native manager slots are first-free physical slots, not an append log:
+-- freeing a slot hands it back to the next loaded manager so capture and
+-- calculation walk ascending physical order. Sibling overlay lifetimes keep
+-- their own slot owners through this same seam.
+function T.freed_manager_slots_return_to_the_next_loaded_manager()
+  local scene = BattleScene.new()
+  local first = scene:allocParticleSystem({ simulation = { emitters = {} }, textures = {} })
+  local second = scene:allocParticleSystem({ simulation = { emitters = {} }, textures = {} })
+  Assert.isTrue(first ~= second, "two live managers occupy distinct slots")
+  scene:releaseParticleSystem(first)
+  local refilled = scene:allocParticleSystem({ simulation = { emitters = {} }, textures = {} })
+  Assert.equal(
+    refilled,
+    first,
+    "freeing a slot returns it to the next loaded manager instead of growing a new identity"
+  )
+  scene:release()
+end
+
+-- The wrapper display policy rides every published frame and gates
+-- healthbar interpolation while its root runs: suspension holds the
+-- health task (never hiding the HUD) while experience keeps its own
+-- source cadence, and the default restores both booleans on exit.
+function T.wrapper_display_policy_freezes_health_tasks_while_its_root_runs()
+  local scene = BattleScene.new()
+  local frame = scene:animationFrame()
+  Assert.deepEqual(
+    frame.displayPolicy,
+    { suspendHealthbarUpdates = false, updateBattlerG3 = false },
+    "frames carry the default wrapper policy with no active root"
+  )
+  scene:startGaugeTask("health", { maximum = 100, current = 21, delta = 5, tiles = 6 })
+  scene:startExpGaugeTask("exp", { maximum = 1000, current = 200, delta = -50 })
+  scene:setWrapperDisplayPolicy({ suspendHealthbarUpdates = true, updateBattlerG3 = false })
+  Assert.deepEqual(
+    scene:wrapperDisplayPolicy(),
+    { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+    "the scene reports the installed wrapper policy detached"
+  )
+  local healthBefore = scene:gaugeTaskValue("health")
+  local expBefore = scene:gaugeTaskValue("exp")
+  scene:stepHostTick()
+  Assert.equal(
+    scene:gaugeTaskValue("health"),
+    healthBefore,
+    "suspension holds healthbar updates while the wrapper runs"
+  )
+  Assert.isTrue(
+    scene:gaugeTaskValue("exp") ~= expBefore,
+    "experience keeps its own source cadence beside the suspension"
+  )
+  Assert.deepEqual(
+    scene:animationFrame().displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+    "published frames carry the active wrapper policy"
+  )
+  scene:setWrapperDisplayPolicy({ suspendHealthbarUpdates = false, updateBattlerG3 = false })
+  scene:stepHostTick()
+  Assert.isTrue(
+    scene:gaugeTaskValue("health") ~= healthBefore,
+    "restoring the default resumes healthbar updates"
+  )
+  local bad = { suspendHealthbarUpdates = true }
+  local ok = pcall(scene.setWrapperDisplayPolicy, scene, bad)
+  Assert.isFalse(ok, "a half-named wrapper policy never installs")
+  scene:release()
+end
+
 return { tests = T }

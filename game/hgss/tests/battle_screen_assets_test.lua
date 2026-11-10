@@ -1332,7 +1332,29 @@ local function layoutOnlyCache(portraitEntries)
     },
     encounterParticles = ParticlesFixture.sets(PORTRAIT_SCENE_KEY),
   }
-  cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries }
+  local pages = {}
+  local pageIds = {}
+  local seenPages = {}
+  for _, entry in pairs(portraitEntries) do
+    if not seenPages[entry.pageId] then
+      seenPages[entry.pageId] = true
+      pageIds[#pageIds + 1] = entry.pageId
+      pages[entry.pageId] = {
+        pageId = entry.pageId,
+        image = MonCache.pageImagePath("portraits", entry.pageId),
+        width = 160,
+        height = 80,
+        indexed = {
+          indices = MonCache.portraitIndexPagePath(entry.pageId),
+          palettes = MonCache.portraitPalettePagePath(entry.pageId),
+          paletteCount = 1,
+        },
+      }
+    end
+  end
+  table.sort(pageIds)
+  cache.lua[MonCache.portraitManifestPath()] =
+    { entries = portraitEntries, pages = pages, pageIds = pageIds }
   function cache:loadLua(path)
     self.loadedPaths[#self.loadedPaths + 1] = path
     return self.lua[path]
@@ -1348,29 +1370,33 @@ local function layoutOnlyCache(portraitEntries)
 end
 
 ---@param pageId integer zero-based portrait page identity under staging
----@return table manifest cell covering an 8x8 portrait at the page origin
+---@return table manifest cell covering an 80x80 portrait at the page origin
 local function portraitEntry(pageId)
   return {
     x = 0,
     y = 0,
-    width = 8,
-    height = 8,
+    width = 80,
+    height = 80,
     pageId = pageId,
     frames = {
-      { x = 0, y = 0, width = 8, height = 8 },
-      { x = 8, y = 0, width = 8, height = 8 },
+      { x = 0, y = 0, width = 80, height = 80 },
+      { x = 80, y = 0, width = 80, height = 80 },
     },
+    paletteIndex = 0,
   }
 end
 
 -- Stages one portrait page exactly like the page worker would publish
--- it: the page marker plus complete decodable pixels.
+-- it: the page marker plus complete decodable pixels and the exact CPU
+-- source sidecars the copy operations read beside the raster.
 ---@param cache table isolated cache filesystem double under staging
 ---@param pageId integer zero-based portrait page identity under staging
 local function stagePortraitPage(cache, pageId)
   local MonCache = require("libs.assets.src.MonCache")
   cache.files[MonCache.pageMarkerPath("portraits", pageId)] = "portrait-marker-" .. tostring(pageId)
-  cache.files[MonCache.pageImagePath("portraits", pageId)] = solidPortraitPng(64, 64)
+  cache.files[MonCache.pageImagePath("portraits", pageId)] = solidPortraitPng(160, 80)
+  cache.files[MonCache.portraitIndexPagePath(pageId)] = string.rep("\0", 160 * 80)
+  cache.files[MonCache.portraitPalettePagePath(pageId)] = string.rep("\0", 32)
 end
 
 -- The borrowed selected-game page host: per-page programmable
@@ -2371,6 +2397,78 @@ function T.data_only_effect_readies_without_texture()
   Assert.equal(staging.uploads, 0, "no dummy texture is invented for a data-only effect")
   Assert.isNil(owned:drawable("probe-palette"), "data dependencies never resolve to a drawable")
   owned:dispose()
+end
+
+-- Pooled and pool-less portrait realizations carry the identical CPU
+-- source beside their frames: the pooled borrow and the direct upload
+-- decode the same index planes and base words once per selector, and a
+-- repeat resolution never rereads the sidecars.
+function T.pooled_and_poolless_handles_share_one_cpu_source()
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local selector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
+  local cache = layoutOnlyCache({ [selector] = portraitEntry(3) })
+  stagePortraitPage(cache, 3)
+  local host = portraitPageHost()
+  host.answers[3] = { ready = true }
+  local graphics = FakeGraphics.new()
+  local pooled = demandEnvelope(cache, host, graphics, scriptedPool())
+  local pooledServices = pooled:_preparationServices()
+  Assert.isTrue(pooledServices.prepare(portraitDemand({ selector })), "the staged page prepares")
+  local pooledHandle = assert(pooledServices.drawable("mon:" .. selector), "the pooled borrow resolves")
+  local pooledSource = assert(pooledHandle.source, "the pooled handle keeps its CPU source")
+  Assert.equal(pooledSource.width, 80, "the CPU source keeps the native frame width")
+  Assert.equal(pooledSource.height, 80, "the CPU source keeps the native frame height")
+  Assert.equal(#pooledSource.indexFrames, 2, "the CPU source keeps both authored frames")
+  Assert.equal(#pooledSource.indexFrames[1], 6400, "the first frame keeps its exact indices")
+  Assert.equal(#pooledSource.basePaletteRgb555, 16, "the CPU source keeps sixteen base words")
+  local function sidecarReads()
+    local count = 0
+    for _, path in ipairs(cache.readPaths) do
+      if path == MonCache.portraitIndexPagePath(3) or path == MonCache.portraitPalettePagePath(3) then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local readsAfterFirst = sidecarReads()
+  Assert.isTrue(readsAfterFirst >= 2, "preparation reads both sidecars once")
+  Assert.notNil(pooledServices.drawable("mon:" .. selector), "repeat resolutions reuse the handle")
+  Assert.equal(sidecarReads(), readsAfterFirst, "repeat resolutions never reread the sidecars")
+  local direct = demandEnvelope(cache, host, FakeGraphics.new(), scriptedPool())
+  local directServices = direct:_preparationServices()
+  Assert.isTrue(directServices.prepare(portraitDemand({ selector })), "the pool-less page prepares")
+  direct._pool = nil
+  local directHandle = assert(directServices.drawable("mon:" .. selector), "the direct upload resolves")
+  local directSource = assert(directHandle.source, "the direct handle keeps its CPU source")
+  Assert.deepEqual(directSource, pooledSource, "both realizations share one identical CPU source")
+  pooled:dispose()
+  direct:dispose()
+end
+
+-- A missing or truncated sidecar makes its portrait cold with the
+-- selector and sidecar path named: preparation fails instead of
+-- staging guessed indices.
+function T.broken_portrait_sidecars_fail_with_their_path()
+  local MonCache = require("libs.assets.src.MonCache")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local selector = MonCache.portraitSelector("RATTATA", 0, "male", false)
+  local cache = layoutOnlyCache({ [selector] = portraitEntry(7) })
+  stagePortraitPage(cache, 7)
+  cache.files[MonCache.portraitIndexPagePath(7)] = "short"
+  local host = portraitPageHost()
+  host.answers[7] = { ready = true }
+  local envelope = demandEnvelope(cache, host, FakeGraphics.new(), scriptedPool())
+  local services = envelope:_preparationServices()
+  Assert.isTrue(services.prepare(portraitDemand({ selector })), "page pixels still prepare")
+  local handle, failure = services.drawable("mon:" .. selector)
+  Assert.isNil(handle, "the broken sidecar hands out no portrait")
+  Assert.isTrue(type(failure) == "string", "the broken sidecar fails")
+  Assert.isTrue(
+    failure:find(selector, 1, true) ~= nil,
+    "the sidecar failure names its exact selector: " .. tostring(failure)
+  )
+  envelope:dispose()
 end
 
 return { tests = T }

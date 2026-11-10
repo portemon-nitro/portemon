@@ -534,19 +534,11 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       instruction = { op = "skip-words" }
       targetOffsets[#targetOffsets + 1] = { instruction = #instructions + 1, offset = offset }
     elseif opcode == 32 then
-      -- ClearBattlerBg normally takes one source word, but a trailing 45
-      -- extends the frame by one word (observed once: EXTRASENSORY member
-      -- 326 lowers [32,0,45] with the third word consumed, landing the next
-      -- decode on the following opcode instead of misreading the 45 as one
-      -- and desyncing into its operands).
-      local advance = 8
-      if offset + 12 <= #stream and readWord(stream, key, offset + 8) == 45 then
-        advance = 12
-      end
+      -- ClearBattlerBg consumes exactly one unused operand word; the word
+      -- after it is the next command, never a second operand.
       readWord(stream, key, offset)
-      readWord(stream, key, offset + 4)
       instruction = { op = "clear-background-plane", values = { 2 } }
-      offset = offset + advance
+      offset = offset + 4
     elseif opcode == 4 then
       instruction = { op = "reset-battle-presentation" }
     elseif opcode == 56 then
@@ -880,18 +872,18 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       }
       offset = offset + 12
     elseif opcode == 70 then
-      local branchCases = { { sideMask = 0 } }
-      local maskCaseCount = #sources().SIDE_MASK_BRANCHES
-      for caseIndex = 1, maskCaseCount do
-        branchCases[#branchCases + 1] = { sideMask = sources().SIDE_MASK_BRANCHES[caseIndex] }
-      end
-      branchCases[#branchCases + 1] = { otherwise = true }
-      local targetCountOffsets = { offset }
-      for caseIndex = 0, maskCaseCount do
-        targetCountOffsets[#targetCountOffsets + 1] = offset + 4 + caseIndex * 4
+      -- JumpByWeather selects among six independent relative
+      -- destinations by named effective-weather condition: clear, rain,
+      -- sand, sun, hail, or any other condition. Each destination is
+      -- based on its own operand word; raw side masks never drive it.
+      local conditions = { "clear", "rain", "sand", "sun", "hail", "other" }
+      local branchCases = {}
+      for caseIndex = 1, 6 do
+        branchCases[caseIndex] = { condition = conditions[caseIndex] }
       end
       local nextOffset = #stream
-      for caseIndex, countOffset in ipairs(targetCountOffsets) do
+      for caseIndex = 1, 6 do
+        local countOffset = offset + (caseIndex - 1) * 4
         local targetOffset = countOffset + readWord(stream, key, countOffset) * 4
         nextOffset = math.min(nextOffset, targetOffset)
         targetOffsets[#targetOffsets + 1] = {
@@ -900,7 +892,7 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
           caseIndex = caseIndex,
         }
       end
-      instruction = { op = "branch-on-side-mask", branchCases = branchCases }
+      instruction = { op = "branch-on-weather-condition", branchCases = branchCases }
       offset = nextOffset
     elseif opcode == 71 then
       local countOffset = offset
@@ -973,7 +965,10 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       }
       offset = math.min(equalTarget, unequalTarget)
     elseif opcode == 87 then
-      local countOffset = offset + 4
+      -- JumpIfAttackerActive consumes exactly one relative offset word;
+      -- the taken destination is based on that operand word and
+      -- fallthrough is the next word.
+      local countOffset = offset
       local count = readWord(stream, key, countOffset)
       local setTarget = countOffset + count * 4
       local clearTarget = countOffset + 4
@@ -1114,9 +1109,8 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       }
       offset = offset + 12
     elseif opcode == 67 then
-      readWord(stream, key, offset)
+      -- ClearArgs consumes no operand word; the very next word dispatches.
       instruction = { op = "clear-parameters" }
-      offset = offset + 4
     elseif opcode == 68 or opcode == 69 then
       local selector = readWord(stream, key, offset)
       if opcode == 68 and selector > 3 then

@@ -149,6 +149,22 @@ local function catalogWithRepresentatives()
   }
 end
 
+-- The planned layout representative set needs both icon and portrait
+-- forms present: UNOWN f1 and ROTOM f5 for icons beside the portrait
+-- UNOWN f5 and ROTOM f1.
+local function catalogWithPlannedRepresentatives()
+  return {
+    version = { id = "heartgold", language = "english" },
+    species = {
+      CHIKORITA = { forms = { [0] = {} } },
+      CYNDAQUIL = { forms = { [0] = {} } },
+      TOTODILE = { forms = { [0] = {} } },
+      UNOWN = { forms = { [1] = {}, [5] = {} } },
+      ROTOM = { forms = { [1] = {}, [5] = {} } },
+    },
+  }
+end
+
 -- Serve synthetic members through the two production archive aliases, keyed
 -- by each variant's own selected archive and member exactly as the producer
 -- resolves them. charFor receives (speciesKey, gender, form) and palFor
@@ -156,12 +172,33 @@ end
 -- fixture serves the same geometry bytes at each facing's own members, so
 -- facing-selection tests use this for shape while dedicated back-pixel
 -- tests serve distinct front/back bytes.
+-- Minimal two-frame icon animation behind plan: planning decodes only
+-- this member for frame timing and never touches character payloads.
+-- Layout mirrors the proven facing-test icon animation fixture.
+local function iconAnimMember()
+  local frames = { { duration = 6, cell = 0 }, { duration = 6, cell = 1 } }
+  local header = u16(1)
+    .. u16(#frames)
+    .. u32(0x18)
+    .. u32(0x18 + 16)
+    .. u32(0x18 + 16 + 8 * #frames)
+    .. string.rep("\0", 8)
+  local entry = u32(#frames) .. u16(0) .. u16(1) .. u32(1) .. u32(0)
+  local frameBlocks, frameData = {}, {}
+  for i, frame in ipairs(frames) do
+    frameBlocks[#frameBlocks + 1] = u32((i - 1) * 2) .. u16(frame.duration) .. u16(0)
+    frameData[#frameData + 1] = u16(frame.cell)
+  end
+  local animPayload = header .. entry .. table.concat(frameBlocks) .. table.concat(frameData)
+  return container("RNAN", { block("ABNK", animPayload) })
+end
+
 ---@param catalog { species: table<string, { forms: table<integer, table> }> }
 ---@param charFor fun(speciesKey: string, gender: string, formId: integer): string
 ---@param palFor fun(speciesKey: string, gender: string, shiny: boolean, formId: integer): string
 ---@return table
 local function romFsWith(catalog, charFor, palFor)
-  local perNarc = {}
+  local perNarc = { pokemon_icons = { [1] = iconAnimMember() } }
   for key, species in pairs(catalog.species) do
     local speciesId = assert(MonSources.speciesId(key), key .. " must be a known species")
     for formId in pairs(species.forms) do
@@ -508,6 +545,134 @@ function T.front_frame_helper_reuses_the_page_raster_path()
       subrect(portraits.image.pixels, portraits.image.width, cell.x, cell.y, 80, 80),
       "front frame " .. index .. " matches the packed page pixels"
     )
+  end
+end
+
+-- The bounded page compiler publishes exact CPU source sidecars beside
+-- its raster: the R8 index plane covers the full page with palette-slot
+-- indices, and the palette payload holds every authored RGB555 word in
+-- slot order. Output is deterministic across compilations.
+function T.portrait_pages_publish_index_planes_and_base_palettes()
+  local scanned = {}
+  for i = 1, 3200 do
+    scanned[i] = (i * 257) % 65536
+  end
+  scanned[1] = 0x0102
+  local catalog = catalogWithPlannedRepresentatives()
+  local planned = assert(MonPresentationCompiler.plan(uniformFs(catalog, charContainer(wordsToBytes(scanned))), catalog))
+  local pagePlan = assert(planned.portraitPages[0], "the first portrait page is planned")
+  local fs = uniformFs(catalog, charContainer(wordsToBytes(scanned)))
+  local first = assert(MonPresentationCompiler.compilePage(fs, "portraits", pagePlan))
+  Assert.equal(#first.indicesR8, first.width * first.height, "the index plane covers the full page")
+  for position = 1, #first.indicesR8 do
+    local index = string.byte(first.indicesR8, position)
+    Assert.isTrue(index <= 15, "every index is a palette slot")
+  end
+  Assert.equal(#first.basePalettesRgb555, first.paletteCount * 32, "palettes hold whole banks per visual")
+  local expected = paletteWords()
+  for slot = 1, 16 do
+    local at = (slot - 1) * 2 + 1
+    local word = string.byte(first.basePalettesRgb555, at) + string.byte(first.basePalettesRgb555, at + 1) * 256
+    Assert.equal(word, expected[slot], "base word " .. slot .. " keeps its authored RGB555")
+  end
+  local again = assert(MonPresentationCompiler.compilePage(fs, "portraits", pagePlan))
+  Assert.equal(again.indicesR8, first.indicesR8, "index bytes are deterministic")
+  Assert.equal(again.basePalettesRgb555, first.basePalettesRgb555, "palette bytes are deterministic")
+end
+
+-- Planning resolves layout facts without decoding pixels: the character
+-- and palette members stay unread while indexed paths, counts, palette
+-- slots and personalization marks land in the manifest.
+function T.portrait_plan_adds_indexed_bindings_without_decoding_pixels()
+  local scanned = {}
+  for i = 1, 3200 do
+    scanned[i] = (i * 257) % 65536
+  end
+  scanned[1] = 0x0102
+  local catalog = catalogWithPlannedRepresentatives()
+  local fs = uniformFs(catalog, charContainer(wordsToBytes(scanned)))
+  local planned = assert(MonPresentationCompiler.plan(fs, catalog))
+  -- Planning resolves layout facts without decoding pixels: the plan
+  -- carries member selections and paths, never pixel buffers.
+  Assert.isNil(planned.portraits.image, "planning stages no portrait pixels")
+  for _, pagePlan in pairs(planned.portraitPages) do
+    for _, combo in ipairs(pagePlan.combos) do
+      Assert.isTrue(type(combo.charMemberId) == "number", "page plans name source members")
+      Assert.isTrue(type(combo.palMemberId) == "number", "page plans name source palettes")
+      Assert.isNil(combo.pixels, "page plans carry no decoded pixels")
+    end
+  end
+  local manifest = planned.portraits
+  for pageId, page in pairs(manifest.pages) do
+    Assert.notNil(page.indexed, "page " .. pageId .. " publishes its index plane path")
+    Assert.notNil(page.indexed.indices, "page " .. pageId .. " names its R8 sidecar")
+    Assert.notNil(page.indexed.palettes, "page " .. pageId .. " names its palette sidecar")
+    Assert.isTrue(page.indexed.paletteCount >= 1 and page.indexed.paletteCount <= 16, "page counts stay bounded")
+  end
+  for selector, entry in pairs(manifest.entries) do
+    Assert.isTrue(type(entry.paletteIndex) == "number", selector .. " carries its palette slot")
+  end
+end
+
+-- Duplicate RGB colors keep their distinct indices and the original
+-- index-zero word is retained: the sidecar never reverse-maps colors.
+function T.duplicate_palette_colors_keep_distinct_indices()
+  local words = paletteWords()
+  words[1] = 0x7FFF
+  words[2] = 0x7FFF
+  words[3] = 0x03E0
+  -- Desired unscanned nibbles: the retail unscan always clears word 0,
+  -- so row 0 continues with indices 2,1,0,0 from the second word.
+  local desired = {}
+  for i = 1, 3200 do
+    desired[i] = 0
+  end
+  desired[2] = 0x0012
+  local scanned = scanWords(desired, 0x0102)
+  local catalog = catalogWithPlannedRepresentatives()
+  local fs = uniformFs(catalog, charContainer(wordsToBytes(scanned)), words)
+  local planned = assert(MonPresentationCompiler.plan(fs, catalog))
+  local pagePlan = assert(planned.portraitPages[0], "the single portrait page is planned")
+  local page = assert(MonPresentationCompiler.compilePage(fs, "portraits", pagePlan))
+  local r8 = assert(page.indicesR8, "the page stages its index plane")
+  Assert.equal(string.byte(r8, 5), 2, "the first index survives its duplicate color")
+  Assert.equal(string.byte(r8, 6), 1, "the second index survives its duplicate color")
+  local palettes = assert(page.basePalettesRgb555, "the page stages base palettes")
+  local word0 = string.byte(palettes, 1) + string.byte(palettes, 2) * 256
+  local word1 = string.byte(palettes, 3) + string.byte(palettes, 4) * 256
+  Assert.equal(word0, 0x7FFF, "the original index-zero word is retained")
+  Assert.equal(word1, 0x7FFF, "the duplicate slot keeps its own equal word")
+end
+
+-- Aliased selectors share one source slot: the egg male and female
+-- variants resolve to the identical source tuple, so plan assigns one
+-- combo, one palette slot and one sidecar bank to every alias.
+function T.aliased_selectors_share_source_slots()
+  local scanned = {}
+  for i = 1, 3200 do
+    scanned[i] = (i * 257) % 65536
+  end
+  scanned[1] = 0x0102
+  local catalog = catalogWithPlannedRepresentatives()
+  catalog.species.EGG = { forms = { [0] = {} } }
+  local fs = uniformFs(catalog, charContainer(wordsToBytes(scanned)))
+  local planned = assert(MonPresentationCompiler.plan(fs, catalog))
+  local seen = {}
+  for selector, entry in pairs(planned.portraits.entries) do
+    if selector:sub(1, 4) == "EGG/" then
+      seen[#seen + 1] = { selector = selector, pageId = entry.pageId, paletteIndex = entry.paletteIndex }
+    end
+  end
+  Assert.isTrue(#seen >= 2, "the egg plans both gender variants")
+  local first = seen[1]
+  for _, record in ipairs(seen) do
+    Assert.equal(record.pageId, first.pageId, "aliases share one page")
+    Assert.equal(record.paletteIndex, first.paletteIndex, "aliases share one source slot")
+  end
+  for _, pagePlan in pairs(planned.portraitPages) do
+    for _, combo in ipairs(pagePlan.combos) do
+      Assert.isTrue(#combo.selectors >= 1, "every combo carries its aliases")
+    end
   end
 end
 

@@ -291,7 +291,20 @@ function FieldState.new(game, options)
         runtime.audio:playCry(species, pattern, form)
       end or nil,
     }
+    -- The detached visual launch seed comes from the live mon-service
+    -- generator, captured once per launch admission by the envelope:
+    -- the field ScriptRng is not the native global generator, so the
+    -- mon-service capture is the Portemon composition bridge. Launch
+    -- preparation never advances the captured owner stream.
+    local captureAnimationRng = nil
+    if runtime.monService ~= nil then
+      local function captureLaunchRng()
+        return runtime.monService:capture().rng
+      end
+      captureAnimationRng = captureLaunchRng
+    end
     self.battleEnvelope = FieldBattlePresentation.new({
+      captureAnimationRng = captureAnimationRng,
       cacheFs = runtime.cacheFs,
       graphics = love.graphics,
       windows = self._battleWindows,

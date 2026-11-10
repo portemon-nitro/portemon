@@ -57,6 +57,8 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _assets BattlePresentationAssets per-launch preparation leases
 ---@field _timeline BattleTimeline ordered visible-cue player
 ---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
+---@field _animationRngSeed integer? shared visual-stream seed behind occurrence playback, nil without a launch capture
+---@field _animationRngSeeded boolean true once the launch seed entered player playback
 ---@field _nativeHandles table<table<string, unknown>, table<string, unknown>> native occurrence tracks by player handle or pending token
 ---@field _nativeVoices table<string, table<string, unknown>> staged player voices by name behind launch-owned stops
 ---@field _nativeVoiceArmed table<string, boolean> per-play fast-rate arming behind sound-task completion
@@ -495,6 +497,7 @@ end
 ---@field battleScene boolean? scene choice for this launch, defaulting to On for previous callers
 ---@field musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
+---@field animationRngState table<string, unknown>? detached launch visual-stream capture behind the shared seed
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
 
 -- The battle screen owns one animation player and its per-launch
@@ -773,8 +776,47 @@ local function enrichedEventForTopology(event, visualSeed)
 end
 
 ---@param screen BattleScreenState owning screen behind effect admission
----@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
----@param effectKey string flat semantic effect key under admission
+---@param record table<string, unknown> loaded staged effect record behind the admission
+---@param effectKey string catalog key behind diagnosis
+---@return boolean installed true once the scene carries the admitted root policy
+local function installWrapperPolicy(screen, record, effectKey)
+  -- The native script wrapper applies the admitted root's immutable
+  -- display policy around its run: healthbar updates suspend while
+  -- the policy names them, never hiding the HUD. A staged record
+  -- without the complete policy is malformed generated data and
+  -- fails with provenance instead of animating under a guessed one.
+  local policy = record.displayPolicy --[[@as table<string, unknown>?]]
+  if
+    type(policy) ~= "table"
+    or type(policy.suspendHealthbarUpdates) ~= "boolean"
+    or type(policy.updateBattlerG3) ~= "boolean"
+  then
+    failNative(
+      screen,
+      "battle effect "
+        .. effectKey
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": staged record carries no complete root display policy"
+    )
+    return false
+  end
+  screen._scene:setWrapperDisplayPolicy(policy --[[@as table<string, boolean>]])
+  return true
+end
+
+---@param screen BattleScreenState owning screen behind wrapper restoration
+local function restoreWrapperPolicy(screen)
+  -- The wrapper restores the default on the source-defined exit or
+  -- exceptional cancel so no retired root leaks suspension into the
+  -- next admission. The default matches the source default branch.
+  if screen._scene ~= nil then
+    screen._scene:setWrapperDisplayPolicy({ suspendHealthbarUpdates = false, updateBattlerG3 = false })
+  end
+end
+
+---@param screen BattleScreenState owning screen behind effect admission
+---@param cue table<string, unknown> native-effect cue carrying its ledgered frozen request
 ---@return table<string, unknown>? player handle behind the running occurrence, nil on terminal refusal
 local function nativeEffectAdmit(screen, cue, effectKey)
   local record, loadFailure = screen._assets:loadEffect(effectKey)
@@ -861,30 +903,32 @@ local function nativeEffectAdmit(screen, cue, effectKey)
       return nil
     end
   end
-  local slots = screen._manifest.battlefield.slots
-  local enriched = enrichedEventForTopology(cue.event, cue.visualSeed)
-  local ok, playback = pcall(BattlePresentationFlow.animationPlayback, {
-    launchId = cue.launchId,
-    packetId = cue.packetId,
-    before = enrichedViewForTopology(cue.before),
-    after = enrichedViewForTopology(cue.after),
-  }, enriched, slots)
-  if not ok then
-    failNative(
-      screen,
-      "battle effect "
-        .. effectKey
-        .. " failed for launch "
-        .. screen._launchId
-        .. ": bad source topology: "
-        .. tostring(playback)
-    )
+  -- Admission consumes the ledgered frozen request: the selector
+  -- already froze roots, context, and topology, so nothing here
+  -- re-selects or repairs them. The cue event rides along only as
+  -- task context behind the running player occurrence.
+  -- The wrapper applies the admitted root display policy before the
+  -- occurrence starts; refusal, completion, retirement, cancellation,
+  -- and failure restore the default.
+  if not installWrapperPolicy(screen, record, effectKey) then
     return nil
   end
+  -- Playback carries no occurrence-derived seed: the running
+  -- occurrence draws visual variation from the screen-owned battle
+  -- visual stream, never from cue identity arithmetic.
+  local playback = {
+    launchId = cue.launchId,
+    packetId = cue.packetId,
+    identity = request.identity,
+    event = cue.event,
+    topology = frozen.topology,
+    context = frozen.context,
+  }
   screen._liveEffectRecord = record
   local handle, refusal = screen._player:start(playback, program)
   if handle == nil then
     screen._liveEffectRecord = nil
+    restoreWrapperPolicy(screen)
     failNative(
       screen,
       "battle effect "
@@ -1029,6 +1073,7 @@ local function nativeEffectCancel(screen, handleOrToken, reason)
     if screen._liveEffectHandle == track.handle then
       screen._liveEffectHandle = nil
       screen._liveEffectRecord = nil
+      restoreWrapperPolicy(screen)
     end
   end
 end
@@ -1055,6 +1100,7 @@ local function pollNativeEffects(screen)
     if phase ~= "preparing" and phase ~= "running" and phase ~= "waiting" then
       screen._liveEffectHandle = nil
       screen._liveEffectRecord = nil
+      restoreWrapperPolicy(screen)
     end
   end
 end
@@ -1131,6 +1177,7 @@ local function nativeEffectRetire(screen, handleOrToken)
   if screen._liveEffectHandle == handle then
     screen._liveEffectHandle = nil
     screen._liveEffectRecord = nil
+    restoreWrapperPolicy(screen)
   end
   return true
 end
@@ -1403,13 +1450,43 @@ function BattleScreenState.new(opts)
   -- real task factory, a semantic voice adapter over the existing
   -- battle audio path, and a selected-effect resource adapter over the
   -- selected effect record and its dependencies. These are the real
-  -- collaborators, not fake task or voice doubles.
+  -- collaborators, not fake task or voice doubles. The injected frame
+  -- hook is the only source clock: draw runs the particle capture/
+  -- calculation and picture phases at the native graphics priority,
+  -- publish freezes the displayable frame, and every accepted tick
+  -- invokes both phases in order even with no live visual machine.
+  local screen = self
+  local function onNativeFrame(phase, sourceTick)
+    if phase == "draw" then
+      local ParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+      ParticleSystems.stepSourceDrawPhase(screen._scene, sourceTick)
+      screen._scene:stepAnimationPictures(sourceTick)
+    end
+  end
   self._player = BattleAnimationPlayer.new({
     scene = self._scene,
     audio = nativeVoiceAdapter(self),
     resources = nativeResourceAdapter(self),
     tasks = BattleEffectTasks,
+    services = {
+      onNativeFrame = onNativeFrame,
+    },
   })
+  -- The screen owns one continuous battle-lifetime visual stream from a
+  -- single detached launch capture: it selects the shared stream seed
+  -- once, never advances the mon-service or mechanics streams, and
+  -- discards the capture at exit without writing it back.
+  local animationRngState = opts.animationRngState
+  if animationRngState ~= nil then
+    assert(
+      type(animationRngState) == "table" and type(animationRngState.state) == "number",
+      "the battle screen restores its visual stream from a detached launch capture"
+    )
+    self._animationRngSeed = math.floor(animationRngState.state) % 4294967296
+  else
+    self._animationRngSeed = nil
+  end
+  self._animationRngSeeded = false
   -- Native-effect routing engages only when the injected preparation
   -- services expose the lazy effect staging callbacks; legacy rigs without
   -- them keep the established generic cue vocabulary untouched.
@@ -8141,7 +8218,14 @@ function BattleScreenState:updateFixed(dt)
       -- this cue tick. Stage immediately after that handoff and before
       -- particle stepping so its first source frame sees the palette.
       self:_stageEncounterSource()
-      self._player:stepSourceTick({ tick = 1 })
+      local playerTick = { tick = 1 }
+      if not self._animationRngSeeded then
+        self._animationRngSeeded = true
+        if self._animationRngSeed ~= nil then
+          playerTick.seed = self._animationRngSeed
+        end
+      end
+      self._player:stepSourceTick(playerTick)
       local completion = self._completion
       local child = self._completionChild
       local summaryOpen = false
@@ -8149,7 +8233,7 @@ function BattleScreenState:updateFixed(dt)
         summaryOpen = child:status().phase == "summary"
       end
       if not summaryOpen then
-        self._scene:stepSourceTick()
+        self._scene:stepHostTick()
       end
       if completion ~= nil and completion.kind == "evolution" and child ~= nil then
         self:_stepEvolutionPalette(completion, child)

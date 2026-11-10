@@ -40,23 +40,35 @@ local function catalog()
 end
 
 local function manifestFor(schema, pageImage, pageWidth, pageHeight, cell)
+  local portrait = schema == MonCache.PORTRAIT_MANIFEST_SCHEMA
+  local page = { pageId = 0, image = pageImage, width = pageWidth, height = pageHeight }
+  local entry = {
+    x = 0,
+    y = 0,
+    width = cell,
+    height = cell,
+    pageId = 0,
+  }
+  if portrait then
+    page.indexed = {
+      indices = "assets/generated/mon/portraits/0.indices.r8",
+      palettes = "assets/generated/mon/portraits/0.palettes.rgb555",
+      paletteCount = 1,
+    }
+    entry.frames = {
+      { x = 0, y = 0, width = cell, height = cell },
+      { x = cell, y = 0, width = cell, height = cell },
+    }
+    entry.paletteIndex = 0
+  else
+    entry.frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } }
+  end
   return {
     schema = schema,
     version = { id = "heartgold", language = "english" },
-    pages = {
-      [0] = { pageId = 0, image = pageImage, width = pageWidth, height = pageHeight },
-    },
+    pages = { [0] = page },
     pageIds = { 0 },
-    entries = {
-      ["K/f0"] = {
-        x = 0,
-        y = 0,
-        width = cell,
-        height = cell,
-        frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } },
-        pageId = 0,
-      },
-    },
+    entries = { ["K/f0"] = entry },
     representative = { "K/f0" },
   }
 end
@@ -97,7 +109,7 @@ local function pagePlans()
 end
 
 local function pageBundle(kind, pageId, width, height, marker)
-  return {
+  local bundle = {
     kind = kind,
     pageId = pageId,
     width = width,
@@ -105,6 +117,12 @@ local function pageBundle(kind, pageId, width, height, marker)
     pixels = string.rep("\0", width * height * 4),
     marker = marker,
   }
+  if kind == "portraits" then
+    bundle.indicesR8 = string.rep("\0", width * height)
+    bundle.basePalettesRgb555 = string.rep("\0", 32)
+    bundle.paletteCount = 1
+  end
+  return bundle
 end
 
 local function provenance()
@@ -353,6 +371,46 @@ function T.page_readiness_requires_the_marker_and_a_complete_image()
   local missing = CacheFs.forVersion("heartgold", FakeCache.new())
   missing:write(MonCache.pageMarkerPath("icons", 0), marker)
   Assert.isFalse(MonCache.isPageReady(missing, "icons", 0, marker), "a missing page file is not ready")
+end
+
+-- A portrait page is cold without its exact CPU source sidecars: a
+-- missing, truncated, extra-length or malformed R8/palette plane never
+-- reads ready even when the raster and marker are intact.
+function T.portrait_sidecars_gate_page_readiness()
+  local marker = MonCacheWriter.pageMarker("abc", "portraits", 0, portraits())
+  local bundle = pageBundle("portraits", 0, 640, 320, marker)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  MonCacheWriter.writePage(cache, bundle)
+  Assert.isTrue(MonCache.isPageReady(cache, "portraits", 0, marker), "the published portrait page reads ready")
+  local indexPath = MonCache.portraitIndexPagePath(0)
+  local palettePath = MonCache.portraitPalettePagePath(0)
+  local goodIndices = assert(cache:read(indexPath), "the staged index plane is available")
+  local goodPalettes = assert(cache:read(palettePath), "the staged palette plane is available")
+  local cases = {
+    missing_indices = { indices = nil, palettes = goodPalettes },
+    truncated_indices = { indices = goodIndices:sub(1, 100), palettes = goodPalettes },
+    long_indices = { indices = goodIndices .. "\0", palettes = goodPalettes },
+    missing_palettes = { indices = goodIndices, palettes = nil },
+    truncated_palettes = { indices = goodIndices, palettes = goodPalettes:sub(1, 10) },
+    ragged_palettes = { indices = goodIndices, palettes = goodPalettes .. "\0" },
+    out_of_range_palettes = { indices = goodIndices, palettes = "\255\255" .. goodPalettes:sub(3) },
+  }
+  for name, damaged in pairs(cases) do
+    if damaged.indices == nil then
+      cache:remove(indexPath)
+    else
+      cache:write(indexPath, damaged.indices)
+    end
+    if damaged.palettes == nil then
+      cache:remove(palettePath)
+    else
+      cache:write(palettePath, damaged.palettes)
+    end
+    Assert.isFalse(MonCache.isPageReady(cache, "portraits", 0, marker), "a damaged sidecar reads cold: " .. name)
+  end
+  cache:write(indexPath, goodIndices)
+  cache:write(palettePath, goodPalettes)
+  Assert.isTrue(MonCache.isPageReady(cache, "portraits", 0, marker), "restored sidecars read ready again")
 end
 
 function T.published_truncation_with_intact_marker_reads_cold()

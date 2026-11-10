@@ -22,6 +22,8 @@ local BattleAnimationCommands = require("libs.hgss.src.presentation.BattleAnimat
 ---@field _audio table<string, unknown> narrow voice collaborator behind play, stop, isFinished
 ---@field _resources table<string, unknown> launch-owned lease collaborator behind resolve, release
 ---@field _tasks table<string, unknown> task-construction collaborator behind create
+---@field _services table<string, unknown> frame services behind the native draw and publish hook
+---@field _tick integer source ticks advanced
 ---@field _occurrences table<integer, BattleAnimationOccurrence> occurrences in admission order
 ---@field _byId table<integer, BattleAnimationOccurrence> occurrences behind opaque handles
 ---@field _nextId integer next occurrence identity
@@ -34,6 +36,14 @@ BattleAnimationPlayer.__index = BattleAnimationPlayer
 -- VOICE_MONITOR_KIND; the player owns the contract string because it is
 -- the sole constructor-side consumer.
 BattleAnimationPlayer.VOICE_TASK_KIND = "voice-completion-monitor"
+
+-- Continuous battle visual random streams keyed by latched launch seed.
+-- The native animation generator is a single stream consumed in source
+-- order across every root of a launch; per-occurrence reseeds would
+-- restart it. Roots latched to the same launch seed therefore continue
+-- one shared stream instead of restarting it, while seedless ticks draw
+-- from the zero stream without disturbing seeded launches.
+local sharedVisualStreams = {}
 
 local LIVE_PHASES = { preparing = true, running = true, waiting = true }
 local TASK_STATES = { pending = true, running = true, complete = true, cancelled = true, failed = true }
@@ -49,7 +59,7 @@ local VOICE_ESCAPE_TICKS = 90
 ---@class BattleAnimationOccurrence
 ---@field id integer stable admission identity behind the opaque handle
 ---@field launchId string playback launch identity under diagnosis
----@field packetId integer per-launch playback identity under diagnosis
+---@field packetId integer? per-launch playback identity under diagnosis, absent before the first delivery
 ---@field programKey string normalized program identity under diagnosis
 ---@field program table<string, unknown> admitted normalized program under execution
 ---@field phase string preparing, running, waiting, complete, cancelled, or failed
@@ -76,7 +86,14 @@ local VOICE_ESCAPE_TICKS = 90
 ---@field packet table<string, unknown> immutable playback packet behind identity and context
 ---@field particles table<string, table<integer, unknown>> loaded particle systems, persistent emitters, and camera settings shared by the occurrence tasks
 
----@param collaborators table<string, unknown> required scene, audio, resources, tasks narrow seam
+-- Continuous battle visual random streams keyed by latched launch seed.
+-- The native animation generator is a single stream consumed in source
+-- order across every root of a launch; per-occurrence reseeds would
+-- restart it. Roots latched to the same launch seed therefore continue
+-- one shared stream instead of restarting it, while seedless ticks draw
+-- from the zero stream without disturbing seeded launches.
+
+---@param collaborators table<string, unknown> required scene, audio, resources, tasks, services narrow seam
 ---@return BattleAnimationPlayer runnable battle-private animation player
 function BattleAnimationPlayer.new(collaborators)
   assert(type(collaborators) == "table", "the animation player requires its collaborators")
@@ -90,11 +107,18 @@ function BattleAnimationPlayer.new(collaborators)
   assert(type(collaborators.resources.release) == "function", "player resources release by lease")
   assert(type(collaborators.tasks) == "table", "the animation player requires its task factory")
   assert(type(collaborators.tasks.create) == "function", "player tasks construct by kind")
+  assert(type(collaborators.services) == "table", "the animation player requires its frame services")
+  assert(
+    type(collaborators.services.onNativeFrame) == "function",
+    "the animation player requires its native frame hook"
+  )
   return setmetatable({
+    _tick = 0,
     _scene = collaborators.scene,
     _audio = collaborators.audio,
     _resources = collaborators.resources,
     _tasks = collaborators.tasks,
+    _services = collaborators.services,
     _occurrences = {},
     _byId = {},
     _nextId = 1,
@@ -135,8 +159,14 @@ local function validPlayback(playback)
   if type(packet.launchId) ~= "string" or packet.launchId == "" then
     return false, "playback carries no launch identity"
   end
-  if type(packet.packetId) ~= "number" or packet.packetId % 1 ~= 0 or packet.packetId < 1 then
-    return false, "playback carries no packet identity"
+  -- The packet number is optional diagnostic information: opening calls
+  -- happen before the first delivery, so they omit it instead of
+  -- fabricating a packet identity. A present value stays a positive
+  -- integer.
+  if packet.packetId ~= nil then
+    if type(packet.packetId) ~= "number" or packet.packetId % 1 ~= 0 or packet.packetId < 1 then
+      return false, "playback carries no packet identity"
+    end
   end
   return true, nil
 end
@@ -187,6 +217,12 @@ function BattleAnimationPlayer:start(playback, program)
   for _ = 1, 3 do
     loopSlots[#loopSlots + 1] = { active = false }
   end
+  -- Source default: all 16 logical systems request perspective
+  -- projection until an explicit SetParticlePerspective says otherwise.
+  local requestedPerspective = {}
+  for slot = 0, 15 do
+    requestedPerspective[slot] = 1
+  end
   local packet = playback --[[@as table<string, unknown>]]
   local id = self._nextId
   self._nextId = id + 1
@@ -219,7 +255,7 @@ function BattleAnimationPlayer:start(playback, program)
     seed = 0,
     seedLatched = false,
     randomState = 0,
-    particles = { systems = {}, emitters = {}, perspective = {}, flipY = {}, skipped = {} },
+    particles = { systems = {}, emitters = {}, perspective = requestedPerspective, flipY = {}, skipped = {} },
   }
   self._occurrences[#self._occurrences + 1] = occurrence
   self._byId[id] = occurrence
@@ -366,7 +402,6 @@ local function taskContext(occurrence)
   local topology = nil ---@type table<string, unknown>?
   local sourceBattlers = nil ---@type table<integer, table<string, unknown>>?
   local event = nil ---@type table<string, unknown>?
-  local visualSeed = nil ---@type integer?
   if type(packet) == "table" then
     if type(packet.topology) == "table" then
       topology = packet.topology --[[@as table<string, unknown>]]
@@ -377,14 +412,26 @@ local function taskContext(occurrence)
     if type(packet.event) == "table" then
       event = packet.event --[[@as table<string, unknown>]]
     end
-    if type(packet.visualSeed) == "number" then
-      visualSeed = packet.visualSeed --[[@as integer]]
-    end
   end
+  -- The shared animation generator recurrence: u32(state*1103515245+24691)
+  -- returning the high 16 bits, drawn from the continuous launch stream
+  -- rather than a per-occurrence reseed.
   local function occurrenceRandom(bound)
     assert(type(bound) == "number" and bound >= 1, "visual draws name a positive bound")
-    occurrence.randomState = (occurrence.randomState * 1103515245 + 12345) % 2147483648
-    return occurrence.randomState % math.floor(bound)
+    local stream = sharedVisualStreams[occurrence.seed]
+    if stream == nil then
+      stream = { state = occurrence.seed % 4294967296 }
+      sharedVisualStreams[occurrence.seed] = stream
+    end
+    stream.state = (stream.state * 1103515245 + 24691) % 4294967296
+    occurrence.randomState = stream.state
+    return math.floor(stream.state / 65536) % math.floor(bound)
+  end
+  local function liveParam(slot)
+    if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 9 then
+      return nil
+    end
+    return occurrence.scratch[slot + 1]
   end
   return {
     launchId = occurrence.launchId,
@@ -393,10 +440,10 @@ local function taskContext(occurrence)
     programKey = occurrence.programKey,
     seed = occurrence.seed,
     random = occurrenceRandom,
+    liveParam = liveParam,
     topology = topology,
     sourceBattlers = sourceBattlers,
     event = event,
-    visualSeed = visualSeed,
     particles = occurrence.particles,
   }
 end
@@ -415,6 +462,22 @@ function BattleAnimationPlayer:_exec(occurrence)
   local exec = {}
   function exec.advance()
     occurrence.pc = occurrence.pc + 1
+  end
+  -- Ends the stream past its final instruction: the next chain pass
+  -- observes the terminal boundary and drains through the End machine
+  -- instead of running any following arm.
+  function exec.finishStream()
+    occurrence.pc = count + 1
+  end
+  -- Reports the admitted occurrence battle context behind weather and
+  -- other context-selected branches; a missing record fails its branch
+  -- closed instead of guessing a semantic arm.
+  function exec.battleContext()
+    local packet = occurrence.packet
+    if type(packet) == "table" and type(packet.context) == "table" then
+      return packet.context
+    end
+    return nil
   end
   function exec.jump(target)
     if type(target) ~= "number" or target % 1 ~= 0 or target < 1 or target > count + 1 then
@@ -482,7 +545,10 @@ function BattleAnimationPlayer:_exec(occurrence)
       failOccurrence(player, occurrence, "task construction returned no runnable task for kind " .. kind)
       return nil
     end
-    local record = { kind = kind, task = task, group = group, args = args, retired = false }
+    -- Fresh queue insertions never execute again in their insertion
+    -- frame: only an explicit constructor-time synchronous call runs
+    -- immediately. The stepper skips records spawned on its own tick.
+    local record = { kind = kind, task = task, group = group, args = args, retired = false, spawnTick = player._tick }
     occurrence.owned[#occurrence.owned + 1] = record
     return record
   end
@@ -686,8 +752,10 @@ function BattleAnimationPlayer:_exec(occurrence)
     for index = #occurrence.loopSlots, 1, -1 do
       local slot = occurrence.loopSlots[index]
       if slot.active then
-        slot.counter = slot.counter + 1
-        if slot.counter == slot.count then
+        -- Loop counts are unsigned 8-bit: a zero count wraps through
+        -- the full 256-iteration cycle instead of hanging or refusing.
+        slot.counter = (slot.counter + 1) % 256
+        if slot.counter == slot.count % 256 then
           slot.active = false
           return "finished"
         end
@@ -793,7 +861,16 @@ end
 ---@param tick table<string, unknown> source tick under advancement
 ---@return boolean live true while the occurrence stays under execution
 function BattleAnimationPlayer:_stepTasks(occurrence, tick)
-  for _, record in ipairs({ unpack(occurrence.owned) }) do
+  -- Loaded particle systems advance only through the single source draw
+  -- phase behind the native frame hook, never once per queued pass here,
+  -- so one accepted tick calculates every manager exactly once.
+  local stepped = {}
+  for _, record in ipairs(occurrence.owned) do
+    if record.group ~= "system" and record.spawnTick ~= self._tick then
+      stepped[#stepped + 1] = record
+    end
+  end
+  for _, record in ipairs(stepped) do
     if not record.retired then
       local ok, err = pcall(record.task.stepSourceTick, record.task, tick)
       if not ok then
@@ -822,11 +899,13 @@ function BattleAnimationPlayer:_stepTasks(occurrence, tick)
         return false
       end
     end
-    if LIVE_PHASES[occurrence.phase] ~= true then
+    -- A mid-pass failure stops the pass; a chain-settled completion does
+    -- not preempt the frame's remaining task phase.
+    if occurrence.phase == "failed" then
       return false
     end
   end
-  return LIVE_PHASES[occurrence.phase] == true
+  return occurrence.phase ~= "failed"
 end
 
 ---@param self BattleAnimationPlayer
@@ -945,10 +1024,13 @@ local function runOccurrence(self, occurrence, tick)
   else
     occurrence.phase = "running"
   end
-  if not self:_stepTasks(occurrence, tick) then
-    return
-  end
+  -- Native queue order: the priority-0 VM invocation runs before later
+  -- priority tasks, so a task retiring later in the tick is observed on
+  -- the following tick rather than by the same tick's command chain. The
+  -- task pass still runs when the chain completes mid-tick: queue work
+  -- owns the frame's task phase independently of the VM outcome.
   runChain(self, occurrence, tick)
+  self:_stepTasks(occurrence, tick)
 end
 
 -- Advances each admitted live occurrence once in stable admission order
@@ -960,6 +1042,7 @@ function BattleAnimationPlayer:stepSourceTick(tick)
   if self._disposed then
     return
   end
+  self._tick = self._tick + 1
   local quantum = tick
   if type(quantum) ~= "table" then
     quantum = {}
@@ -969,11 +1052,32 @@ function BattleAnimationPlayer:stepSourceTick(tick)
       if not occurrence.seedLatched then
         occurrence.seedLatched = true
         if type(quantum.seed) == "number" then
-          occurrence.seed = math.floor(quantum.seed)
+          occurrence.seed = math.floor(quantum.seed) % 4294967296
         end
-        occurrence.randomState = occurrence.seed % 2147483648
+        occurrence.randomState = occurrence.seed
       end
       runOccurrence(self, occurrence, quantum)
+    end
+  end
+  -- Every accepted tick invokes draw then publish in order, including
+  -- ticks with no live machine: the draw phase runs particle capture/
+  -- calculation and the picture phase, and publish freezes the
+  -- displayable frame. Draws and status reads never advance otherwise.
+  local hook = self._services.onNativeFrame
+  local ok, err = pcall(hook, "draw", quantum)
+  if not ok then
+    for _, occurrence in ipairs({ unpack(self._occurrences) }) do
+      if LIVE_PHASES[occurrence.phase] == true then
+        failOccurrence(self, occurrence, "native draw phase failure: " .. tostring(err))
+      end
+    end
+  end
+  local pok, perr = pcall(hook, "publish", quantum)
+  if not pok then
+    for _, occurrence in ipairs({ unpack(self._occurrences) }) do
+      if LIVE_PHASES[occurrence.phase] == true then
+        failOccurrence(self, occurrence, "native publish phase failure: " .. tostring(perr))
+      end
     end
   end
 end

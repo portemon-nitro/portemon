@@ -3,6 +3,47 @@
 local Assert = require("tests.support.Assert")
 local T = {}
 
+-- Synthetic 16-byte move-table entry behind the producer display
+-- policy: readable type/category, zero reserved padding, and the
+-- caller-chosen flags byte (MOVEATTR_UNK9). Flags 0 suspends
+-- healthbar updates without battler G3 updates, matching the source
+-- default branch.
+---@param flags integer move-table flags byte under the probe
+---@return string sixteen raw move-table bytes
+local function syntheticWazaEntry(flags)
+  return string.char(
+    0, 0, -- effect
+    0, -- category physical
+    35, -- power
+    0, -- type normal
+    100, -- accuracy
+    35, -- pp
+    0, -- effect chance
+    0, 0, -- range
+    0, -- priority
+    flags, -- MOVEATTR_UNK9 flags
+    0, -- unknownC
+    0, -- contest type
+    0, 0 -- reserved padding
+  )
+end
+
+-- Serves the synthetic move-table archive behind ordinary-root
+-- display policy reads: every probed move decodes the same readable
+-- entry, so policy assertions stay on the bits, never on ROM bytes.
+---@param archiveSymbol string requested archive symbol under routing
+---@return table? synthetic waza archive, nil for other archives
+local function syntheticWazaArchive(archiveSymbol)
+  if archiveSymbol ~= "NARC_poketool_waza_waza_tbl" then
+    return nil
+  end
+  return {
+    readMember = function()
+      return syntheticWazaEntry(0)
+    end,
+  }
+end
+
 local function u16(value)
   return string.char(value % 256, math.floor(value / 256) % 256)
 end
@@ -315,6 +356,10 @@ function T.move_power_callback_declares_its_event_time_context()
       return { sha1 = string.rep("a", 40) }
     end,
     openNarc = function(_, archiveSymbol)
+      local waza = syntheticWazaArchive(archiveSymbol)
+      if waza ~= nil then
+        return waza
+      end
       Assert.equal(archiveSymbol, route.archiveSymbol)
       return {
         readMember = function(_, memberId)
@@ -334,6 +379,11 @@ function T.move_power_callback_declares_its_event_time_context()
   Assert.deepEqual(effect.requiredContext.movePower, { type = "battle-animation-move-power-u16" })
   Assert.deepEqual(effect.requiredContext.battlerTopology, { type = "battle-animation-battler-topology" })
   Assert.isNil(effect.requiredContext.movePower.value, "producer declares the event-time type, not a guessed value")
+  Assert.deepEqual(
+    effect.displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+    "the synthetic flags byte suspends healthbar updates without battler G3 updates"
+  )
 end
 
 function T.picture_offset_callback_declares_battler_topology()
@@ -369,6 +419,10 @@ function T.picture_offset_callback_declares_battler_topology()
       return { sha1 = string.rep("a", 40) }
     end,
     openNarc = function(_, archiveSymbol)
+      local waza = syntheticWazaArchive(archiveSymbol)
+      if waza ~= nil then
+        return waza
+      end
       Assert.equal(archiveSymbol, route.archiveSymbol)
       return {
         readMember = function(_, memberId)
@@ -509,6 +563,10 @@ function T.previously_waived_move_closes_through_its_selected_source_member()
       return { sha1 = string.rep("a", 40) }
     end,
     openNarc = function(_, archiveSymbol)
+      local waza = syntheticWazaArchive(archiveSymbol)
+      if waza ~= nil then
+        return waza
+      end
       Assert.equal(archiveSymbol, route.archiveSymbol)
       return {
         readMember = function(_, memberId)
@@ -528,6 +586,88 @@ function T.previously_waived_move_closes_through_its_selected_source_member()
   Assert.equal(effect.key, effectKey)
   Assert.equal(effect.provenance.archiveSymbol, route.archiveSymbol)
   Assert.equal(effect.provenance.memberId, route.memberId)
+end
+
+-- Root display policy follows the source MoveAnim_GetDisplayFlags
+-- switch exactly: weather continuations, nightmare, leech seed, wrap,
+-- fire spin, clamp, and sand tomb suspend without G3 updates; magma
+-- storm and whirlpool suspend with G3 updates; every other feedback
+-- member (including follower entry/recall) changes neither. Ordinary
+-- roots read the move-table flags byte instead.
+function T.feedback_roots_carry_the_source_display_policy_switch()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local previous = package.loaded["romdump.src.digest.battle.BattleAnimationCompiler"]
+  package.loaded["romdump.src.digest.battle.BattleAnimationCompiler"] = {
+    compile = function()
+      return {
+        entry = "main",
+        instructions = { { op = "interpreter-wait", values = { 2 } } },
+        subprograms = {},
+        taskKinds = {},
+      }
+    end,
+  }
+  local romFs = {
+    version = function()
+      return "heartgold"
+    end,
+    metadata = function()
+      return { sha1 = string.rep("a", 40) }
+    end,
+    openNarc = function(_, archiveSymbol)
+      local waza = syntheticWazaArchive(archiveSymbol)
+      if waza ~= nil then
+        return waza
+      end
+      return {
+        readMember = function()
+          return "feedback route stream is lowered by the stub"
+        end,
+      }
+    end,
+  }
+  local function policyOf(effectKey)
+    local ok, effect, err = pcall(compiler.compileEffect, romFs, { versionId = "heartgold" }, effectKey)
+    Assert.isTrue(ok, "feedback root compiles its policy: " .. tostring(effect or err))
+    return assert(effect).displayPolicy
+  end
+  local sand = policyOf("BATTLE_ANIMATION_WEATHER_SAND")
+  local magma = policyOf("BATTLE_ANIMATION_DAMAGE_MAGMA_STORM")
+  local whirlpool = policyOf("BATTLE_ANIMATION_DAMAGE_WHIRLPOOL")
+  local poisoned = policyOf("BATTLE_ANIMATION_POISONED")
+  local enter = policyOf("BATTLE_ANIMATION_FOLLOWER_ENTER")
+  local recall = policyOf("BATTLE_ANIMATION_FOLLOWER_RECALL")
+  package.loaded["romdump.src.digest.battle.BattleAnimationCompiler"] = previous
+  Assert.deepEqual(
+    sand,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+    "weather continuations suspend healthbar updates without G3 updates"
+  )
+  Assert.deepEqual(
+    magma,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+    "magma storm suspends with battler G3 updates"
+  )
+  Assert.deepEqual(
+    whirlpool,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+    "whirlpool suspends with battler G3 updates"
+  )
+  Assert.deepEqual(
+    poisoned,
+    { suspendHealthbarUpdates = false, updateBattlerG3 = false },
+    "ordinary feedback outside the switch changes neither"
+  )
+  Assert.deepEqual(
+    enter,
+    { suspendHealthbarUpdates = false, updateBattlerG3 = false },
+    "follower entry changes neither"
+  )
+  Assert.deepEqual(
+    recall,
+    { suspendHealthbarUpdates = false, updateBattlerG3 = false },
+    "follower recall changes neither"
+  )
 end
 
 local Errors = require("libs.errors.src.Errors")
@@ -626,6 +766,10 @@ local function compileParticleEffect(effectKey, particleBlobs, particleInstructi
             return "particle-route-stream-is-lowered-by-the-stub"
           end,
         }
+      end
+      local waza = syntheticWazaArchive(archiveSymbol)
+      if waza ~= nil then
+        return waza
       end
       return {
         readMember = function(_, memberId)
@@ -867,6 +1011,10 @@ local function compileManagedSpriteEffect(effectKey, members, buildInstructions)
             return "managed-sprite-route-stream-is-lowered-by-the-stub"
           end,
         }
+      end
+      local waza = syntheticWazaArchive(archiveSymbol)
+      if waza ~= nil then
+        return waza
       end
       local archiveMembers = members[archiveSymbol]
       if archiveMembers == nil then

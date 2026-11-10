@@ -17,7 +17,7 @@ end
 
 local function baseEffect()
   return {
-    schema = "g4-battle-effect-v4",
+    schema = "g4-battle-effect-v5",
     key = "synthetic-lower-probe",
     catalogIdentity = "synthetic-catalog",
     program = {
@@ -47,6 +47,7 @@ local function baseEffect()
       attackerPosition = { type = "battler-position" },
       targetPosition = { type = "battler-position" },
     },
+    displayPolicy = { suspendHealthbarUpdates = false, updateBattlerG3 = false },
   }
 end
 

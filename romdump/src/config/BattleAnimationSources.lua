@@ -76,6 +76,8 @@ local NON_MOVE_ANIMATION_ROOTS = {
   [38] = "BATTLE_ANIMATION_DAMAGE_WHIRLPOOL",
   [39] = "BATTLE_ANIMATION_DAMAGE_SAND_TOMB",
   [40] = "BATTLE_ANIMATION_DAMAGE_INGRAIN",
+  [41] = "BATTLE_ANIMATION_FOLLOWER_ENTER",
+  [42] = "BATTLE_ANIMATION_FOLLOWER_RECALL",
 }
 
 -- Build-only inputs whose source-selected resources or callbacks are supplied
@@ -680,6 +682,68 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
   local count = operands[2]
   if type(count) ~= "number" or count % 1 ~= 0 or count < 0 or count > 10 or #operands ~= count + 2 then
     return nil, "battle animation callback parameter count is invalid"
+  end
+  if selector == 0 then
+    -- None: a genuine synchronous no-op with no explicit arguments.
+    if count ~= 0 then
+      return nil, "empty callback carries no source operands"
+    end
+    return {
+      callback = "battle-visual-none",
+      taskKind = "battle-visual-none",
+      context = "pokemon-picture",
+      parameters = {},
+    }
+  end
+  if selector == 1 then
+    -- OneFrameTask: a counted two-state wait/end task.
+    if count ~= 0 then
+      return nil, "one-frame callback carries no source operands"
+    end
+    return {
+      callback = "battle-visual-one-frame-task",
+      taskKind = "battle-visual-one-frame-task",
+      context = "pokemon-picture",
+      parameters = {},
+    }
+  end
+  if selector == 2 then
+    -- OneFrameSoundTask: a sound-counted two-state wait/end task.
+    if count ~= 0 then
+      return nil, "one-frame sound callback carries no source operands"
+    end
+    return {
+      callback = "battle-visual-one-frame-sound-task",
+      taskKind = "battle-visual-one-frame-sound-task",
+      context = "pokemon-picture",
+      parameters = {},
+    }
+  end
+  if selector == 3 then
+    -- OneFrameUncountedTask: an uncounted two-state wait/end task.
+    if count ~= 0 then
+      return nil, "one-frame uncounted callback carries no source operands"
+    end
+    return {
+      callback = "battle-visual-one-frame-uncounted-task",
+      taskKind = "battle-visual-one-frame-uncounted-task",
+      context = "pokemon-picture",
+      parameters = {},
+    }
+  end
+  if selector == 21 then
+    -- ShowAttackerObjWindowSprites: source object-window copies with
+    -- delay/show/hold phases and explicit window cleanup.
+    if count ~= 0 then
+      return nil, "object-window callback carries no source operands"
+    end
+    return {
+      callback = "battle-visual-show-attacker-obj-window-sprites",
+      taskKind = "battle-visual-show-attacker-obj-window-sprites",
+      context = "battle-display",
+      battlerTarget = "attacker",
+      parameters = {},
+    }
   end
   if selector == 6 then
     return {

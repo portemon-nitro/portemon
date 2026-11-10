@@ -230,6 +230,16 @@ function T.shapes_execute_with_source_order_targets_completion_and_audio()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+          scene:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
   }))
   for _, program in ipairs(programs) do
     for _, name in ipairs(audio.played) do
@@ -382,6 +392,7 @@ function T.position_pair_selects_only_its_matching_emitter_ordinal()
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local first =
     assert(player:start(pairPlayback(1, "solo-player", 0, "solo-enemy", 1), pairProgram("pair-selection-first")))
@@ -492,7 +503,13 @@ function T.move_power_profiles_diverge_through_player()
     function resources.release(_lease)
       error("power-selected background transitions release no leases", 0)
     end
-    local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+    local player = assert(Player.new({
+      scene = scene,
+      audio = audio,
+      resources = resources,
+      tasks = Factory,
+      services = { onNativeFrame = function() end },
+    }))
     local packet = playbackPacket()
     packet.event.move = { power = power }
     local handle = assert(player:start(packet, program))

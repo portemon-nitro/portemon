@@ -286,11 +286,29 @@ local function validIconManifest()
 end
 
 local function validPortraitManifest()
+  local Spinda = require("romdump.src.config.MonSources").SPINDA_SPOT_ROWS
   local manifest = validIconManifest()
-  manifest.schema = "g4-mon-portrait-manifest-v2"
+  manifest.schema = "g4-mon-portrait-manifest-v3"
   manifest.pages[0].image = "assets/generated/mon/portraits/0.png"
   manifest.pages[0].width = 640
   manifest.pages[0].height = 320
+  manifest.pages[0].indexed = {
+    indices = "assets/generated/mon/portraits/0.indices.r8",
+    palettes = "assets/generated/mon/portraits/0.palettes.rgb555",
+    paletteCount = 1,
+  }
+  manifest.personalizations = {
+    spinda = { spotRows = Spinda, secondFrameXOffset = -14 },
+  }
+  for _, entry in pairs(manifest.entries) do
+    entry.width = 80
+    entry.height = 80
+    entry.frames = {
+      { x = 0, y = 0, width = 80, height = 80 },
+      { x = 80, y = 0, width = 80, height = 80 },
+    }
+    entry.paletteIndex = 0
+  end
   return manifest
 end
 
@@ -482,14 +500,38 @@ function T.manifests_require_entries_and_resolving_representatives()
     representative = { "CHIKORITA/f0" },
   }
   Assert.isFalse(MonAssetSchema.isValidIconManifest(escaped))
+  local portraitEntries = {
+    ["CHIKORITA/f0"] = {
+      x = 0,
+      y = 0,
+      width = 80,
+      height = 80,
+      frames = {
+        { x = 0, y = 0, width = 80, height = 80 },
+        { x = 80, y = 0, width = 80, height = 80 },
+      },
+      pageId = 0,
+      paletteIndex = 0,
+    },
+  }
   local portrait = {
-    schema = "g4-mon-portrait-manifest-v2",
+    schema = "g4-mon-portrait-manifest-v3",
     version = { id = "heartgold", language = "english" },
     pages = {
-      [0] = { pageId = 0, image = "assets/generated/mon/portraits/0.png", width = 640, height = 320 },
+      [0] = {
+        pageId = 0,
+        image = "assets/generated/mon/portraits/0.png",
+        width = 640,
+        height = 320,
+        indexed = {
+          indices = "assets/generated/mon/portraits/0.indices.r8",
+          palettes = "assets/generated/mon/portraits/0.palettes.rgb555",
+          paletteCount = 1,
+        },
+      },
     },
     pageIds = { 0 },
-    entries = manifest.entries,
+    entries = portraitEntries,
     representative = { "CHIKORITA/f0" },
   }
   Assert.isTrue(MonAssetSchema.assertPortraitManifest(portrait))
@@ -546,7 +588,7 @@ function T.atlas_manifests_reject_broken_page_identity()
   oneBased.pageIds = { 1 }
   oneBased.entries["CHIKORITA/f0"].pageId = 1
   Assert.isFalse(MonAssetSchema.isValidIconManifest(oneBased))
-  oneBased.schema = "g4-mon-portrait-manifest-v2"
+  oneBased.schema = "g4-mon-portrait-manifest-v3"
   Assert.isFalse(MonAssetSchema.isValidPortraitManifest(oneBased))
   -- A page record must carry its own key.
   local mismatched = validIconManifest()

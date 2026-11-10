@@ -2062,22 +2062,39 @@ function T.stale_script_generation_fails_instead_of_reading_old_metadata()
 end
 
 local function sessionLayoutManifest(schema, imagePath, width, height, cell)
+  local MonCache = require("libs.assets.src.MonCache")
+  local portrait = schema == MonCache.PORTRAIT_MANIFEST_SCHEMA
+  local page = { pageId = 0, image = imagePath, width = width, height = height }
+  local frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } }
+  local entry = {
+    x = 0,
+    y = 0,
+    width = cell,
+    height = cell,
+    frames = frames,
+    pageId = 0,
+  }
+  if portrait then
+    -- Portrait pages carry their CPU source sidecars beside the raster
+    -- page, and portrait entries carry their palette slot with both
+    -- authored frames, exactly what the portrait manifest requires.
+    page.indexed = {
+      indices = string.rep("\0", width * height),
+      palettes = string.rep("\0", 32),
+      paletteCount = 1,
+    }
+    frames[#frames + 1] = { x = cell, y = 0, width = cell, height = cell, duration = 6 }
+    entry.paletteIndex = 0
+  end
   return {
     schema = schema,
     version = { id = "heartgold", language = "english" },
     pages = {
-      [0] = { pageId = 0, image = imagePath, width = width, height = height },
+      [0] = page,
     },
     pageIds = { 0 },
     entries = {
-      ["K/f0"] = {
-        x = 0,
-        y = 0,
-        width = cell,
-        height = cell,
-        frames = { { x = 0, y = 0, width = cell, height = cell, duration = 6 } },
-        pageId = 0,
-      },
+      ["K/f0"] = entry,
     },
     representative = { "K/f0" },
   }

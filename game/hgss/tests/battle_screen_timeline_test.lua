@@ -2757,7 +2757,15 @@ local function taskAwareEffects(program)
   function resources.release(lease)
     resources.released[#resources.released + 1] = lease
   end
-  local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+  local player = assert(
+    Player.new({
+      scene = scene,
+      audio = audio,
+      resources = resources,
+      tasks = Factory,
+      services = { onNativeFrame = function() end },
+    })
+  )
   local rec = { starts = {}, player = player, audio = audio, resources = resources, scene = scene }
   function rec.start(cue)
     Assert.isTrue(type(cue) == "table", "native cues carry their cue record with launch and effect identity")

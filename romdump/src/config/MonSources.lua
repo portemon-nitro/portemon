@@ -3629,6 +3629,62 @@ function MonSources.followerParamIndex(speciesId, form, isFemale)
   return offset + form
 end
 
+-- Front-Spinda personalization source rows, in listed order. Each triple
+-- is {y, firstX, lastX} inclusive, expanding to x ascending, compactly
+-- reproducing the native spot tables without the source 255 sentinel.
+-- Spot i uses personality byte floor(pid/256^i)%256 with offsets
+-- dx=(byte%16)-8 and dy=floor(byte/16)-8; unsigned-u8 x/y after
+-- addition; destination indices 1,2,3 become 6,7,8; already replaced
+-- pixels stay unchanged, including overlaps. Front only; back has no
+-- personalization. The live second frame shifts source x by -14.
+MonSources.SPINDA_SPOT_ROWS = {
+  {
+    { 15, 27, 30 },
+    { 16, 26, 31 },
+    { 17, 25, 32 },
+    { 18, 25, 32 },
+    { 19, 25, 32 },
+    { 20, 25, 32 },
+    { 21, 26, 31 },
+    { 22, 27, 30 },
+  },
+  {
+    { 17, 51, 54 },
+    { 18, 50, 55 },
+    { 19, 49, 56 },
+    { 20, 49, 56 },
+    { 21, 49, 56 },
+    { 22, 49, 56 },
+    { 23, 50, 55 },
+    { 24, 51, 54 },
+  },
+  {
+    { 33, 30, 32 },
+    { 34, 29, 33 },
+    { 35, 28, 34 },
+    { 36, 28, 34 },
+    { 37, 28, 34 },
+    { 38, 28, 34 },
+    { 39, 28, 34 },
+    { 40, 29, 33 },
+    { 41, 30, 32 },
+  },
+  {
+    { 33, 43, 45 },
+    { 34, 41, 47 },
+    { 35, 40, 48 },
+    { 36, 40, 48 },
+    { 37, 40, 48 },
+    { 38, 40, 48 },
+    { 39, 40, 48 },
+    { 40, 40, 48 },
+    { 41, 41, 47 },
+    { 42, 43, 45 },
+  },
+}
+
+MonSources.SPINDA_SECOND_FRAME_X_OFFSET = -14
+
 -- Deterministic runtime visual ID for a follower model offset. The source
 -- sprite namespace (428..993) can collide with map actor IDs, so runtime
 -- visuals live in the documented follower range instead.

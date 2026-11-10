@@ -54,7 +54,8 @@ function T.front_selectors_without_facing_keep_their_meaning()
 end
 
 ---@return table manifest entry pinned inside a 640x320 page
-local function pageEntry()
+---@param paletteIndex integer zero-based visual slot behind the entry palette
+local function pageEntry(paletteIndex)
   return {
     x = 0,
     y = 0,
@@ -65,18 +66,29 @@ local function pageEntry()
       { x = 0, y = 0, width = 80, height = 80, duration = 6 },
       { x = 80, y = 0, width = 80, height = 80, duration = 6 },
     },
+    paletteIndex = paletteIndex,
   }
 end
 
 function T.facing_manifests_validate_front_and_back_entries_together()
   local entries = {}
-  entries[frontSelector()] = pageEntry()
-  entries[backSelector()] = pageEntry()
+  entries[frontSelector()] = pageEntry(0)
+  entries[backSelector()] = pageEntry(1)
   local manifest = {
-    schema = "g4-mon-portrait-manifest-v2",
+    schema = "g4-mon-portrait-manifest-v3",
     version = { id = "soulsilver", language = "en" },
     pages = {
-      [0] = { pageId = 0, image = "assets/generated/mon/portraits/0.png", width = 640, height = 320 },
+      [0] = {
+        pageId = 0,
+        image = "assets/generated/mon/portraits/0.png",
+        width = 640,
+        height = 320,
+        indexed = {
+          indices = "assets/generated/mon/portraits/0.indices.r8",
+          palettes = "assets/generated/mon/portraits/0.palettes.rgb555",
+          paletteCount = 2,
+        },
+      },
     },
     pageIds = { 0 },
     entries = entries,

@@ -234,43 +234,36 @@ function T.evolution_graphics_load_only_from_the_leaf_record_and_check_all_scree
   )
 end
 
--- Minimal hand-built PNG envelope: the mon page validator checks
--- structure, never CRCs, so the fixture carries a real-headed envelope
--- without a pixel payload.
-local function envelopePng()
-  local function u32(v)
-    return string.char(math.floor(v / 16777216) % 256, math.floor(v / 65536) % 256, math.floor(v / 256) % 256, v % 256)
-  end
-  return "\137PNG\r\n\26\n"
-    .. u32(13)
-    .. "IHDR"
-    .. u32(8)
-    .. u32(8)
-    .. "\8\2\0\0\0"
-    .. u32(0)
-    .. u32(1)
-    .. "IDAT"
-    .. "\120"
-    .. u32(0)
-    .. u32(0)
-    .. "IEND"
-    .. u32(0)
-end
-
 local function stageMonPage(cache, selector)
   cache:writeLua(MonCache.portraitManifestPath(), {
-    schema = "g4-mon-portrait-manifest-v2",
+    schema = "g4-mon-portrait-manifest-v3",
     version = { id = "heartgold", language = "en" },
-    pages = { [0] = { pageId = 0, image = MonCache.portraitPagePath(0), width = 8, height = 8 } },
+    pages = {
+      [0] = {
+        pageId = 0,
+        image = MonCache.portraitPagePath(0),
+        width = 160,
+        height = 80,
+        indexed = {
+          indices = MonCache.portraitIndexPagePath(0),
+          palettes = MonCache.portraitPalettePagePath(0),
+          paletteCount = 1,
+        },
+      },
+    },
     pageIds = { 0 },
     entries = {
       [selector] = {
         x = 0,
         y = 0,
-        width = 8,
-        height = 8,
+        width = 80,
+        height = 80,
         pageId = 0,
-        frames = { { x = 0, y = 0, width = 8, height = 8 } },
+        frames = {
+          { x = 0, y = 0, width = 80, height = 80 },
+          { x = 80, y = 0, width = 80, height = 80 },
+        },
+        paletteIndex = 0,
       },
     },
     representative = { selector },
@@ -286,7 +279,10 @@ local function stageMonPage(cache, selector)
     portraitPages = { "portrait-marker-0" },
   })
   cache:write(MonCache.pageMarkerPath("portraits", 0), "portrait-marker-0")
-  cache:write(MonCache.pageImagePath("portraits", 0), envelopePng())
+  local portraitPixels = string.rep("\1\2\3\255", 160 * 80)
+  cache:write(MonCache.pageImagePath("portraits", 0), PngWriter.encode(160, 80, portraitPixels))
+  cache:write(MonCache.portraitIndexPagePath(0), string.rep("\0", 160 * 80))
+  cache:write(MonCache.portraitPalettePagePath(0), string.rep("\0", 32))
 end
 
 local function stageSourceIndices(cache, sourceIndices)
@@ -361,7 +357,7 @@ local function stageBattle(cache, manifest, sceneKey)
     end
   end
   local record = {
-    schema = "g4-battle-scene-v5",
+    schema = "g4-battle-scene-v6",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -1346,6 +1342,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
       },
     },
     requiredContext = {},
+    displayPolicy = { suspendHealthbarUpdates = false, updateBattlerG3 = false },
   }
   cache:writeLua(BattlePresentationCache.effectPath(effectKey), effectRecord)
   cache:write(BattlePresentationCache.effectMarkerPath(effectKey), "complete")

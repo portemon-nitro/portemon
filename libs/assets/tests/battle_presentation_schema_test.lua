@@ -1198,7 +1198,7 @@ end
 ---@return table valid composed scene record
 local function scene()
   return {
-    schema = "g4-battle-scene-v5",
+    schema = "g4-battle-scene-v6",
     key = "general/grass/day",
     background = "general",
     terrain = "grass",

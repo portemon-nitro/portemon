@@ -109,6 +109,7 @@ function T.late_work_for_a_withdrawn_activation_never_touches_its_replacement()
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local packet = playbackPacket()
   local staleHandle = assert(player:start(packet, {
@@ -148,6 +149,28 @@ local function strikeEvent(sequence, actors, targets, extra)
     payload = {},
     actors = actors,
     targets = targets,
+    move = { selected = key, executed = key, phase = "direct" },
+    -- Every probe strike carries its producer execution moment so
+    -- the selector admits the root; topology assertions read the
+    -- frozen slots either way.
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = key,
+        executedMove = key,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = actors[1].combatant, activation = actors[1].activation },
+        defender = { combatant = targets[1].combatant, activation = targets[1].activation },
+        targets = { { combatant = targets[1].combatant, activation = targets[1].activation } },
+        damage = -1,
+        power = 0,
+        friendship = 0,
+        hitOrdinal = fields.hitIndex or 1,
+        hitCount = fields.hitIndex or 1,
+        hitCycle = fields.hitIndex or 1,
+      },
+    },
   }
   if extra ~= nil then
     for field, value in pairs(extra) do
@@ -364,6 +387,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local bound = assert(player:start(singlePlayback, {
     entry = "main",
@@ -490,6 +514,7 @@ function T.invalid_position_pair_fails_naming_its_pair_without_leasing()
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local program = {
     key = "assert-pair-probe",
@@ -607,6 +632,7 @@ function T.fainted_target_missing_from_after_view_keeps_event_slot_without_reser
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local bound = assert(player:start(playback, {
     entry = "main",
@@ -653,19 +679,28 @@ function T.resolved_power_rides_the_frozen_occurrence_detached()
     }, { actionId = 6, hitIndex = 1, effectKey = "variable-strike", visualSeed = 777 }),
   }, "power-probe", 10)
   packet.events[1].move = { selected = "MAGNITUDE", executed = "MAGNITUDE", phase = "direct", power = 90 }
-  local playback = BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
-  Assert.equal(playback.event.move.power, 90, "the occurrence keeps the executed value")
-  Assert.equal(playback.event.move.executed, "MAGNITUDE", "the occurrence keeps its executed identity")
-  packet.events[1].move.power = 10
-  Assert.equal(playback.event.move.power, 90, "later event edits never reach the occurrence")
+  packet.events[1].presentation.execution.selectedMove = "MAGNITUDE"
+  packet.events[1].presentation.execution.executedMove = "MAGNITUDE"
+  packet.events[1].presentation.execution.power = 90
+  local powerRequests = BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
+  Assert.equal(#powerRequests, 1, "the variable strike selects one frozen request")
+  Assert.equal(powerRequests[1].playback.context.movePower, 90, "the request keeps the executed value")
+  Assert.equal(powerRequests[1].effectKey, "MAGNITUDE", "the request keeps its executed identity")
+  packet.events[1].presentation.execution.power = 10
+  Assert.equal(powerRequests[1].playback.context.movePower, 90, "later event edits never reach the request")
   local plainPacket = packetFor(before, before, {
     strikeEvent(10, { { combatant = 1, activation = 7, side = 1, position = 1 } }, {
       { combatant = 2, activation = 9, side = 2, position = 2 },
     }, { actionId = 7, hitIndex = 1, effectKey = "plain-strike", visualSeed = 778 }),
   }, "power-probe", 11)
   plainPacket.events[1].move = { selected = "TACKLE", executed = "TACKLE", phase = "direct" }
-  local plainPlayback = BattlePresentationFlow.animationPlayback(plainPacket, plainPacket.events[1], geometry)
-  Assert.isNil(plainPlayback.event.move.power, "events without a resolved value omit the fact")
+  plainPacket.events[1].presentation.execution.selectedMove = "TACKLE"
+  plainPacket.events[1].presentation.execution.executedMove = "TACKLE"
+  -- The plain hit resolves no power: the absent value stays absent
+  -- for effects that never require it.
+  plainPacket.events[1].presentation.execution.power = nil
+  local plainRequests = BattlePresentationFlow.animationPlayback(plainPacket, plainPacket.events[1], geometry)
+  Assert.isNil(plainRequests[1].playback.context.movePower, "events without a resolved value omit the fact")
 end
 
 -- Event-time sides select the side branches: a player-side user takes
@@ -742,6 +777,7 @@ function T.event_time_sides_select_the_side_branches()
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local predicateProgram = {
     entry = "main",

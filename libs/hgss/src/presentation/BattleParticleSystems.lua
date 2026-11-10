@@ -615,6 +615,159 @@ local function newConfiguredEmitter(args, context, kind, registry, system, recor
   )
 end
 
+-- Occurrence-bound emitter handles behind the path callbacks: the
+-- registry slot validates the owning system, and the identity guard
+-- keeps stale or mismatched lookups from touching a successor.
+---@param owner table<string, unknown> occurrence-bound context carrying the particle registry
+---@param systemSlot integer logical system slot under validation, 0..15
+---@param emitterSlot integer global emitter slot under validation, 0..15
+---@return table<string, unknown> identity-safe emitter handle
+function BattleParticleSystems.getEmitterHandle(owner, systemSlot, emitterSlot)
+  local kind = "battle-particle-emitter-handle"
+  if type(owner) ~= "table" then
+    error(malformedMessage(kind, "binds handles through its occurrence context"), 0)
+  end
+  local registry = registryOf(owner, kind)
+  if not isNonNegativeInteger(systemSlot) or systemSlot > MAX_SYSTEM_INDEX then
+    error(malformedMessage(kind, "binds a system slot in 0.." .. MAX_SYSTEM_INDEX), 0)
+  end
+  if not isNonNegativeInteger(emitterSlot) or emitterSlot > MAX_SYSTEM_INDEX then
+    error(malformedMessage(kind, "binds an emitter slot in 0.." .. MAX_SYSTEM_INDEX), 0)
+  end
+  local system = registry.systems[systemSlot]
+  if system == nil then
+    error(malformedMessage(kind, "binds system slot " .. systemSlot .. " before loading it"), 0)
+  end
+  local handle = registry.emitters[emitterSlot]
+  if handle == nil or handle.system ~= system then
+    error(malformedMessage(kind, "binds emitter slot " .. emitterSlot .. " before creating it"), 0)
+  end
+  local identity = handle
+  local base = { x = 0, y = 0, z = 0 }
+  local stored = identity.runtime
+  if type(stored) == "table" and type(stored.record) == "table" then
+    local position = stored.record.position
+    if type(position) == "table" then
+      base = { x = position.x or 0, y = position.y or 0, z = position.z or 0 }
+    end
+  end
+  local facade = {}
+  -- Detached signed raw fx32 coordinates in source setter-argument
+  -- space: the stored position minus the immutable resource base.
+  function facade:getPositionFx32()
+    if registry.emitters[emitterSlot] ~= identity then
+      error(malformedMessage(kind, "reads a handle its slot no longer references"), 0)
+    end
+    local runtime = identity.runtime
+    if type(runtime) ~= "table" then
+      error(malformedMessage(kind, "reads a deleted emitter handle"), 0)
+    end
+    return {
+      x = math.floor((runtime.x or 0) * FX_ONE + 0.5) - math.floor(base.x * FX_ONE + 0.5),
+      y = math.floor((runtime.y or 0) * FX_ONE + 0.5) - math.floor(base.y * FX_ONE + 0.5),
+      z = math.floor((runtime.z or 0) * FX_ONE + 0.5) - math.floor(base.z * FX_ONE + 0.5),
+    }
+  end
+  -- Stores s32(resource base + value) per supplied axis; omitted axes
+  -- stay untouched. Base is added here once, never in task code again.
+  function facade:setPositionFx32(position)
+    if registry.emitters[emitterSlot] ~= identity then
+      error(malformedMessage(kind, "writes a handle its slot no longer references"), 0)
+    end
+    local runtime = identity.runtime
+    if type(runtime) ~= "table" then
+      error(malformedMessage(kind, "writes a deleted emitter handle"), 0)
+    end
+    assert(type(position) == "table", "emitter handle writes carry their coordinates as a record")
+    local function storedAxis(current, resourceBase, value)
+      if value == nil then
+        return current
+      end
+      local raw = resourceBase + value
+      if raw >= 2147483648 then
+        raw = raw - 4294967296
+      elseif raw < -2147483648 then
+        raw = raw + 4294967296
+      end
+      return raw / FX_ONE
+    end
+    local baseFx = {
+      x = math.floor(base.x * FX_ONE + 0.5),
+      y = math.floor(base.y * FX_ONE + 0.5),
+      z = math.floor(base.z * FX_ONE + 0.5),
+    }
+    runtime.x = storedAxis(runtime.x, baseFx.x, position.x)
+    runtime.y = storedAxis(runtime.y, baseFx.y, position.y)
+    runtime.z = storedAxis(runtime.z, baseFx.z, position.z)
+  end
+  -- Oldest live parent has age != life; no-parent boundary is
+  -- deterministically false and children never count.
+  function facade:isActive()
+    if registry.emitters[emitterSlot] ~= identity then
+      return false
+    end
+    local runtime = identity.runtime
+    if type(runtime) ~= "table" then
+      return false
+    end
+    return emitterActive(runtime)
+  end
+  -- Idempotently deletes this exact emitter; clears the script slot
+  -- only while it still references this identity.
+  function facade:delete()
+    if registry.emitters[emitterSlot] == identity then
+      registry.emitters[emitterSlot] = nil
+    end
+    local runtime = identity.runtime
+    if type(runtime) == "table" and type(identity.system) == "table" then
+      SplParticleSimulation.removeEmitter(identity.system.simulation, runtime)
+      identity.runtime = nil
+    end
+  end
+  return facade
+end
+
+-- One source particle draw phase: capture every manager's geometry
+-- first, then calculate all systems once in native physical slot
+-- order. Later host rendering reuses that captured result; no
+-- per-system task calculates twice.
+---@param scene table<string, unknown> scene carrying the physical manager registry
+---@param sourceTick table<string, unknown>? accepted source tick under advancement
+function BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+  local _ = sourceTick
+  assert(type(scene) == "table", "the source draw phase captures through its scene")
+  if type(scene.particleSystems) ~= "function" then
+    return
+  end
+  local systems = scene:particleSystems()
+  if type(systems) ~= "table" then
+    return
+  end
+  local captured = {}
+  for slot, view in ipairs(systems) do
+    local simulation = type(view) == "table" and view.simulation or nil
+    if type(simulation) == "table" and type(simulation.emitters) == "table" then
+      local snapshot = {}
+      for _, runtime in ipairs(simulation.emitters) do
+        snapshot[#snapshot + 1] = {
+          runtime = runtime,
+          x = runtime.x,
+          y = runtime.y,
+          z = runtime.z,
+          particles = #runtime.particles,
+        }
+      end
+      captured[slot] = { simulation = simulation, snapshot = snapshot }
+    end
+  end
+  for slot = 1, #systems do
+    local entry = captured[slot]
+    if entry ~= nil then
+      SplParticleSimulation.advance(entry.simulation)
+    end
+  end
+end
+
 -- CreateEmitter: adds one emitter of the loaded system, positioned by its
 -- callback profile, and holds it as a particle-group task until the emitter
 -- leaves the system.

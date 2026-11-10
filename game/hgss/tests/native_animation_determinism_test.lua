@@ -101,6 +101,7 @@ function T.same_program_and_seed_give_the_same_trace_at_any_host_schedule()
       audio = audio,
       resources = resources,
       tasks = tasks,
+      services = { onNativeFrame = function() end },
     }))
     local program = {
       entry = "main",

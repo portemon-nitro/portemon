@@ -2387,7 +2387,7 @@ local function drawBagChild(resources, view, child)
         pressBank = pocket + 8
       end
     else
-      pressBank = BattleBagPockets.buttonBank(animButton --[[@as integer]], 0)
+      pressBank = BattleBagPockets.buttonBank(math.floor(animButton), 0)
     end
     if pressBank ~= nil then
       drawButtonFace(animButton, animFrame, pressBank)

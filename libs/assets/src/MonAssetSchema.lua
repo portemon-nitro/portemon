@@ -620,18 +620,37 @@ end
 -- with the published inventory.
 ---@param manifest table<string, unknown>
 ---@param context table<string, unknown>
-local function checkManifestPages(manifest, context)
+---@param portrait boolean true when portrait pages carry their CPU source sidecars
+local function checkManifestPages(manifest, context, portrait)
   checkRecord(manifest.pages, nil, context, "MON_MANIFEST_INVALID", "manifest pages")
   local pageCount = 0
   for pageId, page in pairs(manifest.pages) do
     checkInt(pageId, 0, nil, context, "MON_MANIFEST_INVALID", "manifest page ids")
-    checkRecord(
-      page,
-      { pageId = true, image = true, width = true, height = true },
-      context,
-      "MON_MANIFEST_INVALID",
-      "manifest page " .. pageId
-    )
+    local allowed = { pageId = true, image = true, width = true, height = true }
+    if portrait then
+      allowed.indexed = true
+    end
+    checkRecord(page, allowed, context, "MON_MANIFEST_INVALID", "manifest page " .. pageId)
+    if portrait then
+      local indexed = page.indexed
+      checkRecord(
+        indexed,
+        { indices = true, palettes = true, paletteCount = true },
+        context,
+        "MON_MANIFEST_INVALID",
+        "manifest page " .. pageId .. " indexed"
+      )
+      checkNonEmptyString(indexed.indices, context, "MON_MANIFEST_INVALID", "manifest page " .. pageId .. " indices")
+      checkNonEmptyString(indexed.palettes, context, "MON_MANIFEST_INVALID", "manifest page " .. pageId .. " palettes")
+      checkInt(
+        indexed.paletteCount,
+        1,
+        16,
+        context,
+        "MON_MANIFEST_INVALID",
+        "manifest page " .. pageId .. " palette count"
+      )
+    end
     if page.pageId ~= pageId then
       fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " must carry its own id", context)
     end
@@ -663,7 +682,8 @@ end
 -- default realized quad never disagree.
 ---@param manifest table<string, unknown>
 ---@param context table<string, unknown>
-local function checkManifestEntries(manifest, context)
+---@param portrait boolean true when portrait entries carry their palette slot and personalization
+local function checkManifestEntries(manifest, context, portrait)
   checkRecord(manifest.entries, nil, context, "MON_MANIFEST_INVALID", "manifest entries")
   local entryCount = 0
   for selector, entry in pairs(manifest.entries) do
@@ -671,13 +691,40 @@ local function checkManifestEntries(manifest, context)
     if type(selector) ~= "string" or selector == "" then
       fail("MON_MANIFEST_INVALID", "manifest selectors must be non-empty strings", context)
     end
-    checkRecord(
-      entry,
-      { x = true, y = true, width = true, height = true, frames = true, pageId = true },
-      context,
-      "MON_MANIFEST_INVALID",
-      "manifest entry " .. selector
-    )
+    local allowed = { x = true, y = true, width = true, height = true, frames = true, pageId = true }
+    if portrait then
+      allowed.paletteIndex = true
+      allowed.personalization = true
+    end
+    checkRecord(entry, allowed, context, "MON_MANIFEST_INVALID", "manifest entry " .. selector)
+    if portrait then
+      checkInt(
+        entry.paletteIndex,
+        0,
+        15,
+        context,
+        "MON_MANIFEST_INVALID",
+        "manifest entry " .. selector .. " palette slot"
+      )
+      if entry.personalization ~= nil and entry.personalization ~= "spinda" then
+        fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " names a known personalization", context)
+      end
+      local page = manifest.pages[entry.pageId]
+      if type(page) == "table" and type(page.indexed) == "table" then
+        local paletteCount = page.indexed.paletteCount
+        if
+          type(entry.paletteIndex) == "number"
+          and type(paletteCount) == "number"
+          and entry.paletteIndex >= paletteCount
+        then
+          fail(
+            "MON_MANIFEST_INVALID",
+            "manifest entry " .. selector .. " palette slot exceeds its page palette count",
+            context
+          )
+        end
+      end
+    end
     checkInt(entry.pageId, 0, nil, context, "MON_MANIFEST_INVALID", "manifest entry " .. selector .. " page id")
     local page = manifest.pages[entry.pageId]
     if page == nil then
@@ -718,9 +765,61 @@ local function checkManifestEntries(manifest, context)
     if entry.x ~= first.x or entry.y ~= first.y or entry.width ~= first.width or entry.height ~= first.height then
       fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " must match its first frame", context)
     end
+    if portrait then
+      if #entry.frames ~= 2 then
+        fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " carries both authored frames", context)
+      end
+      for _, frame in ipairs(entry.frames) do
+        if frame.width ~= 80 or frame.height ~= 80 then
+          fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " frames are 80x80 source crops", context)
+        end
+      end
+    end
   end
   if entryCount == 0 then
     fail("MON_MANIFEST_INVALID", "manifest must carry entries", context)
+  end
+end
+
+-- Personalization validation: the only marked kind is front-Spinda with
+-- its four exact source row sets and the second-frame x shift.
+---@param manifest table<string, unknown>
+---@param context table<string, unknown>
+local function checkManifestPersonalizations(manifest, context)
+  local definitions = manifest.personalizations
+  if definitions == nil then
+    return
+  end
+  checkRecord(definitions, { spinda = true }, context, "MON_MANIFEST_INVALID", "manifest personalizations")
+  local spinda = definitions.spinda
+  checkRecord(
+    spinda,
+    { spotRows = true, secondFrameXOffset = true },
+    context,
+    "MON_MANIFEST_INVALID",
+    "manifest spinda personalization"
+  )
+  if type(spinda.spotRows) ~= "table" or #spinda.spotRows ~= 4 then
+    fail("MON_MANIFEST_INVALID", "manifest spinda personalization carries four spot row sets", context)
+  end
+  for setIndex, rows in ipairs(spinda.spotRows) do
+    if type(rows) ~= "table" or #rows == 0 then
+      fail("MON_MANIFEST_INVALID", "manifest spinda spot set " .. setIndex .. " carries rows", context)
+    end
+    for _, row in ipairs(rows) do
+      if
+        type(row) ~= "table"
+        or #row ~= 3
+        or type(row[1]) ~= "number"
+        or type(row[2]) ~= "number"
+        or type(row[3]) ~= "number"
+      then
+        fail("MON_MANIFEST_INVALID", "manifest spinda spot rows are {y, firstX, lastX} triples", context)
+      end
+    end
+  end
+  if spinda.secondFrameXOffset ~= -14 then
+    fail("MON_MANIFEST_INVALID", "manifest spinda second frame shifts by its source offset", context)
   end
 end
 
@@ -744,25 +843,32 @@ end
 -- page-local rectangles and animation frames, and every representative
 -- selector resolves. No source archive, member, or palette identity may
 -- appear here: pages are source-independent.
-function MonAssetSchema.assertManifest(manifest, expectedSchema)
+function MonAssetSchema.assertManifest(manifest, expectedSchema, portrait)
   local context = {}
-  checkRecord(manifest, {
+  local allowed = {
     schema = true,
     version = true,
     pages = true,
     pageIds = true,
     entries = true,
     representative = true,
-  }, context, "MON_MANIFEST_INVALID", "manifest")
+  }
+  if portrait then
+    allowed.personalizations = true
+  end
+  checkRecord(manifest, allowed, context, "MON_MANIFEST_INVALID", "manifest")
   if manifest.schema ~= expectedSchema then
     fail("MON_MANIFEST_INVALID", "manifest schema must be " .. expectedSchema, context)
   end
   checkRecord(manifest.version, { id = true, language = true }, context, "MON_MANIFEST_INVALID", "manifest version")
   checkNonEmptyString(manifest.version.id, context, "MON_MANIFEST_INVALID", "manifest version id")
   checkNonEmptyString(manifest.version.language, context, "MON_MANIFEST_INVALID", "manifest version language")
-  checkManifestPages(manifest, context)
-  checkManifestEntries(manifest, context)
+  checkManifestPages(manifest, context, portrait == true)
+  checkManifestEntries(manifest, context, portrait == true)
   checkManifestRepresentatives(manifest, context)
+  if portrait then
+    checkManifestPersonalizations(manifest, context)
+  end
   return true
 end
 
@@ -771,7 +877,7 @@ function MonAssetSchema.assertIconManifest(manifest)
 end
 
 function MonAssetSchema.assertPortraitManifest(manifest)
-  return MonAssetSchema.assertManifest(manifest, "g4-mon-portrait-manifest-v2")
+  return MonAssetSchema.assertManifest(manifest, "g4-mon-portrait-manifest-v3", true)
 end
 
 function MonAssetSchema.isValidIconManifest(manifest)

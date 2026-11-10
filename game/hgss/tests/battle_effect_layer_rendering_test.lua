@@ -322,6 +322,16 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(poisoned, sourceTick)
+          poisoned:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
   }))
   for _, program in ipairs(programs) do
     local packet = playbackPacket()
@@ -388,6 +398,7 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    services = { onNativeFrame = function() end },
   }))
   local packet = playbackPacket()
   packet.event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "layer-callback-run" }

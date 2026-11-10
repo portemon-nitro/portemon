@@ -66,7 +66,22 @@ local function optionTaskAwareEffects(program)
     return { key = key, lease = key }
   end
   function resources.release(_lease) end
-  local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+          scene:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
+  }))
   local rec = { starts = {}, player = player, audio = audio, scene = scene }
   function rec.status(handle)
     -- The double models the locked one-tick-advances-all contract:
@@ -284,7 +299,13 @@ function T.effect_execution_runs_through_the_animation_player()
     return { key = key, lease = key }
   end
   function resources.release(_lease) end
-  local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = Factory,
+    services = { onNativeFrame = function() end },
+  }))
   local handle = assert(
     player:start({
       launchId = "animation-option-probe",

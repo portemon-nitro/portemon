@@ -10,6 +10,7 @@ local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
@@ -133,6 +134,14 @@ local function runVersion(scope, versionId)
       audio = audio,
       resources = resources,
       tasks = BattleEffectTasks,
+      services = {
+        onNativeFrame = function(phase, sourceTick)
+          if phase == "draw" then
+            BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+            scene:stepAnimationPictures(sourceTick)
+          end
+        end,
+      },
     }))
     local packet = {
       launchId = "named-effect-pixels",

@@ -83,6 +83,62 @@ local function assertEffectClosesThroughItsSelectedMember(compiler, factory, sou
   return effect
 end
 
+-- Root display policy closes from real source data: ordinary moves
+-- read their move-table flags byte (MOVEATTR_UNK9) while feedback
+-- members follow the source MoveAnim_GetDisplayFlags switch. The
+-- pinned flags below were read from the HeartGold dump through this
+-- same producer path and cover the three combinations the source
+-- table actually uses: TACKLE keeps healthbar updates live without
+-- G3 updates, FIRE_PUNCH suspends without G3 updates, and FLY
+-- suspends with G3 updates. No ordinary move pairs live updates
+-- with G3 updates.
+function T.roots_carry_source_display_policy_from_real_rom(romFs, versionId)
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local tackle =
+    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "TACKLE")
+  Assert.deepEqual(
+    tackle.displayPolicy,
+    { suspendHealthbarUpdates = false, updateBattlerG3 = false },
+    "TACKLE keeps healthbar updates live without battler G3 updates"
+  )
+  local fly = assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "FLY")
+  Assert.deepEqual(
+    fly.displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+    "FLY suspends healthbar updates with battler G3 updates"
+  )
+  local firePunch =
+    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "FIRE_PUNCH")
+  Assert.deepEqual(
+    firePunch.displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+    "FIRE_PUNCH suspends healthbar updates without battler G3 updates"
+  )
+  local magma =
+    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "BATTLE_ANIMATION_DAMAGE_MAGMA_STORM")
+  Assert.deepEqual(
+    magma.displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+    "magma storm suspends with battler G3 updates"
+  )
+  local whirlpool =
+    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "BATTLE_ANIMATION_DAMAGE_WHIRLPOOL")
+  Assert.deepEqual(
+    whirlpool.displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = true },
+    "whirlpool suspends with battler G3 updates"
+  )
+  local asleep =
+    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "BATTLE_ANIMATION_ASLEEP")
+  Assert.deepEqual(
+    asleep.displayPolicy,
+    { suspendHealthbarUpdates = false, updateBattlerG3 = false },
+    "ordinary feedback changes neither"
+  )
+end
+
 function T.previously_failing_effects_close_through_compile(romFs, versionId)
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   local factory = require("libs.hgss.src.presentation.BattleEffectTasks")

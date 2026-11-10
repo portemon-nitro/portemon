@@ -389,16 +389,19 @@ function T.path_task_moves_the_emitter_between_battlers_and_removes_it_when_done
   system:dispose()
 end
 
-function T.path_task_fails_without_an_emitter_and_the_curved_path_fails_loudly()
+function T.path_task_fails_without_an_emitter_and_the_curved_path_binds_lazily()
   local scene = BattleScene.new()
   local ctx = context()
   local system = loadSystem(scene, nil, ctx)
   Assert.throws(function()
     BattleEffectTasks.create(BattleEffectTasks.EMITTER_BATTLER_PATH_KIND, pathArgs(), ctx, {})
   end, "a path over an empty emitter slot fails")
-  Assert.throws(function()
-    BattleEffectTasks.create(BattleEffectTasks.EMITTER_CURVED_PATH_KIND, pathArgs(), ctx, {})
-  end, "the unreproduced curved path fails instead of playing nothing")
+  local curved = assert(
+    BattleEffectTasks.create(BattleEffectTasks.EMITTER_CURVED_PATH_KIND, pathArgs({ durationTicks = 4 }), ctx, {}),
+    "the curved path constructs with its operands and binds its emitter lazily"
+  )
+  curved:stepSourceTick({ tick = 1 })
+  Assert.equal(curved:status(), "complete", "the curved path over an empty slot completes at once")
   Assert.throws(function()
     createEmitter(ctx)
     BattleEffectTasks.create(BattleEffectTasks.EMITTER_BATTLER_PATH_KIND, pathArgs({ durationTicks = 0 }), ctx, {})

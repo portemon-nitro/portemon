@@ -11,7 +11,25 @@ local PartyAssetPrefetch = require("game.hgss.src.field.PartyAssetPrefetch")
 local T = {}
 
 local function manifest(schema, entries)
-  local pages = { [0] = { pageId = 0, image = "assets/generated/mon/pages/0.png", width = 64, height = 64 } }
+  local portrait = schema == "g4-mon-portrait-manifest-v3"
+  local pages
+  if portrait then
+    pages = {
+      [0] = {
+        pageId = 0,
+        image = "assets/generated/mon/pages/0.png",
+        width = 160,
+        height = 80,
+        indexed = {
+          indices = "assets/generated/mon/portraits/0.indices.r8",
+          palettes = "assets/generated/mon/portraits/0.palettes.rgb555",
+          paletteCount = 1,
+        },
+      },
+    }
+  else
+    pages = { [0] = { pageId = 0, image = "assets/generated/mon/pages/0.png", width = 64, height = 64 } }
+  end
   local built = {
     schema = schema,
     version = { id = "test", language = "en" },
@@ -21,14 +39,29 @@ local function manifest(schema, entries)
     representative = {},
   }
   for selector, pageId in pairs(entries) do
-    built.entries[selector] = {
-      x = 0,
-      y = 0,
-      width = 16,
-      height = 16,
-      frames = { { x = 0, y = 0, width = 16, height = 16, duration = 1 } },
-      pageId = pageId,
-    }
+    if portrait then
+      built.entries[selector] = {
+        x = 0,
+        y = 0,
+        width = 80,
+        height = 80,
+        frames = {
+          { x = 0, y = 0, width = 80, height = 80 },
+          { x = 80, y = 0, width = 80, height = 80 },
+        },
+        pageId = pageId,
+        paletteIndex = 0,
+      }
+    else
+      built.entries[selector] = {
+        x = 0,
+        y = 0,
+        width = 16,
+        height = 16,
+        frames = { { x = 0, y = 0, width = 16, height = 16, duration = 1 } },
+        pageId = pageId,
+      }
+    end
     built.representative[#built.representative + 1] = selector
   end
   return built
@@ -153,7 +186,7 @@ function T.warms_party_pages_cries_and_move_effects_at_near_urgency()
   local options = optionsFor({
     cacheFs = cacheFsWith(
       manifest("g4-mon-icon-manifest-v2", { ["PIKACHU/f0"] = 0 }),
-      manifest("g4-mon-portrait-manifest-v2", { ["PIKACHU/f0/male/plain"] = 0 })
+      manifest("g4-mon-portrait-manifest-v3", { ["PIKACHU/f0/male/plain"] = 0 })
     ),
     derivedAssets = loggingHost(log),
   })
@@ -187,7 +220,7 @@ function T.skips_portraits_and_cries_for_eggs()
     monService = eggService,
     cacheFs = cacheFsWith(
       manifest("g4-mon-icon-manifest-v2", { ["PIKACHU/egg"] = 0 }),
-      manifest("g4-mon-portrait-manifest-v2", { ["PIKACHU/f0/male/plain"] = 0 })
+      manifest("g4-mon-portrait-manifest-v3", { ["PIKACHU/f0/male/plain"] = 0 })
     ),
     derivedAssets = loggingHost(log),
   })
@@ -225,7 +258,7 @@ function T.skips_placeholder_and_unknown_moves()
     monService = moveService,
     cacheFs = cacheFsWith(
       manifest("g4-mon-icon-manifest-v2", { ["PIKACHU/f0"] = 0 }),
-      manifest("g4-mon-portrait-manifest-v2", { ["PIKACHU/f0/male/plain"] = 0 })
+      manifest("g4-mon-portrait-manifest-v3", { ["PIKACHU/f0/male/plain"] = 0 })
     ),
     derivedAssets = loggingHost(log),
   })

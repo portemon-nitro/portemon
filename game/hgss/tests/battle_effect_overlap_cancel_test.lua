@@ -163,6 +163,16 @@ function T.overlapping_tasks_cancel_and_replace_without_stale_restores()
     audio = first.audio,
     resources = first.resources,
     tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+          scene:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
   }))
   local surviving = assert(runner:start(playbackPacket(), firstProgram))
   local cancelled = assert(runner:start(playbackPacket(), secondProgram))
@@ -192,6 +202,16 @@ function T.overlapping_tasks_cancel_and_replace_without_stale_restores()
     audio = fresh.audio,
     resources = fresh.resources,
     tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+          scene:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
   }))
   local nextHandle = assert(nextRunner:start(playbackPacket(), firstProgram))
   for _ = 1, 60 do

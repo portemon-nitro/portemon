@@ -242,6 +242,16 @@ function T.status_weather_item_and_restoration_effects_keep_their_own_traces()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    splRandomState = { state = 0 },
+    services = {
+      onNativeFrame = function(phase, sourceTick)
+        if phase == "draw" then
+          local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+          BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
+          scene:stepAnimationPictures(sourceTick)
+        end
+      end,
+    },
   }))
   local voicedBefore = 0
   for name, program in pairs(programs) do
@@ -335,6 +345,7 @@ function T.submitted_sound_actions_run_through_real_factory_tasks()
     audio = audio,
     resources = resources,
     tasks = Factory,
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
   for _ = 1, 10 do

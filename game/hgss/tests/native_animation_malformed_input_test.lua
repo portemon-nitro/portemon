@@ -102,6 +102,7 @@ function T.missing_playback_detail_and_zero_time_cycles_fail_instead_of_completi
     audio = audio,
     resources = resources,
     tasks = tasks,
+    services = { onNativeFrame = function() end },
   }))
   local missing = BattlePresentationModel.packet({}, { events = {} }, {}, {
     launchId = "malformed-probe",

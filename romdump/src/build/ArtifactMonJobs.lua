@@ -108,14 +108,20 @@ local function executeMonPage(artifact, context, pageKind, pageId, generationId)
     error(pageErr, 0)
   end
   local marker = MonCacheWriter.pageMarker(romFs:metadata().sha1, pageKind, pageId, manifest)
-  return MonCacheWriter.stagePage(artifact, {
+  local bundle = {
     kind = pageKind,
     pageId = pageId,
     width = page.width,
     height = page.height,
     pixels = page.pixels,
     marker = marker,
-  })
+  }
+  if pageKind == "portraits" then
+    bundle.indicesR8 = assert(page.indicesR8, "portrait pages stage their index plane")
+    bundle.basePalettesRgb555 = assert(page.basePalettesRgb555, "portrait pages stage their base palettes")
+    bundle.paletteCount = assert(page.paletteCount, "portrait pages stage their palette count")
+  end
+  return MonCacheWriter.stagePage(artifact, bundle)
 end
 
 ---@param artifact table<string, unknown>

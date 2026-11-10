@@ -164,6 +164,7 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
     audio = audio,
     resources = resources,
     tasks = taskFactory(log),
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
   player:stepSourceTick({ tick = 1 })
@@ -208,6 +209,7 @@ function T.unawaited_children_stay_owned_after_the_main_stream_ends()
     audio = audio,
     resources = resources,
     tasks = taskFactory(log),
+    services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
   for _ = 1, 10 do

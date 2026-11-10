@@ -12,6 +12,13 @@
 -- picture metadata and motion archives). Stale v12 manifests without
 -- motion data must fail readiness; only the identity changes.
 --
+-- revision 14 / battle presentation v13 / scene v6 / effect v5 /
+-- cache v6 / mon-cache v3 / mon portrait manifest v3: battle programs
+-- decode to exact semantic instructions with native control flow, tasks
+-- run source state machines through one source clock with persistent
+-- picture/plane/palette state, and portrait pages publish exact indexed
+-- R8 and base RGB555 sidecars beside their raster pages. Stale payloads
+-- cannot execute or stage under the new strict validators.
 -- battlePresentation schema 11/cache v5: the global manifest carries the
 -- EvolutionScene SPL emitter set and its staged texture PNGs, the source
 -- main/sub/menu BG maps as normalized screen rasters, and tokenized retail
@@ -189,7 +196,7 @@
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 13
+DerivedAssetContract.revision = 14
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",
@@ -433,7 +440,7 @@ DerivedAssetContract.starterChoice = {
 -- hectograms (cacheFormat v2), so a stale v3 catalog without those facts
 -- must fail readiness.
 DerivedAssetContract.mons = {
-  cacheFormat = "mon-cache-v2",
+  cacheFormat = "mon-cache-v3",
   catalogSchema = "g4-mon-catalog-v5",
   -- v2 replaces the whole-atlas index with a page inventory: the index binds
   -- the catalog hash to one marker per icon/portrait page.
@@ -441,7 +448,7 @@ DerivedAssetContract.mons = {
   -- v2 replaces the single global image with per-page records: each selector
   -- entry carries its zero-based page id and page-local rectangles.
   iconManifestSchema = "g4-mon-icon-manifest-v2",
-  portraitManifestSchema = "g4-mon-portrait-manifest-v2",
+  portraitManifestSchema = "g4-mon-portrait-manifest-v3",
 }
 
 -- The battle input class carries the source-independent native battle,
@@ -470,13 +477,13 @@ DerivedAssetContract.trainerCatalog = {
 -- voices name shared audio sequence symbols instead of staging private
 -- sound payloads).
 DerivedAssetContract.battlePresentation = {
-  cacheFormat = "battle-presentation-cache-v5",
+  cacheFormat = "battle-presentation-cache-v6",
   schema = "g4-battle-presentation-v13",
   trainerPictureSchema = "g4-battle-trainer-picture-v1",
   ballSchema = "g4-battle-ball-v1",
   evolutionSchema = "g4-battle-evolution-v1",
-  sceneSchema = "g4-battle-scene-v5",
-  effectSchema = "g4-battle-effect-v4",
+  sceneSchema = "g4-battle-scene-v6",
+  effectSchema = "g4-battle-effect-v5",
 }
 
 DerivedAssetContract.encounterCatalog = {

@@ -29,7 +29,7 @@ end
 
 local function effectArtifact()
   return {
-    schema = "g4-battle-effect-v4",
+    schema = "g4-battle-effect-v5",
     key = "synthetic-effect-probe",
     catalogIdentity = "synthetic-catalog",
     program = {
@@ -57,6 +57,7 @@ local function effectArtifact()
     requiredContext = {
       actors = { type = "battle-actors" },
     },
+    displayPolicy = { suspendHealthbarUpdates = true, updateBattlerG3 = false },
   }
 end
 
@@ -78,6 +79,31 @@ function T.effect_artifacts_carry_closed_programs_and_typed_context()
   local unknownKind = effectArtifact()
   unknownKind.resources["synthetic-palette"] = { kind = "mystery" }
   Assert.isFalse(Schema.isValidEffect(unknownKind), "unknown resource kinds never validate")
+end
+
+function T.effect_artifacts_carry_their_complete_root_display_policy()
+  local Schema = animationSchema()
+  assert(Schema ~= nil, "the effect schema is available")
+  local artifact = effectArtifact()
+  Assert.deepEqual(
+    artifact.displayPolicy,
+    { suspendHealthbarUpdates = true, updateBattlerG3 = false },
+    "the fixture carries the complete root display policy"
+  )
+  local valid, failure = Schema.isValidEffect(artifact)
+  Assert.isTrue(valid, "a closed synthetic effect with its policy validates: " .. tostring(failure))
+  local missing = effectArtifact()
+  missing.displayPolicy = nil
+  Assert.isFalse(Schema.isValidEffect(missing), "a root without its display policy never validates")
+  local partial = effectArtifact()
+  partial.displayPolicy = { suspendHealthbarUpdates = true }
+  Assert.isFalse(Schema.isValidEffect(partial), "a half-named display policy never validates")
+  local invented = effectArtifact()
+  invented.displayPolicy = { suspendHealthbarUpdates = true, updateBattlerG3 = false, hideHud = true }
+  Assert.isFalse(Schema.isValidEffect(invented), "a display policy with extra fields never validates")
+  local guessed = effectArtifact()
+  guessed.displayPolicy = { suspendHealthbarUpdates = 1, updateBattlerG3 = false }
+  Assert.isFalse(Schema.isValidEffect(guessed), "a non-boolean display policy never validates")
 end
 
 function T.visual_task_background_load_carries_its_staged_slots()
