@@ -348,4 +348,59 @@ function T.menu_task_rejects_out_of_range_saved_logical_state()
   Assert.equal(err.code, "SCRIPT_TASK_UNSERIALIZABLE")
 end
 
+-- Retail script list menus (ScriptMenu_ListTask) blip SELECT on row
+-- change and on confirm/cancel: the Buy/Sell/See Ya choice must not be
+-- silent, and repeating the focused row must not replay the cue.
+-- Retail script list menus (ScriptMenu_ListTask) blip SELECT on row
+-- change and on confirm/cancel: the Buy/Sell/See Ya choice must not be
+-- silent, and repeating the focused row must not replay the cue.
+function T.menu_task_plays_the_source_select_cue_on_move_decision_and_cancel()
+  local played = {}
+  local audio = {
+    play = function(_, sequence)
+      played[#played + 1] = sequence
+    end,
+  }
+  local function fresh()
+    local host = RecordingMenuHost.new()
+    local state = MenuTask.create({ menu = MENU_SPEC }, { services = { menu = host } })
+    return host, state
+  end
+  local host, state = fresh()
+  local function poll(events, tick)
+    return MenuTask.poll(state, {
+      services = { menu = host, audio = audio },
+      input = { menuEvents = events },
+      tick = tick,
+    })
+  end
+  poll({ { type = "focus", itemIndex = 1 } }, 100)
+  Assert.deepEqual(played, { "SEQ_SE_DP_SELECT" }, "moving to a new row sounds once")
+  poll({ { type = "focus", itemIndex = 1 } }, 101)
+  Assert.deepEqual(
+    played,
+    { "SEQ_SE_DP_SELECT" },
+    "repeating the focused row stays silent"
+  )
+  local outcome = poll({ { type = "confirm" } }, 102)
+  Assert.deepEqual(
+    played,
+    { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" },
+    "confirming the choice sounds once more"
+  )
+  Assert.isTrue(outcome.complete, "confirmation completes the menu task")
+  Assert.equal(outcome.result, 99, "confirmation resolves the focused value")
+
+  played = {}
+  host, state = fresh()
+  local cancelled = MenuTask.poll(state, {
+    services = { menu = host, audio = audio },
+    input = { menuEvents = { { type = "cancel" } } },
+    tick = 100,
+  })
+  Assert.deepEqual(played, { "SEQ_SE_DP_SELECT" }, "cancelling the list menu sounds like the source")
+  Assert.isTrue(cancelled.complete, "cancellation completes the menu task")
+  Assert.equal(cancelled.result, -1, "cancellation resolves the cancel value")
+end
+
 return { tests = T }

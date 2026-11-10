@@ -1103,6 +1103,13 @@ function FieldPresentationResources:drawMart(host)
     status.presentation,
     { icons = assert(self.itemIconProvider, "mart rendering requires the shared item icons") }
   )
+  -- The mart paints its resolved outer frames through the shared
+  -- selected-frame pipeline like every other application does.
+  drawApplicationFrames(
+    assert(love and love.graphics, "mart frame drawing requires its host graphics namespace"),
+    self,
+    status.presentation
+  )
 end
 
 -- Leases the one banner skin the status names and borrows the compiled

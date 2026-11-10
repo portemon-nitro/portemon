@@ -664,6 +664,10 @@ local function prepareQuote(session, entry, quantity, selling)
     total = total,
     currency = currency,
     displayItemKey = entry.displayItemKey,
+    -- The receipt message family depends on where the item lands, not on
+    -- which balance paid for it: an Apricorn or Data Card bought with
+    -- athlete points reads differently from a Bag item bought the same way.
+    destinationKind = entry.destination.kind,
     bindings = {
       itemName = service._items:item(entry.displayItemKey).name,
       pocketName = service._items:pocketName(service._items:item(entry.displayItemKey).pocket),

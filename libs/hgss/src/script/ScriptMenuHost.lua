@@ -154,16 +154,13 @@ function ScriptMenuHost:beginMenu(spec)
     messageSource = { kind = "script", bank = messageSource.bank }
   end
   local cancelValue = spec.cancelValue
-  if cancelValue == nil and spec.cancellable then
-    cancelValue = MenuProtocol.CANCEL_RESULT
-  end
   return {
     messageSource = messageSource,
     initialCursor = spec.initialCursor,
     cancellable = spec.cancellable,
-    -- HGSS's list-menu cancellation result. This compatibility
-    -- detail stays at the imported-script boundary; public menu APIs supply
-    -- their cancellation value explicitly.
+    -- The retail list menu carries no cancellation value: B selects the
+    -- last row, so the builder leaves cancellation unresolved until
+    -- execute() can name the last item value.
     cancelValue = cancelValue,
     result = spec.result,
     items = {},
@@ -218,6 +215,12 @@ function ScriptMenuHost:execute(builder, textArgs)
     cancelValue = builder.cancelValue,
     result = builder.result,
   }
+  if request.cancellable and request.cancelValue == nil then
+    -- Source B behavior for a cancellable list menu (touchscreen choice
+    -- menu list input): the cursor jumps to the last row and confirms it,
+    -- so cancellation carries the last item value instead of a synthetic one.
+    request.cancelValue = items[#items].value
+  end
   return request
 end
 

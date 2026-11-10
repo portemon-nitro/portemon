@@ -327,7 +327,12 @@ function MartAssetSchema.assertManifest(manifest)
   end
 
   local upper = manifest.upper
-  keys(upper, { backgrounds = true, description = true, itemAnchor = true }, MANIFEST_ERROR, "upper")
+  keys(
+    upper,
+    { backgrounds = true, description = true, itemAnchor = true, visibleRect = true, padColor = true },
+    MANIFEST_ERROR,
+    "upper"
+  )
   keys(upper.backgrounds, { items = true, legacy = true }, MANIFEST_ERROR, "upper.backgrounds")
   checkVisual(upper.backgrounds.items, MANIFEST_ERROR, "upper.backgrounds.items")
   checkVisual(upper.backgrounds.legacy, MANIFEST_ERROR, "upper.backgrounds.legacy")
@@ -335,6 +340,20 @@ function MartAssetSchema.assertManifest(manifest)
   checkTextBox(upper.description.items, MANIFEST_ERROR, "upper.description.items")
   checkTextBox(upper.description.legacy, MANIFEST_ERROR, "upper.description.legacy")
   checkPoint(upper.itemAnchor, MANIFEST_ERROR, "upper.itemAnchor")
+  local function checkPadColor(value, what)
+    keys(value, { r = true, g = true, b = true }, MANIFEST_ERROR, what)
+    integer(value.r, MANIFEST_ERROR, what .. ".r", 0, 255)
+    integer(value.g, MANIFEST_ERROR, what .. ".g", 0, 255)
+    integer(value.b, MANIFEST_ERROR, what .. ".b", 0, 255)
+  end
+  -- The native upper pane is 256x192 logical pixels, matching the
+  -- interface clip contract below.
+  if upper.visibleRect.x + upper.visibleRect.width > 256 or upper.visibleRect.y + upper.visibleRect.height > 192 then
+    fail(MANIFEST_ERROR, "upper.visibleRect must stay inside the upper pane", {})
+  end
+  keys(upper.padColor, { items = true, legacy = true }, MANIFEST_ERROR, "upper.padColor")
+  checkPadColor(upper.padColor.items, "upper.padColor.items")
+  checkPadColor(upper.padColor.legacy, "upper.padColor.legacy")
 
   local lower = manifest.lower
   keys(lower, {

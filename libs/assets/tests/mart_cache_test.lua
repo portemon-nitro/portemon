@@ -132,6 +132,8 @@ local function manifest()
       backgrounds = { items = visual("upper-items"), legacy = visual("upper-legacy") },
       description = { items = textBox(), legacy = textBox() },
       itemAnchor = { x = 0, y = 0 },
+      visibleRect = { x = 0, y = 141, width = 256, height = 51 },
+      padColor = { items = { r = 16, g = 82, b = 189 }, legacy = { r = 8, g = 58, b = 173 } },
     },
     lower = {
       backgrounds = { browse = browse, quantity = visual("quantity"), confirm = visual("confirm") },

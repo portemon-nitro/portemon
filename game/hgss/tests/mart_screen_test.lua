@@ -126,6 +126,8 @@ local function manifest()
       backgrounds = { items = visual("upper-items"), legacy = visual("upper-legacy") },
       description = { items = textBox(), legacy = textBox() },
       itemAnchor = { x = 0, y = 0 },
+      visibleRect = { x = 0, y = 141, width = 256, height = 51 },
+      padColor = { items = { r = 16, g = 82, b = 189 }, legacy = { r = 8, g = 58, b = 173 } },
     },
     lower = {
       backgrounds = {
@@ -248,7 +250,7 @@ function T.live_resize_cancels_pointer_capture_and_disposal_is_idempotent()
 
   Assert.equal(state:status().state, "browse", "the purchase child begins open")
   state:step({ { type = "pointer_down", pointerId = "mart-touch", x = 4, y = 4 } })
-  width = 512
+  width, height = 800, 400
   state:refreshPresentation()
   local resized = state:status()
   Assert.equal(#resized.presentation.panes, 2, "the live wide display publishes both mart panes")
@@ -265,6 +267,138 @@ function T.live_resize_cancels_pointer_capture_and_disposal_is_idempotent()
   state:dispose()
   state:dispose()
   resources.session:close()
+end
+
+function T.composed_layouts_clip_the_upper_pane_and_carry_the_compact_description()
+  local loaded, MartScreenState = pcall(require, "game.hgss.src.mart.MartScreenState")
+  Assert.isTrue(loaded, "the purchase screen composition is required")
+
+  local resources = serviceFixture()
+  local width, height = 256, 192
+  local state = MartScreenState.new({
+    session = resources.session,
+    manifest = manifest(),
+    uiManifest = FieldUiFixture.manifest(),
+    fontDef = FieldDialogueFixture.fontDef(),
+    textPolicy = { interGlyphDelay = 2, glyphBudget = 1, abAcceleration = true },
+    effect = function(_) end,
+    measureDisplay = function()
+      return displayMeasurement(width, height)
+    end,
+    frameIndex = 0,
+  })
+  local ok, failure = xpcall(function()
+    local compact = state:status()
+    Assert.equal(compact.state, "browse", "the child opens in browse")
+    Assert.equal(#compact.presentation.panes, 1, "the compact display keeps only the lower pane")
+    Assert.notNil(compact.descriptionBox, "the compact composition carries the flipping description box")
+    Assert.equal(compact.descriptionBox.y, 141, "the top-row compact box keeps the source strip rows")
+    width, height = 1280, 720
+    state:refreshPresentation()
+    local wide = state:status()
+    local upper, lower
+    for _, pane in ipairs(wide.presentation.panes) do
+      if pane.id == "upper" then
+        upper = pane
+      elseif pane.id == "lower" then
+        lower = pane
+      end
+    end
+    Assert.notNil(upper, "the wide composition pairs the upper pane")
+    Assert.notNil(lower, "the wide composition pairs the lower pane")
+    Assert.equal(
+      upper.placement.frame.height,
+      56 * lower.placement.pixelScale,
+      "the composed upper slot spans strip plus blue padding"
+    )
+    Assert.equal(
+      lower.placement.frame.y,
+      upper.placement.frame.y + 56 * lower.placement.pixelScale,
+      "the composed lower pane stacks below the padded slot"
+    )
+    Assert.equal(#wide.presentation.frames, 1, "the clipped pair keeps one outer frame")
+  end, debug.traceback)
+  state:dispose()
+  resources.session:close()
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- The field mart host paints through the shared outer-frame pipeline
+-- like every other application: content first, then one selected frame
+-- per resolved frame record. A frameless plan paints no extra chrome.
+-- This is a synthetic pipeline check, so it lives with the cheap
+-- composition tests instead of the ROM graphics suite.
+function T.draw_mart_paints_the_resolved_outer_frames(_, context)
+  if not (love and love.graphics) then
+    context:skip("the mart frame proof needs its host graphics namespace")
+  end
+  local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
+  local draws = {}
+  local framed = {}
+  local owner = {
+    martRenderer = {
+      draw = function(_, status, plan, collaborators)
+        draws[#draws + 1] = { status = status, plan = plan, collaborators = collaborators }
+      end,
+    },
+    itemIconProvider = { id = "test-icons" },
+    windowRenderer = {
+      drawApplicationFrame = function(_, box, frameIndex)
+        framed[#framed + 1] = { box = box, frameIndex = frameIndex }
+      end,
+    },
+    applicationFrameIndex = 3,
+  }
+  local function placement()
+    return {
+      frame = { x = 100, y = 60, width = 512, height = 486 },
+      origin = { x = 100, y = 60 },
+      scale = 2,
+      logicalWidth = 256,
+      logicalHeight = 243,
+      clipRect = { x = 100, y = 60, width = 512, height = 486 },
+      pixelScale = 2,
+      pixelRatio = 1,
+    }
+  end
+  local contentBox = { x = 8, y = 7, width = 256, height = 248 }
+  local plan = {
+    panes = { { id = "lower", placement = placement(), interactive = true } },
+    frames = { { placement = placement(), contentBox = contentBox } },
+    content = {},
+    inputKey = "mart",
+    render = function() end,
+    mapInput = function() end,
+  }
+  local status = { martKind = "buy", open = true, presentation = plan }
+  local host = {
+    status = function()
+      return status
+    end,
+  }
+  FieldPresentationResources.drawMart(owner, host)
+  Assert.equal(#draws, 1, "the mart host draws content before chrome")
+  Assert.equal(#framed, 1, "the mart host paints the resolved outer frame")
+  Assert.deepEqual(framed[1].box, contentBox, "the outer frame hugs the resolved content box")
+  Assert.equal(framed[1].frameIndex, 3, "the outer frame uses the player-selected frame")
+  local bare = {
+    panes = plan.panes,
+    frames = {},
+    content = {},
+    inputKey = "mart",
+    render = function() end,
+    mapInput = function() end,
+  }
+  local bareStatus = { martKind = "buy", open = true, presentation = bare }
+  FieldPresentationResources.drawMart(owner, {
+    status = function()
+      return bareStatus
+    end,
+  })
+  Assert.equal(#draws, 2, "the frameless plan still draws its content")
+  Assert.equal(#framed, 1, "a frameless plan paints no extra chrome")
 end
 
 local function advanceUntil(state, label, expectedState, limit)

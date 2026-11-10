@@ -1167,6 +1167,19 @@ function BagController:_adjustSaleQuantity(delta, touch)
   end
   if before ~= self._quantity then
     self:_play(EFFECT.quantity)
+    self:_refreshSaleTotal()
+  end
+end
+
+-- Reprints the wallet-scaled total for the picked quantity, like the
+-- source PrintSellPrice on every picker step. A failed quote keeps the
+-- last displayed total; the offer re-quotes authoritatively on confirm,
+-- so this never owns the commit token.
+function BagController:_refreshSaleTotal()
+  local token, terms =
+    self._saleSession:quoteSell(assert(self._actionItemKey, "sale totals quote the snapshotted item"), self._quantity)
+  if token ~= nil then
+    self._saleDisplayedTotal = assert(terms.total, "a sale quote carries its total")
   end
 end
 
@@ -1285,6 +1298,7 @@ function BagController:_beginSaleSelection()
   self._saleSoundAttempted = false
   self._salePostCommitBusy = false
   self._saleBalance = assert(self._saleSession:view().balance, "sale session exposes the current balance")
+  self:_refreshSaleTotal()
   if owned == 1 then
     self:_prepareSaleOffer()
   else
@@ -1403,8 +1417,10 @@ function BagController:_stepSaleQuantity(uiInput)
       self:_stepMessage(accelerate)
       return
     end
-    self._message = nil
-    return
+    -- The quantity prompt stays visible through quantity input like the
+    -- source wide message window: a tick that finishes typing returns so
+    -- the accelerating edge cannot confirm, while an already-complete
+    -- prompt falls through to quantity input below on fresh edges.
   end
   for _, event in ipairs(uiInput) do
     validateBagEvent(event)
@@ -1493,7 +1509,9 @@ function BagController:_stepSaleRefusal(uiInput)
     self:_stepMessage(false)
     return
   end
-  self._message = nil
+  -- The completed refusal stays in its window until the ack press
+  -- clears it on the way back to browsing, exactly like the retail
+  -- wait state. Clearing here would blank the ack screen instead.
   self._state = "sale_ack"
 end
 

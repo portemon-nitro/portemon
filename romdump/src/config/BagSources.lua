@@ -282,10 +282,14 @@ BagSources.selectedItem = {
 
 -- Lower message windows from the ov15_021FE204 window table: the framed
 -- +0x24 window carries the action/move messages (43/46) and the framed
--- +0x34 window carries the toss confirmation/result messages (55/54).
+-- +0x34 window carries the toss confirmation/result messages (55/54). The
+-- sale quantity prompt and offer print in the dedicated wide window
+-- (dynWindows[21] at tiles (11, 1), 18x4), which sits beside the wallet
+-- window instead of covering it.
 BagSources.lowerMessages = {
   selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
   modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+  wide = { contentRect = { x = 88, y = 8, width = 144, height = 32 } },
 }
 
 -- Activation feedback cadence (ov15_021FD7D0 setup, ov15_021FD850 step):
@@ -447,6 +451,12 @@ BagSources.messages = {
     confirm = { bank = 10, index = 5 },
     use = { bank = 10, index = 0 },
     give = { bank = 10, index = 3 },
+  },
+  -- Sale chrome labels: the wallet caption and the sale-specific confirm
+  -- button read. The sale confirm prints SELL, never the generic CONFIRM.
+  saleLabels = {
+    money = { bank = 10, index = 80 },
+    sell = { bank = 10, index = 86 },
   },
   templates = {
     movePrompt = { bank = 10, index = 46 },
@@ -610,9 +620,15 @@ BagSources.geometry = {
 -- controls in ov15_021FCDE4: +10, +1, -10, and -1. The same increment and
 -- decrement face animations serve both quantity modes; sale has distinct
 -- hit targets and amount placement. Its item, wallet, and total windows are
--- written by ov15_021FF7FC, ov15_021FF29C, and ov15_021FFFDC.
+-- written by ov15_021FF7FC, ov15_021FF29C, and ov15_021FFFDC: the wallet
+-- window is the 9x4 tile window at (0, 0) with its label at (4, 0) and its
+-- amount right-aligned to window x+60 at y+16, the total window is the 8x3
+-- tile window at (24, 14) with its amount right-aligned at window (0, 4),
+-- and the two amount digits fill the first two quantity digit windows at
+-- tiles (16, 14) and (20, 14), each 2x3 tiles. The confirm button prints
+-- SELL (msg 86), not the generic CONFIRM label.
 BagSources.saleQuantity = {
-  digits = { rect(160, 112, 16, 24), rect(192, 112, 16, 24) },
+  digits = { rect(128, 112, 16, 24), rect(160, 112, 16, 24) },
   controls = {
     { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
     { delta = 1, role = "increment", center = { x = 168, y = 104 }, hitRect = rect(152, 88, 32, 24) },
@@ -633,9 +649,9 @@ BagSources.saleQuantity = {
   },
   selectedItem = BagSources.selectedItem,
   money = {
-    x = 168,
-    y = 8,
-    width = 80,
+    x = 0,
+    y = 16,
+    width = 60,
     height = 16,
     fontId = 0,
     textX = 0,
@@ -643,14 +659,15 @@ BagSources.saleQuantity = {
     alignment = "right",
     paletteRole = "foreground",
   },
+  moneyLabelAt = { x = 4, y = 0 },
   total = {
-    x = 168,
-    y = 24,
-    width = 80,
-    height = 16,
+    x = 192,
+    y = 112,
+    width = 64,
+    height = 24,
     fontId = 0,
     textX = 0,
-    textY = 0,
+    textY = 4,
     alignment = "right",
     paletteRole = "foreground",
   },

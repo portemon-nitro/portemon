@@ -3,6 +3,8 @@
 
 local Assert = require("tests.support.Assert")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MartInterface = require("game.hgss.src.mart.MartInterface")
 local MartFixture = require("tests.support.MartFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -95,24 +97,53 @@ function T.native_like_shows_only_the_interactive_lower_pane()
   uncropped(plan.panes[1].placement, "native lower pane")
 end
 
-function T.wide_and_tall_pair_source_panes_without_gap_or_reflow()
+function T.wide_and_tall_clip_stack_and_pad_the_pair_without_gap_or_reflow()
   local set = interfaces()
-  local wide = resolve(set, "wide", single(1280, 720))
-  local wideUpper, wideLower = pane(wide, "upper"), pane(wide, "lower")
-  Assert.isFalse(wideUpper.interactive)
-  Assert.isTrue(wideLower.interactive)
-  Assert.equal(wideUpper.placement.pixelScale, wideLower.placement.pixelScale)
-  Assert.equal(wideLower.placement.frame.x, wideUpper.placement.frame.x + 256 * wideUpper.placement.pixelScale)
-  uncropped(wideUpper.placement, "wide upper pane")
-  uncropped(wideLower.placement, "wide lower pane")
-  Assert.equal(#wide.frames, 1, "the pair reserves one independent application frame")
-
-  local tall = resolve(set, "tall", single(600, 1000))
-  local tallUpper, tallLower = pane(tall, "upper"), pane(tall, "lower")
-  Assert.equal(tallUpper.placement.pixelScale, tallLower.placement.pixelScale)
-  Assert.equal(tallLower.placement.frame.y, tallUpper.placement.frame.y + 192 * tallUpper.placement.pixelScale)
-  uncropped(tallLower.placement, "tall lower pane")
-  Assert.equal(#tall.frames, 1, "the tall pair reserves one independent application frame")
+  local cases = {
+    { key = "wide", width = 1280, height = 720 },
+    { key = "tall", width = 600, height = 1000 },
+  }
+  for _, case in ipairs(cases) do
+    local plan = resolve(set, case.key, single(case.width, case.height))
+    local upper, lower = pane(plan, "upper"), pane(plan, "lower")
+    Assert.isFalse(upper.interactive, case.key .. " keeps the upper strip non-interactive")
+    Assert.isTrue(lower.interactive, case.key .. " keeps the lower pane interactive")
+    Assert.equal(upper.placement.pixelScale, lower.placement.pixelScale, case.key .. " shares one integer scale")
+    -- The opaque 51-row strip sits top-aligned in its 8px-padded 56-row
+    -- slot; the renderer paints the 5 padding rows below it with the strip
+    -- background blue, so the frame content stays 8px-compatible with no
+    -- transparent air.
+    Assert.equal(
+      upper.placement.frame.height,
+      56 * upper.placement.pixelScale,
+      case.key .. " padded upper slot spans strip plus blue"
+    )
+    Assert.equal(
+      lower.placement.frame.y,
+      upper.placement.frame.y + 56 * upper.placement.pixelScale,
+      case.key .. " stacks the lower pane below the padded slot"
+    )
+    uncropped(upper.placement, case.key .. " upper pane")
+    uncropped(lower.placement, case.key .. " lower pane")
+    Assert.equal(#plan.frames, 1, case.key .. " reserves one independent application frame")
+    local contentBox = assert(plan.frames[1].contentBox, case.key .. " frame carries its content box")
+    Assert.equal(contentBox.width % 8, 0, case.key .. " frame content stays 8px-compatible wide")
+    Assert.equal(contentBox.height % 8, 0, case.key .. " frame content stays 8px-compatible tall")
+    local tiles = FieldDialogueTheme.applicationFrameTilePlacements(contentBox)
+    Assert.isTrue(
+      #tiles.top > 0 and #tiles.sides > 0 and #tiles.bottom > 0,
+      case.key .. " frame content tiles without raising the 8px contract"
+    )
+  end
+  -- The wide slot keeps full logical rows for the renderer while its top
+  -- maps to the first opaque source row.
+  local wideUpper = pane(resolve(set, "wide", single(1280, 720)), "upper")
+  Assert.equal(wideUpper.placement.logicalHeight, 192, "the padded upper keeps full logical rows for the renderer")
+  Assert.equal(wideUpper.placement.logicalWidth, 256, "the padded upper keeps full logical columns")
+  local logicalX, logicalY =
+    LayoutGeometry.hostToLogical(wideUpper.placement, wideUpper.placement.frame.x, wideUpper.placement.frame.y)
+  Assert.equal(logicalX, 0, "the padded upper slot starts at the visible rect origin")
+  Assert.equal(logicalY, 141, "the slot top maps to the first opaque row")
 end
 
 function T.dual_display_uses_world_for_upper_and_auxiliary_for_interaction()
@@ -128,7 +159,7 @@ function T.dual_display_uses_world_for_upper_and_auxiliary_for_interaction()
   uncropped(lower.placement, "dual lower pane")
 end
 
-function T.input_is_already_lower_local_and_outside_press_becomes_dismiss()
+function T.input_is_already_lower_local_and_outside_presses_are_dropped()
   local set = interfaces()
   local plan = resolve(set, "nativeLike", single(640, 480))
   local view = { state = "quantity", quantity = 3 }
@@ -138,10 +169,9 @@ function T.input_is_already_lower_local_and_outside_press_becomes_dismiss()
     event,
     "pane-local pointer coordinates reach the controller unchanged"
   )
-  Assert.deepEqual(
+  Assert.isNil(
     plan.mapInput({ type = "pointer_down", pointerId = "touch:0", outside = true }, view, plan),
-    { type = "dismiss" },
-    "an outside press is a dismissal intent"
+    "an outside press never closes the modal shop"
   )
 end
 

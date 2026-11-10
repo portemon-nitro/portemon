@@ -1057,17 +1057,13 @@ local function compileLowerBackgrounds(lower, cancelFace, moveMarkerRects, brows
     moveSlots = "move-slots",
     actionOverlay = "action-overlay",
     quantityOverlay = "quantity-overlay",
+    saleQuantity = "sale-quantity",
   }
   local backgrounds = {}
-  local saleScreen = rasterizeScreen(
-    lower.charData,
-    effectiveLowerPalette(lower.colors, 0).colors,
-    assert(lower.screens["sale-quantity"]),
-    "sale-quantity"
-  )
-  saleScreen = RgbaImage.crop(saleScreen, { x = 0, y = 0, width = 256, height = 192 }, "interactive sale quantity")
-  local salePath = BagCache.assetDir() .. "/background-sale-quantity.png"
-  assets[salePath] = PngWriter.encode(saleScreen.width, saleScreen.height, saleScreen.pixels)
+  -- The sale quantity screen is realized once per pocket like the other
+  -- overlays: the lower palette follows the entry pocket and the sale
+  -- flow never switches pockets, so each pocket keeps its own screen.
+  backgrounds.saleOverlay = compileStateOverlay(lower, screenRoles.saleQuantity, "background-sale-quantity", assets)
   backgrounds.actionOverlay = compileStateOverlay(lower, screenRoles.actionOverlay, "background-action-overlay", assets)
   backgrounds.quantityOverlay =
     compileStateOverlay(lower, screenRoles.quantityOverlay, "background-quantity-overlay", assets)
@@ -1079,7 +1075,7 @@ local function compileLowerBackgrounds(lower, cancelFace, moveMarkerRects, brows
   backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, browseCellRects, assets)
   assert(browseCellRects, "browse rows carry their cell rects")
   backgrounds.browseCells = browseCellRects
-  return backgrounds, { image = salePath, width = saleScreen.width, height = saleScreen.height }
+  return backgrounds
 end
 
 -- Semantic message lowering. The pinned Bag messages carry two STRVAR
@@ -1201,6 +1197,11 @@ local function compileText(messageArchive, dependencies)
     local selector = BagSources.messages.templates[name]
     saleMessages[name] = lowerTemplate(bankOf(selector.bank), selector.bank, selector.index, "template:" .. name)
   end
+  local saleLabels = {}
+  for _, name in ipairs({ "money", "sell" }) do
+    local selector = BagSources.messages.saleLabels[name]
+    saleLabels[name] = lowerLabel(bankOf(selector.bank), selector.bank, selector.index, "sale-label:" .. name)
+  end
   return {
     actions = labels,
     movePrompt = templates.movePrompt,
@@ -1208,7 +1209,8 @@ local function compileText(messageArchive, dependencies)
     tossResult = templates.tossResult,
     selectedItem = templates.selectedItem,
   },
-    saleMessages
+    saleMessages,
+    saleLabels
 end
 
 -- Normalizes the audited toss-confirmation prompt template to the runtime
@@ -1539,12 +1541,12 @@ local function _compile(romFs)
     )
   end
   assert(messageArchive ~= nil, "unavailable message archives fail above")
-  local text, saleMessages = compileText(messageArchive, dependencies)
+  local text, saleMessages, saleLabels = compileText(messageArchive, dependencies)
   local moveSummary = compileMoveSummary(messageArchive, dependencies)
   moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
   local earlyGeometry = BagPresentationCompiler.compileGeometry(BagSources)
-  local backgrounds, saleQuantityBackground = compileLowerBackgrounds(
+  local backgrounds = compileLowerBackgrounds(
     lower,
     sprites.cancelFace,
     earlyGeometry.moveMarkerRects,
@@ -1694,7 +1696,6 @@ local function _compile(romFs)
       text = text,
       sale = {
         pressTicks = geometry.sale.pressTicks,
-        quantityBackground = saleQuantityBackground,
         digits = geometry.sale.digits,
         controls = geometry.sale.controls,
         confirm = {
@@ -1711,6 +1712,11 @@ local function _compile(romFs)
         },
         selectedItem = geometry.sale.selectedItem,
         money = geometry.sale.money,
+        moneyLabelAt = geometry.sale.moneyLabelAt,
+        labels = {
+          money = saleLabels.money,
+          sell = saleLabels.sell,
+        },
         total = geometry.sale.total,
         compactPrompt = geometry.sale.compactPrompt,
         messages = {
@@ -1764,6 +1770,7 @@ local function _compile(romFs)
         messages = {
           selected = { contentRect = BagSources.lowerMessages.selected.contentRect },
           modal = { contentRect = BagSources.lowerMessages.modal.contentRect },
+          wide = { contentRect = BagSources.lowerMessages.wide.contentRect },
         },
       },
     },

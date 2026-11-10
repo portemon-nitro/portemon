@@ -269,6 +269,7 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
       browseCells = true,
       actionOverlay = true,
       quantityOverlay = true,
+      saleOverlay = true,
       move = true,
       moveMarker = true,
     }, schemaContext, "interactive.backgrounds")
@@ -308,7 +309,7 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
         end
       end
     end
-    for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
+    for _, state in ipairs({ "actionOverlay", "quantityOverlay", "saleOverlay" }) do
       local pockets = backgrounds[state]
       local what = "interactive.backgrounds." .. state
       Checks.checkRecord(pockets, POCKET_SET, schemaContext, what, "a pocket record")
@@ -579,25 +580,19 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
   local function checkSale(sale, schemaContext)
     Checks.checkRecord(sale, {
       pressTicks = true,
-      quantityBackground = true,
       digits = true,
       controls = true,
       confirm = true,
       cancel = true,
       selectedItem = true,
       money = true,
+      moneyLabelAt = true,
+      labels = true,
       total = true,
       compactPrompt = true,
       messages = true,
     }, schemaContext, "interactive.sale")
     Checks.checkInteger(sale.pressTicks, schemaContext, "interactive.sale.pressTicks", 1, nil, "a positive integer")
-    Checks.checkImage(sale.quantityBackground, schemaContext, "interactive.sale.quantityBackground")
-    if
-      sale.quantityBackground.width ~= constantsForValidation.PANE_WIDTH
-      or sale.quantityBackground.height ~= constantsForValidation.PANE_HEIGHT
-    then
-      Checks.reject("interactive.sale.quantityBackground must cover the lower pane", schemaContext)
-    end
     Checks.checkFixedArray(
       sale.digits,
       2,
@@ -681,6 +676,14 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
         Checks.reject(what .. ".paletteRole must be a semantic role", schemaContext)
       end
     end
+    checkPoint(sale.moneyLabelAt, schemaContext, "interactive.sale.moneyLabelAt")
+    Checks.checkRecord(sale.labels, { money = true, sell = true }, schemaContext, "interactive.sale.labels")
+    for _, key in ipairs({ "money", "sell" }) do
+      local label = sale.labels[key]
+      if type(label) ~= "string" or label == "" then
+        Checks.reject("interactive.sale.labels." .. key .. " must be a non-empty label", schemaContext)
+      end
+    end
     Checks.checkRecord(
       sale.compactPrompt,
       { x = true, y = true, shape = true, initialSelection = true },
@@ -735,10 +738,16 @@ function InteractiveValidation.validate(interactiveData, constantsForValidation)
   end
 
   -- Lower-message geometry: the short framed window for action/move
-  -- messages and the tall framed window for toss confirmation/result.
+  -- messages, the tall framed window for toss confirmation/result, and the
+  -- wide framed window for the sale quantity prompt and offer.
   local function checkMessages(messages, schemaContext)
-    Checks.checkRecord(messages, { selected = true, modal = true }, schemaContext, "interactive.overlays.messages")
-    for _, key in ipairs({ "selected", "modal" }) do
+    Checks.checkRecord(
+      messages,
+      { selected = true, modal = true, wide = true },
+      schemaContext,
+      "interactive.overlays.messages"
+    )
+    for _, key in ipairs({ "selected", "modal", "wide" }) do
       local window = messages[key]
       local what = "interactive.overlays.messages." .. key
       Checks.checkRecord(window, { contentRect = true }, schemaContext, what)

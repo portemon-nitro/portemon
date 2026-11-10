@@ -183,7 +183,10 @@ local function saveCapture(data, name)
 end
 
 local function sourceLayout(measured)
-  local set = MartInterface.defaults({ upper = {}, lower = {} })
+  local set = MartInterface.defaults({
+    upper = { visibleRect = { x = 0, y = 141, width = 256, height = 51 } },
+    lower = {},
+  })
   local selection = ApplicationLayout.selectSurfaces(measured)
   local context = {
     measurement = measured,
@@ -600,6 +603,20 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       pixelDiff(withEntry, errorPaint, 272, 8, 216, 32) > 0,
       versionId .. " error printing adds the generated source window and message pixels"
     )
+    local tallBox = manifest.lower.messages.tall
+    local fill = text:windowBackgroundColor()
+    local function errorPixel(x, y)
+      local r, g, b, a = errorPaint:getPixel(256 + tallBox.x + x, tallBox.y + y)
+      return r, g, b, a
+    end
+    local fr, fg, fb, fa = errorPixel(tallBox.width - 8, tallBox.height - 8)
+    Assert.isTrue(
+      math.abs(fr - fill[1]) < 0.01
+        and math.abs(fg - fill[2]) < 0.01
+        and math.abs(fb - fill[3]) < 0.01
+        and math.abs(fa - (fill[4] or 1)) < 0.01,
+      versionId .. " refusal fills the full message window opaque below the short single-line band"
+    )
 
     occupied.state = "selection_feedback"
     occupied.selection = 0
@@ -706,6 +723,43 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
       increment.anchor.x + amountFrame.offsetX + amountX,
       increment.anchor.y + amountFrame.offsetY + amountY
     )
+
+    local singleQuantity = {}
+    for keyName, value in pairs(quantity) do
+      singleQuantity[keyName] = value
+    end
+    singleQuantity.maxQuantity = 1
+    local gatedQuantity = draw(scope, renderer, icons, singleQuantity)
+    local stepAnchor = manifest.lower.quantity.decrement1.anchor
+    local stepRegion = { x = stepAnchor.x - 12, y = stepAnchor.y - 12, width = 36, height = 24 }
+    Assert.isTrue(
+      pixelDiff(quantityPaint, gatedQuantity, 256 + stepRegion.x, stepRegion.y, stepRegion.width, stepRegion.height) > 0,
+      versionId .. " a single affordable unit hides its quantity steppers"
+    )
+    local gatedData = gatedQuantity
+    local hidden = 0
+    for y = stepRegion.y, stepRegion.y + stepRegion.height - 1 do
+      for x = stepRegion.x, stepRegion.x + stepRegion.width - 1 do
+        assertSamePixel(
+          gatedData,
+          quantityBackground,
+          256 + x,
+          y,
+          x,
+          y,
+          versionId .. " hidden stepper backdrop at " .. x .. "," .. y
+        )
+        hidden = hidden + 1
+      end
+    end
+    Assert.isTrue(hidden > 0, versionId .. " the hidden stepper region is sampled")
+    local cancelBox = manifest.lower.cancelLabelBox
+    Assert.isTrue(countPalette(gatedQuantity, {
+      x = cancelBox.x + 256,
+      y = cancelBox.y,
+      width = math.min(cancelBox.width, text:textWidth(cancelLabel)),
+      height = cancelBox.height,
+    }, systemForeground) > 0, versionId .. " quantity keeps its generated cancel label beside buy")
 
     local confirming = {
       open = true,

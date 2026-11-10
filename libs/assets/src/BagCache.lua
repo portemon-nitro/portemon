@@ -70,7 +70,6 @@ function BagCache.referencedPaths(manifest)
     end
   end
   local interactive = manifest.interactive
-  addImage(interactive.sale.quantityBackground)
   addVisual(interactive.sale.confirm.visual)
   addVisual(interactive.sale.cancel.visual)
   for _, pocket in ipairs(BagAssetSchema.POCKETS) do
@@ -79,7 +78,7 @@ function BagCache.referencedPaths(manifest)
       addVisual(patch)
     end
   end
-  for _, state in ipairs({ "actionOverlay", "quantityOverlay" }) do
+  for _, state in ipairs({ "actionOverlay", "quantityOverlay", "saleOverlay" }) do
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       addVisual(interactive.backgrounds[state][pocket])
     end

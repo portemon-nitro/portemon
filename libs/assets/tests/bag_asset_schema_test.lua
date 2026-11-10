@@ -238,8 +238,16 @@ local function layeredBackgrounds()
     end
     overlays[state] = pockets
   end
+  do
+    local pockets = {}
+    for _, pocket in ipairs(POCKETS) do
+      pockets[pocket] = imageRef("assets/generated/bag/background-sale-quantity-" .. pocket .. ".png")
+    end
+    overlays.sale = pockets
+  end
   out.actionOverlay = overlays.action
   out.quantityOverlay = overlays.quantity
+  out.saleOverlay = overlays.sale
   local move = {}
   for _, pocket in ipairs(POCKETS) do
     local counts = {}
@@ -516,8 +524,7 @@ local function salePresentation()
   end
   return {
     pressTicks = 2,
-    quantityBackground = image("assets/generated/bag/background-sale-quantity.png"),
-    digits = { rect(160, 112, 16, 24), rect(192, 112, 16, 24) },
+    digits = { rect(128, 112, 16, 24), rect(160, 112, 16, 24) },
     controls = {
       { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
       { delta = 1, role = "increment", center = { x = 168, y = 104 }, hitRect = rect(152, 88, 32, 24) },
@@ -543,9 +550,9 @@ local function salePresentation()
       quantityAt = { x = 48, y = 16 },
     },
     money = {
-      x = 168,
-      y = 8,
-      width = 80,
+      x = 0,
+      y = 16,
+      width = 60,
       height = 16,
       fontId = 0,
       textX = 0,
@@ -553,14 +560,16 @@ local function salePresentation()
       alignment = "right",
       paletteRole = "foreground",
     },
+    moneyLabelAt = { x = 4, y = 0 },
+    labels = { money = "Money", sell = "SELL" },
     total = {
-      x = 168,
-      y = 24,
-      width = 80,
-      height = 16,
+      x = 192,
+      y = 112,
+      width = 64,
+      height = 24,
       fontId = 0,
       textX = 0,
-      textY = 0,
+      textY = 4,
       alignment = "right",
       paletteRole = "foreground",
     },
@@ -596,6 +605,7 @@ local function validFocusManifest()
   manifest.interactive.overlays.messages = {
     selected = { contentRect = rect(16, 8, 216, 16) },
     modal = { contentRect = rect(16, 8, 216, 32) },
+    wide = { contentRect = rect(88, 8, 144, 32) },
   }
   manifest.interactive.feedback = {
     totalTicks = 4,

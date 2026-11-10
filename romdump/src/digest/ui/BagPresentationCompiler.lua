@@ -384,6 +384,7 @@ function BagPresentationCompiler.compileGeometry(config)
       quantityAt = checkPoint(saleSource.selectedItem.quantityAt, "sale selected-item quantity anchor"),
     },
     money = checkTextBox(saleSource.money, "sale money text box"),
+    moneyLabelAt = checkPoint(saleSource.moneyLabelAt, "sale money label origin"),
     total = checkTextBox(saleSource.total, "sale total text box"),
     compactPrompt = {
       x = prompt.x * 8,

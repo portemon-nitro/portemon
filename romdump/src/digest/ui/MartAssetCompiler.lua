@@ -59,6 +59,89 @@ local function decode(kind, bytes, role)
   return value
 end
 
+-- The union opaque rectangle over the upper screens: the only content the
+-- wide/tall pairs center and frame. Both family screens share the same
+-- transparent top, so the union keeps the composition stable across kinds.
+---@param screens table<integer, { width: integer, height: integer, pixels: string }>
+---@return { x: integer, y: integer, width: integer, height: integer }
+local function unionOpaqueRect(screens)
+  assert(type(screens) == "table" and #screens > 0, "the upper visible rect needs its source screens")
+  local minX, minY, maxX, maxY
+  for _, screen in ipairs(screens) do
+    local width = assert(screen.width, "the rasterized upper screen carries its width")
+    local height = assert(screen.height, "the rasterized upper screen carries its height")
+    local pixels = assert(screen.pixels, "the rasterized upper screen carries its pixels")
+    for y = 0, height - 1 do
+      for x = 0, width - 1 do
+        local alpha = string.byte(pixels, (y * width + x) * 4 + 4) or 0
+        if alpha > 0 then
+          if minX == nil then
+            minX, minY, maxX, maxY = x, y, x, y
+          else
+            if x < minX then
+              minX = x
+            end
+            if y < minY then
+              minY = y
+            end
+            if x > maxX then
+              maxX = x
+            end
+            if y > maxY then
+              maxY = y
+            end
+          end
+        end
+      end
+    end
+  end
+  assert(minX ~= nil, "the upper screens carry opaque pixels")
+  return { x = minX, y = minY, width = maxX - minX + 1, height = maxY - minY + 1 }
+end
+
+-- The dominant RGB of one rendered upper screen's bottom opaque row: the
+-- layout pads the opaque strip down to the 8px frame grid, and the
+-- renderer paints those padding rows with this darker strip edge shade
+-- so the padded slot extends the segment instead of showing
+-- transparent air. The edge row is a solid border line, so the maximum
+-- count is stable across text and icon placement.
+---@param screen { width: integer, height: integer, pixels: string }
+---@return { r: integer, g: integer, b: integer }
+local function bottomEdgeColor(screen)
+  local width = assert(screen.width, "the rasterized upper screen carries its width")
+  local height = assert(screen.height, "the rasterized upper screen carries its height")
+  local pixels = assert(screen.pixels, "the rasterized upper screen carries its pixels")
+  local bottomY
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      if (string.byte(pixels, (y * width + x) * 4 + 4) or 0) > 0 then
+        bottomY = y
+      end
+    end
+  end
+  assert(bottomY ~= nil, "the upper screen carries opaque pixels")
+  local counts = {}
+  local bestKey, bestCount = nil, 0
+  for x = 0, width - 1 do
+    local base = (bottomY * width + x) * 4 + 1
+    if (string.byte(pixels, base + 3) or 0) > 0 then
+      local key = string.byte(pixels, base)
+        .. ","
+        .. string.byte(pixels, base + 1)
+        .. ","
+        .. string.byte(pixels, base + 2)
+      local count = (counts[key] or 0) + 1
+      counts[key] = count
+      if count > bestCount then
+        bestKey, bestCount = key, count
+      end
+    end
+  end
+  assert(bestKey ~= nil, "the upper screen bottom edge carries opaque pixels")
+  local r, g, b = string.match(bestKey, "^(%d+),(%d+),(%d+)$")
+  return { r = tonumber(r), g = tonumber(g), b = tonumber(b) }
+end
+
 local function imageAsset(image, role, assets)
   local path = MartCache.assetDir() .. "/" .. role .. ".png"
   assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
@@ -456,6 +539,11 @@ local function _compile(romFs)
       },
       description = copyRecord(MartSources.geometry.upper.description),
       itemAnchor = copyRecord(MartSources.geometry.upper.itemAnchor),
+      visibleRect = unionOpaqueRect({ upperItems, upperLegacy }),
+      padColor = {
+        items = bottomEdgeColor(upperItems),
+        legacy = bottomEdgeColor(upperLegacy),
+      },
     },
   }
 

@@ -47,7 +47,6 @@ local function manifest()
   result.schema = "g4-bag-assets-v20"
   result.interactive.sale = {
     pressTicks = result.interactive.overlays.quantity.pressTicks,
-    quantityBackground = visual("test/bag/sale-quantity.png"),
     digits = { rect(128, 112, 16, 24), rect(160, 112, 16, 24) },
     controls = {
       { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
@@ -74,6 +73,8 @@ local function manifest()
       quantityAt = { x = 48, y = 16 },
     },
     money = textBox(),
+    moneyLabelAt = { x = 4, y = 0 },
+    labels = { money = "Money", sell = "SELL" },
     total = textBox(),
     compactPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
     messages = {

@@ -176,6 +176,20 @@ function BagPresentationFixture.manifest()
     backgrounds[state] = pockets
   end
   do
+    local pockets = {}
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      pockets[pocket] = bagImageRef("assets/generated/bag/background-sale-quantity-" .. pocket .. ".png")
+    end
+    backgrounds.saleOverlay = pockets
+  end
+  do
+    local pockets = {}
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      pockets[pocket] = bagImageRef("assets/generated/bag/background-sale-quantity-" .. pocket .. ".png")
+    end
+    backgrounds.saleOverlay = pockets
+  end
+  do
     local move = {}
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       local counts = {}
@@ -317,8 +331,7 @@ function BagPresentationFixture.manifest()
       backgrounds = backgrounds,
       sale = {
         pressTicks = 2,
-        quantityBackground = bagImageRef("assets/generated/bag/background-sale-quantity.png"),
-        digits = { bagRect(160, 112, 16, 24), bagRect(192, 112, 16, 24) },
+        digits = { bagRect(128, 112, 16, 24), bagRect(160, 112, 16, 24) },
         controls = {
           { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = bagRect(120, 88, 32, 24) },
           { delta = 1, role = "increment", center = { x = 168, y = 104 }, hitRect = bagRect(152, 88, 32, 24) },
@@ -344,9 +357,9 @@ function BagPresentationFixture.manifest()
           quantityAt = { x = 48, y = 16 },
         },
         money = {
-          x = 168,
-          y = 8,
-          width = 80,
+          x = 0,
+          y = 16,
+          width = 60,
           height = 16,
           fontId = 0,
           textX = 0,
@@ -355,17 +368,19 @@ function BagPresentationFixture.manifest()
           paletteRole = "foreground",
         },
         total = {
-          x = 168,
-          y = 24,
-          width = 80,
-          height = 16,
+          x = 192,
+          y = 112,
+          width = 64,
+          height = 24,
           fontId = 0,
           textX = 0,
-          textY = 0,
+          textY = 4,
           alignment = "right",
           paletteRole = "foreground",
         },
         compactPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
+        moneyLabelAt = { x = 4, y = 0 },
+        labels = { money = "Money", sell = "SELL" },
         messages = {
           notSellable = { segments = { { kind = "item" }, { kind = "text", value = " cannot be sold." } } },
           quantity = { segments = { { kind = "item" }, { kind = "text", value = "? Quantity?" } } },
@@ -551,6 +566,7 @@ function BagPresentationFixture.manifest()
         messages = {
           selected = { contentRect = bagRect(16, 8, 216, 16) },
           modal = { contentRect = bagRect(16, 8, 216, 32) },
+          wide = { contentRect = bagRect(88, 8, 144, 32) },
         },
       },
       feedback = {

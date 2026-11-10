@@ -46,7 +46,6 @@ local function manifest()
   result.schema = "g4-bag-assets-v20"
   result.interactive.sale = {
     pressTicks = 2,
-    quantityBackground = visual("test/bag/sale-quantity.png"),
     digits = { rect(128, 112, 16, 24), rect(160, 112, 16, 24) },
     controls = {
       { delta = 10, role = "increment", center = { x = 136, y = 104 }, hitRect = rect(120, 88, 32, 24) },
@@ -73,6 +72,8 @@ local function manifest()
       quantityAt = { x = 48, y = 16 },
     },
     money = box(),
+    moneyLabelAt = { x = 4, y = 0 },
+    labels = { money = "Money", sell = "SELL" },
     total = box(),
     compactPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" },
     messages = {
@@ -155,7 +156,10 @@ end
 local function untilMessageReady(state)
   for _ = 1, 512 do
     local status = state:status()
-    if status.lowerMessage == nil then
+    -- The quantity prompt stays visible through quantity input like the
+    -- source wide window, so readiness is fully-typed text, not a
+    -- cleared message.
+    if status.lowerMessage ~= nil and status.lowerMessage.visibleText == status.lowerMessage.fullText then
       return status
     end
     Assert.isNil(state:takeResult(), "message printing keeps the Bag child open")

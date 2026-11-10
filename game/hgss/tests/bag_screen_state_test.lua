@@ -653,6 +653,17 @@ local function composedManifest()
     backgrounds[state .. "Overlay"] = pockets
   end
   do
+    local pockets = {}
+    for _, pocket in ipairs(POCKETS) do
+      pockets[pocket] = {
+        image = "test/bag/background-sale-quantity-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
+    end
+    backgrounds.saleOverlay = pockets
+  end
+  do
     local move = {}
     for _, pocket in ipairs(POCKETS) do
       local counts = {}
@@ -960,6 +971,9 @@ local function seedComposedCache()
     end
   end
   for _, pocket in ipairs(POCKETS) do
+    put("test/bag/background-sale-quantity-" .. pocket .. ".png")
+  end
+  for _, pocket in ipairs(POCKETS) do
     for count = 0, 4 do
       put("test/bag/background-move-" .. pocket .. "-" .. count .. ".png")
     end
@@ -996,7 +1010,7 @@ local function seedComposedCache()
   put("test/bag/quantity-decrement.png")
   put("test/bag/quantity-decrement-pressed.png")
   put("test/bag/quantity-confirm.png")
-  put("assets/generated/bag/background-sale-quantity.png")
+  put("test/bag/quantity-confirm.png")
   put("assets/generated/bag/quantity-confirm.png")
   put("assets/generated/bag/quantity-cancel.png")
   put("test/bag/registration-slot-1.png")

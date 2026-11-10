@@ -232,6 +232,32 @@ function T.sale_sources_keep_member_and_two_digit_controls_distinct_from_toss()
   Assert.equal(BagSources.lowerLayers.saleQuantity.variant, 4, "sale uses the source variant four")
   local sale = assert(BagSources.saleQuantity, "sale carries its own source presentation record")
   Assert.equal(#sale.digits, 2, "sale selects exactly two amount digits")
+  -- dynWindows[17]/[18] sit at tiles (16, 14) and (20, 14), 2x3 tiles each.
+  Assert.deepEqual(
+    sale.digits,
+    { { x = 128, y = 112, width = 16, height = 24 }, { x = 160, y = 112, width = 16, height = 24 } },
+    "sale digits fill the first two quantity digit windows"
+  )
+  -- dynWindows[22] is the 9x4 wallet window at tiles (0, 0): its amount
+  -- right-aligns to window x+60 at y+16 (PrintMoney prints at 68-(w+8)).
+  -- dynWindows[23] is the 8x3 total window at tiles (24, 14) with its
+  -- amount at window (0, 4).
+  Assert.deepEqual(
+    { x = sale.money.x, y = sale.money.y, width = sale.money.width, height = sale.money.height },
+    { x = 0, y = 16, width = 60, height = 16 },
+    "the sale wallet amount matches its window placement"
+  )
+  Assert.deepEqual(
+    { x = sale.total.x, y = sale.total.y, width = sale.total.width, height = sale.total.height },
+    { x = 192, y = 112, width = 64, height = 24 },
+    "the sale total matches its window placement"
+  )
+  -- dynWindows[21] is the 18x4 wide message window at tiles (11, 1).
+  Assert.deepEqual(
+    BagSources.lowerMessages.wide,
+    { contentRect = { x = 88, y = 8, width = 144, height = 32 } },
+    "the sale prompt uses the wide message window beside the wallet"
+  )
   local deltas = {}
   for index, control in ipairs(sale.controls) do
     deltas[index] = control.delta
@@ -264,6 +290,10 @@ function T.message_selection_names_the_audited_banks_and_indexes()
     use = { bank = 10, index = 0 },
     give = { bank = 10, index = 3 },
   })
+  Assert.deepEqual(BagSources.messages.saleLabels, {
+    money = { bank = 10, index = 80 },
+    sell = { bank = 10, index = 86 },
+  })
   Assert.deepEqual(BagSources.messages.templates, {
     movePrompt = { bank = 10, index = 46 },
     tossConfirm = { bank = 10, index = 55 },
@@ -274,6 +304,7 @@ function T.message_selection_names_the_audited_banks_and_indexes()
     saleOffer = { bank = 10, index = 78 },
     saleResult = { bank = 10, index = 79 },
   })
+  Assert.deepEqual(BagSources.saleQuantity.moneyLabelAt, { x = 4, y = 0 })
 end
 
 function T.toss_prompt_selection_names_the_audited_template_facts()

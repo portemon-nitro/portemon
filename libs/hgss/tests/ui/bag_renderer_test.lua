@@ -60,6 +60,17 @@ local function manifest()
     backgrounds[state .. "Overlay"] = variants
   end
   do
+    local variants = {}
+    for _, pocket in ipairs(pockets) do
+      variants[pocket] = {
+        image = "bag/background-sale-quantity-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
+    end
+    backgrounds.saleOverlay = variants
+  end
+  do
     local move = {}
     for _, pocket in ipairs(pockets) do
       local counts = {}
@@ -312,6 +323,7 @@ local function manifest()
         messages = {
           selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
           modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+          wide = { contentRect = { x = 88, y = 8, width = 144, height = 32 } },
         },
         descriptionFallback = {
           frame = { x = 0, y = 144, width = 256, height = 48 },
@@ -1744,6 +1756,13 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
     end
   end
   Assert.isTrue(digit, "the picked quantity renders inside the generated digit geometry")
+  local exact = printedAt(content, "2")
+  Assert.isTrue(exact ~= nil, "the picked digit prints")
+  Assert.deepEqual(
+    { x = exact.x, y = exact.y },
+    { x = cell.x, y = cell.y + 4 },
+    "the picked digit prints at the source window-local (0, 4) origin"
+  )
   Assert.equal(fillCount(graphics), 0, "no generic fill covers the generated quantity layers")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
@@ -4832,7 +4851,7 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
       end,
     },
     {
-      label = "the background-free sale state releases its obsolete background",
+      label = "the pocket-realized sale state swaps its obsolete background",
       run = function()
         local pool, state = censusPool()
         local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
@@ -4840,7 +4859,6 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
         local browse = status()
         Assert.isTrue(pumpReady(draw, browse), "the browsing menu resolves")
         local held = pool:stats().outstandingLeases
-        local requestsBefore = state.requests
         local sale = status({
           state = "sale_quantity",
           quantity = 1,
@@ -4848,19 +4866,28 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
           saleBalance = 12345,
           saleTotal = 2,
         })
-        Assert.isTrue(draw:prepare(sale), "the sale state publishes without re-enrolling chrome")
-        Assert.equal(state.requests, requestsBefore, "the background-free sale state enrolls no new demand")
+        Assert.isTrue(draw:prepare(sale), "the sale state publishes its pocket screen")
+        local saleDemands = 0
+        for _, path in ipairs(state.demandRequests) do
+          if path == "bag/background-sale-quantity-balls.png" then
+            saleDemands = saleDemands + 1
+          end
+        end
+        Assert.equal(saleDemands, 1, "the sale state demands exactly its pocket-realized screen")
         Assert.isNil(draw._images["background:browse:balls:base"], "the sale state drops the obsolete background")
         Assert.isNil(draw._images["browseRow:balls:0"], "the sale state drops the obsolete row patch")
         Assert.equal(
           pool:stats().outstandingLeases,
-          held - 2,
-          "the sale state returns exactly the obsolete background leases"
+          held - 1,
+          "the sale state returns its two obsolete background leases for one screen lease"
         )
         clearDraws(graphics)
         draw:draw(sale, plan(true), { icons = icons() })
         Assert.isTrue(#graphics.draws > 0, "the sale state draws its chrome")
-        Assert.isTrue(wasDrawn(graphics, draw._images.saleQuantityBackground), "the sale state draws its own surface")
+        Assert.isTrue(
+          wasDrawn(graphics, draw._images["overlay:sale:balls"]),
+          "the sale state draws its pocket-realized screen"
+        )
         draw:release()
         Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle")
       end,
@@ -4909,6 +4936,213 @@ function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
     end
   end
   Assert.equal(#failures, 0, "every lifecycle row holds (" .. table.concat(failures, " | ") .. ")")
+end
+
+-- The retail sale quantity panel (bag_app display): the two amount digits
+-- sit in the first two digit windows, the wallet "$" and total "+$"
+-- prefixes stay at their window origins while the digits right-align,
+-- and the two-line prompt prints in the wide message window beside the
+-- wallet.
+function T.sale_quantity_matches_the_source_amount_and_message_windows()
+  local content = paletteText()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = composedRenderer(graphics, content)
+  local sale = status({
+    state = "sale_quantity",
+    quantity = 12,
+    quantityMax = 99,
+    saleBalance = 12345,
+    saleTotal = 2,
+    lowerMessage = { visibleText = "Potion?\nHow many?", full = "Potion?\nHow many?" },
+  })
+  Assert.isTrue(prepareBounded(draw, sale, 20), "the sale quantity state admits")
+  draw:draw(sale, plan(true), { icons = icons() })
+  local ones = printedAt(content, "1")
+  Assert.isTrue(ones ~= nil, "the tens digit prints")
+  Assert.deepEqual({ x = ones.x, y = ones.y }, { x = 128, y = 116 }, "the tens digit uses its source cell")
+  local twos = printedAt(content, "2")
+  Assert.isTrue(twos ~= nil, "the ones digit prints")
+  Assert.deepEqual({ x = twos.x, y = twos.y }, { x = 160, y = 116 }, "the ones digit uses its source cell")
+  local prefix = palettedAt(content, "$")
+  Assert.isTrue(prefix ~= nil, "the wallet prefix prints at its window origin")
+  Assert.deepEqual({ x = prefix.x, y = prefix.y }, { x = 0, y = 16 }, "the wallet prefix stays left")
+  local balance = palettedAt(content, "12345")
+  Assert.isTrue(balance ~= nil, "the wallet digits print")
+  Assert.deepEqual(
+    { x = balance.x, y = balance.y },
+    { x = 20, y = 16 },
+    "the wallet digits right-align in the money window"
+  )
+  local totalPrefix = palettedAt(content, "+$")
+  Assert.isTrue(totalPrefix ~= nil, "the quoted total prints its source plus-sign prefix")
+  Assert.deepEqual(
+    { x = totalPrefix.x, y = totalPrefix.y },
+    { x = 192, y = 116 },
+    "the total prefix stays at its window origin"
+  )
+  local total = palettedAt(content, "2")
+  Assert.isTrue(total ~= nil, "the quoted total digits print")
+  Assert.deepEqual(
+    { x = total.x, y = total.y },
+    { x = 248, y = 116 },
+    "the total digits right-align in their own window"
+  )
+  local moneyLabel = palettedAt(content, "Money")
+  Assert.isTrue(moneyLabel ~= nil, "the wallet label prints")
+  Assert.deepEqual(
+    { x = moneyLabel.x, y = moneyLabel.y },
+    { x = 4, y = 0 },
+    "the wallet label prints at its source window origin"
+  )
+  local sell = palettedAt(content, "SELL")
+  Assert.isTrue(sell ~= nil, "the sale confirm prints its generated sell label")
+  Assert.deepEqual(
+    { x = sell.x, y = sell.y },
+    { x = 117, y = 168 },
+    "the sale confirm label prints at its generated origin"
+  )
+  local prompt = palettedAt(content, "Potion?")
+  Assert.isTrue(prompt ~= nil, "the quantity prompt prints")
+  Assert.deepEqual(
+    { x = prompt.x, y = prompt.y },
+    { x = 88, y = 8 },
+    "the quantity prompt prints in the wide message window"
+  )
+  draw:release()
+end
+
+-- The completed sale result stays in its two-line window through
+-- acknowledgement: retail clears the message window only on the ack
+-- press, so the ack state must not shrink it to the single-line
+-- selected window and drop the received line.
+function T.sale_result_acknowledgement_keeps_the_completed_message_window()
+  local content = paletteText()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local manifested = manifest()
+  local window = windowSpy()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    promptManifest = promptManifest(),
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
+    window = window,
+    frameIndex = 0,
+  })
+  local showing = status({
+    state = "sale_ack",
+    pocket = "medicine",
+    saleQuantity = 2,
+    saleBalance = 1450,
+    saleTotal = 300,
+    lowerMessage = {
+      visibleText = "Turned over the POTION\nand received $300.",
+      full = "Turned over the POTION\nand received $300.",
+    },
+  })
+  admitted(draw, showing, plan(true), { icons = icons() })
+  local modal =
+    assert(manifested.interactive.overlays.messages.modal.contentRect, "the messages carry the two-line window")
+  local selected =
+    assert(manifested.interactive.overlays.messages.selected.contentRect, "the messages carry the single-line window")
+  local framed
+  for _, call in ipairs(window.calls) do
+    Assert.isFalse(
+      call.box.width == selected.width and call.box.height == selected.height,
+      "the kept result never shrinks to the single-line window"
+    )
+    if call.box.width == modal.width and call.box.height == modal.height then
+      framed = call
+    end
+  end
+  framed = assert(framed, "the kept result keeps its two-line window")
+  Assert.equal(framed.box.x, modal.x, "the kept result keeps the window origin")
+  Assert.equal(framed.box.y, modal.y, "the kept result keeps the window top")
+  local first = palettedAt(content, "Turned over the POTION")
+  Assert.isTrue(first ~= nil, "the kept result still prints its first line")
+  Assert.deepEqual({ x = first.x, y = first.y }, { x = 16, y = 8 }, "the first line keeps its row")
+  local second = palettedAt(content, "and received $300.")
+  Assert.isTrue(second ~= nil, "the kept result still prints the received line")
+  Assert.deepEqual({ x = second.x, y = second.y }, { x = 16, y = 24 }, "the received line keeps its row")
+  draw:release()
+end
+
+-- The retail sale flow keeps its own full-pane screen through every sale
+-- state: the pocket-realized sale quantity screen, never the browse base
+-- or the action overlay, and the pocket tab buttons stay hidden with the
+-- rest of the tab chrome.
+function T.sale_states_keep_the_pocket_realized_sale_screen_without_tabs()
+  local content = paletteText()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = composedRenderer(graphics, content)
+  local states = {
+    sale_quantity = {
+      quantity = 1,
+      quantityMax = 99,
+      saleBalance = 2400,
+      saleTotal = 150,
+      lowerMessage = { visibleText = "Potion?\nHow many?", full = "Potion?\nHow many?" },
+    },
+    sale_offer = {
+      saleQuantity = 1,
+      saleBalance = 2400,
+      saleTotal = 150,
+      yesNoPrompt = promptStatusAt(200, 48, "yes"),
+      lowerMessage = { visibleText = "Offer: 150", full = "Offer: 150" },
+    },
+  }
+  for state, extra in pairs(states) do
+    local overrides = { state = state, pocket = "medicine" }
+    for key, value in pairs(extra) do
+      overrides[key] = value
+    end
+    local showing = status(overrides)
+    Assert.isTrue(prepareBounded(draw, showing, 20), state .. " admits its sale screen")
+    clearDraws(graphics)
+    draw:draw(showing, plan(true), { icons = icons() })
+    Assert.isTrue(
+      wasDrawn(graphics, draw._images["overlay:sale:medicine"]),
+      state .. " draws its pocket-realized sale screen"
+    )
+    Assert.isFalse(wasDrawn(graphics, draw._images["strip:medicine"]), state .. " hides the pocket tab buttons")
+    Assert.isFalse(
+      wasDrawn(graphics, draw._images["background:browse:medicine:base"]),
+      state .. " never falls back to the browse base"
+    )
+    Assert.isFalse(
+      wasDrawn(graphics, draw._images["overlay:action:medicine"]),
+      state .. " never borrows the action overlay"
+    )
+  end
+  draw:release()
+end
+
+-- The retail digit windows always print two glyphs with a leading zero,
+-- and they persist through the offer once shown: a single-unit sale
+-- skips the picker yet still shows "01" behind its offer.
+function T.sale_offer_keeps_zero_padded_digits_for_single_unit_stacks()
+  local content = paletteText()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = composedRenderer(graphics, content)
+  local showing = status({
+    state = "sale_offer",
+    saleQuantity = 1,
+    saleBalance = 2400,
+    saleTotal = 150,
+    yesNoPrompt = promptStatusAt(200, 48, "yes"),
+    lowerMessage = { visibleText = "Offer: 150", full = "Offer: 150" },
+  })
+  Assert.isTrue(prepareBounded(draw, showing, 20), "the single-unit offer admits")
+  draw:draw(showing, plan(true), { icons = icons() })
+  local zero = printedAt(content, "0")
+  Assert.isTrue(zero ~= nil, "the tens digit prints its leading zero")
+  Assert.deepEqual({ x = zero.x, y = zero.y }, { x = 128, y = 116 }, "the leading zero uses the tens cell")
+  local one = printedAt(content, "1")
+  Assert.isTrue(one ~= nil, "the ones digit prints")
+  Assert.deepEqual({ x = one.x, y = one.y }, { x = 160, y = 116 }, "the ones digit uses the ones cell")
+  draw:release()
 end
 
 return { tests = T }

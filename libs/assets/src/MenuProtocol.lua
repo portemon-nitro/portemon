@@ -16,6 +16,5 @@ MenuProtocol.STANDARD_MESSAGE_BANK = 191
 -- bank entry references it, so it is pinned through this protocol constant
 -- like the standard list-menu bank rather than discovered from references.
 MenuProtocol.START_MENU_MESSAGE_BANK = 196
-MenuProtocol.CANCEL_RESULT = 0xFFFE
 
 return MenuProtocol

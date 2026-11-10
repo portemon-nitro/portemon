@@ -18,6 +18,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field private _printer FieldDialogueController
 ---@field private _prompt YesNoPromptController
 ---@field private _state string
+---@field private _background string the shown lower backdrop: browse, quantity, or confirm
 ---@field private _page integer
 ---@field private _selection integer
 ---@field private _quantity integer
@@ -32,7 +33,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field private _receipt unknown
 ---@field private _printerTarget string?
 ---@field private _messageRole string?
----@field private _messagePages DialogueLayout.Result?
+---@field private _frozenLines table<string, unknown>? the printer's final visible lines, kept while an ack or input state shows them
 ---@field private _printerComplete boolean
 ---@field private _failureReason string?
 ---@field private _result table<string, unknown>?
@@ -151,6 +152,7 @@ function MartController.new(opts)
     _effect = opts.effect,
     _frameIndex = opts.frameIndex,
     _state = "browse",
+    _background = "browse",
     _page = 0,
     _selection = 0,
     _quantity = 1,
@@ -165,7 +167,7 @@ function MartController.new(opts)
     _receipt = nil,
     _printerTarget = nil,
     _messageRole = nil,
-    _messagePages = nil,
+    _frozenLines = nil,
     _printerComplete = false,
     _failureReason = nil,
     _result = nil,
@@ -281,11 +283,7 @@ end
 function MartController:_openMessage(role, bindings, target)
   local tokens = self:_messageTokens(role, bindings or {})
   self._messageRole = role
-  self._messagePages = DialogueLayout.layout(tokens, FieldDialogueTheme.fontMetrics(self._fontDef), {
-    width = 216,
-    maxLines = 2,
-    sourcePositioned = true,
-  })
+  self._frozenLines = nil
   local message = {
     tokens = tokens,
     text = FieldMessageText.tokensToText(tokens),
@@ -372,8 +370,15 @@ function MartController:_afterSelection()
   self._maximum = entry.maxQuantity
   self._quantity = 1
   if view.quantityMode == "single" then
-    self:_quote(1)
+    -- The single-quantity path never visits the quantity backdrop: the
+    -- confirm tilemap arrives with the confirmation, matching the source
+    -- BeginPurchase direct-to-space-check flow. A refused quote stays on
+    -- the browse backdrop since no tilemap ever loaded.
+    if self:_quote(1) then
+      self._background = "confirm"
+    end
   else
+    self._background = "quantity"
     self._state = "quantity_prompt"
     self:_openMessage("quantityPrompt", self:_itemBindings(entry), "quantity")
   end
@@ -390,6 +395,22 @@ function MartController:_commit()
   self._receipt = receipt
   self._quote = nil
   self._state = "success_ack"
+end
+
+function MartController:_snapshotPrinter()
+  -- While the printer waits with its message fully revealed, keep those
+  -- exact lines: completion itself clears the printer's visible lines, so
+  -- freezing must happen at the wait, not at the completion callback.
+  -- Entries normalize to laid-out line records so readers keep the same
+  -- `.tokens` shape the static pages used to provide.
+  local printer = self._printer:status()
+  if printer.waiting then
+    local frozen = {}
+    for _, line in ipairs(printer.visibleLines) do
+      frozen[#frozen + 1] = { tokens = copyTerms(line.tokens or line) }
+    end
+    self._frozenLines = frozen
+  end
 end
 
 function MartController:_finishPrinter()
@@ -480,7 +501,8 @@ function MartController:_applyPendingAction(action)
     self:_quote(assert(action.quantity))
   elseif action.kind == "browse" then
     self._state = "browse"
-    self._messageRole, self._messagePages = nil, nil
+    self._background = "browse"
+    self._messageRole, self._frozenLines = nil, nil
   else
     error("unknown mart control action " .. tostring(action.kind), 0)
   end
@@ -677,10 +699,11 @@ function MartController:_eventsForPrinter(events)
 end
 
 function MartController:_startSuccess()
-  local view = self:_view()
-  local role = view.presentationKind == "seals" and "sealReceived"
-    or view.currency == "athlete_points" and "pointsReceived"
-    or "itemReceived"
+  -- The receipt family follows the destination, not the balance: seals
+  -- land in the Seal Case, Bag items (however paid) read the pocket
+  -- receipt, and only Apricorns and Data Cards read the points receipt.
+  local destination = assert(self._terms, "success owns its quote terms").destinationKind
+  local role = destination == "seal" and "sealReceived" or destination == "bag" and "itemReceived" or "pointsReceived"
   local bindings = role == "sealReceived" and { item = assert(self._terms).bindings.itemName }
     or role == "itemReceived" and namedItemBindings(assert(self._terms).bindings)
     or {}
@@ -698,7 +721,8 @@ function MartController:_acknowledgeSuccess()
     self:_openMessage("premierBonus", { quantity = tostring(self._terms and self._terms.quantity or 1) }, "bonus_ack")
   else
     self._terms = nil
-    self._messageRole, self._messagePages = nil, nil
+    self._messageRole, self._frozenLines = nil, nil
+    self._background = "browse"
     self._state = "browse"
   end
 end
@@ -713,12 +737,6 @@ function MartController:step(events)
     assert(type(event) == "table" and type(event.type) == "string", "mart input events need a type")
     if event.type == "pointer_cancel" then
       self:cancelPointerCapture()
-    elseif event.type == "dismiss" then
-      self._pointer = nil
-      self._prompt:dispose()
-      self._printer:close()
-      self:_closeNormally()
-      return
     end
   end
   self:_stepAmountAnimations()
@@ -745,6 +763,19 @@ function MartController:step(events)
     or self._state == "error_print"
   then
     self._printer:step(self:_eventsForPrinter(events))
+    self:_snapshotPrinter()
+    if not self._printerComplete then
+      -- The source task advances on print finish, never on an
+      -- acknowledgement: the quantity and confirmation prompts yield to
+      -- input (and the yes/no prompt) as soon as their text is revealed,
+      -- and receipts and refusals commit as soon as theirs is revealed so
+      -- exactly one later press acknowledges them. Closing here is silent:
+      -- the revealed lines are already frozen for the next state.
+      local printer = self._printer:status()
+      if printer.waiting then
+        self._printer:close()
+      end
+    end
     self:_finishPrinter()
     return
   end
@@ -755,7 +786,8 @@ function MartController:step(events)
       self:_startSuccess()
     elseif answer == "no" then
       self._quote, self._terms = nil, nil
-      self._messageRole, self._messagePages = nil, nil
+      self._messageRole, self._frozenLines = nil, nil
+      self._background = "browse"
       self._state = "browse"
     end
     return
@@ -773,8 +805,9 @@ function MartController:step(events)
     for _, event in ipairs(events) do
       if event.type == "confirm" or event.type == "cancel" then
         self._state = "browse"
+        self._background = "browse"
         self._terms, self._failureReason = nil, nil
-        self._messageRole, self._messagePages = nil, nil
+        self._messageRole, self._frozenLines = nil, nil
         break
       end
     end
@@ -882,24 +915,48 @@ function MartController:status()
       or { entryIndex = entryIndex }
   end
   local selected = view.entries[self._page * 6 + self._selection + 1]
+  -- The compact single-pane description mirrors the upper-pane text the
+  -- two-pane layouts show: it is only valid while the browse grid owns
+  -- the highlight. The box sits below the grid unless the highlight is
+  -- on the bottom row, when it moves above so it never covers the
+  -- selection. Quantity and confirm panels own the lower pane, so they
+  -- publish no box. Cancel highlights no entry, so the box closes
+  -- exactly like the upper-pane description it mirrors. Both positions
+  -- keep the source strip rows (256x51) so the renderer reuses the
+  -- top-screen segment art exactly.
+  local descriptionBox
+  if selected ~= nil and selected.descriptionText ~= nil and (state == "browse" or state == "selection_feedback") then
+    local boxY = 141
+    if self._selection == 4 or self._selection == 5 then
+      boxY = 32
+    end
+    descriptionBox = {
+      x = 0,
+      y = boxY,
+      width = 256,
+      height = 51,
+      fontId = 0,
+      textX = 0,
+      textY = 0,
+      alignment = "left",
+      paletteRole = "foreground",
+    }
+  end
   local printer = self._printer:status()
   local messageLines
   if PRINTER_STATES[state] then
     messageLines = printer.visibleLines
-  elseif self._messagePages ~= nil then
-    local pages = self._messagePages.pages
-    local page = pages[#pages]
-    messageLines = page and page.lines or {}
+  elseif self._frozenLines ~= nil then
+    messageLines = self._frozenLines
   else
     messageLines = {}
   end
-  local lowerMode = "browse"
-  if state == "quantity" or state == "quantity_prompt" then
-    lowerMode = "quantity"
-  end
-  if state == "confirm" or state == "confirm_prompt" then
-    lowerMode = "confirm"
-  end
+  -- The backdrop follows the entry flow, not the message state: the
+  -- quantity backdrop arrives with the quantity panel and the confirm
+  -- backdrop with single-quantity confirmation, and both persist through
+  -- receipts and refusals until an acknowledgement returns to browsing.
+  local lowerMode = self._background
+  assert(lowerMode == "browse" or lowerMode == "quantity" or lowerMode == "confirm", "mart backdrop is known")
   local balanceRole = view.currency == "athlete_points" and "pointsBalance" or "moneyBalance"
   local pageTokens = self:_formatRole("pageNumber", {
     currentPage = tostring(self._page + 1),
@@ -926,6 +983,7 @@ function MartController:status()
     page = self._page,
     pageCount = pageCount,
     selection = self._selection,
+    descriptionBox = descriptionBox,
     entryIndex = selected and self._page * 6 + self._selection + 1 or nil,
     currentEntry = selected and copyTerms(selected) or nil,
     entries = slots,
@@ -978,7 +1036,7 @@ function MartController:dispose()
   self._receipt = nil
   self._terms = nil
   self._messageRole = nil
-  self._messagePages = nil
+  self._frozenLines = nil
   self._result = nil
   self._controlFeedback = nil
   self._amountAnimations = {}

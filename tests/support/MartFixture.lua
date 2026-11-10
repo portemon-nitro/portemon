@@ -158,6 +158,8 @@ local function manifest()
       backgrounds = { items = visual("upper-items"), legacy = visual("upper-legacy") },
       description = { items = textBox(40, 144, 216, 48), legacy = textBox(8, 144, 216, 48) },
       itemAnchor = point(22, 172),
+      visibleRect = rect(0, 141, 256, 51),
+      padColor = { items = { r = 16, g = 82, b = 189 }, legacy = { r = 8, g = 58, b = 173 } },
     },
     lower = {
       backgrounds = {

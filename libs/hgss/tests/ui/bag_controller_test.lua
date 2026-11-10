@@ -2251,16 +2251,23 @@ local function settleSaleState(control, state)
   Assert.equal(control:status().state, state, "the sale settles into " .. state)
 end
 
--- Drains sale ticks until the quantity prompt finishes typing.
+-- Drains sale ticks until the quantity prompt finishes typing. The prompt
+-- stays visible through quantity input like the source wide window, so
+-- readiness is fully-typed text, not a cleared message.
 ---@param control BagController
 local function settleSaleQuantityPrompt(control)
   for _ = 1, 64 do
-    if control:status().lowerMessage == nil then
+    local message = control:status().lowerMessage
+    if message ~= nil and message.visibleText == message.fullText then
       return
     end
     control:updateFixed({})
   end
-  Assert.isNil(control:status().lowerMessage, "the quantity prompt finishes typing before input")
+  local message = control:status().lowerMessage
+  Assert.isTrue(
+    message ~= nil and message.visibleText == message.fullText,
+    "the quantity prompt finishes typing before input"
+  )
 end
 
 -- Exclusive clips own their ticks: latched activation and the move commit
@@ -2354,6 +2361,88 @@ end
 -- Sale and toss stay transactional across every substate: prices and
 -- messages match the quote, revisions gate the commit, and each committed
 -- change happens exactly once no matter how often the result is ticked.
+-- The retail picker yields to fresh input, reprints the wallet-scaled
+-- total on every adjustment (PrintSellPrice per HandleNumberSelectInput
+-- step), and never lets the accelerating press confirm: retail
+-- SetupSellQuantity yields to quantity input on the next fresh edge, so
+-- the same confirm that speeds up typing stays in the picker instead of
+-- overwriting the prompt with the offer.
+function T.sale_quantity_picker_yields_tracks_total_and_ignores_accelerating_confirm()
+  local bag = service()
+  Assert.isTrue(bag:add("POTION", 5))
+  local cursor = BagCursor.new()
+  cursor:setPocket("medicine")
+  local session = stubSaleSession(bag, 1000)
+  local control = sellController(bag, cursor, session)
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  settleSaleState(control, "sale_quantity")
+  Assert.equal(control:status().saleTotal, 150, "selecting the item prices one copy")
+  -- One tick finishes typing the prompt; the message stays up but the
+  -- next tick must already accept input instead of swallowing it.
+  control:updateFixed({})
+  Assert.isTrue(control:status().lowerMessage ~= nil, "the quantity prompt is still showing")
+  control:updateFixed({ navigate("up") })
+  Assert.equal(control:status().quantity, 2, "fresh input adjusts the quantity at once")
+  Assert.equal(control:status().saleTotal, 300, "the displayed total tracks the adjusted quantity")
+  control:updateFixed({ navigate("up") })
+  Assert.equal(control:status().quantity, 3, "quantity navigation accumulates without extra presses")
+  Assert.equal(control:status().saleTotal, 450, "the displayed total tracks the accumulated quantity")
+
+  local bag2 = service()
+  Assert.isTrue(bag2:add("POTION", 5))
+  local cursor2 = BagCursor.new()
+  cursor2:setPocket("medicine")
+  local session2 = stubSaleSession(bag2, 1000)
+  local fresh = sellController(bag2, cursor2, session2)
+  fresh:updateFixed({})
+  fresh:updateFixed({ { type = "confirm" } })
+  settleSaleState(fresh, "sale_quantity")
+  -- Drain until one tick of typing remains, then accelerate with confirm.
+  -- The message completes this tick but the picker must not confirm.
+  local accelerated = false
+  for _ = 1, 64 do
+    local message = fresh:status().lowerMessage
+    if message ~= nil and message.visibleText ~= message.fullText then
+      fresh:updateFixed({ { type = "confirm" } })
+      accelerated = true
+      break
+    end
+    fresh:updateFixed({})
+  end
+  Assert.isTrue(accelerated, "the test accelerates an incomplete prompt")
+  Assert.equal(fresh:status().state, "sale_quantity", "the accelerating press stays in the picker")
+  Assert.equal(fresh:status().quantity, 1, "the accelerating press changes no quantity")
+  Assert.isTrue(fresh:status().lowerMessage ~= nil, "the quantity prompt is still showing")
+  fresh:updateFixed({ { type = "confirm" } })
+  settleFeedback(fresh)
+  Assert.equal(fresh:status().state, "sale_offer", "a fresh confirm opens the offer")
+end
+
+-- The retail picker reprints the wallet-scaled total on every adjustment
+-- (PrintSellPrice per HandleNumberSelectInput step), so the displayed
+-- total tracks quantity live instead of appearing only at the offer.
+function T.sale_refusal_acknowledgement_keeps_the_completed_message()
+  local bag = service()
+  Assert.isTrue(bag:add("BICYCLE", 1))
+  local cursor = BagCursor.new()
+  cursor:setPocket("key_items")
+  local session = stubSaleSession(bag, 1000)
+  local control = sellController(bag, cursor, session)
+  control:updateFixed({})
+  control:updateFixed({ { type = "confirm" } })
+  settleSaleAck(control)
+  local message = control:status().lowerMessage
+  Assert.notNil(message, "the refusal keeps its completed message through acknowledgement")
+  Assert.equal(message.fullText, "cannot be sold", "the kept refusal names the uncompleted sale")
+  Assert.equal(message.visibleText, "cannot be sold", "the kept refusal stays fully revealed like the retail window")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "browsing", "acknowledging a refusal returns to browsing")
+  Assert.isNil(control:status().lowerMessage, "acknowledging clears the refusal message")
+  control:dispose()
+end
+
+
 function T.sale_and_toss_flows_commit_exactly_once_across_substates()
   local bag = service()
   Assert.isTrue(bag:add("POTION", 5))
@@ -2708,5 +2797,10 @@ function T.sale_ten_step_pointer_matches_keyboard_when_enabled()
   Assert.equal(control:status().quantity, 11, "the pointer ten-step matches keyboard right")
   Assert.equal(bag:revision(), revision, "staging the quantity never mutates the inventory")
 end
+
+-- The accelerating press that finishes the quantity prompt must not
+-- confirm it: retail SetupSellQuantity yields to quantity input on the
+-- next fresh edge, so the same confirm that speeds up typing stays in
+-- the picker instead of overwriting the prompt with the offer.
 
 return { tests = T }

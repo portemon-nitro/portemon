@@ -267,14 +267,25 @@ function MartRenderer:_drawUpper(status, icons)
   local legacyFamily = status.presentationKind == "seals" or status.presentationKind == "legacy_decorations"
   local family = legacyFamily and "legacy" or "items"
   local upper = manifest.upper
+  -- The layout pads the opaque strip down to the 8px frame grid: paint
+  -- those rows with the per-family strip background shade before the
+  -- source art so the padded slot shows no transparent air.
+  local visible = assert(upper.visibleRect, "the mart manifest carries the upper opaque visible rect")
+  local padRows = (8 - visible.height % 8) % 8
+  if padRows > 0 then
+    local pad = assert(upper.padColor and upper.padColor[family], "the mart manifest carries the strip pad shade")
+    graphics.setColor(pad.r / 255, pad.g / 255, pad.b / 255, 1)
+    graphics.rectangle("fill", visible.x, visible.y + visible.height, visible.width, padRows)
+  end
   self:_drawVisual(upper.backgrounds[family], 0, 0)
   local selected = status.currentEntry
   if selected ~= nil then
     if not legacyFamily then
       self:_drawIcon(icons, selected.displayItemKey, upper.itemAnchor)
     end
+    -- The source description window never draws a frame: the pixel buffer
+    -- is filled transparent and only the description text prints.
     local box = upper.description[family]
-    self._window:drawWindow(box, self._frameIndex, { 0, 0, 0, 0 })
     self:_drawText(selected.descriptionText, box, "system")
   end
   graphics.setColor(1, 1, 1, 1)
@@ -358,20 +369,28 @@ function MartRenderer:_drawQuantity(status, icons)
   local entry = assert(status.currentEntry, "quantity states carry their selected entry")
   self:_drawIcon(icons, entry.displayItemKey, quantity.selectedItemAnchor)
   self:_drawText(entry.bindings.itemName, quantity.itemBox, "stock")
-  self:_drawText(self._manifest.text.labels.ownedLabel, quantity.owned.labelBox, "system")
-  self:_drawTokens(status.ownedTokens, quantity.owned.valueBox, "system")
-  self:_drawTokens(status.totalTokens, quantity.totalBox, "system")
+  self:_drawText(self._manifest.text.labels.ownedLabel, quantity.owned.labelBox, "stock")
+  self:_drawTokens(status.ownedTokens, quantity.owned.valueBox, "stock")
+  self:_drawTokens(status.totalTokens, quantity.totalBox, "stock")
   local digits = string.format("%02d", status.quantity)
-  self:_drawText(digits:sub(1, 1), quantity.digitBoxes[1], "system")
-  self:_drawText(digits:sub(2, 2), quantity.digitBoxes[2], "system")
+  self:_drawText(digits:sub(1, 1), quantity.digitBoxes[1], "stock")
+  self:_drawText(digits:sub(2, 2), quantity.digitBoxes[2], "stock")
+  -- The source quantity panel hides its steppers exactly like the input
+  -- guards do: the +-10 pair below ten affordable and the +-1 pair at one.
+  local maximum = status.maxQuantity or 99
   for _, name in ipairs({ "increment10", "increment1", "decrement10", "decrement1", "confirm", "cancel" }) do
     if name == "confirm" or name == "cancel" then
       self:_drawControl(quantity[name], status, name)
-    else
+    elseif name == "increment10" or name == "decrement10" then
+      if maximum >= 10 then
+        self:_drawAmountControl(quantity[name], status, name)
+      end
+    elseif maximum > 1 then
       self:_drawAmountControl(quantity[name], status, name)
     end
   end
   self:_drawText(self._manifest.text.labels.buyLabel or "", quantity.buyLabelBox, "system")
+  self:_drawText(self._manifest.text.labels.cancelLabel or "", self._manifest.lower.cancelLabelBox, "system")
 end
 
 function MartRenderer:_drawPrinter(status)
@@ -379,20 +398,67 @@ function MartRenderer:_drawPrinter(status)
   if lines == nil or #lines == 0 then
     return
   end
-  local confirmMessage = status.messageRole == "moneyConfirm" or status.messageRole == "pointsConfirm"
-  local box = confirmMessage and self._manifest.lower.messages.confirm
-    or status.lowerMode == "confirm" and self._manifest.lower.messages.confirm
-    or self._manifest.lower.messages.short
-  self._window:drawWindow(box, self._frameIndex, { 0, 0, 0, 0 })
+  -- The box follows the message role, matching the source windows: the
+  -- quantity and confirmation prompts print in the PROMPT detail window,
+  -- while receipts, bonuses, and refusals print in the full-width bottom
+  -- message window. Both fill opaque; only the upper description window
+  -- stays transparent like the source pixel-buffer fill.
+  local promptMessage = status.messageRole == "quantityPrompt"
+    or status.messageRole == "moneyConfirm"
+    or status.messageRole == "pointsConfirm"
+  local box = promptMessage and self._manifest.lower.messages.confirm or self._manifest.lower.messages.tall
+  local background = self._text:windowBackgroundColor()
+  self._window:drawWindow(box, self._frameIndex, background)
+  -- The retail message printer uses the font default colors (dark fg 1,
+  -- shadow 2 on the white fill), never the white system palette.
   for lineIndex, line in ipairs(lines) do
     local tokens = line.tokens or line
     local lineHeight = status.printer and status.printer.lineHeight or 16
     local y = box.y + (lineIndex - 1) * lineHeight + box.textY
-    self._text:drawLineWithPalette(tokens, box.x + box.textX, y, self:_palette("system"))
+    self._text:drawLineWithPalette(tokens, box.x + box.textX, y, self:_palette("stock"))
   end
 end
 
-function MartRenderer:_drawLower(status, icons)
+function MartRenderer:_drawCompactDescription(status, icons, hasUpper)
+  if hasUpper then
+    return
+  end
+  local box = status.descriptionBox
+  local description = status.description
+  if box == nil or description == nil or description == "" then
+    return
+  end
+  -- The compact layout has no upper pane, so the selected description
+  -- reuses the top-screen segment exactly: the opaque strip art blits at
+  -- the flipped box with the selected icon, and the text prints in the
+  -- upper system style at the strip-relative text row. The controller
+  -- owns the flip above the grid; both boxes keep the source strip rows.
+  local legacyFamily = status.presentationKind == "seals" or status.presentationKind == "legacy_decorations"
+  local family = legacyFamily and "legacy" or "items"
+  local upper = self._manifest.upper
+  local visible = assert(upper.visibleRect, "the mart manifest carries the upper opaque visible rect")
+  self:_drawVisual(upper.backgrounds[family], 0, box.y - visible.y)
+  if not legacyFamily then
+    local anchor = assert(upper.itemAnchor, "the mart manifest carries the upper item anchor")
+    local current = status.currentEntry
+    self:_drawIcon(icons, current ~= nil and current.displayItemKey or nil, {
+      x = anchor.x,
+      y = box.y + (anchor.y - visible.y),
+    })
+  end
+  local textSource = assert(upper.description[family], "the mart manifest carries the upper description text")
+  self:_drawText(description, {
+    x = textSource.x,
+    y = box.y + (textSource.y - visible.y),
+    width = textSource.width,
+    height = textSource.height,
+    textX = textSource.textX,
+    textY = textSource.textY,
+    alignment = textSource.alignment,
+  }, "system")
+end
+
+function MartRenderer:_drawLower(status, icons, hasUpper)
   local mode = status.lowerMode
   if mode == "quantity" then
     self:_drawQuantity(status, icons)
@@ -403,15 +469,22 @@ function MartRenderer:_drawLower(status, icons)
       self:_drawIcon(icons, entry.displayItemKey, self._manifest.lower.quantity.selectedItemAnchor)
       self:_drawText(entry.bindings.itemName, self._manifest.lower.quantity.itemBox, "stock")
     end
-    self:_drawPrinter(status)
-    if status.prompt ~= nil then
-      self._promptRenderer:draw(status.prompt)
-    end
-    return
+    -- Single-quantity confirmation carries its own In Bag panel, like the
+    -- source detail windows added alongside the confirm tilemap. The panel
+    -- prints through the stock palette like the quantity panel.
+    local owned = self._manifest.lower.quantity.owned
+    self:_drawText(self._manifest.text.labels.ownedLabel, owned.labelBox, "stock")
+    self:_drawTokens(status.ownedTokens, owned.valueBox, "stock")
   else
     self:_drawBrowse(status, icons)
   end
   self:_drawPrinter(status)
+  self:_drawCompactDescription(status, icons, hasUpper)
+  -- The yes/no prompt is independent of the backdrop: confirmation after
+  -- quantity selection keeps the quantity panel while the prompt is open.
+  if status.prompt ~= nil then
+    self._promptRenderer:draw(status.prompt)
+  end
 end
 
 function MartRenderer:draw(status, plan, collaborators)
@@ -436,7 +509,7 @@ function MartRenderer:draw(status, plan, collaborators)
     end)
   end
   LogicalSurface.draw(self._graphics, lowerPane.placement, function()
-    self:_drawLower(status, icons)
+    self:_drawLower(status, icons, upperPane ~= nil)
   end)
   self._graphics.pop()
 end

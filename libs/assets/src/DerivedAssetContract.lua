@@ -508,7 +508,13 @@ DerivedAssetContract.mart = {
   -- independent focus remains on items and Cancel.
   -- v3 maps hardware OBJ palette slots 6-7 to file banks 0-1 of the SUB
   -- control palette; slots 6-7 within the file are unpopulated black.
-  schema = "g4-mart-presentation-v3",
+  -- v4 publishes the upper opaque visible rect the wide/tall pairs clip
+  -- to when centering and framing.
+  -- v5 publishes the per-family strip background shade the renderer
+  -- paints the 8px padding rows with.
+  -- v6 resamples that shade from the darker bottom edge row instead of
+  -- the strip fill.
+  schema = "g4-mart-presentation-v6",
 }
 
 -- The bag class carries the source-independent field-bag presentation: the

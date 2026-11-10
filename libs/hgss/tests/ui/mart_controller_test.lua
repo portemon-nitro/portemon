@@ -800,6 +800,76 @@ local function watchedResources(balance, entryCount)
   return { service = service, bag = bag, profile = profile, session = session, reads = reads }
 end
 
+function T.compact_description_box_tracks_highlight_and_closes_outside_it()
+  local function expectedBox(y)
+    return {
+      x = 0,
+      y = y,
+      width = 256,
+      height = 51,
+      fontId = 0,
+      textX = 0,
+      textY = 0,
+      alignment = "left",
+      paletteRole = "foreground",
+    }
+  end
+  local service = resources()
+  local session = service:openBuy(stock(10, 7))
+  local controller = newController(session)
+  Assert.equal(controller:status().selection, 0)
+  Assert.deepEqual(
+    controller:status().descriptionBox,
+    expectedBox(141),
+    "the top rows keep the compact description on the source strip rows"
+  )
+  controller:step({ { type = "navigate", direction = "down" } })
+  controller:step({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().selection, 4)
+  Assert.deepEqual(
+    controller:status().descriptionBox,
+    expectedBox(32),
+    "the bottom row lifts the source-sized strip above the grid"
+  )
+  controller:step({ { type = "navigate", direction = "right" } })
+  controller:step({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().selection, 8)
+  Assert.isNil(
+    controller:status().descriptionBox,
+    "Cancel highlights no entry, so the compact description closes like the upper pane"
+  )
+  controller:dispose()
+  session:close()
+
+  service = resources()
+  session = service:openBuy(stock(10, 7))
+  controller = newController(session)
+  tap(controller, 22, 59)
+  Assert.equal(controller:status().state, "selection_feedback")
+  Assert.notNil(
+    controller:status().descriptionBox,
+    "selection feedback keeps the compact description while highlighted"
+  )
+  for _ = 1, 400 do
+    if controller:status().state == "quantity_prompt" then
+      break
+    end
+    controller:step({ { type = "confirm" } })
+  end
+  Assert.equal(controller:status().state, "quantity_prompt")
+  Assert.isNil(controller:status().descriptionBox, "the quantity panel owns the lower pane, not the description")
+  controller:dispose()
+  session:close()
+
+  service = resources()
+  session = service:openBuy(stock(10, 0))
+  controller = newController(session)
+  Assert.isNil(controller:status().description, "an empty stock selects no description")
+  Assert.isNil(controller:status().descriptionBox, "an empty stock shows no compact description")
+  controller:dispose()
+  session:close()
+end
+
 function T.idle_status_and_selected_reads_reuse_the_session_projection()
   local state = watchedResources(1000, 7)
   local controller = newController(state.session)
@@ -887,6 +957,130 @@ function T.mutated_status_cannot_reach_the_session_and_flows_close_cleanly()
   controller:dispose()
   controller:dispose()
   state.session:close()
+end
+
+local function driveTo(controller, target, maxSteps)
+  for _ = 1, maxSteps or 240 do
+    if controller:status().state == target then
+      return
+    end
+    controller:step({ { type = "confirm" } })
+  end
+  error("stuck in " .. controller:status().state .. " waiting for " .. target, 0)
+end
+
+-- Empty-input driver: the source mart advances its printers on print
+-- finish, never on an acknowledgement, so these transitions must happen
+-- with no edges at all.
+local function driveEmptyTo(controller, target, maxSteps)
+  for _ = 1, maxSteps or 240 do
+    if controller:status().state == target then
+      return
+    end
+    controller:step({})
+  end
+  error("stuck in " .. controller:status().state .. " waiting for " .. target, 0)
+end
+
+function T.purchase_prints_advance_without_ack_and_results_ack_once()
+  -- One full purchase journey: the source mart advances its printers on
+  -- print finish, never on an acknowledgement, and every result keeps
+  -- the quantity backdrop until the single acknowledgement press.
+  local service, bag = resources(10000)
+  local session = service:openBuy(stock(10, 1))
+  local controller = newController(session)
+  driveTo(controller, "quantity_prompt")
+  driveEmptyTo(controller, "quantity")
+  Assert.equal(
+    controller:status().lowerMode,
+    "quantity",
+    "the quantity prompt yields to quantity input once its print finishes"
+  )
+  controller:step({ { type = "confirm" } })
+  driveEmptyTo(controller, "confirm_prompt")
+  driveEmptyTo(controller, "confirm")
+  Assert.isTrue(
+    controller:status().prompt ~= nil,
+    "the confirmation print opens its yes/no prompt once its print finishes"
+  )
+  Assert.equal(
+    controller:status().lowerMode,
+    "quantity",
+    "confirmation after quantity keeps the quantity backdrop instead of the confirm backdrop"
+  )
+  controller:step({ { type = "confirm" } })
+  driveEmptyTo(controller, "success_ack")
+  Assert.equal(bag:quantity("POTION"), 1, "the receipt commits once its print finishes")
+  Assert.equal(
+    controller:status().lowerMode,
+    "quantity",
+    "the receipt keeps the quantity backdrop until acknowledgement"
+  )
+  controller:step({ { type = "confirm" } })
+  driveEmptyTo(controller, "browse", 60)
+  Assert.equal(controller:status().lowerMode, "browse", "one acknowledgement dismisses the receipt")
+  controller:dispose()
+  session:close()
+
+  service = resources(0)
+  session = service:openBuy(stock(10, 1))
+  controller = newController(session)
+  driveTo(controller, "error_print")
+  driveEmptyTo(controller, "error_ack")
+  controller:step({ { type = "confirm" } })
+  driveEmptyTo(controller, "browse", 60)
+  Assert.equal(controller:status().lowerMode, "browse", "one acknowledgement dismisses the refusal")
+  controller:dispose()
+  session:close()
+end
+
+local function singleAthleteService()
+  local root = ItemFixture.buildAssetRoot()
+  root.items.POTION.price = 2
+  local items = ItemCatalog.new(root)
+  local bag = HgssBagService.new({ catalog = items, bag = BagSave.empty() })
+  local bucket = MartSave.empty()
+  bucket.athletePoints = 10
+  return MartService.new({
+    profile = { money = 1000, badges = {}, nationalDex = false },
+    bag = bag,
+    itemCatalog = items,
+    catalog = { cards = {}, apricorns = {}, seals = {}, decorations = {} },
+    bucket = bucket,
+  })
+end
+
+function T.single_quantity_athlete_purchase_confirms_on_its_backdrop_with_item_receipt()
+  local service = singleAthleteService()
+  local session = service:openBuy({
+    key = "single-athlete-test",
+    currency = "athlete_points",
+    presentationKind = "athlete_items",
+    quantityMode = "single",
+    bonusPolicy = "none",
+    entries = {
+      {
+        key = "points-item",
+        displayItemKey = "POTION",
+        description = { kind = "item" },
+        unitPrice = 2,
+        destination = { kind = "bag", key = "POTION" },
+        restriction = { kind = "none" },
+      },
+    },
+  })
+  local controller = newController(session)
+  driveTo(controller, "confirm_prompt")
+  Assert.equal(controller:status().lowerMode, "confirm", "single-quantity stock confirms on its dedicated backdrop")
+  driveTo(controller, "confirm")
+  driveTo(controller, "success_ack")
+  Assert.equal(
+    controller:status().messageRole,
+    "itemReceived",
+    "a Bag item bought with athlete points uses the pocket receipt, not the points receipt"
+  )
+  controller:dispose()
+  session:close()
 end
 
 return { tests = T }

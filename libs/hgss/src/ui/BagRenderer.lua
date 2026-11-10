@@ -220,7 +220,7 @@ local function buildPathMap(manifest, moveIcons)
       end
     end
   end
-  for _, state in ipairs({ "action", "quantity" }) do
+  for _, state in ipairs({ "action", "quantity", "sale" }) do
     local overlays =
       assert(interactive.backgrounds[state .. "Overlay"], "the bag manifest carries its " .. state .. " overlay")
     for _, pocket in ipairs(BagSave.POCKET_ORDER) do
@@ -317,7 +317,6 @@ local function buildPathMap(manifest, moveIcons)
   )
   add("quantityConfirm", assert(quantity.confirm.visual, "the quantity carries its confirm visual"))
   add("quantityCancel", assert(quantity.cancel.visual, "the quantity carries its cancel visual"))
-  add("saleQuantityBackground", sale.quantityBackground)
   paths.saleConfirm = assert(paths.quantityConfirm, "the bag presentation names its quantity controls")
   paths.saleCancel = assert(paths.quantityCancel, "the bag presentation names its quantity controls")
   local registration =
@@ -730,15 +729,14 @@ local function collectEntries(paths, presentation)
   add("quantityDecrementPressed")
   add("quantityConfirm")
   add("quantityCancel")
-  add("saleQuantityBackground")
   add("moveCursor:original")
   add("moveCursor:candidate")
   -- Layered backgrounds in bottom-to-top draw order: the browse base plus
   -- one row patch per visible cell, then the state overlay, then the
   -- retained Cancel face for the action family (which the retired baked
-  -- variants composited on top) or the move origin marker. The sale
-  -- quantity state draws the sale chrome without a lower-pane background
-  -- and enrolls nothing below.
+  -- variants composited on top) or the move origin marker. Every sale
+  -- state keeps the pocket-realized sale screen instead, matching the
+  -- retained variant-4 tilemaps, and enrolls nothing below.
   local function browseLayers(targetPocket)
     local keys = { "background:browse:" .. targetPocket .. ":base" }
     for cell = 0, count - 1 do
@@ -749,23 +747,25 @@ local function collectEntries(paths, presentation)
   local function backgroundKeys(targetPocket, origin)
     if state == "browsing" or state == "description_overlay" or state == "item_select" then
       return browseLayers(targetPocket)
+    elseif state == "action_menu" then
+      local keys = browseLayers(targetPocket)
+      keys[#keys + 1] = "overlay:action:" .. targetPocket
+      keys[#keys + 1] = "cancelFace"
+      return keys
     elseif
-      state == "action_menu"
+      state == "sale_quantity"
       or state == "sale_offer"
       or state == "sale_result"
       or state == "sale_refusal"
       or state == "sale_ack"
     then
-      local keys = browseLayers(targetPocket)
-      keys[#keys + 1] = "overlay:action:" .. targetPocket
-      keys[#keys + 1] = "cancelFace"
-      return keys
+      -- Every sale state retains the sale tilemaps, so the pocket-realized
+      -- sale screen draws alone with no browse base or action overlay.
+      return { "overlay:sale:" .. targetPocket }
     elseif state == "toss_quantity" then
       local keys = browseLayers(targetPocket)
       keys[#keys + 1] = "overlay:quantity:" .. targetPocket
       return keys
-    elseif state == "sale_quantity" then
-      return {}
     elseif state == "toss_confirm" or state == "toss_ack" then
       local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
       assert(base == "action" or base == "quantity", "toss confirmation retains a known base")
@@ -1196,13 +1196,17 @@ function BagRenderer:_drawStateBackground(state, pocket, presentation)
   elseif state == "toss_quantity" then
     drawBrowseLayers()
     keys = { "overlay:quantity:" .. pocket }
-  elseif state == "sale_quantity" then
-    drawVisual(self._graphics, assert(self._visuals.saleQuantityBackground), 0, 0)
-    return
-  elseif state == "sale_offer" or state == "sale_result" or state == "sale_refusal" or state == "sale_ack" then
-    drawBrowseLayers()
-    keys = { "overlay:action:" .. pocket }
-    cancelAt = true
+  elseif
+    state == "sale_quantity"
+    or state == "sale_offer"
+    or state == "sale_result"
+    or state == "sale_refusal"
+    or state == "sale_ack"
+  then
+    -- Every sale state retains the sale tilemaps: the pocket-realized
+    -- sale screen draws alone with no browse base, action overlay, or
+    -- Cancel face, matching the hidden tab and cancel chrome.
+    keys = { "overlay:sale:" .. pocket }
   elseif state == "toss_confirm" or state == "toss_ack" then
     local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
     assert(base == "action" or base == "quantity", "toss confirmation retains a known base")
@@ -1592,24 +1596,37 @@ function BagRenderer:_drawLowerMessage(presentation)
   end
   local messages = assert(self._manifest.interactive.overlays.messages, "the bag manifest carries its message windows")
   local state = assert(presentation.state, "the bag presentation names its state")
-  local windowKey = (state == "toss_confirm" or state == "toss_ack" or state == "sale_offer" or state == "sale_result")
+  -- The sale quantity prompt and offer print in the dedicated wide window
+  -- beside the wallet; the toss confirmation/result and the sale result,
+  -- refusal, and acknowledgement print in the tall framed window. The
+  -- completed result stays in that window until the ack press clears it,
+  -- exactly like the source message window; everything else keeps the
+  -- short window.
+  local windowKey = (
+    state == "toss_confirm"
+    or state == "toss_ack"
+    or state == "sale_result"
+    or state == "sale_refusal"
+    or state == "sale_ack"
+  )
       and "modal"
+    or (state == "sale_quantity" or state == "sale_offer") and "wide"
     or "selected"
   local contentRect = assert(messages[windowKey].contentRect, "the bag manifest carries its message content rect")
   local box = { x = contentRect.x, y = contentRect.y, width = contentRect.width, height = contentRect.height }
   local background = self._text:windowBackgroundColor()
   local fontDef = assert(self._text.fontDef, "bag text needs the shared field font definition")
   local palette = paletteRecord(fontDef, 1, 2, 15)
-  local maxLines = windowKey == "modal" and 2 or 1
+  local maxLines = windowKey == "selected" and 1 or 2
   local lines = {}
   for line in (plainText(visibleText) .. "\n"):gmatch("([^\n]*)\n") do
     if #lines >= maxLines then
       break
     end
-    if windowKey == "modal" then
-      lines[#lines + 1] = { text = line, x = 0, y = #lines * LINE_HEIGHT }
-    else
+    if windowKey == "selected" then
       lines[#lines + 1] = { text = line, x = 0, y = 0 }
+    else
+      lines[#lines + 1] = { text = line, x = 0, y = #lines * LINE_HEIGHT }
     end
   end
   local window = self._window
@@ -1647,7 +1664,18 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
   -- exhaustive, so an unknown state fails before borrowing other layers.
   local layers = interactiveLayers(state)
   self:_drawStateBackground(state, pocket, presentation)
-  drawVisual(graphics, assert(self._visuals["strip:" .. pocket]), 0, 0)
+  -- The tab strip draws everywhere except the sale flow: entering sell
+  -- hides the pocket tab sprites until the flow exits, so the sale screen
+  -- keeps its own top bar instead of the bag tabs.
+  if
+    state ~= "sale_quantity"
+    and state ~= "sale_offer"
+    and state ~= "sale_result"
+    and state ~= "sale_refusal"
+    and state ~= "sale_ack"
+  then
+    drawVisual(graphics, assert(self._visuals["strip:" .. pocket]), 0, 0)
+  end
   self:_drawTabFocus(presentation)
   -- The movable item cursor draws beneath the cell content it frames, so
   -- icons, names, quantities, and registration markers stay visible above it.
@@ -1696,6 +1724,13 @@ function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
     self:_drawLowerMessage(presentation)
   elseif state == "sale_offer" or state == "sale_result" or state == "sale_refusal" or state == "sale_ack" then
     self:_drawSelectedItemPanel(presentation, icons, iconImage, palettes.item)
+    -- The retail digit windows persist through the offer and the result
+    -- acknowledgement once shown: StartSell prints them before the
+    -- single-unit offer and ShowSellPrice never clears them. The initial
+    -- not-sellable refusal never printed digits, so it keeps none.
+    if state == "sale_offer" or state == "sale_result" or state == "sale_ack" then
+      self:_drawSaleDigits(presentation)
+    end
     self:_drawSaleValues(presentation)
     self:_drawLowerMessage(presentation)
     if state == "sale_offer" then
@@ -1807,8 +1842,9 @@ function BagRenderer:_drawQuantityState(presentation)
   for position = 1, #picked do
     local glyph = picked:sub(position, position)
     local cell = digits[#digits - #picked + position]
-    local width = self._text:textWidth(glyph)
-    self._text:drawText(glyph, cell.x + (cell.width - width) / 2, cell.y + 2)
+    -- One glyph per digit window at window-local (0, 4), like the sale
+    -- picker: left-aligned at the cell origin, four pixels down.
+    self._text:drawText(glyph, cell.x, cell.y + 4)
   end
   local overlay = assert(self._manifest.interactive.overlays.quantity, "the quantity overlay is required")
   local controls = assert(overlay.controls, "the quantity overlay carries controls")
@@ -1861,15 +1897,20 @@ function BagRenderer:_drawQuantityState(presentation)
 end
 
 ---@param box table<string, unknown>
----@param value integer
+---@param prefix string the source currency prefix drawn at the box origin
+---@param number integer|string the right-aligned amount following the prefix
 ---@param palette table<string, unknown>
-function BagRenderer:_drawSaleAmount(box, value, palette)
+function BagRenderer:_drawSaleAmount(box, prefix, number, palette)
   local rect = assert(box, "sale amounts carry text boxes")
-  local text = tostring(value)
-  local width = self._text:textWidth(text)
-  local alignment = assert(rect.alignment, "sale amount boxes carry alignment")
-  local x = rect.x + (alignment == "right" and rect.width - width or 0) + rect.textX
-  self._text:drawTextWithPalette(text, x, rect.y + rect.textY, palette)
+  assert(type(prefix) == "string" and prefix ~= "", "sale amounts carry their currency prefix")
+  local digits = tostring(number)
+  -- The retail amount windows keep the currency prefix at the box
+  -- origin while the digits right-align: the wallet "$" and the total
+  -- "+$" never drift with the amount width.
+  self._text:drawTextWithPalette(prefix, rect.x + rect.textX, rect.y + rect.textY, palette)
+  local width = self._text:textWidth(digits)
+  local x = rect.x + rect.width - width + rect.textX
+  self._text:drawTextWithPalette(digits, x, rect.y + rect.textY, palette)
 end
 
 ---@param presentation table<string, unknown>
@@ -1877,10 +1918,43 @@ function BagRenderer:_drawSaleValues(presentation)
   local sale = assert(self._manifest.interactive.sale, "the bag manifest carries sale geometry")
   local balance = assert(presentation.saleBalance, "sale presentation carries the money balance")
   local total = assert(presentation.saleTotal, "sale presentation carries the quoted total")
+  local labels = assert(sale.labels, "the sale carries its chrome labels")
   local palette = self:_palettes().item
   setColor(self._graphics, WHITE)
-  self:_drawSaleAmount(sale.money, balance, palette)
-  self:_drawSaleAmount(sale.total, total, palette)
+  -- The wallet caption prints at its source window origin; the total
+  -- carries the source "+" prefix from the total template.
+  self._text:drawTextWithPalette(
+    plainText(assert(labels.money, "the sale carries its wallet label")),
+    sale.moneyLabelAt.x,
+    sale.moneyLabelAt.y,
+    palette
+  )
+  -- The wallet amount carries the source "$" prefix from its template
+  -- and the total carries the source "+$" prefix (msg 83); both print
+  -- through the item palette like the rest of the sale chrome.
+  self:_drawSaleAmount(sale.money, "$", balance, palette)
+  self:_drawSaleAmount(sale.total, "+$", total, palette)
+end
+
+---@param presentation table<string, unknown>
+function BagRenderer:_drawSaleDigits(presentation)
+  local sale = assert(self._manifest.interactive.sale, "the bag manifest carries sale geometry")
+  local quantity = assert(
+    presentation.quantity ~= nil and presentation.quantity or presentation.saleQuantity,
+    "sale states carry their picked amount"
+  )
+  assert(quantity >= 1 and quantity <= 99, "sale amount fits two digits and its cap")
+  local digits = assert(sale.digits, "sale quantity carries two digit placements")
+  assert(#digits == 2, "sale quantity uses two digit cells")
+  -- The retail digit windows always print two glyphs with a leading
+  -- zero (PrintQuantityDigits divides by 10 then 1), one glyph per
+  -- window at window-local (0, 4).
+  local picked = string.format("%02d", quantity)
+  for position = 1, 2 do
+    local glyph = picked:sub(position, position)
+    local cell = digits[position]
+    self._text:drawText(glyph, cell.x, cell.y + 4)
+  end
 end
 
 ---@param presentation table<string, unknown>
@@ -1889,15 +1963,7 @@ function BagRenderer:_drawSaleQuantityState(presentation)
   local quantity = assert(presentation.quantity, "sale quantity carries its amount")
   local quantityMax = assert(presentation.quantityMax, "sale quantity carries its cap")
   assert(quantity >= 1 and quantity <= quantityMax and quantity <= 99, "sale amount fits two digits and its cap")
-  local digits = assert(sale.digits, "sale quantity carries two digit placements")
-  local picked = tostring(quantity)
-  assert(#digits == 2 and #picked <= 2, "sale quantity uses two digit cells")
-  for position = 1, #picked do
-    local glyph = picked:sub(position, position)
-    local cell = digits[#digits - #picked + position]
-    local width = self._text:textWidth(glyph)
-    self._text:drawText(glyph, cell.x + (cell.width - width) / 2, cell.y + 2)
-  end
+  self:_drawSaleDigits(presentation)
   local pressed = presentation.quantityPressedControl
   for index, control in ipairs(sale.controls) do
     local hiddenTens = (control.delta == 10 or control.delta == -10) and quantityMax < 10
@@ -1913,9 +1979,12 @@ function BagRenderer:_drawSaleQuantityState(presentation)
   local cancel = sale.cancel
   drawVisual(self._graphics, assert(self._visuals.saleConfirm), confirm.center.x, confirm.center.y)
   drawVisual(self._graphics, assert(self._visuals.saleCancel), cancel.center.x, cancel.center.y)
-  local labels = assert(self._manifest.interactive.text.actions, "the Bag carries CONFIRM and CANCEL labels")
+  local saleLabels = assert(sale.labels, "the sale carries its chrome labels")
+  local labels = assert(self._manifest.interactive.text.actions, "the Bag carries its CANCEL label")
   local palette = self:_palettes().description
-  self._text:drawTextWithPalette(plainText(assert(labels.confirm)), confirm.labelAt.x, confirm.labelAt.y, palette)
+  -- The sale confirm prints the sale-specific SELL label, never the
+  -- generic CONFIRM read.
+  self._text:drawTextWithPalette(plainText(assert(saleLabels.sell)), confirm.labelAt.x, confirm.labelAt.y, palette)
   self._text:drawTextWithPalette(plainText(assert(labels.cancel)), cancel.labelAt.x, cancel.labelAt.y, palette)
   self:_drawSaleValues(presentation)
 end

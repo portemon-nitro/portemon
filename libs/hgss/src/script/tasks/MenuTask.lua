@@ -97,8 +97,27 @@ function MenuTask.poll(state, ctx)
   local input = ctx.input or {}
   local events = input.menuEvents or {}
   assert(type(events) == "table", "menu input events must be a table")
+  local services = ctx.services or {}
+  local audio = services.audio
+  assert(audio == nil or type(audio.play) == "function", "menu audio service must provide play")
+  local function playSelect()
+    if audio ~= nil then
+      audio:play("SEQ_SE_DP_SELECT")
+    end
+  end
   for _, event in ipairs(events) do
+    local before = controller:status().selectedIndex
+    local wasActive = controller:isActive()
     applyEvent(controller, state, event)
+    -- Retail script list menus (ScriptMenu_ListTask) blip SELECT on row
+    -- change and on confirm/cancel: focus changes sound only when the row
+    -- actually moves, and completion sounds once even when the release
+    -- also moves the cursor.
+    if wasActive and not controller:isActive() then
+      playSelect()
+    elseif controller:isActive() and controller:status().selectedIndex ~= before then
+      playSelect()
+    end
     if not controller:isActive() then
       break
     end

@@ -269,4 +269,20 @@ function T.retains_an_explicit_zero_cancellation_value()
   Assert.equal(h:execute(builder, {}).cancelValue, 0)
 end
 
+-- The retail list menu has no cancellation value: B selects the last row,
+-- so a cancellable builder without one resolves to its last item value.
+function T.cancellable_retail_menu_cancels_to_its_last_row_value()
+  local h = host()
+  local builder = h:beginMenu({
+    messageSource = "standard",
+    initialCursor = 0,
+    cancellable = true,
+    result = "VAR_RESULT",
+  })
+  h:addItem(builder, { messageId = 0, vanillaMetadata = 0, value = 0 })
+  h:addItem(builder, { messageId = 0, vanillaMetadata = 0, value = 1 })
+  h:addItem(builder, { messageId = 0, vanillaMetadata = 0, value = 2 })
+  Assert.equal(h:execute(builder, {}).cancelValue, 2)
+end
+
 return { tests = T }

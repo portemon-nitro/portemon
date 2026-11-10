@@ -303,6 +303,8 @@ local function syntheticMessageBanks()
   bank10[78] = messageUnits({ ITEM_SUBSTITUTION, "? Quantity?" })
   bank10[79] = messageUnits({ "Offer: ", SALE_TOTAL_SUBSTITUTION })
   bank10[80] = messageUnits({ ITEM_SUBSTITUTION, " for ", SALE_TOTAL_SUBSTITUTION })
+  bank10[81] = messageUnits({ "Money" })
+  bank10[87] = messageUnits({ "SELL" })
   bank10[76] = messageUnits({ "MOVE" })
   bank10[102] = messageUnits({ "TYPE" })
   bank10[90] = messageUnits({ "PP" })
@@ -634,6 +636,10 @@ function T.producer_declares_the_audited_message_selection()
     use = { bank = 10, index = 0 },
     give = { bank = 10, index = 3 },
   })
+  Assert.deepEqual(messages.saleLabels, {
+    money = { bank = 10, index = 80 },
+    sell = { bank = 10, index = 86 },
+  })
   Assert.deepEqual(messages.templates, {
     movePrompt = { bank = 10, index = 46 },
     tossConfirm = { bank = 10, index = 55 },
@@ -761,6 +767,17 @@ local function layeredPocketBackgrounds()
       }
     end
     backgrounds[state .. "Overlay"] = overlays
+  end
+  do
+    local overlays = {}
+    for _, pocket in ipairs(POCKETS) do
+      overlays[pocket] = {
+        image = "assets/generated/bag/background-sale-quantity-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
+    end
+    backgrounds.saleOverlay = overlays
   end
   do
     local move = {}
@@ -1141,6 +1158,7 @@ local function syntheticBundle(marker)
         messages = {
           selected = { contentRect = { x = 16, y = 8, width = 216, height = 16 } },
           modal = { contentRect = { x = 16, y = 8, width = 216, height = 32 } },
+          wide = { contentRect = { x = 88, y = 8, width = 144, height = 32 } },
         },
         actionMenu = {
           face = visualRef("assets/generated/bag/action-face-frame-1.png"),

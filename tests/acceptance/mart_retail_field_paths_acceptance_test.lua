@@ -28,6 +28,7 @@ local T = {
       "map:281",
       "mart:global",
       "message-bank:138",
+      "script-member:3",
       "script-member:123",
     },
     tags = { "field", "mart", "acceptance" },
@@ -614,6 +615,62 @@ function T.tests.seal_shop_grants_a_seal_while_legacy_decoration_stays_non_grant
     )
     Assert.notNil(sealItem, "the generated Seal presentation supplied a semantic display item")
   end, { recordingScriptHosts = true })
+end
+
+function T.tests.standard_clerk_reasks_after_buy_and_quits_through_goodbye_line()
+  withGame(function(game)
+    game:waitForFieldEntry()
+    game.runtime.scripts.worldState:setFlag(0x09A)
+    local status = reachRetailMart(game, "common.pokemart")
+    Assert.equal(status.martKind, "buy", "the clerk Buy choice opens the purchase child")
+    for _ = 1, 40 do
+      if not game.runtime.martHost:isActive() then
+        break
+      end
+      pressCancel(game)
+      for _ = 1, 10 do
+        game:step()
+      end
+    end
+    Assert.isFalse(game.runtime.martHost:isActive(), "cancelling the buy list closes the child")
+    -- The re-asked menu must be visibly modal before asserting its rows:
+    -- the source answers B by confirming its last row, so the press has
+    -- to reach the open menu instead of the opening tick.
+    game:advanceUntil("the clerk reopens its menu", function()
+      return game.runtime.menuHost:isModal()
+    end, 400)
+    local reopened
+    for _, task in ipairs(game.runtime.scripts.scheduler:tasks()) do
+      if task.taskType == "menu" then
+        reopened = task
+        break
+      end
+    end
+    Assert.notNil(reopened, "the clerk reopens Buy/Sell/Quit after its anything-else line")
+    local values = {}
+    for _, item in ipairs(reopened.state.menuDefinition.items) do
+      values[#values + 1] = item.value
+    end
+    Assert.deepEqual(values, { 0, 1, 2 }, "the clerk reopens Buy/Sell/Quit after its anything-else line")
+    pressCancel(game)
+    game:advanceUntil("the goodbye line replaces the menu", function()
+      return not game.runtime.menuHost:isModal()
+    end, 60)
+    for _ = 1, 200 do
+      if game:snapshot().foregroundScript == nil then
+        break
+      end
+      Assert.isFalse(game.runtime.menuHost:isModal(), "no menu reopens after declining the clerk")
+      local dialogue = game.runtime.dialogue:status().state
+      if dialogue == "WAITING_BOUNDARY" or dialogue == "WAITING_CLOSE" then
+        game:pressAction()
+      else
+        game:step()
+      end
+    end
+    Assert.isNil(game:snapshot().foregroundScript, "declining the re-asked menu quits the clerk")
+    Assert.isFalse(game.runtime.dialogue:isModal(), "quitting closes the clerk dialogue")
+  end)
 end
 
 function T.tests.script_sell_child_owns_modal_input_and_returns_to_the_field_once()
