@@ -761,6 +761,13 @@ function FieldObjectActor:reprojectActiveAction(start, destination)
 end
 
 function FieldObjectActor:advanceScriptedAction(progressTicks, durationTicks)
+  -- Scripted motion also advances while the actor stepper is locked: door
+  -- and stair choreography drives scripted walks outside actors:step, which
+  -- owns the per-tick render-baseline snapshot. Mirror the player contract
+  -- by rebasing previousWorld onto the pre-advance point, so host-frame
+  -- draws blend from the latest applied position instead of juddering back
+  -- to a stale tick-start anchor every fixed tick.
+  collapseRenderBaseline(self)
   self:advanceAction(progressTicks, durationTicks)
 end
 

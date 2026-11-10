@@ -678,7 +678,13 @@ function FollowingMonController:_handleMapChange(mapId, coveredRebuild)
   self._pendingHiddenLead = nil
   self._lastPlayerRevision = nil
   self._lastAnchor = nil
-  self._lastMovementTransactionRevision = nil
+  -- No live transaction survives a map change (live revisions start at 1,
+  -- so 0 is the same "no live transaction" sentinel the idle observation
+  -- uses): the first step on the new map is observed as new, so an arrival
+  -- hidden until its first trail step reveals on that step instead of
+  -- waiting for a second one. A reinstall landing mid-step still steers
+  -- from its own tile, never replays history.
+  self._lastMovementTransactionRevision = 0
   self._consumedStep = nil
   self._ledgeLanding = nil
   self._paused = false
@@ -1566,7 +1572,7 @@ end
 -- installs hidden on the tile. The trail-step observation owns the reveal.
 -- The reason is accepted for the transition collaborator contract; panel and
 -- preview arrivals hide identically.
----@param _ string arrival reason ("panel"|"preview"|"event"), descriptive only
+---@param _ string arrival reason ("panel"|"preview"|"event"|"warp"|"egress"), descriptive only
 ---@param self FollowingMonController
 function FollowingMonController:rejoin(_)
   self._rejoinHidden = true

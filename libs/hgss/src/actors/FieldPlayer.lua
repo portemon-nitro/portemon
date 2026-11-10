@@ -445,7 +445,7 @@ end
 -- adopt the resolved destination, and enter the walking motion. The semantic
 -- speed is final here: manual steps walk normal or run, scripted steps carry their
 -- action speed, and the published duration is that speed's calibration.
-function FieldPlayer:_beginStep(direction, destination, speed)
+function FieldPlayer:_beginStep(direction, destination, speed, traversalKind)
   assert(type(speed) == "string", "movement speed required")
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   local durationTicks = assert(MovementCalibration.SPEED_TICKS[speed], "unknown movement speed " .. tostring(speed))
@@ -464,7 +464,7 @@ function FieldPlayer:_beginStep(direction, destination, speed)
   self.motion = "walking"
   self.progressTicks = 0
   self.durationTicks = durationTicks
-  self:_publishMovementStart(direction, speed, "walk")
+  self:_publishMovementStart(direction, speed, traversalKind or "walk")
 end
 
 -- Publish the resolved translation before the first in-flight tick: source
@@ -473,9 +473,13 @@ end
 -- never reach this path, so they publish nothing.
 ---@param direction FieldDirection
 ---@param speed string
----@param traversalKind "walk"|"ledge_jump"
+---@param traversalKind "walk"|"ledge_jump"|"transition"
 function FieldPlayer:_publishMovementStart(direction, speed, traversalKind)
   assert(type(speed) == "string", "movement speed required")
+  assert(
+    traversalKind == "walk" or traversalKind == "ledge_jump" or traversalKind == "transition",
+    "unknown movement traversal kind " .. tostring(traversalKind)
+  )
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   assert(
     self.durationTicks == MovementCalibration.SPEED_TICKS[speed],
@@ -718,15 +722,25 @@ end
 -- into the door tile normal movement cannot enter and out of a door tile onto
 -- the floor beyond it. Terrain surface resolution still governs (a door tile
 -- without a walkable surface simply fails, and the choreography continues by
--- fading). Returns true when the step began.
-function FieldPlayer:scriptedStep(direction)
+-- fading). Returns true when the step began. Arrival-side choreography
+-- passes "transition": the follower trail never follows transition-driven
+-- steps (retail teleports the follower onto the player at the egress end
+-- instead of queueing a trail step), while source-side ingress keeps the
+-- ordinary "walk" so the follower trails it.
+---@param direction FieldDirection
+---@param traversalKind "walk"|"transition"?
+---@return boolean
+function FieldPlayer:scriptedStep(direction, traversalKind)
   assert(DELTAS[direction], "unknown field direction " .. tostring(direction))
   assert(self.motion == "idle", "cannot begin a scripted step while walking")
+  if traversalKind ~= nil then
+    assert(traversalKind == "walk" or traversalKind == "transition", "unknown scripted traversal kind")
+  end
   local destination = self:_resolveStep(direction, true)
   if not destination then
     return false
   end
-  self:_beginStep(direction, destination, "normal")
+  self:_beginStep(direction, destination, "normal", traversalKind or "walk")
   return true
 end
 

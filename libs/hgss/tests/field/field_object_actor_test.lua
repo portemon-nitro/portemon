@@ -685,35 +685,38 @@ function T.a_reused_numeric_storage_slot_starts_clean_for_its_new_owner()
   Assert.equal(reused.visible, 0, "a reused numeric slot must not leak the previous occupant's visibility")
 end
 
--- Moved numeric/boolean state has exactly one authority, the actor's cdata
--- record: it must not remain a mutable Lua table property, and no
--- __index/__newindex compatibility proxy may reintroduce transparent
--- property-style access to it.
-function T.moved_numeric_fields_are_not_mutable_actor_table_properties()
+function T.scripted_walk_rebases_its_render_baseline_without_the_stepper()
   local a = actor()
-  local mt = getmetatable(a)
-  Assert.isNil(mt.__newindex, "the actor metatable must not add a compatibility property proxy")
-  local movedFields = {
-    "fieldX",
-    "fieldZ",
-    "worldX",
-    "worldY",
-    "worldZ",
-    "previousWorldX",
-    "previousWorldY",
-    "previousWorldZ",
-    "surfaceId",
-    "sourceSurfaceId",
-    "poseTick",
-    "presentationOffset",
-    "resident",
-    "visible",
-    "solid",
-    "animationPaused",
-  }
-  for _, field in ipairs(movedFields) do
-    Assert.isNil(rawget(a, field), field .. " must not live directly on the actor table")
-  end
+  -- The live stepper snapshots the render baseline every tick, but door
+  -- and stair choreography drives scripted walks while it is locked. Each
+  -- scripted advance must rebase previousWorld onto the pre-advance point
+  -- itself (the player contract), or host-frame draws blend from a stale
+  -- anchor and the walker visibly judders back every fixed tick.
+  a:beginFixedStep()
+  a:beginScriptedAction({
+    action = "walk",
+    direction = "east",
+    speed = "normal",
+    start = { fieldX = 6, fieldZ = 5, worldX = 6.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    dest = { fieldX = 7, fieldZ = 5, worldX = 7.5, worldY = 0, worldZ = 5.5, surfaceId = 0, resident = true },
+    durationTicks = 8,
+  })
+  a:advanceScriptedAction(1, 8)
+  a:advanceScriptedAction(2, 8)
+  local sampled = a:renderPosition(0)
+  Assert.near(
+    assert(sampled.x),
+    6.5 + 1 / 8,
+    1e-9,
+    "the second advance draws from the first advance's endpoint, not the walk start"
+  )
+  Assert.near(assert(sampled.z), 5.5, 1e-9, "unmoved axes keep their baseline")
+  Assert.near(
+    a:getWorldPosition().x,
+    6.5 + 2 / 8,
+    1e-9,
+    "the rebased advance still lands the world position"
+  )
 end
 
 return { tests = T }

@@ -50,7 +50,12 @@
 -- rejoin through presence-gated exactly-once hooks: recall at departure start,
 -- rejoin("panel") at arrival end, rejoin("preview") once the profile-8 preview
 -- arrival completes or, for any other profile, once the preview itself
--- completes. Absence or no present partner keeps current behavior. The
+-- completes, and rejoin("warp") at the swap for every other ordinary
+-- arrival (door, stairs, directional, generic). A door egress ends with one
+-- more rejoin("egress"): the retail MoveToPlayer stacking the follower onto
+-- the committed player tile. Panel and preview arrivals keep their single
+-- stage-owned rejoin: the swap-time warp rejoin is skipped for them.
+-- Absence or no present partner keeps current behavior. The
 -- coordinator injects the collaborator over the live following-mon
 -- controller; the controller's hide-until-step latch keeps the rejoined
 -- follower hidden and its trail-step observation owns the reveal.
@@ -879,8 +884,10 @@ local function advanceDestinationChoreo(self)
     if not self.destinationDoor or finished ~= false then
       assert(self.player and type(self.player.scriptedStep) == "function", "door egress player required")
       -- Both an actual destination door and the explicitly admitted
-      -- doorless profile-1/south case use HGSS STEP_DOWN.
-      local ok = self.player:scriptedStep("south")
+      -- doorless profile-1/south case use HGSS STEP_DOWN. The egress never
+      -- feeds the follower trail: retail teleports the follower onto the
+      -- player at the egress end instead of queueing a trail step.
+      local ok = self.player:scriptedStep("south", "transition")
       if not ok then
         Errors.raise(
           FieldErrors.MAP_TRANSITION_EGRESS_FAILED,
@@ -897,6 +904,12 @@ local function advanceDestinationChoreo(self)
       self.player:updateFixed({})
     end
     if not self.player or self.player.motion ~= "walking" then
+      -- Retail MoveToPlayer at the egress end: the follower rejoins hidden
+      -- on the committed player tile. Only arrivals with a destination
+      -- door teleport; the doorless south step leaves the trail alone.
+      if self.destinationDoor ~= nil then
+        followerRejoin(self, "egress")
+      end
       local animatedDoor = self.destinationDoor and self.destinationDoor:isFinished() ~= nil
       if animatedDoor then
         local sound = self.destinationDoor:close()
@@ -1289,6 +1302,14 @@ function FieldTransition:updateFixed(inputSnapshot)
         beginPreview(self, selected)
         return false
       end
+    end
+    if self.transitionMode ~= FieldTransitionProfile.MODE_PANEL then
+      -- Ordinary warp arrivals rejoin hidden on the player tile until the
+      -- first trail step (retail MoveToPlayer + HideUntilStep): the commit
+      -- cleared the partner before the reinstall, so the latch carries the
+      -- hide to the map-entry publish. Panel arrivals rejoin at their spin
+      -- end and preview arrivals at their completion instead, exactly once.
+      followerRejoin(self, "warp")
     end
     if self.transitionMode == FieldTransitionProfile.MODE_PANEL then
       if self.onPanel then

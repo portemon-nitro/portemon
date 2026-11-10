@@ -632,13 +632,15 @@ local function stubPlayer(opts)
     motion = "idle",
     facing = "south",
     steps = {},
+    kinds = {},
     updates = 0,
     stepTicks = opts.stepTicks or 8,
     remaining = 0,
     trace = opts.trace,
-    scriptedStep = function(self, direction)
+    scriptedStep = function(self, direction, traversalKind)
       assert(self.motion == "idle", "cannot begin a scripted step while walking")
       self.steps[#self.steps + 1] = direction
+      self.kinds[#self.kinds + 1] = traversalKind or "walk"
       local duration = self.stepTicks
       if type(duration) == "table" then
         duration = duration[#self.steps] or duration[#duration]
@@ -697,6 +699,7 @@ local function transitionFixture(opts)
     loader = loader,
     doorAt = opts.doorAt,
     onStart = opts.onStart,
+    follower = opts.follower,
     playSound = function(soundId)
       sounds[#sounds + 1] = soundId
     end,
@@ -2350,6 +2353,85 @@ function T.a_profile8_preview_owns_its_arrival_without_the_generic_destination_r
   Assert.equal(observed.stageAtReturn, "blend_out", "the vertical return runs during the reveal blend")
   Assert.equal(observed.turn, "south", "the arrival faces south")
   Assert.isNil(observed.step, "the preview branch must not append the generic destination step")
+end
+
+-- An ordinary door arrival rejoins the follower twice: once at the swap
+-- onto the destination map (retail MoveToPlayer onto the committed tile,
+-- hidden until the first trail step) and once more when the destination
+-- egress step finishes (the egress-end teleport). The ingress keeps the
+-- ordinary walk kind so the follower trails the way in; the egress runs
+-- as a transition step so it never queues a trail step of its own.
+function T.door_arrival_rejoins_the_follower_at_the_swap_and_at_the_egress_end()
+  local sourceDoor = doorStub()
+  local destinationDoor = doorStub()
+  local player = stubPlayer()
+  local rejoins = {}
+  local transition, source = transitionFixture({
+    doorAt = function(runtimeMap)
+      if runtimeMap == source then
+        return sourceDoor
+      end
+      return destinationDoor
+    end,
+    player = player,
+    follower = {
+      isPresent = function()
+        return true
+      end,
+      recall = function() end,
+      rejoin = function(reason)
+        rejoins[#rejoins + 1] = reason
+      end,
+    },
+  })
+  transition:start(source, makeTrigger("door", DOOR_WARP), "south")
+  runUntil(transition, { sourceDoor, destinationDoor }, function()
+    return transition.phase == "idle"
+  end, 400)
+  Assert.equal(transition.phase, "idle", "the door transition completes with a follower present")
+  Assert.deepEqual(rejoins, { "warp", "egress" }, "the arrival rejoins at the swap and at the egress end")
+  Assert.deepEqual(player.steps, { "north", "south" }, "the choreography walks the ingress and the egress")
+  Assert.deepEqual(
+    player.kinds,
+    { "walk", "transition" },
+    "the ingress feeds the follower trail while the egress never does"
+  )
+end
+
+-- The swap-time and egress-end rejoins are presence-gated: no present
+-- partner means no rejoin calls and the choreography still completes.
+function T.door_arrival_without_a_present_follower_never_rejoins()
+  local sourceDoor = doorStub()
+  local destinationDoor = doorStub()
+  local player = stubPlayer()
+  local rejoins = {}
+  local transition, source = transitionFixture({
+    doorAt = function(runtimeMap)
+      if runtimeMap == source then
+        return sourceDoor
+      end
+      return destinationDoor
+    end,
+    player = player,
+    follower = {
+      isPresent = function()
+        return false
+      end,
+      recall = function()
+        error("no recall without a present partner", 2)
+      end,
+      rejoin = function()
+        rejoins[#rejoins + 1] = true
+      end,
+    },
+  })
+  transition:start(source, makeTrigger("door", DOOR_WARP), "south")
+  runUntil(transition, { sourceDoor, destinationDoor }, function()
+    return transition.phase == "idle"
+  end, 400)
+  Assert.equal(transition.phase, "idle", "the door transition completes without a present follower")
+  Assert.deepEqual(rejoins, {}, "no rejoin fires without a present partner")
+  Assert.deepEqual(player.steps, { "north", "south" }, "the choreography still walks without a follower")
 end
 
 return { tests = T }

@@ -27,13 +27,56 @@ local T = {
 local TOWN = "MAP_NEW_BARK"
 local HOUSE_1F = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
 local HOUSE_2F = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
+local LAB_1F = "MAP_NEW_BARK_ELMS_LAB_1F"
 local TOWN_DOOR_APPROACH = { fieldX = 684, fieldZ = 394 }
 local HOUSE_WARP = { fieldX = 3, fieldZ = 3 }
+
+local function freezeAutonomousActors(game)
+  local runtime = game.runtime
+  for mapId in pairs(runtime.actors.maps) do
+    for _, actor in ipairs(runtime.actors:actorsOf(mapId)) do
+      runtime.actors:setMovementType(actor.actorId, "stationary")
+    end
+  end
+end
+
+-- Drives one real step in `direction`: single presses can fall between
+-- fixed ticks, so press until the committed tile changes (a turn-in-place
+-- never counts), then prove the displacement.
+local function driveStep(game, direction, label)
+  game:face(direction)
+  local start = game:snapshot().player
+  for _ = 1, 20 do
+    game:move(direction)
+    local after = game:advanceUntil(label, function(snapshot)
+      return snapshot.player.motion == "idle"
+    end, 120)
+    if after.player.fieldX ~= start.fieldX or after.player.fieldZ ~= start.fieldZ then
+      return after
+    end
+  end
+  error("no committable step " .. direction .. " for " .. label, 0)
+end
+
+-- Presses `direction` until a transition starts (bounded): single presses
+-- can fall between fixed ticks, and the first press may only turn.
+local function driveTransitionStart(game, direction, label)
+  game:face(direction)
+  for _ = 1, 20 do
+    game:move(direction)
+    if game.runtime.transition.phase ~= "idle" then
+      return
+    end
+  end
+  error("no transition started for " .. label, 0)
+end
 
 -- Source facts for the two transitions; identical across ready versions.
 local FACTS = {
   house2fArrival = { fieldX = 3, fieldZ = 4 },
-  labFloor = { fieldX = 4, fieldZ = 13 },
+  -- The lab entry lands on the destination warp tile itself (retail warp
+  -- placement), not on the map spawn one tile north of it.
+  labFloor = { fieldX = 4, fieldZ = 14 },
   labDoorAnchor = { fieldX = 4, fieldZ = 14 },
   -- The shop entrance stands one tile north of its approach: the approach
   -- is the logical-local tile (43, 8), the door warp the global tile
@@ -63,12 +106,6 @@ local function withDefaultGame(map, fn, fieldOptions)
   end
 end
 
-local function beginTownDoor(game)
-  game:moveTo(TOWN_DOOR_APPROACH)
-  game:move("north")
-  Assert.equal(game.runtime.transition.phase, "fade_out", "the production door input must start a transition")
-end
-
 local function hasEffect(game, sequence)
   for _, effect in ipairs(game:hostEffects()) do
     if effect == "audio:" .. sequence then
@@ -88,13 +125,39 @@ local function stepOntoHouseStairs(game)
   game:step({ direction = "west" })
 end
 
-function T.tests.door_fade_waits_for_source_ingress_and_preserves_anchor()
+-- The one production door journey: the source door opens and the swap waits
+-- for the completed ingress at full black, the entry lands on the
+-- destination warp tile itself (retail warp placement), and a trailing
+-- follower reinstalls hidden on the committed player tile until its first
+-- trail step reveals it and ordinary visible trailing resumes. The egress
+-- teleport, the mid-step reinstall, and the no-trail egress step live one
+-- layer down in the cheap coordinator/transition/controller suites; this
+-- boot pins only what needs the real maps, doors, and generated data.
+function T.tests.door_entry_lands_on_the_warp_tile_with_the_follower_hidden_until_its_first_step()
   withDefaultGame(TOWN, function(game)
-    beginTownDoor(game)
+    OpeningLifecycle.seedNewBarkWestExitScene(game)
+    OpeningLifecycle.settleNewBarkFriendScene(game)
+    freezeAutonomousActors(game)
+    local added = game.runtime.monService:giveMon({ species = "CHIKORITA", level = 5, form = 0 })
+    Assert.isTrue(added, "setup gift must enter the party")
+    game:advanceUntil("follower installation after party gift", function()
+      return game.runtime.actors:partnerId() ~= nil
+    end, 120)
+    freezeAutonomousActors(game)
+    game:moveTo(TOWN_DOOR_APPROACH)
+    game:move("north")
     local transition = game.runtime.transition
+    local neededRetry = transition.phase == "idle"
+    if neededRetry then
+      -- A single press can fall between fixed ticks; retry until the edge registers.
+      driveTransitionStart(game, "north", "the lab door entry")
+    end
+    Assert.equal(transition.phase, "fade_out", "the production door input must start a transition")
     Assert.isTrue(hasEffect(game, "SEQ_SE_DP_DOOR_OPEN"), "door audio follows the selected source animation")
     Assert.notNil(transition.sourceDoor, "the production transition must resolve the source door")
-    Assert.isNil(transition.resolution, "destination preparation waits for source door ingress")
+    if not neededRetry then
+      Assert.isNil(transition.resolution, "destination preparation waits for source door ingress")
+    end
     game:advanceUntil("source door ingress completes", function()
       return transition.resolution ~= nil
     end, 120)
@@ -102,9 +165,56 @@ function T.tests.door_fade_waits_for_source_ingress_and_preserves_anchor()
     Assert.equal(transition.resolution.fieldZ, FACTS.labDoorAnchor.fieldZ)
     Assert.equal(transition:presentationStatus().entryAction, "step_down")
     local completed = game:waitForTransition()
+    Assert.equal(completed.destination.mapSymbol, LAB_1F, "the door completes into the lab")
     Assert.deepEqual(
       { completed.destination.player.fieldX, completed.destination.player.fieldZ },
-      { FACTS.labFloor.fieldX, FACTS.labFloor.fieldZ }
+      { FACTS.labFloor.fieldX, FACTS.labFloor.fieldZ },
+      "a door entry lands on the destination warp tile"
+    )
+    game:advanceUntil("partner reinstalls on the arrival map", function()
+      return game.runtime.actors:partnerId() ~= nil
+    end, 180)
+    freezeAutonomousActors(game)
+    local followingMon = assert(game.runtime.followingMon, "the live following-mon controller is required")
+    local id = assert(game.runtime.actors:partnerId(), "the arrival keeps one partner installed")
+    local arrived = game:snapshot()
+    Assert.equal(
+      arrived.actors[id].fieldX,
+      arrived.player.fieldX,
+      "the rejoined follower stands on the committed player tile"
+    )
+    Assert.equal(
+      arrived.actors[id].fieldZ,
+      arrived.player.fieldZ,
+      "the rejoined follower stands on the committed player tile"
+    )
+    Assert.isFalse(
+      game.runtime.actors:isVisible(id),
+      "the arrival keeps the follower hidden until its first trail step"
+    )
+    -- North off the arrival tile: the warp tile itself is no ordinary
+    -- destination (normal movement cannot step back onto a door tile),
+    -- so the single reveal step plus the settled visible follower is the
+    -- whole production contract here; continued trailing lives in the
+    -- cheap coordinator suite.
+    local vacated = { fieldX = arrived.player.fieldX, fieldZ = arrived.player.fieldZ }
+    local stepped = driveStep(game, "north", "the reveal step resolves")
+    Assert.deepEqual(
+      { stepped.player.fieldX, stepped.player.fieldZ },
+      { vacated.fieldX, vacated.fieldZ - 1 },
+      "the reveal step walks north off the arrival tile"
+    )
+    game:advanceUntil("the follower re-shows after the arrival", function(snapshot)
+      local actor = snapshot.actors[id]
+      return snapshot.player.motion == "idle"
+        and actor ~= nil
+        and actor.fieldX == vacated.fieldX
+        and actor.fieldZ == vacated.fieldZ
+        and followingMon:isMovementSettled()
+    end, 180)
+    Assert.isTrue(
+      game.runtime.actors:isVisible(id),
+      "the first trail step re-shows the follower on the vacated tile"
     )
   end, { recordingScriptHosts = true })
 end

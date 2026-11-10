@@ -60,9 +60,12 @@ function FieldWorldSwapCoordinator:prepare(resolution, facing)
   local fieldX, fieldZ = resolution.fieldX, resolution.fieldZ
   local surfaceId, worldY = resolution.surfaceId, resolution.worldY
   if runtime.transition.sourceKind == "door" then
+    -- Retail warp placement lands on the destination warp tile itself
+    -- (FieldSystem_EnterLocation copies the warp coordinates); the
+    -- destination door choreography steps south out of it from there.
     assert(resolution.destinationWarp, "door destination warp required")
     fieldX = resolution.destinationWarp.x
-    fieldZ = resolution.destinationWarp.z - 1
+    fieldZ = resolution.destinationWarp.z
     local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
     local sample = SurfaceResolver.new(runtimeMap.terrain):resolve({
       localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,

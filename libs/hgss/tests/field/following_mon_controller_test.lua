@@ -2525,4 +2525,52 @@ function T.step_after_a_northward_ledge_jump_catches_up_at_the_player_pace()
   w.mgr:dispose()
 end
 
+-- A reinstall that lands mid-step reveals on that step: the map change
+-- resets movement observation to the no-transaction sentinel, so the live
+-- step counts as new and clears the arrival hide instead of being
+-- swallowed as already-seen history (which would hide the follower until
+-- a second step).
+function T.map_change_mid_step_reveals_the_hidden_arrival_on_its_first_step()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  Assert.isTrue(w.controller:isPartnerVisible(), "setup installs the partner visible")
+  -- The production swap retires the actor map, and a scripted walk is
+  -- already in flight on the new map before the controller observes the
+  -- change: a reinstall landing mid-step. The swap-time warp rejoin hides
+  -- the arrival on the committed tile.
+  enterMap(w, 62)
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  local duration = MovementCalibration.SPEED_TICKS.normal
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "normal" })
+  w.controller:rejoin("warp")
+  w.controller:update()
+  local hidden = assert(w.mgr:getById(partnerId), "the new map reinstalls the partner")
+  Assert.isTrue(
+    w.controller:isPartnerVisible(),
+    "the live step on the new map re-shows the follower instead of waiting for a second one"
+  )
+  Assert.notNil(hidden:scriptedMotionState(), "the live step starts the follower trail at once")
+  for progress = 1, duration do
+    w.player:advanceScriptedAction(progress, duration)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  tick(w, 12)
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower trail settles after the map change")
+  hidden = assert(w.mgr:getById(partnerId), "the partner survives the map change")
+  Assert.equal(
+    hidden:getFieldPosition().fieldX,
+    vacated.fieldX,
+    "the revealed follower trails onto the vacated tile"
+  )
+  Assert.equal(
+    hidden:getFieldPosition().fieldZ,
+    vacated.fieldZ,
+    "the revealed follower trails onto the vacated tile"
+  )
+  w.mgr:dispose()
+end
+
 return { tests = T }
