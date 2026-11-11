@@ -16,6 +16,70 @@ local U32 = require("libs.codec.src.U32")
 
 local NewGame = {}
 
+-- Fresh-game rival mail (pret/pokeheartgold src/overlay_36.c
+-- InitGameStateAfterOakSpeech_Internal): the PC mailbox slot zero carries an
+-- AIR letter from the opposite-gender friend, with a Marill icon, the
+-- ADVENTURE!/EXCITED! and I love POKEMON! lines, and an empty third line.
+-- Author names are the msg_0445 pair (Ethan/Lyra); word ids are the retail
+-- Easy Chat globals and template keys are the compiled mail-template
+-- bank/message identities (292:4 and 293:1).
+local RIVAL_MAIL = {
+  type = 9,
+  language = 2,
+  games = { heartgold = 7, soulsilver = 8 },
+  icon = { species = "MARILL", form = 0, palette = 2 },
+  lines = {
+    { template = "mail-template:2:4", words = { "1371", "1417" } },
+    { template = "mail-template:3:1", words = { "1479", false } },
+    false,
+  },
+}
+
+local function rivalMailFor(gender, versionId)
+  assert(gender == 0 or gender == 1, "rival mail requires the finalized player gender")
+  local game = RIVAL_MAIL.games[versionId]
+  assert(type(game) == "number", "rival mail requires a known version identity")
+  local authorName = gender == 0 and "Lyra" or "Ethan"
+  local authorGender = gender == 0 and 1 or 0
+  return {
+    schema = "g4-mail-v1",
+    type = RIVAL_MAIL.type,
+    author = {
+      trainerId = 0,
+      name = authorName,
+      gender = authorGender,
+      language = RIVAL_MAIL.language,
+      game = game,
+    },
+    icons = {
+      { species = RIVAL_MAIL.icon.species, form = RIVAL_MAIL.icon.form, palette = RIVAL_MAIL.icon.palette },
+      false,
+      false,
+    },
+    lines = {
+      {
+        template = RIVAL_MAIL.lines[1].template,
+        words = { RIVAL_MAIL.lines[1].words[1], RIVAL_MAIL.lines[1].words[2] },
+      },
+      {
+        template = RIVAL_MAIL.lines[2].template,
+        words = { RIVAL_MAIL.lines[2].words[1], RIVAL_MAIL.lines[2].words[2] },
+      },
+      false,
+    },
+  }
+end
+
+local function populateRivalMailbox(candidate, gender)
+  local box = Mailbox.new()
+  local preparation = assert(
+    box:prepareChanges(box:revision(), { { slot = 0, value = rivalMailFor(gender, candidate.versionId) } }),
+    "rival mail preparation must succeed"
+  )
+  preparation.publish()
+  candidate.mailbox = box:capture()
+end
+
 local FACING = {
   north = true,
   south = true,
@@ -194,6 +258,7 @@ function NewGame.finalize(candidate, confirmation, options)
     return nil, finalError
   end
   candidate.playerData = finalized
+  populateRivalMailbox(candidate, finalized.profile.gender)
   return candidate
 end
 

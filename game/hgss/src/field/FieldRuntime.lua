@@ -1489,8 +1489,14 @@ function FieldRuntime:_composeFieldServices(boot)
     dex = assert(self.dexKnowledge, "field runtime composes dex knowledge before the mon service"),
     stats = assert(self.gameStats, "field runtime composes game stats before the mon service"),
   })
-  self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
-  self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
+  self.mailbox = Mailbox.new(
+    boot.loadedGame and boot.loadedGame.mailbox
+      or assert(boot.activeGame.mailbox, "finalized game mailbox bucket is required")
+  )
+  self.photoAlbum = PhotoAlbum.new(
+    boot.loadedGame and boot.loadedGame.photoAlbum
+      or assert(boot.activeGame.photoAlbum, "finalized game photo album bucket is required")
+  )
   self:_composePokegear(boot.loadedGame, boot.cacheFs)
   self:_composePokegearFeature(boot)
   self:_composeBag(boot.activeGame, boot.loadedGame)

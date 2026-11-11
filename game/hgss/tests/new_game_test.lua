@@ -7,6 +7,7 @@ local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local Mailbox = require("libs.hgss.src.save.Mailbox")
 local SaveFs = require("libs.storage.src.SaveFs")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 
@@ -177,6 +178,61 @@ function T.partial_candidate_finalizes_after_confirmation_without_publishing_gam
   Assert.equal(service.calls.reserve, 1)
   Assert.equal(service.calls.publish, 0, "finalization is not first Save")
   Assert.equal(service.calls.save, 0, "finalization does not publish a gameplay payload")
+end
+
+function T.finalize_places_rival_mail_in_mailbox_slot_zero()
+  local service = reservationService()
+  local candidate = newCandidate(service)
+  candidate.versionId = "heartgold"
+  local finalized = assert(NewGame.finalize(candidate, {
+    name = "GOLD",
+    gender = 0,
+  }, {
+    randomU32 = function()
+      return 0x12345678
+    end,
+    playerDataContext = playerDataContext(),
+  }))
+  local mailbox = Mailbox.new(finalized.mailbox)
+  Assert.equal(mailbox:usedCount(), 1, "a new game starts with the rival mail in the PC")
+  local letter = assert(mailbox:get(0), "the rival mail occupies mailbox slot zero")
+  Assert.equal(letter.type, 9, "the rival mail uses AIR stationery")
+  Assert.equal(letter.author.name, "Lyra")
+  Assert.equal(letter.author.gender, 1)
+  Assert.equal(letter.author.trainerId, 0)
+  Assert.equal(letter.author.language, 2)
+  Assert.equal(letter.author.game, 7)
+  Assert.deepEqual(letter.icons, {
+    { species = "MARILL", form = 0, palette = 2 },
+    false,
+    false,
+  })
+  Assert.deepEqual(letter.lines, {
+    { template = "mail-template:2:4", words = { "1371", "1417" } },
+    { template = "mail-template:3:1", words = { "1479", false } },
+    false,
+  })
+  Assert.isNil(mailbox:get(1), "only the rival mail occupies the new-game mailbox")
+end
+
+function T.finalize_addresses_rival_mail_to_male_player()
+  local service = reservationService()
+  local candidate = newCandidate(service)
+  candidate.versionId = "soulsilver"
+  local finalized = assert(NewGame.finalize(candidate, {
+    name = "GOLD",
+    gender = 1,
+  }, {
+    randomU32 = function()
+      return 0x12345678
+    end,
+    playerDataContext = playerDataContext(),
+  }))
+  local mailbox = Mailbox.new(finalized.mailbox)
+  local letter = assert(mailbox:get(0), "the rival mail occupies mailbox slot zero")
+  Assert.equal(letter.author.name, "Ethan")
+  Assert.equal(letter.author.gender, 0)
+  Assert.equal(letter.author.game, 8)
 end
 
 return { tests = T }
