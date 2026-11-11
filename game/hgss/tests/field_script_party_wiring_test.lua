@@ -84,6 +84,10 @@ local function stubRuntime()
     mapLoader = {},
     kurtBoxHost = {},
     fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
+    easyChatCatalog = {},
+    easyChatState = {},
+    pokegearRandom = {},
+    easyChatScriptHost = {},
   }
 end
 

@@ -152,6 +152,18 @@ function M.externalMessage(bank, id)
   return { message = "external", bank = bank, id = id }
 end
 
+-- A literal word message reference: a sentence bank, a sentence number,
+-- and its two word identities. Display lowering always fills literals;
+-- the runtime evaluates the detached numeric payload without formatting.
+---@param bank integer
+---@param number integer
+---@param word1 integer
+---@param word2 integer
+---@return { message: string, bank: integer, number: integer, words: integer[] } literal word message reference
+function M.easyChatMessage(bank, number, word1, word2)
+  return { message = "easy_chat", bank = bank, number = number, words = { word1, word2 } }
+end
+
 -- Text-value constructors
 
 function M.playerName()
@@ -581,6 +593,43 @@ function M.askYesNo(spec)
 end
 function M.bufferText(spec)
   return op("buffer_text", spec)
+end
+
+-- Word editor and learned-word constructors. Each takes the single
+-- canonical spec table named by the schema fields; the message
+-- reference above carries the literal display operands.
+function M.easyChatEdit(spec)
+  return op("easy_chat_edit", spec)
+end
+function M.easyChatBuffer(spec)
+  return op("easy_chat_buffer", spec)
+end
+function M.easyChatUnlockTrendy(spec)
+  return op("easy_chat_unlock_trendy", spec)
+end
+function M.easyChatAllTrendy(spec)
+  return op("easy_chat_all_trendy", spec)
+end
+function M.easyChatFixedPhrase(spec)
+  return op("easy_chat_fixed_phrase", spec)
+end
+function M.easyChatGreeting(spec)
+  return op("easy_chat_greeting", spec)
+end
+function M.frontierIntroMessage(spec)
+  return op("frontier_intro_message", spec)
+end
+function M.fashionTitleWord(spec)
+  return op("fashion_title_word", spec)
+end
+function M.unionOwnChatMessage(spec)
+  return op("union_own_chat_message", spec)
+end
+function M.unionPartnerLanguage(spec)
+  return op("union_partner_language", spec)
+end
+function M.trainerHouseIntroMessage(spec)
+  return op("trainer_house_intro_message", spec)
 end
 function M.showWaitingIcon(spec)
   return op("show_waiting_icon", spec)

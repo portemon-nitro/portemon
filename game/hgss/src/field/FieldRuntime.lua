@@ -1589,6 +1589,11 @@ function FieldRuntime:_composeFieldServices(boot)
     resolveTerminalProp = resolveTerminalProp,
   })
   self:_composePokemonCenterHeal(boot.audioService)
+  -- The one script-owned word editor child host, composed beside the PC
+  -- host: the task owns the source lifecycle, this host owns only the
+  -- single child, its readiness, and its result lease.
+  local EasyChatScriptHost = require("game.hgss.src.easychat.EasyChatScriptHost")
+  self.easyChatScriptHost = EasyChatScriptHost.new({ runtime = self })
   local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
     cacheFs = boot.cacheFs,
     layoutMessage = boot.layoutMessage,
@@ -1926,6 +1931,7 @@ function FieldRuntime:_startFieldSession(boot)
     fieldEntranceIndicator = self.fieldEntranceIndicator,
     incomingCalls = assert(self.incomingCalls, "the field session routes the ambient phone opportunity"),
     pokegearApplications = self.pokegear and self.pokegear.scriptHost or nil,
+    easyChatScriptHost = self.easyChatScriptHost,
     enterMapActors = enterMapActors,
     autoAcknowledgePresentation = not self.presentation,
     terrainEffects = self.fieldTerrainEffectController,
@@ -2164,6 +2170,17 @@ function FieldRuntime:update(dt)
     if applicationError ~= nil then
       error(applicationError, 0)
     end
+    -- The scheduler-owned word editor child reports its preparation
+    -- failure through its inspected status: the runtime never prepares
+    -- or steps the child here, only cancels the owning foreground and
+    -- rethrows the original error.
+    local easyChatHost = self.easyChatScriptHost
+    if easyChatHost ~= nil and easyChatHost:isActive() then
+      local childStatus = easyChatHost:status()
+      if type(childStatus) == "table" and childStatus.preparationError ~= nil then
+        self:failEasyChatPresentation("word editor preparation failed: " .. tostring(childStatus.preparationError))
+      end
+    end
     local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
     local preview = self.transition.preview
     local pausePreviewHold = self.transition.phase == FieldTransition.PHASES.preview
@@ -2300,7 +2317,19 @@ function FieldRuntime:_pumpIncomingClock()
       return
     end
   end
-  calls:onFieldClock(self.localClock:nowLocal())
+  local report = calls:onFieldClock(self.localClock:nowLocal())
+  if type(report) ~= "table" then
+    return
+  end
+  -- The Route16 daily word gate clears on a positive civil-day advance
+  -- only: same-day reloads preserve the use, and backward adjustments
+  -- never reopen the gate. Learned words are never cleared.
+  if report.backward ~= true and type(report.dayAdvance) == "number" and report.dayAdvance > 0 then
+    local world = self.scripts ~= nil and self.scripts.worldState or nil
+    if world ~= nil then
+      world:clearFlag(FieldScriptSymbols.flagsByName.FLAG_UNK_ABA)
+    end
+  end
 end
 
 -- Every semantic-input entry point below needs the same live-input guard;
@@ -2657,6 +2686,23 @@ function FieldRuntime:failPcApplicationPresentation(reason)
     scheduler:cancelEnvironment(environmentId, reason)
   elseif self.pcApplicationHost ~= nil then
     local host = self.pcApplicationHost
+    host:cancel(reason)
+  end
+  error(reason, 0)
+end
+
+-- A word editor presentation failure freezes the field, so release the
+-- foreground script environment that owns its task before publishing the
+-- terminal error.
+---@param reason string
+function FieldRuntime:failEasyChatPresentation(reason)
+  assert(type(reason) == "string" and reason ~= "", "word editor presentation failure needs a diagnostic")
+  local scheduler = assert(self.session.scriptScheduler, "field session owns its script scheduler")
+  local environmentId = scheduler:foregroundEnvironmentId()
+  if environmentId ~= nil then
+    scheduler:cancelEnvironment(environmentId, reason)
+  elseif self.easyChatScriptHost ~= nil then
+    local host = self.easyChatScriptHost
     host:cancel(reason)
   end
   error(reason, 0)
@@ -4654,6 +4700,9 @@ function FieldRuntime:_releaseAll()
   if self.pcApplicationHost then
     self.pcApplicationHost:dispose()
   end
+  if self.easyChatScriptHost ~= nil then
+    self.easyChatScriptHost:dispose()
+  end
   if self.kurtBoxHost then
     self.kurtBoxHost:dispose()
   end
@@ -4661,6 +4710,7 @@ function FieldRuntime:_releaseAll()
     self.pcTerminal:releaseEffect()
   end
   self.pcApplicationHost, self.pcTerminal = nil, nil
+  self.easyChatScriptHost = nil
   self.martHost = nil
   self.kurtBoxHost = nil
   self.applications = nil
@@ -4783,6 +4833,10 @@ function FieldRuntime:dispose()
   end
   if self.pcApplicationHost then
     self.pcApplicationHost:dispose()
+  end
+  if self.easyChatScriptHost ~= nil then
+    self.easyChatScriptHost:dispose()
+    self.easyChatScriptHost = nil
   end
   if self.pcTerminal then
     self.pcTerminal:releaseEffect()

@@ -147,6 +147,9 @@ local function normalizeMessage(v)
     out.id = normalizeByType(out.id, "scalar_or_value")
     return out
   end
+  if v.message == "easy_chat" then
+    return deepCopy(v)
+  end
   if v.text == "gendered_message" then
     local out = normalizeText(v)
     out.male = normalizeMessage(out.male)

@@ -85,6 +85,13 @@ function FieldSaveCoordinator:capture(allowMenu)
   if pcHost ~= nil and pcHost:isActive() then
     return nil, "Save deferred: a PC application is active"
   end
+  -- The script-owned word editor owns the field from its leave through
+  -- its fade: the child stays open until the task publishes, so the live
+  -- child alone gates the whole transaction.
+  local easyChatHost = runtime.easyChatScriptHost
+  if easyChatHost ~= nil and easyChatHost:isActive() then
+    return nil, "Save deferred: a word editor is active"
+  end
   -- The composed companion feature denies capture while its script host
   -- holds the feature lease (an accepted or staged call, a town-map
   -- open, or a pending terminal result): live controllers and staged

@@ -60,6 +60,21 @@ function FieldOverworldLifecycle:updateFixed()
   end
 end
 
+-- Synchronous leave for script-owned editor tasks: requests the leave and
+-- settles it on the same boundary the runtime update owns. The task calls
+-- this when it takes the field and restores it when it returns.
+function FieldOverworldLifecycle:leave()
+  self:requestLeave()
+  self:updateFixed()
+end
+
+-- Synchronous restore for script-owned editor tasks: requests the restore
+-- and settles it on the same boundary the runtime update owns.
+function FieldOverworldLifecycle:restore()
+  self:requestRestore()
+  self:updateFixed()
+end
+
 function FieldOverworldLifecycle:fail(err)
   assert(err ~= nil, "lifecycle failure requires an error")
   self.failure = err

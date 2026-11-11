@@ -1906,6 +1906,8 @@ return {
     },
     [256] = {
       name = "ScrCmd_256",
+      disposition = "supported",
+      classification = "yield_next_tick",
       widths = {
         [1] = 2,
       },
@@ -1928,6 +1930,8 @@ return {
     },
     [260] = {
       name = "ScrCmd_260",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -1948,6 +1952,8 @@ return {
     },
     [264] = {
       name = "ScrCmd_264",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3283,6 +3289,8 @@ return {
     },
     [441] = {
       name = "ScrCmd_441",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3292,6 +3300,8 @@ return {
     },
     [442] = {
       name = "ScrCmd_442",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3301,6 +3311,8 @@ return {
     },
     [443] = {
       name = "ScrCmd_443",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 1,
       },
@@ -3709,6 +3721,8 @@ return {
     },
     [492] = {
       name = "ScrCmd_492",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3717,6 +3731,8 @@ return {
     },
     [493] = {
       name = "ScrCmd_PromptEasyChat",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3725,6 +3741,8 @@ return {
     },
     [494] = {
       name = "ScrCmd_494",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4041,6 +4059,8 @@ return {
     },
     [538] = {
       name = "ScrCmd_538",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4054,6 +4074,8 @@ return {
     },
     [540] = {
       name = "ScrCmd_540",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -4278,6 +4300,8 @@ return {
     },
     [571] = {
       name = "ScrCmd_571",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5115,6 +5139,8 @@ return {
     },
     [681] = {
       name = "ScrCmd_681",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
@@ -6034,9 +6060,8 @@ return {
     [809] = {
       name = "ScrCmd_ShowTrainerHouseIntroMessage",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer house needs the facility application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },

@@ -279,6 +279,69 @@ local function checkActor(context, v, path, field)
   )
 end
 
+-- A literal word identity: an unsigned 16-bit value. The null identity
+-- 0xFFFF carries no fragment; anything outside the range is malformed.
+---@param context table<string, unknown>
+---@param value unknown
+---@param path string
+---@param field string
+local function checkU16(context, value, path, field)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 0xFFFF then
+    fail(context, ScriptErrors.SCRIPT_SCHEMA_INVALID, path, "expected a u16 word identity", { field = field })
+  end
+end
+
+-- A literal word message reference: a sentence bank, a sentence number,
+-- and exactly two word identities. Operands stay literal here; the
+-- display commands lower literal source halfwords and never variables.
+---@param context table<string, unknown>
+---@param v table<string, unknown>
+---@param path string
+---@param field string
+local function checkEasyChatMessage(context, v, path, field)
+  checkU16(context, v.bank, fieldPath(path, "bank"), "bank")
+  checkU16(context, v.number, fieldPath(path, "number"), "number")
+  if type(v.words) ~= "table" or #v.words ~= 2 then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      fieldPath(path, "words"),
+      "word references carry exactly two words",
+      { field = field }
+    )
+  end
+  checkU16(context, v.words[1], fieldPath(path, "words/0"), "words")
+  checkU16(context, v.words[2], fieldPath(path, "words/1"), "words")
+  for key in pairs(v) do
+    if key ~= "message" and key ~= "bank" and key ~= "number" and key ~= "words" then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        fieldPath(path, key),
+        "unknown field",
+        { field = key, message = "easy_chat" }
+      )
+    end
+  end
+end
+
+-- The instant printer request is admitted only on a non-waiting message:
+-- a waiting message keeps the ordinary typed cadence.
+---@param context table<string, unknown>
+---@param step table<string, unknown>
+---@param path string
+local function checkMessageTiming(context, step, path)
+  if step.instant == true and step.waitForPrint ~= false then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      fieldPath(path, "instant"),
+      "instant printing requires a non-waiting message",
+      { op = "message" }
+    )
+  end
+end
+
 local function checkMessage(context, v, path, field)
   if type(v) == "string" then
     if #v == 0 then
@@ -295,6 +358,10 @@ local function checkMessage(context, v, path, field)
   end
   if v.message == "external" then
     checkFields(context, "external_message", EXTERNAL_MESSAGE_FIELDS, v, path, { message = true })
+    return
+  end
+  if v.message == "easy_chat" then
+    checkEasyChatMessage(context, v, path, field)
     return
   end
   if v.text == "gendered_message" then
@@ -408,7 +475,9 @@ local function checkStep(context, step, path)
     fail(context, ScriptErrors.SCRIPT_UNKNOWN_OPERATION, path, "unknown operation", { op = name })
   end
   checkFields(context, name, spec.fields, step, path, { op = true })
-  if name == "choose" then
+  if name == "message" then
+    checkMessageTiming(context, step, path)
+  elseif name == "choose" then
     checkMenuStep(context, step, path)
   elseif name == "mart_open" then
     local needsSelector = step.kind == "special" or step.kind == "seal" or step.kind == "decoration"

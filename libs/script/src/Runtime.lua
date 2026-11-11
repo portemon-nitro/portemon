@@ -777,6 +777,139 @@ do
   HANDLERS.update_rotom_form = handleUpdateRotomForm
 end
 
+-- Word editor, learned-word, and deferred-parent operations. Each handler
+-- evaluates its semantic operands in source order through the run
+-- semantics, calls exactly one named operation on the injected word
+-- service, and writes the source result convention: cancellation and
+-- unchanged acceptance write zero, changed acceptance writes one, and
+-- the editor words follow in source order through the blocking task.
+-- Synchronous parent commands merge their buffer effects into the
+-- instance text arguments only; the editor, greeting, and printed
+-- introductions block on their tasks while the rest continue same tick
+-- and the fashion title yields one tick. A missing service or parent
+-- context is an attributed fault, never a silent skip.
+do
+  local function easyChatFor(run)
+    return requireService(run, "easyChatService")
+  end
+
+  local function mergeBufferEffects(run, effects)
+    for slot, descriptor in pairs(effects or {}) do
+      run.instance.textArgs[slot] = descriptor
+    end
+  end
+
+  local function handleEasyChatEdit(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "easyChatService")
+    return blockOnTask(run, "easy_chat", { node = node })
+  end
+
+  local function handleEasyChatBuffer(node, run)
+    local semantics = semanticsFor(run)
+    local slot = semantics.evaluateValue(node.slot, run)
+    local word = semantics.evaluateValue(node.word, run)
+    if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 7 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "word buffer slot names slots 0..7",
+        { scriptId = run.instance.scriptId, slot = slot }
+      )
+    end
+    run.instance.textArgs[slot] = { text = "easy_chat_word", value = word }
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleEasyChatUnlockTrendy(node, run)
+    local semantics = semanticsFor(run)
+    local slot = semantics.evaluateValue(node.slot, run)
+    local index, effects = easyChatFor(run):unlockTrendy(slot)
+    semantics.writeRef(node.result, index, run)
+    mergeBufferEffects(run, effects)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleEasyChatAllTrendy(node, run)
+    local learned = easyChatFor(run):allTrendyUnlocked()
+    semanticsFor(run).writeRef(node.result, learned, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleEasyChatFixedPhrase(node, run)
+    local semantics = semanticsFor(run)
+    local words = {
+      semantics.evaluateValue(node.word1, run),
+      semantics.evaluateValue(node.word2, run),
+      semantics.evaluateValue(node.word3, run),
+      semantics.evaluateValue(node.word4, run),
+    }
+    local match = easyChatFor(run):fixedPhraseMatches(words)
+    semantics.writeRef(node.result, match, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleEasyChatGreeting(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "easyChatService")
+    return blockOnTask(run, "easy_chat", { node = node })
+  end
+
+  local function handleFrontierIntroMessage(node, run)
+    requireForeground(run, node.op)
+    local outcome = easyChatFor(run):frontierIntro(node.index)
+    if outcome == nil then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    return blockOnTask(run, "dialogue", {
+      node = { op = "message", message = outcome.message, waitForPrint = true },
+    })
+  end
+
+  local function handleFashionTitleWord(node, run)
+    requireForeground(run, node.op)
+    local word = semanticsFor(run).evaluateValue(node.word, run)
+    easyChatFor(run):fashionTitleWord(word)
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+
+  local function handleUnionOwnChatMessage(node, run)
+    local outcome = easyChatFor(run):unionOwnChatMessage()
+    semanticsFor(run).writeRef(node.result, outcome.message.number, run)
+    mergeBufferEffects(run, outcome.buffers)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleUnionPartnerLanguage(node, run)
+    local outcome = easyChatFor(run):unionPartnerLanguage(node.mode)
+    if outcome == nil then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    mergeBufferEffects(run, outcome.buffers)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerHouseIntroMessage(node, run)
+    requireForeground(run, node.op)
+    local index = semanticsFor(run).evaluateValue(node.index, run)
+    local outcome = easyChatFor(run):trainerHouseIntro(index)
+    return blockOnTask(run, "dialogue", {
+      node = { op = "message", message = outcome.message, waitForPrint = true },
+    })
+  end
+
+  HANDLERS.easy_chat_edit = handleEasyChatEdit
+  HANDLERS.easy_chat_buffer = handleEasyChatBuffer
+  HANDLERS.easy_chat_unlock_trendy = handleEasyChatUnlockTrendy
+  HANDLERS.easy_chat_all_trendy = handleEasyChatAllTrendy
+  HANDLERS.easy_chat_fixed_phrase = handleEasyChatFixedPhrase
+  HANDLERS.easy_chat_greeting = handleEasyChatGreeting
+  HANDLERS.frontier_intro_message = handleFrontierIntroMessage
+  HANDLERS.fashion_title_word = handleFashionTitleWord
+  HANDLERS.union_own_chat_message = handleUnionOwnChatMessage
+  HANDLERS.union_partner_language = handleUnionPartnerLanguage
+  HANDLERS.trainer_house_intro_message = handleTrainerHouseIntroMessage
+end
+
 local function handleReturnLoanMon(node, run)
   monsFor(run):returnLoanMon(evalField(node, run, "slot"))
   if node.result ~= nil then

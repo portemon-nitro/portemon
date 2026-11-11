@@ -64,6 +64,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field pcApplications table<string, unknown> script-owned PC child host
 ---@field pokegearApplications FieldSession.PokegearHost? script-owned companion host; absent sessions route no companion lane
+---@field easyChatScriptHost FieldSession.EasyChatHost? script-owned word editor host; absent sessions route no editor lane
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
@@ -101,6 +102,12 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field close fun(self: FieldSession.PokegearHost, handle: table<string, unknown>)
 ---@field cancel fun(self: FieldSession.PokegearHost, reason: string)
 
+---@class FieldSession.EasyChatHost
+---@field isActive fun(self: FieldSession.EasyChatHost): boolean
+---@field activeHandle fun(self: FieldSession.EasyChatHost): table<string, unknown>?
+---@field activeUiInput fun(self: FieldSession.EasyChatHost): unknown
+---@field cancelPointerCapture fun(self: FieldSession.EasyChatHost)
+
 ---@class FieldSession
 ---@field versionId string
 ---@field currentMap RuntimeFieldMap
@@ -129,6 +136,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field pcApplications table<string, unknown> script-owned PC child host
 ---@field pokegearApplications FieldSession.PokegearHost? script-owned companion host behind calls and town-map opens
+---@field easyChatScriptHost FieldSession.EasyChatHost? script-owned word editor host behind editor commands
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
@@ -444,6 +452,16 @@ function FieldSession.new(options)
       "field session companion host needs its active and handle operations"
     )
   end
+  if options.easyChatScriptHost ~= nil then
+    assert(
+      type(options.easyChatScriptHost) == "table"
+        and type(options.easyChatScriptHost.isActive) == "function"
+        and type(options.easyChatScriptHost.activeHandle) == "function"
+        and type(options.easyChatScriptHost.activeUiInput) == "function"
+        and type(options.easyChatScriptHost.cancelPointerCapture) == "function",
+      "field session word editor host needs its active and input operations"
+    )
+  end
   local session = setmetatable({
     versionId = options.versionId,
     currentMap = options.currentMap,
@@ -494,6 +512,7 @@ function FieldSession.new(options)
     overworld = options.overworld,
     incomingCalls = options.incomingCalls,
     pokegearApplications = options.pokegearApplications,
+    easyChatScriptHost = options.easyChatScriptHost,
     acceptedAmbientCallHandle = nil,
     tick = 0,
     accumulator = 0,
@@ -722,6 +741,10 @@ function FieldSession:_phoneClaimed()
     return true
   end
   if hostModal(self.pokegearApplications) or self.acceptedAmbientCallHandle ~= nil then
+    return true
+  end
+  local easyChatHost = self.easyChatScriptHost
+  if easyChatHost ~= nil and hostModal(easyChatHost) then
     return true
   end
   if isPlayerInputOwned(self.scriptScheduler) or isForegroundActive(self.scriptScheduler) then
@@ -1013,6 +1036,7 @@ end
 ---@field kurt boolean
 ---@field pc boolean
 ---@field pokegear boolean
+---@field easyChat boolean script-owned word editor child
 
 -- One modal-status snapshot per tick edge: each host is probed exactly
 -- once per snapshot, and the currently prohibited combinations fail here
@@ -1039,6 +1063,7 @@ local function snapshotModalStatus(self)
     kurt = kurtBoxHost ~= nil and kurtBoxHost:isActive(),
     pc = self.pcApplications:isActive(),
     pokegear = self.pokegearApplications ~= nil and self.pokegearApplications:isActive() or false,
+    easyChat = self.easyChatScriptHost ~= nil and self.easyChatScriptHost:isActive() or false,
   }
   assert(
     not (status.yesNo and status.contextChoice),
@@ -1061,6 +1086,21 @@ local function snapshotModalStatus(self)
     not (
         status.pokegear
         and (status.starterChoice or status.naming or status.party or status.mart or status.kurt or status.pc)
+      ),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (
+        status.easyChat
+        and (
+          status.starterChoice
+          or status.naming
+          or status.party
+          or status.mart
+          or status.kurt
+          or status.pc
+          or status.pokegear
+        )
       ),
     "script-owned field modals are mutually exclusive"
   )
@@ -1092,6 +1132,9 @@ local function captureOwner(status)
   end
   if status.pokegear then
     return "pokegear"
+  end
+  if status.easyChat then
+    return "easyChat"
   end
   return nil
 end
@@ -1126,6 +1169,7 @@ local function runScriptPhase(self, inputSnapshot)
     or before.pc
     or before.naming
     or before.pokegear
+    or before.easyChat
     or self.dialogue:isModal()
     or self.signpost:isModal()
     or self.applicationHost:isActive()
@@ -1147,8 +1191,15 @@ local function runScriptPhase(self, inputSnapshot)
     or before.pc
     or before.yesNo
     or before.pokegear
+    or before.easyChat
   then
-    local uiEvents = self.input:uiSnapshot(self.tick + 1)
+    local uiEvents = nil
+    local easyChatHost = self.easyChatScriptHost
+    if before.easyChat and easyChatHost ~= nil then
+      uiEvents = self.input:uiSnapshot(self.tick + 1, easyChatHost:activeUiInput())
+    else
+      uiEvents = self.input:uiSnapshot(self.tick + 1)
+    end
     if before.menu then
       schedulerInput.menuEvents = self.menuHost:inputEvents(uiEvents)
     elseif before.yesNo then

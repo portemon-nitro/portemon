@@ -1052,6 +1052,10 @@ function FieldState:resize(width, height)
   if pcHost ~= nil then
     pcHost:cancelPointerCapture()
   end
+  local easyChatHost = self.runtime.easyChatScriptHost
+  if easyChatHost ~= nil then
+    easyChatHost:cancelPointerCapture()
+  end
   if self._pollPresentationTopology then
     self:_recordGeometrySignature(width, height, topology)
   end
@@ -1616,6 +1620,15 @@ function FieldState:draw()
   local kurtBoxHost = self.runtime.kurtBoxHost
   if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
     resources:drawApricornBox(assert(kurtBoxHost:status(), "active Kurt selector publishes presentation status"))
+  end
+  -- The scheduler-owned word editor child draws through the shared
+  -- resources: the inspected child status rides the scheduler update, and
+  -- the pending cover paints before the editor is ready. The absent field
+  -- underneath stays suppressed by its own lifecycle; this site never
+  -- prepares or steps the child.
+  local easyChatHost = self.runtime.easyChatScriptHost
+  if easyChatHost ~= nil and easyChatHost:isActive() then
+    resources:drawEasyChat(assert(easyChatHost:status(), "active word editor host publishes its status"))
   end
   self:_drawEntryCoverIfNeeded(width, height)
   if not legendCinematic then

@@ -333,6 +333,10 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       transition = {},
       mapLoader = {},
       kurtBoxHost = {},
+      easyChatCatalog = {},
+      easyChatState = {},
+      pokegearRandom = {},
+      easyChatScriptHost = {},
       dexKnowledge = {
         isNationalDexComplete = function()
           return true

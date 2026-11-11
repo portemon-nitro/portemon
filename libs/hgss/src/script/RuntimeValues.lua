@@ -270,6 +270,14 @@ function RuntimeValues.evaluateMessage(message, run)
       id = RuntimeValues.evaluateValue(message.id, run),
     }
   end
+  if message.message == "easy_chat" then
+    return {
+      message = "easy_chat",
+      bank = message.bank,
+      number = message.number,
+      words = { message.words[1], message.words[2] },
+    }
+  end
   if message.text == "gendered_message" then
     local gender = run.services.player:gender()
     return RuntimeValues.evaluateMessage(gender == 0 and message.male or message.female, run)

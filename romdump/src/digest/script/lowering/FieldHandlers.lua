@@ -2014,4 +2014,22 @@ FieldHandlers[687] = require("romdump.src.digest.script.lowering.PokedexHandlers
 FieldHandlers[707] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkMonSeen
 FieldHandlers[770] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkSeenAllLetterUnown
 
+-- The fourteen word entries ride the cohesive EasyChatHandlers leaf. This
+-- chunk sits at LuaJIT's 200-local budget, so the leaf is referenced
+-- through cached inline requires that declare no new locals.
+FieldHandlers[256] = require("romdump.src.digest.script.lowering.EasyChatHandlers").fashionTitleWord
+FieldHandlers[260] = require("romdump.src.digest.script.lowering.EasyChatHandlers").unionOwnChatMessage
+FieldHandlers[264] = require("romdump.src.digest.script.lowering.EasyChatHandlers").unionPartnerLanguage
+FieldHandlers[441] = require("romdump.src.digest.script.lowering.EasyChatHandlers").nonNpcMessageEasyChat
+FieldHandlers[442] = require("romdump.src.digest.script.lowering.EasyChatHandlers").msgBoxEasyChat
+FieldHandlers[443] = require("romdump.src.digest.script.lowering.EasyChatHandlers").frontierOpponentIntro
+FieldHandlers[492] = require("romdump.src.digest.script.lowering.EasyChatHandlers").promptEasyChatOneWord
+FieldHandlers[493] = require("romdump.src.digest.script.lowering.EasyChatHandlers").promptEasyChat
+FieldHandlers[494] = require("romdump.src.digest.script.lowering.EasyChatHandlers").bufferEasyChatWord
+FieldHandlers[538] = require("romdump.src.digest.script.lowering.EasyChatHandlers").unlockRandomTrendySaying
+FieldHandlers[540] = require("romdump.src.digest.script.lowering.EasyChatHandlers").checkAllTrendySayingsUnlocked
+FieldHandlers[571] = require("romdump.src.digest.script.lowering.EasyChatHandlers").checkEasyChatWordsMatchFixedPhrase
+FieldHandlers[681] = require("romdump.src.digest.script.lowering.EasyChatHandlers").editBattleGreeting
+FieldHandlers[809] = require("romdump.src.digest.script.lowering.EasyChatHandlers").showTrainerHouseIntroMessage
+
 return FieldHandlers

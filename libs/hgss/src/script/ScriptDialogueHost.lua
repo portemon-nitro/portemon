@@ -25,6 +25,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
 ---@field private _yesNoController table<string, unknown> semantic field choice owner
 ---@field private _yesNoHost table<string, unknown>|nil live choice presentation host
+---@field private _easyChatCatalog table<string, unknown>|nil borrowed shared word catalog behind word text and sentences
 ---@field private _pendingNode table<string, unknown>|nil
 local ScriptDialogueHost = {}
 ScriptDialogueHost.__index = ScriptDialogueHost
@@ -229,20 +230,48 @@ end
 
 -- Text-value descriptor resolvers for the implemented forms: player name,
 -- integers backed by a variable, mon/party identities resolved through the
--- injected live mon service and its catalog, and item/pocket/TM/berry
+-- injected live mon service and its catalog, item/pocket/TM/berry
 -- identities resolved through the injected shared item catalog (TM/HM move
--- names coordinate both catalogs). Any other form is a fault: the resolver
+-- names coordinate both catalogs), and buffered word identities resolved
+-- through the shared word catalog. Any other form is a fault: the resolver
 -- contract never leaves a marker visible in the stream.
----@param descriptor table<string, unknown>
----@param player table<string, unknown>
----@param fontDef table<string, unknown>
----@param world table<string, unknown>|nil
----@param provider FieldMessageProvider
----@param mons HgssMonService|nil the live HGSS mon service
----@param items ItemCatalog|nil the shared item catalog
----@param locationNames table<integer, string>|(fun(sectionId: integer): string?)|nil generated map-section display names
----@return table<string, unknown>|nil replacementTokens
-local function resolveTextValue(descriptor, player, fontDef, world, provider, mons, items, locationNames)
+-- One buffered word identity behind the easy_chat_word text form: the
+-- null identity stays empty, every other identity resolves its display
+-- fragments through the shared catalog. A missing catalog or an unknown
+-- word is an attributed fault, never a marker.
+---@param catalog table<string, unknown>|nil borrowed shared word catalog
+---@param descriptor table<string, unknown> easy_chat_word text descriptor
+---@return table<integer, table<string, unknown>>|nil replacementTokens
+local function resolveEasyChatWord(catalog, descriptor)
+  local word = descriptor.value
+  if type(word) ~= "number" or word % 1 ~= 0 or word < 0 or word > 0xFFFF then
+    local context = { value = word }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "buffered word identity is invalid", context)
+  end
+  if catalog == nil then
+    local context = { value = word }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "buffered words require the shared word catalog", context)
+  end
+  if word == 0xFFFF then
+    return {}
+  end
+  local catalogOwner = catalog --[[@as { wordTokens: fun(self: table, id: integer): table }]]
+  return catalogOwner:wordTokens(word)
+end
+
+local function resolveTextValue(
+  descriptor,
+  player,
+  fontDef,
+  world,
+  provider,
+  mons,
+  items,
+  locationNames,
+  easyChatCatalog
+)
   if type(descriptor) == "string" then
     return FieldMessageProvider.asciiGlyphTokens(descriptor, fontDef)
   end
@@ -251,6 +280,9 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   end
   local kind = descriptor.text
   local value = descriptor.value
+  if kind == "easy_chat_word" then
+    return resolveEasyChatWord(easyChatCatalog, descriptor)
+  end
   if kind == "player_name" then
     return FieldMessageProvider.asciiGlyphTokens(player:name(), fontDef)
   elseif kind == "rival_name" then
@@ -321,7 +353,7 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   )
 end
 
----@param opts table<string, unknown> { controller, yesNoController, yesNoHost?, provider, layout, fontDef, player, world, mons?, items?, locationNames?, frameIndex? }
+---@param opts table<string, unknown> { controller, yesNoController, yesNoHost?, provider, layout, fontDef, player, world, mons?, items?, locationNames?, frameIndex?, easyChatCatalog? }
 ---@return ScriptDialogueHost
 function ScriptDialogueHost.new(opts)
   assert(
@@ -352,6 +384,13 @@ function ScriptDialogueHost.new(opts)
     frameIndex == nil or (type(frameIndex) == "number" and frameIndex >= 0 and frameIndex % 1 == 0),
     "script dialogue host frameIndex must be a non-negative integer"
   )
+  local easyChatCatalog = opts.easyChatCatalog
+  if easyChatCatalog ~= nil then
+    assert(
+      type(easyChatCatalog.wordTokens) == "function" and type(easyChatCatalog.template) == "function",
+      "script dialogue word catalog needs its token and template resolvers"
+    )
+  end
   return setmetatable({
     _controller = opts.controller,
     _provider = opts.provider,
@@ -365,6 +404,7 @@ function ScriptDialogueHost.new(opts)
     _frameIndex = frameIndex,
     _yesNoController = opts.yesNoController,
     _yesNoHost = yesNoHost,
+    _easyChatCatalog = easyChatCatalog,
   }, ScriptDialogueHost)
 end
 
@@ -475,7 +515,8 @@ function ScriptDialogueHost:substitutionResolvers(template, bindings, textArgs)
           self._provider,
           self._mons,
           self._items,
-          self._locationNames
+          self._locationNames,
+          self._easyChatCatalog
         )
       end
       resolvers[token.control] = resolveSubstitution
@@ -484,12 +525,60 @@ function ScriptDialogueHost:substitutionResolvers(template, bindings, textArgs)
   return resolvers
 end
 
+-- Resolve a literal word reference to a controller-ready formatted
+-- message: the sentence template must exist, every non-null word resolves
+-- its display fragments through the shared catalog, and the null identity
+-- stays empty. The fragment stream concatenates the detached word tokens
+-- directly; read-time expansion ignores selection locks.
+---@param message table<string, unknown> easy_chat message reference
+---@return FieldMessageProvider.FormattedMessage formatted { tokens, ... }
+function ScriptDialogueHost:resolveEasyChatMessage(message)
+  local catalog = self._easyChatCatalog
+  if catalog == nil then
+    local context = { message = message }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "word sentences require the shared word catalog", context)
+  end
+  ---@cast catalog table<string, unknown>
+  local bank, number, words = message.bank, message.number, message.words
+  if
+    type(bank) ~= "number"
+    or type(number) ~= "number"
+    or type(words) ~= "table"
+    or #words ~= 2
+    or catalog:template(bank, number) == nil
+  then
+    local context = { message = message }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "unknown word sentence", context)
+  end
+  local tokens = {}
+  local catalogOwner = catalog --[[@as { wordTokens: fun(self: table, id: integer): table }]]
+  for _, word in ipairs(words) do
+    if word ~= 0xFFFF then
+      for _, fragment in ipairs(catalogOwner:wordTokens(word)) do
+        tokens[#tokens + 1] = fragment
+      end
+    end
+  end
+  return {
+    bankId = bank,
+    messageId = number,
+    text = "",
+    tokens = tokens,
+    hadUnresolvedSubstitutions = false,
+  }
+end
+
 -- Resolve a message reference to a controller-ready formatted message.
----@param message unknown string reference or external descriptor
+---@param message unknown string reference, external descriptor, or word reference
 ---@param bindings table<string, unknown> slot -> text value
 ---@param textArgs table<string, unknown> slot -> text value
 ---@return FieldMessageProvider.FormattedMessage formatted { tokens, ... }
 function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
+  if type(message) == "table" and message.message == "easy_chat" then
+    return self:resolveEasyChatMessage(message)
+  end
   local bankId, messageId
   if type(message) == "string" then
     bankId, messageId = message:match("^msg%.hgss%.(%d+)%.(%d+)$")
@@ -550,6 +639,8 @@ function ScriptDialogueHost:openMessage(node)
 end
 
 -- Open the controller as a script-owned request and start revealing.
+-- An explicitly requested instant print reveals its whole content in the
+-- same open: the waiter still owns completion, only the cadence changes.
 ---@param message unknown
 ---@param bindings table<string, unknown>|nil
 ---@param textArgs table<string, unknown>|nil
@@ -567,6 +658,7 @@ function ScriptDialogueHost:startPrint(message, bindings, textArgs)
     id = id,
     message = formatted,
     allowCancel = false,
+    instant = node.instant == true,
     frameIndex = self._frameIndex,
     metadata = {
       scriptOwned = true,

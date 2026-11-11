@@ -189,6 +189,11 @@ Schema.TEXT_VALUES = {
   trainer_class_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   starter_species_name = { fields = {} },
   map_name = { fields = { value = { type = "scalar_or_value", required = true } } },
+  easy_chat_word = {
+    fields = {
+      value = { type = "scalar_or_value", required = true },
+    },
+  },
   gendered_message = {
     fields = {
       male = { type = "message", required = true },
@@ -739,6 +744,7 @@ Schema.OPERATIONS = {
     fields = {
       message = { type = "message", required = true },
       waitForPrint = { type = "boolean", default = true },
+      instant = { type = "boolean", default = false },
       bindings = { type = "bindings", default = {} },
     },
   },
@@ -1444,6 +1450,84 @@ Schema.OPERATIONS = {
       defaultMoveSlot = { type = "scalar_or_value", required = true },
       unused = { type = "scalar_or_value", required = true },
       form = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- Word editor and learned-word operations. The edit suspends the script
+  -- on the script-owned word editor: mode 1 edits two words, modes 2..5
+  -- edit the matching Battle Tower phrase slot, and any other kind takes
+  -- the single-word default. The single-output wrapper kind 1 has no
+  -- second word and never opens. Cancellation and unchanged acceptance
+  -- write result zero and leave word outputs pending; changed acceptance
+  -- writes result one, then the words in source order. The greeting edits
+  -- the separate terminal phrase, restores the field itself, and reports
+  -- acceptance even unchanged. Buffering snapshots its evaluated slot
+  -- and word (the null identity stays empty), trendy learning draws
+  -- exactly once per grant through the labeled random stream, and the
+  -- deferred-parent branches read explicit context records. Only the
+  -- fashion title yields a tick and only the editor, greeting, opponent
+  -- intro, and Trainer House intro block; the rest continue same tick.
+  easy_chat_edit = {
+    fields = {
+      kind = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+      word1 = { type = "value", required = true },
+      word2 = { type = "value" },
+    },
+  },
+  easy_chat_buffer = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      word = { type = "scalar_or_value", required = true },
+    },
+  },
+  easy_chat_unlock_trendy = {
+    fields = {
+      result = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  easy_chat_all_trendy = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  easy_chat_fixed_phrase = {
+    fields = {
+      result = { type = "value", required = true },
+      word1 = { type = "scalar_or_value", required = true },
+      word2 = { type = "scalar_or_value", required = true },
+      word3 = { type = "scalar_or_value", required = true },
+      word4 = { type = "scalar_or_value", required = true },
+    },
+  },
+  easy_chat_greeting = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  frontier_intro_message = {
+    fields = {
+      index = { type = "integer", required = true },
+    },
+  },
+  fashion_title_word = {
+    fields = {
+      word = { type = "scalar_or_value", required = true },
+    },
+  },
+  union_own_chat_message = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  union_partner_language = {
+    fields = {
+      mode = { type = "integer", required = true },
+    },
+  },
+  trainer_house_intro_message = {
+    fields = {
+      index = { type = "scalar_or_value", required = true },
     },
   },
   -- Party-screen selection. The launch node blocks on the party_select
@@ -2496,6 +2580,66 @@ Schema.CONSTRUCTORS = {
         signature = "S.updateRotomForm(spec)",
         canonical = "op=update_rotom_form",
         notes = "spec={slot, defaultMoveSlot, unused, form}.",
+      },
+      {
+        signature = "S.easyChatEdit(spec)",
+        canonical = "op=easy_chat_edit",
+        notes = "spec={kind, result, word1, word2?}; kind 1 pairs two words, 2..5 edit tower slots.",
+      },
+      {
+        signature = "S.easyChatBuffer(spec)",
+        canonical = "op=easy_chat_buffer",
+        notes = "spec={slot 0..7, word}; snapshots its evaluated operands.",
+      },
+      {
+        signature = "S.easyChatUnlockTrendy(spec)",
+        canonical = "op=easy_chat_unlock_trendy",
+        notes = "spec={result, slot}; learns one trendy word, buffers it, writes its index or 0xFFFF.",
+      },
+      {
+        signature = "S.easyChatAllTrendy(spec)",
+        canonical = "op=easy_chat_all_trendy",
+        notes = "spec={result}; result writes 1 exactly when all words are learned.",
+      },
+      {
+        signature = "S.easyChatFixedPhrase(spec)",
+        canonical = "op=easy_chat_fixed_phrase",
+        notes = "spec={result, word1..word4}; result writes 1 on an exact phrase match.",
+      },
+      {
+        signature = "S.easyChatGreeting(spec)",
+        canonical = "op=easy_chat_greeting",
+        notes = "spec={result}; edits the terminal phrase, accepts even unchanged.",
+      },
+      {
+        signature = "S.easyChatMessage(bank, number, word1, word2)",
+        canonical = 'message="easy_chat"',
+        notes = "literal bank/number/words word reference.",
+      },
+      {
+        signature = "S.frontierIntroMessage(spec)",
+        canonical = "op=frontier_intro_message",
+        notes = "spec={index}; no-ops same tick without its opponent context.",
+      },
+      {
+        signature = "S.fashionTitleWord(spec)",
+        canonical = "op=fashion_title_word",
+        notes = "spec={word}; mutates the validated fashion entry, yields one tick.",
+      },
+      {
+        signature = "S.unionOwnChatMessage(spec)",
+        canonical = "op=union_own_chat_message",
+        notes = "spec={result}; selects the contextual message and writes its number.",
+      },
+      {
+        signature = "S.unionPartnerLanguage(spec)",
+        canonical = "op=union_partner_language",
+        notes = "spec={mode}; buffers partner, local, and language names.",
+      },
+      {
+        signature = "S.trainerHouseIntroMessage(spec)",
+        canonical = "op=trainer_house_intro_message",
+        notes = "spec={index}; index 10 reads the source default.",
       },
       {
         signature = "S.chooseStarter(spec)",

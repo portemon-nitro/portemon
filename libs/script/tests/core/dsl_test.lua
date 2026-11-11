@@ -543,13 +543,13 @@ local CASES = {
     function()
       return S.message({ message = "msg.elms_lab.elm_intro" })
     end,
-    { op = "message", message = "msg.elms_lab.elm_intro", waitForPrint = true, bindings = {} },
+    { op = "message", message = "msg.elms_lab.elm_intro", waitForPrint = true, instant = false, bindings = {} },
   },
   message_nowait = {
     function()
       return S.message({ message = "msg.elms_lab.elm_intro", waitForPrint = false })
     end,
-    { op = "message", message = "msg.elms_lab.elm_intro", waitForPrint = false, bindings = {} },
+    { op = "message", message = "msg.elms_lab.elm_intro", waitForPrint = false, instant = false, bindings = {} },
   },
   wait_input_defaults = {
     function()

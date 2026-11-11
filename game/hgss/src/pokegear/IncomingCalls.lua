@@ -404,8 +404,10 @@ end
 -- checkpoint's opening report may include offline time, which is ignored
 -- once. A fresh checkpoint starts at its opening sample, so its next live
 -- minute counts. A backward sample preserves the ring. Polling, expiry,
--- and evaluation draw nothing here.
+-- and evaluation draw nothing here. Returns the calendar report so the
+-- field runtime can consume the civil-day advance on the same observation.
 ---@param sample table<string, integer>
+---@return { dayAdvance: integer, minuteAdvance: integer, backward: boolean } report
 function IncomingCalls:onFieldClock(sample)
   self:_checkLive()
   local observe = self._calendar.observeField --[[@as fun(self: table<string, unknown>, sample: table<string, integer>): table<string, integer>]]
@@ -414,7 +416,7 @@ function IncomingCalls:onFieldClock(sample)
   local openingSample = self._openingSamplePending
   self._openingSamplePending = false
   if report.backward == true then
-    return
+    return report --[[@as { dayAdvance: integer, minuteAdvance: integer, backward: boolean }]]
   end
   local advance = report.minuteAdvance
   assert(type(advance) == "number", "calendar observations report whole elapsed minutes")
@@ -432,6 +434,7 @@ function IncomingCalls:onFieldClock(sample)
       end
     end
   end
+  return report --[[@as { dayAdvance: integer, minuteAdvance: integer, backward: boolean }]]
 end
 
 -- Offers one stable field opportunity: a claimed tick clears only

@@ -77,6 +77,10 @@ local BLOCKING_OPS = {
   prop_animation_wait = true,
   follower_appearance = true,
   follower_recall = true,
+  easy_chat_edit = true,
+  easy_chat_greeting = true,
+  frontier_intro_message = true,
+  trainer_house_intro_message = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.
@@ -89,6 +93,7 @@ local YIELD_OPS = {
   signpost_set = true,
   signpost_command = true,
   stop = true,
+  fashion_title_word = true,
 }
 
 -- Operations that end the script context (a stop-classified instruction
@@ -401,6 +406,190 @@ local function checkWaitSignpost(ins, step)
   end
 end
 
+-- Word operand checkers: each re-states its row's literal-versus-variable
+-- split independently of the lowering leaf above, so a baked kind, a
+-- dropped output, or a flipped timing flag fails instead of passing
+-- quietly. Display literals stay raw numbers even when their values
+-- resemble variable ids; evaluated inputs and outputs ride varRef.
+local function checkEasyChatEditOperands(opcode, ins, step)
+  if step.op ~= "easy_chat_edit" then
+    return "opcode " .. opcode .. " editor request changed by translation"
+  end
+  if opcode == 492 then
+    if not operandMatches(ins.operands[1].raw, step.kind) then
+      return "opcode 492 launch kind changed by translation"
+    end
+    if step.word2 ~= nil then
+      return "opcode 492 single-output wrapper acquired a second word"
+    end
+  elseif step.kind ~= 1 then
+    return "opcode 493 pair kind is not its source literal"
+  end
+  if not operandMatches(ins.operands[opcode == 492 and 2 or 1].raw, step.result) then
+    return "opcode " .. opcode .. " editor result changed by translation"
+  end
+  local base = opcode == 492 and 2 or 1
+  if not operandMatches(ins.operands[base + 1].raw, step.word1) then
+    return "opcode " .. opcode .. " editor first word changed by translation"
+  end
+  if opcode == 493 and not operandMatches(ins.operands[3].raw, step.word2) then
+    return "opcode 493 editor second word changed by translation"
+  end
+  return nil
+end
+
+local function checkPromptEasyChatOneWord(ins, step)
+  return checkEasyChatEditOperands(492, ins, step)
+end
+
+local function checkPromptEasyChat(ins, step)
+  return checkEasyChatEditOperands(493, ins, step)
+end
+
+local function checkEasyChatDisplay(opcode, ins, step)
+  if step.op ~= "message" then
+    return "opcode " .. opcode .. " display changed by translation"
+  end
+  local message = step.message
+  if type(message) ~= "table" or message.message ~= "easy_chat" then
+    return "opcode " .. opcode .. " display lost its word reference"
+  end
+  local fields = { message.bank, message.number, message.words[1], message.words[2] }
+  for position = 1, 4 do
+    if fields[position] ~= ins.operands[position].raw then
+      return "opcode " .. opcode .. " display operand " .. position .. " changed by translation"
+    end
+  end
+  if opcode == 441 then
+    if step.waitForPrint ~= false or step.instant ~= true then
+      return "opcode 441 immediate display lost its timing flags"
+    end
+  elseif step.waitForPrint ~= true then
+    return "opcode 442 waiting display lost its timing flag"
+  end
+  return nil
+end
+
+local function checkNonNpcMessageEasyChat(ins, step)
+  return checkEasyChatDisplay(441, ins, step)
+end
+
+local function checkMsgBoxEasyChat(ins, step)
+  return checkEasyChatDisplay(442, ins, step)
+end
+
+local function checkFrontierOpponentIntro(ins, step)
+  if step.op ~= "frontier_intro_message" then
+    return "opcode 443 opponent intro changed by translation"
+  end
+  if step.index ~= ins.operands[1].raw then
+    return "opcode 443 opponent index changed by translation"
+  end
+  return nil
+end
+
+local function checkBufferEasyChatWord(ins, step)
+  if step.op ~= "easy_chat_buffer" then
+    return "opcode 494 word buffer changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.slot) then
+    return "opcode 494 buffer slot changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.word) then
+    return "opcode 494 buffered word changed by translation"
+  end
+  return nil
+end
+
+local function checkFashionTitleWord(ins, step)
+  if step.op ~= "fashion_title_word" then
+    return "opcode 256 fashion title changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.word) then
+    return "opcode 256 title word changed by translation"
+  end
+  return nil
+end
+
+local function checkUnionOwnChatMessage(ins, step)
+  if step.op ~= "union_own_chat_message" then
+    return "opcode 260 own message changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.result) then
+    return "opcode 260 own message result changed by translation"
+  end
+  return nil
+end
+
+local function checkUnionPartnerLanguage(ins, step)
+  if step.op ~= "union_partner_language" then
+    return "opcode 264 partner language changed by translation"
+  end
+  if step.mode ~= ins.operands[1].raw then
+    return "opcode 264 partner mode changed by translation"
+  end
+  return nil
+end
+
+local function checkUnlockRandomTrendySaying(ins, step)
+  if step.op ~= "easy_chat_unlock_trendy" then
+    return "opcode 538 trendy unlock changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.result) then
+    return "opcode 538 unlock result changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.slot) then
+    return "opcode 538 buffer slot changed by translation"
+  end
+  return nil
+end
+
+local function checkAllTrendySayingsUnlocked(ins, step)
+  if step.op ~= "easy_chat_all_trendy" then
+    return "opcode 540 trendy query changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.result) then
+    return "opcode 540 trendy result changed by translation"
+  end
+  return nil
+end
+
+local function checkEasyChatFixedPhrase(ins, step)
+  if step.op ~= "easy_chat_fixed_phrase" then
+    return "opcode 571 fixed phrase changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.result) then
+    return "opcode 571 phrase result changed by translation"
+  end
+  local words = { step.word1, step.word2, step.word3, step.word4 }
+  for position = 1, 4 do
+    if not operandMatches(ins.operands[position + 1].raw, words[position]) then
+      return "opcode 571 phrase word " .. position .. " changed by translation"
+    end
+  end
+  return nil
+end
+
+local function checkEditBattleGreeting(ins, step)
+  if step.op ~= "easy_chat_greeting" then
+    return "opcode 681 greeting edit changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.result) then
+    return "opcode 681 greeting result changed by translation"
+  end
+  return nil
+end
+
+local function checkShowTrainerHouseIntroMessage(ins, step)
+  if step.op ~= "trainer_house_intro_message" then
+    return "opcode 809 intro message changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.index) then
+    return "opcode 809 trainer index changed by translation"
+  end
+  return nil
+end
+
 -- Pocket-gear operand checkers: each re-derives its row's mapping from the
 -- raw operands independently of the lowering functions above. Cards,
 -- music effects, and trigger slots re-state the source vocabulary here so
@@ -671,6 +860,20 @@ local CHECKERS = {
   [812] = checkMomGiftTake,
   [813] = checkMomGift,
   [821] = checkBuenasPassword,
+  [256] = checkFashionTitleWord,
+  [260] = checkUnionOwnChatMessage,
+  [264] = checkUnionPartnerLanguage,
+  [441] = checkNonNpcMessageEasyChat,
+  [442] = checkMsgBoxEasyChat,
+  [443] = checkFrontierOpponentIntro,
+  [492] = checkPromptEasyChatOneWord,
+  [493] = checkPromptEasyChat,
+  [494] = checkBufferEasyChatWord,
+  [538] = checkUnlockRandomTrendySaying,
+  [540] = checkAllTrendySayingsUnlocked,
+  [571] = checkEasyChatFixedPhrase,
+  [681] = checkEditBattleGreeting,
+  [809] = checkShowTrainerHouseIntroMessage,
 }
 
 -- Walk the lowered items collecting the covering node per source offset.

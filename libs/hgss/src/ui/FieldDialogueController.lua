@@ -524,14 +524,35 @@ function FieldDialogueController:open(request)
     -- session's modal gate still drives the completion, and handle callbacks
     -- registered after open() fire normally.
     self._pendingClose = { kind = "complete" }
+  elseif request.instant == true then
+    self:_revealInstant(request)
   end
   return handle
 end
 
--- Advances to the next page, or to the final wait when the last page ends.
--- Returns true when a page switch happened.
+-- Synchronously reveals an explicitly requested instant print: the whole
+-- authored content is visible and the printer waits print-complete before
+-- open returns. The narrow path owns no interactive controls, so a
+-- continuation boundary, a timed pause, or a printer callback in the laid
+-- out content fails instead of silently skipping a wait.
+---@param request FieldDialogueController.Request
+function FieldDialogueController:_revealInstant(request)
+  assert(request.instant == true, "instant reveal answers an instant request")
+  assert(request.allowCancel == false, "instant printing owns no cancel edge")
+  assert(#self._pages == 1, "instant printing owns a single page")
+  local page = assert(self._pages[1], "instant printing lays out its page")
+  assert(continuationKind(page) == nil, "instant printing owns no continuation control")
+  local flattened = assert(self._pageTokens[1], "instant printing flattens its page")
+  for _, token in ipairs(flattened) do
+    assert(token.kind ~= "pause" and token.kind ~= "printer_callback", "instant printing owns no timed control")
+  end
+  self._revealed = assert(self._pageGlyphs[1], "instant printing counts its glyphs")
+  self._tokenIndex = #flattened + 1
+  self:_enterWait()
+end
 
----@return boolean
+-- Advances to the next page, or to the final wait when the last page ends.
+-- Returns true when a page switch happened.---@return boolean
 function FieldDialogueController:_advancePage()
   self:_invalidatePresentation()
   if self._pageIndex >= #self._pages then
@@ -815,6 +836,7 @@ end
 ---@field id string
 ---@field message FieldMessageProvider.FormattedMessage
 ---@field allowCancel boolean
+---@field instant boolean? reveal the whole content synchronously on open
 ---@field metadata table<string, unknown>?
 ---@field frameIndex integer?
 

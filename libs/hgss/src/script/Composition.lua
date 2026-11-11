@@ -50,6 +50,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.CelebiTimeTravelTask",
   "libs.hgss.src.script.tasks.ApricornTreeTask",
   "libs.hgss.src.script.tasks.PokegearApplicationTask",
+  "libs.hgss.src.script.tasks.EasyChatTask",
 }
 
 ---@param registry TaskRegistry

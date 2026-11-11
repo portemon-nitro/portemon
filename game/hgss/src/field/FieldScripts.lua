@@ -285,6 +285,11 @@ end
 ---@field apricornKurt table<string, unknown>? Kurt order and native Ball adapter
 ---@field kurtBoxHost table<string, unknown>? script-owned Kurt Box child host
 ---@field overworld table<string, unknown>|nil the shared field lifecycle owner
+---@field easyChatCatalog table<string, unknown>? the shared word catalog behind editor requests and buffered text
+---@field easyChatState table<string, unknown>? the authoritative saved word state
+---@field easyChatRandom table<string, unknown>? the labeled random stream behind trendy learning
+---@field easyChatScriptHost table<string, unknown>? the script-owned word editor child host
+---@field easyChatContexts table<string, unknown>? explicit parent command envelopes for deferred features
 ---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
 ---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
 ---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
@@ -409,7 +414,26 @@ function FieldScripts.new(opts)
     items = opts.itemCatalog,
     locationNames = opts.followerInteractionCatalog and opts.followerInteractionCatalog.locationNames,
     frameIndex = opts.frameIndex,
+    easyChatCatalog = opts.easyChatCatalog,
   })
+  -- The script-owned word editor service over the shared catalog and
+  -- saved state, the live profile, mons, world, random stream, and
+  -- message provider. Absent catalogs keep the operation unfabricated:
+  -- word commands fault on use instead of answering through a fake.
+  local easyChatService = nil
+  if opts.easyChatCatalog ~= nil then
+    local EasyChatScriptService = require("game.hgss.src.easychat.EasyChatScriptService")
+    easyChatService = EasyChatScriptService.new({
+      catalog = opts.easyChatCatalog,
+      state = assert(opts.easyChatState, "word scripts require the saved word state"),
+      profile = assert(opts.profile, "word scripts require the player profile"),
+      mons = assert(opts.mons, "word scripts require the mon service"),
+      world = worldState,
+      random = assert(opts.easyChatRandom, "word scripts require the labeled random stream"),
+      messageProvider = assert(opts.messageProvider, "word scripts require the message provider"),
+      contexts = opts.easyChatContexts,
+    })
+  end
   local mapsService = ScriptMapsService.new({
     transition = opts.transition,
     loader = opts.mapLoader,
@@ -567,6 +591,8 @@ function FieldScripts.new(opts)
       phoneGifts = opts.phoneGifts,
       radioMusic = opts.radioMusic,
       battle = opts.battle,
+      easyChatService = easyChatService,
+      easyChatScriptHost = opts.easyChatScriptHost,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,
