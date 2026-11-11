@@ -130,13 +130,12 @@ function T.compile_enforces_the_caller_emitter_count_and_groups()
   Assert.isNil(ungrouped, "an emitter the group mapping rejects never compiles")
 end
 
-function T.compile_accepts_every_placement_kind_and_rejects_unknown_ones()
-  for placement = 0, 9 do
+function T.compile_accepts_every_placement_kind_with_its_recorded_kind()
+  for placement = 0, 15 do
     local compiled, err = compileOne(emitterBase(SELF_DEST + placement, 0))
     Assert.notNil(compiled, "placement " .. placement .. " compiles: " .. tostring(err))
     Assert.equal(compiled.particles.emitters[1].initPosType, placement, "the placement kind is kept")
   end
-  Assert.isNil(compileOne(emitterBase(SELF_DEST + 10, 0)), "an unreplayed placement kind fails")
 end
 
 function T.compile_marks_emitters_without_the_self_destruct_flag_persistent()
@@ -211,7 +210,7 @@ function T.compile_records_the_child_rotation_inheritance_only_when_set()
   local USE_CHILD = 2 ^ 16
   local plain = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(0))
   Assert.isNil(plain.particles.emitters[1].child.rotationType, "a child with no rotation carries no rotation type")
-  for rotationType = 1, 2 do
+  for rotationType = 1, 3 do
     local compiled, err = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(rotationType * 8))
     Assert.notNil(compiled, "child rotation type " .. rotationType .. " compiles: " .. tostring(err))
     Assert.equal(
@@ -220,10 +219,6 @@ function T.compile_records_the_child_rotation_inheritance_only_when_set()
       "the child keeps how it inherits the parent rotation"
     )
   end
-  Assert.isNil(
-    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8)),
-    "a child rotation type the retail generator never handles fails"
-)
 end
 
 function T.compile_records_emitter_following_only_when_set()
@@ -244,8 +239,14 @@ function T.compile_normalizes_the_convergence_field()
   )
 end
 
-function T.compile_rejects_mirrored_texture_coordinates()
-  Assert.isNil(compileOne(emitterBase(SELF_DEST, 0, 1)), "a mirrored emitter texture fails")
+function T.compile_accepts_mirrored_texture_coordinates()
+  local compiled, err = compileOne(emitterBase(SELF_DEST, 0, 1))
+  Assert.notNil(compiled, "a mirrored emitter texture compiles: " .. tostring(err))
+  Assert.deepEqual(
+    compiled.particles.emitters[1].reverseTex,
+    { s = true, t = false },
+    "the mirror flag keeps its signed axes"
+  )
 end
 
 -- An emitter base whose axis vector (s16 fixed point, offset 28) is set.
@@ -268,7 +269,7 @@ local function childBlock(flag)
   return u16(flag) .. u16(0) .. u16(0) .. u16(10) .. string.char(0, 0) .. u16(0) .. string.char(1, 0, 1, 0) .. u32(0)
 end
 
-function T.compile_keeps_child_draw_and_rotation_kinds_and_rejects_the_rest()
+function T.compile_keeps_child_draw_and_rotation_kinds_including_polygon_modes()
   local USE_CHILD = 2 ^ 16
   local plain = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(0))
   Assert.equal(plain.particles.emitters[1].child.drawType, 0, "a billboard child keeps draw kind 0")
@@ -276,13 +277,19 @@ function T.compile_keeps_child_draw_and_rotation_kinds_and_rejects_the_rest()
   local directional = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(1 * 128 + 2 * 8))
   Assert.equal(directional.particles.emitters[1].child.drawType, 1, "a directional child keeps its draw kind")
   Assert.equal(directional.particles.emitters[1].child.rotationType, 2, "a spinning child keeps its rotation kind")
-  Assert.isNil(
-    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(2 * 128)),
-    "a polygon child never compiles"
-  )
-  Assert.isNil(
-    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8)),
-    "an unknown child rotation kind never compiles"
+  local polygon, polygonErr =
+    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(2 * 128))
+  Assert.notNil(polygon, "a polygon child compiles: " .. tostring(polygonErr))
+  local polygonChild = assert(polygon.particles.emitters[1].child, "the polygon child normalizes")
+  Assert.equal(polygonChild.drawType, 2, "the polygon child keeps its draw kind")
+  Assert.equal(polygonChild.polygonRotationAxis, "y", "the rotation axis keeps its source entry")
+  Assert.equal(polygonChild.polygonPlane, "xy", "the polygon plane keeps its source selection")
+  local spun, spunErr = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8))
+  Assert.notNil(spun, "a recycled-rotation child compiles: " .. tostring(spunErr))
+  Assert.equal(
+    spun.particles.emitters[1].child.rotationType,
+    3,
+    "the child keeps the recycled rotation kind"
   )
 end
 

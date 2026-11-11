@@ -205,6 +205,9 @@ local function testEmitter(id, group)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = id,
     textureImage = root .. "particles/texture" .. id .. ".png",
     animations = {},
@@ -287,7 +290,7 @@ local function manifestFor(sceneNumber)
     },
     spriteClips = clips,
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = sceneSteps(sceneNumber), events = sceneEvents(sceneNumber) },
     assets = { [upperImage] = true, [lowerImage] = true },
   }
@@ -320,7 +323,6 @@ local function manifestFor(sceneNumber)
       manifest.assets[root .. "particles/texture" .. id .. ".png"] = true
     end
     manifest.particles = {
-      seed = 0,
       emitters = emitters,
       textures = textures,
     }
@@ -416,7 +418,7 @@ local function neutralSceneFive()
     },
     spriteClips = {},
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = {
       steps = { { id = "fill", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } },
       events = {
@@ -493,6 +495,7 @@ local function openMovie(scenes, cacheFs, graphics)
   local Movie = requireMovie()
   return Movie.new({
     versionId = VERSION_ID,
+    splRandomState = { state = 0 },
     scenes = scenes,
     cacheFs = cacheFs,
     width = WIDTH,
@@ -1210,7 +1213,7 @@ function T.finished_wipe_brightness_holds_only_for_the_retail_kinds_until_the_ne
       },
       spriteClips = {},
       models = {},
-      particles = { seed = 0, emitters = {} },
+      particles = { emitters = {} },
       timeline = { steps = steps, events = events },
       assets = { [root .. "layers/hold-upper.png"] = true, [root .. "layers/hold-lower.png"] = true },
     },
@@ -1340,7 +1343,7 @@ function T.scene_five_shutter_opens_main_center_out_before_sub_bottom_up_and_wai
       },
       spriteClips = {},
       models = {},
-      particles = { seed = 0, emitters = {} },
+      particles = { emitters = {} },
       timeline = {
         steps = {
           { id = "wipe", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 18 } },
@@ -1515,7 +1518,7 @@ local function blendScene()
     },
     spriteClips = {},
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = {
       steps = { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
       events = {

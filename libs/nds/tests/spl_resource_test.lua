@@ -92,13 +92,28 @@ function T.spl_decoder_rejects_implausible_counts()
   Assert.notNil(err, "the empty member reports its cause")
 end
 
-function T.spl_decoder_rejects_unsupported_animation_and_field_flags()
-  for _, flag in ipairs({ 2 ^ 20, 2 ^ 25, 2 ^ 28, 2 ^ 30, 2 ^ 31 }) do
+function T.spl_decoder_accepts_defined_loop_field_and_polygon_identity_flags()
+  -- Random loop phase and fixed polygon identities are valid source
+  -- behavior: they decode into normalized records instead of failing.
+  for _, flag in ipairs({ 2 ^ 20, 2 ^ 30, 2 ^ 31 }) do
     local member = blob(1, 1, { emitter(flag) }, { textureBlock() })
     local decoded, err = SplResource.decode(member)
-    Assert.isNil(decoded, "an unsupported feature bit never decodes silently: " .. tostring(flag))
-    Assert.notNil(err, "the unsupported feature reports its emitter context")
+    Assert.notNil(decoded, "a defined feature bit decodes: " .. tostring(err))
   end
+  local randomOnly = blob(1, 1, { emitter(2 ^ 25) .. string.rep("\0", 8) }, { textureBlock() })
+  local decodedRandom, randomErr = SplResource.decode(randomOnly)
+  Assert.notNil(decodedRandom, "the random field decodes: " .. tostring(randomErr))
+  Assert.equal(decodedRandom.emitters[1].fields[1].kind, "random", "the random field keeps its kind")
+  local collisionOnly = blob(1, 1, { emitter(2 ^ 28) .. string.rep("\0", 8) }, { textureBlock() })
+  local decodedCollision, collisionErr = SplResource.decode(collisionOnly)
+  Assert.notNil(decodedCollision, "the collision field decodes: " .. tostring(collisionErr))
+  Assert.equal(decodedCollision.emitters[1].fields[1].kind, "collision", "the collision field keeps its kind")
+  local looped = assert(SplResource.decode(blob(1, 1, { emitter(2 ^ 20) }, { textureBlock() })))
+  Assert.isTrue(looped.emitters[1].randomLoopPhase, "the random loop phase bit normalizes")
+  local fixedParent = assert(SplResource.decode(blob(1, 1, { emitter(2 ^ 30) }, { textureBlock() })))
+  Assert.isTrue(fixedParent.emitters[1].fixedPolygonId, "the fixed polygon identity bit normalizes")
+  local fixedChild = assert(SplResource.decode(blob(1, 1, { emitter(2 ^ 31) }, { textureBlock() })))
+  Assert.isTrue(fixedChild.emitters[1].childFixedPolygonId, "the child fixed identity bit normalizes")
 end
 
 function T.spl_decoder_accepts_the_observed_anchor_feature_set()

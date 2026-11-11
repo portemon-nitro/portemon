@@ -29,7 +29,7 @@ end
 
 local function effectArtifact()
   return {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "synthetic-effect-probe",
     catalogIdentity = "synthetic-catalog",
     program = {

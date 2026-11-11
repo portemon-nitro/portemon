@@ -36,13 +36,20 @@ function T.evolution_source_compiles_thirteen_emitters_and_embeds_texture_pixels
   local archiveSymbol, memberId = selectedSource()
   Assert.equal(archiveSymbol, source.archiveSymbol, "EvolutionScene reads its configured source archive")
   Assert.equal(memberId, source.memberId, "EvolutionScene reads its configured source member")
-  Assert.equal(particles.seed, 0, "the generated record pins the retail particle seed")
+  Assert.isNil(particles.seed, "the generated record carries no persisted seed")
   Assert.equal(#particles.emitters, 13, "the generated record contains every EvolutionScene emitter")
   for index, emitter in ipairs(particles.emitters) do
     Assert.equal(emitter.id, index - 1, "emitter records retain their retail sequence IDs")
   end
   Assert.deepEqual(particles.textures, {
-    { id = 0, width = 32, height = 32, image = "assets/generated/battle/evolution-particles-0.png" },
+    {
+      id = 0,
+      width = 32,
+      height = 32,
+      image = "assets/generated/battle/evolution-particles-0.png",
+      sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
+      alphaUsage = { hasZero = true, hasPartial = false, hasOpaque = false },
+    },
   }, "the payload exposes normalized texture metadata and a cache path")
   Assert.isTrue(type(pngs[particles.textures[1].image]) == "string", "decoded texture pixels are embedded as a staged PNG")
   Assert.equal(provenance.archiveSymbol, source.archiveSymbol, "producer provenance records the selected archive")

@@ -1,6 +1,6 @@
 -- Synthetic Elite Four intro particle sets in the shape the battle transition
--- stages: compiled emitter records plus RGBA texture pixels under the set's
--- seed. Every emitter is the plain terrain-grass emitter of the encounter
+-- stages: compiled emitter records plus RGBA texture pixels. Every emitter
+-- is the plain terrain-grass emitter of the encounter
 -- fixture with its own id, so the sets replay through the real simulation.
 
 local BattleEncounterParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
@@ -22,7 +22,6 @@ function Fixture.set(emitterCount)
     emitters[index] = record
   end
   return {
-    seed = 0,
     emitters = emitters,
     textures = { { id = 0, width = 2, height = 2, pixels = string.rep("\255", 16) } },
   }

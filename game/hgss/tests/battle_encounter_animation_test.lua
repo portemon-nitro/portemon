@@ -78,7 +78,7 @@ local function openTask(secondCount, firstLife, secondLife)
       end
     end,
   })
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   local view = openingView()
   timeline:reset(view)
   timeline:intro(view, true)

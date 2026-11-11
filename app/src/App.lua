@@ -113,6 +113,7 @@ end
 function App._retireSelection()
   App._swallowedPointers = {}
   App.pairIndex = nil
+  App.splRandomState = nil
   App._importReceipt = nil
   App._cancelImport()
   App._releaseStartupAudio()
@@ -490,6 +491,7 @@ function App._launchGameWithProvisioner(versionId, entry)
     end,
     development = App.opts.dev,
     derivedAssets = provisioner:gameHost(),
+    splRandomState = App.splRandomState,
   })
   if not ok then
     App._showVersionSelector()
@@ -651,6 +653,10 @@ function App._selectVersion(versionId, options)
   -- catalog. Later journeys (menu returns, New Game, Continue, editor,
   -- late GPU adoption) reuse it, never reroll.
   App.pairIndex = math.floor(love.math.random(1, 32))
+  -- One SPL stream per selected boot: the opening movie consumes it before
+  -- any game exists, so the App boot owner spans that lifetime. Reset only
+  -- when a new boot is selected; independent from gameplay random state.
+  App.splRandomState = { state = 0 }
   local epoch = App.epoch
   local service = assert(App.service, "process cache service is unavailable")
   -- A newly imported verified source crosses on the same control stream
@@ -716,6 +722,7 @@ function App._continueSelectedVersion(versionId, options)
     versionId = versionId,
     epoch = epoch,
     derivedAssets = provisioner:gameHost(),
+    splRandomState = App.splRandomState,
     width = width,
     height = height,
     initialImport = freshImport,
@@ -755,6 +762,7 @@ function App.load(opts)
   App.pixelRatio = love.graphics.getDPIScale()
   App.importer = nil
   App.provisioner = nil
+  App.splRandomState = nil
   App.service = nil
   App.epoch = 0
   App.pendingQuiesce = nil

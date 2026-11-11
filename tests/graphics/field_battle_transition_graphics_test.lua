@@ -102,6 +102,7 @@ local function assertPresentedRoute(scope, versionId, cacheFs, case)
     return true
   end
   local state = FieldState.new(freshGame(versionId, case.location), {
+    splRandomState = { state = 0 },
     derivedAssets = derivedAssets,
     localClock = LocalClock.new(function()
       return { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }

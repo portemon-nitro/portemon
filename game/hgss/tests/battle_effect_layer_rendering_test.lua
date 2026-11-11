@@ -148,6 +148,27 @@ local function topologyPlayback(key)
     actors = { { combatant = 1, activation = 1 } },
     targets = { { combatant = 3, activation = 3 } },
     visualSeed = 4242,
+    -- The probe hit carries its producer execution moment so the
+    -- selector admits it; the request freezes the topology the
+    -- player consumes.
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = key,
+        executedMove = key,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -1,
+        power = 0,
+        friendship = 0,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = 1,
+      },
+    },
   }
   local geometry = ManifestFixture.manifest().battlefield.slots
   return BattlePresentationFlow.animationPlayback(packet, event, geometry)
@@ -557,6 +578,7 @@ local function probePaintStaging(launchId)
   local windows = {}
   function windows.drawWindow(_, _, _) end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     graphics = graphics,
     windows = windows,
@@ -690,6 +712,7 @@ end
 function T.blend_coefficients_map_to_slot_scoped_battler_alpha()
   local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = "blend-mapping-probe",
     manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
     model = BattlePresentationModel,
@@ -732,21 +755,25 @@ function T.blend_coefficients_map_to_slot_scoped_battler_alpha()
     blendCoefficientB = 8,
     spriteSlots = { "sprite-context-slot-1", "sprite-context-slot-2" },
   })
-  local byCombatant = {}
+  -- Task-owned sprite blend weights stay compositor state: the snapshot
+  -- carries the raw coefficients with their compiled slot scope while no
+  -- battler carries a generic alpha multiplier, and removal clears the
+  -- published blend back to base.
+  local blended = assert(screen:_snapshot().spriteBlend, "the active patch publishes its blend state")
+  Assert.equal(blended.blendCoefficientA, 8, "the snapshot carries the staged sprite weight")
+  Assert.equal(blended.blendCoefficientB, 8, "the snapshot carries the staged background weight")
+  Assert.deepEqual(
+    blended.spriteSlots,
+    { "sprite-context-slot-1", "sprite-context-slot-2" },
+    "the snapshot keeps the compiled sprite scope"
+  )
   for _, battler in ipairs(screen:_snapshot().battlers) do
-    byCombatant[battler.combatant] = battler
+    Assert.isNil(battler.alpha, "combatant " .. tostring(battler.combatant) .. " keeps no generic alpha")
   end
-  Assert.equal(byCombatant[2].alpha, 0.5, "the foe in the first patched slot fades to half")
-  Assert.equal(byCombatant[4].alpha, 0.5, "the second ally in the other patched slot fades to half")
-  Assert.isNil(byCombatant[1].alpha, "the unpatched lead ally keeps base alpha")
-  Assert.isNil(byCombatant[3].alpha, "the unpatched second foe keeps base alpha")
   screen._scene:removeTaskScalarPatch(owner)
-  local restored = {}
+  Assert.isNil(screen:_snapshot().spriteBlend, "removal restores the base blend state")
   for _, battler in ipairs(screen:_snapshot().battlers) do
-    restored[battler.combatant] = battler
-  end
-  for combatant, battler in pairs(restored) do
-    Assert.isNil(battler.alpha, "combatant " .. tostring(combatant) .. " restores base alpha without a patch")
+    Assert.isNil(battler.alpha, "combatant " .. tostring(battler.combatant) .. " stays without generic alpha")
   end
   screen:dispose()
 end

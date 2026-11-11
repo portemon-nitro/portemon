@@ -6,8 +6,8 @@
 
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
 local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
@@ -485,11 +485,9 @@ function T.native_control_art_starts_at_the_hit_region_origin()
             end,
           }
         end,
-        menuBlendTargets = function(self, blendGraphics)
-          if self.menuBlend == nil then
-            self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
-          end
-          return self.menuBlend
+        renderPictures = function(_, drawGraphics, frame)
+          CompositionFrameDrain.drain(drawGraphics, frame)
+          return { handle = "interface-pass" }
         end,
       },
       frameKey = "default",
@@ -521,7 +519,6 @@ function T.native_control_art_starts_at_the_hit_region_origin()
         mode .. " art uses the source region origin"
       )
     end
-    resources.assets.menuBlend:release()
   end
 
   assertLayout("command", {
@@ -606,14 +603,9 @@ function T.render_restores_borrowed_state()
       drawable = function(_, key)
         return image(key)
       end,
-      renderPictures = function()
+      renderPictures = function(_, drawGraphics, frame)
+        CompositionFrameDrain.drain(drawGraphics, frame)
         return { handle = "picture-composite" }
-      end,
-      menuBlendTargets = function(self, blendGraphics)
-        if self.menuBlend == nil then
-          self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
-        end
-        return self.menuBlend
       end,
     },
     frameKey = "default",
@@ -648,6 +640,41 @@ local function interfaceDualMeasurement()
     ),
     pixelRatio = 1,
     signature = "battle-pointer-test:dual",
+  }
+end
+
+
+-- Headless composition runs without GPU targets: the seeded pass drains
+-- plane and OBJ content through the recording boundary and records each
+-- typed frame, so content assertions observe the same draws production
+-- composes. Real pixels stay in the graphics layer.
+---@param rig table live screen rig under test driving
+local function seedHeadlessPass(rig)
+  local screen = assert(rig.screen, "the rig carries its battle screen")
+  rig.frames = {}
+  screen._assets._picturePass = {
+    render = function(_, graphics, frame)
+      rig.frames[#rig.frames + 1] = frame
+      CompositionFrameDrain.drain(graphics, frame)
+      for _, primitive in ipairs(frame.primitives or {}) do
+        local handle = primitive.image or primitive.material
+        local image = type(handle) == "table" and (handle.image or handle) or handle
+        local minX, minY = nil, nil
+        for _, vertex in ipairs(primitive.vertices or {}) do
+          local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+          local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+          if minX == nil or x < minX then
+            minX = x
+          end
+          if minY == nil or y < minY then
+            minY = y
+          end
+        end
+        graphics.draw(image, nil, minX or 0, minY or 0)
+      end
+      return { handle = "rig-picture-pass" }
+    end,
+    release = function() end,
   }
 end
 
@@ -718,14 +745,13 @@ local function openInterfaceRig(opts)
     end
     return stored
   end
-  function rig.assets.renderPictures()
-    return { handle = "picture-composite" }
-  end
+
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local launchId = opts.launchId or "launch-pointer-cancel"
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.launchView(
       { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
@@ -745,6 +771,7 @@ local function openInterfaceRig(opts)
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   function rig.pump(ticks, dt)
     for _ = 1, ticks or 1 do
@@ -1061,9 +1088,7 @@ local function openChildRig(opts)
     end
     return stored
   end
-  function rig.assets.renderPictures()
-    return { handle = "picture-composite" }
-  end
+
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
@@ -1105,6 +1130,7 @@ local function openChildRig(opts)
     return true
   end
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.launchView(
       { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
@@ -1133,6 +1159,7 @@ local function openChildRig(opts)
     },
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   holder.battle = BattleRuntime.new({
     request = launch,

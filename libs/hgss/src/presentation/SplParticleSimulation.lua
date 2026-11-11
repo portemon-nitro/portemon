@@ -3,21 +3,58 @@
 -- scale/color/alpha/texture blocks (plain or looping), random color and
 -- texture picks, rotation, fields, and children over compiled emitter
 -- records. Each particle carries the texture it currently shows in texNo. Rendering stays with each consumer; this module
--- owns only emitter and particle state. Normalized directions and rotations
--- use host floating point and are deterministic without being bit-identical
--- to the retail fixed-point unit.
+-- owns only emitter and particle state. Stored positions, velocities, and
+-- fixed-point magnitudes are binary-exact multiples of 1/4096: every write
+-- is an exact raw fixed-point result divided by 4096, never a continuously
+-- integrated float. Integer fields (ages, angles, rates, scales) stay raw.
+
+local FxMath = require("libs.hgss.src.presentation.PresentationFxMath")
 
 ---@class SplParticleSimulation
----@field rng integer deterministic stream state
+---@field randomState table<string, integer> borrowed boot stream record shared by every manager of one boot
+---@field rng integer last stream value drawn
 ---@field emitters table<string, unknown>[] live emitter runtimes, oldest first
 ---@field emitterZOffset number added to every emitter's resource z on creation
+---@field resources table<string, unknown>[] per-manager mutable resource clones, one per compiled emitter
+---@field camera table<string, unknown> mutable manager camera behind drawing
+---@field _emitterNodes table<string, unknown>[] pooled emitter nodes, live or free
+---@field _freeEmitters table<string, unknown>[] free emitter nodes, allocation pops the front
+---@field _freeParticles table<string, unknown>[] free particle nodes shared by parents and children
+---@field _calcCycle integer manager calculation cycle toggling 0 and 1 each advance
+---@field _nextPolygonId integer next cycling polygon identity 6..63
 
 local M = {}
 M.__index = M
 
--- The retail particle heap bounds one system to 200 particles; exhausted
--- spawns drop instead of growing (ParticleSystem_New).
+-- The retail particle heap bounds one system to 20 simultaneous emitters
+-- and 200 particles shared across parents, children, and emitters
+-- (spl_manager.c, ParticleSystem_New). Exhausted allocation drops the
+-- creation or spawn without consuming random draws instead of growing.
+local MAX_EMITTER_COUNT = 20
 local MAX_PARTICLE_COUNT = 200
+
+-- Default manager camera behind battle drawing (spl camera defaults with
+-- the battle-requested perspective applied at each emitter creation).
+local CAMERA_DEFAULTS = {
+  x = 0,
+  y = 0,
+  z = 16384,
+  targetX = 0,
+  targetY = 0,
+  targetZ = 0,
+  upX = 0,
+  upY = 4096,
+  upZ = 0,
+  distance = 16384,
+  angleX = 0,
+  angleY = 0,
+  angleZ = 0,
+  halfFov = 8192,
+  aspect = 5461,
+  near = 4096,
+  far = 3686400,
+  perspective = 0,
+}
 
 -- C integer division truncates toward zero, unlike a flooring shift: color
 -- and scale slopes with negative spans must round the same way.
@@ -36,9 +73,9 @@ end
 -- Wrapping reinterpretation between the unsigned draw stream and the
 -- signed magnitudes the retail fixed point computes with.
 ---@param value number
----@return number
+---@return integer
 local function s32wrap(value)
-  local wrapped = value % 4294967296
+  local wrapped = math.floor(value) % 4294967296
   if wrapped >= 2147483648 then
     return wrapped - 4294967296
   end
@@ -68,6 +105,23 @@ local function dampRawFx(rawVel, airResist)
   return math.floor(s32wrap(rawVel * (airResist + 384)) / 512)
 end
 
+-- Rounded fixed-point multiply: exact signed product, +2048 bias,
+-- arithmetic shift 12 (the retail FX_Mul).
+---@param a integer raw fixed-point factor
+---@param b integer raw fixed-point factor
+---@return integer rounded raw product
+local function fxMulRound(a, b)
+  return FxMath.fxMul(a, b)
+end
+
+-- Truncating fixed-point scale: exact signed product, C division toward
+-- zero by 4096 (the retail magnet/convergence integer path, not FX_Mul).
+---@param product integer exact signed product
+---@return integer truncated raw value
+local function truncScale12(product)
+  return FxMath.truncDiv(FxMath.s32(product), 4096)
+end
+
 -- One step of the retail particle library's congruential stream
 -- (seed = seed * 0x5EEDF715 + 0x1B0CB173 mod 2^32). The full product
 -- exceeds double precision, so 16-bit limbs keep every step exact; the
@@ -80,13 +134,16 @@ local RNG_MULTIPLIER_HI = (RNG_MULTIPLIER - RNG_MULTIPLIER_LO) / 65536
 ---@param sim SplParticleSimulation simulation owning the deterministic particle seed
 ---@return integer next stream value
 local function rngNext(sim)
-  local seed = sim.rng --[[@as integer]]
+  local state = assert(sim.randomState, "particle simulation borrows its boot stream record")
+  local seed = state.state --[[@as integer]]
   local seedLo = seed % 65536
   local seedHi = math.floor((seed - seedLo) / 65536)
   local low = seedLo * RNG_MULTIPLIER_LO
   local mid = seedLo * RNG_MULTIPLIER_HI + seedHi * RNG_MULTIPLIER_LO
-  sim.rng = ((low + (mid % 65536) * 65536 + RNG_INCREMENT) % 4294967296) --[[@as integer]]
-  return sim.rng --[[@as integer]]
+  local next = ((low + (mid % 65536) * 65536 + RNG_INCREMENT) % 4294967296) --[[@as integer]]
+  state.state = next
+  sim.rng = next
+  return next
 end
 
 ---@param x number
@@ -315,12 +372,15 @@ end
 -- Places a particle by the retail placement kind (spl_gen_ptcl), returning
 -- its emitter-relative position and, for cylinder walls, its outward
 -- direction. Draw counts per kind follow the retail stream order.
+-- Kinds 10..15 execute no placement case: the pooled node's prior local
+-- position is retained, zero before its first use.
 ---@param sim SplParticleSimulation
 ---@param runtime table<string, unknown> live emitter runtime gaining one particle
+---@param node table<string, unknown> pooled particle node under initialization
 ---@param index integer zero-based index of this particle within its generation burst
 ---@param count integer particles the burst generates
 ---@return number px, number py, number pz, number? dirX, number? dirY, number? dirZ
-local function placeParticle(sim, runtime, index, count)
+local function placeParticle(sim, runtime, node, index, count)
   local record = runtime.record --[[@as table<string, unknown>]]
   local initPosType = record.initPosType --[[@as integer]]
   local radius = record.radius --[[@as number]]
@@ -388,20 +448,26 @@ local function placeParticle(sim, runtime, index, count)
         vx * frame.c1z --[[@as number]] + vy * frame.c2z --[[@as number]]
     end
     return px, py, pz
+  elseif initPosType >= 10 and initPosType <= 15 then
+    -- Retained-pool behavior: no placement case executes, so the recycled
+    -- node's local position survives; zeroed nodes start at the origin.
+    return node.x, node.y, node.z
   end
   return 0, 0, 0
 end
 
 ---@param sim SplParticleSimulation
 ---@param runtime table<string, unknown> live emitter runtime gaining one particle
+---@param node table<string, unknown> pooled particle node under initialization
 ---@param index integer zero-based index of this particle within its generation burst
 ---@param count integer particles the burst generates
-local function spawnParticle(sim, runtime, index, count)
-  if liveParticleCount(sim) >= MAX_PARTICLE_COUNT then
-    return
-  end
+---@return table<string, unknown> initialized particle node
+local function spawnParticle(sim, runtime, node, index, count)
+  -- The caller allocates the pooled node before any placement draw, so a
+  -- missing node never reaches this path and failed allocation consumes
+  -- no random values.
   local record = runtime.record --[[@as table<string, unknown>]]
-  local px, py, pz, dirX, dirY, dirZ = placeParticle(sim, runtime, index, count)
+  local px, py, pz, dirX, dirY, dirZ = placeParticle(sim, runtime, node, index, count)
   local velocityFx = record.velocityFx --[[@as { pos: integer, axis: integer }]]
   local velRandom = record.velRandom --[[@as integer]]
   local velPos = randomizeFx(velocityFx.pos, velRandom, sim)
@@ -414,7 +480,7 @@ local function spawnParticle(sim, runtime, index, count)
   else
     nx, ny, nz = normalize3(px, py, pz)
   end
-  local axis = record.axis --[[@as { x: number, y: number, z: number }]]
+  local axis = runtime.axis --[[@as { x: number, y: number, z: number }]]
   local baseScale = randomizeFx(record.baseScaleFx --[[@as integer]], record.scaleRandom --[[@as integer]], sim)
   local baseRgb = record.baseColorRgb --[[@as table<string, integer>]]
   local animations = record.animations --[[@as table<string, unknown>]]
@@ -456,92 +522,113 @@ local function spawnParticle(sim, runtime, index, count)
     end
   end
   local loopFrame = record.loopFrame --[[@as integer]]
-  runtime.particles[#runtime.particles + 1] = {
-    x = px,
-    y = py,
-    z = pz,
-    vx = nx * velPos / 4096 + axis.x * velAxis / 4096,
-    vy = ny * velPos / 4096 + axis.y * velAxis / 4096,
-    vz = nz * velPos / 4096 + axis.z * velAxis / 4096,
-    rtt = rtt,
-    rttVel = rttVel,
-    life = life,
-    age = 0,
-    diffLoop = math.floor(65535 / loopFrame),
-    diffNoloop = math.floor(65535 / life),
-    baseScale = baseScale,
-    animScale = 4096,
-    colorRgb = { r = pickedRgb.r, g = pickedRgb.g, b = pickedRgb.b },
-    baseAlpha = record.baseAlpha --[[@as integer]],
-    animAlpha = 31,
-    texNo = texNo,
-    ex = runtime.x --[[@as number]],
-    ey = runtime.y --[[@as number]],
-    ez = runtime.z --[[@as number]],
-  }
+  local phase = 0
+  if record.randomLoopPhase then
+    phase = math.floor(rngNext(sim) / 16777216)
+  end
+  node.x, node.y, node.z = px, py, pz
+  node.vx = nx * velPos / 4096 + axis.x * velAxis / 4096
+  node.vy = ny * velPos / 4096 + axis.y * velAxis / 4096
+  node.vz = nz * velPos / 4096 + axis.z * velAxis / 4096
+  node.rtt, node.rttVel = rtt, rttVel
+  node.life, node.age = life, 0
+  node.diffLoop = math.floor(65535 / loopFrame) % 65536
+  node.diffNoloop = math.floor(65535 / life) % 65536
+  node.phase = phase
+  node.baseScale = baseScale
+  node.animScale = 4096
+  node.colorRgb.r, node.colorRgb.g, node.colorRgb.b = pickedRgb.r, pickedRgb.g, pickedRgb.b
+  node.baseAlpha = record.baseAlpha --[[@as integer]]
+  node.animAlpha = 31
+  node.texNo = texNo
+  node.pid = 5
+  node.ex = runtime.x --[[@as number]]
+  node.ey = runtime.y --[[@as number]]
+  node.ez = runtime.z --[[@as number]]
+  return node
 end
 
 -- Spawns one child particle from a live parent: the parent position, its
 -- velocity scaled by the velocity ratio plus a random spread, the scaled
 -- base, and the child color or inherited color. Each spawn draws three
--- times, even when the spread magnitude is zero.
+-- times, even when the spread magnitude is zero. Rotation kind 3 writes
+-- neither rotation nor rotation velocity, retaining the pooled node's
+-- prior values; other kinds write both fields.
 ---@param sim SplParticleSimulation
 ---@param runtime table<string, unknown> live emitter runtime
 ---@param parent table<string, unknown> live parent particle
-local function spawnChild(sim, runtime, parent)
+---@param node table<string, unknown> pooled child node under initialization
+local function spawnChild(sim, runtime, parent, node)
   local record = runtime.record --[[@as table<string, unknown>]]
   local child = record.child --[[@as table<string, unknown>]]
   local velRatio = child.velRatio --[[@as integer]]
   local spreadRawFx = worldToRawFx(child.initVelRandom --[[@as number]])
-  local function spreadAxis(parentVel)
-    local scaled = math.floor(worldToRawFx(parentVel) * velRatio / 256)
-    local draw = math.floor(rngNext(sim) / 8388608)
-    return (scaled + math.floor((spreadRawFx * draw - spreadRawFx * 256) / 256)) / 4096
+  local ratioFx = fxMulRound(velRatio * 4096, 16)
+  local draws = {
+    math.floor(rngNext(sim) / 8388608),
+    math.floor(rngNext(sim) / 8388608),
+    math.floor(rngNext(sim) / 8388608),
+  }
+  local parentVel = { parent.vx, parent.vy, parent.vz }
+  local vel = {}
+  for axis = 1, 3 do
+    local scaled = fxMulRound(worldToRawFx(parentVel[axis] --[[@as number]]), ratioFx)
+    vel[axis] = (scaled + math.floor((spreadRawFx * draws[axis] - spreadRawFx * 256) / 256)) / 4096
   end
-  local scaledBase = math.floor(parent.baseScale --[[@as integer]] * parent.animScale --[[@as integer]] / 4096)
+  local scaledBase = math.floor(
+    (
+      worldToRawFx(parent.baseScale --[[@as integer]] / 4096) * parent.animScale --[[@as integer]]
+    ) / 4096
+  )
   local colorRgb = child.childColor --[[@as table<string, integer>]]
   if not child.useChildColor then
     local inherited = parent.colorRgb --[[@as table<string, integer>]]
     colorRgb = { r = inherited.r, g = inherited.g, b = inherited.b }
   end
   -- Rotation type 1 inherits the parent angle, 2 also its spin; absent
-  -- means unrotated.
+  -- means unrotated; 3 retains the pooled node's prior rotation pair.
   local rotationType = child.rotationType --[[@as integer|nil]]
-  runtime.children[#runtime.children + 1] = {
-    x = parent.x,
-    y = parent.y,
-    z = parent.z,
-    vx = spreadAxis(parent.vx --[[@as number]]),
-    vy = spreadAxis(parent.vy --[[@as number]]),
-    vz = spreadAxis(parent.vz --[[@as number]]),
-    rtt = rotationType ~= nil and parent.rtt or 0,
-    rttVel = rotationType == 2 and parent.rttVel or 0,
-    life = child.life --[[@as integer]],
-    age = 0,
-    baseScale = math.floor(
-      scaledBase
-        * (
-          child.sclRatio --[[@as integer]]
-          + 1
-        )
-        / 64
-    ),
-    animScale = 4096,
-    colorRgb = { r = colorRgb.r, g = colorRgb.g, b = colorRgb.b },
-    baseAlpha = math.floor(
-      parent.baseAlpha --[[@as integer]]
-        * (
-          parent.animAlpha --[[@as integer]]
-          + 1
-        )
-        / 32
-    ),
-    animAlpha = 31,
-    texNo = child.texNo --[[@as integer]],
-    ex = parent.ex,
-    ey = parent.ey,
-    ez = parent.ez,
-  }
+  local rtt, rttVel = 0, 0
+  if rotationType == 1 or rotationType == 2 then
+    rtt = parent.rtt --[[@as integer]]
+  elseif rotationType == 3 then
+    rtt, rttVel = node.rtt, node.rttVel
+  end
+  if rotationType == 2 then
+    rttVel = parent.rttVel --[[@as integer]]
+  elseif rotationType == 3 then
+    rttVel = node.rttVel
+  end
+  node.x, node.y, node.z = parent.x, parent.y, parent.z
+  node.vx, node.vy, node.vz = vel[1], vel[2], vel[3]
+  node.rtt, node.rttVel = rtt, rttVel
+  node.life, node.age =
+    child.life, --[[@as integer]]
+    0
+  node.diffLoop, node.diffNoloop = 0, 0
+  node.phase = 0
+  node.baseScale = math.floor(
+    scaledBase
+      * (
+        child.sclRatio --[[@as integer]]
+        + 1
+      )
+      / 64
+  )
+  node.animScale = 4096
+  node.colorRgb.r, node.colorRgb.g, node.colorRgb.b = colorRgb.r, colorRgb.g, colorRgb.b
+  node.baseAlpha = math.floor(
+    parent.baseAlpha --[[@as integer]]
+      * (
+        parent.animAlpha --[[@as integer]]
+        + 1
+      )
+      / 32
+  )
+  node.animAlpha = 31
+  node.texNo = child.texNo --[[@as integer]]
+  node.pid = 5
+  node.ex, node.ey, node.ez = parent.ex, parent.ey, parent.ez
 end
 
 -- One convergence step on a single axis: the position plus the retail
@@ -552,10 +639,13 @@ end
 ---@return number converged world position
 local function convergeFx(position, target, ratio)
   local positionFx = worldToRawFx(position)
-  return (positionFx + math.floor((ratio * (worldToRawFx(target) - positionFx) + 2048) / 4096)) / 4096
+  return (positionFx + fxMulRound(ratio, worldToRawFx(target) - positionFx)) / 4096
 end
 
--- Rotates a position about one source axis by a retail rotation step.
+-- Rotates a position about one source axis by a retail rotation step,
+-- using the indexed sine/cosine lookup and the truncating matrix-vector
+-- multiply (sums of signed products, arithmetic shift 12, no +2048 bias).
+-- It rotates position only, never velocity.
 ---@param x number
 ---@param y number
 ---@param z number
@@ -563,14 +653,18 @@ end
 ---@param rotation integer rotation step 0..65535
 ---@return number rx, number ry, number rz
 local function spinRotate(x, y, z, axis, rotation)
-  local angle = rotation / 65536 * 2 * math.pi
-  local sine, cosine = math.sin(angle), math.cos(angle)
-  if axis == 0 then
-    return x, cosine * y - sine * z, sine * y + cosine * z
-  elseif axis == 1 then
-    return cosine * x + sine * z, y, cosine * z - sine * x
+  local sine = FxMath.sinIdx(rotation)
+  local cosine = FxMath.cosIdx(rotation)
+  local raw = { worldToRawFx(x), worldToRawFx(y), worldToRawFx(z) }
+  local function row(a, b, c)
+    return FxMath.s32(math.floor((a + b + c) / 4096))
   end
-  return cosine * x - sine * y, sine * x + cosine * y, z
+  if axis == 0 then
+    return x, row(cosine * raw[2], -sine * raw[3], 0) / 4096, row(sine * raw[2], cosine * raw[3], 0) / 4096
+  elseif axis == 1 then
+    return row(cosine * raw[1], sine * raw[3], 0) / 4096, y, row(-sine * raw[1], cosine * raw[3], 0) / 4096
+  end
+  return row(cosine * raw[1], -sine * raw[2], 0) / 4096, row(sine * raw[1], cosine * raw[2], 0) / 4096, z
 end
 
 -- Moves one particle for a source tick: rotation advance, damping of the
@@ -596,6 +690,117 @@ local function moveParticle(particle, airResist, accX, accY, accZ)
   particle.z = particle.z --[[@as number]] + particle.vz --[[@as number]]
 end
 
+-- Runs the manager's shared field blocks over one particle in source
+-- order: gravity adds its magnitudes to the acceleration, random fires on
+-- its interval with three draws, magnet pulls with the truncating 32-bit
+-- product, spin rotates the position only, collision clamps against its
+-- plane, and convergence steps the position by its ratio. Gravity,
+-- magnet, and random accumulate into the acceleration the later movement
+-- consumes; spin, collision, and convergence rewrite the position and
+-- velocity immediately. Returns the accumulated acceleration.
+---@param sim SplParticleSimulation
+---@param runtime table<string, unknown> live emitter runtime
+---@param particle table<string, unknown> live particle under update
+---@return number accX, number accY, number accZ field acceleration in world units
+local function applyFields(sim, runtime, particle)
+  local record = runtime.record --[[@as table<string, unknown>]]
+  local accX, accY, accZ = 0, 0, 0
+  local age = particle.age --[[@as integer]]
+  for _, field in
+    ipairs(record.fields --[[@as table<string, unknown>[] ]])
+  do
+    local entry = field --[[@as table<string, unknown>]]
+    if entry.kind == "gravity" then
+      local magnitude = entry.magnitude --[[@as { x: number, y: number, z: number }]]
+      accX, accY, accZ = accX + magnitude.x, accY + magnitude.y, accZ + magnitude.z
+    elseif entry.kind == "random" then
+      local interval = entry.interval --[[@as integer]]
+      if age % interval == 0 then
+        -- Each axis draws once and adds the signed expression, even when
+        -- the magnitude is zero, keeping the stream position sourced.
+        local magnitude = entry.magnitude --[[@as { x: number, y: number, z: number }]]
+        local axes = { "x", "y", "z" }
+        local adds = { accX, accY, accZ }
+        for axis = 1, 3 do
+          local magRaw = worldToRawFx(magnitude[axes[axis]])
+          local draw = math.floor(rngNext(sim) / 8388608)
+          adds[axis] = adds[axis] + math.floor((magRaw * draw - magRaw * 256) / 256) / 4096
+        end
+        accX, accY, accZ = adds[1], adds[2], adds[3]
+      end
+    elseif entry.kind == "magnet" then
+      -- The retail magnet is a truncating 32-bit product and shift, not a
+      -- rounded FX_Mul: each axis adds magnitude*(target-position-velocity)
+      -- scaled by 1/4096 toward zero.
+      local target = entry.position --[[@as { x: number, y: number, z: number }]]
+      local magRaw = worldToRawFx(entry.magnitude --[[@as number]])
+      local deltas = {
+        worldToRawFx(target.x) - worldToRawFx(particle.x --[[@as number]]) - worldToRawFx(particle.vx --[[@as number]]),
+        worldToRawFx(target.y) - worldToRawFx(particle.y --[[@as number]]) - worldToRawFx(particle.vy --[[@as number]]),
+        worldToRawFx(target.z) - worldToRawFx(particle.z --[[@as number]]) - worldToRawFx(particle.vz --[[@as number]]),
+      }
+      local adds = { accX, accY, accZ }
+      for axis = 1, 3 do
+        adds[axis] = adds[axis] + truncScale12(s32wrap(magRaw * deltas[axis])) / 4096
+      end
+      accX, accY, accZ = adds[1], adds[2], adds[3]
+    elseif entry.kind == "convergence" then
+      -- Pulls the emitter-relative position toward the field position by the
+      -- staged ratio with the retail rounded fixed-point multiply.
+      local target = entry.position --[[@as { x: number, y: number, z: number }]]
+      local ratio = entry.ratio --[[@as integer]]
+      particle.x = convergeFx(particle.x --[[@as number]], target.x, ratio)
+      particle.y = convergeFx(particle.y --[[@as number]], target.y, ratio)
+      particle.z = convergeFx(particle.z --[[@as number]], target.z, ratio)
+    elseif entry.kind == "spin" then
+      particle.x, particle.y, particle.z = spinRotate(
+        particle.x --[[@as number]],
+        particle.y --[[@as number]],
+        particle.z --[[@as number]],
+        entry.axis --[[@as integer]],
+        entry.rotation --[[@as integer]]
+      )
+    elseif entry.kind == "collision" then
+      local plane = worldToRawFx(entry.height --[[@as number]])
+      local originRaw = worldToRawFx(particle.ey --[[@as number]])
+      local localRaw = worldToRawFx(particle.y --[[@as number]])
+      local worldRaw = originRaw + localRaw
+      local crossed = (originRaw < plane and worldRaw > plane) or (originRaw >= plane and worldRaw < plane)
+      if crossed then
+        particle.y = (plane - originRaw) / 4096
+        local response = entry.response --[[@as string]]
+        if response == "kill" then
+          particle.age = particle.life
+        elseif response == "bounce" then
+          local oldVel = worldToRawFx(particle.vy --[[@as number]])
+          particle.vy = -fxMulRound(oldVel, entry.bounceFx --[[@as integer]]) / 4096
+        end
+      end
+    end
+  end
+  return accX, accY, accZ
+end
+
+-- Assigns one particle its polygon identity for this calculation tick:
+-- the manager fixed identity 5 when its fixed flag is set, otherwise the
+-- current cycling identity, advancing and wrapping 63 to 6 afterwards.
+-- Drawing consumes no identities and allocates none.
+---@param sim SplParticleSimulation
+---@param particle table<string, unknown> live particle under update
+---@param fixed boolean fixed-identity flag behind this particle
+local function assignPolygonId(sim, particle, fixed)
+  if fixed then
+    particle.pid = 5
+    return
+  end
+  particle.pid = sim._nextPolygonId
+  if sim._nextPolygonId >= 63 then
+    sim._nextPolygonId = 6
+  else
+    sim._nextPolygonId = sim._nextPolygonId + 1
+  end
+end
+
 -- Runs one particle through its staged scale/color/alpha blocks at its
 -- current age, then its fields and motion. Newborn particles update on
 -- their birth tick, matching the retail generation-then-update order.
@@ -608,7 +813,14 @@ local function updateParticle(sim, runtime, particle)
   -- The retail life rates are bytes: one over the particle's life, one
   -- looping over the emitter's loop frame.
   local rateNoloop = math.floor(particle.diffNoloop --[[@as integer]] * age / 256) % 256
-  local rateLoop = math.floor(particle.diffLoop --[[@as integer]] * age / 256) % 256
+  local rateLoop = math.floor(
+    (
+      particle.phase --[[@as integer]]
+      + particle.diffLoop --[[@as integer]]
+        * age
+        / 256
+    )
+  ) % 256
   local animations = record.animations --[[@as table<string, unknown>]]
   local scale = animations.scale --[[@as table<string, unknown>|nil]]
   if scale ~= nil then
@@ -640,72 +852,49 @@ local function updateParticle(sim, runtime, particle)
     particle.ey = runtime.y
     particle.ez = runtime.z
   end
-  local accX, accY, accZ = 0, 0, 0
-  for _, field in
-    ipairs(record.fields --[[@as table<string, unknown>[] ]])
-  do
-    local entry = field --[[@as table<string, unknown>]]
-    if entry.kind == "gravity" then
-      local magnitude = entry.magnitude --[[@as { x: number, y: number, z: number }]]
-      accX, accY, accZ = accX + magnitude.x, accY + magnitude.y, accZ + magnitude.z
-    elseif entry.kind == "magnet" then
-      -- The retail magnet pulls toward its resource position with the
-      -- velocity-damped offset; positions here are emitter-relative, so
-      -- the attraction runs in the emitter frame exactly as staged.
-      local target = entry.position --[[@as { x: number, y: number, z: number }]]
-      local magnitude = entry.magnitude --[[@as number]]
-      local dx = target.x - particle.x --[[@as number]] - particle.vx --[[@as number]]
-      local dy = target.y - particle.y --[[@as number]] - particle.vy --[[@as number]]
-      local dz = target.z - particle.z --[[@as number]] - particle.vz --[[@as number]]
-      accX, accY, accZ = accX + magnitude * dx, accY + magnitude * dy, accZ + magnitude * dz
-    elseif entry.kind == "convergence" then
-      -- Pulls the emitter-relative position toward the field position by the
-      -- staged ratio with the retail rounded fixed-point multiply.
-      local target = entry.position --[[@as { x: number, y: number, z: number }]]
-      local ratio = entry.ratio --[[@as integer]]
-      particle.x = convergeFx(particle.x --[[@as number]], target.x, ratio)
-      particle.y = convergeFx(particle.y --[[@as number]], target.y, ratio)
-      particle.z = convergeFx(particle.z --[[@as number]], target.z, ratio)
-    elseif entry.kind == "spin" then
-      particle.x, particle.y, particle.z = spinRotate(
-        particle.x --[[@as number]],
-        particle.y --[[@as number]],
-        particle.z --[[@as number]],
-        entry.axis --[[@as integer]],
-        entry.rotation --[[@as integer]]
-      )
-    end
-  end
+  local accX, accY, accZ = applyFields(sim, runtime, particle)
   moveParticle(particle, record.airResist --[[@as integer]], accX, accY, accZ)
   if record.child ~= nil then
     local child = record.child --[[@as table<string, unknown>]]
     local genStart = child.genStart --[[@as integer]]
     local genInterval = child.genInterval --[[@as integer]]
+    local genNum = child.genNum --[[@as integer]]
     local life = particle.life --[[@as integer]]
-    local since = age * 4096 - life * genStart * 16
-    if since >= 0 and math.floor(since / 4096) % genInterval == 0 then
-      for _ = 1, child.genNum --[[@as integer]] do
-        if liveParticleCount(sim) < MAX_PARTICLE_COUNT then
-          spawnChild(sim, runtime, particle)
+    if genNum > 0 and genInterval > 0 then
+      local since = age * 4096 - life * genStart * 16
+      if since >= 0 and math.floor(since / 4096) % genInterval == 0 then
+        for _ = 1, genNum do
+          if #sim._freeParticles > 0 or liveParticleCount(sim) < MAX_PARTICLE_COUNT then
+            local node = table.remove(sim._freeParticles, 1)
+            assert(node ~= nil, "particle pool exhaustion matches its live count")
+            spawnChild(sim, runtime, particle, node)
+            runtime.children[#runtime.children + 1] = node
+          end
         end
       end
     end
   end
-  particle.age = age + 1
+  assignPolygonId(sim, particle, record.fixedPolygonId == true)
+  -- A collision kill writes particle.age directly above; advance from the
+  -- live value, not the entry snapshot, so the kill retires this tick.
+  particle.age = (particle.age + 1) % 65536
 end
 
 -- Runs one child particle for a source tick: its life-rate scale/alpha
--- curves (or none), emitter tracking, and motion. The animated scale
--- stays in raw fx16 units, starting at unity and interpolating toward
--- the staged end with truncating slopes; the renderer normalizes once.
+-- curves (or none), emitter tracking, the shared fields when its
+-- affectFields flag is set, and motion. The animated scale stays in raw
+-- fx16 units, starting at unity and interpolating toward the staged end
+-- with truncating slopes; the renderer normalizes once. The child rate
+-- wraps 256 back to 0 at age equal to life.
+---@param sim SplParticleSimulation
 ---@param runtime table<string, unknown> live emitter runtime
 ---@param particle table<string, unknown> live child particle
-local function updateChild(runtime, particle)
+local function updateChild(sim, runtime, particle)
   local record = runtime.record --[[@as table<string, unknown>]]
   local child = record.child --[[@as table<string, unknown>]]
   local age = particle.age --[[@as integer]]
   local life = particle.life --[[@as integer]]
-  local rate = math.floor(age * 256 / life)
+  local rate = math.floor(age * 256 / life) % 256
   if child.useScaleAnm then
     local endRawFx = worldToRawFx(child.scaleEnd --[[@as number]])
     particle.animScale = endRawFx + cdivTrunc((endRawFx - 4096) * (rate - 255), 255)
@@ -718,42 +907,221 @@ local function updateChild(runtime, particle)
     particle.ey = runtime.y
     particle.ez = runtime.z
   end
-  moveParticle(particle, record.airResist --[[@as integer]], 0, 0, 0)
-  particle.age = age + 1
+  local accX, accY, accZ = 0, 0, 0
+  if child.affectFields then
+    accX, accY, accZ = applyFields(sim, runtime, particle)
+  end
+  moveParticle(particle, record.airResist --[[@as integer]], accX, accY, accZ)
+  assignPolygonId(sim, particle, child.fixedPolygonId == true)
+  particle.age = (particle.age + 1) % 65536
 end
 
----@param seed integer opening value of the deterministic stream
----@param emitterZOffset number z offset applied to every emitter position
----@return SplParticleSimulation
-function M.new(seed, emitterZOffset)
-  assert(seed % 1 == 0 and seed >= 0 and seed < 4294967296, "particle seed is a 32-bit value")
-  return setmetatable({ rng = seed, emitters = {}, emitterZOffset = emitterZOffset }, M)
-end
-
--- Adds one emitter runtime for a compiled record; it starts generating once
--- its start offset elapses.
----@param sim SplParticleSimulation
----@param id integer source emitter id
----@param group string|nil consumer-owned group tag that advance may filter on
+-- Clones one compiled emitter record for this manager: scalars and small
+-- parameter tables copy, animation and texture bindings stay shared and
+-- immutable, and the field blocks clone once so every emitter of this
+-- resource ordinal mutates the same per-manager field state. The cached
+-- payload, other managers, and other occurrences stay independent.
 ---@param record table<string, unknown> compiled emitter record
----@return table<string, unknown> runtime live emitter runtime; its x, y, z may be moved by the owner
-function M.addEmitter(sim, id, group, record)
-  local position = record.position --[[@as { x: number, y: number, z: number }]]
+---@return table<string, unknown> per-manager mutable resource clone
+local function cloneResource(record)
+  local clone = {}
+  for key, value in pairs(record) do
+    clone[key] = value
+  end
+  local function copyVec(vec)
+    if type(vec) ~= "table" then
+      return vec
+    end
+    return { x = vec.x, y = vec.y, z = vec.z }
+  end
+  clone.position = copyVec(record.position)
+  clone.axis = copyVec(record.axis)
+  if type(record.velocityFx) == "table" then
+    clone.velocityFx = { pos = record.velocityFx.pos, axis = record.velocityFx.axis }
+  end
+  if type(record.rotation) == "table" then
+    clone.rotation = { min = record.rotation.min, max = record.rotation.max }
+  end
+  if type(record.generation) == "table" then
+    clone.generation = { countFx = record.generation.countFx, interval = record.generation.interval }
+  end
+  if type(record.baseColorRgb) == "table" then
+    local rgb = record.baseColorRgb --[[@as table<string, integer>]]
+    clone.baseColorRgb = { r = rgb.r, g = rgb.g, b = rgb.b }
+  end
+  if type(record.texRepeat) == "table" then
+    clone.texRepeat = { s = record.texRepeat.s, t = record.texRepeat.t }
+  end
+  if type(record.reverseTex) == "table" then
+    clone.reverseTex = { s = record.reverseTex.s, t = record.reverseTex.t }
+  end
+  local fields = {}
+  for index, field in
+    ipairs(record.fields --[[@as table<string, unknown>[] ]])
+  do
+    local entry = field --[[@as table<string, unknown>]]
+    local copy = { kind = entry.kind }
+    for key, value in pairs(entry) do
+      if key ~= "kind" then
+        if type(value) == "table" then
+          local vec = value --[[@as table<string, number>]]
+          if vec.x ~= nil then
+            copy[key] = { x = vec.x, y = vec.y, z = vec.z }
+          else
+            copy[key] = value
+          end
+        else
+          copy[key] = value
+        end
+      end
+    end
+    fields[index] = copy
+  end
+  clone.fields = fields
+  return clone
+end
+
+-- Zeroes one pooled particle node exactly once; later reuse preserves any
+-- field the initialization path does not rewrite (retained local position
+-- for placements 10..15 and the retained rotation pair for child kind 3).
+---@return table<string, unknown> zeroed particle node
+local function zeroParticleNode()
+  return {
+    x = 0,
+    y = 0,
+    z = 0,
+    vx = 0,
+    vy = 0,
+    vz = 0,
+    rtt = 0,
+    rttVel = 0,
+    life = 0,
+    age = 0,
+    diffLoop = 0,
+    diffNoloop = 0,
+    phase = 0,
+    baseScale = 0,
+    animScale = 4096,
+    colorRgb = { r = 0, g = 0, b = 0 },
+    baseAlpha = 0,
+    animAlpha = 31,
+    texNo = 0,
+    pid = 5,
+    ex = 0,
+    ey = 0,
+    ez = 0,
+  }
+end
+
+---@param randomState table<string, integer> borrowed boot stream record shared by every manager of one boot
+---@param emitterZOffset number z offset applied to every emitter position
+---@param records table<string, unknown>[]? complete compiled emitter array for this loaded manager
+---@return SplParticleSimulation
+function M.new(randomState, emitterZOffset, records)
+  assert(
+    type(randomState) == "table"
+      and type(randomState.state) == "number"
+      and randomState.state % 1 == 0
+      and randomState.state >= 0
+      and randomState.state < 4294967296,
+    "particle simulation borrows its boot stream record"
+  )
+  local owned = records or {}
+  assert(type(owned) == "table", "particle simulation loads its manager resource array")
+  local resources = {}
+  for index, record in ipairs(owned) do
+    resources[index] = cloneResource(record --[[@as table<string, unknown>]])
+  end
+  -- The retail heap zeroes every node exactly once, then pushes nodes in
+  -- ascending memory order onto each inactive-list front; the first
+  -- allocation therefore takes the highest-index node.
+  local emitterNodes = {}
+  local freeEmitters = {}
+  for index = 1, MAX_EMITTER_COUNT do
+    local node = { live = false }
+    emitterNodes[index] = node
+    table.insert(freeEmitters, 1, node)
+  end
+  local freeParticles = {}
+  for _ = 1, MAX_PARTICLE_COUNT do
+    table.insert(freeParticles, 1, zeroParticleNode())
+  end
+  local camera = {}
+  for key, value in pairs(CAMERA_DEFAULTS) do
+    camera[key] = value
+  end
+  return setmetatable({
+    randomState = randomState,
+    rng = randomState.state,
+    emitters = {},
+    emitterZOffset = emitterZOffset,
+    records = owned,
+    resources = resources,
+    camera = camera,
+    _emitterNodes = emitterNodes,
+    _freeEmitters = freeEmitters,
+    _freeParticles = freeParticles,
+    _calcCycle = 0,
+    _nextPolygonId = 6,
+  }, M)
+end
+
+-- Adds one emitter runtime for the manager's resource ordinal: the shared
+-- per-manager clone selects axis, initial position, generation, scale,
+-- lifetime, velocity, alpha, color, and flags, copied into the runtime at
+-- creation, while the field blocks stay in the shared clone. Returns nil
+-- when all 20 emitter nodes are occupied, consuming no random draws.
+---@param sim SplParticleSimulation
+---@param resourceOrdinal integer zero-based ordinal into the manager resource array
+---@param group string|nil consumer-owned group tag that advance may filter on
+---@return table<string, unknown>|nil runtime live emitter runtime; its x, y, z may be moved by the owner
+function M.addEmitter(sim, resourceOrdinal, group)
+  assert(
+    type(resourceOrdinal) == "number" and resourceOrdinal % 1 == 0 and resourceOrdinal >= 0,
+    "particle creation names its manager resource ordinal"
+  )
+  local shared = sim.resources[resourceOrdinal + 1]
+  if shared == nil then
+    error("particle creation names an emitter ordinal outside its loaded manager: " .. tostring(resourceOrdinal), 0)
+  end
+  local node = table.remove(sim._freeEmitters, 1)
+  if node == nil then
+    return nil
+  end
+  -- The runtime record copies per-emitter defaults out of the shared
+  -- clone; only the field blocks stay shared so a configured field write
+  -- reaches every existing and future emitter of this ordinal.
+  local shaped = {}
+  for key, value in
+    pairs(shared --[[@as table<string, unknown>]])
+  do
+    shaped[key] = value
+  end
+  local sharedAxis = shared.axis --[[@as { x: number, y: number, z: number }]]
+  local axis = { x = sharedAxis.x, y = sharedAxis.y, z = sharedAxis.z }
+  shaped.axis = axis
+  local position = shared.position --[[@as { x: number, y: number, z: number }]]
   local runtime = {
-    id = id,
+    id = shared.id,
+    ordinal = resourceOrdinal,
     group = group,
-    record = record,
+    record = shaped,
+    resource = shared,
+    axis = axis,
     age = 0,
     started = false,
     carry = 0,
     x = position.x,
     y = position.y,
     z = position.z + sim.emitterZOffset,
-    frame = circleFrame(record),
+    frame = circleFrame(shaped),
     particles = {},
     children = {},
     quad = nil,
+    _node = node,
   }
+  node.live = true
+  node.runtime = runtime
   sim.emitters[#sim.emitters + 1] = runtime
   return runtime
 end
@@ -770,14 +1138,29 @@ function M.hasEmitter(sim, runtime)
   return false
 end
 
--- Removes one emitter and every particle and child it owns at once, as the
--- retail emitter deletion does. Removing a runtime that already left is a no-op.
+-- Removes one emitter and returns every parent node, then every child
+-- node, then the emitter node to their inactive fronts, as the retail
+-- emitter deletion does. Removing a runtime that already left is a no-op.
 ---@param sim SplParticleSimulation
 ---@param runtime table<string, unknown> runtime returned by addEmitter
 function M.removeEmitter(sim, runtime)
   for index, live in ipairs(sim.emitters) do
     if live == runtime then
       table.remove(sim.emitters, index)
+      for particleIndex = #runtime.particles, 1, -1 do
+        table.insert(sim._freeParticles, 1, runtime.particles[particleIndex])
+      end
+      for childIndex = #runtime.children, 1, -1 do
+        table.insert(sim._freeParticles, 1, runtime.children[childIndex])
+      end
+      runtime.particles = {}
+      runtime.children = {}
+      local node = runtime._node
+      if type(node) == "table" then
+        node.live = false
+        node.runtime = nil
+        table.insert(sim._freeEmitters, 1, node)
+      end
       return
     end
   end
@@ -786,7 +1169,8 @@ end
 ---@param sim SplParticleSimulation
 ---@param group string|nil only emitters of this group advance; nil advances every emitter
 function M.advance(sim, group)
-  -- walk, keeping the shared stream position sourced across emitters.
+  -- Younger emitters update first in the retail newest-first walk; the
+  -- live list stays oldest-first and every traversal runs in reverse.
   for index = #sim.emitters, 1, -1 do
     local runtime = sim.emitters[index]
     if group == nil or runtime.group == group then
@@ -807,14 +1191,20 @@ function M.advance(sim, group)
           local due = math.floor(total / 4096)
           runtime.carry = total - due * 4096
           for burstIndex = 0, due - 1 do
-            if liveParticleCount(sim) < MAX_PARTICLE_COUNT then
-              spawnParticle(sim, runtime, burstIndex, due)
+            if #sim._freeParticles > 0 then
+              local node = table.remove(sim._freeParticles, 1)
+              assert(node ~= nil, "particle pool exhaustion matches its live count")
+              if spawnParticle(sim, runtime, node, burstIndex, due) ~= nil then
+                runtime.particles[#runtime.particles + 1] = node
+              else
+                table.insert(sim._freeParticles, 1, node)
+              end
             end
           end
         end
       end
-      -- Youngest particles update first: newborns join at the front of
-      -- the retail active list and update on their birth tick.
+      -- Youngest particles update first: newborns join at the back of the
+      -- live list and update on their birth tick in reverse traversal.
       for particleIndex = #runtime.particles, 1, -1 do
         local particle = runtime.particles[particleIndex]
         updateParticle(sim, runtime, particle)
@@ -823,22 +1213,28 @@ function M.advance(sim, group)
           > particle.life --[[@as integer]]
         then
           table.remove(runtime.particles, particleIndex)
+          table.insert(sim._freeParticles, 1, particle)
         end
       end
       for childIndex = #runtime.children, 1, -1 do
         local childParticle = runtime.children[childIndex]
-        updateChild(runtime, childParticle)
+        updateChild(sim, runtime, childParticle)
         if
           childParticle.age --[[@as integer]]
           > childParticle.life --[[@as integer]]
         then
           table.remove(runtime.children, childIndex)
+          table.insert(sim._freeParticles, 1, childParticle)
         end
       end
-      runtime.age = runtime.age --[[@as integer]] + 1
+      runtime.age = (
+        runtime.age --[[@as integer]]
+        + 1
+      ) % 65536
       -- Self-destroying emitters leave the active set once their age
       -- passes their lifespan and their last particle retires; persistent
-      -- emitters stay until their owner removes them.
+      -- emitters stay until their owner removes them. A zero life means
+      -- infinite generation until stopped or deleted.
       if
         not record.persistent
         and emitterLife ~= 0
@@ -849,9 +1245,22 @@ function M.advance(sim, group)
         and #runtime.children == 0
       then
         table.remove(sim.emitters, index)
+        for particleIndex = #runtime.particles, 1, -1 do
+          table.insert(sim._freeParticles, 1, runtime.particles[particleIndex])
+        end
+        for childIndex = #runtime.children, 1, -1 do
+          table.insert(sim._freeParticles, 1, runtime.children[childIndex])
+        end
+        local node = runtime._node
+        if type(node) == "table" then
+          node.live = false
+          node.runtime = nil
+          table.insert(sim._freeEmitters, 1, node)
+        end
       end
     end
   end
+  sim._calcCycle = 1 - sim._calcCycle
 end
 
 return M

@@ -91,10 +91,8 @@ local function checkImagePath(value, context, code, field)
   checkString(value, context, code, field)
 end
 
-local SHA1_TEXT = "^" .. ("%x"):rep(40) .. "$"
-
 local function isSha1Text(value)
-  return type(value) == "string" and value:match(SHA1_TEXT) ~= nil
+  return type(value) == "string" and value:match("^" .. ("%x"):rep(40) .. "$") ~= nil
 end
 
 local function contains(values, wanted)
@@ -564,484 +562,10 @@ end
 
 -- The retail encounter animation starts its two terrain emitter sets at
 -- these animation ticks, first set first.
-BattlePresentationSchema.ENCOUNTER_START_TICKS = { 1, 20 }
-local ENCOUNTER_START_TICKS = BattlePresentationSchema.ENCOUNTER_START_TICKS
+local BattlePresentationParticles = require("libs.assets.src.battle.BattlePresentationParticles")
 
-local function isFinite(value)
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
-end
-
-local function checkFinite(value, context, field)
-  if not isFinite(value) then
-    fail(CODE_SCENE, field .. " must be a finite number", context)
-  end
-end
-
-local function checkBool(value, context, field)
-  if type(value) ~= "boolean" then
-    fail(CODE_SCENE, field .. " must be a boolean", context)
-  end
-end
-
-local function checkXyz(value, context, field)
-  SchemaCheck.checkRecord(value, { x = true, y = true, z = true }, context, CODE_SCENE, field)
-  for _, axis in ipairs({ "x", "y", "z" }) do
-    checkFinite(value[axis], context, field .. "." .. axis)
-  end
-end
-
-local function checkRgb555(value, context, field)
-  SchemaCheck.checkRecord(value, { r = true, g = true, b = true }, context, CODE_SCENE, field)
-  for _, channel in ipairs({ "r", "g", "b" }) do
-    checkInt(value[channel], 0, 31, context, CODE_SCENE, field .. "." .. channel)
-  end
-end
-
-local function checkTick(value, context, field)
-  checkInt(value, 0, 255, context, CODE_SCENE, field)
-end
-
-local function checkOptionalFlag(value, context, field)
-  if value ~= nil and value ~= true then
-    fail(CODE_SCENE, field .. " is true when present", context)
-  end
-end
-
-local function checkEmitterAnimations(animations, context, field)
-  SchemaCheck.checkRecord(animations, { scale = true, color = true, alpha = true }, context, CODE_SCENE, field)
-  local scale = animations.scale
-  if scale ~= nil then
-    local at = field .. ".scale"
-    SchemaCheck.checkRecord(scale, {
-      startFx = true,
-      normalFx = true,
-      finishFx = true,
-      inTick = true,
-      outTick = true,
-      loop = true,
-    }, context, CODE_SCENE, at)
-    for _, name in ipairs({ "startFx", "normalFx", "finishFx" }) do
-      checkInt(scale[name], -32768, 32767, context, CODE_SCENE, at .. "." .. name)
-    end
-    checkTick(scale.inTick, context, at .. ".inTick")
-    checkTick(scale.outTick, context, at .. ".outTick")
-    checkOptionalFlag(scale.loop, context, at .. ".loop")
-  end
-  local color = animations.color
-  if color ~= nil then
-    local at = field .. ".color"
-    SchemaCheck.checkRecord(color, {
-      startRgb = true,
-      endRgb = true,
-      inTick = true,
-      peakTick = true,
-      outTick = true,
-      interpolate = true,
-      random = true,
-      loop = true,
-    }, context, CODE_SCENE, at)
-    checkRgb555(color.startRgb, context, at .. ".startRgb")
-    checkRgb555(color.endRgb, context, at .. ".endRgb")
-    checkTick(color.inTick, context, at .. ".inTick")
-    checkTick(color.peakTick, context, at .. ".peakTick")
-    checkTick(color.outTick, context, at .. ".outTick")
-    checkBool(color.interpolate, context, at .. ".interpolate")
-    checkOptionalFlag(color.random, context, at .. ".random")
-    checkOptionalFlag(color.loop, context, at .. ".loop")
-  end
-  local alpha = animations.alpha
-  if alpha ~= nil then
-    local at = field .. ".alpha"
-    SchemaCheck.checkRecord(
-      alpha,
-      { start = true, normal = true, finish = true, flick = true, inTick = true, outTick = true, loop = true },
-      context,
-      CODE_SCENE,
-      at
-    )
-    for _, name in ipairs({ "start", "normal", "finish" }) do
-      checkInt(alpha[name], 0, 31, context, CODE_SCENE, at .. "." .. name)
-    end
-    checkTick(alpha.flick, context, at .. ".flick")
-    checkTick(alpha.inTick, context, at .. ".inTick")
-    checkTick(alpha.outTick, context, at .. ".outTick")
-    checkOptionalFlag(alpha.loop, context, at .. ".loop")
-  end
-end
-
-local function checkTexRepeat(value, context, field)
-  SchemaCheck.checkRecord(value, { s = true, t = true }, context, CODE_SCENE, field)
-  checkInt(value.s, 0, 3, context, CODE_SCENE, field .. ".s")
-  checkInt(value.t, 0, 3, context, CODE_SCENE, field .. ".t")
-end
-
-local function checkEmitterChild(child, textures, context, field)
-  SchemaCheck.checkRecord(child, {
-    useScaleAnm = true,
-    useAlphaAnm = true,
-    followEmitter = true,
-    useChildColor = true,
-    childColor = true,
-    drawType = true,
-    rotationType = true,
-    initVelRandom = true,
-    scaleEnd = true,
-    life = true,
-    velRatio = true,
-    sclRatio = true,
-    genNum = true,
-    genStart = true,
-    genInterval = true,
-    texNo = true,
-    textureImage = true,
-    texRepeat = true,
-  }, context, CODE_SCENE, field)
-  for _, name in ipairs({ "useScaleAnm", "useAlphaAnm", "followEmitter", "useChildColor" }) do
-    checkBool(child[name], context, field .. "." .. name)
-  end
-  checkRgb555(child.childColor, context, field .. ".childColor")
-  checkInt(child.drawType, 0, 1, context, CODE_SCENE, field .. ".drawType")
-  if child.rotationType ~= nil then
-    checkInt(child.rotationType, 1, 2, context, CODE_SCENE, field .. ".rotationType")
-  end
-  checkFinite(child.initVelRandom, context, field .. ".initVelRandom")
-  checkFinite(child.scaleEnd, context, field .. ".scaleEnd")
-  checkInt(child.life, 1, nil, context, CODE_SCENE, field .. ".life")
-  checkInt(child.velRatio, 0, 255, context, CODE_SCENE, field .. ".velRatio")
-  checkInt(child.sclRatio, 0, 255, context, CODE_SCENE, field .. ".sclRatio")
-  checkInt(child.genNum, 0, nil, context, CODE_SCENE, field .. ".genNum")
-  checkInt(child.genStart, 0, 255, context, CODE_SCENE, field .. ".genStart")
-  checkInt(child.genInterval, 1, nil, context, CODE_SCENE, field .. ".genInterval")
-  if child.rotationType ~= nil then
-    checkInt(child.rotationType, 1, 2, context, CODE_SCENE, field .. ".rotationType")
-  end
-  checkInt(child.texNo, 0, 255, context, CODE_SCENE, field .. ".texNo")
-  local texture = textures[child.texNo]
-  if texture == nil or child.textureImage ~= texture.image then
-    fail(CODE_SCENE, field .. " must reference a staged texture of its set", context)
-  end
-  checkTexRepeat(child.texRepeat, context, field .. ".texRepeat")
-end
-
-local function checkEmitterFields(fields, context, field)
-  if not Validate.isArray(fields) then
-    fail(CODE_SCENE, field .. " must be an ordered field list", context)
-  end
-  for index, entry in ipairs(fields) do
-    local at = field .. "[" .. index .. "]"
-    if type(entry) ~= "table" then
-      fail(CODE_SCENE, at .. " must be a record", context)
-    end
-    if entry.kind == "gravity" then
-      SchemaCheck.checkRecord(entry, { kind = true, magnitude = true }, context, CODE_SCENE, at)
-      checkXyz(entry.magnitude, context, at .. ".magnitude")
-    elseif entry.kind == "magnet" then
-      SchemaCheck.checkRecord(entry, { kind = true, position = true, magnitude = true }, context, CODE_SCENE, at)
-      checkXyz(entry.position, context, at .. ".position")
-      checkFinite(entry.magnitude, context, at .. ".magnitude")
-    elseif entry.kind == "convergence" then
-      SchemaCheck.checkRecord(entry, { kind = true, position = true, ratio = true }, context, CODE_SCENE, at)
-      checkXyz(entry.position, context, at .. ".position")
-      checkInt(entry.ratio, -32768, 32767, context, CODE_SCENE, at .. ".ratio")
-    elseif entry.kind == "spin" then
-      SchemaCheck.checkRecord(entry, { kind = true, rotation = true, axis = true }, context, CODE_SCENE, at)
-      checkInt(entry.rotation, 0, 65535, context, CODE_SCENE, at .. ".rotation")
-      checkInt(entry.axis, 0, 2, context, CODE_SCENE, at .. ".axis")
-    else
-      fail(CODE_SCENE, at .. " names an unknown field kind", context)
-    end
-  end
-end
-
-local EMITTER_KEYS = {
-  id = true,
-  emitterLife = true,
-  particleLife = true,
-  startOffset = true,
-  generation = true,
-  initPosType = true,
-  circleAxis = true,
-  drawType = true,
-  radius = true,
-  length = true,
-  position = true,
-  axis = true,
-  baseColorRgb = true,
-  baseAlpha = true,
-  baseScaleFx = true,
-  velocityFx = true,
-  velRandom = true,
-  scaleRandom = true,
-  lifeRandom = true,
-  rotation = true,
-  useRotationAnim = true,
-  useInitRotationRandom = true,
-  initRotation = true,
-  airResist = true,
-  aspect = true,
-  loopFrame = true,
-  dbbScale = true,
-  sclAnmDirect = true,
-  texRepeat = true,
-  texture = true,
-  textureImage = true,
-  textureAnim = true,
-  textureOffset = true,
-  drawChildFirst = true,
-  followEmitter = true,
-  persistent = true,
-  hideParent = true,
-  animations = true,
-  child = true,
-  fields = true,
-}
-
--- One compiled emitter record. Every texture the emitter, its texture
--- animation, and its child name must be a staged texture of the same set.
-local function checkEncounterEmitter(emitter, textures, context, field)
-  SchemaCheck.checkRecord(emitter, EMITTER_KEYS, context, CODE_SCENE, field)
-  checkInt(emitter.id, 0, 255, context, CODE_SCENE, field .. ".id")
-  checkInt(emitter.emitterLife, 1, nil, context, CODE_SCENE, field .. ".emitterLife")
-  checkInt(emitter.particleLife, 1, nil, context, CODE_SCENE, field .. ".particleLife")
-  checkInt(emitter.startOffset, 0, nil, context, CODE_SCENE, field .. ".startOffset")
-  SchemaCheck.checkRecord(
-    emitter.generation,
-    { countFx = true, interval = true },
-    context,
-    CODE_SCENE,
-    field .. ".generation"
-  )
-  checkInt(emitter.generation.countFx, nil, nil, context, CODE_SCENE, field .. ".generation.countFx")
-  checkInt(emitter.generation.interval, 1, nil, context, CODE_SCENE, field .. ".generation.interval")
-  checkInt(emitter.initPosType, 0, 9, context, CODE_SCENE, field .. ".initPosType")
-  checkInt(emitter.circleAxis, 0, 3, context, CODE_SCENE, field .. ".circleAxis")
-  checkInt(emitter.drawType, 0, 1, context, CODE_SCENE, field .. ".drawType")
-  checkFinite(emitter.radius, context, field .. ".radius")
-  checkFinite(emitter.length, context, field .. ".length")
-  checkXyz(emitter.position, context, field .. ".position")
-  checkXyz(emitter.axis, context, field .. ".axis")
-  checkRgb555(emitter.baseColorRgb, context, field .. ".baseColorRgb")
-  checkInt(emitter.baseAlpha, 0, 31, context, CODE_SCENE, field .. ".baseAlpha")
-  checkInt(emitter.baseScaleFx, nil, nil, context, CODE_SCENE, field .. ".baseScaleFx")
-  SchemaCheck.checkRecord(emitter.velocityFx, { pos = true, axis = true }, context, CODE_SCENE, field .. ".velocityFx")
-  checkInt(emitter.velocityFx.pos, nil, nil, context, CODE_SCENE, field .. ".velocityFx.pos")
-  checkInt(emitter.velocityFx.axis, nil, nil, context, CODE_SCENE, field .. ".velocityFx.axis")
-  checkInt(emitter.velRandom, 0, 255, context, CODE_SCENE, field .. ".velRandom")
-  checkInt(emitter.scaleRandom, 0, 255, context, CODE_SCENE, field .. ".scaleRandom")
-  checkInt(emitter.lifeRandom, 0, 255, context, CODE_SCENE, field .. ".lifeRandom")
-  SchemaCheck.checkRecord(emitter.rotation, { min = true, max = true }, context, CODE_SCENE, field .. ".rotation")
-  checkInt(emitter.rotation.min, nil, nil, context, CODE_SCENE, field .. ".rotation.min")
-  checkInt(emitter.rotation.max, nil, nil, context, CODE_SCENE, field .. ".rotation.max")
-  checkBool(emitter.useRotationAnim, context, field .. ".useRotationAnim")
-  checkBool(emitter.useInitRotationRandom, context, field .. ".useInitRotationRandom")
-  checkInt(emitter.initRotation, 0, 65535, context, CODE_SCENE, field .. ".initRotation")
-  checkInt(emitter.airResist, 0, 255, context, CODE_SCENE, field .. ".airResist")
-  checkFinite(emitter.aspect, context, field .. ".aspect")
-  checkInt(emitter.loopFrame, 1, nil, context, CODE_SCENE, field .. ".loopFrame")
-  checkInt(emitter.dbbScale, 0, 65535, context, CODE_SCENE, field .. ".dbbScale")
-  checkInt(emitter.sclAnmDirect, 0, 7, context, CODE_SCENE, field .. ".sclAnmDirect")
-  checkTexRepeat(emitter.texRepeat, context, field .. ".texRepeat")
-  checkInt(emitter.texture, 0, 255, context, CODE_SCENE, field .. ".texture")
-  local texture = textures[emitter.texture]
-  if texture == nil or emitter.textureImage ~= texture.image then
-    fail(CODE_SCENE, field .. " must reference a staged texture of its set", context)
-  end
-  local anim = emitter.textureAnim
-  if anim ~= nil then
-    local at = field .. ".textureAnim"
-    SchemaCheck.checkRecord(anim, { textures = true, diff = true, random = true, loop = true }, context, CODE_SCENE, at)
-    if not Validate.isArray(anim.textures) or #anim.textures < 1 or #anim.textures > 8 then
-      fail(CODE_SCENE, at .. ".textures must list one to eight textures", context)
-    end
-    for index, textureId in ipairs(anim.textures) do
-      checkInt(textureId, 0, 255, context, CODE_SCENE, at .. ".textures[" .. index .. "]")
-      if textures[textureId] == nil then
-        fail(CODE_SCENE, at .. ".textures[" .. index .. "] must reference a staged texture of its set", context)
-      end
-    end
-    if anim.textures[1] ~= emitter.texture then
-      fail(CODE_SCENE, at .. " must start on the emitter texture", context)
-    end
-    checkInt(anim.diff, 0, 255, context, CODE_SCENE, at .. ".diff")
-    checkBool(anim.random, context, at .. ".random")
-    checkBool(anim.loop, context, at .. ".loop")
-  end
-  local offset = emitter.textureOffset
-  if offset ~= nil then
-    local at = field .. ".textureOffset"
-    SchemaCheck.checkRecord(offset, { mode = true, x = true, y = true }, context, CODE_SCENE, at)
-    checkInt(offset.mode, 0, nil, context, CODE_SCENE, at .. ".mode")
-    checkFinite(offset.x, context, at .. ".x")
-    checkFinite(offset.y, context, at .. ".y")
-  end
-  checkOptionalFlag(emitter.drawChildFirst, context, field .. ".drawChildFirst")
-  checkOptionalFlag(emitter.followEmitter, context, field .. ".followEmitter")
-  checkOptionalFlag(emitter.persistent, context, field .. ".persistent")
-  checkOptionalFlag(emitter.hideParent, context, field .. ".hideParent")
-  checkEmitterAnimations(emitter.animations, context, field .. ".animations")
-  if emitter.child ~= nil then
-    checkEmitterChild(emitter.child, textures, context, field .. ".child")
-  end
-  checkEmitterFields(emitter.fields, context, field .. ".fields")
-end
-
--- The retail encounter animation's two terrain emitter sets in start
--- order: each set carries its start tick, the particle random seed, its
--- compiled emitters, and one staged RGBA image per texture.
-local function checkEncounterParticles(sets, sceneKey, context)
-  local field = "scene encounterParticles"
-  if not Validate.isArray(sets) or #sets ~= #ENCOUNTER_START_TICKS then
-    fail(CODE_SCENE, field .. " must carry the two retail emitter sets", context)
-  end
-  local stem = sceneKey:gsub("/", "-")
-  for setIndex, set in ipairs(sets) do
-    local at = field .. "[" .. setIndex .. "]"
-    SchemaCheck.checkRecord(
-      set,
-      { startTick = true, seed = true, emitters = true, textures = true },
-      context,
-      CODE_SCENE,
-      at
-    )
-    if set.startTick ~= ENCOUNTER_START_TICKS[setIndex] then
-      fail(CODE_SCENE, at .. ".startTick must be the retail start tick", context)
-    end
-    if set.seed ~= 0 then
-      fail(CODE_SCENE, at .. ".seed must be the retail zero seed", context)
-    end
-    if not Validate.isArray(set.textures) or #set.textures == 0 then
-      fail(CODE_SCENE, at .. ".textures must carry the set's staged textures", context)
-    end
-    local byId = {}
-    for index, texture in ipairs(set.textures) do
-      local textureField = at .. ".textures[" .. index .. "]"
-      SchemaCheck.checkRecord(
-        texture,
-        { id = true, width = true, height = true, image = true },
-        context,
-        CODE_SCENE,
-        textureField
-      )
-      checkInt(texture.id, 0, 255, context, CODE_SCENE, textureField .. ".id")
-      if byId[texture.id] ~= nil then
-        fail(CODE_SCENE, textureField .. ".id repeats a texture of its set", context)
-      end
-      checkInt(texture.width, 1, 1024, context, CODE_SCENE, textureField .. ".width")
-      checkInt(texture.height, 1, 1024, context, CODE_SCENE, textureField .. ".height")
-      checkString(texture.image, context, CODE_SCENE, textureField .. ".image")
-      local expected = "assets/generated/battle/scenes/"
-        .. stem
-        .. "-particles-"
-        .. setIndex
-        .. "-"
-        .. texture.id
-        .. ".png"
-      if texture.image ~= expected then
-        fail(CODE_SCENE, textureField .. ".image must be the staged particle texture PNG of its scene", context)
-      end
-      byId[texture.id] = texture
-    end
-    if not Validate.isArray(set.emitters) or #set.emitters == 0 then
-      fail(CODE_SCENE, at .. ".emitters must carry the set's emitters", context)
-    end
-    for index, emitter in ipairs(set.emitters) do
-      checkEncounterEmitter(emitter, byId, context, at .. ".emitters[" .. index .. "]")
-    end
-  end
-end
-
--- The emitter placement positions a battle particle system carries: for each
--- battler position, the staged emitter world position under each of the two
--- particle perspective types.
-local PARTICLE_PLACEMENT_POSITIONS = {
-  "solo-player",
-  "solo-enemy",
-  "player-side-slot-1",
-  "enemy-side-slot-1",
-  "player-side-slot-2",
-  "enemy-side-slot-2",
-}
-
--- Asserts one battle move particle system payload: the zero retail seed, its
--- compiled emitters, the staged texture keys they draw, and the emitter
--- placement table. A member whose vocabulary is not reproduced stages only
--- the cause, which the runtime refuses to load.
----@param system table<string, unknown> particle system payload under validation
-function BattlePresentationSchema.assertParticleSystem(system)
-  local context = {}
-  local field = "particle system"
-  if type(system) == "table" and system.unsupported ~= nil then
-    SchemaCheck.checkRecord(system, { unsupported = true }, context, CODE_SCENE, field)
-    checkString(system.unsupported, context, CODE_SCENE, field .. ".unsupported")
-    return
-  end
-  SchemaCheck.checkRecord(
-    system,
-    { seed = true, emitters = true, textures = true, placements = true, axisTables = true },
-    context,
-    CODE_SCENE,
-    field
-  )
-  if system.seed ~= 0 then
-    fail(CODE_SCENE, field .. ".seed must be the retail zero seed", context)
-  end
-  if not Validate.isArray(system.textures) or #system.textures == 0 then
-    fail(CODE_SCENE, field .. ".textures must carry the system's staged textures", context)
-  end
-  local byId = {}
-  for index, texture in ipairs(system.textures) do
-    local at = field .. ".textures[" .. index .. "]"
-    SchemaCheck.checkRecord(texture, { id = true, width = true, height = true, image = true }, context, CODE_SCENE, at)
-    checkInt(texture.id, 0, 255, context, CODE_SCENE, at .. ".id")
-    if byId[texture.id] ~= nil then
-      fail(CODE_SCENE, at .. ".id repeats a texture of its system", context)
-    end
-    checkInt(texture.width, 1, 1024, context, CODE_SCENE, at .. ".width")
-    checkInt(texture.height, 1, 1024, context, CODE_SCENE, at .. ".height")
-    checkString(texture.image, context, CODE_SCENE, at .. ".image")
-    byId[texture.id] = {}
-  end
-  if not Validate.isArray(system.emitters) or #system.emitters == 0 then
-    fail(CODE_SCENE, field .. ".emitters must carry the system's emitters", context)
-  end
-  -- Emitters name their textures by id only; the system's texture list owns
-  -- the staged resource keys.
-  for index, emitter in ipairs(system.emitters) do
-    checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
-  end
-  local allowed = {}
-  for _, position in ipairs(PARTICLE_PLACEMENT_POSITIONS) do
-    allowed[position] = true
-  end
-  SchemaCheck.checkRecord(system.placements, allowed, context, CODE_SCENE, field .. ".placements")
-  for _, position in ipairs(PARTICLE_PLACEMENT_POSITIONS) do
-    local at = field .. ".placements[" .. position .. "]"
-    local kinds = system.placements[position]
-    if not Validate.isArray(kinds) or #kinds ~= 12 then
-      fail(CODE_SCENE, at .. " must carry all twelve emitter kinds", context)
-    end
-    for kind, perspectives in ipairs(kinds) do
-      local kindAt = at .. "[" .. kind .. "]"
-      if not Validate.isArray(perspectives) or #perspectives ~= 2 then
-        fail(CODE_SCENE, kindAt .. " must carry one vector per particle perspective type", context)
-      end
-      for perspective, vector in ipairs(perspectives) do
-        checkXyz(vector, context, kindAt .. "[" .. perspective .. "]")
-      end
-    end
-  end
-  local axisTables = system.axisTables
-  SchemaCheck.checkRecord(axisTables, { mode1 = true, mode10 = true }, context, CODE_SCENE, field .. ".axisTables")
-  for _, mode in ipairs({ "mode1", "mode10" }) do
-    local entries = axisTables[mode]
-    if not Validate.isArray(entries) or #entries ~= 36 then
-      fail(CODE_SCENE, field .. ".axisTables." .. mode .. " must carry one axis per battler-type pair", context)
-    end
-    for index, vector in ipairs(entries) do
-      checkXyz(vector, context, field .. ".axisTables." .. mode .. "[" .. index .. "]")
-    end
-  end
-end
+BattlePresentationSchema.ENCOUNTER_START_TICKS = BattlePresentationParticles.ENCOUNTER_START_TICKS
+BattlePresentationSchema.assertParticleSystem = BattlePresentationParticles.assertParticleSystem
 
 local SCRIPT_MESSAGE_INPUTS = { "messageRecordReference", "messageTagSymbol", "tagTypedParameters" }
 
@@ -4425,14 +3949,11 @@ local function checkTrainerPictureEntry(selector, record, checkImage, context, f
   end
 end
 
--- One ball particle set: the retail zero seed, one staged PNG per texture
--- under the ball's particle texture path, and compiled emitters naming only
--- those textures.
+-- One ball particle set: one staged PNG per texture under the ball's
+-- particle texture path, and compiled emitters naming only those
+-- textures. The boot stream record lives with the boot, never here.
 local function checkBallParticleSet(set, itemKey, kind, context, field)
-  SchemaCheck.checkRecord(set, { seed = true, emitters = true, textures = true }, context, CODE_MANIFEST, field)
-  if set.seed ~= 0 then
-    fail(CODE_MANIFEST, field .. ".seed must be the retail zero seed", context)
-  end
+  SchemaCheck.checkRecord(set, { emitters = true, textures = true }, context, CODE_MANIFEST, field)
   if not Validate.isArray(set.textures) or #set.textures == 0 then
     fail(CODE_MANIFEST, field .. ".textures must carry the set's staged textures", context)
   end
@@ -4441,7 +3962,7 @@ local function checkBallParticleSet(set, itemKey, kind, context, field)
     local textureField = field .. ".textures[" .. index .. "]"
     SchemaCheck.checkRecord(
       texture,
-      { id = true, width = true, height = true, image = true },
+      { id = true, width = true, height = true, image = true, sampler = true, alphaUsage = true },
       context,
       CODE_MANIFEST,
       textureField
@@ -4462,13 +3983,25 @@ local function checkBallParticleSet(set, itemKey, kind, context, field)
     if texture.image ~= expected then
       fail(CODE_MANIFEST, textureField .. ".image must be the staged particle texture PNG of its ball", context)
     end
+    BattlePresentationParticles.ParticleChecks.sampler(
+      texture.sampler,
+      context,
+      CODE_MANIFEST,
+      textureField .. ".sampler"
+    )
+    BattlePresentationParticles.ParticleChecks.alphaUsage(
+      texture.alphaUsage,
+      context,
+      CODE_MANIFEST,
+      textureField .. ".alphaUsage"
+    )
     byId[texture.id] = texture
   end
   if not Validate.isArray(set.emitters) or #set.emitters == 0 then
     fail(CODE_MANIFEST, field .. ".emitters must carry the set's emitters", context)
   end
   for index, emitter in ipairs(set.emitters) do
-    checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
+    BattlePresentationParticles.checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
   end
 end
 
@@ -4555,10 +4088,7 @@ end
 -- 12 across its phases. Source archive/member identity stays in producer
 -- provenance; this persisted contract carries compiled records and images.
 local function checkEvolutionParticles(particles, context, field)
-  SchemaCheck.checkRecord(particles, { seed = true, emitters = true, textures = true }, context, CODE_MANIFEST, field)
-  if particles.seed ~= 0 then
-    fail(CODE_MANIFEST, field .. ".seed must be the retail zero seed", context)
-  end
+  SchemaCheck.checkRecord(particles, { emitters = true, textures = true }, context, CODE_MANIFEST, field)
   if not Validate.isArray(particles.textures) or #particles.textures == 0 then
     fail(CODE_MANIFEST, field .. ".textures must carry the staged textures", context)
   end
@@ -4567,7 +4097,7 @@ local function checkEvolutionParticles(particles, context, field)
     local at = field .. ".textures[" .. index .. "]"
     SchemaCheck.checkRecord(
       texture,
-      { id = true, width = true, height = true, image = true },
+      { id = true, width = true, height = true, image = true, sampler = true, alphaUsage = true },
       context,
       CODE_MANIFEST,
       at
@@ -4581,6 +4111,13 @@ local function checkEvolutionParticles(particles, context, field)
     if texture.image ~= ("assets/generated/battle/evolution-particles-" .. texture.id .. ".png") then
       fail(CODE_MANIFEST, at .. ".image must name its staged evolution particle PNG", context)
     end
+    BattlePresentationParticles.ParticleChecks.sampler(texture.sampler, context, CODE_MANIFEST, at .. ".sampler")
+    BattlePresentationParticles.ParticleChecks.alphaUsage(
+      texture.alphaUsage,
+      context,
+      CODE_MANIFEST,
+      at .. ".alphaUsage"
+    )
     byId[texture.id] = texture
   end
   if not Validate.isArray(particles.emitters) or #particles.emitters ~= 13 then
@@ -4590,7 +4127,7 @@ local function checkEvolutionParticles(particles, context, field)
     if emitter.id ~= index - 1 then
       fail(CODE_MANIFEST, field .. ".emitters must preserve retail IDs 0 through 12", context)
     end
-    checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
+    BattlePresentationParticles.checkEncounterEmitter(emitter, byId, context, field .. ".emitters[" .. index .. "]")
   end
 end
 
@@ -5165,7 +4702,7 @@ function BattlePresentationSchema.assertScene(scene)
   if scene.paletteSource.format ~= "native-encounter-palettes-v1" then
     fail(CODE_SCENE, "scene paletteSource must use native-encounter-palettes-v1", context)
   end
-  checkEncounterParticles(scene.encounterParticles, scene.key, context)
+  BattlePresentationParticles.checkEncounterParticles(scene.encounterParticles, scene.key, context)
   checkNoNativeKeys(scene, context, CODE_SCENE, "scene")
   return true
 end

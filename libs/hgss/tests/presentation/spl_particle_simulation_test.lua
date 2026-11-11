@@ -70,8 +70,8 @@ end
 ---@return table<string, unknown> runtime
 local function spawnBurst(overrides, count)
   overrides.generation = { countFx = count * 4096, interval = 1 }
-  local sim = SplParticleSimulation.new(0, 0)
-  SplParticleSimulation.addEmitter(sim, 0, nil, record(overrides))
+  local sim = SplParticleSimulation.new({ state = 0 }, 0, { record(overrides) })
+  SplParticleSimulation.addEmitter(sim, 0, nil)
   SplParticleSimulation.advance(sim)
   return sim, sim.emitters[1]
 end
@@ -173,8 +173,8 @@ end
 ---@param ticks integer
 ---@return table<string, unknown> particle
 local function ageOne(overrides, ticks)
-  local sim = SplParticleSimulation.new(0, 0)
-  SplParticleSimulation.addEmitter(sim, 0, nil, record(overrides))
+  local sim = SplParticleSimulation.new({ state = 0 }, 0, { record(overrides) })
+  SplParticleSimulation.addEmitter(sim, 0, nil)
   for _ = 1, ticks do
     SplParticleSimulation.advance(sim)
   end
@@ -303,8 +303,8 @@ end
 
 function T.tests.following_emitters_carry_their_particles_with_the_emitter()
   local function worldXAfterMove(follow)
-    local sim = SplParticleSimulation.new(0, 0)
-    SplParticleSimulation.addEmitter(sim, 0, nil, record({ followEmitter = follow, emitterLife = 5 }))
+    local sim = SplParticleSimulation.new({ state = 0 }, 0, { record({ followEmitter = follow, emitterLife = 5 }) })
+    SplParticleSimulation.addEmitter(sim, 0, nil)
     SplParticleSimulation.advance(sim)
     sim.emitters[1].x = 3
     SplParticleSimulation.advance(sim)
@@ -316,26 +316,406 @@ function T.tests.following_emitters_carry_their_particles_with_the_emitter()
 end
 
 function T.tests.persistent_emitters_outlive_their_life_until_removed_with_their_particles()
-  local sim = SplParticleSimulation.new(0, 0)
-  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil, record({ persistent = true, particleLife = 2 }))
+  local sim = SplParticleSimulation.new({ state = 0 }, 0, { record({ persistent = true, particleLife = 2 }) })
+  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
   for _ = 1, 10 do
     SplParticleSimulation.advance(sim)
   end
   Assert.equal(#sim.emitters, 1, "a persistent emitter outlives its life and its last particle")
   Assert.equal(#runtime.particles, 0, "its particles still retire on their own life")
-  local plain = SplParticleSimulation.new(0, 0)
-  SplParticleSimulation.addEmitter(plain, 0, nil, record({ particleLife = 2 }))
+  local plain = SplParticleSimulation.new({ state = 0 }, 0, { record({ particleLife = 2 }) })
+  SplParticleSimulation.addEmitter(plain, 0, nil)
   for _ = 1, 10 do
     SplParticleSimulation.advance(plain)
   end
   Assert.equal(#plain.emitters, 0, "a self-destroying emitter leaves once its particles retire")
-  local held = SplParticleSimulation.new(0, 0)
-  local owned = SplParticleSimulation.addEmitter(held, 0, nil, record({ persistent = true }))
+  local held = SplParticleSimulation.new({ state = 0 }, 0, { record({ persistent = true }) })
+  local owned = SplParticleSimulation.addEmitter(held, 0, nil)
   SplParticleSimulation.advance(held)
   Assert.equal(#owned.particles, 1, "the emitter holds a live particle")
   SplParticleSimulation.removeEmitter(held, owned)
   SplParticleSimulation.removeEmitter(held, owned)
   Assert.equal(#held.emitters, 0, "removal drops the emitter and its particles at once, and repeats silently")
+end
+
+-- One boot owns one stream: every manager borrows the same record, draws
+-- consume it in source call order, and no manager reseeds or keeps a
+-- private stream. Sibling state below is independent today.
+function T.tests.sibling_managers_share_one_boot_stream()
+  local boot = { state = 0 }
+  local first = SplParticleSimulation.new(boot, 0, { record({}) })
+  SplParticleSimulation.addEmitter(first, 0, nil)
+  SplParticleSimulation.advance(first)
+  local second = SplParticleSimulation.new(boot, 0, { record({}) })
+  SplParticleSimulation.addEmitter(second, 0, nil)
+  SplParticleSimulation.advance(second)
+  Assert.isTrue(
+    second.rng ~= first.rng,
+    "a second manager continues the boot stream where the first left off "
+      .. "instead of replaying the same draws from zero"
+  )
+end
+
+function T.tests.simulations_borrow_their_boot_stream_record()
+  local boot = { state = 0 }
+  local ok, sim = pcall(SplParticleSimulation.new, boot, 0, {})
+  Assert.isTrue(
+    ok,
+    "simulations borrow one boot stream record instead of a numeric seed: " .. tostring(sim)
+  )
+  if ok then
+    Assert.isTrue(
+      sim.randomState == boot,
+      "draws advance the borrowed boot record the whole boot shares"
+    )
+  end
+end
+
+function T.tests.zero_life_emitters_generate_without_a_duration_cap()
+  local sim = SplParticleSimulation.new({ state = 0 }, 0, { record({ emitterLife = 0, particleLife = 2 }) })
+  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
+  for _ = 1, 6 do
+    SplParticleSimulation.advance(sim)
+  end
+  Assert.equal(#sim.emitters, 1, "a zero-life emitter never expires on its own")
+  Assert.isTrue(#runtime.particles > 0, "it keeps generating until explicitly stopped or deleted")
+end
+
+function T.tests.simultaneous_emitters_are_capped_at_twenty_without_random_draws()
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(boot, 0, { record({ persistent = true, emitterLife = 0 }) })
+  for _ = 1, 20 do
+    Assert.notNil(SplParticleSimulation.addEmitter(sim, 0, nil), "the first twenty emitters allocate")
+  end
+  local before = boot.state
+  Assert.isNil(SplParticleSimulation.addEmitter(sim, 0, nil), "the twenty-first emitter drops")
+  Assert.equal(boot.state, before, "exhausted emitter allocation consumes no random draws")
+  Assert.equal(#sim.emitters, 20, "only twenty emitters stay live")
+end
+
+function T.tests.a_full_particle_pool_generates_nothing_and_draws_nothing()
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(
+    boot,
+    0,
+    { record({ persistent = true, emitterLife = 0, particleLife = 10000, generation = { countFx = 10 * 4096, interval = 1 } }) }
+  )
+  for _ = 1, 20 do
+    SplParticleSimulation.addEmitter(sim, 0, nil)
+  end
+  -- Twenty emitters generating ten per tick fill the shared 200 nodes.
+  -- Generation rides the per-emitter runtime copy taken at creation, so
+  -- the burst rate is staged in the initial record, not poked later.
+  SplParticleSimulation.advance(sim)
+  local live = 0
+  for _, runtime in ipairs(sim.emitters) do
+    live = live + #runtime.particles
+  end
+  Assert.equal(live, 200, "the shared pool holds two hundred particles")
+  local before = boot.state
+  SplParticleSimulation.advance(sim)
+  Assert.equal(boot.state, before, "a full pool consumes no random draws on generation")
+end
+
+function T.tests.retained_placements_keep_the_recycled_node_position()
+  local function retainedRecord(velocity)
+    return record({
+      persistent = true,
+      emitterLife = 0,
+      particleLife = 3,
+      initPosType = 12,
+      velocityFx = { pos = velocity, axis = 0 },
+      generation = { countFx = 4096, interval = 100 },
+    })
+  end
+  -- A first-use retained node starts at the zeroed origin: with no
+  -- velocity the newborn never moves away from it on its birth tick.
+  local still = SplParticleSimulation.new({ state = 0 }, 0, { retainedRecord(0) })
+  local idle = SplParticleSimulation.addEmitter(still, 0, nil)
+  SplParticleSimulation.advance(still)
+  local newborn = idle.particles[1]
+  Assert.isTrue(
+    math.abs(newborn.x) < EPSILON and math.abs(newborn.y) < EPSILON and math.abs(newborn.z) < EPSILON,
+    "a first-use retained node starts at the zeroed origin"
+  )
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(boot, 0, { retainedRecord(4096) })
+  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
+  SplParticleSimulation.advance(sim)
+  for _ = 1, 2 do
+    SplParticleSimulation.advance(sim)
+  end
+  local last = runtime.particles[1]
+  Assert.notNil(last, "the particle still lives on its third tick")
+  Assert.isTrue(
+    math.sqrt(last.x ^ 2 + last.y ^ 2 + last.z ^ 2) > 1,
+    "the live particle moved away from the origin"
+  )
+  for _ = 1, 2 do
+    SplParticleSimulation.advance(sim)
+  end
+  Assert.equal(#runtime.particles, 0, "the short-lived particle retires")
+  SplParticleSimulation.removeEmitter(sim, runtime)
+  local again = SplParticleSimulation.addEmitter(sim, 0, nil)
+  SplParticleSimulation.advance(sim)
+  local second = again.particles[1]
+  local moved = math.sqrt(second.x ^ 2 + second.y ^ 2 + second.z ^ 2)
+  Assert.isTrue(moved > 0.5, "a recycled retained node keeps its prior local position instead of zeroing")
+end
+
+function T.tests.retained_placements_draw_no_placement_random_values()
+  for placement = 10, 15 do
+    local sim = spawnBurst({ initPosType = placement, length = 1 }, 1)
+    local seed = 0
+    -- First-use nodes sit at the origin, so the outward direction draws
+    -- three values exactly like the point kind, then the shared four.
+    for _ = 1, 7 do
+      seed = nextSeed(seed)
+    end
+    Assert.equal(sim.rng, seed, "retained placement " .. placement .. " draws its source count on first use")
+  end
+end
+
+function T.tests.child_rotation_three_retains_the_recycled_node_pair()
+  local function childRecord(rotationType, life)
+    return record({
+      persistent = true,
+      emitterLife = 0,
+      particleLife = 2,
+      initRotation = 1000,
+      useRotationAnim = true,
+      rotation = { min = 500, max = 500 },
+      generation = { countFx = 4096, interval = 100 },
+      child = {
+        rotationType = rotationType,
+        useScaleAnm = false,
+        useAlphaAnm = false,
+        followEmitter = false,
+        useChildColor = true,
+        childColor = { r = 0, g = 0, b = 0 },
+        initVelRandom = 0,
+        scaleEnd = 1,
+        life = life,
+        velRatio = 0,
+        sclRatio = 63,
+        genNum = 1,
+        genStart = 0,
+        genInterval = 1,
+        texNo = 1,
+        texRepeat = { s = 0, t = 0 },
+      },
+    })
+  end
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(boot, 0, { childRecord(2, 2), childRecord(3, 50) })
+  local first = SplParticleSimulation.addEmitter(sim, 0, nil)
+  SplParticleSimulation.advance(sim)
+  Assert.equal(#first.children, 1, "the rotating parent spawns its child")
+  for _ = 1, 5 do
+    SplParticleSimulation.advance(sim)
+  end
+  Assert.equal(#first.particles + #first.children, 0, "the short-lived family retires")
+  SplParticleSimulation.removeEmitter(sim, first)
+  local second = SplParticleSimulation.addEmitter(sim, 1, nil)
+  SplParticleSimulation.advance(sim)
+  local child = second.children[1]
+  Assert.notNil(child, "the rotation-three parent spawns its child")
+  Assert.isTrue(child.rtt ~= 0, "rotation kind 3 retains the recycled node angle instead of zeroing")
+  Assert.equal(child.rttVel, 500, "rotation kind 3 retains the recycled node spin")
+end
+
+function T.tests.random_fields_fire_on_their_interval_with_three_draws()
+  local field = { kind = "random", magnitude = { x = 0, y = 0, z = 0 }, interval = 1 }
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(
+    boot,
+    0,
+    { record({ persistent = true, emitterLife = 0, particleLife = 100, fields = { field }, generation = { countFx = 4096, interval = 100 } }) }
+  )
+  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
+  SplParticleSimulation.advance(sim)
+  Assert.equal(#runtime.particles, 1, "the emitter spawns")
+  -- Spawn tick: three placement draws plus the shared four, then the
+  -- birth-tick update fires the newborn field for three more.
+  local expected = 0
+  for _ = 1, 10 do
+    expected = nextSeed(expected)
+  end
+  Assert.equal(sim.rng, expected, "the spawn tick draws its source count")
+  for _ = 1, 3 do
+    expected = nextSeed(expected)
+  end
+  SplParticleSimulation.advance(sim)
+  Assert.equal(sim.rng, expected, "a zero-magnitude random field still draws three values per update")
+end
+
+function T.tests.random_fields_skip_off_interval_ticks_without_draws()
+  local field = { kind = "random", magnitude = { x = 1, y = 1, z = 1 }, interval = 2 }
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(
+    boot,
+    0,
+    { record({ persistent = true, emitterLife = 0, particleLife = 100, fields = { field }, generation = { countFx = 4096, interval = 100 } }) }
+  )
+  SplParticleSimulation.addEmitter(sim, 0, nil)
+  SplParticleSimulation.advance(sim)
+  -- Birth tick: the newborn age 0 fires on its interval; the next tick
+  -- age 1 skips and draws nothing.
+  local before = boot.state
+  SplParticleSimulation.advance(sim)
+  Assert.equal(boot.state, before, "a skipped random-field interval consumes nothing")
+end
+
+function T.tests.collision_fields_kill_bounce_or_pass_through()
+  local function fallingSim(response)
+    local boot = { state = 0 }
+    local sim = SplParticleSimulation.new(boot, 0, {
+      record({
+        emitterLife = 1,
+        particleLife = 100,
+        axis = { x = 0, y = -1, z = 0 },
+        velocityFx = { pos = 0, axis = 4096 },
+        generation = { countFx = 4096, interval = 100 },
+        fields = { { kind = "collision", height = -0.5, bounceFx = 2048, response = response } },
+      }),
+    })
+    local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
+    SplParticleSimulation.advance(sim)
+    return sim, runtime
+  end
+  local killSim, killRuntime = fallingSim("kill")
+  Assert.equal(#killRuntime.particles, 1, "the falling particle lives before the plane")
+  SplParticleSimulation.advance(killSim)
+  Assert.equal(#killRuntime.particles, 0, "a kill response retires the particle at the plane")
+  local bounceSim, bounceRuntime = fallingSim("bounce")
+  SplParticleSimulation.advance(bounceSim)
+  local bounced = bounceRuntime.particles[1]
+  Assert.notNil(bounced, "a bounce response keeps the particle")
+  -- The zero-range axis velocity scales by 255/256 (4080 raw), damps to
+  -- -3060 raw, clamps at the plane, reflects through the rounded
+  -- multiply to +1530 raw, then damps to 1147 raw with movement running.
+  Assert.near(bounced.y, -901 / 4096, 1e-9, "the bounce clamps to the plane then leaves with the reflected velocity")
+  Assert.near(bounced.vy, 1147 / 4096, 1e-9, "the reflected velocity damps through the retail shift")
+  SplParticleSimulation.advance(bounceSim)
+  local risen = bounceRuntime.particles[1]
+  Assert.notNil(risen, "the bounced particle keeps rising")
+  Assert.near(risen.y, -41 / 4096, 1e-9, "it leaves the plane on the next tick")
+  local passSim, passRuntime = fallingSim("none")
+  SplParticleSimulation.advance(passSim)
+  SplParticleSimulation.advance(passSim)
+  local passed = passRuntime.particles[1]
+  Assert.notNil(passed, "a no-op response keeps falling")
+  Assert.isTrue(passed.y < -0.5, "it crosses the plane without clamping")
+end
+
+function T.tests.child_affect_fields_runs_the_shared_fields_for_children()
+  local function childSim(affect)
+    local boot = { state = 0 }
+    local sim = SplParticleSimulation.new(boot, 0, {
+      record({
+        emitterLife = 1,
+        particleLife = 100,
+        velocityFx = { pos = 0, axis = 0 },
+        generation = { countFx = 4096, interval = 100 },
+        fields = { { kind = "gravity", magnitude = { x = 0, y = -1, z = 0 } } },
+        child = {
+          useScaleAnm = false,
+          useAlphaAnm = false,
+          followEmitter = false,
+          useChildColor = true,
+          childColor = { r = 0, g = 0, b = 0 },
+          affectFields = affect and true or nil,
+          initVelRandom = 0,
+          scaleEnd = 1,
+          life = 50,
+          velRatio = 0,
+          sclRatio = 63,
+          genNum = 1,
+          genStart = 0,
+          genInterval = 1,
+          texNo = 1,
+          texRepeat = { s = 0, t = 0 },
+        },
+      }),
+    })
+    local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
+    SplParticleSimulation.advance(sim)
+    return runtime.children[1]
+  end
+  local affected = childSim(true)
+  Assert.notNil(affected, "the parent spawns its child")
+  Assert.near(affected.vy, -1, 1e-9, "an affected child falls with the shared gravity")
+  local plain = childSim(false)
+  Assert.notNil(plain, "the unaffected parent spawns its child")
+  Assert.equal(plain.vy, 0, "an unaffected child ignores the shared fields")
+end
+
+function T.tests.per_manager_clones_isolate_fields_from_siblings_and_the_cache()
+  local cached = record({ fields = {} })
+  local bootA, bootB = { state = 0 }, { state = 0 }
+  local first = SplParticleSimulation.new(bootA, 0, { cached })
+  local second = SplParticleSimulation.new(bootB, 0, { cached })
+  Assert.isTrue(first.resources[1] ~= cached, "the manager clones its resource record")
+  first.resources[1].fields[#first.resources[1].fields + 1] =
+    { kind = "gravity", magnitude = { x = 0, y = -1, z = 0 } }
+  Assert.equal(#second.resources[1].fields, 0, "a sibling manager keeps its own fields")
+  Assert.equal(#cached.fields, 0, "the cached payload stays immutable")
+  SplParticleSimulation.addEmitter(first, 0, nil)
+  SplParticleSimulation.addEmitter(first, 0, nil)
+  SplParticleSimulation.advance(first)
+  for _, runtime in ipairs(first.emitters) do
+    Assert.isTrue(
+      (runtime.particles[1] or {}).y ~= nil and runtime.particles[1].y < 0,
+      "every same-ordinal emitter feels the shared field mutation"
+    )
+  end
+end
+
+function T.tests.cycling_polygon_identities_wrap_from_sixty_three_to_six()
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(
+    boot,
+    0,
+    { record({ persistent = true, emitterLife = 0, particleLife = 200, generation = { countFx = 4096, interval = 200 } }) }
+  )
+  local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
+  local seen = {}
+  for _ = 1, 60 do
+    SplParticleSimulation.advance(sim)
+    seen[#seen + 1] = runtime.particles[1].pid
+  end
+  Assert.equal(seen[1], 6, "calculation assigns the first cycling identity")
+  Assert.equal(seen[58], 63, "the cycle reaches sixty-three")
+  Assert.equal(seen[59], 6, "the cycle wraps back to six")
+  Assert.equal(seen[60], 7, "drawing consumes no identities")
+end
+
+function T.tests.zeroed_ranges_still_consume_their_stream_draws()
+  local boot = { state = 0 }
+  local sim = SplParticleSimulation.new(boot, 0, {
+    record({
+      persistent = true,
+      emitterLife = 0,
+      particleLife = 100,
+      velRandom = 0,
+      scaleRandom = 0,
+      lifeRandom = 0,
+      generation = { countFx = 4096, interval = 100 },
+      animations = {
+        alpha = { start = 0, normal = 31, finish = 31, flick = 0, inTick = 10, outTick = 200 },
+      },
+      fields = { { kind = "random", magnitude = { x = 0, y = 0, z = 0 }, interval = 1 } },
+    }),
+  })
+  SplParticleSimulation.addEmitter(sim, 0, nil)
+  SplParticleSimulation.advance(sim)
+  -- Spawn: three placement plus four shared draws; first update: one
+  -- alpha flicker plus three random-field draws.
+  local expected = 0
+  for _ = 1, 11 do
+    expected = nextSeed(expected)
+  end
+  Assert.equal(sim.rng, expected, "zero ranges still advance the stream")
 end
 
 return T

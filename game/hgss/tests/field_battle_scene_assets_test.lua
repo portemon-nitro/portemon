@@ -601,7 +601,7 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
   for setIndex, set in ipairs(record.encounterParticles) do
     local staged = layer.encounterParticles[setIndex]
     Assert.equal(staged.startTick, set.startTick, "set " .. setIndex .. " keeps its start tick")
-    Assert.equal(staged.seed, set.seed, "set " .. setIndex .. " keeps its seed")
+    Assert.isNil(staged.seed, "set " .. setIndex .. " carries no persisted seed")
     Assert.equal(staged.emitters, set.emitters, "set " .. setIndex .. " carries its staged emitters")
     Assert.equal(#staged.textures, #set.textures, "set " .. setIndex .. " carries every texture")
     for index, texture in ipairs(set.textures) do
@@ -836,7 +836,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   }
   for selector, entry in pairs(manifest.battleBalls.entries) do
     leafRecords[BattlePresentationCache.ballPath(selector)] = {
-      schema = "g4-battle-ball-v1",
+      schema = "g4-battle-ball-v2",
       selector = selector,
       catalogIdentity = manifest.catalogIdentity,
       entry = entry,
@@ -2709,6 +2709,34 @@ function T.repeating_particle_textures_keep_repeat_samplers_from_warmup_to_draw(
       drawable = function()
         return nil
       end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        local primitives = assert(frame.primitives, "production renders its typed composition frame")
+        for _, primitive in ipairs(primitives) do
+          local handle = primitive.image or primitive.material
+          local image = type(handle) == "table" and (handle.image or handle) or handle
+          -- Repeated viewports size from the primitive UV span over the
+          -- staged texture, exactly like the shared target samples them.
+          local texW, texH = nil, nil
+          if type(image) == "table" and type(image.getDimensions) == "function" then
+            texW, texH = image:getDimensions()
+          elseif type(image) == "table" and type(image.getWidth) == "function" then
+            texW, texH = image:getWidth(), image:getHeight()
+          end
+          local maxU, maxV = 0, 0
+          for _, vertex in ipairs(primitive.vertices or {}) do
+            maxU = math.max(maxU, vertex.u or 0)
+            maxV = math.max(maxV, vertex.v or 0)
+          end
+          if type(texW) == "number" and type(texH) == "number" and (maxU > 1 or maxV > 1) then
+            drawGraphics.draw(image, drawGraphics.newQuad(0, 0, maxU * texW, maxV * texH, texW, texH), 0, 0)
+          else
+            drawGraphics.draw(image, 0, 0)
+          end
+        end
+        return { handle = "picture-composite" }
+      end,
     },
     frameKey = "default",
   }, {
@@ -2779,7 +2807,7 @@ function T.modded_trainer_and_ball_payloads_stage_without_catalog_recheck()
       entry = trainerEntry,
     },
     [BattlePresentationCache.ballPath("ball:MODDED")] = {
-      schema = "g4-battle-ball-v1",
+      schema = "g4-battle-ball-v2",
       selector = "ball:MODDED",
       catalogIdentity = "modded-catalog",
       entry = ballEntry,

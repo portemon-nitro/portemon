@@ -51,6 +51,20 @@ local DOUBLES_SETTLED = {
   { side = 5, x = 176, y = 42 },
 }
 
+-- Clip coordinates round-trip exactly in real arithmetic; the fine
+-- grid absorbs host float dust while keeping real fractional origins
+-- intact. The production mesh carries homogeneous clip vertices, so
+-- expectations pinned in native pixels convert through the exact
+-- source projection the renderer inverts.
+---@param vertex number[] homogeneous clip-space mesh corner under test driving
+---@return number native pixel x behind the corner
+---@return number native pixel y behind the corner
+local function meshPixel(vertex)
+  local x = math.floor((vertex[1] / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+  local y = math.floor((1 - vertex[2] / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+  return x, y
+end
+
 ---@param center table<string, number> native settled center under test driving
 ---@param height number|nil signed height displacement under test driving
 ---@return number expected nominal image left edge
@@ -160,6 +174,7 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   }
   view.battleBalls = { entries = { ["ball:POKE_BALL"] = ballLeaf.entry } }
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = view,
     model = BattlePresentationModel,
@@ -260,13 +275,15 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   end
   local openingGraphics = FakeGraphics.new({})
   screen:draw({ graphics = openingGraphics })
+  do local kinds = {} for _, e in ipairs(openingGraphics.draws) do local d = e.kind .. ":" .. type(e.image) .. ":" .. tostring(e.meshTexture ~= nil) .. ":" .. tostring(e.meshVertices ~= nil) kinds[#kinds+1] = d end print("DEBUG-OPENING-KINDS: n=" .. #openingGraphics.draws .. "\n" .. table.concat(kinds, "\n")) end
   local openingRattata = drawsOf(openingGraphics.draws, "mon:RATTATA/f0/male/plain")
   local sourceSelector = core.pictures.selectors["pokemon/RATTATA/form-0/male/front"]
   local sourceAttributes = core.pictures.attributes[sourceSelector.attributes]
   Assert.equal(#openingRattata, 1, "the opening foe uses its exact staged portrait")
   local portraitTop = math.huge
   for _, vertex in ipairs(assert(openingRattata[1].meshVertices, "the production mesh carries source vertices")) do
-    portraitTop = math.min(portraitTop, vertex[2])
+    local _, y = meshPixel(vertex)
+    portraitTop = math.min(portraitTop, y)
   end
   -- Pokepic lowers the picture by its height and lifts an opponent's by
   -- the species shadow height.
@@ -287,7 +304,8 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   local function pictureLeft(entry)
     local left = math.huge
     for _, vertex in ipairs(assert(entry.meshVertices, "the production mesh carries source vertices")) do
-      left = math.min(left, vertex[1])
+      local x = meshPixel(vertex)
+      left = math.min(left, x)
     end
     return left
   end
@@ -309,10 +327,17 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   })
   screen:startPictureEntry(switchedAfter.foes[2], 8)
   local trajectory = {}
+  local seenHandles = {}
   for _ = 1, 600 do
     screen:updateFixed(1 / 60)
     local graphics = FakeGraphics.new({})
     screen:draw({ graphics = graphics })
+    for _, entry in ipairs(graphics.draws) do
+      local image = entry.meshTexture or entry.image
+      if type(image) == "table" and type(image.handle) == "string" and image.handle:sub(1, 4) == "mon:" then
+        seenHandles[image.handle] = true
+      end
+    end
     local pictures = drawsOf(graphics.draws, "mon:RATTATA/f0/male/shiny")
     if #pictures >= 1 then
       trajectory[#trajectory + 1] = pictureLeft(pictures[1])

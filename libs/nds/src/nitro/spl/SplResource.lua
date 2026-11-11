@@ -36,10 +36,14 @@ local FIELD_SIZES = {
   convergence = 16,
 }
 
+-- Collision response codes: the first two responses act, higher values
+-- are defined no-ops normalizing to none.
+
 local MAGIC = " APS12_1"
 
 ---@param message string
 ---@param context table<string, unknown>|nil
+---@noreturn
 local function sourceError(message, context)
   Errors.raise(SplResource.ERROR.SOURCE_INVALID, message, context or {})
 end
@@ -58,21 +62,18 @@ local function hasBit(flag, bit)
   return math.floor(flag / (2 ^ bit)) % 2 == 1
 end
 
--- Bits no observed retail emitter sets. Any of them
--- fails the decode with emitter and flag context instead of silently
--- dropping an effect the runtime cannot reproduce.
-local UNSUPPORTED_BITS = {
-  [20] = "ptcl_random_loop_anm",
-  [25] = "use_fld_rndm",
-  [28] = "use_fld_scfld",
-  [30] = "polygonID_fixed",
-  [31] = "child_polygonID_fixed",
-}
+-- Bits the structural walk decodes into normalized records. Formerly
+-- unsupported entries (random loop phase, random/collision fields, fixed
+-- polygon identities) are valid source behavior and decode below instead
+-- of failing the resource.
+local UNSUPPORTED_BITS = {}
 
 local SUPPORTED_FIELD_BITS = {
   [24] = "gravity",
+  [25] = "random",
   [26] = "magnet",
   [27] = "spin",
+  [28] = "collision",
   [29] = "convergence",
 }
 
@@ -86,14 +87,18 @@ local function decodeChild(reader, offset, emitterId)
     sourceError("SPL emitter child block exceeds its resource", { emitter = emitterId, offset = offset })
   end
   local flag = reader:u16le(offset)
-  -- Only the observed child flag vocabulary decodes: reserved bits would
-  -- change spawn, animation, or draw behavior the structural walk cannot see.
+  -- Only the undefined child flag vocabulary fails: reserved bits 12-15
+  -- would change spawn, animation, or draw behavior the structural walk
+  -- cannot see. Every other documented bit normalizes below.
   if math.floor(flag / 4096) % 16 ~= 0 then
     sourceError("SPL emitter uses an unsupported child feature", {
       emitter = emitterId,
       flag = flag,
       offset = offset,
     })
+  end
+  local function childBit(bit)
+    return math.floor(flag / (2 ^ bit)) % 2 == 1
   end
   local color = reader:u16le(offset + 10)
   local gen = reader:u32le(offset + 12)
@@ -126,6 +131,9 @@ local function decodeChild(reader, offset, emitterId)
     reverseS = math.floor(tex / 16) % 2 == 1,
     reverseT = math.floor(tex / 32) % 2 == 1,
     dpolCenter = math.floor(tex / 64) % 2 == 1,
+    affectFields = childBit(0),
+    polygonRotationAxis = math.floor(flag / 512) % 4,
+    polygonPlane = math.floor(flag / 2048) % 2,
   }
 end
 
@@ -217,11 +225,15 @@ local function decodeEmitter(reader, baseOffset, emitterId)
     return { r = value % 32, g = math.floor(value / 32) % 32, b = math.floor(value / 1024) % 32 }
   end
   -- Second animation/texture word: loop frame, directional scale, texture
-  -- repeat counts, the animated scale direction, and the polygon center.
+  -- repeat counts, the animated scale direction, the polygon center, and
+  -- the direction-from-center selector in bit 31.
   local word1 = reader:u32le(baseOffset + 72)
   -- Mirror/offset word: texture mirroring, the UV offset mode, and the
   -- reserved remainder, which carries no behavior for the observed records.
   local word2 = reader:u32le(baseOffset + 76)
+  local function wordBit(word, bit)
+    return math.floor(word / (2 ^ bit)) % 2 == 1
+  end
   local child = nil
   if blocks.childOffset ~= nil then
     child = decodeChild(reader, blocks.childOffset, emitterId)
@@ -263,6 +275,13 @@ local function decodeEmitter(reader, baseOffset, emitterId)
     texRepeat = { s = math.floor(word1 / 16777216) % 4, t = math.floor(word1 / 67108864) % 4 },
     sclAnmDirect = math.floor(word1 / 268435456) % 8,
     reverseTex = { s = word2 % 2 == 1, t = math.floor(word2 / 2) % 2 == 1 },
+    randomLoopPhase = wordBit(flag, 20),
+    cameraOffset = wordBit(flag, 23),
+    fixedPolygonId = wordBit(flag, 30),
+    childFixedPolygonId = wordBit(flag, 31),
+    polygonRotationAxis = math.floor(flag / 131072) % 4,
+    polygonPlane = wordBit(flag, 19) and "xz" or "xy",
+    directionFromCenter = wordBit(word1, 31),
     offsetPos = math.floor(word2 / 4) % 8,
     offset = { x = s16(baseOffset + 80) / 4096, y = s16(baseOffset + 82) / 4096 },
     blocks = blocks,
@@ -275,9 +294,10 @@ end
 ---@param reader BinaryReader
 ---@param offset integer zero-based offset of the texture header
 ---@param textureId integer
+---@param earlier table<string, unknown>[] already decoded texture records for shared-texel resolution
 ---@return table<string, unknown> normalized texture record
 ---@return integer nextOffset zero-based offset past the texture block
-local function decodeTexture(reader, offset, textureId)
+local function decodeTexture(reader, offset, textureId, earlier)
   local length = reader:length()
   if offset + 32 > length then
     sourceError("SPL texture block exceeds its resource", { texture = textureId, offset = offset })
@@ -300,6 +320,13 @@ local function decodeTexture(reader, offset, textureId)
   end
   local width = 2 ^ (bits(param, 4, 4) + 3)
   local height = 2 ^ (bits(param, 8, 4) + 3)
+  local repeatS = bits(param, 12, 1) == 1
+  local repeatT = bits(param, 13, 1) == 1
+  local flipS = bits(param, 14, 1) == 1
+  local flipT = bits(param, 15, 1) == 1
+  local color0Transparent = bits(param, 16, 1) == 1
+  local sharedTexels = bits(param, 17, 1) == 1
+  local reference = bits(param, 18, 8)
   local texSize = reader:u32le(offset + 8)
   local paletteOffset = reader:u32le(offset + 12)
   local paletteSize = reader:u32le(offset + 16)
@@ -310,15 +337,52 @@ local function decodeTexture(reader, offset, textureId)
   if paletteOffset + paletteSize > blockSize then
     sourceError("SPL texture palette exceeds its texture block", { texture = textureId, offset = offset })
   end
+  local texelOffset = offset + 32
+  local texelSize = texSize
+  if sharedTexels then
+    -- Hardware texture sharing copies only the earlier entry's texel
+    -- bytes: the referencing header keeps its own dimensions, format,
+    -- palette, transparency, and sampler.
+    local shared = earlier[reference + 1]
+    if shared == nil then
+      sourceError("SPL texture references a missing earlier texture", {
+        texture = textureId,
+        reference = reference,
+        offset = offset,
+      })
+    end
+    assert(shared ~= nil, "SPL texture references a staged earlier texture")
+    texelOffset = shared.texelOffset
+    texelSize = shared.texelSize
+  end
+  if texelOffset + texelSize > length then
+    sourceError("SPL texture texels exceed their resource", { texture = textureId, offset = offset })
+  end
+  local function wrap(repeatEnabled, flipEnabled)
+    if flipEnabled then
+      return "mirroredrepeat"
+    end
+    if repeatEnabled then
+      return "repeat"
+    end
+    return "clamp"
+  end
   return {
     id = textureId,
     format = format,
     width = width,
     height = height,
-    texelOffset = offset + 32,
-    texelSize = texSize,
+    texelOffset = texelOffset,
+    texelSize = texelSize,
     paletteOffset = offset + paletteOffset,
     paletteSize = paletteSize,
+    color0Transparent = color0Transparent,
+    sampler = {
+      minFilter = "nearest",
+      magFilter = "nearest",
+      wrapX = wrap(repeatS, flipS),
+      wrapY = wrap(repeatT, flipT),
+    },
   },
     offset + blockSize
 end
@@ -368,7 +432,7 @@ function SplResource.decode(data)
     local textures = {}
     for textureId = 0, textureCount - 1 do
       local texture
-      texture, cursor = decodeTexture(reader, cursor, textureId)
+      texture, cursor = decodeTexture(reader, cursor, textureId, textures)
       textures[#textures + 1] = texture
     end
     if cursor ~= #data then

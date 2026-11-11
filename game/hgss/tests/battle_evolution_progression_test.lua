@@ -471,6 +471,7 @@ local function openEvolutionRig(opts)
   local screen = BattleScreenState.new({
     launchId = launchId,
     manifest = opts.manifest or screenManifest(),
+    splRandomState = { state = 0 },
     model = BattlePresentationModel,
     submit = function(reply)
       return holder.battle:submit(reply)

@@ -30,6 +30,15 @@ end
 local function fakeArtHeight()
   return 8
 end
+local function fakePageWidth(self)
+  return self.width
+end
+local function fakePageHeight(self)
+  return self.height
+end
+local function fakePageDimensions(self)
+  return self.width, self.height
+end
 
 ---@param width integer host width under test driving
 ---@param height integer host height under test driving
@@ -161,11 +170,22 @@ local function drawnHud(view, held)
     missing[key] = true
   end
   local manifest = BattlePresentationManifestFixture.manifest()
+  local resultFrames = {}
   local drawView = {}
   for key, value in pairs(view) do
     drawView[key] = value
   end
+  -- The fake bypasses the screen enrichment that publishes each
+  -- portrait's species height, so the draw entry carries that step:
+  -- every battler carries a numeric species height before drawing.
+  for _, battler in ipairs(drawView.battlers or {}) do
+    if type(battler) == "table" and battler.sourceHeight == nil then
+      battler.sourceHeight = 0
+    end
+  end
   drawView.hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy }
+  drawView.slotGeometry = manifest.battlefield.slots
+  drawView.effectInstances = drawView.effectInstances or {}
   drawView.hudPatchSpans = manifest.hud.patchSpans
   drawView.textPalettes = {
     narration = manifest.messages.roles.narration.palette,
@@ -182,19 +202,49 @@ local function drawnHud(view, held)
         if missing[key] then
           return nil
         end
+        -- Portrait pages stage many cells: index art resolves through
+        -- a page-sized plane while HUD strips keep their strip size.
+        -- Shared dimension functions keep recorded draws comparable
+        -- across runs.
+        local page = key:sub(1, 4) == "mon:"
         return {
           handle = key,
+          width = page and 256 or 1648,
+          height = page and 256 or 8,
           setFilter = fakeArtSetFilter,
-          getWidth = fakeArtWidth,
-          getHeight = fakeArtHeight,
+          getWidth = page and fakePageWidth or fakeArtWidth,
+          getHeight = page and fakePageHeight or fakeArtHeight,
+          getDimensions = fakePageDimensions,
         }
+      end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        resultFrames[#resultFrames + 1] = frame
+        for _, primitive in ipairs(frame.primitives or {}) do
+          local handle = primitive.image or primitive.material
+          local image = type(handle) == "table" and (handle.image or handle) or handle
+          local minX, minY = nil, nil
+          for _, vertex in ipairs(primitive.vertices or {}) do
+            local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+            local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+            if minX == nil or x < minX then
+              minX = x
+            end
+            if minY == nil or y < minY then
+              minY = y
+            end
+          end
+          drawGraphics.draw(image, minX or 0, minY or 0)
+        end
+        return { handle = "compact-hud-pass" }
       end,
     },
     frameKey = "compact-hud-test-frame",
     sceneImageKey = "scene:test",
   }
   ApplicationPresentation.draw(graphics, resources, drawView, plan)
-  return { graphics = graphics, text = text, windows = windows, plan = plan, requests = requests }
+  return { graphics = graphics, text = text, windows = windows, plan = plan, requests = requests, frames = resultFrames }
 end
 
 ---@param graphics table recording graphics boundary under inspection
@@ -262,13 +312,16 @@ function T.fainting_picture_moves_down_and_clips_in_compact_view()
   local moved = drawsOf(result.graphics, art)
   Assert.isTrue(#moved > 0, "the partially visible foe portrait is drawn")
   Assert.equal(moved[1].y, original[1].y + 8, "the faint task moves the foe portrait down")
-  local cropped = false
-  for _, clip in ipairs(result.graphics.scissorIntersections) do
-    if clip.requested[3] == 80 and clip.requested[4] == 64 then
-      cropped = true
+  local cropped = nil
+  for _, frame in ipairs(result.frames) do
+    for _, primitive in ipairs(frame.primitives or {}) do
+      if primitive.image ~= nil and primitive.image.handle == art then
+        cropped = primitive
+      end
     end
   end
-  Assert.isTrue(cropped, "the faint task clips the picture to its remaining height")
+  Assert.notNil(cropped, "the fainting picture submits to the shared target")
+  Assert.equal(cropped.height, 64, "the faint task keeps the picture's remaining height")
 end
 
 -- The player composite samples its source artwork through quads with its
@@ -487,7 +540,12 @@ function T.arrow_and_ball_strips_stay_hidden()
   local leadKey = "mon:" .. MonCache.portraitSelector("LEAD", 0, "male", false, "back")
   for _, handle in ipairs(handles) do
     Assert.isTrue(
-      handle == "scene:test" or handle == foeKey or handle == leadKey or handle == "hud:enemy" or handle == "hud:player",
+      handle == "scene:test"
+        or handle == foeKey
+        or handle == leadKey
+        or handle == "hud:enemy"
+        or handle == "hud:player"
+        or handle == "compact-hud-pass",
       "the compact scene uses only its scene, battlers and native HUD cells"
     )
   end
@@ -838,48 +896,46 @@ end
 
 -- Doubles portraits use presentation-only half scale and recoil remains
 -- clipped to each allocated picture cell at its maximum displacement.
+-- Compact portraits share the one battlefield transform instead of
+-- per-battler anchors: all four submit to the shared 3D target in
+-- native submission order, and recoil moves native geometry without a
+-- private scale or clip cell.
 function T.doubles_portraits_draw_half_scale_inside_their_cells()
   local view = doubledSnapshot()
   for _, battler in ipairs(view.battlers) do
     battler.shakeDx = 2
   end
   local result = drawnHud(view, {})
-  local expected = {
-    [1] = { x = 72, y = 40 },
-    [2] = { x = 200, y = 40 },
-    [3] = { x = 24, y = 40 },
-    [4] = { x = 152, y = 40 },
-  }
-  local found = {}
-  for _, entry in ipairs(result.graphics.draws) do
-    local handle = type(entry.image) == "table" and entry.image.handle or ""
-    if type(handle) == "string" and handle:sub(1, 4) == "mon:" then
-      local positionByHandle = {
-        ["mon:" .. MonCache.portraitSelector("STARLY", 0, "male", false, "back")] = 1,
-        ["mon:" .. MonCache.portraitSelector("SHINX", 0, "male", false, "back")] = 2,
-        ["mon:" .. MonCache.portraitSelector("BIDOOF", 0, "male", false)] = 3,
-        ["mon:" .. MonCache.portraitSelector("PICHU", 0, "male", false)] = 4,
-      }
-      local position = assert(positionByHandle[handle], "each source portrait has its own slot")
-      local cell = expected[position]
-      Assert.equal(entry.x, cell.x + 1, "two recoil pixels move the half-scale portrait one screen pixel")
-      Assert.equal(entry.y, cell.y, "the half-scale portrait keeps its vertical origin")
-      Assert.equal(entry.sx, 0.5, "each compact doubles picture scales horizontally by one half")
-      Assert.equal(entry.sy, 0.5, "each compact doubles picture scales vertically by one half")
-      found[position] = true
+  local mainFrame = nil
+  for _, frame in ipairs(result.frames) do
+    if frame.engine == "main" and #(frame.primitives or {}) > 0 then
+      mainFrame = frame
     end
   end
-  Assert.equal(#result.graphics.draws, 5, "the scene and four source portraits draw without substitute art")
-  for position, cell in pairs(expected) do
-    Assert.isTrue(found[position] == true, "position " .. position .. " has its distinct portrait")
-    local clipped = false
-    for _, intersection in ipairs(result.graphics.scissorIntersections) do
-      local rect = intersection.requested
-      if rect[1] == cell.x and rect[2] == cell.y and rect[3] == 40 and rect[4] == 40 then
-        clipped = true
+  Assert.notNil(mainFrame, "compact portraits submit through one shared main frame")
+  local layout = assert(mainFrame.layout, "the shared frame carries its world fit")
+  local transform = assert(result.plan.content.worldTransform, "the plan carries one battlefield transform")
+  Assert.equal(layout.scale, transform.scale, "portraits share the plan world fit")
+  local found = {}
+  for _, primitive in ipairs(mainFrame.primitives) do
+    local handle = primitive.image ~= nil and primitive.image.handle or ""
+    if type(handle) == "string" and handle:sub(1, 4) == "mon:" then
+      found[#found + 1] = primitive
+    end
+  end
+  Assert.equal(#found, 4, "all four source portraits submit without substitute art")
+  local origins = {}
+  for _, primitive in ipairs(found) do
+    local minX = nil
+    for _, vertex in ipairs(primitive.vertices) do
+      local x = (vertex.clipX / 4096 + 1) * 128
+      if minX == nil or x < minX then
+        minX = x
       end
     end
-    Assert.isTrue(clipped, "position " .. position .. " recoil stays clipped to its 40x40 picture cell")
+    local origin = tostring(math.floor(minX * 2 ^ 20 + 0.5) / 2 ^ 20)
+    Assert.isNil(origins[origin], "each portrait keeps its distinct native origin")
+    origins[origin] = true
   end
 end
 

@@ -79,6 +79,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
 ---@field _captureAnimationRng (fun(): table<string, unknown>) | nil detached visual-launch capture closure behind the shared seed
+---@field _splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field _animationRngState { state: integer, calls: number }? captured visual-launch generator state behind the shared seed
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
 ---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
@@ -121,6 +122,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field fieldCamera fun(): table<string, unknown>? current field camera provider
 ---@field captureFieldLayers fun(): table<string, unknown>? fresh launch-owned native field planes
 ---@field captureAnimationRng (fun(): table<string, unknown>) | nil detached visual-launch capture closure behind the shared seed
+---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field overrides table<string, unknown>? per-instance scene, frame, and case inputs
 
 ---@class FieldBattlePresentation.PooledHandle
@@ -955,6 +957,10 @@ function FieldBattlePresentation.new(opts)
   if opts.captureAnimationRng ~= nil then
     assert(type(opts.captureAnimationRng) == "function", "the visual launch seed arrives as a detached capture closure")
   end
+  assert(
+    opts.splRandomState == nil or type(opts.splRandomState) == "table",
+    "the presented battle envelope borrows the boot stream record"
+  )
   local envelope = setmetatable({
     _cacheFs = opts.cacheFs,
     _text = opts.text,
@@ -994,6 +1000,7 @@ function FieldBattlePresentation.new(opts)
     _musicRole = nil,
     _resultMusicPlayed = false,
     _captureAnimationRng = opts.captureAnimationRng,
+    _splRandomState = opts.splRandomState,
     _animationRngState = nil,
     _fieldRenderer = opts.fieldRenderer,
     _fieldCamera = opts.fieldCamera,
@@ -2375,8 +2382,7 @@ function FieldBattlePresentation:_preparationServices()
           end
           local particleSets = {}
           for setIndex, set in ipairs(record.encounterParticles) do
-            particleSets[setIndex] =
-              { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = {} }
+            particleSets[setIndex] = { startTick = set.startTick, emitters = set.emitters, textures = {} }
           end
           for _, entry in ipairs(particles) do
             local drawable, failure = acquirePooled(envelope, entry.key, entry.path, nil, entry.sampler)
@@ -4116,6 +4122,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     monIconProvider = self._monIconProvider,
     battleMenus = self._battleMenus,
     summary = self._summary,
+    splRandomState = self._splRandomState,
     overrides = { sceneKey = sceneKey },
   }
   if self._animationRngState ~= nil then
@@ -4441,6 +4448,7 @@ function FieldBattlePresentation:_startTransition(descriptor)
       {
         camera = self._fieldCamera and self._fieldCamera() or nil,
         fieldRenderer = assert(self._fieldRenderer, "source camera transitions borrow the field compositor"),
+        splRandomState = self._splRandomState,
       },
       launchContext
     )

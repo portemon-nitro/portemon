@@ -304,6 +304,7 @@ local function openPresentedLaunch(kind, trainerClass, textSpeed)
     return true
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     monCatalog = CatalogFixture.makeCatalog(),
     windows = recordingWindows(),

@@ -62,6 +62,7 @@ local DOMAINS = {
     "BattleDataCache",
     "BattleDataSchema",
     "BattlePresentationCache",
+    "BattlePresentationParticles",
     "BattlePresentationSchema",
   },
   -- The private effective-image derivative format behind worker-side

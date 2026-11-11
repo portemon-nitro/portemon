@@ -4,8 +4,9 @@
 local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
 
 ---@class BattleEvolutionParticles.Options
----@field set { seed: integer, emitters: table<string, unknown>[], textures: { id: integer, drawable: table<string, unknown> }[] } compiled EvolutionScene resource
+---@field set { seed: integer?, emitters: table<string, unknown>[], textures: { id: integer, drawable: table<string, unknown> }[] } compiled EvolutionScene resource
 ---@field emitterPosition { x: number, y: number, z: number } retail scene emitter placement
+---@field splRandomState table<string, integer>? borrowed boot stream record shared by every manager of one boot
 
 ---@class BattleEvolutionParticles
 ---@field _simulation SplParticleSimulation one source EvolutionScene particle system
@@ -13,7 +14,7 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 ---@field _emitters table<integer, boolean> emitter resources already created
 ---@field _records table<integer, table<string, unknown>> compiled emitter records
 ---@field _position { x: number, y: number, z: number } retail scene emitter position
----@field _seed integer initial deterministic simulation seed
+---@field _splRandomState table<string, integer>? borrowed boot stream record, or nil for the staged seed fallback
 local BattleEvolutionParticles = {}
 BattleEvolutionParticles.__index = BattleEvolutionParticles
 
@@ -22,7 +23,7 @@ BattleEvolutionParticles.__index = BattleEvolutionParticles
 function BattleEvolutionParticles.new(opts)
   assert(type(opts) == "table", "evolution particles require their staged scene resource")
   local set = assert(opts.set, "evolution particles need their compiled SPL set")
-  assert(type(set.seed) == "number" and set.seed % 1 == 0, "evolution SPL carries its deterministic seed")
+  assert(type(opts.splRandomState) == "table", "evolution particles borrow the boot stream record")
   assert(
     type(set.emitters) == "table" and #set.emitters == 13,
     "EvolutionScene resource zero carries emitters 0 through 12"
@@ -35,7 +36,8 @@ function BattleEvolutionParticles.new(opts)
     assert(textures[id] == nil, "evolution SPL texture ids are unique")
     textures[id] = drawable
   end
-  local simulation = SplParticleSimulation.new(set.seed, 0)
+  local randomState = assert(opts.splRandomState, "evolution particles borrow their boot stream record")
+  local simulation = SplParticleSimulation.new(randomState, 0, set.emitters)
   for expectedId, record in ipairs(set.emitters) do
     assert(type(record) == "table" and record.id == expectedId - 1, "EvolutionScene emitter ids stay contiguous")
   end
@@ -44,7 +46,7 @@ function BattleEvolutionParticles.new(opts)
     _textures = textures,
     _emitters = {},
     _records = set.emitters,
-    _seed = set.seed,
+    _splRandomState = opts.splRandomState,
     _position = { x = position.x, y = position.y, z = position.z },
   }, BattleEvolutionParticles)
 end
@@ -56,13 +58,12 @@ function BattleEvolutionParticles:createEmitter(emitterId)
     "EvolutionScene names emitter ids 0 through 12"
   )
   assert(self._emitters[emitterId] ~= true, "EvolutionScene creates each emitter resource once")
-  local source = assert(self._records[emitterId + 1], "evolution resource carries every requested emitter")
-  local record = {}
-  for key, value in pairs(source) do
-    record[key] = value
-  end
-  record.position = { x = self._position.x, y = self._position.y, z = self._position.z }
-  SplParticleSimulation.addEmitter(self._simulation, emitterId, nil, record)
+  assert(self._records[emitterId + 1], "evolution resource carries every requested emitter")
+  -- The scene placement rides the runtime position; the shared resource
+  -- clone keeps its immutable base for the camera-offset drawing path.
+  local runtime = SplParticleSimulation.addEmitter(self._simulation, emitterId, nil)
+  assert(runtime ~= nil, "EvolutionScene creates its emitter while manager nodes are free")
+  runtime.x, runtime.y, runtime.z = self._position.x, self._position.y, self._position.z
   self._emitters[emitterId] = true
 end
 
@@ -84,7 +85,8 @@ function BattleEvolutionParticles:systems()
 end
 
 function BattleEvolutionParticles:clear()
-  self._simulation = SplParticleSimulation.new(self._seed, 0)
+  local randomState = assert(self._splRandomState, "evolution particles borrow their boot stream record")
+  self._simulation = SplParticleSimulation.new(randomState, 0, self._records)
   self._emitters = {}
 end
 

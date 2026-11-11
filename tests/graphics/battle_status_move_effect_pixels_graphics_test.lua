@@ -105,6 +105,10 @@ local function runVersion(scope, versionId)
         position = 1,
         portraitSelector = "probe/player",
         visible = true,
+        -- Synthetic probe pictures carry no species geometry, so the
+        -- settled visual center names an explicit zero species height
+        -- instead of inheriting a default.
+        sourceHeight = 0,
         pictureVisible = true,
         pictureWidth = 48,
         pictureHeight = 48,
@@ -118,6 +122,10 @@ local function runVersion(scope, versionId)
         position = 2,
         portraitSelector = "probe/foe",
         visible = true,
+        -- Synthetic probe pictures carry no species geometry, so the
+        -- settled visual center names an explicit zero species height
+        -- instead of inheriting a default.
+        sourceHeight = 0,
         pictureVisible = true,
         pictureWidth = 48,
         pictureHeight = 48,
@@ -134,6 +142,7 @@ local function runVersion(scope, versionId)
       audio = audio,
       resources = resources,
       tasks = BattleEffectTasks,
+      splRandomState = { state = 0 },
       services = {
         onNativeFrame = function(phase, sourceTick)
           if phase == "draw" then

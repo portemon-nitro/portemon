@@ -2,7 +2,6 @@
 
 ---@class BattleMenuPresenter
 local BattleMenuPresenter = {}
-local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 -- Resolves the drawable sampler behind one handle: the handle itself
 -- when it samples (pool and test leases), else its admitted effect
@@ -39,174 +38,51 @@ local function drawArtwork(graphics, art, x, y)
   end
 end
 
-local BLEND_SHADER = [[
-extern Image underlay;
-vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
-  vec4 top = Texel(texture, texture_coords);
-  vec4 bottom = Texel(underlay, texture_coords);
-  vec3 blended = mix(top.rgb, clamp((top.rgb * 8.0 + bottom.rgb * 12.0) / 16.0, 0.0, 1.0), bottom.a);
-  return vec4(mix(bottom.rgb, blended, top.a), max(bottom.a, top.a)) * color;
-}
-]]
-
 local PULSE_COLOR = { 0.741176, 0.549020, 1.0 }
 
----@class BattleMenuPresenter.BlendTargets
----@field bottom love.Canvas planes below BG1, sampled as the blend underlay
----@field top love.Canvas BG1 alone, blended over the underlay
----@field shader love.Shader source BG1 alpha-blend shader
-local BlendTargets = {}
-BlendTargets.__index = BlendTargets
-
--- Allocates the render targets and shader of the BG1 alpha blend. The
--- per-screen asset holder owns the result and releases it exactly once.
----@param graphics love.graphics host graphics namespace
----@return BattleMenuPresenter.BlendTargets
-function BattleMenuPresenter.newBlendTargets(graphics)
-  local bottom, top, shader
-  local ok, failure = pcall(function()
-    bottom = graphics.newCanvas(256, 192)
-    top = graphics.newCanvas(256, 192)
-    shader = graphics.newShader(BLEND_SHADER)
-    assert(bottom ~= nil and top ~= nil and shader ~= nil, "native menu composition allocates its render targets")
-  end)
-  if not ok then
-    if bottom ~= nil then
-      bottom:release()
-    end
-    if top ~= nil then
-      top:release()
-    end
-    if shader ~= nil then
-      shader:release()
-    end
-    error(failure, 0)
+-- Source lower BG planes ride fixed sub-engine roles: buttons on menu,
+-- panels on window, the backdrop on transition. The unified sub-engine
+-- frame owns visibility, priority, windows and blending; a plane entry
+-- only forwards its staged content.
+---@param plane integer source lower BG plane 0..3
+---@return string sub-engine role behind the plane
+function BattleMenuPresenter.roleForPlane(plane)
+  if plane == 0 then
+    return "menu"
+  elseif plane == 1 then
+    return "window"
+  elseif plane == 2 then
+    return "transition"
+  elseif plane == 3 then
+    return "battlefield"
   end
-  return setmetatable({ bottom = bottom, top = top, shader = shader }, BlendTargets)
+  error("unknown lower menu plane: " .. tostring(plane), 0)
 end
 
-function BlendTargets:release()
-  self.bottom:release()
-  self.top:release()
-  self.shader:release()
-end
-
+-- Draws one already-generated menu layer's content into the pass-owned
+-- target: staged tilemaps, move buttons and pressed-button feedback.
+-- Visibility, priority, window, scroll and blend selection belong to
+-- the unified sub-engine frame, never to this content callback.
 ---@param graphics love.graphics borrowed renderer graphics
----@param assets table<string, unknown> generated image holder owning the blend targets
+---@param assets table<string, unknown> generated image holder
 ---@param layout string selected lower menu layout
----@param layers table[] source screen records with plane and priority
 ---@param view table<string, unknown> semantic render snapshot
----@param menuWindows table<string, unknown>? native window and lower BG scroll snapshot
----@param onlyBackdrop boolean? true while the menu is closed: only the SUB_2 backdrop plane draws, matching the retail disabled composition
-function BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows, onlyBackdrop)
-  local ordered = {}
-  for index, layer in ipairs(layers) do
-    -- Screen positions are the staged drawable identity, so a closed menu
-    -- skips its button planes in place instead of renumbering the list.
-    if onlyBackdrop ~= true or layer.plane == 2 then
-      ordered[#ordered + 1] = { index = index, layer = layer, priority = layer.priority or index }
-    end
-  end
-  table.sort(ordered, function(a, b)
-    if a.priority == b.priority then
-      return a.layer.plane > b.layer.plane
-    end
-    return a.priority > b.priority
-  end)
-
-  -- Source BG1 is the alpha blend's first target over the planes below
-  -- it; planes above BG1 cover the blended result like any opaque plane.
-  local blendIndex = nil
-  for index, entry in ipairs(ordered) do
-    if entry.layer.plane == 1 then
-      blendIndex = index
-    end
-  end
-  if blendIndex == nil then
-    for _, entry in ipairs(ordered) do
-      BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, entry, menuWindows)
-    end
-    return
-  end
-
-  local targets = assets:menuBlendTargets(graphics) --[[@as BattleMenuPresenter.BlendTargets]]
-  local bottomCanvas, topCanvas, shader = targets.bottom, targets.top, targets.shader
-  local previousCanvas = graphics.getCanvas()
-  graphics.push("all")
-  local planeScopeOpen = true
-  local outputScopeOpen = false
-  local ok, err = pcall(function()
-    graphics.setCanvas(bottomCanvas)
-    graphics.origin()
-    graphics.setScissor()
-    graphics.clear(0, 0, 0, 0)
-    for index = 1, blendIndex - 1 do
-      BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, ordered[index], menuWindows)
-    end
-    graphics.setCanvas(topCanvas)
-    graphics.origin()
-    graphics.setScissor()
-    graphics.clear(0, 0, 0, 0)
-    BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, ordered[blendIndex], menuWindows)
-    graphics.setCanvas(previousCanvas)
-    graphics.pop()
-    planeScopeOpen = false
-    graphics.push("all")
-    outputScopeOpen = true
-    shader:send("underlay", bottomCanvas)
-    graphics.setShader(shader)
-    graphics.draw(topCanvas, 0, 0)
-    graphics.pop()
-    outputScopeOpen = false
-    for index = blendIndex + 1, #ordered do
-      BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, ordered[index], menuWindows)
-    end
-  end)
-  if outputScopeOpen then
-    graphics.pop()
-  end
-  if planeScopeOpen then
-    graphics.pop()
-  end
-  if not ok then
-    error(err, 0)
-  end
+---@param entry { index: integer, layer: { plane: integer, priority: number?, pulse?: boolean, feedback: table<string, table<string, { x: number, y: number }>>? } } selected screen entry
+function BattleMenuPresenter.drawPlane(graphics, assets, layout, view, entry)
+  assert(type(entry) == "table", "menu plane draws carry their screen entry")
+  assert(
+    type(entry.layer) == "table" and type(entry.layer.plane) == "number",
+    "menu plane draws name their source plane"
+  )
+  BattleMenuPresenter.roleForPlane(entry.layer.plane)
+  BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
 end
 
 ---@param graphics love.graphics borrowed renderer graphics
 ---@param assets table<string, unknown> generated image holder
 ---@param layout string selected lower menu layout
 ---@param view table<string, unknown> semantic render snapshot
----@param entry { index: integer, layer: { plane: integer, priority: number?, pulse?: boolean, feedback: table<string, table<string, { x: number, y: number }>>? }, priority: number } selected screen entry
----@param menuWindows table<string, unknown>? native window and lower BG scroll snapshot
-function BattleMenuPresenter._drawWithWindows(graphics, assets, layout, view, entry, menuWindows)
-  local plane = entry.layer.plane
-  if menuWindows == nil or (plane ~= 0 and plane ~= 1) then
-    BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
-    return
-  end
-  local top = assert(menuWindows.outsideTop, "menu window snapshot carries the upper outside region") --[[@as table<string, number>]]
-  local bottom = assert(menuWindows.outsideBottom, "menu window snapshot carries the lower outside region") --[[@as table<string, number>]]
-  local scroll = assert(menuWindows.scroll, "menu window snapshot carries per-plane BG offsets") --[[@as table<integer, table<string, number>>]]
-  local offset = assert(scroll[plane], "menu window snapshot carries each composited plane offset")
-  local function drawRegion(region, yOffset)
-    if region.width == 0 or region.height == 0 then
-      return
-    end
-    LogicalSurface.clip(graphics, region, function()
-      graphics.translate(-offset.x, -yOffset)
-      BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
-    end)
-  end
-  drawRegion(top, offset.topY)
-  drawRegion(bottom, offset.bottomY)
-end
-
----@param graphics love.graphics borrowed renderer graphics
----@param assets table<string, unknown> generated image holder
----@param layout string selected lower menu layout
----@param view table<string, unknown> semantic render snapshot
----@param entry { index: integer, layer: { plane: integer, priority: number?, pulse?: boolean, feedback: table<string, table<string, { x: number, y: number }>>? }, priority: number } selected screen entry
+---@param entry { index: integer, layer: { plane: integer, priority: number?, pulse?: boolean, feedback: table<string, table<string, { x: number, y: number }>>? } } selected screen entry
 function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
   local layer = entry.layer
   local touch = view.touchFeedback == true and ":touch" or ""
@@ -272,28 +148,6 @@ function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
 end
 
 -- Child-scoped controls mapped onto the source two-option identities.
-local CHILD_TWO_OPTION = { confirm = "yes", back = "cancel" }
-
--- Draws the learning confirmation's two-option planes with the armed
--- child control selecting and pressing its source option: Confirm the top
--- "yes" option and Back the bottom "cancel" option.
----@param graphics love.graphics borrowed renderer graphics
----@param assets table<string, unknown> generated image holder
----@param view table<string, unknown> semantic render snapshot carrying the menu layers and armed control
----@return string? pressed source option identity, nil while no child control is armed
-function BattleMenuPresenter.drawChildTwoOption(graphics, assets, view)
-  local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
-  local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
-  local armed = view.armed
-  local pressed = nil
-  if type(armed) == "table" and armed.scope == "child" then
-    pressed = CHILD_TWO_OPTION[armed.id]
-  end
-  BattleMenuPresenter.draw(graphics, assets, "two-option", layers, {
-    selection = pressed,
-    armed = pressed ~= nil and { scope = "two-option", id = pressed } or nil,
-  })
-  return pressed
-end
+BattleMenuPresenter.CHILD_TWO_OPTION = { confirm = "yes", back = "cancel" }
 
 return BattleMenuPresenter

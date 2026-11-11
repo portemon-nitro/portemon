@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local OPENING_SCHEMA = "g4-startup-opening-scene-v11"
+local OPENING_SCHEMA = "g4-startup-opening-scene-v12"
 local SOURCE_TICK_RATE = 30
 
 local CLOSED_OPS = {
@@ -415,7 +415,7 @@ local function sourceOpeningAssetsKeepLayeredModelsParticlesAndFailedStagesPrese
 
   local fourth = checkSceneBundle(compileScene(romFs, versionId, 4), versionId, 4)
   local particles = assert(fourth.particles, "scene 4 carries its normalized particle set")
-  Assert.equal(particles.seed, 0, "scene 4 keeps the deterministic source particle seed")
+  Assert.isNil(particles.seed, "scene 4 keeps the seedless particle set")
   Assert.isTrue(#particles.emitters == 9, "scene 4 keeps all nine starter emitters")
   for _, clip in ipairs(fourth.spriteClips) do
     Assert.isTrue(
@@ -488,7 +488,7 @@ end
 -- below reads the exact compiled bundles and fails until the producer
 -- emits that contract and the central reader enforces it.
 
-local STRICT_SCHEMA = "g4-startup-opening-scene-v11"
+local STRICT_SCHEMA = "g4-startup-opening-scene-v12"
 
 local function strictManifest(bundle, versionId, sceneNumber)
   local manifest = assert(bundle.manifest, "scene " .. sceneNumber .. " publishes its manifest")
@@ -1121,7 +1121,7 @@ local function strictValidationAcceptsOnlyCompleteContracts(romFs, versionId)
     local entryManifest = assert(compiled[sceneNumber].manifest, "scene " .. sceneNumber .. " publishes its manifest")
     Assert.equal(
       entryManifest.schema,
-      "g4-startup-opening-scene-v11",
+      "g4-startup-opening-scene-v12",
       "scene " .. sceneNumber .. " carries the entry-mapping scene schema"
     )
     Assert.deepEqual(
@@ -2413,7 +2413,7 @@ local function movieTickRateRemainsRetail30Hz(romFs, versionId)
     local manifest = strictManifest(bundle, versionId, sceneNumber)
     Assert.equal(
       manifest.schema,
-      "g4-startup-opening-scene-v11",
+      "g4-startup-opening-scene-v12",
       "scene " .. sceneNumber .. " carries the current scene schema"
     )
     Assert.equal(manifest.sourceTickRate, 30, "scene " .. sceneNumber .. " runs at the retail 30 Hz tick rate")

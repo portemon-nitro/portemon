@@ -210,7 +210,7 @@ local function buildAssets(species, form, newSpecies)
   }
 end
 
----@param opts { mon: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>, source: string?, particles: table<string, unknown>? } presentation options with optional retail source origin and compiled SPL resources
+---@param opts { mon: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>, source: string?, particles: table<string, unknown>?, splRandomState: table<string, integer>? } presentation options with optional retail source origin and compiled SPL resources
 ---@return BattleEvolutionState
 function BattleEvolutionState.new(opts)
   assert(type(opts) == "table", "evolution presentation requires options")
@@ -251,6 +251,7 @@ function BattleEvolutionState.new(opts)
     _particles = opts.particles ~= nil and require("game.hgss.src.battle.BattleEvolutionParticles").new({
       set = opts.particles,
       emitterPosition = { x = 0, y = 0x560 / 4096, z = 0 },
+      splRandomState = opts.splRandomState,
     }) or nil,
     _result = nil,
     _taken = false,

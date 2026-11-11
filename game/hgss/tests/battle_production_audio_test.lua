@@ -1070,6 +1070,7 @@ local function openMusicLaunch(fieldAudio, kind, launchTag)
     return true
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = musicWindows(),
     text = musicText(),

@@ -1217,14 +1217,36 @@ local function drawFrame(
   self.worldShader:send("u_view", "column", viewMatrix)
   self:_sendLighting(frame, self.worldShader)
 
-  for _, d in ipairs(queue.opaque) do
-    self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_OPAQUE)
-  end
-  for _, d in ipairs(queue.cutout) do
-    self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_CUTOUT)
-  end
-  for _, d in ipairs(queue.mixedOpaque) do
-    self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_MIXED_OPAQUE)
+  -- Battle MANUAL/Z consumes the single ordered opaque sequence the manual
+  -- queue scratch publishes: opaque, cutout and wireframe entries sorted by
+  -- native bottom/top extents with submission order as the tie breaker.
+  -- Mixed-opaque fragments keep their existing prepass. The field default
+  -- traverses the current passes exactly.
+  local manualOpaque = queue.sortMode == "manual" and queue.opaqueOrder ~= nil
+  if manualOpaque then
+    for _, entry in ipairs(queue.opaqueOrder) do
+      local item = entry.item
+      if entry.fragmentPass == AlphaClassifier.WIREFRAME then
+        self:_drawWireframe(item, projectionFor(item, frame))
+      elseif entry.fragmentPass == AlphaClassifier.CUTOUT then
+        self:_drawItem(item, projectionFor(item, frame), FRAGMENT_PASS_CUTOUT)
+      else
+        self:_drawItem(item, projectionFor(item, frame), FRAGMENT_PASS_OPAQUE)
+      end
+    end
+    for _, d in ipairs(queue.mixedOpaque) do
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_MIXED_OPAQUE)
+    end
+  else
+    for _, d in ipairs(queue.opaque) do
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_OPAQUE)
+    end
+    for _, d in ipairs(queue.cutout) do
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_CUTOUT)
+    end
+    for _, d in ipairs(queue.mixedOpaque) do
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_MIXED_OPAQUE)
+    end
   end
   self._activeShader = nil
 
@@ -1329,8 +1351,10 @@ local function drawFrame(
   -- Wireframe edges (polygon alpha zero): these count as opaque for edge
   -- marking; the color pass draws them for their own visible RGB. They
   -- target the ACTIVE color/state pair so the final resolve sees them
-  -- composited with any translucent overlays.
-  if #queue.wireframe > 0 then
+  -- composited with any translucent overlays. Manual battle traversal
+  -- already drew wireframe entries inside the ordered opaque sequence
+  -- above, so the legacy final wireframe loop must not draw them again.
+  if #queue.wireframe > 0 and not manualOpaque then
     local wireframeTargets = assert(self._colorTargets)
     local wireframeShader = self.worldShader
     if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT and #queue.blended > 0 then
@@ -1354,36 +1378,65 @@ local function drawFrame(
   end
 
   -- ---- final resolve: edge marking, fog, then the current AA approximation ----
-  self:_sendEdgeColors(frame)
-  self:_sendFog(frame)
-  self.edgeShader:send("u_antialiasEnabled", true)
-  self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
-  lg.setDepthMode()
-  lg.setBlendMode("replace", "premultiplied")
-  lg.setColor(1, 1, 1, 1)
-  lg.setCanvas(assert(self._resolvedColor))
-  lg.setShader(self.edgeShader)
-  sendStateUniforms(self.edgeShader, opaqueState, self._stateSize)
-  if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT then
-    self.edgeShader:send("u_translucentState", #queue.blended > 0 and activeTranslucentState or opaqueState)
-  end
-  lg.draw(activeColor, 0, 0)
-  stats.worldFullSurfaceDraws = stats.worldFullSurfaceDraws + 1
-
-  -- Edge, fog, and the current AA approximation have finished at world
-  -- resolution. Presentation is only a nearest-filtered scale of that result.
-  lg.setCanvas(presentationCanvas)
-  if callerScissorX == nil then
-    lg.setScissor()
+  -- Battle composition opts out with frame.postprocess == false: it keeps
+  -- the active raw RGB6/alpha5 world layer straight from the shared 3D
+  -- pass, bypassing field edge/fog/AA resolve. Absence preserves the
+  -- existing field path byte-for-byte.
+  local rawResolve = frame.postprocess == false
+  local resolvedWorld = assert(self._resolvedColor)
+  if rawResolve then
+    lg.setDepthMode()
+    lg.setBlendMode("replace", "premultiplied")
+    lg.setColor(1, 1, 1, 1)
+    lg.setCanvas(presentationCanvas)
+    if callerScissorX == nil then
+      lg.setScissor()
+    else
+      lg.setScissor(callerScissorX, callerScissorY, callerScissorW, callerScissorH)
+    end
+    lg.setShader()
+    lg.draw(activeColor, rectangle.x, rectangle.y, 0, rectangle.width / colorW, rectangle.height / colorH)
+    stats.presentationWorldBlits = stats.presentationWorldBlits + 1
+    resolvedWorld = activeColor
   else
-    lg.setScissor(callerScissorX, callerScissorY, callerScissorW, callerScissorH)
+    self:_sendEdgeColors(frame)
+    self:_sendFog(frame)
+    self.edgeShader:send("u_antialiasEnabled", true)
+    self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
+    lg.setDepthMode()
+    lg.setBlendMode("replace", "premultiplied")
+    lg.setColor(1, 1, 1, 1)
+    lg.setCanvas(assert(self._resolvedColor))
+    lg.setShader(self.edgeShader)
+    sendStateUniforms(self.edgeShader, opaqueState, self._stateSize)
+    if self.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT then
+      self.edgeShader:send("u_translucentState", #queue.blended > 0 and activeTranslucentState or opaqueState)
+    end
+    lg.draw(activeColor, 0, 0)
+    stats.worldFullSurfaceDraws = stats.worldFullSurfaceDraws + 1
+
+    -- Edge, fog, and the current AA approximation have finished at world
+    -- resolution. Presentation is only a nearest-filtered scale of that result.
+    lg.setCanvas(presentationCanvas)
+    if callerScissorX == nil then
+      lg.setScissor()
+    else
+      lg.setScissor(callerScissorX, callerScissorY, callerScissorW, callerScissorH)
+    end
+    lg.setShader()
+    lg.setDepthMode()
+    lg.setBlendMode("replace", "premultiplied")
+    lg.setColor(1, 1, 1, 1)
+    lg.draw(
+      assert(self._resolvedColor),
+      rectangle.x,
+      rectangle.y,
+      0,
+      rectangle.width / colorW,
+      rectangle.height / colorH
+    )
+    stats.presentationWorldBlits = stats.presentationWorldBlits + 1
   end
-  lg.setShader()
-  lg.setDepthMode()
-  lg.setBlendMode("replace", "premultiplied")
-  lg.setColor(1, 1, 1, 1)
-  lg.draw(assert(self._resolvedColor), rectangle.x, rectangle.y, 0, rectangle.width / colorW, rectangle.height / colorH)
-  stats.presentationWorldBlits = stats.presentationWorldBlits + 1
 
   -- The world is now present at presentation resolution. Ordinary billboards
   -- rasterize into one presentation-resolution color/coverage/depth layer,
@@ -1490,7 +1543,7 @@ local function drawFrame(
 
   if frame.captureLayers == true then
     return {
-      world = assert(self._resolvedColor),
+      world = resolvedWorld,
       objects = self._spriteColor,
       objectCoverage = self._spriteCoverage,
     }

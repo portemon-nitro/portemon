@@ -72,6 +72,7 @@ local function newScreen(battleSpeed, state)
   state = state or {}
   local opts = {
     launchId = "voice-hold-probe",
+    splRandomState = { state = 0 },
     manifest = ManifestFixture.launchView(
       { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
       { "ball:POKE_BALL" }
@@ -395,6 +396,7 @@ end
 ---@return table envelope owning the launch lifetime
 local function admitWithSpeed(speed)
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = wiringCache(),
     windows = {},
     text = {},

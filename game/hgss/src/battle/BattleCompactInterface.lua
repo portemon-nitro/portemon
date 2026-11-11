@@ -16,7 +16,6 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
-local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
@@ -89,10 +88,6 @@ local DOUBLES_HUD_CELLS = {
   enemy = { { x = 4, y = 0 }, { x = 132, y = 0 } },
   player = { { x = 4, y = 80 }, { x = 132, y = 80 } },
 }
-local DOUBLES_PICTURE_CELLS = {
-  enemy = { { x = 24, y = 40 }, { x = 152, y = 40 } },
-  player = { { x = 72, y = 40 }, { x = 200, y = 40 } },
-}
 local DOUBLES_HUD_WIDTH = 120
 local DOUBLES_HUD_HEIGHT = 40
 local DOUBLES_BAR_X = 4
@@ -102,8 +97,6 @@ local DOUBLES_NAME_WIDTH = 76
 local DOUBLES_LEVEL_WIDTH = 32
 local DOUBLES_CONDITION_WIDTH = 44
 local DOUBLES_HEALTH_WIDTH = 59
-local PLAYER_CENTER = { x = 60, y = 96 }
-local ENEMY_CENTER = { x = 196, y = 44 }
 
 ---@param outer table<string, unknown> half-open outer allocation
 ---@return table<string, unknown> framed content box derived through the real theme insets
@@ -578,39 +571,18 @@ local function doublesHud(view, players, enemies)
   end)
   return { boxes = boxes }
 end
-
----@param view table<string, unknown> internal semantic snapshot under resolution
----@param players table<integer, table<string, unknown>> live allies in slot order under resolution
----@param enemies table<integer, table<string, unknown>> live foes in slot order under resolution
----@return table<integer, table<string, unknown>> compact sprite anchors keyed by native position
-local function doublesSpriteCenters(view, players, enemies)
-  -- Anchors follow the canonical claimed order so a surviving slot
-  -- never slides onto a hidden neighbor's anchor mid-transition.
-  -- Records without a native position keep their live-order anchor.
-  local spots = {} ---@type table<integer, table<string, unknown>>
-  local function add(list, order, cells)
-    for index, battler in ipairs(list) do
-      local cell = cells[BattleViewRoster.claimedIndex(order, battler, index)]
-      assert(cell ~= nil, "the compact doubles anchors cover every live battler")
-      spots[#spots + 1] = {
-        position = battler.position,
-        x = cell.x,
-        y = cell.y,
-        width = 40,
-        height = 40,
-        scale = 0.5,
-      }
-    end
-  end
-  add(enemies, BattleViewRoster.claimedPositions(view, false), DOUBLES_PICTURE_CELLS.enemy)
-  add(players, BattleViewRoster.claimedPositions(view, true), DOUBLES_PICTURE_CELLS.player)
-  table.sort(spots, function(a, b)
-    local pa = a.position
-    local pb = b.position
-    assert(type(pa) == "number" and type(pb) == "number", "doubles sprite anchors key on native positions")
-    return pa < pb
-  end)
-  return spots
+-- One shared battlefield transform behind every world picture,
+-- particle, background and managed sprite: the native lattice fits
+-- uniformly inside the scene rectangle, centered on both axes.
+---@param scene table<string, unknown> fixed half-open scene rectangle
+---@return table<string, unknown> shared world fit behind the compact present
+local function worldTransformFor(scene)
+  local scale = math.min(scene.width / 256, scene.height / 192)
+  return {
+    scale = scale,
+    offsetX = scene.x + (scene.width - 256 * scale) / 2,
+    offsetY = scene.y + (scene.height - 192 * scale) / 2,
+  }
 end
 
 ---@param rect table<string, unknown> fixed half-open rect
@@ -711,9 +683,7 @@ function BattleCompactInterface.contentFor(view)
       width = NARRATION_WIDTH,
     },
     hud = doubles and doublesHud(view, players, enemies) or singlesHud(view),
-    playerCenter = { x = PLAYER_CENTER.x, y = PLAYER_CENTER.y },
-    enemyCenter = { x = ENEMY_CENTER.x, y = ENEMY_CENTER.y },
-    spriteCenters = doubles and doublesSpriteCenters(view, players, enemies) or nil,
+    worldTransform = worldTransformFor(SCENE),
   }
 end
 
@@ -1644,25 +1614,26 @@ end
 ---@param childView table<string, unknown>? detached child view carrying the staged labels
 local function drawTwoOptionModal(resources, view, childView)
   local text = resources.text --[[@as table<string, unknown>]]
-  local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
-  local assets = assert(resources.assets, "the compact render borrows its asset holder")
-  local pressed = BattleMenuPresenter.drawChildTwoOption(graphics, assets, view)
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   local sourceLabels = assert(childView, "the child snapshot carries source text") --[[@as table<string, unknown>]]
   local labels = assert(sourceLabels.twoOption, "learning confirmation carries staged source labels") --[[@as table<string, unknown>]]
   local drawText = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, colors: table<string, integer>?)?]]
   local measureText = text.measureForRole --[[@as fun(role: string, content: string): table<string, number>?]]
-  local function drawOption(value, anchorY, colors, optionId)
-    local label = assert(value, "the two-option source label is staged") --[[@as string]]
-    local width = measureText ~= nil and measureText("menu", label).width or text.measure(label).width
-    local y = pressed == optionId and anchorY - 2 or anchorY
-    if drawText ~= nil then
-      drawText("menu", label, 128 - math.floor(width / 2), y, colors)
-    else
-      text.drawText(label, 128 - math.floor(width / 2), y)
+  local function overlay(pressed)
+    local function drawOption(value, anchorY, colors, optionId)
+      local label = assert(value, "the two-option source label is staged") --[[@as string]]
+      local width = measureText ~= nil and measureText("menu", label).width or text.measure(label).width
+      local y = pressed == optionId and anchorY - 2 or anchorY
+      if drawText ~= nil then
+        drawText("menu", label, 128 - math.floor(width / 2), y, colors)
+      else
+        text.drawText(label, 128 - math.floor(width / 2), y)
+      end
     end
+    drawOption(labels.top, 67, { foreground = 1, shadow = 2, background = 3 }, "yes")
+    drawOption(labels.bottom, 139, { foreground = 10, shadow = 11, background = 12 }, "cancel")
   end
-  drawOption(labels.top, 67, { foreground = 1, shadow = 2, background = 3 }, "yes")
-  drawOption(labels.bottom, 139, { foreground = 10, shadow = 11, background = 12 }, "cancel")
+  BattleRenderer.drawTwoOptionPane(resources, view, overlay)
 end
 
 -- Tabular row columns relative to the row origin: the entry name width,
@@ -1892,20 +1863,63 @@ function BattleCompactInterface.render(resources, view, plan)
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   LogicalSurface.draw(graphics, placement, function()
     if view.mode == "child" and type(content.child) == "table" and type(view.childView) == "table" then
-      drawChildModal(resources, view, content, placement)
+      -- Child modals compose through the sub engine fullscreen: the
+      -- modal content owns every role it paints, never a post-composed
+      -- overlay.
+      local function drawChildModalDock()
+        drawChildModal(resources, view, content, placement)
+      end
+      BattleRenderer.drawCompactDock(resources, view, {
+        draw = drawChildModalDock,
+        rect = { x = 0, y = 0, width = 256, height = 192 },
+      })
       return
     end
-    BattleRenderer.drawPane(resources, view, BattleCompactInterface.NATIVE.id, content, placement)
-    drawCompactHud(resources, view, content)
+    -- HUD, narration and docks enter the composition as content
+    -- callbacks at their planned target coordinates; nothing draws
+    -- past the pass. Interactive docks compose through the sub engine
+    -- inside their dock rectangle; narration rides the main window.
     local mode = view.mode
+    local function drawCompactHudContent()
+      drawCompactHud(resources, view, content)
+    end
+    local compactUI = {
+      hud = drawCompactHudContent,
+    }
+    local subDock = nil
     if mode == "command" then
-      drawCommandDock(resources, view, content)
+      local function drawCommandSubDock()
+        drawCommandDock(resources, view, content)
+      end
+      subDock = {
+        draw = drawCommandSubDock,
+        rect = { x = 0, y = 136, width = 256, height = 56 },
+      }
     elseif mode == "moves" then
-      drawMoveDock(resources, view, content)
+      local function drawMoveSubDock()
+        drawMoveDock(resources, view, content)
+      end
+      subDock = {
+        draw = drawMoveSubDock,
+        rect = { x = 0, y = 120, width = 256, height = 72 },
+      }
     elseif mode == "target" then
-      drawTargetDock(resources, view, content)
+      local function drawTargetSubDock()
+        drawTargetDock(resources, view, content)
+      end
+      subDock = {
+        draw = drawTargetSubDock,
+        rect = { x = 0, y = 120, width = 256, height = 72 },
+      }
     else
-      drawNarrationDock(resources, view, content)
+      local function drawNarrationWindow()
+        drawNarrationDock(resources, view, content)
+      end
+      compactUI.window = drawNarrationWindow
+    end
+    BattleRenderer.drawPane(resources, view, BattleCompactInterface.NATIVE.id, content, placement, compactUI)
+    if subDock ~= nil then
+      BattleRenderer.drawCompactDock(resources, view, subDock)
     end
   end)
 end

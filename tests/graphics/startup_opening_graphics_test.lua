@@ -85,6 +85,7 @@ local function openMovie(scope, versionId, width, height, kind)
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
   local movie = Movie.new({
     versionId = versionId,
+    splRandomState = { state = 0 },
     scenes = loadScenes(versionId),
     cacheFs = CacheFs.forVersion(versionId),
     width = width,
@@ -552,6 +553,9 @@ local function fillerEmitter(id, group, root)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = id,
     textureImage = root .. "particles/texture" .. id .. ".png",
     animations = {},
@@ -595,7 +599,7 @@ local function fillerScene(sceneNumber)
     { compositeLayer(0, root .. "layers/fill-upper.png", 256, 192) },
     { compositeLayer(0, root .. "layers/fill-lower.png", 256, 192) },
     {},
-    { seed = 0, emitters = emitters, textures = textures },
+    { emitters = emitters, textures = textures },
     { { id = "fill", events = eventIndexes, ["until"] = { kind = "duration", ticks = 10 } } },
     events
   )
@@ -681,6 +685,7 @@ local function openCompositeMovie(scope, scenes, cacheFs, width, height, kind)
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
   local movie = Movie.new({
     versionId = "soulsilver",
+    splRandomState = { state = 0 },
     scenes = scenes,
     cacheFs = cacheFs,
     width = width,
@@ -745,7 +750,7 @@ local function composite_layers_pan_independently_with_true_blending(scope)
       layers,
       lower,
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "pan", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -797,7 +802,7 @@ local function composite_layers_pan_independently_with_true_blending(scope)
       layers,
       lower,
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 30 } } },
       {
         {
@@ -904,7 +909,7 @@ local function native_viewports_wrap_across_source_extents(scope)
       },
       { compositeLayer(0, groundImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "show", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -979,7 +984,7 @@ local function swapped_viewports_follow_the_active_image_extents(scope)
       },
       { compositeLayer(0, groundImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "show", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -1080,7 +1085,7 @@ local function fillerRomScene(versionId, generationId, sceneNumber, art)
     },
     spriteClips = {},
     models = {},
-    particles = { seed = 0, emitters = emitters, textures = textures },
+    particles = { emitters = emitters, textures = textures },
     timeline = {
       steps = { { id = "fill", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 10 } } },
       events = {
@@ -1162,7 +1167,7 @@ local function authored_sprites_stay_on_their_engine_with_frame_offsets(scope)
       {
         compositeClip(clipId, { compositeFrame(0, 0, 16, 16, 40, 30, 1) }),
       },
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "show", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -1258,7 +1263,7 @@ local function step_relative_fades_composite_on_the_gpu(scope)
         { compositeLayer(0, sunriseImage, 256, 192) },
         { compositeLayer(0, groundImage, 256, 192) },
         {},
-        { seed = 0, emitters = {} },
+        { emitters = {} },
         steps,
         events
       ),
@@ -1548,6 +1553,7 @@ local function openMovieWithCache(scope, scenes, cacheFs, versionId, width, heig
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
   local movie = Movie.new({
     versionId = versionId,
+    splRandomState = { state = 0 },
     scenes = scenes,
     cacheFs = cacheFs,
     width = width,
@@ -2036,7 +2042,7 @@ local function singleBeatScene()
     { compositeLayer(0, upperImage, 256, 192) },
     { compositeLayer(0, lowerImage, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     { { id = "hold", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 40 } } },
     {
       { op = "enableSkip", stepId = "hold", atStepTick = 10 },
@@ -2080,7 +2086,7 @@ local function pairedFlipScene()
     { compositeLayer(0, upperImage, 256, 192) },
     { compositeLayer(0, lowerImage, 256, 192) },
     { compositeClip(clipId, { compositeFrame(0, 0, 16, 16, 0, 0, 1) }) },
-    { seed = 0, emitters = emitters, textures = textures },
+    { emitters = emitters, textures = textures },
     {
       { id = "intro", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 20 } },
       { id = "flip", events = { 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 20 } },
@@ -2538,7 +2544,7 @@ local function synthetic_color_overlap_proves_bg_ordering(scope)
       },
       { compositeLayer(0, groundImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "show", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         { op = "enableSkip", stepId = "show", atStepTick = 10 },
@@ -2574,7 +2580,7 @@ local function synthetic_window_masks_isolate_engine_planes(scope)
       { compositeLayer(1, mainBg1, 256, 192), compositeLayer(2, mainBg2, 256, 192) },
       { compositeLayer(1, subBg1, 256, 192), compositeLayer(2, subBg2, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "reveal", events = { 1, 2, 3, 4, 5 }, ["until"] = { kind = "duration", ticks = 20 } } },
       {
         {
@@ -2665,7 +2671,7 @@ local function synthetic_dual_coefficients_saturate_both_weights_per_pixel(scope
       },
       { compositeLayer(0, grayImage, 256, 192) },
       { compositeClip(probeClip, { compositeFrame(0, 0, 128, 96, 0, 0, 1) }) },
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "hold", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -2807,7 +2813,7 @@ local function synthetic_masked_pairs_use_raw_under_pixels_without_cascading(sco
       },
       { compositeLayer(0, grayImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "hold", events = { 1, 2, 3, 4 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -4877,7 +4883,7 @@ local function synthetic_wipe_kinds_paint_the_source_inside_outside_masks_and_ba
     { compositeLayer(0, mainImage, 256, 192) },
     { compositeLayer(0, subImage, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     steps,
     events
   )
@@ -4977,7 +4983,7 @@ local function synthetic_terminal_wipe_brightness_holds_only_for_the_retail_kind
     { compositeLayer(0, mainImage, 256, 192) },
     { compositeLayer(0, subImage, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     steps,
     events
   )
@@ -5063,7 +5069,7 @@ local function synthetic_scene_five_shutter_opens_main_center_out_before_sub_bot
     { compositeLayer(0, mainImage, 256, 192) },
     { compositeLayer(0, subImage, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     steps,
     events
   )
@@ -6040,7 +6046,7 @@ local function wrapped_backgrounds_match_the_modulo_oracle_without_per_draw_quad
         compositeLayer(1, deepImage, 512, 192, true, 1),
       },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         { op = "setScroll", stepId = "show", atStepTick = 0, engine = "main", bgSlot = 0, dx = -1, dy = -1, ticks = 0 },
@@ -6139,7 +6145,7 @@ local function swapped_alternates_and_window_sliced_pans_keep_wrap_pixels_withou
         },
       },
       { compositeClip(probeImage, { compositeFrame(0, 0, 16, 16, 0, 0, 40) }) },
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       { { id = "show", events = { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, ["until"] = { kind = "duration", ticks = 40 } } },
       {
         {
@@ -6558,7 +6564,7 @@ local function source_cases_dispatch_one_per_fixed_update(scope)
     { compositeLayer(0, base1, 256, 192) },
     { compositeLayer(0, sub1, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     {
       { id = "appear", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
       { id = "start", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 1 } },
@@ -6611,7 +6617,7 @@ local function source_cases_dispatch_one_per_fixed_update(scope)
     { compositeLayer(0, base2, 256, 192) },
     { compositeLayer(0, sub2, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     {
       { id = "entry", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 3 } },
     },
@@ -6713,7 +6719,7 @@ local function conjunctive_effect_guard_holds_mutation_until_both_effects_finish
     { mainLayer },
     { compositeLayer(0, sub, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     {
       { id = "start-scrolls", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
       {
@@ -6849,7 +6855,7 @@ local function scoped_sub_brightness_out_holds_black_while_main_stays_clear(scop
       { compositeLayer(0, mainImage, 256, 192) },
       { compositeLayer(0, subImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       steps,
       events
     ),
@@ -6945,7 +6951,7 @@ local function both_engine_line_shutters_sample_source_rows_not_uniform_alpha(sc
       { compositeLayer(0, mainImage, 256, 192) },
       { compositeLayer(0, subImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       steps,
       events
     ),
@@ -7052,7 +7058,7 @@ local function absolute_scroll_position_overwrites_and_cancels_the_running_scrol
       { compositeLayer(1, mainImage, 512, 192) },
       { compositeLayer(0, subImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       steps,
       events
     ),
@@ -7169,7 +7175,7 @@ local function paused_sprite_clip_holds_its_first_frame_until_started(scope)
         compositeFrame(0, 0, 16, 16, 0, 0, 2),
         compositeFrame(16, 0, 16, 16, 0, 0, 2),
       }),
-    }, { seed = 0, emitters = {} }, steps, events),
+    }, { emitters = {} }, steps, events),
     {
       [stageImage] = solidPng(256, 192, 255, 0, 255),
       [pitImage] = solidPng(256, 192, 0, 255, 0),
@@ -7237,7 +7243,7 @@ local function sub_engine_neutral_resets_only_the_sub_engine(scope)
       { compositeLayer(0, mainImage, 256, 192) },
       { compositeLayer(0, subImage, 256, 192) },
       {},
-      { seed = 0, emitters = {} },
+      { emitters = {} },
       steps,
       events
     ),
@@ -7561,7 +7567,7 @@ function EntryHolds.entryHoldScene(sceneNumber, mainImage, subImage, mainPhysica
     { compositeLayer(0, mainImage, 256, 192) },
     { compositeLayer(0, subImage, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     { { id = "fill", events = eventIndexes, ["until"] = { kind = "duration", ticks = 10 } } },
     events
   )
@@ -7634,7 +7640,7 @@ function EntryHolds.staged_sprites_stay_visible_while_the_physical_bottom_holds_
     {
       compositeClip(clipId, { compositeFrame(0, 0, 16, 16, 0, 0, 1) }),
     },
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     {
       { id = "enter", events = { 1, 2, 3 }, ["until"] = { kind = "duration", ticks = 20 } },
       { id = "reveal", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 8 } },
@@ -7738,7 +7744,7 @@ function EntryHolds.engine_holds_follow_their_engine_across_mapping_flips_and_ne
     { compositeLayer(0, mainImage, 256, 192) },
     { compositeLayer(0, subImage, 256, 192) },
     {},
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     {
       { id = "setup", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 4 } },
       { id = "flip", events = { 3, 4 }, ["until"] = { kind = "duration", ticks = 4 } },
@@ -7960,7 +7966,7 @@ function OcclusionCases.scene(withBlend)
       compositeClip(midClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
       compositeClip(tieClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
     },
-    { seed = 0, emitters = {} },
+    { emitters = {} },
     { { id = "hold", events = owned, ["until"] = { kind = "duration", ticks = 40 } } },
     events
   )
@@ -8071,7 +8077,7 @@ local T = GraphicsSmoke.suite({
         },
         { compositeLayer(0, root .. "layers/register-lower.png", 256, 192) },
         {},
-        { seed = 0, emitters = {} },
+        { emitters = {} },
         { { id = "reveal", events = { 1, 2, 3, 4, 5, 6 }, ["until"] = { kind = "duration", ticks = 20 } } },
         {
           {

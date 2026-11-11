@@ -32,7 +32,7 @@ local function liveParticles(owner)
 end
 
 function T.each_set_starts_on_its_own_animation_frame()
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   local sets = stagedSets()
   owner:step(nil, sets)
   Assert.equal(#owner:systems(), 0, "nothing starts before the animation runs")
@@ -48,7 +48,7 @@ function T.each_set_starts_on_its_own_animation_frame()
 end
 
 function T.sets_keep_running_after_the_animation_and_retire_without_restarting()
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   local sets = stagedSets()
   for frame = 1, 20 do
     owner:step(frame, sets)
@@ -65,15 +65,15 @@ function T.sets_keep_running_after_the_animation_and_retire_without_restarting()
 end
 
 function T.sets_with_missed_start_ticks_never_start_late()
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   owner:step(5, nil)
   Assert.equal(#owner:systems(), 0, "nothing starts without staged art")
   owner:step(18, stagedSets())
   Assert.equal(#owner:systems(), 0, "the first set never starts after its frame-1 tick")
-  local late = BattleEncounterParticles.new()
+  local late = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   late:step(49, stagedSets())
   Assert.equal(#late:systems(), 0, "sets whose start ticks already passed never start")
-  local exact = BattleEncounterParticles.new()
+  local exact = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   local sets = stagedSets()
   exact:step(20, sets)
   Assert.equal(#exact:systems(), 1, "frame 20 starts exactly one set")
@@ -86,7 +86,7 @@ end
 
 function T.a_retired_first_system_leaves_the_second_running()
   local sets = Fixture.sizedSets("grass/day/forest", 1, 1, 10, 43)
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   for frame = 1, 30 do
     owner:step(frame, sets)
   end
@@ -102,7 +102,7 @@ function T.a_retired_first_system_leaves_the_second_running()
 end
 
 function T.clear_drops_every_system_and_allows_a_fresh_run()
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   local sets = stagedSets()
   owner:step(1, sets)
   owner:clear()

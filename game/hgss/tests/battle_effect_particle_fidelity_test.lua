@@ -174,6 +174,7 @@ local function productionEnvelope(cache, host)
   local windows = {}
   function windows.drawWindow(_, _, _) end
   return FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = windows,
     text = text,
@@ -525,8 +526,12 @@ function T.cancelled_production_system_releases_every_lease_exactly_once()
   local Factory = effectFactoryModule()
   local scene = sceneWithPair()
   local journal = { acquired = {}, released = {} }
-  local services =
-    { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
+  local services = {
+    scene = scene,
+    audio = {},
+    resources = journaledHolderServices(probe.owned, probe.effect, journal),
+    splRandomState = { state = 0 },
+  }
   local task = assert(
     Factory.create(
       "battle-particle-system",
@@ -567,7 +572,8 @@ function T.failed_texture_rolls_back_the_production_system()
   local Factory = effectFactoryModule()
   local scene = sceneWithPair()
   local journal = { acquired = {}, released = {} }
-  local services = { scene = scene, audio = {}, resources = journaledHolderServices(owned, effect, journal) }
+  local services =
+    { scene = scene, audio = {}, resources = journaledHolderServices(owned, effect, journal), splRandomState = { state = 0 } }
   local built, failure = pcall(
     Factory.create,
     "battle-particle-system",

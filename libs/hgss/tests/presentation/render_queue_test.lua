@@ -29,6 +29,7 @@ local function item(id, mode, center, transform, opts)
     center = center or { 0, 0, 0 },
     transform = transform or Matrix4.identity(),
     sortBounds = opts.sortBounds,
+    projectedBounds = opts.projectedBounds,
     billboardCenter = opts.billboardCenter,
     billboardScale = opts.billboardScale,
     billboardProjection = opts.billboardProjection,
@@ -729,6 +730,90 @@ function T.warmed_rebuilds_reuse_sort_storage_and_leave_inputs_untouched()
   )
   local rendererQueue = RenderQueue.buildInto(parts, IDENTITY, ortho, ortho, renderer._queueScratch)
   Assert.deepEqual(ids(rendererQueue, "blended"), { "first", "mixed-second", "third" })
+end
+
+-- The battle compositor keeps native submission order for translucent
+-- polygons even when their screen extents oppose it, and orders the single
+-- shared opaque sequence by clipped native extents. These manual-mode
+-- behaviors ride the existing queue scratch without changing the field
+-- default: absent options keep automatic Y sorting and the current passes.
+function T.manual_scratch_keeps_translucent_submission_order_against_opposing_extents()
+  local ortho = orthoProjection()
+  local submittedFirst = item("submitted-first", "translucent", { 0, -8, 0 }, nil, {
+    sortBounds = bounds(-1, 1, -9, -7, -1, 1),
+  })
+  local submittedSecond = item("submitted-second", "translucent", { 0, 8, 0 }, nil, {
+    sortBounds = bounds(-1, 1, 7, 9, -1, 1),
+  })
+  local manual = RenderQueue.newScratch({ sortMode = "manual" })
+  Assert.isTrue(
+    manual ~= nil,
+    "the queue admits the battle manual sort mode on its existing scratch"
+  )
+  local queue = RenderQueue.buildInto({ { submittedFirst, submittedSecond } }, IDENTITY, ortho, ortho, manual)
+  Assert.deepEqual(
+    ids(queue, "blended"),
+    { "submitted-first", "submitted-second" },
+    "manual mode preserves native submission order for translucent polygons "
+      .. "instead of automatic screen-Y sorting"
+  )
+end
+
+function T.manual_queue_publishes_one_ordered_opaque_sequence()
+  local ortho = orthoProjection()
+  local low = item("low-opaque", "opaque", { 0, -6, 0 }, nil, {
+    sortBounds = bounds(-1, 1, -7, -5, -1, 1),
+  })
+  local high = item("high-cutout", "cutout", { 0, 6, 0 }, nil, {
+    sortBounds = bounds(-1, 1, 5, 7, -1, 1),
+  })
+  local manual = RenderQueue.newScratch({ sortMode = "manual" })
+  local queue = RenderQueue.buildInto({ { high, low } }, IDENTITY, ortho, ortho, manual)
+  Assert.notNil(
+    queue.opaqueOrder,
+    "manual mode publishes one ordered opaque sequence for the shared 3D pass"
+  )
+  local ordered = {}
+  for _, entry in ipairs(queue.opaqueOrder) do
+    ordered[#ordered + 1] = entry.item.id
+  end
+  Assert.deepEqual(
+    ordered,
+    { "low-opaque", "high-cutout" },
+    "the shared opaque sequence follows native bottom/top extents across classes, "
+      .. "not submission order"
+  )
+end
+
+function T.manual_queue_prefers_clipped_projected_bounds_over_model_boxes()
+  local ortho = orthoProjection()
+  -- The unprojected model boxes claim boxed-top sits above clipped-bottom,
+  -- but the exact clipped native bounds reverse them; the shared opaque
+  -- sequence must follow the clipped bounds.
+  local clippedBottom = item("clipped-bottom", "opaque", { 0, -8, 0 }, nil, {
+    sortBounds = bounds(-1, 1, -9, -7, -1, 1),
+    projectedBounds = { topY = 0.8, bottomY = 0.9 },
+  })
+  local boxedTop = item("boxed-top", "opaque", { 0, 8, 0 }, nil, {
+    sortBounds = bounds(-1, 1, 7, 9, -1, 1),
+    projectedBounds = { topY = 0.1, bottomY = 0.2 },
+  })
+  local manual = RenderQueue.newScratch({ sortMode = "manual" })
+  local queue = RenderQueue.buildInto({ { clippedBottom, boxedTop } }, IDENTITY, ortho, ortho, manual)
+  Assert.notNil(
+    queue.opaqueOrder,
+    "manual mode publishes one ordered opaque sequence for the shared 3D pass"
+  )
+  local ordered = {}
+  for _, entry in ipairs(queue.opaqueOrder) do
+    ordered[#ordered + 1] = entry.item.id
+  end
+  Assert.deepEqual(
+    ordered,
+    { "boxed-top", "clipped-bottom" },
+    "the shared opaque sequence reads exact clipped native bounds before "
+      .. "falling back to the unprojected model box"
+  )
 end
 
 return { tests = T }

@@ -25,6 +25,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field onTitleReady fun()?
 ---@field beginWarmup fun()?
 ---@field audio table<string, function>?
+---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field initialImport boolean
 ---@field phase string
 ---@field loading StartupTitleLoading?
@@ -117,6 +118,7 @@ local OPENING_SCENE_COUNT = 5
 ---@field onTitleReady (fun())?
 ---@field beginWarmup (fun())? fires the save-agnostic near/sweep prefetch once at title entry
 ---@field audio table<string, function>? borrowed App-owned callbacks
+---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field initialImport boolean?
 ---@field loading StartupTitleLoading? one transferred C02 presentation; a default is built only on test/special paths
 ---@field width number
@@ -146,6 +148,10 @@ function StartupTitleState.new(options)
     assert(type(options.beginWarmup) == "function", "startup title begins its warmup through a function")
   end
   assert(type(options.width) == "number" and type(options.height) == "number")
+  assert(
+    options.splRandomState == nil or type(options.splRandomState) == "table",
+    "startup title borrows the boot stream record"
+  )
   -- The normal App path transfers the single live boot presentation; only
   -- test and special selection paths that never pass C02 build a default.
   local loading = options.loading
@@ -172,6 +178,7 @@ function StartupTitleState.new(options)
     onTitleReady = options.onTitleReady,
     beginWarmup = options.beginWarmup,
     audio = options.audio,
+    splRandomState = options.splRandomState,
     initialImport = options.initialImport == true,
     phase = "loading",
     loading = loading,
@@ -380,6 +387,7 @@ function StartupTitleState:_adoptMovie()
     versionId = self.versionId,
     scenes = scenes,
     cacheFs = cacheFs,
+    splRandomState = self.splRandomState,
     width = self.width,
     height = self.height,
   })
@@ -709,6 +717,7 @@ function StartupTitleState:_reenterMovie()
     versionId = self.versionId,
     scenes = self.movieScenes,
     cacheFs = cacheFs,
+    splRandomState = self.splRandomState,
     width = self.width,
     height = self.height,
   })

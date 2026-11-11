@@ -414,15 +414,42 @@ local function decodeParticleOperands(key, stream, offset, start, opcode, label,
     -- carry the signed offset block so the runtime can place the
     -- emitter instead of decoding trailer words as opcodes.
     local positionMode = instruction.emitterConfig.positionMode
-    -- Position modes that read battler-type offset blocks (100/101)
-    -- and the script-driven camera mode (2) read more words the
-    -- producer does not stage: fail loudly naming the route instead
-    -- of decoding script words as opcodes.
+    -- Position modes 100/101 read one offset block per battler type
+    -- (BattleAnimEmitter_AddOffsetForBattlerType): consume all six
+    -- [skip, count, offset words] trailers for framing and carry the
+    -- ordered blocks so the runtime selects the battler's entry.
     if positionMode == 100 or positionMode == 101 then
-      error(decodeError(key, offset, "configure-from-script battler-type offsets are not staged"), 0)
+      local typeOffsets = {}
+      for typeIndex = 0, 5 do
+        local blockCount = readWord(stream, key, offset + 4)
+        if blockCount ~= 4 then
+          error(decodeError(key, offset, "emitter type offset count disagrees with the source reader"), 0)
+        end
+        typeOffsets[typeIndex + 1] = {
+          x = signed32(readWord(stream, key, offset + 8)),
+          y = signed32(readWord(stream, key, offset + 12)),
+          z = signed32(readWord(stream, key, offset + 16)),
+          ignoreSide = readWord(stream, key, offset + 20),
+        }
+        offset = offset + 8 + blockCount * 4
+      end
+      instruction.typeOffsets = typeOffsets
     end
+    -- The script-driven camera mode reads four words inline
+    -- (BattleAnimEmitterCameraCb_SetAngleFromScript): consume its
+    -- [skip, count, four words] trailer for framing and carry the
+    -- used angle triple; the first word rides the framing only.
     if instruction.emitterConfig.cameraMode == 2 then
-      error(decodeError(key, offset, "configure-from-script script-driven camera is not staged"), 0)
+      local cameraCount = readWord(stream, key, offset + 4)
+      if cameraCount ~= 4 then
+        error(decodeError(key, offset, "emitter camera count disagrees with the source reader"), 0)
+      end
+      instruction.cameraAngles = {
+        x = readWord(stream, key, offset + 12),
+        y = readWord(stream, key, offset + 16),
+        z = readWord(stream, key, offset + 20),
+      }
+      offset = offset + 8 + cameraCount * 4
     end
     if positionMode == 3 or positionMode == 4 or positionMode == 5 or positionMode == 12 or positionMode == 13 then
       local offsetCount = readWord(stream, key, offset + 4)
@@ -436,6 +463,78 @@ local function decodeParticleOperands(key, stream, offset, start, opcode, label,
         ignoreSide = readWord(stream, key, offset + 20),
       }
       offset = offset + 8 + offsetCount * 4
+    end
+    -- Every meaningful configured flag callback reads its five script
+    -- words inline (BattleAnimEmitter_ReadFlagCbParams) in ascending
+    -- mask order: consume each [skip, count, five words] trailer for
+    -- framing and carry the ordered blocks so the runtime applies the
+    -- native flag order instead of decoding words as opcodes.
+    local fieldScripts = {}
+    for _, mask in ipairs({ 2, 16, 32, 64, 128, 4096, 8192 }) do
+      if math.floor(instruction.emitterConfig.flags / mask) % 2 == 1 then
+        local fieldCount = readWord(stream, key, offset + 4)
+        if fieldCount ~= 5 then
+          error(decodeError(key, offset, "emitter field count disagrees with the source reader"), 0)
+        end
+        fieldScripts[#fieldScripts + 1] = {
+          mask = mask,
+          mode = readWord(stream, key, offset + 8),
+          ignoreSide = readWord(stream, key, offset + 12),
+          x = signed32(readWord(stream, key, offset + 16)),
+          y = signed32(readWord(stream, key, offset + 20)),
+          z = signed32(readWord(stream, key, offset + 24)),
+        }
+        offset = offset + 8 + fieldCount * 4
+      end
+    end
+    if #fieldScripts > 0 then
+      instruction.fieldScripts = fieldScripts
+    end
+  end
+  -- The pair-transform emitter callbacks (indices 5..16) read seven
+  -- script axis triples plus one position triple inline at creation
+  -- (BattleAnimEmitter_SetTransformFromScript), with a four-word
+  -- script target for the from-script convergence/magnet kinds:
+  -- consume every [skip, count, words] trailer for framing and carry
+  -- the staged vectors so the runtime places the emitter from the
+  -- same script words instead of decoding them as opcodes.
+  if callbackIndex ~= nil and callbackIndex >= 5 and callbackIndex <= 16 then
+    local scriptVectors = {}
+    for vectorIndex = 1, 7 do
+      local vectorCount = readWord(stream, key, offset + 4)
+      if vectorCount ~= 3 then
+        error(decodeError(key, offset, "emitter script vector count disagrees with the source reader"), 0)
+      end
+      scriptVectors[vectorIndex] = {
+        x = signed32(readWord(stream, key, offset + 8)),
+        y = signed32(readWord(stream, key, offset + 12)),
+        z = signed32(readWord(stream, key, offset + 16)),
+      }
+      offset = offset + 8 + vectorCount * 4
+    end
+    instruction.scriptVectors = scriptVectors
+    local positionCount = readWord(stream, key, offset + 4)
+    if positionCount ~= 3 then
+      error(decodeError(key, offset, "emitter script position count disagrees with the source reader"), 0)
+    end
+    instruction.scriptPosition = {
+      x = signed32(readWord(stream, key, offset + 8)),
+      y = signed32(readWord(stream, key, offset + 12)),
+      z = signed32(readWord(stream, key, offset + 16)),
+    }
+    offset = offset + 8 + positionCount * 4
+    if callbackIndex == 11 or callbackIndex == 16 then
+      local targetCount = readWord(stream, key, offset + 4)
+      if targetCount ~= 4 then
+        error(decodeError(key, offset, "emitter script target count disagrees with the source reader"), 0)
+      end
+      instruction.scriptTarget = {
+        x = signed32(readWord(stream, key, offset + 8)),
+        y = signed32(readWord(stream, key, offset + 12)),
+        z = signed32(readWord(stream, key, offset + 16)),
+        scaleKind = readWord(stream, key, offset + 20),
+      }
+      offset = offset + 8 + targetCount * 4
     end
   end
   return instruction, offset

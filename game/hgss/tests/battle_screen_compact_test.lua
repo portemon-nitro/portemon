@@ -30,6 +30,18 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 
+-- Drains one typed composition frame through the recording boundary so
+-- compact content assertions observe production draws without GPU.
+---@param graphics table recording graphics boundary under drawing
+---@return function renderPictures stub behind the test asset holder
+local function drainPictures(graphics)
+  return function(_, drawGraphics, frame)
+    local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+    CompositionFrameDrain.drain(drawGraphics, frame)
+    return { handle = "picture-composite" }
+  end
+end
+
 local function fakeImage(key)
   return {
     handle = key,
@@ -446,6 +458,7 @@ function T.dock_draws_background_text_before_shared_borders()
       drawable = function(_, key)
         return fakeImage(key)
       end,
+      renderPictures = drainPictures(graphics),
     },
     frameKey = "single-pane-test-frame",
     sceneImageKey = "scene:test",
@@ -879,6 +892,7 @@ local function openRig(opts)
     }
   )
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" }),
     model = Model,
@@ -1197,6 +1211,7 @@ local function openLearnRig(layout)
     }
   )
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" }),
     model = Model,

@@ -58,7 +58,6 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
 ---@field _effectDrawables table<string, boolean> staged semantic texture keys admitted through effect leases
 ---@field _picturePass table<string, unknown>? per-screen Pokepic color/depth renderer
----@field _menuBlend BattleMenuPresenter.BlendTargets? per-screen native menu BG1 blend targets
 ---@field _released boolean release guard
 ---@field _headless boolean explicit data-only composition
 local BattlePresentationAssets = {}
@@ -133,7 +132,6 @@ function BattlePresentationAssets.new(opts)
     _effects = {},
     _effectDrawables = {},
     _picturePass = nil,
-    _menuBlend = nil,
     _released = false,
     _headless = opts.assets.headless == true,
   }, BattlePresentationAssets)
@@ -920,29 +918,22 @@ function BattlePresentationAssets:releaseFadedIntro()
   end
 end
 
--- Renders one source Pokepic plane into this screen's isolated depth target.
+-- Delegates one complete typed composition frame to the screen's shared
+-- battle pass: native pictures and particle polygons share one exact 3D
+-- target, then the private six-plane resolve blends the 2D planes. The
+-- pass owns its targets; callers borrow the returned opaque canvas until
+-- the next render and never retain or release it.
 ---@param graphics table<string, unknown> borrowed graphics namespace
----@param pictures table<integer, table<string, unknown>> visible native picture submissions
----@return table<string, unknown> staged picture color layer
-function BattlePresentationAssets:renderPictures(graphics, pictures)
+---@param frame table<string, unknown> typed composition frame for one engine
+---@return table<string, unknown> borrowed opaque logical canvas
+function BattlePresentationAssets:renderPictures(graphics, frame)
   assert(not self._released, "released battle assets render no pictures")
+  assert(type(frame) == "table" and frame.engine ~= nil, "battle composition renders its typed frame")
   if self._picturePass == nil then
     local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
     self._picturePass = BattlePicturePass.new(graphics)
   end
-  return self._picturePass:render(graphics, pictures)
-end
-
--- Lends this screen's native menu BG1 blend targets, allocated on first use.
----@param graphics love.graphics borrowed graphics namespace
----@return BattleMenuPresenter.BlendTargets
-function BattlePresentationAssets:menuBlendTargets(graphics)
-  assert(not self._released, "released battle assets lend no menu blend targets")
-  if self._menuBlend == nil then
-    local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
-    self._menuBlend = BattleMenuPresenter.newBlendTargets(graphics)
-  end
-  return self._menuBlend
+  return self._picturePass:render(graphics, frame)
 end
 
 ---@param size integer native Pokepic shadow-size selector
@@ -987,10 +978,6 @@ function BattlePresentationAssets:dispose()
   if self._picturePass ~= nil then
     self._picturePass:release()
     self._picturePass = nil
-  end
-  if self._menuBlend ~= nil then
-    self._menuBlend:release()
-    self._menuBlend = nil
   end
   for key in pairs(self._owned) do
     self._assets.release(key)

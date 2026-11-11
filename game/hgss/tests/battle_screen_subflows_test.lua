@@ -316,6 +316,7 @@ local function openRig(opts)
   end
   rig.scenario = scenario
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = screenManifest(),
     model = Model,

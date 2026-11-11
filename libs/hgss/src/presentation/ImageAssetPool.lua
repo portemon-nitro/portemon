@@ -56,13 +56,14 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 
 ---@class ImageAssetPoolRequest
 ---@field logicalKey string private resident lookup identity for the path plus sampler
----@field logicalPath string
+---@field logicalPath string? generated PNG path in the selected cache, nil for synthesized native-index payloads
 ---@field sampler ImageAssetPoolSampler
 ---@field priority "demand"|"prefetch"
 ---@field job integer? preparation queue token while the request is still queued
 ---@field state "queued"|"prepared"|"cached"|"failed"
 ---@field payload ImageAssetPoolPayload? unuploaded worker result held only by a prepared ticket
 ---@field physicalKey string?
+---@field indexedSingle boolean? true while the prepared ticket realizes a single indexed payload
 ---@field failure string?
 ---@field residentReservation ResidentAssetCacheLease? kernel borrow held while a cached ticket stays unconsumed
 
@@ -412,6 +413,13 @@ local function expandIndexedData(indexData, paletteData, count)
   return out
 end
 
+---@class ImageAssetPoolIndexedSource
+---@field width integer positive decoded width in pixels
+---@field height integer positive decoded height in pixels
+---@field indicesR8 string packed palette slots, exactly width times height bytes
+---@field paletteRgba8 string concatenated RGBA tuples, exactly colorCount times four bytes
+---@field colorCount integer palette slot count, one to 256
+
 ---@class ImageAssetPoolRealizedPixels
 ---@field pixelHash string exact pixel identity bytes for the physical key
 ---@field width integer decoded source width in pixels
@@ -552,6 +560,73 @@ local function realizePayload(pool, payload)
   }
 end
 
+-- Realize one admitted native index payload into staged pixels without
+-- routing it through the path worker's RGBA classification: the staged
+-- pair is the shared index image alone (the staging owner keeps its own
+-- mutable palette), so duplicate palette slots never collapse and slot
+-- identity survives. Devices without indexed support fall back to one
+-- straight RGBA image with every source pixel recovered exactly.
+---@param pool ImageAssetPool
+---@param payload ImageAssetPoolPayload
+---@return ImageAssetPoolRealizedPixels
+local function realizeIndexedPayload(pool, payload)
+  assert(type(payload) == "table", "image preparation answered without a payload")
+  local record = payload --[[@as ImageAssetPoolPayload]]
+  assert(
+    type(record.width) == "number"
+      and record.width % 1 == 0
+      and record.width >= 1
+      and type(record.height) == "number"
+      and record.height % 1 == 0
+      and record.height >= 1,
+    "indexed image preparation needs positive integer dimensions"
+  )
+  assert(record.kind == "r8", "native index preparation carries indexed pixels")
+  local kind = effectiveKindFor(pool, record.kind)
+  local count = record.width * record.height
+  if kind == "r8" then
+    assert(type(record.colors) == "number" and record.colors >= 1, "indexed image preparation needs a palette")
+    local paletteData = assert(record.paletteData, "indexed image preparation needs palette bytes")
+    local indexData = assert(record.indexData, "indexed image preparation needs index bytes")
+    assert(dataByteSize(indexData) == count, "indexed image payload length must match its dimensions")
+    assert(dataByteSize(paletteData) == record.colors * 4, "palette payload length must match its slot count")
+    local sourceData = love.image.newImageData(record.width, record.height, kind, indexData --[[@as string]])
+    return {
+      pixelHash = hashToString(record.pixelHash),
+      width = record.width,
+      height = record.height,
+      sourceData = sourceData,
+      paletteData = nil,
+      kind = kind,
+      weight = count,
+    }
+  end
+  local paletteData = assert(record.paletteData, "indexed image fallback needs palette bytes")
+  local indexData = assert(record.indexData, "indexed image fallback needs index bytes")
+  assert(dataByteSize(indexData) == count, "indexed image payload length must match its dimensions")
+  assert(dataByteSize(paletteData) == record.colors * 4, "palette payload length must match its slot count")
+  local sourceData
+  if type(indexData) == "string" or type(paletteData) == "string" then
+    local indexString = type(indexData) == "string" and indexData or (indexData --[[@as love.ByteData]]):getString()
+    local paletteString = type(paletteData) == "string" and paletteData
+      or (paletteData --[[@as love.ByteData]]):getString()
+    local rgbaBytes = expandIndexedPayload(indexString, paletteString, count)
+    sourceData = love.image.newImageData(record.width, record.height, kind, rgbaBytes)
+  else
+    local rgbaData = expandIndexedData(indexData --[[@as love.ByteData]], paletteData --[[@as love.ByteData]], count)
+    sourceData = love.image.newImageData(record.width, record.height, kind, rgbaData --[[@as string]])
+  end
+  return {
+    pixelHash = hashToString(record.pixelHash),
+    width = record.width,
+    height = record.height,
+    sourceData = sourceData,
+    paletteData = nil,
+    kind = kind,
+    weight = count * 4,
+  }
+end
+
 ---@param cacheFs CacheFs
 ---@param opts ImageAssetPoolOptions?
 ---@return ImageAssetPool
@@ -670,6 +745,113 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
     priority = level,
     job = job,
     state = "queued",
+  }
+  return token
+end
+
+-- Admit already-decoded native index planes plus the full native palette
+-- through the existing prepared-token lifecycle instead of the path
+-- worker's RGBA classification, which would collapse duplicate palette
+-- slots and lose slot identity. The source-domain digest covers every
+-- original index byte and palette slot, including equal-colored and
+-- unused slots, so native identities never alias path requests and
+-- palettes that differ in one slot stage distinct images. No GPU, queue,
+-- or cache-filesystem work happens here; the consuming acquire stages
+-- and publishes exactly one image through the existing machinery.
+---@param source ImageAssetPoolIndexedSource already-decoded native planes and palette
+---@param sampler ImageAssetPoolSampler immutable sampler state for the physical key
+---@return integer token for poll and acquire
+function ImageAssetPool:requestIndexed(source, sampler)
+  assert(not self._disposed, "image pool is disposed")
+  assert(type(source) == "table", "native index source is a record")
+  local width, height, colorCount = source.width, source.height, source.colorCount
+  assert(
+    type(width) == "number" and width % 1 == 0 and width >= 1,
+    "native index source carries a positive integer width"
+  )
+  assert(
+    type(height) == "number" and height % 1 == 0 and height >= 1,
+    "native index source carries a positive integer height"
+  )
+  assert(
+    type(colorCount) == "number" and colorCount % 1 == 0 and colorCount >= 1 and colorCount <= 256,
+    "native index source carries one to 256 palette slots"
+  )
+  local indices = source.indicesR8
+  local palette = source.paletteRgba8
+  assert(type(indices) == "string" and #indices == width * height, "native index planes match their dimensions")
+  assert(type(palette) == "string" and #palette == colorCount * 4, "native palette bytes match their slot count")
+  for position = 1, #indices do
+    assert(indices:byte(position) < colorCount, "every native index names a palette slot")
+  end
+  checkSampler(sampler)
+  local samplerCopy = {
+    wrapX = sampler.wrapX,
+    wrapY = sampler.wrapY,
+    minFilter = sampler.minFilter,
+    magFilter = sampler.magFilter,
+  }
+  local digest = hashToString(
+    love.data.hash(
+      "sha256",
+      "ImageAssetPool/native-index-v1\0"
+        .. tostring(width)
+        .. "\0"
+        .. tostring(height)
+        .. "\0"
+        .. tostring(colorCount)
+        .. "\0"
+        .. indices
+        .. palette
+    )
+  )
+  local payload = {
+    sourceHash = digest,
+    pixelHash = digest,
+    width = width,
+    height = height,
+    kind = "r8",
+    colors = colorCount,
+    indexData = indices,
+    paletteData = palette,
+  }
+  local physicalKey = keyForPayload(self, payload --[[@as ImageAssetPoolPayload]], samplerCopy)
+  local logicalKey = "native-index:" .. physicalKey
+  local mapped = self._residentByLogical[logicalKey]
+  if mapped ~= nil then
+    local resident = self._images:find(mapped)
+    if resident ~= nil then
+      local reservationOk, reservationOrErr = pcall(function()
+        return self._images:borrow(mapped)
+      end)
+      if not reservationOk then
+        dropStaleAlias(self, logicalKey, mapped)
+        error(reservationOrErr, 0)
+      end
+      self._nextToken = self._nextToken + 1
+      local token = self._nextToken
+      self._requests[token] = {
+        logicalKey = logicalKey,
+        sampler = samplerCopy,
+        priority = "demand",
+        state = "cached",
+        physicalKey = mapped,
+        residentReservation = reservationOrErr,
+      }
+      return token
+    end
+    dropStaleAlias(self, logicalKey, mapped)
+  end
+  self._nextToken = self._nextToken + 1
+  local token = self._nextToken
+  self._requests[token] = {
+    logicalKey = logicalKey,
+    sampler = samplerCopy,
+    priority = "demand",
+    state = "prepared",
+    payload = payload,
+    physicalKey = physicalKey,
+    indexedSingle = true,
   }
   return token
 end
@@ -797,7 +979,8 @@ function ImageAssetPool:acquire(token)
     error("physical image left the pool under its request", 0)
   end
   local payload = assert(request.payload, "prepared image request has no payload")
-  local decodeOk, realized = pcall(realizePayload, self, payload)
+  local realize = request.indexedSingle == true and realizeIndexedPayload or realizePayload
+  local decodeOk, realized = pcall(realize, self, payload)
   if not decodeOk then
     request.payload = nil
     self._requests[token] = nil

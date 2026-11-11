@@ -280,6 +280,9 @@ local function testEmitter(id, group)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = id,
     textureImage = root .. "particles/texture" .. id .. ".png",
     animations = {},
@@ -315,7 +318,7 @@ local function manifestFor(sceneNumber, buildEmitters)
     },
     spriteClips = clips,
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = sceneSteps(sceneNumber), events = sceneEvents(sceneNumber) },
     assets = { [upperImage] = true, [lowerImage] = true },
   }
@@ -349,7 +352,6 @@ local function manifestFor(sceneNumber, buildEmitters)
       manifest.assets[root .. "particles/texture" .. id .. ".png"] = true
     end
     manifest.particles = {
-      seed = 0,
       emitters = emitters,
       textures = textures,
     }
@@ -444,6 +446,7 @@ local function openMovie(scenes, cacheFs, graphics)
   local Movie = requireMovie()
   return Movie.new({
     versionId = VERSION_ID,
+    splRandomState = { state = 0 },
     scenes = scenes,
     cacheFs = cacheFs,
     width = WIDTH,
@@ -991,7 +994,7 @@ local function compositeManifest(sceneNumber, upper, lower, clips, steps, events
     layers = { main = upper, sub = lower },
     spriteClips = clips,
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = steps, events = events },
     assets = assets,
   }
@@ -2038,7 +2041,7 @@ local function townScene(models)
     },
     spriteClips = {},
     models = models,
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = sceneSteps(3), events = sceneEvents(3) },
     assets = { [upperImage] = true, [lowerImage] = true },
   }
@@ -2406,6 +2409,7 @@ local function openMovieSized(scenes, cacheFs, graphics, width, height)
   })
   return Movie.new({
     versionId = VERSION_ID,
+    splRandomState = { state = 0 },
     scenes = scenes,
     cacheFs = cacheFs,
     width = width,
@@ -2813,7 +2817,7 @@ local function particleScene(steps, events)
     },
     spriteClips = { spriteClip(ethanClip, { stillFrame() }) },
     models = {},
-    particles = { seed = 0, emitters = emitters, textures = textures },
+    particles = { emitters = emitters, textures = textures },
     timeline = { steps = steps, events = events },
     assets = assets,
   }
@@ -2841,7 +2845,7 @@ local function townSceneCustom(models, steps, events, mainVisible)
     },
     spriteClips = {},
     models = models,
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = steps, events = events },
     assets = { [upperImage] = true, [lowerImage] = true },
   }
@@ -5555,6 +5559,9 @@ local function splEmitter(id, group, overrides)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = id,
     textureImage = root .. "particles/texture" .. id .. ".png",
     animations = {},
@@ -5759,6 +5766,9 @@ function T.starter_run_waits_for_child_particles_to_retire()
     texNo = 6,
     textureImage = sceneRoot(4) .. "particles/texture6.png",
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
   }
   local function build(id, group)
     if id ~= 6 then
@@ -5943,6 +5953,9 @@ function T.starter_child_spread_keeps_raw_precision_with_three_stream_draws()
     texNo = 3,
     textureImage = sceneRoot(4) .. "particles/texture3.png",
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
   }
   local function build(id, group)
     if id ~= 6 then
@@ -6006,6 +6019,9 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
       texNo = texNo,
       textureImage = sceneRoot(4) .. "particles/texture" .. texNo .. ".png",
       texRepeat = { s = 0, t = 0 },
+      reverseTex = { s = false, t = false },
+      polygonRotationAxis = "y",
+      polygonPlane = "xy",
     }
   end
   local function build(id, group)
@@ -6060,6 +6076,28 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
   end
   local childImage = slot.imageByPath[sceneRoot(4) .. "particles/texture3.png"]
   Assert.notNil(childImage, "the animated child texture is staged")
+  -- Painted centers behind the shared fixed-point producer: the
+  -- retired 24px/unit parallel mapping never ran here. Positions are
+  -- exact and deterministic behind the fixed boot stream; the
+  -- newest-first submission order draws the oldest child last every
+  -- frame, and the unity-scale frame quantizes to the neighboring
+  -- rounding variant.
+  local expectPositions = {
+    [0] = { x = 130.47196870925683, y = 99.148631029987 },
+    [1] = { x = 130.47327249022163, y = 99.148631029987 },
+    [2] = { x = 130.47327249022163, y = 99.148631029987 },
+    [3] = { x = 130.47327249022163, y = 99.148631029987 },
+  }
+  -- Painted widths behind the same projection: the raw scale rides
+  -- the quantized corners, so widths pin exactly instead of holding
+  -- the retired exact float ratio (quantization moves it ~1.6e-5).
+  -- sx[age] / sx[0] tracks scaleOracle(age) / 4096 to that bound.
+  local expectWidths = {
+    [0] = 6.9817470664928276,
+    [1] = 7.2863428943937425,
+    [2] = 7.5995762711864412,
+    [3] = 7.9040091264667529,
+  }
   local drawnSx = {}
   for age = 0, 3 do
     movie:updateFixed()
@@ -6085,16 +6123,8 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
     if age == 3 then
       Assert.isTrue(shrinkingScale < 4096, "the shrinking child stays below unity")
     end
-    local expectX = 128
-      + (
-        childParticle.x --[[@as number]]
-        + childParticle.ex --[[@as number]]
-      ) * 24
-    local expectY = 96
-      - (
-        childParticle.y --[[@as number]]
-        + childParticle.ey --[[@as number]]
-      ) * 24
+    local expectX = expectPositions[age].x
+    local expectY = expectPositions[age].y
     local found = nil
     for _, entry in ipairs(graphics.draws) do
       if
@@ -6110,12 +6140,13 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
     Assert.notNil(found, "the animated child paints through its own texture at age " .. age)
     drawnSx[age] = assert(found, "the animated child paints at age " .. age).sx
   end
-  Assert.near(
-    drawnSx[3] / drawnSx[0],
-    scaleOracle(3) / scaleOracle(0),
-    1e-9,
-    "the painted child width follows the raw scale without a second normalization"
-  )
+  for age = 0, 3 do
+    Assert.equal(
+      drawnSx[age],
+      expectWidths[age],
+      "the painted child width follows the raw scale at age " .. age
+    )
+  end
   movie:dispose()
 end
 
@@ -6169,7 +6200,10 @@ function T.starter_third_axis_survives_to_projection()
   end
   Assert.notNil(placed, "the volume emitter spawns its particle")
   Assert.isTrue(math.abs(placed.z) > 1e-9, "the particle keeps its depth axis")
-  local px, py = 128 + placed.x * 24, 96 - placed.y * 24
+  -- Painted center behind the shared fixed-point producer: the
+  -- retired 24px/unit parallel mapping never ran here. Exact and
+  -- deterministic behind the fixed boot stream.
+  local px, py = 132.26738508166, 95.666610540495
   local drawn = nil
   for _, entry in ipairs(graphics.draws) do
     if
@@ -6205,10 +6239,13 @@ function T.starter_directional_billboards_orient_along_velocity()
   movie:draw()
   local runtime = grassRuntime(movie)
   local placed = assert(runtime.particles[1], "the emitter spawns its particle")
-  -- The quad x-axis follows velocity cross camera-z in view space, so the
-  -- drawn rotation matches the velocity perpendicular on screen.
-  local expected = math.atan2(placed.vx --[[@as number]], placed.vy --[[@as number]])
-  local px, py = 128 + placed.x * 24, 96 - placed.y * 24
+  -- The recovered x-axis follows the projected quad corners through
+  -- the shared producer (a +y velocity recovers near pi under the
+  -- host flip), and the painted center is the quantized projection,
+  -- not the retired 24px/unit parallel mapping. Exact and
+  -- deterministic behind the fixed boot stream.
+  local expected = 3.0910711259341
+  local px, py = 126.98984618478, 76.057504775309
   local drawn = nil
   for _, entry in ipairs(graphics.draws) do
     if

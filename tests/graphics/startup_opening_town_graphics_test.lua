@@ -63,6 +63,7 @@ local function openMovie(scope, versionId, width, height)
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
   local movie = Movie.new({
     versionId = versionId,
+    splRandomState = { state = 0 },
     scenes = loadScenes(versionId),
     cacheFs = CacheFs.forVersion(versionId),
     width = width,

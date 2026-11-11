@@ -59,6 +59,7 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
 ---@field _animationRngSeed integer? shared visual-stream seed behind occurrence playback, nil without a launch capture
 ---@field _animationRngSeeded boolean true once the launch seed entered player playback
+---@field _splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field _nativeHandles table<table<string, unknown>, table<string, unknown>> native occurrence tracks by player handle or pending token
 ---@field _nativeVoices table<string, table<string, unknown>> staged player voices by name behind launch-owned stops
 ---@field _nativeVoiceArmed table<string, boolean> per-play fast-rate arming behind sound-task completion
@@ -498,6 +499,7 @@ end
 ---@field musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
 ---@field animationRngState table<string, unknown>? detached launch visual-stream capture behind the shared seed
+---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
 
 -- The battle screen owns one animation player and its per-launch
@@ -1253,6 +1255,10 @@ function BattleScreenState.new(opts)
   end
   local overrides = opts.overrides or {}
   assert(type(overrides) == "table", "per-instance inputs arrive as a record")
+  assert(
+    opts.splRandomState == nil or type(opts.splRandomState) == "table",
+    "the battle screen borrows the boot stream record"
+  )
   local manifest = opts.manifest --[[@as table<string, unknown>]]
   local battleSpeed = opts.battleSpeed
   if battleSpeed == nil then
@@ -1392,14 +1398,15 @@ function BattleScreenState.new(opts)
     _iconAnimationTick = 0,
     _scene = BattleScene.new(),
     _pictureAnimSeqSeen = {},
-    _encounterParticles = BattleEncounterParticles.new(),
-    _ballParticles = BattleBallParticles.new(),
+    _encounterParticles = BattleEncounterParticles.new({ splRandomState = opts.splRandomState }),
+    _ballParticles = BattleBallParticles.new({ splRandomState = opts.splRandomState, scene = nil }),
     _gaugeVisuals = {},
     _sceneHasBackground = false,
     _sceneAccum = 0,
     _outcomeDone = false,
     _lastPlayerName = nil,
     _error = nil,
+    _splRandomState = opts.splRandomState,
     _disposed = false,
   }, BattleScreenState)
   -- Foe move sets never enter the detached views, so foe narration
@@ -1468,6 +1475,7 @@ function BattleScreenState.new(opts)
     audio = nativeVoiceAdapter(self),
     resources = nativeResourceAdapter(self),
     tasks = BattleEffectTasks,
+    splRandomState = opts.splRandomState,
     services = {
       onNativeFrame = onNativeFrame,
     },
@@ -1697,40 +1705,6 @@ end
 -- Applies the effective blend-coefficient overlay to one battler: when
 -- the battler's sprite-context slot appears in the active patch, the
 -- per-item alpha takes the clamped sprite weight, exactly what the
--- picture pass already consumes. Retail EVA is the sprite weight
--- against the background at nominal full-strength 16, so
--- alpha = clamp(EVA, 0, 16) / 16. EVB weights the background plane the
--- composite always draws first and BLDCNT plane masks have no pixel
--- expression for this task kind, so both stay out of the mapping.
--- Sprite-context slots follow retail battler order: slot 0 names the
--- first player-side battler, slot 1 the first foe-side battler, slot 2
--- the second player-side battler, slot 3 the second foe-side battler.
--- Left/right resolves by sorted position order within the side, the
--- same order the slot geometry path trusts.
----@param battler table<string, unknown> displayed battler fact under blending
----@param order integer[] canonical claimed positions of the battler side in slot order
----@param blendSlots table<string, boolean> active sprite-context slot names
----@param coefficients table<string, unknown> effective blend register view
-local function applyBlendAlpha(battler, order, blendSlots, coefficients)
-  local sideBit = battler.side == 1 and 0 or 1
-  for index, slot in ipairs(order) do
-    if slot == battler.position then
-      local name = "sprite-context-slot-" .. ((index - 1) * 2 + sideBit)
-      if blendSlots[name] == true then
-        local eva = coefficients.blendCoefficientA
-        assert(type(eva) == "number", "blend overlays carry a numeric sprite weight")
-        if eva < 0 then
-          eva = 0
-        elseif eva > 16 then
-          eva = 16
-        end
-        battler.alpha = eva / 16
-      end
-      return
-    end
-  end
-end
-
 -- Resolves the baked send-out motion behind one battler: the program
 -- header rides the species/facing motion table while the program track
 -- carries the shared samples. Absent motion (planning manifests) plays
@@ -1802,18 +1776,15 @@ local function applyPictureMotion(self, battler)
   end
 end
 
+-- Task-owned sprite blend weights stay compositor state: the snapshot
+-- carries the raw coefficients and the renderer maps them onto blend
+-- mode, EVA/EVB and first/second targets. Per-battler alpha writes are
+-- gone; polygon alpha stays five-bit source state and color effects
+-- stay compositor state.
 ---@param self BattleScreenState
 ---@param battlers table<integer, table<string, unknown>> displayed battler facts under enriching
 local function enrichScene(self, battlers)
   local foeOrder, allyOrder = sceneSlotOrders(battlers)
-  local coefficients = self._scene:blendCoefficients()
-  local blendSlots = nil
-  if coefficients ~= nil and type(coefficients.spriteSlots) == "table" then
-    blendSlots = {}
-    for _, slot in ipairs(coefficients.spriteSlots) do
-      blendSlots[slot] = true
-    end
-  end
   for _, battler in ipairs(battlers) do
     if type(battler) == "table" then
       local pictureState = self._scene:pictureState(battler)
@@ -1900,9 +1871,6 @@ local function enrichScene(self, battlers)
       local order = nil
       if type(battler.position) == "number" then
         order = battler.side == 1 and allyOrder or foeOrder
-      end
-      if blendSlots ~= nil and coefficients ~= nil and order ~= nil then
-        applyBlendAlpha(battler, order, blendSlots, coefficients)
       end
       local row = BattleScene.slotRow(battler, order, self._manifest.battlefield.slots)
       battler.sideType = row.sideType
@@ -2826,6 +2794,12 @@ function BattleScreenState:_snapshot(borrowStatic)
     moveParticleSystems = self._scene:particleSystems(),
     encounterParticleSystems = self._encounterParticles:systems(),
     ballParticleSystems = self._ballParticles:systems(),
+    -- Detached compositor state behind the typed composition frame:
+    -- engine planes, blend/window/brightness writes, mosaic and the
+    -- source scanline buffer. Task-owned sprite blend weights ride
+    -- alongside for the compositor mapping.
+    sceneAnimation = self._scene:animationFrame(),
+    spriteBlend = self._scene:blendCoefficients(),
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
     -- Retained paint views borrow the immutable gauge families: the
@@ -3625,6 +3599,7 @@ function BattleScreenState:_openCompletionEvolution()
   }, {
     monCatalog = self._monCatalog,
     evolutionParticles = particleSet,
+    splRandomState = self._splRandomState,
     evolutionCursor = cursorAnimations,
     summary = self._summary,
   })

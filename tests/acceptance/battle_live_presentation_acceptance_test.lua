@@ -361,6 +361,7 @@ local function assertTargetMenuJourney(game)
   local battle
   local screen = require("game.hgss.src.battle.BattleScreenState").new({
     launchId = launchId,
+    splRandomState = { state = 0 },
     manifest = manifest,
     model = require("game.hgss.src.battle.BattlePresentationModel"),
     submit = function(reply)
@@ -494,6 +495,7 @@ local function assertEvolutionSceneJourney(game)
   local battle
   local screen = BattleScreenState.new({
     launchId = launchId,
+    splRandomState = { state = 0 },
     manifest = manifest,
     model = require("game.hgss.src.battle.BattlePresentationModel"),
     submit = function(reply)

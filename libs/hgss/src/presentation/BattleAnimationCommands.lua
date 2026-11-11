@@ -1176,6 +1176,12 @@ local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
     continuationSlot = instruction.continuationSlot,
     emitterConfig = instruction.emitterConfig,
     emitterOffset = instruction.emitterOffset,
+    typeOffsets = instruction.typeOffsets,
+    cameraAngles = instruction.cameraAngles,
+    fieldScripts = instruction.fieldScripts,
+    scriptVectors = instruction.scriptVectors,
+    scriptPosition = instruction.scriptPosition,
+    scriptTarget = instruction.scriptTarget,
   })
   if record == nil then
     return "done"

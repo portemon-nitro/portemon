@@ -269,6 +269,16 @@ end
 ---@return number bottomY
 ---@return number topY
 local function sortScreenBounds(item, viewMatrix, worldProjection, billboardProjection)
+  -- Exact clipped native extents computed by the primitive producer win
+  -- over the unprojected model box: the shared native pass stays exact
+  -- while the fallback below keeps every other consumer unchanged.
+  local projected = item.projectedBounds
+  if type(projected) == "table" then
+    local topY, bottomY = projected.topY, projected.bottomY
+    if type(topY) == "number" and type(bottomY) == "number" and topY == topY and bottomY == bottomY then
+      return bottomY, topY
+    end
+  end
   local projection = projectionForItem(item, worldProjection, billboardProjection)
   local bounds = item.sortBounds
   local bottomY, topY
@@ -302,7 +312,11 @@ end
 ---@field mixedOpaque table[]
 ---@field wireframe table[]
 ---@field blended table[]
+---@field opaqueOrder table[]
+---@field sortMode string "auto" keeps automatic screen-Y translucent sorting; "manual" preserves native submission order for translucent polygons and publishes one ordered opaque sequence
 ---@field _blendedEntries table[]
+---@field _opaqueEntries table[]
+---@field _opaqueKeys table[]
 ---@field _sortKeys ffi.cdata*
 ---@field _sortOrder number[]
 ---@field _sortCompare fun(leftIndex: number, rightIndex: number): boolean
@@ -311,16 +325,30 @@ end
 -- The only supported scratch constructor. Allocates the five pass arrays,
 -- unsorted wrapper storage, the initial key buffer, the reusable order array,
 -- and one comparator that reads the scratch key buffer dynamically so later
--- capacity growth cannot leave it pointing at stale storage.
+-- capacity growth cannot leave it pointing at stale storage. The optional
+-- manual mode keeps native translucent submission order and publishes one
+-- ordered opaque sequence for the shared native pass; absence keeps the
+-- field default exactly.
+---@param opts { sortMode: string }? optional manual sort selection
 ---@return RenderQueueScratch
-function RenderQueue.newScratch()
+function RenderQueue.newScratch(opts)
+  local sortMode = "auto"
+  if opts ~= nil then
+    assert(type(opts) == "table", "render queue scratch options are a record")
+    assert(opts.sortMode == "manual", "render queue scratch knows the manual sort mode")
+    sortMode = "manual"
+  end
   local scratch = {
     opaque = {},
     cutout = {},
     mixedOpaque = {},
     wireframe = {},
     blended = {},
+    opaqueOrder = {},
+    sortMode = sortMode,
     _blendedEntries = {},
+    _opaqueEntries = {},
+    _opaqueKeys = {},
     _sortKeys = ffi.new("G4RenderSortKey[?]", INITIAL_SORT_CAPACITY),
     _sortOrder = {},
     _sortCapacity = INITIAL_SORT_CAPACITY,
@@ -394,6 +422,11 @@ function RenderQueue.buildInto(parts, viewMatrix, worldProjection, billboardProj
     unsorted and scratch._sortKeys and order and compare and scratch._sortCapacity,
     "render queue scratch is incomplete"
   )
+  local manual = scratch.sortMode == "manual"
+  local opaqueOrder = scratch.opaqueOrder
+  local opaqueUnsorted = scratch._opaqueEntries
+  local opaqueKeys = scratch._opaqueKeys
+  assert(opaqueOrder and opaqueUnsorted and opaqueKeys, "render queue scratch is incomplete")
 
   clear(opaque)
   clear(cutout)
@@ -402,7 +435,44 @@ function RenderQueue.buildInto(parts, viewMatrix, worldProjection, billboardProj
 
   local position = 0
   local blendedCount = 0
+  local opaqueCount = 0
   local capacity = scratch._sortCapacity
+  -- Records one opaque/cutout/wireframe item for the shared manual
+  -- sequence with its native bottom/top extents and submission position.
+  -- Exact clipped native extents win; otherwise the unprojected model box
+  -- carries the native Y order (never a projected screen-Y resort); items
+  -- without any box fall back to the projected center like the auto path.
+  local function noteOpaque(item, fragmentPass)
+    opaqueCount = opaqueCount + 1
+    local entry = opaqueUnsorted[opaqueCount]
+    if entry == nil then
+      entry = {}
+      opaqueUnsorted[opaqueCount] = entry
+    end
+    entry.item = item
+    entry.fragmentPass = fragmentPass
+    local bottomY, topY
+    local projected = item.projectedBounds
+    if
+      type(projected) == "table"
+      and type(projected.topY) == "number"
+      and type(projected.bottomY) == "number"
+      and projected.topY == projected.topY
+      and projected.bottomY == projected.bottomY
+    then
+      bottomY, topY = projected.bottomY, projected.topY
+    elseif type(item.sortBounds) == "table" then
+      bottomY, topY = item.sortBounds.minY, item.sortBounds.maxY
+    else
+      bottomY, topY = sortScreenBounds(item, viewMatrix, worldProjection, billboardProjection)
+    end
+    local key = opaqueKeys[opaqueCount]
+    if key == nil then
+      key = {}
+      opaqueKeys[opaqueCount] = key
+    end
+    key.bottomY, key.topY, key.position, key.entryIndex = bottomY, topY, position, opaqueCount
+  end
   for _, part in ipairs(parts) do
     for _, item in ipairs(part) do
       position = position + 1
@@ -413,8 +483,14 @@ function RenderQueue.buildInto(parts, viewMatrix, worldProjection, billboardProj
 
       if mode == AlphaClassifier.OPAQUE then
         opaque[#opaque + 1] = item
+        if manual then
+          noteOpaque(item, AlphaClassifier.OPAQUE)
+        end
       elseif mode == AlphaClassifier.CUTOUT then
         cutout[#cutout + 1] = item
+        if manual then
+          noteOpaque(item, AlphaClassifier.CUTOUT)
+        end
       elseif mode == AlphaClassifier.MIXED then
         mixedOpaque[#mixedOpaque + 1] = item
 
@@ -457,6 +533,9 @@ function RenderQueue.buildInto(parts, viewMatrix, worldProjection, billboardProj
         key.entryIndex = blendedCount
       elseif mode == AlphaClassifier.WIREFRAME then
         wireframe[#wireframe + 1] = item
+        if manual then
+          noteOpaque(item, AlphaClassifier.WIREFRAME)
+        end
       else
         Errors.raise(
           RENDER_QUEUE_UNKNOWN_ALPHA_CLASS,
@@ -474,7 +553,9 @@ function RenderQueue.buildInto(parts, viewMatrix, worldProjection, billboardProj
     order[index] = nil
   end
 
-  if blendedCount > 1 then
+  -- Manual mode preserves native submission order for translucent
+  -- polygons; the automatic screen-Y rule applies only by default.
+  if blendedCount > 1 and not manual then
     table.sort(order, compare)
   end
 
@@ -485,6 +566,43 @@ function RenderQueue.buildInto(parts, viewMatrix, worldProjection, billboardProj
   end
   for index = #blended, blendedCount + 1, -1 do
     blended[index] = nil
+  end
+
+  -- The shared opaque sequence orders native opaque geometry by ascending
+  -- bottom/top screen-Y extents with source submission as the tie breaker;
+  -- mixed opaque fragments stay in their existing prepass. The default
+  -- mode publishes no sequence and traverses the current passes exactly.
+  if manual then
+    local sequence = {}
+    for index = 1, opaqueCount do
+      sequence[index] = index
+    end
+    table.sort(sequence, function(leftIndex, rightIndex)
+      local left, right = opaqueKeys[leftIndex], opaqueKeys[rightIndex]
+      if left.bottomY ~= right.bottomY then
+        return left.bottomY < right.bottomY
+      end
+      if left.topY ~= right.topY then
+        return left.topY < right.topY
+      end
+      return left.position < right.position
+    end)
+    for rank = 1, opaqueCount do
+      opaqueOrder[rank] = opaqueUnsorted[sequence[rank]]
+    end
+    for index = #opaqueOrder, opaqueCount + 1, -1 do
+      opaqueOrder[index] = nil
+    end
+    for index = #opaqueUnsorted, opaqueCount + 1, -1 do
+      opaqueUnsorted[index] = nil
+    end
+    for index = #opaqueKeys, opaqueCount + 1, -1 do
+      opaqueKeys[index] = nil
+    end
+  else
+    for index = #opaqueOrder, 1, -1 do
+      opaqueOrder[index] = nil
+    end
   end
 
   return scratch

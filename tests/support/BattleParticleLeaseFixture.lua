@@ -50,6 +50,9 @@ local function emitter(ordinal)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = 0,
     animations = {},
     fields = {},
@@ -73,19 +76,51 @@ function M.payload(emitterCount)
     placements[position] = kinds
   end
   local axisTables = {}
-  for _, mode in ipairs({ "mode1", "mode10" }) do
+  for _, mode in ipairs({ "mode1", "mode8", "mode10", "mode12", "mode14", "mode16", "mode18", "mode20" }) do
     local entries = {}
     for _ = 1, 36 do
       entries[#entries + 1] = { x = 1, y = 0, z = 0 }
     end
     axisTables[mode] = entries
   end
+  local function zeroOffsets()
+    local offsets = {}
+    for _ = 1, 36 do
+      offsets[#offsets + 1] = 0
+    end
+    return offsets
+  end
+  local function zeroPairs(count)
+    local pairs = {}
+    for _ = 1, count do
+      pairs[#pairs + 1] = { x = 0, y = 0 }
+    end
+    return pairs
+  end
+  local axisRows = {}
+  for _ = 1, 7 do
+    axisRows[#axisRows + 1] = { x = 0, y = 0, z = 0, mirrorFlag = 1 }
+  end
+  local cameraAngles = {}
+  for _ = 1, 6 do
+    cameraAngles[#cameraAngles + 1] = { x = 0, y = 0, z = 0 }
+  end
   return {
-    seed = 0,
     emitters = emitters,
     textures = { { id = 0, width = 8, height = 8, image = M.TEXTURE_KEY } },
     placements = placements,
     axisTables = axisTables,
+    emitterTables = {
+      offsetX = zeroOffsets(),
+      offsetY = zeroOffsets(),
+      axisBase = { x = 0, y = 0, z = 0, mirrorFlag = 1 },
+      axisRows = axisRows,
+      axisPositions = zeroPairs(6),
+      position30 = zeroPairs(7),
+      position31 = zeroPairs(6),
+      position32 = zeroPairs(7),
+      cameraAngles = cameraAngles,
+    },
   }
 end
 

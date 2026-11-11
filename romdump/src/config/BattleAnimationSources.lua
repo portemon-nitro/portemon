@@ -439,6 +439,148 @@ BattleAnimationSources.EMITTER_AXIS_MODE10 = {
   unit = 4096,
 }
 
+-- gBattleAnimEmitterOffsetsX/Y (battle_anim_emitter.c) in the overlay 7
+-- data: one signed pixel step per ordered battler-type pair. The runtime
+-- scales each step by 172 raw units and adds the immutable resource base.
+BattleAnimationSources.EMITTER_OFFSET_X = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235440,
+  entryCount = 36,
+  entryBytes = 2,
+}
+
+BattleAnimationSources.EMITTER_OFFSET_Y = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235488,
+  entryCount = 36,
+  entryBytes = 2,
+}
+
+-- gBattleAnimEmitterAxisBase (battle_anim_emitter.c): the single
+-- four-word signed vector/flag row the static axis rows fall back to.
+BattleAnimationSources.EMITTER_AXIS_BASE = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x022354D0,
+  wordCount = 4,
+}
+
+-- gBattleAnimEmitterPositions_Mode31 (battle_anim_emitter.c): six signed
+-- fx32 XY pairs indexed by battler type, Z stays zero.
+BattleAnimationSources.EMITTER_POSITIONS_MODE31 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x022354E0,
+  pairCount = 6,
+  unit = 4096,
+}
+
+-- gBattleAnimEmitterAxisPositions (battle_anim_emitter.c): six signed
+-- fx32 XY pairs indexed by battler type behind axis mode 24, Z stays zero.
+BattleAnimationSources.EMITTER_AXIS_POSITIONS = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235510,
+  pairCount = 6,
+  unit = 4096,
+}
+
+-- gBattleAnimEmitterPositions_Mode32/Mode30 (battle_anim_emitter.c):
+-- seven signed fx32 XY pairs each; the seventh row serves contest use.
+BattleAnimationSources.EMITTER_POSITIONS_MODE32 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235540,
+  pairCount = 7,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_POSITIONS_MODE30 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235578,
+  pairCount = 7,
+  unit = 4096,
+}
+
+-- gBattleAnimEmitterAxisRows (battle_anim_emitter.c): seven four-word
+-- signed vector/flag rows behind static axis modes 6 and 7. The fourth
+-- word is the mirror flag, not an axis component.
+BattleAnimationSources.EMITTER_AXIS_ROWS = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x022355B0,
+  rowCount = 7,
+  wordCount = 4,
+}
+
+-- Remaining gBattleAnimEmitterAxes_ModeN tables (battle_anim_emitter.c):
+-- one fixed-point axis vector per ordered battler-type pair each.
+BattleAnimationSources.EMITTER_AXIS_MODE8 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235620,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_AXIS_MODE16 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235980,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_AXIS_MODE12 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235B30,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_AXIS_MODE14 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02235E90,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_AXIS_MODE18 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02236040,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+BattleAnimationSources.EMITTER_AXIS_MODE20 = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x022361F0,
+  vectorBytes = 12,
+  entryCount = 36,
+  unit = 4096,
+}
+
+-- gBattleAnimEmitterCameraAngles (battle_anim_emitter.c): six unsigned
+-- XYZ angle triples behind the configured camera presets.
+BattleAnimationSources.EMITTER_CAMERA_ANGLES = {
+  cpu = "arm9",
+  overlayId = 7,
+  address = 0x02236414,
+  tripleCount = 6,
+}
+
 -- Native SPL members with a source-resolved semantic identity.
 BattleAnimationSources.PARTICLE_RESOURCES = {
   [64] = "battle/particle/tackle",

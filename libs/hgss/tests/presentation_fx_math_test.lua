@@ -63,4 +63,81 @@ function T.lookup_trigonometry_matches_the_source_table()
   Assert.equal(Fx.cosIdx(0xFFFF), Fx.cosIdx(0), "degree indices wrap like the source table")
 end
 
+-- Particle geometry needs the source vector/matrix layer on the same leaf:
+-- rounded 12-fraction products, unrounded concatenation, and the exact
+-- normalize/magnitude ladder. Host floating-point geometry cannot stand in.
+function T.vector_products_keep_source_rounding_before_narrowing()
+  local Fx = arithmetic()
+  Assert.isTrue(
+    type(Fx.vecDot32) == "function",
+    "visual paths share the source rounded vector dot product on the arithmetic leaf"
+  )
+  Assert.equal(
+    Fx.vecDot32({ x = 4096, y = 0, z = 0 }, { x = 4096, y = 0, z = 0 }),
+    4096,
+    "a unit-axis dot product keeps the rounded 12-fraction scale"
+  )
+  Assert.isTrue(
+    type(Fx.vecCross32) == "function",
+    "visual paths share the source rounded vector cross product on the arithmetic leaf"
+  )
+  local cross = Fx.vecCross32({ x = 4096, y = 0, z = 0 }, { x = 0, y = 4096, z = 0 })
+  Assert.equal(cross.x, 0, "axis cross keeps x")
+  Assert.equal(cross.y, 0, "axis cross keeps y")
+  Assert.equal(cross.z, 4096, "axis cross resolves z at the rounded scale")
+  Assert.isTrue(
+    type(Fx.normalize32) == "function" and type(Fx.magnitude) == "function",
+    "visual paths share the source normalize/magnitude ladder on the arithmetic leaf"
+  )
+end
+
+function T.unrounded_matrix_products_shift_without_bias()
+  local Fx = arithmetic()
+  local moved = Fx.matVec3({ 2049, 0, 0, 0, 4096, 0, 0, 0, 4096 }, { x = 1, y = 0, z = 0 })
+  Assert.equal(moved.x, 0, "a fractional matrix entry scales without the multiply bias")
+  Assert.equal(Fx.fxMul(2049, 1), 1, "the rounded multiply carries the same entry up")
+  local affine = Fx.matVec43({ 4096, 0, 0, 0, 4096, 0, 0, 0, 4096, 10, 20, 30 }, { x = 4096, y = 4096, z = 4096 })
+  Assert.deepEqual(
+    { x = affine.x, y = affine.y, z = affine.z },
+    { x = 4106, y = 4116, z = 4126 },
+    "affine translation adds after the unrounded rotation"
+  )
+end
+
+function T.default_camera_looks_down_negative_depth_with_known_translation()
+  local Fx = arithmetic()
+  local view = Fx.lookAtView({ x = 0, y = 0, z = 16384 }, { x = 0, y = 0, z = 0 }, { x = 0, y = 4096, z = 0 })
+  Assert.deepEqual(
+    { view[1], view[2], view[3], view[4], view[5], view[6], view[7], view[8], view[9] },
+    { 4096, 0, 0, 0, 4096, 0, 0, 0, 4096 },
+    "the default camera keeps identity axes"
+  )
+  Assert.deepEqual(
+    { view[10], view[11], view[12] },
+    { 0, 0, -16384 },
+    "the default camera translates depth by the eye distance"
+  )
+  local moved = Fx.viewPoint(view, { x = 0, y = 0, z = 0 })
+  Assert.deepEqual(
+    { x = moved.x, y = moved.y, z = moved.z },
+    { x = 0, y = 0, z = -16384 },
+    "the world origin lands on the negative depth axis"
+  )
+end
+
+function T.orthographic_projection_matches_the_pixel_space_matrix()
+  local Fx = arithmetic()
+  local proj = Fx.orthoW(0, 786432, 0, 1048576, -4194304, 4194304, 4194304)
+  Assert.deepEqual(
+    { proj[1], proj[6], proj[11], proj[16] },
+    { 32768, -43691, -4096, 4194304 },
+    "the pixel-space orthographic diagonal keeps source quantization"
+  )
+  Assert.deepEqual(
+    { proj[13], proj[14], proj[15] },
+    { -4194304, 4194304, 0 },
+    "the pixel-space orthographic translation keeps source rounding"
+  )
+end
+
 return { tests = T }

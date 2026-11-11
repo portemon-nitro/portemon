@@ -443,6 +443,7 @@ local function openOverlapScreen(launchId, staging)
     return false
   end
   return BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = manifest,
     model = Model,
@@ -492,6 +493,27 @@ local function overlapStrike(effectKey, actionId, sequence)
     effectKey = effectKey,
     payload = { target = 3, damage = 14, hitIndex = sequence },
     after = { hp = { [1] = 52, [3] = 43 } },
+    -- The strike carries its producer execution moment so the
+    -- selector admits the staged cue instead of omitting an
+    -- unfactored hit.
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = effectKey,
+        executedMove = effectKey,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -14,
+        power = 0,
+        friendship = 0,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = 1,
+      },
+    },
   }
 end
 

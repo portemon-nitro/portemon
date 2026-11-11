@@ -3354,12 +3354,19 @@ local function compileBallParticleSet(archive, memberId, emitterCount, itemKey, 
   end
   local textures = {}
   for _, texture in ipairs(compiled.particles.textures) do
-    textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, image = texture.image }
+    textures[#textures + 1] = {
+      id = texture.id,
+      width = texture.width,
+      height = texture.height,
+      image = texture.image,
+      sampler = texture.sampler,
+      alphaUsage = texture.alphaUsage,
+    }
   end
   for path, png in pairs(compiled.files) do
     pngs[path] = png
   end
-  return { seed = compiled.particles.seed, emitters = compiled.particles.emitters, textures = textures }
+  return { emitters = compiled.particles.emitters, textures = textures }
 end
 
 -- Compiles exactly one ball selector: its frame rasters plus the
@@ -4087,10 +4094,11 @@ function BattlePresentationCompiler.compileEvolutionParticles(romFs)
       width = texture.width,
       height = texture.height,
       image = texture.image,
+      sampler = texture.sampler,
+      alphaUsage = texture.alphaUsage,
     }
   end
   return {
-    seed = compiled.particles.seed,
     emitters = compiled.particles.emitters,
     textures = textures,
   },
@@ -5476,12 +5484,17 @@ local function compileEncounterParticles(romFs, sceneKey, terrain)
     end
     local textures = {}
     for _, texture in ipairs(compiled.particles.textures) do
-      textures[#textures + 1] =
-        { id = texture.id, width = texture.width, height = texture.height, image = texture.image }
+      textures[#textures + 1] = {
+        id = texture.id,
+        width = texture.width,
+        height = texture.height,
+        image = texture.image,
+        sampler = texture.sampler,
+        alphaUsage = texture.alphaUsage,
+      }
     end
     sets[setIndex] = {
       startTick = BattlePresentationSchema.ENCOUNTER_START_TICKS[setIndex],
-      seed = compiled.particles.seed,
       emitters = compiled.particles.emitters,
       textures = textures,
     }
@@ -6096,7 +6109,7 @@ end
 ---@field managedSpriteCapacities table<integer, { multiCell: boolean, multiAnimation: boolean }>
 ---@field pendingCharacterRasters table<string, table<string, unknown>>
 ---@field particleByBattler table<integer, string>
----@field decodedParticleResources table<string, { bytes: string, compiled: table<string, unknown>|nil, unsupported: string|nil, source: table<string, unknown> }>
+---@field decodedParticleResources table<string, { bytes: string, compiled: table<string, unknown>, source: table<string, unknown> }>
 
 ---@param state BattleEffectStaging
 ---@param role string source input role
@@ -6214,21 +6227,26 @@ local function resolveManagerDisposal(state, role, operands)
   return {}
 end
 
--- Reads and decodes one battler particle archive member, failing as an
--- unavailable source when the member is absent.
 -- Compiles one particle member into emitter records plus its textures staged
--- as raw RGBA keyed by their semantic texture resource key.
+-- as raw RGBA keyed by their semantic texture resource key. Source-undefined
+-- vocabulary fails at compile with source context through the existing
+-- malformed-boundary errors: the corpus gate proves no valid reviewed
+-- feature needs a staged marker, so none is produced.
+---@param state BattleEffectStaging
 ---@param bytes string raw SPL member bytes
----@return table<string, unknown>|nil compiled particle set and staged texture files
----@return string|nil unsupported cause when the member uses vocabulary the replay does not reproduce
-local function compileParticleMember(bytes)
+---@param source { archiveSymbol: string, memberId: integer } selected particle source
+---@return table<string, unknown> compiled particle set
+local function compileParticleMember(state, bytes, source)
   local compiled, compileErr = SplEmitterCompiler.compile(bytes, { embedPixels = true })
   if compiled == nil then
-    -- The member stays staged as an explicit unsupported marker: the effect
-    -- still closes, and the runtime fails the occurrence loudly where it
-    -- would load the system instead of replaying invented motion. The
-    -- members this producer pins as supported never reach this branch.
-    return nil, tostring(compileErr)
+    error(
+      Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "particle member uses vocabulary the replay does not reproduce", {
+        effectKey = state.effectKey,
+        provenance = { archiveSymbol = source.archiveSymbol, memberId = source.memberId },
+        cause = tostring(compileErr),
+      }),
+      0
+    )
   end
   return compiled
 end
@@ -6312,14 +6330,158 @@ local function readEmitterAxisTable(state, source)
   return axes
 end
 
+-- Reads one overlay table the configured emitter callbacks index. The
+-- reader mirrors the native table layout exactly: signed 16-bit pixel
+-- steps, signed 32-bit words, signed fx32 XY pairs, and unsigned 16-bit
+-- camera angle triples.
+---@param state BattleEffectStaging
+---@param source table<string, unknown> overlay table description
+---@param entryBytes integer entry width in bytes
+---@param count integer entry count under reading
+---@return integer[] signed table entries in source order
+local function readSignedWords(state, source, entryBytes, count)
+  local bytes, info = state.romFs:readOverlay(source.cpu, source.overlayId)
+  if bytes == nil then
+    error(info, 0)
+  end
+  assert(info ~= nil, "overlay reads describe their image")
+  local base = source.address - info.ramAddress --[[@as integer]]
+  local size = count * entryBytes
+  if base < 0 or base + size > #bytes then
+    error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "emitter table lies outside its overlay", {}), 0)
+  end
+  local entries = {}
+  for index = 0, count - 1 do
+    local at = base + index * entryBytes
+    local value = 0
+    local mult = 1
+    for byte = 0, entryBytes - 1 do
+      value = value + string.byte(bytes, at + byte + 1) * mult
+      mult = mult * 256
+    end
+    if value >= 2 ^ (entryBytes * 8 - 1) then
+      value = value - 2 ^ (entryBytes * 8)
+    end
+    entries[index + 1] = value
+  end
+  return entries
+end
+
+---@param state BattleEffectStaging
+---@param source table<string, unknown> overlay table description
+---@return table<string, integer>[] unsigned XYZ angle triples in source order
+local function readCameraAngles(state, source)
+  local bytes, info = state.romFs:readOverlay(source.cpu, source.overlayId)
+  if bytes == nil then
+    error(info, 0)
+  end
+  assert(info ~= nil, "overlay reads describe their image")
+  local base = source.address - info.ramAddress --[[@as integer]]
+  local count = source.tripleCount
+  assert(type(count) == "number" and count % 1 == 0 and count >= 1, "camera tables declare their triple count")
+  if base < 0 or base + count * 6 > #bytes then
+    error(Errors.new("BATTLE_SOURCE_UNEXPECTED", "emitter table lies outside its overlay", {}), 0)
+  end
+  local triples = {}
+  for index = 0, count - 1 do
+    local at = base + index * 6
+    local low1, low2, low3, low4, low5, low6 = string.byte(bytes, at + 1, at + 6)
+    triples[index + 1] = { x = low1 + low2 * 256, y = low3 + low4 * 256, z = low5 + low6 * 256 }
+  end
+  return triples
+end
+
+---@param state BattleEffectStaging
+---@param source table<string, unknown> overlay table description
+---@return table<string, number>[] signed fx32 XY pairs in source order
+local function readEmitterPositionPairs(state, source)
+  local words = readSignedWords(state, source, 4, source.pairCount * 2)
+  local unit = source.unit
+  assert(unit == 4096, "emitter position pairs keep the exact raw/4096 unit contract")
+  local pairs = {}
+  for index = 0, source.pairCount - 1 do
+    pairs[index + 1] = { x = words[index * 2 + 1] / unit, y = words[index * 2 + 2] / unit }
+  end
+  return pairs
+end
+
+---@param words integer[] signed source words in table order
+---@param at integer zero-based row index behind the record
+---@return table<string, number> signed vector/flag row with its mirror flag
+local function axisRowRecord(words, at)
+  return {
+    x = words[at * 4 + 1] / 4096,
+    y = words[at * 4 + 2] / 4096,
+    z = words[at * 4 + 3] / 4096,
+    mirrorFlag = words[at * 4 + 4],
+  }
+end
+
+---@param state BattleEffectStaging
+---@param source table<string, unknown> overlay table description
+---@return table<string, integer>[] signed vector/flag rows in source order
+local function readEmitterAxisRows(state, source)
+  local words = readSignedWords(state, source, 4, source.rowCount * source.wordCount)
+  local rows = {}
+  for index = 0, source.rowCount - 1 do
+    rows[index + 1] = axisRowRecord(words, index)
+  end
+  return rows
+end
+
+-- Stages the complete configured-emitter source tables behind one
+-- particle payload: the axis family per ordered battler-type pair plus
+-- the pixel-offset, static-row, XY-position, and camera-angle tables
+-- the valid position/axis/camera modes index.
+---@param state BattleEffectStaging
+---@return table<string, unknown> staged axis tables by configured mode
+---@return table<string, unknown> staged emitter tables behind configured callbacks
+local function readConfiguredEmitterTables(state)
+  local sources = state.sources
+  local axisTables = {
+    mode1 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE1),
+    mode8 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE8),
+    mode10 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE10),
+    mode12 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE12),
+    mode14 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE14),
+    mode16 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE16),
+    mode18 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE18),
+    mode20 = readEmitterAxisTable(state, sources.EMITTER_AXIS_MODE20),
+  }
+  local emitterTables = {
+    offsetX = readSignedWords(
+      state,
+      sources.EMITTER_OFFSET_X,
+      sources.EMITTER_OFFSET_X.entryBytes,
+      sources.EMITTER_OFFSET_X.entryCount
+    ),
+    offsetY = readSignedWords(
+      state,
+      sources.EMITTER_OFFSET_Y,
+      sources.EMITTER_OFFSET_Y.entryBytes,
+      sources.EMITTER_OFFSET_Y.entryCount
+    ),
+    axisBase = axisRowRecord(
+      readSignedWords(state, sources.EMITTER_AXIS_BASE, 4, sources.EMITTER_AXIS_BASE.wordCount),
+      0
+    ),
+    axisRows = readEmitterAxisRows(state, sources.EMITTER_AXIS_ROWS),
+    axisPositions = readEmitterPositionPairs(state, sources.EMITTER_AXIS_POSITIONS),
+    position30 = readEmitterPositionPairs(state, sources.EMITTER_POSITIONS_MODE30),
+    position31 = readEmitterPositionPairs(state, sources.EMITTER_POSITIONS_MODE31),
+    position32 = readEmitterPositionPairs(state, sources.EMITTER_POSITIONS_MODE32),
+    cameraAngles = readCameraAngles(state, sources.EMITTER_CAMERA_ANGLES),
+  }
+  return axisTables, emitterTables
+end
+
 ---@param state BattleEffectStaging
 ---@param role string source input role
 ---@param operands integer[] source operands
 ---@param source { archiveSymbol: string, memberId: integer } selected particle source
 ---@param memberId integer selected member
 ---@return string bytes
----@return table<string, unknown>|nil compiled
----@return string|nil unsupported
+---@return table<string, unknown> compiled
 local function decodeBattlerParticle(state, role, operands, source, memberId)
   local particleArchive = effectArchive(state, source.archiveSymbol, "animation battler particle")
   local bytes, readErr = particleArchive:readMember(memberId)
@@ -6338,8 +6500,8 @@ local function decodeBattlerParticle(state, role, operands, source, memberId)
       0
     )
   end
-  local compiled, unsupported = compileParticleMember(bytes)
-  return bytes, compiled, unsupported
+  local compiled = compileParticleMember(state, bytes, source)
+  return bytes, compiled
 end
 
 ---@param state BattleEffectStaging
@@ -6375,14 +6537,13 @@ local function resolveBattlerParticleResource(state, role, operands)
     or sources.resolveParticleResource(memberId)
   local particle = particleKey ~= nil and state.decodedParticleResources[particleKey] or nil
   if particle == nil then
-    local bytes, compiled, unsupported = decodeBattlerParticle(state, role, operands, source, memberId)
+    local bytes, compiled = decodeBattlerParticle(state, role, operands, source, memberId)
     particleKey = particleKey or ("battle/particle/content/" .. Hashing.sha1hex(bytes))
     selection = {
       resourceKeys = { particle = particleKey },
       sourceSelections = { particle = source },
     }
-    state.decodedParticleResources[particleKey] =
-      { bytes = bytes, compiled = compiled, unsupported = unsupported, source = source }
+    state.decodedParticleResources[particleKey] = { bytes = bytes, compiled = compiled, source = source }
   end
   state.particleByBattler[operands[1]] = selection.resourceKeys.particle
   local selections = {
@@ -6496,18 +6657,17 @@ end
 ---@param role string source input role
 ---@param operands integer[] source operands
 ---@param particleKey string selected particle archive key
----@param particle { compiled: table<string, unknown>|nil } compiled particle archive
+---@param particle { bytes: string, compiled: table<string, unknown>, source: table<string, unknown> } compiled particle archive
 ---@param emitterOrdinal unknown zero-based emitter ordinal from the source plan
 ---@param caseKey string selection case behind the emitter
 ---@return integer ordinal checked emitter ordinal
 local function checkActionEmitter(state, role, operands, particleKey, particle, emitterOrdinal, caseKey)
-  -- An unsupported member names no emitters to check against.
-  local emitters = particle.compiled ~= nil and particle.compiled.particles.emitters or nil --[[@as table[]|nil]]
+  local emitters = particle.compiled.particles.emitters --[[@as table[] ]]
   if
     type(emitterOrdinal) ~= "number"
     or emitterOrdinal < 0
     or emitterOrdinal % 1 ~= 0
-    or (emitters ~= nil and emitters[emitterOrdinal + 1] == nil)
+    or emitters[emitterOrdinal + 1] == nil
   then
     error(
       Errors.new("BATTLE_EFFECT_SOURCE_UNRESOLVED", "particle emitter ordinal has no compiled emitter", {
@@ -7141,7 +7301,7 @@ end
 -- reusing an archive a battler particle input already compiled.
 ---@param state BattleEffectStaging
 ---@param resourceKey string particle resource key
----@return { bytes: string, compiled: table<string, unknown>|nil, unsupported: string|nil, source: table<string, unknown> }|nil particle
+---@return { bytes: string, compiled: table<string, unknown>, source: table<string, unknown> }|nil particle
 ---@return unknown|nil failure
 local function closureParticle(state, resourceKey)
   local particle = state.decodedParticleResources[resourceKey]
@@ -7169,8 +7329,8 @@ local function closureParticle(state, resourceKey)
   if bytes == nil then
     return nil, particleReadErr
   end
-  local compiled, unsupported = compileParticleMember(bytes)
-  particle = { bytes = bytes, compiled = compiled, unsupported = unsupported, source = source }
+  local compiled = compileParticleMember(state, bytes, source)
+  particle = { bytes = bytes, compiled = compiled, source = source }
   state.decodedParticleResources[resourceKey] = particle
   return particle
 end
@@ -7180,14 +7340,8 @@ end
 -- table as the source-independent particle system payload.
 ---@param state BattleEffectStaging
 ---@param resourceKey string particle resource key
----@param particle { bytes: string, compiled: table<string, unknown>|nil, unsupported: string|nil, source: table<string, unknown> } compiled particle archive
+---@param particle { bytes: string, compiled: table<string, unknown>, source: table<string, unknown> } compiled particle archive
 local function stageClosureParticle(state, resourceKey, particle)
-  if particle.compiled == nil then
-    local marker = { unsupported = particle.unsupported }
-    BattlePresentationSchema.assertParticleSystem(marker)
-    addEffectResource(state, resourceKey, "particle", Hashing.sha1hex(particle.bytes), marker)
-    return
-  end
   local set = particle.compiled.particles --[[@as table<string, unknown>]]
   local digest = Hashing.sha1hex(particle.bytes)
   local textures = {}
@@ -7200,17 +7354,22 @@ local function stageClosureParticle(state, resourceKey, particle)
       height = texture.height,
       rgba8888 = texture.pixels,
     })
-    textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, image = textureKey }
+    textures[#textures + 1] = {
+      id = texture.id,
+      width = texture.width,
+      height = texture.height,
+      image = textureKey,
+      sampler = texture.sampler,
+      alphaUsage = texture.alphaUsage,
+    }
   end
+  local axisTables, emitterTables = readConfiguredEmitterTables(state)
   local payload = {
-    seed = set.seed,
     emitters = set.emitters,
     textures = textures,
     placements = readEmitterPlacements(state),
-    axisTables = {
-      mode1 = readEmitterAxisTable(state, state.sources.EMITTER_AXIS_MODE1),
-      mode10 = readEmitterAxisTable(state, state.sources.EMITTER_AXIS_MODE10),
-    },
+    axisTables = axisTables,
+    emitterTables = emitterTables,
   }
   BattlePresentationSchema.assertParticleSystem(payload)
   addEffectResource(state, resourceKey, "particle", Hashing.sha1hex(particle.bytes), payload)

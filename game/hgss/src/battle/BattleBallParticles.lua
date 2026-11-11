@@ -10,6 +10,7 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 ---@class BattleBallParticleSystem
 ---@field simulation SplParticleSimulation live emitter and particle state
 ---@field textures table<integer, table<string, unknown>> drawable handles by source texture id
+---@field sceneId unknown? scene manager slot identity, nil while unallocated
 
 ---@class BattleBallParticleResolver
 ---@field particles fun(ballKey: string): table<string, unknown>|nil staged particles of a ball, nil when it has none
@@ -18,6 +19,8 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 ---@class BattleBallParticles
 ---@field _pending { start: table<string, unknown>, age: integer, waited: integer }[] effects waiting for their start tick or textures
 ---@field _systems BattleBallParticleSystem[] live systems in start order
+---@field _splRandomState table<string, integer> borrowed boot stream record shared by one boot
+---@field _scene table<string, unknown>? scene manager-slot owner for first-free physical allocation
 local BattleBallParticles = {}
 BattleBallParticles.__index = BattleBallParticles
 
@@ -45,9 +48,15 @@ local SEAL_ORIGINS = {
   [5] = { x = 6912, y = 4096, z = -7344, offsetX = -16, offsetY = -29 },
 }
 
+---@param opts { splRandomState: table<string, integer>, scene: table<string, unknown>? } borrowed boot stream record and scene manager-slot owner
 ---@return BattleBallParticles
-function BattleBallParticles.new()
-  return setmetatable({ _pending = {}, _systems = {} }, BattleBallParticles)
+function BattleBallParticles.new(opts)
+  opts = opts or {}
+  assert(type(opts.splRandomState) == "table", "ball particles borrow the boot stream record")
+  return setmetatable(
+    { _pending = {}, _systems = {}, _splRandomState = opts.splRandomState, _scene = opts.scene },
+    BattleBallParticles
+  )
 end
 
 -- World position of one effect's emitters before each emitter's own
@@ -138,23 +147,27 @@ end
 ---@param set table<string, unknown> staged particle set
 ---@param included fun(emitterId: integer): boolean
 ---@param textures table<integer, table<string, unknown>>
+---@param splRandomState table<string, integer> borrowed boot stream record shared by one boot
 ---@return BattleBallParticleSystem
-local function startSystem(start, set, included, textures)
+local function startSystem(start, set, included, textures, splRandomState)
   local x, y, z = origin(start)
-  local simulation = SplParticleSimulation.new(set.seed --[[@as integer]], 0)
-  for _, record in
+  local randomState = assert(splRandomState, "ball particles borrow their boot stream record")
+  local simulation = SplParticleSimulation.new(randomState, 0, set.emitters)
+  for ordinal, record in
     ipairs(set.emitters --[[@as table<string, unknown>[] ]])
   do
     local id = record.id --[[@as integer]]
     if included(id) then
-      -- The emitter callbacks add the effect origin to the resource position.
-      local position = record.position --[[@as { x: number, y: number, z: number }]]
-      local placed = {}
-      for key, value in pairs(record) do
-        placed[key] = value
+      -- The emitter callbacks add the effect origin to the resource base
+      -- through the runtime position; the shared resource clone keeps its
+      -- immutable base for later emitters of the same ordinal.
+      local runtime = SplParticleSimulation.addEmitter(simulation, ordinal - 1, nil)
+      if runtime ~= nil then
+        local position = record.position --[[@as { x: number, y: number, z: number }]]
+        runtime.x = position.x + x
+        runtime.y = position.y + y
+        runtime.z = position.z + z
       end
-      placed.position = { x = position.x + x, y = position.y + y, z = position.z + z }
-      SplParticleSimulation.addEmitter(simulation, id, nil, placed)
     end
   end
   return { simulation = simulation, textures = textures }
@@ -193,7 +206,11 @@ function BattleBallParticles:step(starts, queuedBalls, resolver)
         local set = particles[kind] --[[@as table<string, unknown>]]
         local textures = resolveTextures(resolver, ballKey, kind, set)
         if textures ~= nil then
-          self._systems[#self._systems + 1] = startSystem(start, set, included, textures)
+          local system = startSystem(start, set, included, textures, self._splRandomState)
+          if self._scene ~= nil and type(self._scene.allocParticleSystem) == "function" then
+            system.sceneId = self._scene:allocParticleSystem(system)
+          end
+          self._systems[#self._systems + 1] = system
           settled = true
         else
           item.waited = item.waited + 1
@@ -209,7 +226,7 @@ function BattleBallParticles:step(starts, queuedBalls, resolver)
     local system = self._systems[index]
     SplParticleSimulation.advance(system.simulation)
     if #system.simulation.emitters == 0 then
-      table.remove(self._systems, index)
+      self:dropSystem(index)
     end
   end
 end
@@ -224,8 +241,21 @@ function BattleBallParticles:systems()
   return self._systems
 end
 
+-- Releases one live system from the draw list and its scene manager slot.
+---@param index integer position in the live systems
+function BattleBallParticles:dropSystem(index)
+  local system = self._systems[index]
+  table.remove(self._systems, index)
+  if system ~= nil and system.sceneId ~= nil and self._scene ~= nil then
+    self._scene:releaseParticleSystem(system.sceneId)
+  end
+end
+
 -- Drops every pending effect and live system.
 function BattleBallParticles:clear()
+  for index = #self._systems, 1, -1 do
+    self:dropSystem(index)
+  end
   self._pending = {}
   self._systems = {}
 end

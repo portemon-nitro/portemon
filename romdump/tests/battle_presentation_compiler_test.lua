@@ -12,19 +12,22 @@ local T = {}
 ---@return string sixteen raw move-table bytes
 local function syntheticWazaEntry(flags)
   return string.char(
-    0, 0, -- effect
+    0,
+    0, -- effect
     0, -- category physical
     35, -- power
     0, -- type normal
     100, -- accuracy
     35, -- pp
     0, -- effect chance
-    0, 0, -- range
+    0,
+    0, -- range
     0, -- priority
     flags, -- MOVEATTR_UNK9 flags
     0, -- unknownC
     0, -- contest type
-    0, 0 -- reserved padding
+    0,
+    0 -- reserved padding
   )
 end
 
@@ -720,25 +723,67 @@ local function splEmitter(flag)
 end
 
 -- The overlay image the producer reads battle emitter tables from:
--- the mode-10 axis block, then the mode-1 axis block, then the placement
--- table with its kind-0 retail vector and a kind-1 marker two vectors
--- later. Everything else is zero.
-local OVERLAY_RAM = 0x022357D0
-local AXIS_MODE10_OFFSET = 0x0
-local AXIS_MODE1_OFFSET = 0x02235CE0 - 0x022357D0
-local PLACEMENT_OFFSET = 0x0223687C - 0x022357D0
+-- pixel offsets, the static vector row, the XY pair tables and camera
+-- angles, every per-pair axis block, then the placement table with its
+-- kind-0 retail vector and a kind-1 marker two vectors later.
+-- Everything else is zero.
+local OVERLAY_RAM = 0x02235440
+local function tableOffset(address)
+  return address - OVERLAY_RAM
+end
+local OFFSET_X_OFF = tableOffset(0x02235440)
+local OFFSET_Y_OFF = tableOffset(0x02235488)
+local AXIS_BASE_OFF = tableOffset(0x022354D0)
+local POSITION31_OFF = tableOffset(0x022354E0)
+local AXIS_POSITIONS_OFF = tableOffset(0x02235510)
+local POSITION32_OFF = tableOffset(0x02235540)
+local POSITION30_OFF = tableOffset(0x02235578)
+local AXIS_ROWS_OFF = tableOffset(0x022355B0)
+local AXIS_MODE8_OFF = tableOffset(0x02235620)
+local AXIS_MODE10_OFF = tableOffset(0x022357D0)
+local AXIS_MODE16_OFF = tableOffset(0x02235980)
+local AXIS_MODE12_OFF = tableOffset(0x02235B30)
+local AXIS_MODE1_OFF = tableOffset(0x02235CE0)
+local AXIS_MODE14_OFF = tableOffset(0x02235E90)
+local AXIS_MODE18_OFF = tableOffset(0x02236040)
+local AXIS_MODE20_OFF = tableOffset(0x022361F0)
+local CAMERA_ANGLES_OFF = tableOffset(0x02236414)
+local PLACEMENT_OFF = tableOffset(0x0223687C)
 
 local function placementOverlay()
-  local parts = {}
-  parts[#parts + 1] = u32le(1000) .. u32le(2000) .. u32le(3000)
-  parts[#parts + 1] = string.rep("\0", AXIS_MODE1_OFFSET - 12)
-  parts[#parts + 1] = u32le(4000) .. u32le(5000) .. u32le(6000)
-  parts[#parts + 1] = string.rep("\0", PLACEMENT_OFFSET - AXIS_MODE1_OFFSET - 12)
-  parts[#parts + 1] = u32le(0xFFFFDA70) .. u32le(0xFFFFEAA8) .. u32le(0x40)
-  parts[#parts + 1] = string.rep("\0", 12)
-  parts[#parts + 1] = u32le(100) .. u32le(200) .. u32le(300)
-  parts[#parts + 1] = string.rep("\0", 6 * 288)
-  return table.concat(parts)
+  local size = PLACEMENT_OFF + 12 + 12 + 12 + 6 * 288
+  local bytes = {}
+  for _ = 1, size do
+    bytes[#bytes + 1] = "\0"
+  end
+  local function poke(at, chunk)
+    for index = 1, #chunk do
+      bytes[at + index] = chunk:sub(index, index)
+    end
+  end
+  local function u16pair(first, second)
+    return u16le(first) .. u16le(second)
+  end
+  poke(OFFSET_X_OFF, u16pair(7, 0))
+  poke(OFFSET_Y_OFF, u16pair(9, 0))
+  poke(AXIS_BASE_OFF, u32le(11) .. u32le(22) .. u32le(33) .. u32le(1))
+  poke(POSITION31_OFF, u32le(333) .. u32le(444))
+  poke(AXIS_POSITIONS_OFF, u32le(77) .. u32le(88))
+  poke(POSITION32_OFF, u32le(555) .. u32le(666))
+  poke(POSITION30_OFF, u32le(111) .. u32le(222))
+  poke(AXIS_ROWS_OFF, u32le(44) .. u32le(55) .. u32le(66) .. u32le(0))
+  poke(AXIS_MODE8_OFF, u32le(1111) .. u32le(2222) .. u32le(3333))
+  poke(AXIS_MODE10_OFF, u32le(1000) .. u32le(2000) .. u32le(3000))
+  poke(AXIS_MODE16_OFF, u32le(10101) .. u32le(11111) .. u32le(12121))
+  poke(AXIS_MODE12_OFF, u32le(4444) .. u32le(5555) .. u32le(6666))
+  poke(AXIS_MODE1_OFF, u32le(4000) .. u32le(5000) .. u32le(6000))
+  poke(AXIS_MODE14_OFF, u32le(7777) .. u32le(8888) .. u32le(9999))
+  poke(AXIS_MODE18_OFF, u32le(13131) .. u32le(14141) .. u32le(15151))
+  poke(AXIS_MODE20_OFF, u32le(16161) .. u32le(17171) .. u32le(18181))
+  poke(CAMERA_ANGLES_OFF, u16le(777) .. u16le(888) .. u16le(999))
+  poke(PLACEMENT_OFF, u32le(0xFFFFDA70) .. u32le(0xFFFFEAA8) .. u32le(0x40))
+  poke(PLACEMENT_OFF + 24, u32le(100) .. u32le(200) .. u32le(300))
+  return table.concat(bytes)
 end
 
 -- Compiles one effect through the real producer while the inner command
@@ -862,7 +907,7 @@ function T.particle_members_stage_as_compiled_emitters_exact_textures_and_placem
   Assert.notNil(descriptor, "the compiled effect stages its selected particle system")
   Assert.equal(descriptor.kind, "particle", "the particle system keeps its resource kind")
   local payload = effect.resourcePayloads[descriptor.payload]
-  Assert.equal(payload.seed, 0, "the system opens the retail zero particle stream")
+  Assert.isNil(payload.seed, "the system carries no persisted seed; the boot stream is borrowed")
   Assert.equal(#payload.emitters, 2, "every source emitter stages in order")
   Assert.isNil(payload.emitters[1].persistent, "a self-destroying emitter carries no persistent flag")
   Assert.isTrue(payload.emitters[2].persistent, "an emitter without the self-destruct flag stays until removed")
@@ -892,11 +937,7 @@ function T.particle_kind_and_axis_tables_stage_every_configured_column()
   Assert.near(kinded.x, 100 / 4096, 1e-9, "kind columns keep their own retail fixed-point x")
   Assert.near(kinded.y, 200 / 4096, 1e-9, "kind columns keep their own retail fixed-point y")
   Assert.near(kinded.z, 300 / 4096, 1e-9, "kind columns keep their own retail fixed-point z")
-  Assert.equal(
-    #payload.placements["enemy-side-slot-2"][3],
-    2,
-    "every kind carries both perspective vectors"
-  )
+  Assert.equal(#payload.placements["enemy-side-slot-2"][3], 2, "every kind carries both perspective vectors")
   local axes = assert(payload.axisTables, "the system stages its configured axis tables")
   Assert.equal(#axes.mode1, 36, "mode 1 stages one axis per battler-type pair")
   Assert.equal(#axes.mode10, 36, "mode 10 stages one axis per battler-type pair")
@@ -906,21 +947,67 @@ function T.particle_kind_and_axis_tables_stage_every_configured_column()
   Assert.near(axes.mode10[1].x, 1000 / 4096, 1e-9, "mode 10 keeps its retail fixed-point x")
   Assert.near(axes.mode10[1].y, 2000 / 4096, 1e-9, "mode 10 keeps its retail fixed-point y")
   Assert.near(axes.mode10[1].z, 3000 / 4096, 1e-9, "mode 10 keeps its retail fixed-point z")
+  for _, mode in ipairs({ "mode8", "mode12", "mode14", "mode16", "mode18", "mode20" }) do
+    Assert.equal(#axes[mode], 36, mode .. " stages one axis per battler-type pair")
+  end
+  Assert.near(axes.mode8[1].x, 1111 / 4096, 1e-9, "mode 8 keeps its staged fixed-point x")
+  Assert.near(axes.mode20[1].z, 18181 / 4096, 1e-9, "mode 20 keeps its staged fixed-point z")
+  local emitterTables = assert(payload.emitterTables, "the system stages its configured emitter tables")
+  Assert.equal(#emitterTables.offsetX, 36, "the pixel offsets cover every battler-type pair")
+  Assert.equal(emitterTables.offsetX[1], 7, "offset x keeps its staged pixel step")
+  Assert.equal(emitterTables.offsetY[1], 9, "offset y keeps its staged pixel step")
+  Assert.equal(emitterTables.axisBase.mirrorFlag, 1, "the static base row keeps its mirror flag")
+  Assert.equal(#emitterTables.axisRows, 7, "all seven static rows stage")
+  Assert.equal(emitterTables.axisRows[1].x, 44 / 4096, "static rows keep their staged x")
+  Assert.equal(#emitterTables.axisPositions, 6, "axis positions cover the six battle types")
+  Assert.equal(emitterTables.axisPositions[1].x, 77 / 4096, "axis positions keep their staged x")
+  Assert.equal(#emitterTables.position30, 7, "position 30 covers six types plus contest")
+  Assert.equal(emitterTables.position30[1].x, 111 / 4096, "position 30 keeps its staged x")
+  Assert.equal(#emitterTables.position31, 6, "position 31 covers the six battle types")
+  Assert.equal(emitterTables.position31[1].y, 444 / 4096, "position 31 keeps its staged y")
+  Assert.equal(#emitterTables.position32, 7, "position 32 covers six types plus contest")
+  Assert.equal(#emitterTables.cameraAngles, 6, "camera angles cover all six presets")
+  Assert.equal(emitterTables.cameraAngles[1].z, 999, "camera angles keep their staged z")
+  local Schema = require("libs.assets.src.battle.BattlePresentationSchema")
+  Assert.isTrue(pcall(Schema.assertParticleSystem, payload), "the staged generation validates")
+  local seeded = {}
+  for key, value in pairs(payload) do
+    seeded[key] = value
+  end
+  seeded.seed = 0
+  Assert.isFalse(pcall(Schema.assertParticleSystem, seeded), "the previous seed-carrying generation is rejected")
+  local untable = {}
+  for key, value in pairs(payload) do
+    untable[key] = value
+  end
+  untable.emitterTables = nil
+  Assert.isFalse(pcall(Schema.assertParticleSystem, untable), "a system without staged emitter tables is rejected")
 end
 
-function T.undecodable_or_unreproduced_particle_members_stage_an_explicit_unsupported_marker()
+function T.undecodable_or_unreproduced_particle_members_fail_compile_with_source_context()
   local tackle = "battle/particle/tackle"
+  -- A spin field around an out-of-range axis stays unreproduced: the
+  -- source matrix for that axis is undefined, so the member fails at
+  -- compile with its source context instead of staging a marker. The
+  -- corpus gate proves no valid reviewed feature needs the old staged
+  -- marker, so source-undefined input never closes.
+  local badSpin = splMember({ splEmitter(SELF_DESTRUCT_FLAG + 2 ^ 27) .. u16le(0) .. u16le(3) }, 1)
   for name, blob in pairs({
-    unreproduced = splMember({ splEmitter(SELF_DESTRUCT_FLAG + 2 ^ 20) }, 1),
+    unreproduced = badSpin,
     truncated = splMember({ splEmitter(SELF_DESTRUCT_FLAG) }, 1):sub(1, 100),
   }) do
-    local effect = assertProducerEffect(
-      compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle)),
-      "the " .. name .. " particle member"
+    local outcome = compileParticleEffect("TACKLE", { [64] = blob }, particleInstructionsFor(tackle))
+    Assert.isTrue(outcome[1] == false, "the " .. name .. " particle member fails instead of staging a marker")
+    Assert.isTrue(Errors.is(outcome[2]), "the " .. name .. " failure is a structured producer error")
+    local failure = outcome[2] --[[@as table<string, unknown>]]
+    Assert.equal(
+      failure.code,
+      "BATTLE_EFFECT_SOURCE_UNRESOLVED",
+      "the " .. name .. " failure names its malformed boundary"
     )
-    local payload = effect.resourcePayloads[effect.resources[tackle].payload]
-    Assert.equal(type(payload.unsupported), "string", name .. " members stage their cause, never invented motion")
-    Assert.isNil(payload.emitters, name .. " members stage no emitters")
+    local context = failure.context --[[@as table<string, unknown>]]
+    Assert.equal(context.effectKey, "TACKLE", "the " .. name .. " failure names its effect")
+    Assert.notNil(context.provenance, "the " .. name .. " failure carries its source provenance")
   end
 end
 

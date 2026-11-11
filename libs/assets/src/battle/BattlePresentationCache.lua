@@ -110,17 +110,14 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 
 ---@class BattlePresentationCache.EncounterParticleSet
 ---@field startTick integer encounter animation tick the set starts on
----@field seed integer particle random seed
 ---@field emitters table<string, unknown>[] compiled emitter records
 ---@field textures BattlePresentationCache.EncounterParticleTexture[]
 
 ---@class BattlePresentationCache.BallParticleSet
----@field seed integer particle random seed
 ---@field emitters table<string, unknown>[] compiled emitter records
 ---@field textures BattlePresentationCache.EncounterParticleTexture[]
 
 ---@class BattlePresentationCache.EvolutionParticleSet
----@field seed integer particle random seed
 ---@field emitters table<string, unknown>[] retail EvolutionScene emitters, in source order
 ---@field textures BattlePresentationCache.EncounterParticleTexture[] staged texture metadata
 

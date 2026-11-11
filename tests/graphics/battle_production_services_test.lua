@@ -9,6 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
@@ -565,6 +566,7 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
       end,
     })
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       graphics = love.graphics,
       windows = windows,
@@ -771,6 +773,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
         end,
       })
       local envelope = FieldBattlePresentation.new({
+        splRandomState = { state = 0 },
         cacheFs = view,
         graphics = love.graphics,
         windows = windows,
@@ -904,6 +907,7 @@ function T.native_steady_frames_reuse_resolved_images(scope, context)
       end,
     })
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       graphics = love.graphics,
       windows = windows,
@@ -975,6 +979,7 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
   for _, versionId in ipairs(versions) do
     local cacheFs = hidingCacheFs(CacheFs.forVersion(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       graphics = love.graphics,
       windows = recordingWindows(),
@@ -1016,29 +1021,10 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 0)
     screen:draw({ graphics = love.graphics })
-    local recording = { draws = {} }
-    function recording.push(_) end
-    function recording.pop() end
-    function recording.origin() end
-    function recording.getDepthMode() end
-    function recording.setDepthMode(_, _) end
-    function recording.setShader() end
-    function recording.setBlendMode(_, _) end
-    function recording.setScissor() end
-    function recording.intersectScissor(_, _, _, _) end
-    function recording.translate(_, _) end
-    function recording.scale(_, _) end
-    function recording.transformPoint(x, y)
-      return x, y
-    end
-    function recording.getColor()
-      return 1, 1, 1, 1
-    end
-    function recording.setColor(_, _, _, _) end
-    function recording.rectangle(_, _, _, _, _) end
-    function recording.draw(drawable, x, y)
-      recording.draws[#recording.draws + 1] = { drawable = drawable, x = x, y = y }
-    end
+    -- The shared recording fake carries the full no-op GPU surface
+    -- behind the composed draw, so both boundaries keep the same
+    -- failure context instead of failing on different missing methods.
+    local recording = FakeGraphics.new({})
     screen:draw({ graphics = recording })
     love.graphics.setCanvas()
     local settled = screen:status()
@@ -1123,6 +1109,7 @@ function T.idle_warmup_reuses_staged_scene_on_first_battle_entry(scope, context)
     end,
   })
   local warmEnvelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     graphics = love.graphics,
     windows = windows,
@@ -1213,6 +1200,7 @@ function T.background_upload_uses_packed_pixels_without_per_pixel_setpixel()
     return { width = 8 * #tostring(content), height = 16 }
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     graphics = graphics,
     windows = {},

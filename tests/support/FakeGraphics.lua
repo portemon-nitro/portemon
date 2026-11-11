@@ -175,6 +175,9 @@ function FakeGraphics.new(opts)
       canvas.setFilter = function(_, min, mag)
         canvas.filters[#canvas.filters + 1] = { min = min, mag = mag }
       end
+      canvas.setWrap = function(_, horizontal, vertical)
+        canvas.wrap = { horizontal = horizontal, vertical = vertical }
+      end
       canvas.getWidth = function()
         return canvas.width
       end
@@ -360,6 +363,12 @@ function FakeGraphics.new(opts)
     end,
     setMeshCullMode = function(mode)
       state.cullMode = mode
+    end,
+    getStencilTest = function()
+      return state.stencilMode or "always", state.stencilValue or 0
+    end,
+    setStencilTest = function(mode, value)
+      state.stencilMode, state.stencilValue = mode, value
     end,
     getScissor = function()
       if not state.scissor then

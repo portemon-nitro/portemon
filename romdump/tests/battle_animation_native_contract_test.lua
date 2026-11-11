@@ -11,23 +11,23 @@ local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSch
 local T = {}
 
 function T.generated_contracts_move_to_the_locked_generation()
-  Assert.equal(DerivedAssetContract.revision, 14, "the shared revision invalidates pre-transition payloads")
+  Assert.equal(DerivedAssetContract.revision, 15, "the shared revision invalidates pre-transition payloads")
   Assert.equal(
     DerivedAssetContract.battlePresentation.cacheFormat,
-    "battle-presentation-cache-v6",
+    "battle-presentation-cache-v7",
     "the presentation cache generation moves atomically"
   )
   Assert.equal(
     DerivedAssetContract.battlePresentation.schema,
-    "g4-battle-presentation-v13",
+    "g4-battle-presentation-v14",
     "the presentation schema generation moves atomically"
   )
   Assert.equal(
     DerivedAssetContract.battlePresentation.sceneSchema,
-    "g4-battle-scene-v6",
+    "g4-battle-scene-v7",
     "the scene schema generation moves atomically"
   )
-  Assert.equal(BattleAnimationSchema.EFFECT_SCHEMA, "g4-battle-effect-v5", "the effect schema moves atomically")
+  Assert.equal(BattleAnimationSchema.EFFECT_SCHEMA, "g4-battle-effect-v6", "the effect schema moves atomically")
 end
 
 function T.stale_effect_generations_never_execute()

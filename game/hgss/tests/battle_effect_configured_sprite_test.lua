@@ -231,6 +231,27 @@ local function topologyPlayback(key)
     actors = { { combatant = 1, activation = 1 } },
     targets = { { combatant = 3, activation = 3 } },
     visualSeed = 4242,
+    -- The probe hit carries its producer execution moment so the
+    -- selector admits it; the request freezes the topology the
+    -- player consumes.
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = key,
+        executedMove = key,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -1,
+        power = 0,
+        friendship = 0,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = 1,
+      },
+    },
   }
   local geometry = ManifestFixture.manifest().battlefield.slots
   local playback = BattlePresentationFlow.animationPlayback(packet, event, geometry)
@@ -574,8 +595,8 @@ function T.staged_sprite_pictures_reach_the_production_renderer()
   function assets.drawable(_self, key)
     return assets.handles[key]
   end
-  function assets.renderPictures(_self, _graphics, pictures)
-    submitted = pictures
+  function assets.renderPictures(_self, _graphics, frame)
+    submitted = assert(frame.primitives, "production renders its typed composition frame")
     return { layer = "probe-layer" }
   end
   local graphics = FakeGraphics.new()

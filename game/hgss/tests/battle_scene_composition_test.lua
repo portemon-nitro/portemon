@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
@@ -50,6 +51,10 @@ local function battler(overrides)
     name = "LEAD",
     level = 9,
     portraitSelector = "LEAD/0/male/plain/back",
+    -- Synthetic probe pictures carry no species geometry; the settled
+    -- visual center names an explicit zero species height instead of
+    -- inheriting a default. Tests that exercise height set their own.
+    sourceHeight = 0,
     shakeDx = 0,
     shadowSize = 1,
   }
@@ -176,27 +181,35 @@ local function recordingText()
 end
 
 ---@param graphics table fake drawing API
----@param opts table? record of the submitted picture instances
----@return fun(self: table, drawGraphics: table, pictures: table[]): table picture-layer handle
+---@param opts table? record of the submitted composition frame
+---@return fun(self: table, drawGraphics: table, frame: table): table picture-layer handle
 local function pictureRenderer(graphics, opts)
-  return function(_, drawGraphics, pictures)
-    graphics.pictureItems = pictures
+  return function(_, drawGraphics, frame)
+    local primitives = assert(frame.primitives, "production renders its typed composition frame")
+    graphics.pictureItems = primitives
     if opts ~= nil then
-      opts.pictureItems = pictures
+      opts.pictureItems = primitives
+      opts.compositionFrame = frame
     end
-    for _, picture in ipairs(pictures) do
-      local x, y
-      if picture.kind == "shadow" then
-        x = picture.centerX - picture.width / 2 + (picture.shadowOffsetX or 0)
-        y = picture.centerY - picture.height / 2 + (picture.shadowOffsetY or 0)
-      elseif picture.pictureVisible then
-        x = picture.centerX - 40 + (picture.xOffset or 0) + (picture.xOffset2 or 0)
-        y = picture.centerY - 40 + (picture.yOffset or 0) + (picture.yOffset2 or 0) - (picture.shadowHeight or 0)
-      else
-        x = picture.centerX - picture.width / 2 + (picture.xOffset or 0)
-        y = picture.centerY - picture.height / 2 + (picture.yOffset or 0) - (picture.shadowHeight or 0)
+    CompositionFrameDrain.drain(drawGraphics, frame)
+    for _, primitive in ipairs(primitives) do
+      local handle = primitive.image or primitive.material
+      local image = type(handle) == "table" and (handle.image or handle) or handle
+      local minX, minY = nil, nil
+      for _, vertex in ipairs(primitive.vertices or {}) do
+        -- Clip coordinates round-trip exactly in real arithmetic; the
+        -- fine grid absorbs host float dust while keeping real
+        -- fractional origins intact.
+        local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+        local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+        if minX == nil or x < minX then
+          minX = x
+        end
+        if minY == nil or y < minY then
+          minY = y
+        end
       end
-      drawGraphics.draw(picture.image, nil, x, y)
+      drawGraphics.draw(image, nil, minX or 0, minY or 0)
     end
     return { handle = "picture-depth-layer" }
   end
@@ -722,23 +735,30 @@ local function firstIndexOf(graphics, handle)
   return 0
 end
 
--- The detail pane layers back to front: the scene, each shadow under
--- its picture, pictures before their health-box cells, and bar tiles
--- after the cells they patch.
+-- The detail pane layers back to front: the scene plane content draws
+-- before HUD objects, while shadows precede their pictures in native
+-- submission order inside the shared 3D target. Bar tiles still patch
+-- after the cells they update.
 function T.detail_layers_order_back_to_front()
-  local graphics = drawnDetail(snapshot())
+  local opts = {}
+  local graphics = drawnDetail(snapshot(), opts)
+  local frame = assert(opts.compositionFrame, "detail draws through one typed composition frame")
   local scene = firstIndexOf(graphics, "scene:test")
-  local shadow = firstIndexOf(graphics, "shadow")
-  local foe = firstIndexOf(graphics, "mon:FOE/0/male/plain/front")
-  local lead = firstIndexOf(graphics, "mon:LEAD/0/male/plain/back")
   local enemyHud = firstIndexOf(graphics, "hud:enemy")
   local playerHud = firstIndexOf(graphics, "hud:player")
-  for _, index in ipairs({ scene, shadow, foe, lead, enemyHud, playerHud }) do
-    Assert.isTrue(index > 0, "every native layer draws")
+  for _, index in ipairs({ scene, enemyHud, playerHud }) do
+    Assert.isTrue(index > 0, "every native 2D layer draws")
   end
-  Assert.isTrue(scene < shadow, "the scene sits behind the shadows")
-  Assert.isTrue(shadow < foe and shadow < lead, "shadows sit behind their pictures")
-  Assert.isTrue(foe < enemyHud and lead < playerHud, "pictures sit behind their health boxes")
+  Assert.isTrue(scene < enemyHud and scene < playerHud, "the scene sits behind the health boxes")
+  local kinds = {}
+  for _, primitive in ipairs(frame.primitives) do
+    kinds[#kinds + 1] = primitive.kind or "picture"
+  end
+  Assert.deepEqual(
+    kinds,
+    { "shadow", "picture", "shadow", "picture" },
+    "each shadow precedes its picture in native submission order"
+  )
   -- Each health box patches its own cells before its bar tiles: cells
   -- and tiles share one sprite whose character buffer the patch spans
   -- update in place.
@@ -1097,7 +1117,8 @@ end
 ---@param view table internal semantic snapshot under drawing
 ---@param layout string? active lower menu layout under drawing
 ---@return table graphics behind one interaction draw
-local function drawnInteraction(view, layout)
+local function drawnInteraction(view, layout, opts)
+  opts = opts or {}
   local graphics = FakeGraphics.new({})
   local text = recordingText()
   local resources = {
@@ -1126,7 +1147,7 @@ local function drawnInteraction(view, layout)
     frameKey = "composition-frame",
     sceneImageKey = "scene:test",
   }
-  resources.assets.renderPictures = pictureRenderer(graphics, {})
+  resources.assets.renderPictures = pictureRenderer(graphics, opts)
   -- Minimal single-plane layers keep the blend path out of the
   -- fixture: the menu still resolves its staged tilemaps per layout.
   -- Plane 2 is the retail disabled backdrop, so it stays up while the
@@ -1300,6 +1321,78 @@ function T.command_menu_paints_only_in_command_modes()
     Assert.isTrue(#tilemapHandles(graphics) > 0, "the tilemaps stay up in " .. mode)
     Assert.equal(#graphics.rectangles, 0, "no wash covers the gauges in " .. mode)
   end
+end
+
+
+-- One typed composition frame carries the detail pane: particle
+-- polygons precede battler pictures in native submission order, planes
+-- and OBJ fragments carry content callbacks, and the layout stays
+-- native. Production no longer serves the pictures-array path.
+function T.detail_draw_builds_one_typed_composition_frame()
+  local opts = {}
+  local graphics = drawnDetail(snapshot(), opts)
+  local frame = assert(opts.compositionFrame, "detail draws through one typed composition frame")
+  Assert.equal(frame.engine, "main", "the detail pane composes on the main engine")
+  Assert.equal(frame.layout.scale, 1, "detail keeps the native lattice")
+  Assert.equal(frame.layout.offsetX, 0, "detail keeps the native horizontal origin")
+  Assert.equal(frame.layout.offsetY, 0, "detail keeps the native vertical origin")
+  local kinds = {}
+  for _, primitive in ipairs(assert(frame.planes ~= nil and frame.primitives, "the frame carries its polygons")) do
+    kinds[#kinds + 1] = primitive.kind or "particle"
+  end
+  local seenPicture = false
+  for _, kind in ipairs(kinds) do
+    if kind ~= "particle" then
+      seenPicture = true
+    elseif seenPicture then
+      error("particle polygons precede battler pictures in native submission order", 0)
+    end
+  end
+  Assert.isTrue(seenPicture, "battler pictures reach the shared 3D target")
+  Assert.notNil(frame.planes.battlefield, "the scene rides the battlefield role")
+  Assert.isTrue(#frame.objects > 0, "HUD content rides OBJ fragments")
+  Assert.notNil(frame.animation, "compositor state rides the frame")
+end
+
+
+-- The native menu slide reaches the sub-engine frame exactly once: the
+-- outside regions become window records and the per-plane scroll rides
+-- the plane content, never a second window pass.
+function T.interaction_slide_windows_reach_the_sub_engine_frame()
+  local opts = {}
+  local view = snapshot({
+    mode = "command",
+    commands = {
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
+    },
+  })
+  view.menuWindows = {
+    edge = 174,
+    outsideTop = { x = 1, y = 0, width = 63, height = 144 },
+    outsideBottom = { x = 0, y = 174, width = 256, height = 18 },
+    scroll = {
+      [0] = { x = 64, topY = 0, bottomY = -30 },
+      [1] = { x = 64, topY = 0, bottomY = -30 },
+    },
+  }
+  local graphics = drawnInteraction(view, "command", opts)
+  local frame = assert(opts.compositionFrame, "interaction draws through one typed sub frame")
+  Assert.equal(frame.engine, "sub", "the interaction pane composes on the sub engine")
+  local windows = assert(frame.animation.windows, "slide regions ride compositor window state")
+  Assert.deepEqual(
+    windows.win0,
+    { x = 1, y = 0, width = 63, height = 144 },
+    "the upper outside region selects window zero"
+  )
+  Assert.deepEqual(
+    windows.win1,
+    { x = 0, y = 174, width = 256, height = 18 },
+    "the lower outside region selects window one"
+  )
+  Assert.isTrue(graphics ~= nil, "slide content still paints")
 end
 
 return { tests = T }

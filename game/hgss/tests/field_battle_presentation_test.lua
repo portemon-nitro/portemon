@@ -335,6 +335,7 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local transitionAssets = transition ~= nil and transition.derivedAssets or nil
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
     windows = doubles.windows,
     text = doubles.text,
@@ -1333,6 +1334,7 @@ function T.portrait_demands_speak_exact_canonical_selectors()
   end
   Assert.notNil(staged, versionId .. " stages at least one ready portrait cell")
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1395,6 +1397,7 @@ function T.trainer_picture_demands_wait_for_the_selected_game_host()
     return staged, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1458,6 +1461,7 @@ function T.battle_ball_demands_wait_for_the_selected_game_host()
     return staged, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1525,6 +1529,7 @@ function T.admission_scene_ticket_takes_over_or_cancels_exactly_once()
       return nil
     end
     return FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       windows = recordingWindows(),
       text = recordingText(),
@@ -1583,6 +1588,7 @@ function T.warm_fixed_drawables_survive_release_without_re_enrolling()
     releases[#releases + 1] = lease
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1638,6 +1644,7 @@ function T.battle_manifest_documents_load_once_per_envelope()
     return true, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1733,6 +1740,7 @@ function T.pooled_portrait_cells_share_one_page_upload_across_selectors()
     return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1791,6 +1799,7 @@ function T.staged_scene_upload_failure_reports_its_key_once()
     return nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -1982,6 +1991,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       return answer.ready, answer.failure
     end
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = view,
       windows = recordingWindows(),
       text = recordingText(),
@@ -2027,6 +2037,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       versionId .. " names its absent scene: " .. tostring(missingErr)
     )
     local hostless = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = view,
       windows = recordingWindows(),
       text = recordingText(),
@@ -2072,6 +2083,7 @@ function T.faded_intro_uploads_once_and_releases_exactly_once()
     return false
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -2115,6 +2127,7 @@ function T.faded_intro_upload_failure_fails_closed()
     return false
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -2163,6 +2176,7 @@ function T.palette_images_reuse_replace_and_release_exactly_once()
     return false
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cacheFs,
     windows = recordingWindows(),
     text = recordingText(),
@@ -2236,6 +2250,7 @@ function T.scene_host_failure_fails_closed_naming_its_scene()
       return nil, "probe-controller-boom"
     end
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = view,
       windows = recordingWindows(),
       text = recordingText(),
@@ -2331,6 +2346,7 @@ function T.scene_worker_failure_aborts_the_pending_launch_without_a_result()
       host.notifies[#host.notifies + 1] = { event = event, reason = reason }
     end
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       windows = recordingWindows(),
       text = recordingText(),
@@ -2457,6 +2473,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
     end
     local ok, failure = xpcall(function()
       local envelope = FieldBattlePresentation.new({
+        splRandomState = { state = 0 },
         cacheFs = cacheFs,
         windows = recordingWindows(),
         text = recordingText(),
@@ -2570,6 +2587,7 @@ function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
       host.notifies[#host.notifies + 1] = { event = event, reason = reason }
     end
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       windows = recordingWindows(),
       text = recordingText(),
@@ -2663,6 +2681,7 @@ function T.scene_failure_reports_once_without_driving_the_host()
         host.notifies[#host.notifies + 1] = { event = event, reason = reason }
       end
       local envelope = FieldBattlePresentation.new({
+        splRandomState = { state = 0 },
         cacheFs = cacheFs,
         windows = recordingWindows(),
         text = recordingText(),
@@ -2754,6 +2773,15 @@ local function paintCountingGraphics()
   function graphics.setDepthMode(_, _)
     paint()
   end
+  function graphics.getStencilTest()
+    return nil, nil
+  end
+  function graphics.setStencilTest(_, _)
+    paint()
+  end
+  function graphics.stencil(_fn, _, _, _)
+    paint()
+  end
   function graphics.setShader(_)
     paint()
   end
@@ -2833,6 +2861,7 @@ local function paintCountingGraphics()
   function graphics.newCanvas(width, height)
     local canvas = { width = width, height = height }
     function canvas.setFilter(_, _, _) end
+    function canvas.setWrap(_, _, _) end
     function canvas.release() end
     function canvas.getWidth()
       return width
@@ -3307,6 +3336,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
   end
   readySelectedLeaves(derivedAssets)
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
     windows = doubles.windows,
     text = doubles.text,
@@ -3860,6 +3890,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       host.notifies[#host.notifies + 1] = { event = event, reason = reason }
     end
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       windows = recordingWindows(),
       text = recordingText(),
@@ -3967,6 +3998,7 @@ function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_en
       host.notifies[#host.notifies + 1] = { event = event, reason = reason }
     end
     local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
       cacheFs = cacheFs,
       windows = recordingWindows(),
       text = recordingText(),
@@ -4082,6 +4114,7 @@ function T.selected_trainer_and_ball_leaves_stage_without_the_global_inventory()
     return leavesReady, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),
@@ -4221,6 +4254,7 @@ function T.selected_audio_banks_gate_the_launch_without_unrelated_tracks()
     return true, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),
@@ -4290,6 +4324,7 @@ function T.retired_leaf_generation_stages_without_poisoning_the_core()
     return true, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),
@@ -4358,6 +4393,7 @@ function T.dropped_launches_release_leaf_maps_while_the_core_persists()
     return true, nil
   end
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),

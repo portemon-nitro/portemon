@@ -14,14 +14,17 @@ local function particleSet()
     textures[#textures + 1] = { id = texture.id, drawable = { id = texture.id } }
   end
   return {
-    seed = result.particles.seed,
     emitters = result.particles.emitters,
     textures = textures,
   }
 end
 
 function T.evolution_scene_creates_requested_emitters_in_one_live_system()
-  local particles = BattleEvolutionParticles.new({ set = particleSet(), emitterPosition = { x = 0, y = 0x560 / 4096, z = 0 } })
+  local particles = BattleEvolutionParticles.new({
+    set = particleSet(),
+    emitterPosition = { x = 0, y = 0x560 / 4096, z = 0 },
+    splRandomState = { state = 0 },
+  })
   particles:createEmitter(0)
   particles:createEmitter(1)
   local systems = particles:systems()

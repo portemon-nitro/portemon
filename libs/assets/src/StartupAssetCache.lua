@@ -926,8 +926,15 @@ local function validateOpeningChild(child, sceneNumber)
       useAlphaAnm = true,
       followEmitter = true,
       useChildColor = true,
+      affectFields = true,
       childColor = true,
       drawType = true,
+      rotationType = true,
+      polygonRotationAxis = true,
+      polygonPlane = true,
+      directionFromCenter = true,
+      fixedPolygonId = true,
+      reverseTex = true,
       initVelRandom = true,
       scaleEnd = true,
       life = true,
@@ -944,8 +951,17 @@ local function validateOpeningChild(child, sceneNumber)
     or type(child.useAlphaAnm) ~= "boolean"
     or type(child.followEmitter) ~= "boolean"
     or type(child.useChildColor) ~= "boolean"
+    or (child.affectFields ~= nil and child.affectFields ~= true)
     or not isRgb555Triple(child.childColor)
-    or child.drawType ~= 0
+    or (child.drawType ~= 0 and child.drawType ~= 1 and child.drawType ~= 2 and child.drawType ~= 3)
+    or (child.rotationType ~= nil and (child.rotationType ~= 1 and child.rotationType ~= 2 and child.rotationType ~= 3))
+    or (child.polygonRotationAxis ~= "y" and child.polygonRotationAxis ~= "diagonal")
+    or (child.polygonPlane ~= "xy" and child.polygonPlane ~= "xz")
+    or (child.directionFromCenter ~= nil and child.directionFromCenter ~= true)
+    or (child.fixedPolygonId ~= nil and child.fixedPolygonId ~= true)
+    or type(child.reverseTex) ~= "table"
+    or type(child.reverseTex.s) ~= "boolean"
+    or type(child.reverseTex.t) ~= "boolean"
     or not isFiniteNumber(child.initVelRandom)
     or not isFiniteNumber(child.scaleEnd)
     or not isPositiveInteger(child.life)
@@ -1014,11 +1030,45 @@ local function checkSpinField(field, path)
   return true
 end
 
--- Emitter field checkers by observed field kind.
+-- Checks one emitter random field for its displacement magnitudes and tick interval.
+---@param field table<string, unknown> emitter field under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkRandomField(field, path)
+  if
+    not onlyKeys(field, { kind = true, magnitude = true, interval = true })
+    or not isXyz(field.magnitude)
+    or not isPositiveInteger(field.interval)
+  then
+    return nil, invalid("opening scene emitter random field is malformed", path)
+  end
+  return true
+end
+
+-- Checks one emitter collision field for its plane height, bounce factor,
+-- and response.
+---@param field table<string, unknown> emitter field under validation
+---@param path string scene manifest path behind diagnostics
+---@return boolean|nil, Errors.Error|nil
+local function checkCollisionField(field, path)
+  if
+    not onlyKeys(field, { kind = true, height = true, bounceFx = true, response = true })
+    or not isFiniteNumber(field.height)
+    or not isInteger(field.bounceFx)
+    or (field.response ~= "kill" and field.response ~= "bounce" and field.response ~= "none")
+  then
+    return nil, invalid("opening scene emitter collision field is malformed", path)
+  end
+  return true
+end
+
+-- Emitter field checkers by valid field kind.
 local FIELD_KIND_CHECKS = {
   gravity = checkGravityField,
+  random = checkRandomField,
   magnet = checkMagnetField,
   spin = checkSpinField,
+  collision = checkCollisionField,
 }
 
 ---@param fields unknown
@@ -1082,6 +1132,13 @@ local function validateOpeningEmitter(emitter)
       dbbScale = true,
       sclAnmDirect = true,
       texRepeat = true,
+      reverseTex = true,
+      randomLoopPhase = true,
+      cameraOffset = true,
+      fixedPolygonId = true,
+      polygonRotationAxis = true,
+      polygonPlane = true,
+      directionFromCenter = true,
       texture = true,
       textureImage = true,
       drawChildFirst = true,
@@ -1164,6 +1221,15 @@ local function validateOpeningEmitter(emitter)
     or emitter.texRepeat.t > 3
     or not isNonnegativeInteger(emitter.texture)
     or type(emitter.textureImage) ~= "string"
+    or type(emitter.reverseTex) ~= "table"
+    or type(emitter.reverseTex.s) ~= "boolean"
+    or type(emitter.reverseTex.t) ~= "boolean"
+    or (emitter.randomLoopPhase ~= nil and emitter.randomLoopPhase ~= true)
+    or (emitter.cameraOffset ~= nil and emitter.cameraOffset ~= true)
+    or (emitter.fixedPolygonId ~= nil and emitter.fixedPolygonId ~= true)
+    or (emitter.polygonRotationAxis ~= "y" and emitter.polygonRotationAxis ~= "diagonal")
+    or (emitter.polygonPlane ~= "xy" and emitter.polygonPlane ~= "xz")
+    or (emitter.directionFromCenter ~= nil and emitter.directionFromCenter ~= true)
   then
     return nil, invalid("opening scene emitter motion record is malformed", path)
   end
@@ -2094,9 +2160,10 @@ function StartupAssetCache.loadOpeningScene(cacheFs, sceneNumber, versionId)
       end
     end
   end
-  -- The particle heap starts zeroed, so the retail random stream opens at
-  -- zero; the normalized seed pins that instead of any host random state.
-  if type(record.particles) ~= "table" or record.particles.seed ~= 0 then
+  -- The persisted particle set carries compiled emitters only; the boot
+  -- stream record lives with the boot, never in generated data. A staged
+  -- seed marks the previous generation and is rejected.
+  if type(record.particles) ~= "table" or record.particles.seed ~= nil then
     return nil, invalid("opening scene particles are malformed", path)
   end
   local ok, err = validateOpeningEmitters(record.particles.emitters, sceneNumber)

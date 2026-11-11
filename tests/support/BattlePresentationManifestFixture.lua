@@ -340,7 +340,7 @@ local function fullManifest()
     evolutionEmitters[#evolutionEmitters + 1] = emitter
   end
   local old = {
-    schema = "g4-battle-presentation-v13",
+    schema = "g4-battle-presentation-v14",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -693,7 +693,17 @@ local function fullManifest()
   end
   local pictureSelectors = { exemplar = "pokemon/CHIKORITA/form-0/male/back" }
   local pictureAttribute = old.pictureAttributes["pokemon/CHIKORITA/form-0/male/back"]
-  for _, species in ipairs({ "EEVEE", "TOTODILE", "PICHU", "NINCADA", "NINJASK", "SHEDINJA", "SENTRET", "FURRET" }) do
+  for _, species in ipairs({
+    "CHIKORITA",
+    "EEVEE",
+    "TOTODILE",
+    "PICHU",
+    "NINCADA",
+    "NINJASK",
+    "SHEDINJA",
+    "SENTRET",
+    "FURRET",
+  }) do
     for _, gender in ipairs({ "male", "female" }) do
       for _, facing in ipairs({ "front", "back" }) do
         local key = "pokemon/" .. species .. "/form-0/" .. gender .. "/" .. facing
@@ -920,9 +930,17 @@ local function fullManifest()
       },
     },
     evolutionParticles = {
-      seed = 0,
       emitters = evolutionEmitters,
-      textures = { { id = 0, width = 32, height = 32, image = evolutionTexture } },
+      textures = {
+        {
+          id = 0,
+          width = 32,
+          height = 32,
+          image = evolutionTexture,
+          sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
+          alphaUsage = { hasZero = false, hasPartial = false, hasOpaque = true },
+        },
+      },
     },
     evolutionGraphics = {
       main = { image = "assets/generated/battle/evolution-main.png", width = 256, height = 192 },
@@ -2051,7 +2069,7 @@ local function ballRecord(selector)
     }
   end
   return {
-    schema = "g4-battle-ball-v1",
+    schema = "g4-battle-ball-v2",
     selector = selector,
     catalogIdentity = "synthetic-catalog",
     entry = {
@@ -2093,7 +2111,7 @@ end
 local function evolutionRecord()
   local full = fullManifest()
   return {
-    schema = "g4-battle-evolution-v1",
+    schema = "g4-battle-evolution-v2",
     kind = "evolution",
     catalogIdentity = "synthetic-catalog",
     particles = full.evolutionParticles,

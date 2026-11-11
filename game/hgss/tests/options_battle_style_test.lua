@@ -261,6 +261,7 @@ local function openRig(opts)
   rig.foeReserveName = foeReserve.nickname ~= nil and foeReserve.nickname ~= "" and foeReserve.nickname
     or foeReserve.species
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = screenManifest(),
     model = Model,

@@ -37,7 +37,7 @@
 ---@field _battlerSpriteSlots table<string, table<integer, integer>> battler picture copies by source occurrence and sprite slot
 ---@field _nextEffect integer next transient effect identity
 ---@field _particleSystems { id: integer, system: table<string, unknown> }[] live move particle systems in registration order
----@field _nextParticleSystem integer next particle system registration identity
+---@field _nextParticleSystem integer compatibility counter, unused: manager slots are first-free physical slots
 ---@field _released boolean launch-scoped release guard
 local BattleScene = {}
 BattleScene.__index = BattleScene
@@ -2608,13 +2608,26 @@ end
 -- Registers one live move particle system for drawing: its simulation and the
 -- drawable handles of its textures by source texture id. The owning task keeps
 -- stepping the simulation; the scene only carries it to the renderer.
+-- Native manager slots are first-free physical slots 0..15, not an append
+-- log: freeing a slot hands it back to the next loaded manager so capture
+-- and calculation walk ascending physical order.
 ---@param system { simulation: SplParticleSimulation, textures: table<integer, unknown> } live system to draw
----@return integer id registration identity for release
+---@return integer id physical manager slot for release
 function BattleScene:allocParticleSystem(system)
   assert(not self._released, "released scenes register no particle systems")
   assert(type(system) == "table" and type(system.simulation) == "table", "particle systems carry their simulation")
-  local id = self._nextParticleSystem
-  self._nextParticleSystem = id + 1
+  local used = {}
+  for _, entry in ipairs(self._particleSystems) do
+    used[entry.id] = true
+  end
+  local id = nil
+  for slot = 0, 15 do
+    if not used[slot] then
+      id = slot
+      break
+    end
+  end
+  assert(id ~= nil, "no free particle manager slot")
   self._particleSystems[#self._particleSystems + 1] = { id = id, system = system }
   return id
 end
@@ -2630,11 +2643,19 @@ function BattleScene:releaseParticleSystem(id)
   end
 end
 
--- The live move particle systems in registration order, for drawing.
+-- The live move particle systems in ascending physical slot order, for
+-- drawing: capture and calculation walk first-free slots ascending.
 ---@return { simulation: SplParticleSimulation, textures: table<integer, unknown> }[]
 function BattleScene:particleSystems()
-  local systems = {}
+  local ordered = {}
   for _, entry in ipairs(self._particleSystems) do
+    ordered[#ordered + 1] = entry
+  end
+  table.sort(ordered, function(left, right)
+    return left.id < right.id
+  end)
+  local systems = {}
+  for _, entry in ipairs(ordered) do
     systems[#systems + 1] = entry.system
   end
   return systems

@@ -154,7 +154,7 @@ function T.evolution_particles_load_only_from_the_leaf_record_and_check_texture_
   stagePng(cache, texture.image, texture.width, texture.height)
 
   local particles = assert(BattlePresentationCache.loadEvolutionParticles(cache))
-  Assert.equal(particles.seed, 0, "the leaf loader returns the normalized particle payload")
+  Assert.isNil(particles.seed, "the leaf loader returns the seedless particle payload")
   Assert.equal(#particles.emitters, #leaf.particles.emitters, "the leaf loader returns the complete emitter list")
   Assert.isTrue(
     BattlePresentationCache.isEvolutionParticlesReady(cache, "evolution-marker"),
@@ -357,7 +357,7 @@ local function stageBattle(cache, manifest, sceneKey)
     end
   end
   local record = {
-    schema = "g4-battle-scene-v6",
+    schema = "g4-battle-scene-v7",
     key = sceneKey,
     background = "general",
     terrain = "grass",
@@ -1087,7 +1087,7 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   -- stays on disk.
   local replacementImage = "assets/generated/battle/balls/POKE_BALL-1.png"
   local replacement = {
-    schema = "g4-battle-ball-v1",
+    schema = "g4-battle-ball-v2",
     selector = "ball:POKE_BALL",
     catalogIdentity = core.catalogIdentity,
     entry = {
@@ -1145,9 +1145,10 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   local evolution, evolutionErr = BattlePresentationCache.loadEvolution(cache)
   Assert.isNil(evolutionErr, "the staged evolution bundle loads cleanly: " .. tostring(evolutionErr))
   Assert.equal(assert(evolution).kind, "evolution", "the loaded evolution record names its bundle kind")
+  Assert.isNil(evolution.particles.seed, "the loaded evolution keeps its seedless particle set")
   Assert.equal(
-    evolution.particles.seed,
-    stagedEvolution.particles.seed,
+    #evolution.particles.emitters,
+    #stagedEvolution.particles.emitters,
     "the loaded evolution keeps its complete particle set"
   )
   Assert.isTrue(

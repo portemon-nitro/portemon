@@ -90,6 +90,7 @@ function BattleScreenFixture.new(options)
     end
   end
   options.manifest = manifest
+  options.splRandomState = options.splRandomState or { state = 0 }
   local screen = BattleScreenState.new(options)
   local present = screen._portPresent
   function screen:_portPresent(packet)

@@ -22,6 +22,7 @@ function T.narration_uses_the_retail_window_and_font_background()
   function graphics.push() end
   function graphics.pop() end
   function graphics.intersectScissor() end
+  function graphics.draw() end
   BattleRenderer.drawPane({
     graphics = graphics,
     text = {
@@ -38,6 +39,11 @@ function T.narration_uses_the_retail_window_and_font_background()
     assets = {
       drawable = function()
         return nil
+      end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "picture-composite" }
       end,
     },
     frameKey = "default",
@@ -77,6 +83,7 @@ function T.narration_window_uses_its_live_source_scroll()
   function graphics.push() end
   function graphics.pop() end
   function graphics.intersectScissor() end
+  function graphics.draw() end
   BattleRenderer.drawPane({
     graphics = graphics,
     text = { drawTextForRole = function() end },
@@ -88,6 +95,11 @@ function T.narration_window_uses_its_live_source_scroll()
     assets = {
       drawable = function()
         return nil
+      end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "picture-composite" }
       end,
     },
     frameKey = "default",

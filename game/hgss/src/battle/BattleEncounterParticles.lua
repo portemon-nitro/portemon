@@ -16,11 +16,14 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 ---@field simulation SplParticleSimulation live emitter and particle state
 ---@field textures table<integer, table<string, unknown>> drawable handles by source texture id
 ---@field setIndex integer staged set order behind second-system status
+---@field sceneId unknown? scene manager slot identity, nil while unallocated
 
 ---@class BattleEncounterParticles
 ---@field _started table<integer, boolean> staged set indexes that already started
 ---@field _systems BattleEncounterParticleSystem[] live systems in set order
 ---@field _secondStarted boolean true once the second staged set started, retained until clear
+---@field _splRandomState table<string, integer>? borrowed boot stream record shared by every manager of one boot
+---@field _scene table<string, unknown>? scene manager-slot owner for first-free physical allocation
 local BattleEncounterParticles = {}
 BattleEncounterParticles.__index = BattleEncounterParticles
 
@@ -31,20 +34,28 @@ local EMITTER_Z_OFFSET = 0
 -- second set's retirement is the encounter task's completion condition.
 local SECOND_SET_INDEX = 2
 
+---@param opts { splRandomState: table<string, integer>, scene: table<string, unknown>? } borrowed boot stream record and scene manager-slot owner
 ---@return BattleEncounterParticles
-function BattleEncounterParticles.new()
-  return setmetatable({ _started = {}, _systems = {}, _secondStarted = false }, BattleEncounterParticles)
+function BattleEncounterParticles.new(opts)
+  opts = opts or {}
+  assert(type(opts.splRandomState) == "table", "encounter particles borrow the boot stream record")
+  return setmetatable(
+    { _started = {}, _systems = {}, _secondStarted = false, _splRandomState = opts.splRandomState, _scene = opts.scene },
+    BattleEncounterParticles
+  )
 end
 
 ---@param set table<string, unknown> staged encounter particle set
 ---@param setIndex integer staged set order behind second-system status
+---@param splRandomState table<string, integer> borrowed boot stream record shared by one boot
 ---@return BattleEncounterParticleSystem
-local function startSystem(set, setIndex)
-  local simulation = SplParticleSimulation.new(set.seed --[[@as integer]], EMITTER_Z_OFFSET)
-  for _, record in
+local function startSystem(set, setIndex, splRandomState)
+  local randomState = assert(splRandomState, "encounter particles borrow their boot stream record")
+  local simulation = SplParticleSimulation.new(randomState, EMITTER_Z_OFFSET, set.emitters)
+  for ordinal in
     ipairs(set.emitters --[[@as table<string, unknown>[] ]])
   do
-    SplParticleSimulation.addEmitter(simulation, record.id --[[@as integer]], nil, record)
+    SplParticleSimulation.addEmitter(simulation, ordinal - 1, nil)
   end
   local textures = {}
   for _, texture in
@@ -100,7 +111,11 @@ function BattleEncounterParticles:step(frame, sets)
         if index == SECOND_SET_INDEX then
           self._secondStarted = true
         end
-        self._systems[#self._systems + 1] = startSystem(staged, index)
+        local system = startSystem(staged, index, self._splRandomState)
+        if self._scene ~= nil and type(self._scene.allocParticleSystem) == "function" then
+          system.sceneId = self._scene:allocParticleSystem(system)
+        end
+        self._systems[#self._systems + 1] = system
       end
     end
   end
@@ -108,7 +123,7 @@ function BattleEncounterParticles:step(frame, sets)
     local system = self._systems[index]
     SplParticleSimulation.advance(system.simulation)
     if #system.simulation.emitters == 0 then
-      table.remove(self._systems, index)
+      self:dropSystem(index)
     end
   end
 end
@@ -138,8 +153,21 @@ function BattleEncounterParticles:secondSystemActive()
   return false
 end
 
+-- Releases one live system from the draw list and its scene manager slot.
+---@param index integer position in the live systems
+function BattleEncounterParticles:dropSystem(index)
+  local system = self._systems[index]
+  table.remove(self._systems, index)
+  if system ~= nil and system.sceneId ~= nil and self._scene ~= nil then
+    self._scene:releaseParticleSystem(system.sceneId)
+  end
+end
+
 -- Drops every live system and forgets which sets started.
 function BattleEncounterParticles:clear()
+  for index = #self._systems, 1, -1 do
+    self:dropSystem(index)
+  end
   self._started = {}
   self._systems = {}
   self._secondStarted = false

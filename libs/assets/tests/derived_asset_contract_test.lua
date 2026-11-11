@@ -351,7 +351,7 @@ end
 function T.opening_scene_contract_carries_the_current_schema_identity()
   Assert.equal(
     DerivedAssetContract.startupOpeningScene.schema,
-    "g4-startup-opening-scene-v11",
+    "g4-startup-opening-scene-v12",
     "the opening scene contract carries the current native schema"
   )
   Assert.equal(DerivedAssetContract.startupOpeningScene.tickRate, 30, "the opening scenes run at the retail 30 Hz rate")

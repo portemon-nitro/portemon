@@ -140,6 +140,7 @@ local function battler(overrides)
     exp = nil,
     condition = nil,
     portraitSelector = "LEAD/0/male/plain/back",
+    sourceHeight = 0,
     shakeDx = 0,
   }
   if overrides ~= nil then
@@ -310,25 +311,28 @@ local function drawnDetail(view, opts)
       shadowRegion = function(_, size)
         return ManifestFixture.manifest().pictures.shadow.regions[size + 1]
       end,
-      renderPictures = function(_, drawGraphics, pictures)
-        for _, picture in ipairs(pictures) do
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        local primitives = assert(frame.primitives, "production renders its typed composition frame")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        for _, primitive in ipairs(primitives) do
           if type(opts.observePicture) == "function" then
-            opts.observePicture(picture)
+            opts.observePicture(primitive)
           end
-          local width = assert(picture.width, "the picture pass receives normalized width")
-          local height = assert(picture.height, "the picture pass receives normalized height")
-          drawGraphics.draw(
-            picture.image,
-            picture.centerX + (picture.xOffset or 0) + (picture.xOffset2 or 0) - width / 2,
-            picture.centerY
-              - (picture.shadowHeight or 0)
-              + (picture.yOffset or 0)
-              + (picture.yOffset2 or 0)
-              - height / 2,
-            picture.rotation or 0,
-            width / 80,
-            height / 80
-          )
+          local handle = primitive.image or primitive.material
+          local image = type(handle) == "table" and (handle.image or handle) or handle
+          local minX, minY = nil, nil
+          for _, vertex in ipairs(primitive.vertices or {}) do
+            local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+            local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+            if minX == nil or x < minX then
+              minX = x
+            end
+            if minY == nil or y < minY then
+              minY = y
+            end
+          end
+          drawGraphics.draw(image, minX or 0, minY or 0)
         end
         return { handle = "picture-composite" }
       end,
@@ -425,13 +429,13 @@ function T.pokepic_polygon_alpha_uses_the_native_five_bit_range()
     {
       observePicture = function(picture)
         if type(picture.image) == "table" and picture.image.handle == "mon:LEAD/0/male/plain/back" then
-          pictureAlpha = picture.alpha
+          pictureAlpha = picture.alpha5
         end
       end,
     }
   )
   Assert.isTrue(#drawn.graphics.draws > 0, "the alpha-modulated source picture remains present")
-  Assert.equal(pictureAlpha, 16 / 31, "Pokepic polygon alpha maps from five bits to host alpha")
+  Assert.equal(pictureAlpha, 16, "Pokepic polygon alpha stays five-bit on the shared target")
 end
 
 function T.pokepic_vanished_picture_keeps_its_hud_but_draws_no_picture_or_shadow()
@@ -631,7 +635,7 @@ function T.single_portraits_use_native_centers_height_and_shadow()
         hp = 12,
         maxHp = 12,
         portraitSelector = "FOE/0/male/plain/front",
-        height = 12,
+        sourceHeight = 12,
       }),
     },
   }))
@@ -1306,6 +1310,11 @@ function T.layers_survive_hostile_state_with_explicit_compact_adaptation()
       drawable = function(_, key)
         return stagedDrawable(key)
       end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "picture-composite" }
+      end,
       release = function(_, _) end,
     },
     frameKey = "scene-test-frame",
@@ -1393,7 +1402,7 @@ function T.substitute_picture_is_owned_by_the_native_animation_route()
         combatant = 1,
         side = 1,
         portraitSelector = "FOE/0/male/plain/back",
-        height = 6,
+        sourceHeight = 6,
       }),
       battler({
         combatant = 2,

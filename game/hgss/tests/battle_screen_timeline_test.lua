@@ -694,6 +694,7 @@ function T.first_packet_events_play_after_the_opening_once()
   local launchId = "launch-first-packet-local"
   local submits = {}
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = manifest,
     model = Model,
@@ -2410,6 +2411,7 @@ function T.native_menu_reveal_frames_and_input_gate_follow_source_ticks()
     local submits = {}
     local launchId = "battle-menu-slide-" .. partition
     local screen = BattleScreenState.new({
+      splRandomState = { state = 0 },
       launchId = launchId,
       manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
       model = Model,
@@ -3329,6 +3331,13 @@ function T.level_up_stats_render_in_the_battle_detail_pane()
       drawable = function()
         return nil
       end,
+      -- The stat pane draws no pictures: the stub drains the typed
+      -- frame like production and returns its opaque layer.
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "level-up-pass" }
+      end,
     },
     sceneImageKey = "unused",
     frameKey = "frame",
@@ -3381,6 +3390,13 @@ function T.narration_prints_each_source_line_on_its_own_row()
     assets = {
       drawable = function()
         return nil
+      end,
+      -- The narration pane draws no pictures: the stub drains the
+      -- typed frame like production and returns its opaque layer.
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "narration-pass" }
       end,
     },
     sceneImageKey = "unused",

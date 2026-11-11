@@ -1293,7 +1293,7 @@ end
 -- fixtures build on the current contract instead.
 local OPENING_SCHEMA = "g4-startup-opening-scene-v3"
 
-local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v11"
+local CURRENT_OPENING_SCHEMA = "g4-startup-opening-scene-v12"
 
 local function openingLayer(engine, bgSlot, image)
   return {
@@ -1502,6 +1502,9 @@ local function openingEmitter(id, group)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = 0,
     textureImage = "assets/generated/startup/opening/4/particles/texture0.png",
     animations = {},
@@ -1537,7 +1540,7 @@ local function validOpeningManifest(sceneNumber, versionId)
     },
     spriteClips = { openingClip(root, "clip0") },
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = openingSteps(sceneNumber), events = openingEvents(sceneNumber, root) },
     assets = {
       [root .. "/main-bg.png"] = true,
@@ -1547,7 +1550,6 @@ local function validOpeningManifest(sceneNumber, versionId)
   }
   if sceneNumber == 4 then
     manifest.particles = {
-      seed = 0,
       emitters = nineOpeningEmitters(),
     }
   end
@@ -1962,7 +1964,7 @@ end
 -- engine-local window records with plane masks, a town-stage stop limited to
 -- the town scene, and manual window overrides. These synthetic fixtures pin
 -- the strict reader contract without touching a ROM.
-local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v11"
+local OPENING_SCHEMA_V3 = "g4-startup-opening-scene-v12"
 
 local function openingLayerV3(engine, bgSlot, image, visible)
   return {
@@ -2014,7 +2016,7 @@ local function validOpeningManifestV3(sceneNumber, versionId)
     },
     spriteClips = { openingClip(root, "clip0") },
     models = {},
-    particles = { seed = 0, emitters = {} },
+    particles = { emitters = {} },
     timeline = { steps = openingSteps(3), events = openingEvents(3, root) },
     assets = {
       [root .. "/main-bg.png"] = true,
@@ -2080,7 +2082,6 @@ end
 function T.opening_scene_reader_accepts_engine_window_records()
   local manifest = validOpeningManifestV3(4, "heartgold")
   manifest.particles = {
-    seed = 0,
     emitters = nineOpeningEmitters(),
   }
   appendStepEventV3(manifest, "open", openingWindowEvent("open", 0))
@@ -2185,7 +2186,7 @@ end
 -- The generated opening scene identity the producer and the strict reader
 -- agree on: full native surfaces with per-image extents, instant and
 -- continuous scroll modes, and per-engine blend and wipe operands.
-local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v11"
+local NATIVE_OPENING_SCHEMA = "g4-startup-opening-scene-v12"
 
 local function typedOpeningManifest()
   local manifest = validOpeningManifest(1, "heartgold")

@@ -296,6 +296,7 @@ local function openCaptureRig(opts)
     },
   }
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = screenManifest(),
     model = BattlePresentationModel,

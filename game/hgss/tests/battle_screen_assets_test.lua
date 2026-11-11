@@ -488,17 +488,36 @@ function T.disposal_releases_owned_handles_once()
   Assert.notNil(owned:drawable("scene:probe"), "the scene image is owned")
   Assert.notNil(owned:drawable(playerBack), "the player image is owned")
   local graphics = FakeGraphics.new({})
-  local blend = owned:menuBlendTargets(graphics)
-  Assert.equal(owned:menuBlendTargets(graphics), blend, "every menu frame reuses the screen's blend targets")
-  Assert.equal(#graphics.canvases, 2, "the blend targets allocate their two canvases once")
-  Assert.equal(#graphics.shaders, 1, "the blend targets compile their shader once")
+  local seen = {}
+  local passReleased = false
+  local canvas = { handle = "picture-pass-canvas" }
+  owned._picturePass = {
+    render = function(_, _, frame)
+      seen[#seen + 1] = frame
+      return canvas
+    end,
+    release = function()
+      passReleased = true
+    end,
+  }
+  local frame = {
+    engine = "main",
+    animation = {},
+    primitives = {},
+    planes = {},
+    objects = {},
+    layout = { scale = 1, offsetX = 0, offsetY = 0 },
+  }
+  local first = owned:renderPictures(graphics, frame)
+  Assert.equal(first.handle, "picture-pass-canvas", "the holder lends the borrowed pass canvas")
+  Assert.equal(owned:renderPictures(graphics, frame), first, "every frame reuses the screen's picture pass")
+  Assert.deepEqual(seen, { frame, frame }, "the holder forwards the complete typed frame")
   owned:dispose()
   owned:dispose()
   Assert.equal(assets.released["scene:probe"], 1, "the scene handle releases once")
   Assert.equal(assets.released[playerBack], 1, "the player handle releases once")
   Assert.isNil(assets.released[enemyFront], "never-drawn keys never release")
-  Assert.isTrue(graphics.canvases[1].released and graphics.canvases[2].released, "disposal releases the blend canvases")
-  Assert.isTrue(graphics.shaders[1].released, "disposal releases the blend shader")
+  Assert.isTrue(passReleased, "disposal releases the picture pass once")
 end
 
 -- The late evolution leaf stages once per launch through the field
@@ -678,6 +697,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   end
   local launchId = "launch-portrait-rebind"
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = BattlePresentationManifestFixture.launchView(
       { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
@@ -1490,6 +1510,7 @@ local function demandEnvelope(cache, host, graphics, pool)
   local windows = {}
   function windows.drawWindow(_, _, _) end
   return FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = windows,
     text = text,
@@ -1590,6 +1611,7 @@ local function demandScreen(launchId, services)
     return true
   end
   return BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = stagedPortraitLaunchView(),
     model = {},
@@ -2126,6 +2148,7 @@ local function effectStagingEnvelope(cache, host)
   local windows = {}
   function windows.drawWindow(_, _, _) end
   return FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = windows,
     text = text,

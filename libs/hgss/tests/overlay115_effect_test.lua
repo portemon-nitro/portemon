@@ -88,7 +88,7 @@ end
 
 function T.gym_and_rival_routes_use_the_source_intro_schedule_and_release_route_art()
   local route, resources = gymFixture()
-  local effect = Overlay115Effect.new(route, resources)
+  local effect = Overlay115Effect.new(route, resources, nil, { splRandomState = { state = 0 } })
   effect:start()
   Assert.equal(effect:stepSourceTick(), false, "native state zero initializes the gym runner")
   Assert.equal(effect:frame().sourcePhase, 1, "gym runner enters its flash-start state")
@@ -126,7 +126,7 @@ end
 
 function T.elite_routes_keep_gender_art_and_own_native_particle_setup()
   local route, resources = eliteFixture(9)
-  local effect = Overlay115Effect.new(route, resources, { playerGender = "female" })
+  local effect = Overlay115Effect.new(route, resources, { playerGender = "female" }, { splRandomState = { state = 0 } })
   effect:start()
   effect:stepSourceTick()
   effect:stepSourceTick()
@@ -167,7 +167,7 @@ end
 -- leave through completion rather than a timer.
 function T.elite_particle_systems_follow_the_source_load_create_free_sequence()
   local route, resources = eliteFixture(9)
-  local effect = Overlay115Effect.new(route, resources, { playerGender = "male" })
+  local effect = Overlay115Effect.new(route, resources, { playerGender = "male" }, { splRandomState = { state = 0 } })
   effect:prepareGraphics(love.graphics)
   effect:start()
   local function particleSystem()

@@ -20,11 +20,6 @@ local SplEmitterCompiler = {}
 
 SplEmitterCompiler.ERROR = { SOURCE_INVALID = "SPL_EMITTER_SOURCE_INVALID" }
 
--- Retail deterministic seed: the particle heap starts zeroed, so the
--- library random stream opens at zero. The record pins zero rather than the
--- host random state.
-local PARTICLE_SEED = 0
-
 ---@param message string
 ---@param context table<string, unknown>|nil
 local function sourceError(message, context)
@@ -52,7 +47,7 @@ local function decodeTexture(block, record)
     height = record.height,
     texel = texels,
     palette = palette,
-    color0Transparent = true,
+    color0Transparent = record.color0Transparent,
   }, { name = "particle-texture-" .. tostring(record.id) })
   if not ok then
     sourceError("particle texture could not be decoded", {
@@ -88,6 +83,17 @@ local function normalizeField(field, block)
       kind = "gravity",
       magnitude = { x = fx(field.offset), y = fx(field.offset + 2), z = fx(field.offset + 4) },
     }
+  elseif field.kind == "random" then
+    local magnitude = {
+      x = toS16(reader:u16le(field.offset)) / 4096,
+      y = toS16(reader:u16le(field.offset + 2)) / 4096,
+      z = toS16(reader:u16le(field.offset + 4)) / 4096,
+    }
+    local interval = reader:u16le(field.offset + 6)
+    if interval == 0 then
+      sourceError("particle random field carries no generation interval", { offset = field.offset })
+    end
+    return { kind = "random", magnitude = magnitude, interval = interval }
   elseif field.kind == "magnet" then
     local function fx(offset)
       local value = reader:u32le(offset)
@@ -119,6 +125,24 @@ local function normalizeField(field, block)
       kind = "convergence",
       position = { x = fx32(field.offset), y = fx32(field.offset + 4), z = fx32(field.offset + 8) },
       ratio = toS16(reader:u16le(field.offset + 12)),
+    }
+  elseif field.kind == "collision" then
+    local height = reader:u32le(field.offset)
+    if height >= 2147483648 then
+      height = height - 4294967296
+    end
+    local response = reader:u16le(field.offset + 6)
+    local responseName = "none"
+    if response == 0 then
+      responseName = "kill"
+    elseif response == 1 then
+      responseName = "bounce"
+    end
+    return {
+      kind = "collision",
+      height = height / 4096,
+      bounceFx = toS16(reader:u16le(field.offset + 4)),
+      response = responseName,
     }
   end
   -- SplResource decodes only the observed gravity, magnet, spin, and
@@ -242,26 +266,20 @@ local function normalizeChild(child, byTexture, emitterId)
   local function reject(message)
     sourceError(message, { emitter = emitterId, offset = child.offset })
   end
-  -- spl_generate.c handles rotation types 0 (none), 1 (parent angle), and
-  -- 2 (parent angle and spin); type 3 leaves the angle uninitialized.
+  -- Child rotation type 3 preserves the recycled node's prior rotation;
+  -- the zeroed pool starts that at zero, so fresh nodes stay unrotated.
   local rotationType = math.floor(child.flag / 8) % 4
-  if rotationType == 3 then
-    reject("particle child uses an unrepresented rotation")
-  end
-  if childBit(0) then
-    reject("particle child is field-driven")
-  end
   local drawType = math.floor(child.flag / 128) % 4
-  if drawType > 1 then
-    reject("particle child uses an unrepresented draw kind")
+  if drawType > 3 then
+    reject("particle child uses an out-of-range draw kind")
   end
-  if child.reverseS or child.reverseT then
-    reject("particle child uses mirrored texture coordinates")
+  if drawType >= 2 and (child.polygonRotationAxis == nil or child.polygonRotationAxis > 1) then
+    reject("particle child indexes an out-of-range polygon rotation function")
   end
   if child.life <= 0 then
     reject("particle child carries no lifespan")
   end
-  if child.genInterval <= 0 then
+  if child.genNum > 0 and child.genInterval <= 0 then
     reject("particle child carries no generation interval")
   end
   local texture = byTexture[child.texNo]
@@ -278,7 +296,12 @@ local function normalizeChild(child, byTexture, emitterId)
     followEmitter = childBit(5),
     useChildColor = childBit(6),
     childColor = child.colorRgb,
+    affectFields = child.affectFields == true or nil,
     rotationType = rotationType ~= 0 and rotationType or nil,
+    polygonRotationAxis = child.polygonRotationAxis == 1 and "diagonal" or "y",
+    polygonPlane = child.polygonPlane == 1 and "xz" or "xy",
+    directionFromCenter = child.dpolCenter == true or nil,
+    reverseTex = { s = child.reverseS, t = child.reverseT },
     drawType = drawType,
     initVelRandom = child.initVelMagRndm,
     scaleEnd = child.scaleEnd,
@@ -301,44 +324,31 @@ local function validateEmitter(emitter)
     context.emitter = emitter.id
     sourceError(message, context)
   end
-  -- Flag-derived geometry: only the placement kinds and draw kinds the
-  -- runtime replays compile.
-  if emitter.flag % 16 > 9 then
-    reject("particle emitter uses an unrepresented placement kind", { placement = emitter.flag % 16 })
-  end
-  -- Circle axis 3 orients the circle across the emitter's own axis, which
-  -- must have a direction.
+  -- Placement kinds 0..15 all decode: kinds 10..15 retain the recycled
+  -- node's local position instead of executing a placement case.
   local circleAxis = math.floor(emitter.flag / 64) % 4
   if circleAxis == 3 and emitter.axis.x == 0 and emitter.axis.y == 0 and emitter.axis.z == 0 then
     reject("particle emitter circle axis names a zero emitter axis", { axis = circleAxis })
   end
   local drawType = math.floor(emitter.flag / 16) % 4
-  if drawType ~= 0 and drawType ~= 1 then
-    reject("particle emitter uses an unrepresented draw kind", { draw = drawType })
+  -- The polygon rotation table carries two entries: rotation-axis values
+  -- 2/3 only fail when a polygon draw mode actually indexes them.
+  local rotationAxis = math.floor(emitter.flag / 131072) % 4
+  if (drawType == 2 or drawType == 3) and rotationAxis > 1 then
+    reject("particle emitter indexes an out-of-range polygon rotation function", { axis = rotationAxis })
   end
-  if math.floor(emitter.flag / 8388608) % 2 == 1 then
-    reject("particle emitter uses an unrepresented camera-relative draw")
-  end
-  -- Bounded lifetimes and schedules: a zero generation interval or loop
-  -- frame divides by zero in the retail update, and a zero lifespan
-  -- divides the life-rate computation or never retires its run case.
+  -- Bounded schedules: a zero generation interval or loop frame would
+  -- divide by zero in the retail update. A zero emitter life means
+  -- infinite generation until stopped or deleted, and a zero particle
+  -- life yields life one through the native birth formula.
   if emitter.generationInterval <= 0 then
     reject("particle emitter carries no generation interval")
-  end
-  if emitter.emitterLife <= 0 then
-    reject("particle emitter carries no emitter lifespan")
-  end
-  if emitter.particleLife <= 0 then
-    reject("particle emitter carries no particle lifespan")
   end
   if emitter.loopFrame <= 0 then
     reject("particle emitter carries no animation loop frame")
   end
   if emitter.baseAlpha > 31 then
     reject("particle emitter carries no 5-bit base alpha", { alpha = emitter.baseAlpha })
-  end
-  if emitter.reverseTex.s or emitter.reverseTex.t then
-    reject("particle emitter uses mirrored texture coordinates")
   end
 end
 
@@ -377,6 +387,9 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
   local child = nil
   if emitter.child ~= nil then
     child = normalizeChild(emitter.child, byTexture, emitter.id)
+    if emitter.childFixedPolygonId then
+      child.fixedPolygonId = true
+    end
   end
   local fields = {}
   for _, field in ipairs(emitter.fields) do
@@ -445,6 +458,13 @@ local function normalizeEmitter(memberBytes, emitter, byTexture, group)
     dbbScale = emitter.dbbScale,
     sclAnmDirect = emitter.sclAnmDirect,
     texRepeat = emitter.texRepeat,
+    reverseTex = { s = emitter.reverseTex.s, t = emitter.reverseTex.t },
+    randomLoopPhase = emitter.randomLoopPhase == true or nil,
+    cameraOffset = emitter.cameraOffset == true or nil,
+    fixedPolygonId = emitter.fixedPolygonId == true or nil,
+    polygonRotationAxis = emitter.polygonRotationAxis == 1 and "diagonal" or "y",
+    polygonPlane = emitter.polygonPlane,
+    directionFromCenter = emitter.directionFromCenter == true or nil,
     texture = texture.id,
     textureImage = texture.image,
     textureAnim = textureAnim,
@@ -498,6 +518,8 @@ local function compileEmitters(memberBytes, options)
       format = texture.format,
       width = texture.width,
       height = texture.height,
+      sampler = texture.sampler,
+      alphaUsage = pixels.alphaUsage,
       sourceHash = Hashing.sha1hex(
         memberBytes:sub(texture.texelOffset + 1, texture.texelOffset + texture.texelSize)
           .. memberBytes:sub(texture.paletteOffset + 1, texture.paletteOffset + texture.paletteSize)
@@ -524,7 +546,7 @@ local function compileEmitters(memberBytes, options)
     emitters[#emitters + 1] = normalizeEmitter(memberBytes, emitter, byTexture, group)
   end
   return {
-    particles = { seed = PARTICLE_SEED, emitters = emitters, textures = textures },
+    particles = { emitters = emitters, textures = textures },
     files = files,
     dependencies = { particleMemberHash = Hashing.sha1hex(memberBytes) },
   }

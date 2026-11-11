@@ -148,7 +148,7 @@ function T.move_power_picture_transition_requires_a_typed_event_input_and_fixed_
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "move-power-picture-transition",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -359,7 +359,7 @@ function T.sprite_priority_appearance_requires_topology_and_registered_sprite_co
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "sprite-priority-appearance-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -378,7 +378,7 @@ end
 
 function T.cyclic_picture_position_transition_requires_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "cyclic-picture-position-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -430,7 +430,7 @@ function T.battler_blend_alpha_callback_has_typed_sprite_and_coefficient_fields(
 
   instruction.parameters.oamModeSpriteSlots = { "sprite-context-slot-0" }
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "blend-alpha-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -457,7 +457,7 @@ function T.selected_picture_pair_callback_requires_a_closed_topology_context()
   Assert.isFalse(pcall(schema().assertProgram, program(instruction)))
   instruction.parameters.pictureSets = { "active-battler" }
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "selected-picture-pair-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -473,7 +473,7 @@ end
 
 function T.picture_affine_blend_callback_requires_registered_sprite_context()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "picture-affine-blend-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1459,7 +1459,7 @@ end
 
 function T.effect_resources_require_semantic_payload_identity()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "synthetic-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "set-parameter", values = { 0, 1 } }),
@@ -1496,7 +1496,7 @@ end
 function T.effect_context_is_a_closed_typed_layout_and_resources_cover_instruction_keys()
   local resourceKey = "battle/particle/test"
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "typed-context-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1533,7 +1533,7 @@ end
 -- provider cannot resolve never validates.
 function T.effect_sounds_name_shared_sequence_symbols_without_staged_payloads()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "voiced-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "play-sound", sound = "SEQ_SE_DP_050" }),
@@ -1560,7 +1560,7 @@ end
 function T.particle_system_instructions_are_closed_over_their_staged_particle_resource()
   local resourceKey = "battle/particle/closure"
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "particle-system-closure",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1598,7 +1598,7 @@ end
 
 function T.vanished_picture_operation_requires_source_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "vanished-picture-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1622,7 +1622,7 @@ end
 
 function T.position_offset_callback_declares_its_battler_topology()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "position-offset-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({
@@ -1664,7 +1664,7 @@ function T.interpolated_picture_effect_declares_its_sprite_context_table()
     },
   }
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "sprite-context-effect",
     catalogIdentity = "synthetic-catalog",
     program = program(instruction),
@@ -1684,7 +1684,7 @@ end
 
 function T.effect_resource_descriptors_accept_typed_multicell_formats()
   local effect = {
-    schema = "g4-battle-effect-v5",
+    schema = "g4-battle-effect-v6",
     key = "synthetic-multicell-effect",
     catalogIdentity = "synthetic-catalog",
     program = program({ op = "set-parameter", values = { 0, 1 } }),

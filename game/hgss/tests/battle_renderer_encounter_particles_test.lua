@@ -10,6 +10,43 @@ local FakeGraphics = require("tests.support.FakeGraphics")
 
 local T = {}
 
+-- The composite layer handle production draws after the picture pass:
+-- idle assertions allow exactly this draw and no primitive-sourced one.
+local COMPOSITE_LAYER = { handle = "picture-composite" }
+
+-- Drains one typed composition frame through the recording boundary so
+-- particle assertions observe production draws without GPU. Pool leases
+-- draw through their palette-exact sampler exactly like shared drawing;
+-- raw images draw directly.
+---@param graphics table recording graphics boundary under drawing
+---@return function renderPictures stub behind the test asset holder
+local function drainPictures(graphics)
+  return function(_, drawGraphics, frame)
+    local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+    CompositionFrameDrain.drain(drawGraphics, frame)
+    local primitives = assert(frame.primitives, "production renders its typed composition frame")
+    for _, primitive in ipairs(primitives) do
+      local handle = primitive.image or primitive.material
+      -- Pool leases unwrap to their staged source image like production
+      -- sampling; sized leases draw through a viewport like shared art.
+      local image = type(handle) == "table" and (handle.image or handle) or handle
+      local width = type(handle) == "table" and handle.width or nil
+      local height = type(handle) == "table" and handle.height or nil
+      if type(width) == "number" and type(height) == "number" then
+        local quad = drawGraphics.newQuad(0, 0, width, height, width, height)
+        if type(handle) == "table" and type(handle.drawQuad) == "function" then
+          handle:drawQuad(drawGraphics, quad, 0, 0)
+        else
+          drawGraphics.draw(image, quad, 0, 0)
+        end
+      else
+        drawGraphics.draw(image, 0, 0)
+      end
+    end
+    return COMPOSITE_LAYER
+  end
+end
+
 local function recordingGraphics(log)
   local graphics = {}
   function graphics.getColor()
@@ -58,6 +95,7 @@ local function drawDetail(graphics, view, scene)
       drawable = function(_, key)
         return (view.drawables ~= nil and view.drawables[key]) or scene
       end,
+      renderPictures = drainPictures(graphics),
     },
     frameKey = "default",
   }, view, "detail", {})
@@ -80,7 +118,7 @@ local function runningSystems()
       texture.drawable = images[index]
     end
   end
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   for frame = 1, 8 do
     owner:step(frame, sets)
   end
@@ -91,7 +129,10 @@ function T.live_particles_draw_over_the_palette_faded_scene()
   local idle = {}
   drawDetail(recordingGraphics(idle), { encounterParticleSystems = {} })
   for _, entry in ipairs(idle) do
-    Assert.isTrue(entry.kind ~= "draw", "an idle encounter draws no particle quads")
+    Assert.isTrue(
+      entry.kind ~= "draw" or entry.image == COMPOSITE_LAYER,
+      "an idle encounter draws no particle quads"
+    )
   end
   local systems, images = runningSystems()
   local scene = {}
@@ -123,9 +164,9 @@ end
 function T.move_particle_systems_draw_their_textures_in_the_detail_pane()
   local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
   local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
-  local simulation = SplParticleSimulation.new(0, 0)
   local record = BattleParticleLeaseFixture.payload(1).emitters[1]
-  SplParticleSimulation.addEmitter(simulation, 0, nil, record)
+  local simulation = SplParticleSimulation.new({ state = 0 }, 0, { record })
+  SplParticleSimulation.addEmitter(simulation, 0, nil)
   SplParticleSimulation.advance(simulation)
   local image = {
     getWidth = function()
@@ -152,9 +193,9 @@ end
 function T.evolution_panes_draw_staged_layers_pictures_window_and_live_particles()
   local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
   local BattleParticleLeaseFixture = require("tests.support.BattleParticleLeaseFixture")
-  local simulation = SplParticleSimulation.new(0, 0)
   local record = BattleParticleLeaseFixture.payload(1).emitters[1]
-  SplParticleSimulation.addEmitter(simulation, 0, nil, record)
+  local simulation = SplParticleSimulation.new({ state = 0 }, 0, { record })
+  SplParticleSimulation.addEmitter(simulation, 0, nil)
   SplParticleSimulation.advance(simulation)
 
   local function image(width, height)
@@ -394,7 +435,7 @@ function T.encounter_particles_draw_pooled_leases_without_raw_draws()
       leases[#leases + 1] = lease
     end
   end
-  local owner = BattleEncounterParticles.new()
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   for frame = 1, 8 do
     owner:step(frame, sets)
   end
@@ -458,6 +499,7 @@ local function drawCompactPane(graphics, view, scene, content)
       drawable = function(_, key)
         return (view.drawables ~= nil and view.drawables[key]) or scene
       end,
+      renderPictures = drainPictures(graphics),
     },
     frameKey = "default",
   }, view, "compact", content or {})

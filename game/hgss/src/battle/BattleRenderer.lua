@@ -17,6 +17,7 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 
@@ -613,6 +614,24 @@ local function numberOr(value, default)
   return type(value) == "number" and value or default
 end
 
+-- The settled visual center behind one battler picture: the frozen slot
+-- row plus the scene-published species picture height. The height is a
+-- required scene fact (every drawn picture carries its species
+-- geometry), never a guessed zero; live vertical displacement arrives
+-- through entry/shake offsets, task-owned center state and picture
+-- offsets, each consumed once by its own owner.
+---@param battler table<string, unknown> displayed battler facts under drawing
+---@param row BattleRenderer.SlotGeometry the battler's published slot row
+---@return number settled horizontal native center
+---@return number settled vertical native center
+local function settledPictureCenter(battler, row)
+  local speciesHeight = assert(
+    type(battler.sourceHeight) == "number" and battler.sourceHeight,
+    "settled pictures carry their scene-published species picture height"
+  )
+  return row.settledX, row.settledY + speciesHeight
+end
+
 ---@param tint table<string, number>? optional picture tint
 ---@return number red multiplier
 ---@return number green multiplier
@@ -718,11 +737,8 @@ local function shadowPicture(assets, battler, row)
     + numberOr(battler.entryDx, 0)
     + numberOr(battler.shakeDx, 0)
     + numberOr(battler.motionDx, 0)
-  local pictureCenterY = row.settledY
-    + numberOr(battler.height, 0)
-    + numberOr(battler.sourceHeight, 0)
-    + numberOr(battler.entryDy, 0)
-    + numberOr(battler.motionDy, 0)
+  local _, settledCenterY = settledPictureCenter(battler, row)
+  local pictureCenterY = settledCenterY + numberOr(battler.entryDy, 0) + numberOr(battler.motionDy, 0)
   local shadowX = battler.shadowAdjustX == false
       and assert(type(battler.shadowX) == "number" and battler.shadowX, "fixed shadows carry their source X")
     or pictureCenterX + numberOr(battler.pictureXOffset, 0) + numberOr(battler.shadowOffsetX, 0)
@@ -800,7 +816,6 @@ local function battlerPicture(assets, battler, row)
       palette = lease.palette
     end
   end
-  local sourceHeight = numberOr(battler.height, 0) + numberOr(battler.sourceHeight, 0)
   local scaleX = numberOr(battler.scaleX, 1)
   local scaleY = numberOr(battler.scaleY, 1)
   if battler.affineMode == true then
@@ -813,14 +828,12 @@ local function battlerPicture(assets, battler, row)
   end
   local pictureVisible = battler.pictureVisible == true
   local tintR, tintG, tintB, tintA = tintOf(battler.pictureTint --[[@as table<string, number>?]])
+  local settledX, settledY = settledPictureCenter(battler, row)
   local picture = {
     image = image.image,
     imageKind = image.imageKind,
-    centerX = row.settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0) + numberOr(
-      battler.motionDx,
-      0
-    ),
-    centerY = row.settledY + sourceHeight + numberOr(battler.entryDy, 0) + numberOr(battler.motionDy, 0),
+    centerX = settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0) + numberOr(battler.motionDx, 0),
+    centerY = settledY + numberOr(battler.entryDy, 0) + numberOr(battler.motionDy, 0),
     zCenter = row.depth,
     frameX = frameX,
     frameY = frameY,
@@ -882,16 +895,16 @@ local function effectPicture(assets, picture)
   }
 end
 
--- Submits every depth-ordered battler shadow and picture, then the
--- transient effect pictures, as one isolated picture pass composited
--- under the neutral tint. Vanished and undrawn battlers submit nothing.
----@param graphics table<string, unknown> injected host graphics
+-- Collects every depth-ordered battler shadow, picture and transient
+-- effect picture as native submissions for the shared 3D target.
+-- Vanished and undrawn battlers submit nothing.
 ---@param assets table<string, unknown> injected asset holder
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
 ---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
 ---@param singles boolean true while the battle keeps its single layout
-local function drawPicturePlanes(graphics, assets, view, players, enemies, singles)
+---@return table<integer, table<string, unknown>> depth-ordered picture submissions
+local function collectPictureSubmissions(assets, view, players, enemies, singles)
   local pictures = {}
   local battlerPictures = {}
   local function activationKey(activation)
@@ -926,11 +939,9 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
           end
           copy.centerY = copy.centerY - numberOr(source.battler.shadowHeight, 0)
           if picture.follow ~= true then
+            local _, followSettledY = settledPictureCenter(source.battler, source.row)
             copy.centerX = source.row.settledX
-            copy.centerY = source.row.settledY
-              + numberOr(source.battler.height, 0)
-              + numberOr(source.battler.sourceHeight, 0)
-              - numberOr(source.battler.shadowHeight, 0)
+            copy.centerY = followSettledY - numberOr(source.battler.shadowHeight, 0)
           end
           submit(copy)
         end
@@ -939,11 +950,386 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
       end
     end
   end
-  if #pictures > 0 then
-    local layer = assets:renderPictures(graphics, pictures)
-    graphics.setColor(1, 1, 1, 1)
+  return pictures
+end
+
+-- Native clip-space extent behind one submitted picture: the shared 3D
+-- target consumes homogeneous clip vertices with identity matrices, so
+-- the submitted screen rectangle maps exactly once here.
+---@param picture table<string, unknown> collected picture submission
+---@param ordinal integer native submission ordinal behind the primitive
+---@return table<string, unknown>? ordered native polygon, nil while the staged image stays unmeasurable
+local function pictureToPrimitive(picture, ordinal)
+  local staged = picture.image
+  if type(staged.getDimensions) ~= "function" then
+    return nil
+  end
+  local function five(value)
+    local channel = math.floor((value or 1) * 31 + 0.5)
+    if channel < 0 then
+      return 0
+    elseif channel > 31 then
+      return 31
+    end
+    return channel
+  end
+  local rows = {}
+  for _, point in ipairs(BattlePicturePass.screenVertices(picture)) do
+    rows[#rows + 1] = {
+      clipX = (point[1] / 128 - 1) * 4096,
+      clipY = (1 - point[2] / 96) * 4096,
+      clipZ = point[3],
+      clipW = 4096,
+      u = point[4],
+      v = point[5],
+    }
+  end
+  return {
+    kind = picture.kind or "picture",
+    vertices = rows,
+    color5 = { r = five(picture.tintR), g = five(picture.tintG), b = five(picture.tintB) },
+    alpha5 = five(picture.alpha),
+    polygonId = 5,
+    image = picture.image,
+    palette = picture.palette,
+    imageKind = picture.imageKind,
+    paletteFade = picture.paletteFade,
+    sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
+    alphaUsage = picture.kind == "shadow" and nil or { hasZero = true, hasOpaque = true },
+    submissionOrdinal = ordinal,
+    flags = { cullMode = "none", fogEnabled = false, translucentDepthWrite = false, depthEqual = false },
+    centerX = picture.centerX,
+    centerY = picture.centerY,
+    width = picture.width,
+    height = picture.height,
+    zCenter = picture.kind == "shadow" and BattleScene.SHADOW_DEPTH or picture.zCenter,
+    pictureVisible = picture.pictureVisible,
+    xOffset = picture.xOffset,
+    yOffset = picture.yOffset,
+    xOffset2 = picture.xOffset2,
+    yOffset2 = picture.yOffset2,
+    shadowHeight = picture.shadowHeight,
+    frameX = picture.frameX,
+    frameY = picture.frameY,
+    frameW = picture.frameW,
+    frameH = picture.frameH,
+    flipH = picture.flipH,
+    flipV = picture.flipV,
+    rotation = picture.rotation,
+    rotationX = picture.rotationX,
+    rotationY = picture.rotationY,
+    rotationZ = picture.rotationZ,
+    pivotX = picture.pivotX,
+    pivotY = picture.pivotY,
+  }
+end
+
+-- Appends native particle polygons in source submission order: move
+-- systems, then encounter, then ball. The capture already ran at the
+-- native graphics phase; drawing never advances simulation or RNG.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param out table<integer, table<string, unknown>> caller-owned ordered primitive array
+local function collectParticlePrimitives(view, out)
+  for _, key in ipairs({ "moveParticleSystems", "encounterParticleSystems", "ballParticleSystems" }) do
+    local systems = view[key] --[[@as table<integer, table<string, unknown>>?]]
+    if systems ~= nil then
+      for _, system in ipairs(systems) do
+        local simulation = system.simulation --[[@as table<string, unknown>?]]
+        local textures = system.textures --[[@as table<integer, table<string, unknown>>?]]
+        if simulation ~= nil and textures ~= nil then
+          ---@param runtime table<string, unknown>
+          ---@param particle table<string, unknown>
+          ---@param child table<string, unknown>?
+          ---@return table<string, unknown> staged particle texture
+          local function resolveTexture(runtime, particle, child)
+            local _ = runtime
+            local texNo = child ~= nil and child.texNo or particle.texNo
+            return assert(textures[texNo], "particle texture is staged")
+          end
+          SplParticleDraw.appendPrimitives(simulation, nil, resolveTexture, out)
+        end
+      end
+    end
+  end
+end
+
+-- Default engine plane priorities behind the typed frame.
+local ENGINE_PRIORITY = {
+  main = { world3d = 1, window = 0, transition = 2, battlefield = 3 },
+  sub = { menu = 1, window = 0, transition = 2, battlefield = 3 },
+}
+local ENGINE_WORLD_ROLE = { main = "world3d", sub = "menu" }
+local NATIVE_LAYOUT = { scale = 1, offsetX = 0, offsetY = 0 }
+
+---@param value unknown optional numeric coefficient
+---@return integer clamped 0..16 hardware coefficient
+local function clampCoefficient(value)
+  if type(value) ~= "number" then
+    return 0
+  end
+  if value < 0 then
+    return 0
+  elseif value > 16 then
+    return 16
+  end
+  return math.floor(value)
+end
+
+-- Normalizes one engine compositor state behind the typed frame.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param engine string "main" or "sub" engine behind the frame
+---@return table<string, unknown> normalized compositor animation state
+local function compositionAnimation(view, engine)
+  local worldRole = assert(ENGINE_WORLD_ROLE[engine], "composition engines are main or sub")
+  local defaults = ENGINE_PRIORITY[engine]
+  local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
+  local perEngine = type(sceneAnimation) == "table" and sceneAnimation[engine] or nil
+  local compositor = type(perEngine) == "table" and type(perEngine.compositor) == "table" and perEngine.compositor or {}
+  local function roleMap(source, fallback)
+    local record = {}
+    for role, default in pairs(fallback) do
+      local value = type(source) == "table" and source[role] or nil
+      record[role] = value == nil and default or value
+    end
+    return record
+  end
+  local visible = roleMap(compositor.visible, {
+    [worldRole] = true,
+    window = true,
+    transition = true,
+    battlefield = true,
+    objects = true,
+  })
+  local priority = roleMap(compositor.priority, defaults)
+  local firstTarget = roleMap(compositor.firstTarget, {})
+  local secondTarget = roleMap(compositor.secondTarget, {})
+  local blend = { mode = "none", eva = 0, evb = 0, evy = 0 }
+  if engine == "main" then
+    local spriteBlend = view.spriteBlend --[[@as table<string, unknown>?]]
+    if type(spriteBlend) == "table" and type(spriteBlend.blendCoefficientA) == "number" then
+      blend = {
+        mode = "alpha",
+        eva = clampCoefficient(spriteBlend.blendCoefficientA),
+        evb = clampCoefficient(spriteBlend.blendCoefficientB),
+        evy = 0,
+      }
+      firstTarget[worldRole] = true
+      secondTarget.battlefield = true
+    end
+  end
+  if type(compositor.blend) == "table" then
+    local source = compositor.blend --[[@as table<string, unknown>]]
+    blend = {
+      mode = source.mode or "none",
+      eva = clampCoefficient(source.eva),
+      evb = clampCoefficient(source.evb),
+      evy = clampCoefficient(source.evy),
+    }
+  end
+  local brightness = { mode = "none", coefficient = 0 }
+  if type(compositor.brightness) == "table" then
+    local source = compositor.brightness --[[@as table<string, unknown>]]
+    brightness = {
+      mode = source.mode or "none",
+      coefficient = clampCoefficient(source.coefficient),
+    }
+  end
+  local windows = {}
+  if type(compositor.windows) == "table" then
+    windows = compositor.windows
+  end
+  return {
+    visible = visible,
+    priority = priority,
+    firstTarget = firstTarget,
+    secondTarget = secondTarget,
+    backdrop = compositor.backdrop or { 0, 0, 0 },
+    windows = windows,
+    blend = blend,
+    brightness = brightness,
+    objTargets = compositor.objTargets or {},
+  }
+end
+
+-- Normalizes the published mosaic block behind the typed frame.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@return table<string, unknown>? mosaic frame state, nil while disabled
+local function frameMosaic(view)
+  local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
+  local mosaic = type(sceneAnimation) == "table" and sceneAnimation.mosaic or nil
+  if type(mosaic) ~= "table" then
+    return nil
+  end
+  local horizontal = mosaic.horizontal or 0
+  local vertical = mosaic.vertical or 0
+  local size = math.max(horizontal, vertical)
+  if size <= 1 then
+    return nil
+  end
+  if size > 16 then
+    size = 16
+  end
+  local enabled = mosaic.bgEnabled == true
+  return {
+    size = math.floor(size),
+    layers = { battlefield = enabled, window = enabled, transition = enabled },
+  }
+end
+
+-- Selects the published scanline rows behind the typed frame.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@return table<integer, table<string, integer>>? 192 scanline rows, nil while idle
+local function frameScanlines(view)
+  local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
+  local rows = type(sceneAnimation) == "table" and sceneAnimation.scanlines or nil
+  if type(rows) ~= "table" or #rows ~= 192 then
+    return nil
+  end
+  for index = 1, 192 do
+    local entry = rows[index]
+    if type(entry) == "table" and ((entry.x or 0) ~= 0 or (entry.y or 0) ~= 0) then
+      return rows
+    end
+  end
+  return nil
+end
+
+-- Presents one main-engine frame through the screen compositor.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param layout table<string, unknown> world fit behind the present
+---@param planes table<string, table<string, unknown>?> 2D content per role
+---@param objects table<integer, table<string, unknown>> ordered OBJ fragments
+local function presentMainFrame(resources, view, layout, planes, objects)
+  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+  local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  local primitives = {}
+  collectParticlePrimitives(view, primitives)
+  local players, enemies = BattleViewRoster.liveSides(view)
+  local singles = not doublesFormat(view, players, enemies)
+  for _, picture in ipairs(collectPictureSubmissions(assets, view, players, enemies, singles)) do
+    local primitive = pictureToPrimitive(picture, #primitives + 1)
+    if primitive ~= nil then
+      primitives[#primitives + 1] = primitive
+    end
+  end
+  local frame = {
+    sourceTick = type(view.requestId) == "number" and view.requestId or 0,
+    engine = "main",
+    animation = compositionAnimation(view, "main"),
+    primitives = primitives,
+    planes = planes,
+    objects = objects,
+    layout = layout,
+    scanlines = frameScanlines(view),
+    scanlineLayer = "battlefield",
+    mosaic = frameMosaic(view),
+  }
+  local r, g, b, a = saveColor(graphics)
+  graphics.setColor(1, 1, 1, 1)
+  local layer = assets:renderPictures(graphics, frame)
+  graphics.draw(layer, 0, 0)
+  restoreColor(graphics, r, g, b, a)
+end
+
+-- Maps the native menu slide snapshot onto sub-engine window state.
+---@param menuWindows table<string, unknown> native slide regions and per-plane offsets
+---@return table<string, unknown> sub-engine window records
+local function slideWindowState(menuWindows)
+  local top = assert(menuWindows.outsideTop, "menu window snapshot carries the upper outside region") --[[@as table<string, number>]]
+  local bottom = assert(menuWindows.outsideBottom, "menu window snapshot carries the lower outside region") --[[@as table<string, number>]]
+  return {
+    win0 = { x = top.x, y = top.y, width = top.width, height = top.height },
+    win1 = { x = bottom.x, y = bottom.y, width = bottom.width, height = bottom.height },
+    outside = { mask = { menu = false, window = false, transition = false, battlefield = false } },
+  }
+end
+
+-- Wraps one sub-engine plane draw with the slide scroll.
+---@param graphics table<string, unknown> injected host graphics
+---@param menuWindows table<string, unknown> native slide regions and per-plane offsets
+---@param plane integer source lower BG plane behind the scroll
+---@param draw fun(graphics: table<string, unknown>) plane content behind the scroll
+local function drawSlidePlane(graphics, menuWindows, plane, draw)
+  local top = assert(menuWindows.outsideTop, "menu window snapshot carries the upper outside region")
+  local bottom = assert(menuWindows.outsideBottom, "menu window snapshot carries the lower outside region")
+  local scroll = assert(menuWindows.scroll, "menu window snapshot carries per-plane BG offsets")
+  local offset = assert(scroll[plane], "menu window snapshot carries each composited plane offset")
+  local function drawRegion(region, yOffset)
+    if region.width == 0 or region.height == 0 then
+      return
+    end
+    LogicalSurface.clip(graphics, region, function()
+      graphics.push("all")
+      graphics.translate(-offset.x, -yOffset)
+      local ok, err = pcall(draw, graphics)
+      graphics.pop()
+      if not ok then
+        error(err, 0)
+      end
+    end)
+  end
+  drawRegion(top, offset.topY)
+  drawRegion(bottom, offset.bottomY)
+end
+
+-- Presents one sub-engine frame through the screen compositor.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> semantic snapshot behind the content
+---@param planeDraws table<string, (fun(graphics: table<string, unknown>))?> content per sub-engine role
+---@param opts table<string, unknown>? presentation options
+local function presentSubFrame(resources, view, planeDraws, opts)
+  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+  local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  opts = opts or {}
+  local animation = compositionAnimation(view, "sub")
+  local slideWindows = opts.slideWindows --[[@as table<string, unknown>?]]
+  if opts.bareRole ~= nil then
+    local visible = {}
+    for _, role in ipairs({ "menu", "window", "transition", "battlefield", "objects" }) do
+      visible[role] = role == opts.bareRole
+    end
+    animation.visible = visible
+  end
+  local planes = {}
+  for _, role in ipairs({ "menu", "window", "transition", "battlefield" }) do
+    local draw = planeDraws[role]
+    if draw ~= nil then
+      if slideWindows ~= nil and (role == "menu" or role == "window") then
+        local plane = role == "menu" and 0 or 1
+        local content = draw
+        local function drawSlideContent(slideGraphics)
+          drawSlidePlane(slideGraphics, slideWindows, plane, content)
+        end
+        draw = drawSlideContent
+      end
+      planes[role] = { draw = draw }
+    end
+  end
+  if slideWindows ~= nil then
+    animation.windows = slideWindowState(slideWindows)
+  end
+  local frame = {
+    sourceTick = type(view.requestId) == "number" and view.requestId or 0,
+    engine = "sub",
+    animation = animation,
+    primitives = {},
+    planes = planes,
+    objects = opts.objects or {},
+    layout = opts.layout or NATIVE_LAYOUT,
+  }
+  local r, g, b, a = saveColor(graphics)
+  graphics.setColor(1, 1, 1, 1)
+  local layer = assets:renderPictures(graphics, frame)
+  local clip = opts.clip --[[@as table<string, unknown>?]]
+  if clip ~= nil then
+    LogicalSurface.clip(graphics, clip, function()
+      graphics.draw(layer, 0, 0)
+    end)
+  else
     graphics.draw(layer, 0, 0)
   end
+  restoreColor(graphics, r, g, b, a)
 end
 
 -- Draws one compiled sprite object from its staged tile strip: tiles lay
@@ -1824,29 +2210,52 @@ local function drawDetail(resources, view)
   -- path below.
   local r, g, b, a = saveColor(graphics)
   graphics.setColor(1, 1, 1, 1)
-  -- The shared source intro pass draws the background, terrain base and
-  -- trainer pictures; portraits and health boxes stay layer-independent.
-  drawSourceMainScene(resources, view)
-  local players, enemies = BattleViewRoster.liveSides(view)
-  local singles = not doublesFormat(view, players, enemies)
-  drawPicturePlanes(graphics, assets, view, players, enemies, singles)
-  drawThrownBall(graphics, assets, view)
-  if singles then
-    drawSinglesDetail(graphics, text, assets, view, players, enemies)
-  else
-    drawDoublesDetail(
-      graphics,
-      text,
-      assets,
-      assert(doublesHud, "the doubled battle render borrows its verified HUD sections"),
-      view,
-      players,
-      enemies
-    )
+  -- Detail composes one main-engine typed frame: the scene plane,
+  -- thrown ball and HUD/narration enter their semantic roles while
+  -- pictures and particles ride the shared 3D target once.
+  local function drawDetailBattlefield()
+    drawSourceMainScene(resources, view)
   end
-  drawNarration(resources, view)
-  drawLevelUpStats(resources, view)
+  local function drawDetailWindow()
+    drawNarration(resources, view)
+    drawLevelUpStats(resources, view)
+  end
+  local planes = {
+    battlefield = {
+      draw = drawDetailBattlefield,
+    },
+    window = {
+      draw = drawDetailWindow,
+    },
+  }
+  local function drawDetailObjects()
+    drawThrownBall(graphics, assets, view)
+    local players, enemies = BattleViewRoster.liveSides(view)
+    local singles = not doublesFormat(view, players, enemies)
+    if singles then
+      drawSinglesDetail(graphics, text, assets, view, players, enemies)
+    else
+      drawDoublesDetail(
+        graphics,
+        text,
+        assets,
+        assert(doublesHud, "the doubled battle render borrows its verified HUD sections"),
+        view,
+        players,
+        enemies
+      )
+    end
+  end
+  local objects = {
+    {
+      objPriority = 0,
+      submissionOrder = 1,
+      oamMode = "normal",
+      draw = drawDetailObjects,
+    },
+  }
   restoreColor(graphics, r, g, b, a)
+  presentMainFrame(resources, view, NATIVE_LAYOUT, planes, objects)
 end
 
 ---@param view table<string, unknown> internal semantic snapshot under drawing
@@ -2898,10 +3307,18 @@ end
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param child table<string, unknown> confirmed learning child view with source labels
 local function drawTwoOptionConfirmation(resources, view, child)
-  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
-  local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  assert(resources.graphics, "the battle render borrows its host graphics")
+  assert(resources.assets, "the battle render borrows its asset holder")
   local text = assert(resources.text, "the battle render borrows its text services")
-  local pressed = BattleMenuPresenter.drawChildTwoOption(graphics, assets, view)
+  -- The armed child control selects its source option through the same
+  -- child-to-source mapping the presented two-option pane uses.
+  local pressed = (function()
+    local armed = view.armed --[[@as table<string, unknown>?]]
+    if type(armed) == "table" and armed.scope == "child" then
+      return BattleMenuPresenter.CHILD_TWO_OPTION[armed.id]
+    end
+    return nil
+  end)()
   local labels = assert(child.twoOption, "learning confirmation carries source-selected labels") --[[@as table<string, unknown>]]
   local top = assert(labels.top, "the top option has its staged source label") --[[@as string]]
   local bottom = assert(labels.bottom, "the bottom option has its staged source label") --[[@as string]]
@@ -2965,11 +3382,28 @@ local function drawInteraction(resources, view, content, placement)
   -- Retail hides every plane but SUB_2 while no menu is open
   -- (BattleInput_ShowOnlySubBgLayer2): the plain backdrop without
   -- the button tilemaps.
-  BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows, not inputMode)
+  local grouped = {}
+  for index, layer in ipairs(layers) do
+    if inputMode or layer.plane == 2 then
+      local role = BattleMenuPresenter.roleForPlane(layer.plane)
+      if grouped[role] == nil then
+        grouped[role] = {}
+      end
+      grouped[role][#grouped[role] + 1] = { index = index, layer = layer }
+    end
+  end
+  local planeDraws = {}
+  for role, entries in pairs(grouped) do
+    local function drawInteractionPlane(planeGraphics)
+      for _, entry in ipairs(entries) do
+        BattleMenuPresenter.drawPlane(planeGraphics, assets, layout, view, entry)
+      end
+    end
+    planeDraws[role] = drawInteractionPlane
+  end
+  local objects = {}
   if inputMode then
     local function drawOverlay()
-      -- Multi-actor turns name the acting battler above the menu so staged
-      -- choices are never mistaken for the previous entry's selection.
       local acting = BattleViewRoster.actingName(view)
       if acting ~= nil then
         drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
@@ -2977,199 +3411,166 @@ local function drawInteraction(resources, view, content, placement)
       drawControls(resources, view, layout, regions)
       drawKeypadCursor(graphics, assets, view, layout, regions)
     end
-    -- OBJ controls obey the same slide windows as the BG planes: the top
-    -- controls wipe horizontally with W0 while the strip below the W1 edge
-    -- stays revealed. Clipping to the full reveal height alone would pop
-    -- the top buttons in early, which reads as flicker.
     local top = type(menuWindows) == "table" and menuWindows.outsideTop or nil
     local bottom = type(menuWindows) == "table" and menuWindows.outsideBottom or nil
+    local overlay = drawOverlay
     if type(top) == "table" and type(bottom) == "table" then
-      if top.width ~= 0 and top.height ~= 0 then
-        LogicalSurface.clip(graphics, top, drawOverlay)
+      local function drawClippedOverlay()
+        if top.width ~= 0 and top.height ~= 0 then
+          LogicalSurface.clip(graphics, top, drawOverlay)
+        end
+        if bottom.width ~= 0 and bottom.height ~= 0 then
+          LogicalSurface.clip(graphics, bottom, drawOverlay)
+        end
       end
-      if bottom.width ~= 0 and bottom.height ~= 0 then
-        LogicalSurface.clip(graphics, bottom, drawOverlay)
-      end
+      overlay = drawClippedOverlay
     else
       local revealEdge = view.menuRevealEdge
       if type(revealEdge) == "number" then
-        LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
-      else
-        drawOverlay()
-      end
-    end
-  end
-  drawGauges(resources, view)
-end
-
----@param graphics table<string, unknown> injected host graphics
----@param assets table<string, unknown> injected asset holder
----@param view table<string, unknown> internal semantic snapshot
----@param spots table<integer, table<string, unknown>> compact sprite anchors keyed by native position
-local function drawCompactSlots(graphics, assets, view, spots)
-  -- One sprite per declared slot, matched by the opaque native
-  -- position in the plan's paint order. Hidden, benched and historic
-  -- records own no slot; a missing portrait draws nothing under the
-  -- existing pending path, never a fallback picture. Draw never
-  -- mutates engine or cue state.
-  local players, enemies = BattleViewRoster.liveSides(view)
-  local live = {}
-  for _, side in ipairs({ players, enemies }) do
-    for _, battler in ipairs(side) do
-      if type(battler.position) == "number" then
-        assert(
-          live[battler.position] == nil,
-          "compact slot "
-            .. tostring(battler.position)
-            .. " is visibly claimed twice (combatant "
-            .. tostring(battler.combatant)
-            .. ")"
-        )
-        live[battler.position] = battler
-      end
-    end
-  end
-  for _, spot in ipairs(spots) do
-    local battler = live[spot.position]
-    local image = battler ~= nil and battlerImage(assets, battler) or nil
-    if image ~= nil and battler.visible ~= false then
-      local dx = numberOr(battler.shakeDx, 0)
-      local crop = battler.pictureVisible == true
-      local pictureWidth = crop and numberOr(battler.pictureWidth, 80) or 80
-      local pictureHeight = crop and numberOr(battler.pictureHeight, 80) or 80
-      local pictureX = numberOr(battler.pictureXOffset, 0)
-      local pictureY = numberOr(battler.pictureYOffset, 0)
-      local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
-      local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
-      LogicalSurface.clip(graphics, allocation, function()
-        -- Lease-paired cells draw through the shared sampler so the
-        -- recorded draw carries the staged cell exactly; owned and
-        -- test images draw directly.
-        local x = spot.x + (dx + pictureX) * scale
-        local y = spot.y + pictureY * scale
-        if crop then
-          LogicalSurface.clip(graphics, {
-            x = x,
-            y = y,
-            width = pictureWidth * scale,
-            height = pictureHeight * scale,
-          }, function()
-            drawArtwork(graphics, image, image.quad, x, y, 0, scale, scale)
-          end)
-        else
-          drawArtwork(graphics, image, image.quad, x, y, 0, scale, scale)
+        local function drawRevealOverlay()
+          LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
         end
-      end)
+        overlay = drawRevealOverlay
+      end
     end
+    objects[#objects + 1] = { objPriority = 0, submissionOrder = 1, oamMode = "normal", draw = overlay }
   end
+  local function drawInteractionGauges()
+    drawGauges(resources, view)
+  end
+  objects[#objects + 1] = {
+    objPriority = 0,
+    submissionOrder = 2,
+    oamMode = "normal",
+    draw = drawInteractionGauges,
+  }
+  presentSubFrame(resources, view, planeDraws, { objects = objects, slideWindows = menuWindows })
 end
 
--- Draws one visible singles battler portrait at its compact center with
--- its transient shake.
----@param graphics table<string, unknown> injected host graphics
----@param assets table<string, unknown> injected asset holder
----@param battler table<string, unknown>? first battler facts on the side
----@param center table<string, number> compact image center under drawing
-local function drawCompactSingle(graphics, assets, battler, center)
-  if battler == nil or battler.visible == false then
-    return
-  end
-  local image = battlerImage(assets, battler)
-  if image ~= nil then
-    local crop = battler.pictureVisible == true
-    local x = center.x + numberOr(battler.shakeDx, 0) + numberOr(battler.pictureXOffset, 0)
-    local y = center.y + numberOr(battler.pictureYOffset, 0)
-    if crop then
-      LogicalSurface.clip(graphics, {
-        x = x,
-        y = y,
-        width = numberOr(battler.pictureWidth, 80),
-        height = numberOr(battler.pictureHeight, 80),
-      }, function()
-        drawArtwork(graphics, image, image.quad, x, y)
-      end)
-    else
-      drawArtwork(graphics, image, image.quad, center.x + numberOr(battler.shakeDx, 0), center.y)
-    end
-  end
-end
-
--- Draws live SPL particle systems over the main screen. The 3D layer sits
--- above the faded BG and OBJ planes, so particles are not tinted by the
--- encounter fade and draw over the battler pictures.
----@param graphics table<string, unknown> injected host graphics
----@param systems table<integer, { simulation: SplParticleSimulation, textures: table<integer, table<string, unknown>> }>|nil live systems in creation order
-local function drawParticleSystems(graphics, systems)
-  if systems == nil then
-    return
-  end
-  for _, system in ipairs(systems) do
-    ---@param _ table<string, unknown>
-    ---@param particle table<string, unknown>
-    ---@param child table<string, unknown>|nil
-    ---@return table<string, unknown>|userdata staged texture handle behind the particle
-    local function resolveTexture(_, particle, child)
-      local texNo = child ~= nil and child.texNo or particle.texNo
-      return assert(system.textures[texNo], "particle texture is staged")
-    end
-    SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
-  end
-end
-
--- Draws the live main-screen 3D/SPL systems over the faded 2D planes in
--- native order: move particles, encounter particles, then ball particles.
--- The encounter snapshot never recolors these draws. Draw never steps.
----@param graphics table<string, unknown> injected host graphics
----@param view table<string, unknown> internal semantic snapshot
-local function drawSourceMainParticles(graphics, view)
-  graphics.push("all")
-  graphics.setColor(1, 1, 1, 1)
-  drawParticleSystems(graphics, view.moveParticleSystems)
-  drawParticleSystems(graphics, view.encounterParticleSystems)
-  drawParticleSystems(graphics, view.ballParticleSystems)
-  graphics.pop()
-end
-
--- Draws one compact scene inside the single-pane viewport: the same
--- selected source scene with the battler pictures at the plan's compact
--- image centers, clipped to the compact scene viewport without scaling.
--- The plan may supply compact centers; without them the native centers
--- apply. The auxiliary selection arrow and party gauges stay hidden in
--- compact mode because the text cursor and Party action provide the
--- corresponding interaction. The compact HUD draws its own region wording
--- through the text services at the plan anchors; this scene path draws
--- images only, never text or bars.
+-- Draws one compact scene through the same composition frame as detail:
+-- the entire native battlefield shares one uniform fit inside the
+-- scene rectangle while compact HUD and narration callbacks arrive at
+-- their planned target coordinates.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
----@param content table<string, unknown> canonical plan content carrying the compact anchors
-local function drawCompactScene(resources, view, content)
-  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
-  local assets = assert(resources.assets, "the battle render borrows its asset holder")
-  local viewport = type(content.scene) == "table" and content.scene or { x = 0, y = 0, width = 256, height = 136 }
-  local playerCenter = type(content.playerCenter) == "table" and content.playerCenter or BattleRenderer.PLAYER_CENTER
-  local enemyCenter = type(content.enemyCenter) == "table" and content.enemyCenter or BattleRenderer.ENEMY_CENTER
-  -- Compact images use ordinary alpha composition under an isolated
-  -- neutral image tint, then restore the caller's complete graphics state.
-  -- The compact viewport evaluates the same source intro state as detail
-  -- (scene, terrain, trainers, live particles) at native main-screen
-  -- coordinates, clipped to the compact scene viewport without moving
-  -- emitter origins to the crop center.
-  graphics.push("all")
-  graphics.setBlendMode("alpha", "alphamultiply")
-  graphics.setColor(1, 1, 1, 1)
-  LogicalSurface.clip(graphics, viewport, function()
+---@param content table<string, unknown> canonical plan content carrying the scene rectangle
+---@param compactUI table<string, unknown>? compact interface callbacks behind the frame
+local function drawCompactScene(resources, view, content, compactUI)
+  local scene = type(content.scene) == "table" and content.scene or { x = 0, y = 0, width = 256, height = 136 }
+  local transform = content.worldTransform
+  local layout
+  if type(transform) == "table" then
+    layout = {
+      scale = transform.scale,
+      offsetX = transform.offsetX,
+      offsetY = transform.offsetY,
+      worldRect = scene,
+    }
+  else
+    local scale = math.min(scene.width / 256, scene.height / 192)
+    layout = {
+      scale = scale,
+      offsetX = scene.x + (scene.width - 256 * scale) / 2,
+      offsetY = scene.y + (scene.height - 192 * scale) / 2,
+      worldRect = scene,
+    }
+  end
+  local ui = compactUI or {}
+  local function drawCompactBattlefield()
     drawSourceMainScene(resources, view)
-    local spots = content.spriteCenters
-    if type(spots) == "table" then
-      drawCompactSlots(graphics, assets, view, spots --[[@as table<integer, table<string, unknown>>]])
-    else
-      local player, enemy = BattleViewRoster.firstPerSide(view)
-      drawCompactSingle(graphics, assets, enemy, enemyCenter)
-      drawCompactSingle(graphics, assets, player, playerCenter)
+  end
+  local planes = {
+    battlefield = {
+      draw = drawCompactBattlefield,
+    },
+  }
+  if type(ui.window) == "function" then
+    local windowDraw = ui.window --[[@as fun()]]
+    planes.window = { draw = windowDraw }
+  end
+  -- Compact HUD rides at its planned target coordinates after the
+  -- shared present: the world fit applies only to source geometry,
+  -- never to HUD placement. During live effects the HUD still enters
+  -- through the compositor via the typed frame; static command views
+  -- carry no active blend or window state, so direct target drawing
+  -- preserves placement without clipping into the world padding.
+  presentMainFrame(resources, view, layout, planes, {})
+  if type(ui.hud) == "function" then
+    local hudDraw = ui.hud --[[@as fun()]]
+    hudDraw()
+  end
+end
+
+-- Presents one compact dock through the sub engine with its own menu
+-- state, then only inside the dock rectangle.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> semantic snapshot behind the content
+---@param dock table<string, unknown> dock content and placement behind the present
+function BattleRenderer.drawCompactDock(resources, view, dock)
+  assert(type(dock) == "table", "compact docks carry their content")
+  local draw = assert(dock.draw, "compact docks draw their content")
+  local rect = assert(dock.rect, "compact docks carry their dock rectangle")
+  presentSubFrame(resources, view, {
+    menu = draw --[[@as fun(graphics: table<string, unknown>)]],
+  }, {
+    clip = rect,
+    bareRole = "menu",
+  })
+end
+
+-- Presents the learning confirmation two-option planes through the
+-- sub engine with the armed child control selecting its source option.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> semantic snapshot carrying the menu layers and armed control
+---@param overlay (fun(pressed: string?))? label content behind the planes
+---@return string? pressed source option identity, nil while no child control is armed
+function BattleRenderer.drawTwoOptionPane(resources, view, overlay)
+  local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
+  local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
+  local pressed = (function()
+    local armed = view.armed --[[@as table<string, unknown>?]]
+    if type(armed) == "table" and armed.scope == "child" then
+      return BattleMenuPresenter.CHILD_TWO_OPTION[armed.id]
     end
-    drawSourceMainParticles(graphics, view)
-  end)
-  graphics.pop()
+    return nil
+  end)()
+  local subView = {}
+  for key, value in pairs(view) do
+    subView[key] = value
+  end
+  subView.selection = pressed
+  subView.armed = pressed ~= nil and { scope = "two-option", id = pressed } or nil
+  local planeDraws = {}
+  for _, layer in ipairs(layers) do
+    local role = BattleMenuPresenter.roleForPlane(layer.plane)
+    if planeDraws[role] == nil then
+      planeDraws[role] = {}
+    end
+    planeDraws[role][#planeDraws[role] + 1] = layer
+  end
+  local draws = {}
+  for role, roleLayers in pairs(planeDraws) do
+    local function drawTwoOptionRole(graphics)
+      for index, layer in ipairs(roleLayers) do
+        BattleMenuPresenter.drawPlane(
+          graphics,
+          assert(resources.assets, "the battle render borrows its asset holder"),
+          "two-option",
+          subView,
+          {
+            index = index,
+            layer = layer,
+          }
+        )
+      end
+      if role == "menu" and overlay ~= nil then
+        overlay(pressed)
+      end
+    end
+    draws[role] = drawTwoOptionRole
+  end
+  presentSubFrame(resources, subView, draws, {})
+  return pressed
 end
 
 ---@param assets table<string, unknown> battle image owner
@@ -3207,6 +3608,28 @@ local function drawEvolutionSummary(resources, state, pane)
   local renderer = assert(resources.summaryRenderer, "evolution Summary borrows the field renderer")
   local bundle = assert(status.resources, "ready evolution Summary carries its resource bundle")
   renderer:drawPane(status, pane, bundle)
+end
+
+-- Draws live SPL particle systems over the evolution pane through the
+-- retained sibling overlay wrapper. The battle-composed main scene owns
+-- its own primitive path; this child pane keeps the overlay draw.
+---@param graphics table<string, unknown> injected host graphics
+---@param systems table<integer, { simulation: SplParticleSimulation, textures: table<integer, table<string, unknown>> }>|nil live systems in creation order
+local function drawParticleSystems(graphics, systems)
+  if systems == nil then
+    return
+  end
+  for _, system in ipairs(systems) do
+    ---@param _ table<string, unknown>
+    ---@param particle table<string, unknown>
+    ---@param child table<string, unknown>|nil
+    ---@return table<string, unknown>|userdata staged texture handle behind the particle
+    local function resolveTexture(_, particle, child)
+      local texNo = child ~= nil and child.texNo or particle.texNo
+      return assert(system.textures[texNo], "particle texture is staged")
+    end
+    SplParticleDraw.draw(graphics, system.simulation, { centerX = 128, centerY = 96, resolveTexture = resolveTexture })
+  end
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -3444,7 +3867,8 @@ end
 ---@param paneId string resolved pane identity
 ---@param content table<string, unknown> canonical plan content carrying the layout
 ---@param placement LayoutGeometry.Placement resolved placement the pane draws under
-function BattleRenderer.drawPane(resources, view, paneId, content, placement)
+---@param compactUI table<string, unknown>? compact interface callbacks behind the compact frame
+function BattleRenderer.drawPane(resources, view, paneId, content, placement, compactUI)
   assert(type(resources) == "table", "pane drawing borrows its resources")
   assert(type(view) == "table", "pane drawing reads its snapshot")
   local child = view.mode == "child" and view.childView or nil
@@ -3461,12 +3885,9 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement)
       drawEvolutionWaiting(assert(resources.graphics, "the battle render borrows its host graphics"))
     end
   elseif paneId == "compact" then
-    drawCompactScene(resources, view, content or {})
+    drawCompactScene(resources, view, content or {}, compactUI)
   elseif paneId == "detail" then
     drawDetail(resources, view)
-    -- No fullscreen wash covers the composed main scene: the 3D systems
-    -- draw above the scene planes untinted.
-    drawSourceMainParticles(assert(resources.graphics, "the battle render borrows its host graphics"), view)
   elseif paneId == "interaction" then
     drawInteraction(resources, view, content or {}, placement)
   end

@@ -1493,6 +1493,237 @@ end
 -- A parameterized emitter creation joins a loaded particle system with
 -- either one fixed emitter ordinal or a closed position-pair ordinal map
 -- selected at runtime.
+-- The twelve pair-transform profiles behind source callbacks 5..16 read
+-- seven script axis triples plus one position triple at creation; the
+-- from-script convergence/magnet profiles read one more target block.
+local PAIR_TRANSFORM_PROFILES = {
+  ["particle-emitter-position-pair-primary-primary"] = true,
+  ["particle-emitter-position-pair-primary-secondary"] = true,
+  ["particle-emitter-position-pair-primary-partner"] = true,
+  ["particle-emitter-position-pair-primary-opponent"] = true,
+  ["particle-emitter-position-pair-primary-opposing-partner"] = true,
+  ["particle-emitter-position-pair-primary-active"] = true,
+  ["particle-emitter-position-pair-secondary-primary"] = true,
+  ["particle-emitter-position-pair-secondary-secondary"] = true,
+  ["particle-emitter-position-pair-secondary-partner"] = true,
+  ["particle-emitter-position-pair-secondary-opponent"] = true,
+  ["particle-emitter-position-pair-secondary-opposing-partner"] = true,
+  ["particle-emitter-position-pair-secondary-active"] = true,
+}
+
+local PAIR_SCRIPT_TARGET_PROFILES = {
+  ["particle-emitter-position-pair-secondary-primary"] = true,
+  ["particle-emitter-position-pair-secondary-active"] = true,
+}
+
+---@param instruction table<string, unknown> decoded battle animation instruction
+---@param context table<string, unknown> validation context
+---@param code string schema error code
+---@param field string instruction path behind diagnostics
+local function checkPairScriptVectors(instruction, context, code, field)
+  local pair = PAIR_TRANSFORM_PROFILES[instruction.actionProfile] == true
+  local function checkTriple(value, what)
+    SchemaCheck.checkRecord(value, { x = true, y = true, z = true }, context, code, what)
+    for _, name in ipairs({ "x", "y", "z" }) do
+      SchemaCheck.checkInteger(value[name], context, code, what .. "." .. name, -0x80000000, 0x7FFFFFFF)
+    end
+  end
+  if instruction.scriptVectors ~= nil then
+    if not pair then
+      fail(code, field .. " carries script vectors only for its pair-transform profiles", context)
+      return
+    end
+    if not Validate.isArray(instruction.scriptVectors) or #instruction.scriptVectors ~= 7 then
+      fail(code, field .. ".scriptVectors carries all seven source axis triples", context)
+      return
+    end
+    for index, triple in ipairs(instruction.scriptVectors) do
+      checkTriple(triple, field .. ".scriptVectors[" .. index .. "]")
+    end
+  elseif pair then
+    fail(code, field .. " carries script vectors for pair-transform profiles", context)
+    return
+  end
+  if instruction.scriptPosition ~= nil then
+    if not pair then
+      fail(code, field .. " carries a script position only for its pair-transform profiles", context)
+      return
+    end
+    checkTriple(instruction.scriptPosition, field .. ".scriptPosition")
+  elseif pair then
+    fail(code, field .. " carries a script position for pair-transform profiles", context)
+    return
+  end
+  local needsTarget = PAIR_SCRIPT_TARGET_PROFILES[instruction.actionProfile] == true
+  if instruction.scriptTarget ~= nil then
+    if not needsTarget then
+      fail(code, field .. " carries a script target only for its from-script pair profiles", context)
+      return
+    end
+    SchemaCheck.checkRecord(
+      instruction.scriptTarget,
+      { x = true, y = true, z = true, scaleKind = true },
+      context,
+      code,
+      field .. ".scriptTarget"
+    )
+    for _, name in ipairs({ "x", "y", "z" }) do
+      SchemaCheck.checkInteger(
+        instruction.scriptTarget[name],
+        context,
+        code,
+        field .. ".scriptTarget." .. name,
+        -0x80000000,
+        0x7FFFFFFF
+      )
+    end
+    SchemaCheck.checkInteger(
+      instruction.scriptTarget.scaleKind,
+      context,
+      code,
+      field .. ".scriptTarget.scaleKind",
+      0,
+      0xFFFFFFFF
+    )
+  elseif needsTarget then
+    fail(code, field .. " carries a script target for from-script pair profiles", context)
+    return
+  end
+end
+
+-- Trailer blocks behind the configured profile: battler-type offsets for
+-- position modes 100/101, script camera angles for camera mode 2, and
+-- one field block per meaningful flag in ascending mask order.
+local CONFIGURED_FIELD_MASKS = { 2, 16, 32, 64, 128, 4096, 8192 }
+
+---@param instruction table<string, unknown> decoded battle animation instruction
+---@param context table<string, unknown> validation context
+---@param code string schema error code
+---@param field string instruction path behind diagnostics
+local function checkConfiguredTrailers(instruction, context, code, field)
+  local configuredProfile = "particle-emitter-battler-class-camera-position"
+  local function checkOffsetBlock(value, what)
+    SchemaCheck.checkRecord(value, { x = true, y = true, z = true, ignoreSide = true }, context, code, what)
+    for _, name in ipairs({ "x", "y", "z" }) do
+      SchemaCheck.checkInteger(value[name], context, code, what .. "." .. name, -0x80000000, 0x7FFFFFFF)
+    end
+    SchemaCheck.checkInteger(value.ignoreSide, context, code, what .. ".ignoreSide", 0, 1)
+  end
+  if instruction.typeOffsets ~= nil then
+    if instruction.actionProfile ~= configuredProfile then
+      fail(code, field .. " carries type offsets only for its configured profile", context)
+      return
+    end
+    local positionMode = type(instruction.emitterConfig) == "table" and instruction.emitterConfig.positionMode or nil
+    if positionMode ~= 100 and positionMode ~= 101 then
+      fail(code, field .. " carries type offsets only for battler-type position modes", context)
+      return
+    end
+    if not Validate.isArray(instruction.typeOffsets) or #instruction.typeOffsets ~= 6 then
+      fail(code, field .. ".typeOffsets carries one block per battler type", context)
+      return
+    end
+    for index, block in ipairs(instruction.typeOffsets) do
+      checkOffsetBlock(block, field .. ".typeOffsets[" .. index .. "]")
+    end
+  elseif
+    instruction.actionProfile == configuredProfile
+    and type(instruction.emitterConfig) == "table"
+    and (instruction.emitterConfig.positionMode == 100 or instruction.emitterConfig.positionMode == 101)
+  then
+    fail(code, field .. " carries type offsets for battler-type position modes", context)
+    return
+  end
+  if instruction.cameraAngles ~= nil then
+    if instruction.actionProfile ~= configuredProfile then
+      fail(code, field .. " carries camera angles only for its configured profile", context)
+      return
+    end
+    local cameraMode = type(instruction.emitterConfig) == "table" and instruction.emitterConfig.cameraMode or nil
+    if cameraMode ~= 2 then
+      fail(code, field .. " carries camera angles only for its script-driven camera mode", context)
+      return
+    end
+    SchemaCheck.checkRecord(
+      instruction.cameraAngles,
+      { x = true, y = true, z = true },
+      context,
+      code,
+      field .. ".cameraAngles"
+    )
+    for _, name in ipairs({ "x", "y", "z" }) do
+      SchemaCheck.checkInteger(
+        instruction.cameraAngles[name],
+        context,
+        code,
+        field .. ".cameraAngles." .. name,
+        0,
+        0xFFFFFFFF
+      )
+    end
+  elseif
+    instruction.actionProfile == configuredProfile
+    and type(instruction.emitterConfig) == "table"
+    and instruction.emitterConfig.cameraMode == 2
+  then
+    fail(code, field .. " carries camera angles for its script-driven camera mode", context)
+    return
+  end
+  if instruction.fieldScripts ~= nil then
+    if instruction.actionProfile ~= configuredProfile then
+      fail(code, field .. " carries field blocks only for its configured profile", context)
+      return
+    end
+    if not Validate.isArray(instruction.fieldScripts) then
+      fail(code, field .. ".fieldScripts carries one block per meaningful flag", context)
+      return
+    end
+    local config = instruction.emitterConfig
+    local expected = {}
+    if type(config) == "table" and type(config.flags) == "number" then
+      for _, mask in ipairs(CONFIGURED_FIELD_MASKS) do
+        if math.floor(config.flags / mask) % 2 == 1 then
+          expected[#expected + 1] = mask
+        end
+      end
+    end
+    if #instruction.fieldScripts ~= #expected then
+      fail(code, field .. ".fieldScripts carries one block per meaningful flag", context)
+      return
+    end
+    for index, block in ipairs(instruction.fieldScripts) do
+      local at = field .. ".fieldScripts[" .. index .. "]"
+      SchemaCheck.checkRecord(
+        block,
+        { mask = true, mode = true, ignoreSide = true, x = true, y = true, z = true },
+        context,
+        code,
+        at
+      )
+      if block.mask ~= expected[index] then
+        fail(code, at .. ".mask follows ascending source mask order", context)
+        return
+      end
+      SchemaCheck.checkInteger(block.mode, context, code, at .. ".mode", 0, 0xFFFFFFFF)
+      SchemaCheck.checkInteger(block.ignoreSide, context, code, at .. ".ignoreSide", 0, 1)
+      for _, name in ipairs({ "x", "y", "z" }) do
+        SchemaCheck.checkInteger(block[name], context, code, at .. "." .. name, -0x80000000, 0x7FFFFFFF)
+      end
+    end
+  elseif
+    instruction.actionProfile == configuredProfile
+    and type(instruction.emitterConfig) == "table"
+    and type(instruction.emitterConfig.flags) == "number"
+  then
+    for _, mask in ipairs(CONFIGURED_FIELD_MASKS) do
+      if math.floor(instruction.emitterConfig.flags / mask) % 2 == 1 then
+        fail(code, field .. ".fieldScripts carries one block per meaningful flag", context)
+        return
+      end
+    end
+  end
+end
+
 local function checkParameterizedBattlerEffect(instruction, context, code, field)
   local emitter = instruction.emitter
   local continuationSlot = instruction.continuationSlot
@@ -1595,6 +1826,8 @@ local function checkParameterizedBattlerEffect(instruction, context, code, field
     fail(code, field .. " carries an offset block for offset position modes", context)
     return
   end
+  checkConfiguredTrailers(instruction, context, code, field)
+  checkPairScriptVectors(instruction, context, code, field)
 end
 
 local function checkSideMaskBranches(instruction, context, code, field)
@@ -1741,6 +1974,12 @@ local OPERATIONS = {
       "emitterCases",
       "emitterConfig",
       "emitterOffset",
+      "typeOffsets",
+      "cameraAngles",
+      "fieldScripts",
+      "scriptVectors",
+      "scriptPosition",
+      "scriptTarget",
       "runtimeSelection",
       "systemIndex",
       "continuationSlot",

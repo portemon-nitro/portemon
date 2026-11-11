@@ -1977,7 +1977,7 @@ function OpeningMovieCompiler.compileScene(romFs, versionId, sceneNumber)
     camera = towns.camera
     lighting = { edgeColors = towns.edgeColors, towns = towns.lighting }
   end
-  local particles = { seed = 0, emitters = {} }
+  local particles = { emitters = {} }
   if sceneNumber == 4 then
     local particleArchive, particleErr = romFs:openNarc(SceneSources.PARTICLE_ARCHIVE)
     if particleArchive == nil then

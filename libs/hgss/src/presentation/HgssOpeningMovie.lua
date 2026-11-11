@@ -22,6 +22,7 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 ---@class HgssOpeningMovie
+---@field _splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field versionId string
 ---@field cacheFs table<string, unknown>
 ---@field graphics table<string, unknown>
@@ -638,7 +639,11 @@ local function acquireSlot(self, manifest)
     initStall = 0,
     stepIndex = 1,
     stepElapsed = 0,
-    sim = SplParticleSimulation.new(manifest.particles.seed or 0, EMITTER_CALLBACK_Z),
+    sim = SplParticleSimulation.new(
+      assert(self._splRandomState, "opening movie borrows its boot stream record"),
+      EMITTER_CALLBACK_Z,
+      manifest.particles.emitters
+    ),
     scrolls = {},
     effects = {},
     backgrounds = { main = {}, sub = {} },
@@ -989,7 +994,9 @@ local function startEmitters(slot, group, ids)
     if record.group ~= group then
       error(invalid("opening scene emitter start leaves its source group", { emitter = id, group = group }), 0)
     end
-    SplParticleSimulation.addEmitter(slot.sim, id, group, record)
+    if SplParticleSimulation.addEmitter(slot.sim, id, group) == nil then
+      error(invalid("opening scene emitter start finds no free manager node", { emitter = id }), 0)
+    end
   end
 end
 
@@ -2167,7 +2174,7 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
 }
 ]]
 
----@param options { versionId: string, scenes: table<string, unknown>[], cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext }
+---@param options { versionId: string, scenes: table<string, unknown>[], cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, splRandomState: table<string, integer>? }
 ---@return HgssOpeningMovie
 function HgssOpeningMovie.new(options)
   assert(type(options) == "table", "opening movie requires composition options")
@@ -2197,7 +2204,12 @@ function HgssOpeningMovie.new(options)
   for sceneNumber = 1, 5 do
     checkBundleShape(scenes[sceneNumber], sceneNumber, options.versionId, first.generationId)
   end
+  assert(
+    options.splRandomState == nil or type(options.splRandomState) == "table",
+    "opening movie borrows the boot stream record"
+  )
   local self = setmetatable({
+    _splRandomState = options.splRandomState,
     versionId = options.versionId,
     cacheFs = options.cacheFs,
     graphics = graphics,

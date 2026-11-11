@@ -227,6 +227,11 @@ local function drawDetailPane(flash)
       drawable = function()
         return {}
       end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "picture-composite" }
+      end,
     },
     frameKey = "default",
     sceneImageKey = "scene:test",
@@ -254,6 +259,11 @@ local function drawChildInteractionPane(lower)
     assets = {
       drawable = function()
         return nil
+      end,
+      renderPictures = function(_, drawGraphics, frame)
+        local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+        CompositionFrameDrain.drain(drawGraphics, frame)
+        return { handle = "picture-composite" }
       end,
     },
     frameKey = "default",

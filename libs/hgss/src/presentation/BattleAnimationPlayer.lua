@@ -23,6 +23,7 @@ local BattleAnimationCommands = require("libs.hgss.src.presentation.BattleAnimat
 ---@field _resources table<string, unknown> launch-owned lease collaborator behind resolve, release
 ---@field _tasks table<string, unknown> task-construction collaborator behind create
 ---@field _services table<string, unknown> frame services behind the native draw and publish hook
+---@field _splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field _tick integer source ticks advanced
 ---@field _occurrences table<integer, BattleAnimationOccurrence> occurrences in admission order
 ---@field _byId table<integer, BattleAnimationOccurrence> occurrences behind opaque handles
@@ -112,6 +113,10 @@ function BattleAnimationPlayer.new(collaborators)
     type(collaborators.services.onNativeFrame) == "function",
     "the animation player requires its native frame hook"
   )
+  assert(
+    collaborators.splRandomState == nil or type(collaborators.splRandomState) == "table",
+    "the animation player borrows the boot stream record"
+  )
   return setmetatable({
     _tick = 0,
     _scene = collaborators.scene,
@@ -119,6 +124,7 @@ function BattleAnimationPlayer.new(collaborators)
     _resources = collaborators.resources,
     _tasks = collaborators.tasks,
     _services = collaborators.services,
+    _splRandomState = collaborators.splRandomState,
     _occurrences = {},
     _byId = {},
     _nextId = 1,
@@ -530,6 +536,7 @@ function BattleAnimationPlayer:_exec(occurrence)
       scene = player._scene,
       audio = player._audio,
       resources = player._resources,
+      splRandomState = player._splRandomState,
     })
     if not ok then
       failOccurrence(player, occurrence, "child construction failure: " .. tostring(task))

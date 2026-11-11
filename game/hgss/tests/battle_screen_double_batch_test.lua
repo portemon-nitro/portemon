@@ -5,6 +5,7 @@
 -- generated trainer records only; no dump capability is required.
 
 local Assert = require("tests.support.Assert")
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
 local StubLease = require("tests.support.StubLease")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -14,7 +15,39 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
-local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
+-- Headless composition runs without GPU targets: the seeded pass drains
+-- plane and OBJ content through the recording boundary and records each
+-- typed frame, so content assertions observe the same draws production
+-- composes. Real pixels stay in the graphics layer.
+---@param rig table live screen rig under test driving
+local function seedHeadlessPass(rig)
+  local screen = assert(rig.screen, "the rig carries its battle screen")
+  rig.frames = {}
+  screen._assets._picturePass = {
+    render = function(_, graphics, frame)
+      rig.frames[#rig.frames + 1] = frame
+      CompositionFrameDrain.drain(graphics, frame)
+      for _, primitive in ipairs(frame.primitives or {}) do
+        local handle = primitive.image or primitive.material
+        local image = type(handle) == "table" and (handle.image or handle) or handle
+        local minX, minY = nil, nil
+        for _, vertex in ipairs(primitive.vertices or {}) do
+          local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+          local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+          if minX == nil or x < minX then
+            minX = x
+          end
+          if minY == nil or y < minY then
+            minY = y
+          end
+        end
+        graphics.draw(image, minX or 0, minY or 0)
+      end
+      return { handle = "rig-picture-pass" }
+    end,
+    release = function() end,
+  }
+end
 
 local T = {}
 
@@ -256,6 +289,7 @@ local function openDoubleRig(opts)
     manifest.hud.doubles = {}
   end
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = manifest,
     model = Model,
@@ -273,6 +307,7 @@ local function openDoubleRig(opts)
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   holder.battle = BattleRuntime.new({
     request = { id = launchId, kind = "trainer", payload = { trainer = trainerId } },
@@ -795,6 +830,7 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = battleManifest(),
     model = Model,
@@ -814,6 +850,7 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   function rig.pump(ticks)
     for _ = 1, ticks or 1 do
@@ -1195,6 +1232,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = battleManifest(),
     model = Model,
@@ -1213,6 +1251,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   function rig.pump(ticks)
     for _ = 1, ticks or 1 do
@@ -1722,17 +1761,26 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
             end,
           }
         end,
-        renderPictures = function(_, drawGraphics, pictures)
-          for _, picture in ipairs(pictures) do
-            drawGraphics.draw(picture.image, picture.centerX - picture.width / 2, picture.centerY - picture.height / 2)
+        renderPictures = function(_, drawGraphics, frame)
+          local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+          CompositionFrameDrain.drain(drawGraphics, frame)
+          for _, primitive in ipairs(assert(frame.primitives, "production renders its typed frame")) do
+            local handle = primitive.image or primitive.material
+            local image = type(handle) == "table" and (handle.image or handle) or handle
+            local minX, minY = nil, nil
+            for _, vertex in ipairs(primitive.vertices or {}) do
+              local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+              local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+              if minX == nil or x < minX then
+                minX = x
+              end
+              if minY == nil or y < minY then
+                minY = y
+              end
+            end
+            drawGraphics.draw(image, minX or 0, minY or 0)
           end
           return { handle = "test-picture-pass" }
-        end,
-        menuBlendTargets = function(self, blendGraphics)
-          if self.menuBlend == nil then
-            self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
-          end
-          return self.menuBlend
         end,
       },
       frameKey = "four-pictures-frame",

@@ -60,7 +60,7 @@ function T.particle_compiler_normalizes_nine_starter_emitters()
   local compiled, err = OpeningParticleCompiler.compile(nineEmitterMember(), "assets/generated/startup/opening/4")
   Assert.notNil(compiled, "the nine-emitter member compiles: " .. tostring(err))
   local particles = assert(compiled.particles, "the bundle carries its particle set")
-  Assert.equal(particles.seed, 0, "the particle set keeps the deterministic source seed")
+  Assert.isNil(particles.seed, "the particle set carries no persisted seed")
   Assert.equal(#particles.emitters, 9, "the particle set keeps all nine starter emitters")
   local groups = {
     [0] = "water",
@@ -327,18 +327,22 @@ function T.particle_compiler_rejects_a_zero_generation_interval()
   Assert.notNil(err, "the zero interval reports its emitter context")
 end
 
-function T.particle_compiler_rejects_an_unsupported_draw_kind()
+function T.particle_compiler_accepts_polygon_draw_kinds_with_their_rotation_axis()
   local first = tailedEmitter(2 + 2 ^ 5, { texNo = 0 })
   local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
-  Assert.isNil(compiled, "a polygon draw kind never compiles")
-  Assert.notNil(err, "the draw kind reports its emitter context")
+  Assert.notNil(compiled, "a polygon draw kind compiles: " .. tostring(err))
+  local record = assert(compiled.particles.emitters[1], "the first emitter normalizes")
+  Assert.equal(record.drawType, 2, "the emitter keeps its polygon draw kind")
+  Assert.equal(record.polygonRotationAxis, "y", "the rotation axis keeps its source entry")
+  Assert.equal(record.polygonPlane, "xy", "the polygon plane keeps its source selection")
 end
 
-function T.particle_compiler_rejects_mirrored_texture_coordinates()
+function T.particle_compiler_accepts_mirrored_texture_coordinates()
   local first = tailedEmitter(2, { texNo = 0, word2 = 1 })
   local compiled, err = OpeningParticleCompiler.compile(memberWithFirst(first), "assets/generated/startup/opening/4")
-  Assert.isNil(compiled, "a mirrored texture never compiles")
-  Assert.notNil(err, "the mirror flag reports its emitter context")
+  Assert.notNil(compiled, "a mirrored texture compiles: " .. tostring(err))
+  local record = assert(compiled.particles.emitters[1], "the first emitter normalizes")
+  Assert.deepEqual(record.reverseTex, { s = true, t = false }, "the mirror flag keeps its signed axes")
 end
 
 return { tests = T }

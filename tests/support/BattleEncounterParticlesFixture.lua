@@ -6,6 +6,20 @@
 
 local Fixture = {}
 
+-- Sampler and transparency metadata every staged particle texture
+-- carries: nearest sampling with the texture header's clamp wrap, and
+-- the decoder's exact coverage flags for these opaque RGBA fixtures.
+local function textureRecord(id, width, height, image)
+  return {
+    id = id,
+    width = width,
+    height = height,
+    image = image,
+    sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
+    alphaUsage = { hasZero = false, hasPartial = false, hasOpaque = true },
+  }
+end
+
 local ASSET_DIR = "assets/generated/battle/scenes/"
 
 ---@param sceneKey string
@@ -51,6 +65,9 @@ local function emitter(id, texture, image)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = texture,
     textureImage = image,
     animations = {
@@ -106,6 +123,9 @@ function Fixture.encounterEmitter(id, emitterLife)
     dbbScale = 0,
     sclAnmDirect = 0,
     texRepeat = { s = 0, t = 0 },
+    reverseTex = { s = false, t = false },
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
     texture = 0,
     textureImage = "img",
     animations = {
@@ -144,15 +164,13 @@ function Fixture.sizedSets(sceneKey, firstCount, secondCount, firstLife, secondL
   return {
     {
       startTick = 1,
-      seed = 0,
       emitters = first,
-      textures = { { id = 0, width = 32, height = 32, image = Fixture.texturePath(sceneKey, 1, 0) } },
+      textures = { textureRecord(0, 32, 32, Fixture.texturePath(sceneKey, 1, 0)) },
     },
     {
       startTick = 20,
-      seed = 0,
       emitters = second,
-      textures = { { id = 0, width = 32, height = 32, image = Fixture.texturePath(sceneKey, 2, 0) } },
+      textures = { textureRecord(0, 32, 32, Fixture.texturePath(sceneKey, 2, 0)) },
     },
   }
 end
@@ -172,6 +190,9 @@ function Fixture.sets(sceneKey)
     useChildColor = false,
     childColor = { r = 31, g = 31, b = 31 },
     drawType = 0,
+    polygonRotationAxis = "y",
+    polygonPlane = "xy",
+    reverseTex = { s = false, t = false },
     initVelRandom = 0,
     scaleEnd = 1,
     life = 12,
@@ -187,17 +208,15 @@ function Fixture.sets(sceneKey)
   return {
     {
       startTick = 1,
-      seed = 0,
       emitters = { emitter(0, 0, image1) },
-      textures = { { id = 0, width = 32, height = 32, image = image1 } },
+      textures = { textureRecord(0, 32, 32, image1) },
     },
     {
       startTick = 20,
-      seed = 0,
       emitters = { animated },
       textures = {
-        { id = 0, width = 32, height = 32, image = image2 },
-        { id = 3, width = 16, height = 64, image = image3 },
+        textureRecord(0, 32, 32, image2),
+        textureRecord(3, 16, 64, image3),
       },
     },
   }

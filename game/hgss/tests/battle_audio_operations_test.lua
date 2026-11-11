@@ -290,6 +290,7 @@ local function bindEnvelope(runtime, versionId, measurement, audio)
   local doubles = { audio = audio, windows = recordingWindows(), text = recordingText() }
   doubles.leaves = selectedLeafHost()
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = CacheFs.forVersion(versionId),
     windows = doubles.windows,
     text = doubles.text,
@@ -778,6 +779,7 @@ local function bootColdEnvelope()
   end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local envelope = FieldBattlePresentation.new({
+    splRandomState = { state = 0 },
     cacheFs = cache,
     windows = recordingWindows(),
     text = recordingText(),

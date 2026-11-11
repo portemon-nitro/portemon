@@ -967,4 +967,82 @@ function T.cancelling_prepared_interest_builds_no_gpu_objects()
   end)
 end
 
+-- Native battle pictures stage already-decoded index planes plus the full
+-- native palette; the pool must admit that source content directly instead
+-- of routing it through the path worker's RGBA classification, which would
+-- collapse duplicate palette slots and lose slot identity.
+local function indexedSource()
+  local indices = string.char(0, 1, 0, 1, 1, 0, 1, 0)
+  local palette = string.char(255, 0, 0, 255, 255, 0, 0, 255)
+  return { width = 4, height = 2, indicesR8 = indices, paletteRgba8 = palette, colorCount = 2 }
+end
+
+function T.native_index_planes_bypass_path_classification()
+  withPool("native-index", {}, function(pool, graphics)
+    Assert.isTrue(
+      type(pool.requestIndexed) == "function",
+      "the pool admits already-decoded native index planes through its prepared-token "
+        .. "lifecycle instead of the path worker's RGBA classification"
+    )
+    local token = pool:requestIndexed(indexedSource(), matchingSampler())
+    awaitReady(pool, token)
+    local lease = pool:acquire(token)
+    Assert.isTrue(lease.image ~= nil, "an indexed request resolves to a staged image")
+    Assert.equal(#graphics.created, 1, "one staged upload backs the indexed request")
+    pool:release(lease)
+    pool:prune()
+  end)
+end
+
+function T.equal_colored_palette_slots_keep_distinct_texel_identity()
+  withPool("native-index-twins", {}, function(pool)
+    Assert.isTrue(
+      type(pool.requestIndexed) == "function",
+      "the pool admits already-decoded native index planes through its prepared-token lifecycle"
+    )
+    local first = indexedSource()
+    -- Same visible colors, but slot 1 turns green: slot identity decides
+    -- texels, never the realized RGB triple.
+    local second = indexedSource()
+    second.paletteRgba8 = string.char(255, 0, 0, 255, 0, 255, 0, 255)
+    local firstToken = pool:requestIndexed(first, matchingSampler())
+    local secondToken = pool:requestIndexed(second, matchingSampler())
+    awaitReady(pool, firstToken)
+    awaitReady(pool, secondToken)
+    local firstLease = pool:acquire(firstToken)
+    local secondLease = pool:acquire(secondToken)
+    Assert.isTrue(
+      firstLease.image ~= secondLease.image,
+      "palettes that differ in one slot stage distinct images even when "
+        .. "every realized color already exists elsewhere"
+    )
+    pool:release(firstLease)
+    pool:release(secondLease)
+    pool:prune()
+  end)
+end
+
+function T.indexed_requests_use_their_own_key_domain_and_sampler()
+  withPool("native-index-keys", { ["sprites/a.png"] = fixturePng() }, function(pool)
+    Assert.isTrue(
+      type(pool.requestIndexed) == "function",
+      "the pool admits already-decoded native index planes through its prepared-token lifecycle"
+    )
+    local token = pool:requestIndexed(indexedSource(), matchingSampler())
+    awaitReady(pool, token)
+    local lease = pool:acquire(token)
+    Assert.isTrue(lease.image ~= nil, "an indexed request resolves to a staged image")
+    pool:release(lease)
+    pool:prune()
+    local pathToken = requestReady(pool, "sprites/a.png", matchingSampler(), "demand")
+    local pathLease = pool:acquire(pathToken)
+    Assert.isTrue(
+      pathLease.image ~= lease.image,
+      "synthetic indexed keys never alias path-request keys"
+    )
+    pool:release(pathLease)
+    pool:prune()
+  end)
+end
+
 return { tests = T }

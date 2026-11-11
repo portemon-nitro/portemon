@@ -12,6 +12,7 @@
 -- owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -407,6 +408,25 @@ end
 ---@param modules table loaded screen owners under test driving
 ---@param opts table rig options: launchId, scenario, party, bag, seed, measurement, assets, audio, windows, text, overrides
 ---@return table live rig with the runtime, screen, port tap, and submit log
+
+-- Headless composition runs without GPU targets: the seeded pass drains
+-- plane and OBJ content through the recording boundary and records each
+-- typed frame, so content assertions observe the same draws production
+-- composes. Real pixels stay in the graphics layer.
+---@param rig table live screen rig under test driving
+local function seedHeadlessPass(rig)
+  local screen = assert(rig.screen, "the rig carries its battle screen")
+  rig.frames = {}
+  screen._assets._picturePass = {
+    render = function(_, graphics, frame)
+      rig.frames[#rig.frames + 1] = frame
+      CompositionFrameDrain.drain(graphics, frame)
+      return { handle = "rig-picture-pass" }
+    end,
+    release = function() end,
+  }
+end
+
 local function openRig(modules, opts)
   local BattleRuntime = require(RUNTIME_MODULE)
   local holder = {}
@@ -424,6 +444,7 @@ local function openRig(modules, opts)
   end
   local screen = modules.state.new({
     launchId = opts.launchId,
+    splRandomState = { state = 0 },
     manifest = opts.manifest or screenManifest(sceneKey),
     model = modules.model,
     submit = function(reply)
@@ -444,6 +465,7 @@ local function openRig(modules, opts)
     overrides = opts.overrides,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   holder.battle = BattleRuntime.new({
     request = opts.launch,
@@ -1060,20 +1082,35 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   end
   rig.pump(2)
   drawNow()
+  local function wasSubmitted(image)
+    for _, frame in ipairs(rig.frames) do
+      for _, primitive in ipairs(frame.primitives or {}) do
+        if primitive.image == image then
+          return true
+        end
+      end
+    end
+    return false
+  end
   local function wasDrawn(image)
     for _, entry in ipairs(graphics.draws) do
       if entry.image == image then
         return true
       end
     end
-    for _, texture in ipairs(meshTextures) do
-      if texture == image then
-        return true
+    return wasSubmitted(image)
+  end
+  do
+    local handles = {}
+    for _, frame in ipairs(rig.frames) do
+      for _, primitive in ipairs(frame.primitives or {}) do
+        local material = primitive.image or primitive.material
+        local image = type(material) == "table" and (material.image or material) or material
+        handles[#handles + 1] = type(image) == "table" and tostring(image.handle) or type(image)
       end
     end
-    return false
+    Assert.isTrue(wasDrawn(playerBack), "the player battler draws from its own back image (have: " .. table.concat(handles, ",") .. ")")
   end
-  Assert.isTrue(wasDrawn(playerBack), "the player battler draws from its own back image")
   Assert.isTrue(wasDrawn(enemyFront), "the enemy battler draws from its own front image")
   Assert.isTrue(#rig.windows.calls > 0, "narration and menus draw through the selected window frame")
   local firstPass = drawNow()
@@ -1607,6 +1644,7 @@ function T.malformed_staged_manifest_fails_before_any_command_input()
   withoutPictures.pictures = nil
   local ok, err = pcall(modules.state.new, {
     launchId = "launch-screen-malformed",
+    splRandomState = { state = 0 },
     manifest = withoutPictures,
     model = modules.model,
     submit = function(_)
@@ -1796,6 +1834,7 @@ function T.native_animation_positioned_sound_reaches_screen_audio()
   local modules = battleScreenModules("positioned native effect audio", STATE_MODULE)
   local audio = recordingAudio(false)
   local screen = modules.state.new({
+    splRandomState = { state = 0 },
     launchId = "positioned-effect-sound",
     manifest = screenManifest(testSceneKey()),
     model = modules.model,
@@ -1846,6 +1885,7 @@ function T.native_animation_cry_reaches_the_attacker_voice()
     return { nativeId = 133 }
   end
   local screen = modules.state.new({
+    splRandomState = { state = 0 },
     launchId = "animation-cry",
     manifest = screenManifest(testSceneKey()),
     model = modules.model,
@@ -2006,6 +2046,7 @@ function T.live_tackle_strike_runs_its_selected_program_before_health()
   local audio = recordingAudio(false)
   local submits = {}
   local screen = modules.state.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = screenManifest(testSceneKey()),
     model = Model,
@@ -2122,6 +2163,7 @@ function T.benched_reserves_contribute_no_live_side_positions()
   local windows = recordingWindows()
   local audio = recordingAudio(false)
   local screen = modules.state.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = screenManifest(testSceneKey()),
     model = Model,
@@ -2250,7 +2292,9 @@ function T.pooled_portrait_cells_submit_their_frame_window()
   local BattleRenderer = modules.renderer
   local frame = { x = 320, y = 64, width = 80, height = 80 }
   local submitted = {}
-  local pageImage = fakeDrawable("page")
+  -- The shared page is an atlas: the cell window must fit inside it,
+  -- exactly like production pages carry many portrait cells.
+  local pageImage = fakeDrawable("page", 512, 256)
   local pagePalette = { handle = "page-palette" }
   local cell = {
     image = pageImage,
@@ -2280,10 +2324,11 @@ function T.pooled_portrait_cells_submit_their_frame_window()
     end
     return assets.images[key]
   end
-  function assets.renderPictures(_, _, pictures)
-    for _, picture in ipairs(pictures) do
-      submitted[#submitted + 1] = picture
+  function assets.renderPictures(_, graphics, frame)
+    for _, primitive in ipairs(assert(frame.primitives, "production renders its typed frame")) do
+      submitted[#submitted + 1] = primitive
     end
+    CompositionFrameDrain.drain(graphics, frame)
     return { drawn = "layer" }
   end
   local graphics = FakeGraphics.new({})

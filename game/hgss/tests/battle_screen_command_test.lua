@@ -7,8 +7,8 @@
 
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -70,6 +70,10 @@ function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
           return firstFrame
         end
         return nil
+      end,
+      renderPictures = function(_, _, frame)
+        CompositionFrameDrain.drain(graphics, frame)
+        return { handle = "picture-pass" }
       end,
     },
     sceneImageKey = "unused",
@@ -133,7 +137,13 @@ function T.trainer_slide_renderer_uses_the_staged_picture_and_source_position()
   end
   BattleRenderer.drawPane(resources, view, "detail", {}, {})
   Assert.equal(#requested, 1, "hidden slides do not resolve their pictures")
-  Assert.equal(#graphics.draws, 0, "a hidden trainer slide draws no sprite")
+  for _, entry in ipairs(graphics.draws) do
+    local handle = type(entry.image) == "table" and entry.image.handle or nil
+    Assert.isFalse(
+      handle == "trainer-frame-0" or handle == "trainer-frame-1",
+      "a hidden trainer slide draws no sprite"
+    )
+  end
 end
 
 function T.opening_terrain_sprites_draw_over_the_unbaked_intro_scene()
@@ -163,6 +173,10 @@ function T.opening_terrain_sprites_draw_over_the_unbaked_intro_scene()
       drawable = function()
         return image("final-scene")
       end,
+      renderPictures = function(_, _, frame)
+        CompositionFrameDrain.drain(graphics, frame)
+        return { handle = "picture-pass" }
+      end,
     },
     sceneImageKey = "final-scene",
     frameKey = "frame",
@@ -188,7 +202,7 @@ function T.opening_terrain_sprites_draw_over_the_unbaked_intro_scene()
   local order, byHandle = {}, {}
   for _, draw in ipairs(graphics.draws) do
     local handle = type(draw.image) == "table" and draw.image.handle or nil
-    if handle ~= nil then
+    if handle ~= nil and handle ~= "picture-pass" then
       order[#order + 1] = handle
       byHandle[handle] = draw
     end
@@ -235,6 +249,10 @@ function T.ball_throw_renderer_uses_the_staged_frame_and_source_position()
         end
         return nil
       end,
+      renderPictures = function(_, _, frame)
+        CompositionFrameDrain.drain(graphics, frame)
+        return { handle = "picture-pass" }
+      end,
     },
     sceneImageKey = "unused",
     frameKey = "frame",
@@ -260,7 +278,12 @@ function T.ball_throw_renderer_uses_the_staged_frame_and_source_position()
   end
   BattleRenderer.drawPane(resources, view, "detail", {}, {})
   Assert.isFalse(requested[2] == "battle-ball:ULTRA_BALL:3", "a hidden ball does not resolve its frame")
-  Assert.equal(#graphics.draws, 0, "a hidden ball draws no sprite")
+  for _, entry in ipairs(graphics.draws) do
+    Assert.isFalse(
+      entry.image == image,
+      "a hidden ball draws no sprite"
+    )
+  end
 end
 local TICK = SourceTick.DT
 
@@ -411,6 +434,40 @@ end
 
 ---@param opts table? rig options: leadPp, overrides, seed
 ---@return table live rig with the runtime, screen, and submit log
+-- Headless composition runs without GPU targets: the seeded pass drains
+-- plane and OBJ content through the recording boundary and records each
+-- typed frame, so content assertions observe the same draws production
+-- composes. Real pixels stay in the graphics layer.
+---@param rig table live screen rig under test driving
+local function seedHeadlessPass(rig)
+  local screen = assert(rig.screen, "the rig carries its battle screen")
+  rig.frames = {}
+  screen._assets._picturePass = {
+    render = function(_, graphics, frame)
+      rig.frames[#rig.frames + 1] = frame
+      CompositionFrameDrain.drain(graphics, frame)
+      for _, primitive in ipairs(frame.primitives or {}) do
+        local handle = primitive.image or primitive.material
+        local image = type(handle) == "table" and (handle.image or handle) or handle
+        local minX, minY = nil, nil
+        for _, vertex in ipairs(primitive.vertices or {}) do
+          local x = math.floor((vertex.clipX / 4096 + 1) * 128 * 2 ^ 20 + 0.5) / 2 ^ 20
+          local y = math.floor((1 - vertex.clipY / 4096) * 96 * 2 ^ 20 + 0.5) / 2 ^ 20
+          if minX == nil or x < minX then
+            minX = x
+          end
+          if minY == nil or y < minY then
+            minY = y
+          end
+        end
+        graphics.draw(image, nil, minX or 0, minY or 0)
+      end
+      return { handle = "rig-picture-pass" }
+    end,
+    release = function() end,
+  }
+end
+
 local function openRig(opts)
   opts = opts or {}
   local BattleRuntime = require(RUNTIME_MODULE)
@@ -504,6 +561,7 @@ local function openRig(opts)
   )
   local screen = BattleScreenState.new({
     launchId = launchId,
+    splRandomState = { state = 0 },
     manifest = opts.manifest or battleManifest(),
     model = Model,
     submit = function(reply)
@@ -520,6 +578,7 @@ local function openRig(opts)
     overrides = opts.overrides,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   completeSourceParticipantRoster(rig.port)
   holder.battle = BattleRuntime.new({
@@ -544,6 +603,7 @@ end
 ---@param rig table live screen rig under test driving
 ---@param mode string awaited controller mode under test driving
 ---@return table the screen status once the mode is reached
+
 local function driveToMode(rig, mode, keepCursorHidden)
   for _ = 1, 600 do
     rig.pump(1)
@@ -631,19 +691,24 @@ function T.transient_effect_picture_flows_through_screen_snapshot_and_picture_pa
   end
 
   local first = draw()
+  local _ = first
   Assert.equal(
     rig.screen:_snapshot().effectInstances[1].sourceKey,
     "animation-picture",
     "the immutable screen view retains the source route key"
   )
+  local frame = assert(rig.frames[#rig.frames], "the typed frame reaches the production pass")
   local effectDraw = nil
-  for _, entry in ipairs(first.draws) do
-    if entry.meshTexture ~= nil and entry.meshTexture.handle == "effect:staged-overlay" then
-      effectDraw = entry
+  for _, primitive in ipairs(frame.primitives) do
+    local material = primitive.image or primitive.material
+    local image = type(material) == "table" and (material.image or material) or material
+    if type(image) == "table" and image.handle == "effect:staged-overlay" then
+      effectDraw = primitive
     end
   end
   Assert.isTrue(effectDraw ~= nil, "an allocated staged effect reaches the native picture pass")
-  Assert.equal(effectDraw.color[4], 0.75, "the transient effect alpha reaches the picture mesh")
+  Assert.equal(effectDraw.kind, "effect", "transient pictures keep their effect submission")
+  Assert.equal(effectDraw.alpha5, 23, "the transient effect alpha reaches the shared target")
 
   rig.screen:updateFixed(TICK)
   Assert.equal(rig.screen:_snapshot().effectInstances[1].age, 1, "the screen snapshot exposes source-ticked effect age")
@@ -664,16 +729,21 @@ function T.transient_effect_picture_flows_through_screen_snapshot_and_picture_pa
   })
   Assert.isTrue(movedApplied, "source-ticked effect updates retain their ready staged resource")
   local moved = draw()
+  local _ = moved
+  local movedFrame = assert(rig.frames[#rig.frames], "the moved frame reaches the production pass")
   local movedDraw = nil
-  for _, entry in ipairs(moved.draws) do
-    if entry.meshTexture ~= nil and entry.meshTexture.handle == "effect:staged-overlay" then
-      movedDraw = entry
+  for _, primitive in ipairs(movedFrame.primitives) do
+    local material = primitive.image or primitive.material
+    local image = type(material) == "table" and (material.image or material) or material
+    if type(image) == "table" and image.handle == "effect:staged-overlay" then
+      movedDraw = primitive
     end
   end
+  Assert.isTrue(movedDraw ~= nil, "the moved effect still reaches the shared target")
   Assert.equal(
-    movedDraw.meshVertices[1][1] - effectDraw.meshVertices[1][1],
+    movedDraw.centerX - effectDraw.centerX,
     8,
-    "source updates move the staged effect mesh"
+    "source updates move the staged effect picture"
   )
   local resolveDrawable = rig.assets.drawable
   rig.assets.drawable = function(key)
@@ -701,9 +771,13 @@ function T.transient_effect_picture_flows_through_screen_snapshot_and_picture_pa
   rig.assets.drawable = resolveDrawable
   rig.screen:releaseEffect(effect.id)
   local released = draw()
-  for _, entry in ipairs(released.draws) do
+  local _ = released
+  local releasedFrame = assert(rig.frames[#rig.frames], "the released frame reaches the production pass")
+  for _, primitive in ipairs(releasedFrame.primitives) do
+    local material = primitive.image or primitive.material
+    local image = type(material) == "table" and (material.image or material) or material
     Assert.isFalse(
-      entry.meshTexture ~= nil and entry.meshTexture.handle == "effect:staged-overlay",
+      type(image) == "table" and image.handle == "effect:staged-overlay",
       "released effects leave the production picture pass"
     )
   end
@@ -909,6 +983,7 @@ function T.picture_form_apply_and_restore_reaches_the_production_compositor()
 
   local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
   local function drawSnapshot(snapshot, graphics)
+    local seen = #rig.frames
     BattleRenderer.drawPane({
       graphics = graphics,
       text = rig.text,
@@ -918,22 +993,25 @@ function T.picture_form_apply_and_restore_reaches_the_production_compositor()
       frameKey = rig.screen._assets:frameKey(),
       sceneImageKey = rig.screen._assets:sceneImage(),
     }, snapshot, "detail")
+    return assert(rig.frames[seen + 1], "the typed frame reaches the production pass")
   end
-  local function pictureDraw(graphics, handle)
-    for _, draw in ipairs(graphics.draws) do
-      if draw.meshTexture ~= nil and draw.meshTexture.handle == handle then
-        return draw
+  local function pictureDraw(frame, handle)
+    for _, primitive in ipairs(frame.primitives) do
+      local material = primitive.image or primitive.material
+      local image = type(material) == "table" and (material.image or material) or material
+      if type(image) == "table" and image.handle == handle then
+        return primitive
       end
     end
     error("the production picture pass draws " .. handle, 0)
   end
 
   local beforeGraphics = FakeGraphics.new({})
-  drawSnapshot(initial, beforeGraphics)
+  local beforeFrame = drawSnapshot(initial, beforeGraphics)
   local originalFrame = rig.assets.images["mon:" .. originalSelector].frames[originalPictureFrame + 1]
   local unrelatedFrame = rig.assets.images["mon:" .. unrelatedSelector].frames[1]
-  local beforeChangedDraw = pictureDraw(beforeGraphics, originalFrame.handle)
-  local beforeUnrelatedDraw = pictureDraw(beforeGraphics, unrelatedFrame.handle)
+  local beforeChangedDraw = pictureDraw(beforeFrame, originalFrame.handle)
+  local beforeUnrelatedDraw = pictureDraw(beforeFrame, unrelatedFrame.handle)
 
   rig.screen:applyPictureState(changedBattler, {
     portraitSelector = changedSelector,
@@ -969,20 +1047,21 @@ function T.picture_form_apply_and_restore_reaches_the_production_compositor()
   Assert.equal(transformedBattler.sourceHeight, 9, "the form selector loads its own source height")
   Assert.equal(transformedBattler.portraitSelector, changedSelector, "the scene snapshot carries the applied selector")
   local transformedGraphics = FakeGraphics.new({})
-  drawSnapshot(transformed, transformedGraphics)
+  local transformedFrameRecord = drawSnapshot(transformed, transformedGraphics)
   local transformedFrame = rig.assets.images["mon:" .. changedSelector].frames[2]
-  local transformedDraw = pictureDraw(transformedGraphics, transformedFrame.handle)
-  local unchangedDraw = pictureDraw(transformedGraphics, unrelatedFrame.handle)
-  local firstBefore, firstAfter = beforeChangedDraw.meshVertices[1], transformedDraw.meshVertices[1]
+  local transformedDraw = pictureDraw(transformedFrameRecord, transformedFrame.handle)
+  local unchangedDraw = pictureDraw(transformedFrameRecord, unrelatedFrame.handle)
+  local firstBefore, firstAfter = beforeChangedDraw.vertices[1], transformedDraw.vertices[1]
   Assert.isTrue(
-    firstBefore[1] ~= firstAfter[1] or firstBefore[2] ~= firstAfter[2] or firstBefore[3] ~= firstAfter[3],
+    firstBefore.clipX ~= firstAfter.clipX or firstBefore.clipY ~= firstAfter.clipY,
     "authored affine changes alter the production picture vertices"
   )
   Assert.deepEqual(
-    transformedDraw.color,
-    { 0.5, 1, 0.25, 15 / 31 * 0.75 },
-    "picture palette tint and native polygon alpha reach the mesh"
+    transformedDraw.color5,
+    { r = 16, g = 31, b = 8 },
+    "picture palette tint reaches the shared target"
   )
+  Assert.equal(transformedDraw.alpha5, 11, "native polygon alpha reaches the shared target")
   local transformedUnrelated = nil
   for _, battler in ipairs(transformed.battlers) do
     if battler.combatant == unrelatedBattler.combatant and battler.activation == unrelatedBattler.activation then
@@ -999,19 +1078,12 @@ function T.picture_form_apply_and_restore_reaches_the_production_compositor()
     unrelatedBattler.pictureFrame,
     "the unrelated source frame is unchanged"
   )
-  Assert.deepEqual(unchangedDraw.color, beforeUnrelatedDraw.color, "the unrelated picture palette is unchanged")
-  local shadowDraw = nil
-  for _, draw in ipairs(transformedGraphics.draws) do
-    if draw.meshTexture ~= nil and draw.meshTexture.handle == "shadow" then
-      shadowDraw = draw
-    end
-  end
-  Assert.isTrue(shadowDraw ~= nil, "the transformed native shadow reaches the same picture pass")
-  Assert.deepEqual(
-    shadowDraw.color,
-    { 1, 0.5, 0.25, 15 / 31 },
-    "the native shadow palette and polygon alpha reach its mesh"
-  )
+  Assert.deepEqual(unchangedDraw.color5, beforeUnrelatedDraw.color5, "the unrelated picture palette is unchanged")
+  Assert.equal(unchangedDraw.alpha5, beforeUnrelatedDraw.alpha5, "the unrelated picture alpha is unchanged")
+  local shadowDraw = pictureDraw(transformedFrameRecord, "shadow")
+  Assert.equal(shadowDraw.kind, "shadow", "the transformed native shadow reaches the same picture pass")
+  Assert.deepEqual(shadowDraw.color5, { r = 31, g = 16, b = 8 }, "the native shadow palette reaches its polygon")
+  Assert.equal(shadowDraw.alpha5, 15, "the native shadow polygon alpha reaches its polygon")
 
   local restoredPictureState = rig.screen:restorePictureState(changedBattler)
   Assert.equal(restoredPictureState.shadowSize, 1, "the activation snapshot includes its native shadow size")
@@ -1032,41 +1104,43 @@ function T.picture_form_apply_and_restore_reaches_the_production_compositor()
   Assert.equal(restoredBattler.shadowSize, 1, "restore reinstates the source shadow size")
   Assert.equal(restoredBattler.shadowVisible, true, "restore reinstates source shadow visibility")
   local restoredGraphics = FakeGraphics.new({})
-  drawSnapshot(restored, restoredGraphics)
+  local restoredFrameRecord = drawSnapshot(restored, restoredGraphics)
   local restoredFrame = rig.assets.images["mon:" .. originalSelector].frames[restoredBattler.pictureFrame + 1]
-  local restoredDraw = pictureDraw(restoredGraphics, restoredFrame.handle)
-  local restoredVertices = {}
-  local verticalDelta = beforeChangedDraw.meshVertices[1][2] - restoredDraw.meshVertices[1][2]
-  for index, vertex in ipairs(restoredDraw.meshVertices) do
-    restoredVertices[index] = {}
-    for component, value in ipairs(vertex) do
-      restoredVertices[index][component] = component == 2 and value + verticalDelta or value
-    end
+  local restoredDraw = pictureDraw(restoredFrameRecord, restoredFrame.handle)
+  Assert.equal(restoredDraw.centerX, beforeChangedDraw.centerX, "restored picture keeps its column")
+  Assert.equal(restoredDraw.width, beforeChangedDraw.width, "restored picture keeps its width")
+  Assert.equal(restoredDraw.height, beforeChangedDraw.height, "restored picture keeps its height")
+  for index, vertex in ipairs(restoredDraw.vertices) do
+    local before = beforeChangedDraw.vertices[index]
+    Assert.equal(vertex.clipX, before.clipX, "restored picture keeps its horizontal geometry")
+    Assert.equal(vertex.u, before.u, "restored picture keeps its horizontal crop")
+    Assert.equal(vertex.v, before.v, "restored picture keeps its vertical crop")
+    -- Clip Y round-trips through host floats; the integer source row
+    -- carries the exact slide instead.
+    local slide = beforeChangedDraw.centerY - restoredDraw.centerY
+    Assert.isTrue(
+      math.abs(vertex.clipY + slide * 4096 / 96 - before.clipY) < 1e-6,
+      "restored picture geometry matches the original up to its source slide"
+    )
   end
-  Assert.deepEqual(restoredVertices, beforeChangedDraw.meshVertices, "restored picture geometry matches the original")
   Assert.equal(
     rig.screen:_snapshot().battlers[1].portraitSelector,
     restored.battlers[1].portraitSelector,
     "restoring one activation leaves the unrelated snapshot unchanged"
   )
-  local restoredShadow = nil
-  for _, draw in ipairs(restoredGraphics.draws) do
-    if draw.meshTexture ~= nil and draw.meshTexture.handle == "shadow" then
-      restoredShadow = draw
-    end
-  end
-  Assert.isTrue(restoredShadow ~= nil, "restoring the mon retains its source shadow resource")
-  local originalShadow = nil
-  for _, draw in ipairs(beforeGraphics.draws) do
-    if draw.meshTexture ~= nil and draw.meshTexture.handle == "shadow" then
-      originalShadow = draw
-    end
-  end
-  Assert.isTrue(originalShadow ~= nil, "the original appearance carries its source shadow")
+  local restoredShadow = pictureDraw(restoredFrameRecord, "shadow")
+  Assert.equal(restoredShadow.kind, "shadow", "restoring the mon retains its source shadow resource")
+  local beforeFrameShadow = pictureDraw(beforeFrame, "shadow")
+  Assert.isTrue(beforeFrameShadow ~= nil, "the original appearance carries its source shadow")
   Assert.deepEqual(
-    restoredShadow.color,
-    originalShadow.color,
-    "restoring the mon restores its shadow palette and alpha"
+    restoredShadow.color5,
+    beforeFrameShadow.color5,
+    "restoring the mon restores its shadow palette"
+  )
+  Assert.equal(
+    restoredShadow.alpha5,
+    beforeFrameShadow.alpha5,
+    "restoring the mon restores its shadow alpha"
   )
   rig.screen:dispose()
   rig.battle:dispose()
@@ -1419,6 +1493,7 @@ function openSealingScreen(launchId, specs, requestId)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = battleManifest(),
     model = Model,
@@ -1435,6 +1510,7 @@ function openSealingScreen(launchId, specs, requestId)
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   completeSourceParticipantRoster(rig.port)
   function rig.pump(ticks, dt)
@@ -2143,7 +2219,7 @@ end
 ---@param layout string? interaction layout under drawing
 ---@param held string[]? artwork keys reporting unavailable
 ---@return table graphics, text, and window records behind one draw
-local function drawNativePane(paneId, view, layout, held, doublesHud, graphicsOverride)
+local function drawNativePane(paneId, view, layout, held, doublesHud, graphicsOverride, observer)
   local BattleRenderer = require(RENDERER_MODULE)
   local graphics = graphicsOverride or FakeGraphics.new({})
   local text = recordingText()
@@ -2161,6 +2237,15 @@ local function drawNativePane(paneId, view, layout, held, doublesHud, graphicsOv
     drawView[key] = value
   end
   drawView.effectInstances = drawView.effectInstances or {}
+  -- Direct renderer snapshots carry no screen enrichment: settled
+  -- pictures require the scene-published species height, so hand-built
+  -- battlers without one stand on the zero baseline the renderer
+  -- previously defaulted.
+  for _, battler in ipairs(drawView.battlers or {}) do
+    if type(battler) == "table" and battler.sourceHeight == nil then
+      battler.sourceHeight = 0
+    end
+  end
   local manifest = battleManifest()
   drawView.slotGeometry = manifest.battlefield.slots
   drawView.hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy }
@@ -2200,15 +2285,13 @@ local function drawNativePane(paneId, view, layout, held, doublesHud, graphicsOv
         end
         return fakeDrawable(key, width, 8)
       end,
-      renderPictures = function(_, _, pictures)
-        pictureRecords = pictures
-        return { handle = "picture-pass" }
-      end,
-      menuBlendTargets = function(self, blendGraphics)
-        if self.menuBlend == nil then
-          self.menuBlend = BattleMenuPresenter.newBlendTargets(blendGraphics)
+      renderPictures = function(_, _, frame)
+        pictureRecords = assert(frame.primitives, "production renders its typed composition frame")
+        if observer ~= nil then
+          observer.compositionFrame = frame
         end
-        return self.menuBlend
+        CompositionFrameDrain.drain(graphics, frame)
+        return { handle = "picture-pass" }
       end,
     },
     frameKey = "default",
@@ -2859,6 +2942,7 @@ function T.opening_presentation_draws_only_visible_trainer_pictures()
 end
 
 function T.native_menu_draws_generated_layers_in_priority_order()
+  local observer = {}
   local drawn = drawNativePane(
     "interaction",
     nativeView({
@@ -2871,10 +2955,27 @@ function T.native_menu_draws_generated_layers_in_priority_order()
       },
     }),
     "command",
-    {}
+    {},
+    nil,
+    nil,
+    observer
+  )
+  local graphics = drawn.graphics
+  local frame = assert(observer.compositionFrame, "interaction draws through one typed sub frame")
+  Assert.equal(frame.engine, "sub", "the interaction pane composes on the sub engine")
+  -- Source planes ride fixed sub-engine roles; the compositor owns
+  -- priority order, so content presence (not painter order) is the
+  -- contract here.
+  Assert.notNil(frame.planes.menu, "plane 0 feeds the menu role")
+  Assert.notNil(frame.planes.window, "plane 1 feeds the window role")
+  Assert.notNil(frame.planes.transition, "plane 2 feeds the transition role")
+  Assert.deepEqual(
+    frame.animation.priority,
+    { menu = 1, window = 0, transition = 2, battlefield = 3 },
+    "the sub engine keeps its source plane priorities"
   )
   local menuOrder = {}
-  for _, entry in ipairs(drawn.graphics.draws) do
+  for _, entry in ipairs(graphics.draws) do
     local key = type(entry.image) == "table" and entry.image.handle or nil
     if type(key) == "string" and key:match("^menu:command:screen:") then
       menuOrder[#menuOrder + 1] = key
@@ -2882,8 +2983,8 @@ function T.native_menu_draws_generated_layers_in_priority_order()
   end
   Assert.deepEqual(
     menuOrder,
-    { "menu:command:screen:2", "menu:command:screen:1", "menu:command:screen:3" },
-    "generated command layers draw by source priority, with physical plane order for ties"
+    { "menu:command:screen:1", "menu:command:screen:3", "menu:command:screen:2" },
+    "every generated layer still paints its tilemap"
   )
 end
 
@@ -3220,6 +3321,7 @@ local function openWeakTerminalRig(launchId)
     }
   )
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = battleManifest(),
     model = Model,
@@ -3236,6 +3338,7 @@ local function openWeakTerminalRig(launchId)
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   completeSourceParticipantRoster(rig.port)
   holder.battle = BattleRuntime.new({
@@ -3355,6 +3458,7 @@ local function openLongOutcomeRig(launchId)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local screen = BattleScreenState.new({
+    splRandomState = { state = 0 },
     launchId = launchId,
     manifest = battleManifest(),
     model = Model,
@@ -3371,6 +3475,7 @@ local function openLongOutcomeRig(launchId)
     audio = rig.audio,
   })
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   completeSourceParticipantRoster(rig.port)
   function rig.pump(ticks, dt)
@@ -3499,6 +3604,7 @@ local function openPacedScreen(launchId, speed)
   end
   local options = {
     launchId = launchId,
+    splRandomState = { state = 0 },
     manifest = battleManifest(),
     model = Model,
     submit = function(reply)
@@ -3518,6 +3624,7 @@ local function openPacedScreen(launchId, speed)
   end
   local screen = BattleScreenState.new(options)
   rig.screen = screen
+  seedHeadlessPass(rig)
   rig.port = screen:presentationPort()
   completeSourceParticipantRoster(rig.port)
   function rig.pump(ticks, dt)

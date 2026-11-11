@@ -17,6 +17,8 @@ local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local Rgb555 = require("libs.codec.src.Rgb555")
 
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+
 local T = {}
 ---@param draws table[] recorded draws under inspection
 ---@param handle string artwork identity under inspection
@@ -166,7 +168,7 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
       textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, drawable = drawable }
     end
     layer.encounterParticles[setIndex] =
-      { startTick = set.startTick, seed = set.seed, emitters = set.emitters, textures = textures }
+      { startTick = set.startTick, emitters = set.emitters, textures = textures }
   end
   return layer
 end
@@ -241,7 +243,7 @@ local function openEncounterRig(opts)
   end
   function text.drawText(_) end
   function text.drawTextWithPalette(_, _, _) end
-  local windows = {}
+  local windows = { background = { 0.2, 0.3, 0.1, 1 } }
   function windows.drawWindow(_, _, _) end
   function windows.drawApplicationFrame(_, _) end
   local launchId = "encounter-readiness-probe"
@@ -271,6 +273,18 @@ local function openEncounterRig(opts)
     fadedRasters = fadedRasters,
     paletteRasters = paletteRasters,
     released = released,
+  }
+  -- Headless composition runs without GPU targets: the seeded pass
+  -- drains plane and OBJ content through the recording boundary and
+  -- records each typed frame. Real pixels stay in the graphics layer.
+  rig.frames = {}
+  screen._assets._picturePass = {
+    render = function(_, graphics, frame)
+      rig.frames[#rig.frames + 1] = frame
+      CompositionFrameDrain.drain(graphics, frame)
+      return { handle = "rig-picture-pass" }
+    end,
+    release = function() end,
   }
   local enter = port.enter
   function port.enter(plan)
@@ -514,8 +528,8 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
 
     local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
     local ParticleFixture = require("tests.support.BattleParticleLeaseFixture")
-    local moveSimulation = SplParticleSimulation.new(0, 0)
-    SplParticleSimulation.addEmitter(moveSimulation, 0, nil, ParticleFixture.payload(1).emitters[1])
+    local moveSimulation = SplParticleSimulation.new({ state = 0 }, 0, ParticleFixture.payload(1).emitters)
+    SplParticleSimulation.addEmitter(moveSimulation, 0, nil)
     SplParticleSimulation.advance(moveSimulation)
     local moveTexture = StubLease.new("move-live-particle")
     moveTexture.width = 8
@@ -551,26 +565,64 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
     Assert.equal(#before.encounterParticleSystems, 1, "the encounter owner has a live emitter")
     Assert.equal(#before.moveParticleSystems, 1, "the scene owner has a live move emitter")
     Assert.equal(#before.ballParticleSystems, 1, "the ball owner has a live seal emitter")
+    -- Live particles reach the shared 3D target as native primitives in
+    -- both layouts: the compositor owns depth against pictures, so no
+    -- particle overlay paints past the UI.
+    local function primitiveHandles(frames)
+      local found = {}
+      for _, frame in ipairs(frames) do
+        if frame.engine == "main" then
+          for _, primitive in ipairs(frame.primitives or {}) do
+            local material = primitive.image or primitive.material
+            local image = type(material) == "table" and (material.image or material) or material
+            if type(image) == "table" and image.handle ~= nil then
+              found[#found + 1] = image.handle
+            end
+          end
+        end
+      end
+      return found
+    end
+    local function handlesHave(handles, handle)
+      for _, found in ipairs(handles) do
+        if found == handle then
+          return true
+        end
+      end
+      return false
+    end
     local detail = FakeGraphics.new({})
+    local detailSeen = #rig.frames
     rig.screen:draw({ graphics = detail })
+    local detailFrames = {}
+    for index = detailSeen + 1, #rig.frames do
+      detailFrames[#detailFrames + 1] = rig.frames[index]
+    end
+    local detailHandles = primitiveHandles(detailFrames)
     for _, handle in ipairs({
       "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0",
       "move-live-particle",
       "ball-live-particle",
     }) do
-      Assert.isTrue(#drawsOf(detail.draws, handle) >= 1, "detail draws " .. handle)
+      Assert.isTrue(handlesHave(detailHandles, handle), "detail submits " .. handle)
     end
 
     rig.compact()
     local compact = FakeGraphics.new({})
+    local compactSeen = #rig.frames
     rig.screen:draw({ graphics = compact })
     rig.screen:draw({ graphics = FakeGraphics.new({}) })
+    local compactFrames = {}
+    for index = compactSeen + 1, #rig.frames do
+      compactFrames[#compactFrames + 1] = rig.frames[index]
+    end
+    local compactHandles = primitiveHandles(compactFrames)
     for _, handle in ipairs({
       "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0",
       "move-live-particle",
       "ball-live-particle",
     }) do
-      Assert.isTrue(#drawsOf(compact.draws, handle) >= 1, "compact draws " .. handle)
+      Assert.isTrue(handlesHave(compactHandles, handle), "compact submits " .. handle)
     end
     local after = rig.screen:view()
     Assert.equal(
@@ -643,6 +695,7 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
 
     local uploadCount = #rig.paletteRasters[image.handle]
     local detail = FakeGraphics.new({})
+    local detailSeen = #rig.frames
     rig.screen:draw({ graphics = detail })
     rig.screen:draw({ graphics = FakeGraphics.new({}) })
     Assert.equal(
@@ -651,20 +704,30 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
       "repeated draws do not rematerialize an unchanged palette image"
     )
     local terrainDraw = drawsOf(detail.draws, image.handle)[1]
-    local particleDraw = drawsOf(detail.draws, "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0")[1]
     Assert.isTrue(terrainDraw ~= nil, "the real detail screen draws the sampled terrain image")
-    Assert.isTrue(particleDraw ~= nil, "the real detail screen draws the separate encounter particle")
-    Assert.equal(particleDraw.image, sourceParticleImage, "the encounter particle keeps its original texture lease")
-    local terrainOrder, particleOrder
-    for index, draw in ipairs(detail.draws) do
-      if draw == terrainDraw then
-        terrainOrder = index
-      elseif draw == particleDraw then
-        particleOrder = index
+    -- Particles reach the shared 3D target as native primitives while
+    -- terrain stays 2D content: the world plane keeps source priority
+    -- above the battlefield, so the particle stays above the terrain.
+    local particlePrimitive = nil
+    local detailFrame = nil
+    for index = detailSeen + 1, #rig.frames do
+      local frame = rig.frames[index]
+      if frame.engine == "main" then
+        detailFrame = detailFrame or frame
+        for _, primitive in ipairs(frame.primitives or {}) do
+          local material = primitive.image or primitive.material
+          local staged = type(material) == "table" and (material.image or material) or material
+          if staged == sourceParticleImage then
+            particlePrimitive = particlePrimitive or primitive
+          end
+        end
       end
     end
+    Assert.isTrue(particlePrimitive ~= nil, "the real detail screen submits the separate encounter particle")
     Assert.isTrue(
-      type(terrainOrder) == "number" and type(particleOrder) == "number" and terrainOrder < particleOrder,
+      detailFrame ~= nil
+        and detailFrame.planes.battlefield ~= nil
+        and detailFrame.animation.priority.world3d < detailFrame.animation.priority.battlefield,
       "the encounter particle remains above the sampled 2D terrain"
     )
     local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
@@ -687,10 +750,27 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     })
     local nativeParticleDraw = drawsOf(nativeParticleGraphics.draws, sourceParticleImage.handle)[1]
     Assert.isTrue(nativeParticleDraw ~= nil, "the source simulation draws its own native particle tint")
-    Assert.deepEqual(
-      particleDraw.color,
-      nativeParticleDraw.color,
-      "native 2D sampling leaves the source particle tint unchanged"
+    -- The shared target carries the same five-bit color and alpha the
+    -- native overlay sampled: sampling never recolors the particle.
+    Assert.equal(
+      particlePrimitive.color5.r / 31,
+      nativeParticleDraw.color[1],
+      "native 2D sampling leaves the particle red unchanged"
+    )
+    Assert.equal(
+      particlePrimitive.color5.g / 31,
+      nativeParticleDraw.color[2],
+      "native 2D sampling leaves the particle green unchanged"
+    )
+    Assert.equal(
+      particlePrimitive.color5.b / 31,
+      nativeParticleDraw.color[3],
+      "native 2D sampling leaves the particle blue unchanged"
+    )
+    Assert.equal(
+      particlePrimitive.alpha5 / 31,
+      nativeParticleDraw.color[4],
+      "native 2D sampling leaves the particle alpha unchanged"
     )
 
     rig.compact()
@@ -850,7 +930,20 @@ function T.interaction_menu_samples_source_bg_and_obj_planes_without_the_lower_w
       end
     end
     Assert.isFalse(fullScreenWash, "the lower encounter plane does not wash over SUB_OBJ art")
-    Assert.isTrue(#graphics.canvases >= 2, "the original BG1 blend still composes the lower menu layers")
+    -- The unified sub-engine frame owns the former BG1 blend: menu
+    -- layers ride plane roles with compositor priorities instead of a
+    -- private two-canvas shader.
+    local subFrame = nil
+    for _, frame in ipairs(rig.frames) do
+      if frame.engine == "sub" then
+        subFrame = frame
+      end
+    end
+    Assert.notNil(subFrame, "the lower menu composes through the unified sub-engine frame")
+    Assert.isTrue(
+      subFrame.planes.menu ~= nil or subFrame.planes.window ~= nil or subFrame.planes.transition ~= nil,
+      "the sub frame carries the sampled menu planes"
+    )
   end)
   rig.screen:dispose()
   if not ok then

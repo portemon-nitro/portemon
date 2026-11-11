@@ -53,6 +53,7 @@ local function fieldStateOptions(options, saveStore, extra, shared)
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
     audioPreferences = options.audioPreferences,
+    splRandomState = options.splRandomState,
   }
   if extra then
     for key, value in pairs(extra) do

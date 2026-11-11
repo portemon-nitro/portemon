@@ -172,6 +172,9 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
       },
     },
     requiredContext = {},
+    -- The closed effect carries its immutable root display policy
+    -- like every compiled record the schema admits.
+    displayPolicy = { suspendHealthbarUpdates = false, updateBattlerG3 = false },
   }
   cache:writeLua(Cache.effectPath(closedDemand.key), record)
   cache:write(Cache.effectMarkerPath(closedDemand.key), "complete")

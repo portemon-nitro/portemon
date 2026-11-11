@@ -2772,6 +2772,7 @@ local function openEvolutionChild(intent, services)
     context = context,
     catalog = catalog,
     particles = services.evolutionParticles,
+    splRandomState = services.splRandomState,
   })
   if not ok then
     return nil, tostring(state)
