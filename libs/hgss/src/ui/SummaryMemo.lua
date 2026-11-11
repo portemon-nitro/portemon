@@ -370,6 +370,18 @@ local function inkForColor(manifest, color)
   return slotName
 end
 
+-- The cleared egg record carries no meeting date: only meeting-date
+-- templates require it, so absence fails at the using segment rather
+-- than for every egg record. Egg bindings read the stored egg date
+-- when present and keep the established meeting-date fallback otherwise.
+---@param date unknown
+---@param what string
+---@return table<string, integer>
+local function requireMemoDate(date, what)
+  assert(type(date) == "table", what .. " requires its stored date")
+  return date --[[@as table<string, integer>]]
+end
+
 ---@param value unknown
 ---@param what string
 ---@return integer
@@ -408,8 +420,13 @@ local function expandSegments(mon, manifest, segments)
   local labels = memoLabels(manifest)
   local met = assert(mon.met, "memo records carry their met record")
   assert(type(met) == "table", "memo met records are records")
-  local metDate = assert(met.date, "memo met records carry a date")
-  assert(type(metDate) == "table", "memo met dates are records")
+  -- The cleared egg record carries no meeting date, so it is required
+  -- only when a meeting-date segment uses it; hatched records always
+  -- carry one.
+  local metDate = met.date
+  if metDate ~= nil then
+    assert(type(metDate) == "table", "memo met dates are records")
+  end
   local metLocation = assert(met.location, "memo met records carry a location")
   assert(type(metLocation) == "number" and metLocation % 1 == 0, "memo met locations are integers")
   ---@cast metLocation integer
@@ -417,8 +434,9 @@ local function expandSegments(mon, manifest, segments)
   assert(type(metLevel) == "number", "memo met levels are numeric")
   local egg = assert(mon.egg, "memo records carry their egg record")
   assert(type(egg) == "table", "memo egg records are records")
-  -- Stored mons never carry a separate egg date, so hatched and egg
-  -- templates read the meeting date for the egg bindings.
+  -- Gift eggs carry their receipt as a separate egg date; hatched and
+  -- older records without one keep reading the meeting date for the egg
+  -- bindings.
   local eggDate = metDate
   if type(egg.date) == "table" then
     eggDate = egg.date
@@ -455,21 +473,23 @@ local function expandSegments(mon, manifest, segments)
       flush()
       ink = inkForColor(manifest, segment.color)
     elseif kind == "metYear" then
-      push(formatNativeYear(metDate.year))
+      push(formatNativeYear(requireMemoDate(metDate, "meeting-date templates").year))
     elseif kind == "metMonth" then
-      push(labelText(labels, monthKey(section, metDate.month), "the memo month"))
+      local meeting = requireMemoDate(metDate, "meeting-date templates")
+      push(labelText(labels, monthKey(section, meeting.month), "the memo month"))
     elseif kind == "metDay" then
-      push(tostring(dateNumber(metDate.day, "memo days")))
+      push(tostring(dateNumber(requireMemoDate(metDate, "meeting-date templates").day, "memo days")))
     elseif kind == "metLevel" then
       push(tostring(dateNumber(metLevel, "memo levels")))
     elseif kind == "metLocation" then
       push(labelText(labels, landmarkKey(manifest, metLocation), "the memo landmark"))
     elseif kind == "eggYear" then
-      push(formatNativeYear(eggDate.year))
+      push(formatNativeYear(requireMemoDate(eggDate, "egg-date templates").year))
     elseif kind == "eggMonth" then
-      push(labelText(labels, monthKey(section, eggDate.month), "the memo month"))
+      local hatched = requireMemoDate(eggDate, "egg-date templates")
+      push(labelText(labels, monthKey(section, hatched.month), "the memo month"))
     elseif kind == "eggDay" then
-      push(tostring(dateNumber(eggDate.day, "memo days")))
+      push(tostring(dateNumber(requireMemoDate(eggDate, "egg-date templates").day, "memo days")))
     elseif kind == "eggLocation" then
       push(labelText(labels, landmarkKey(manifest, eggLocation), "the memo landmark"))
     elseif kind == "migrationRegion" then

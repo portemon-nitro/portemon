@@ -125,6 +125,68 @@ function FieldServiceHandlers.bufferCapitalize(ins)
   return { op = "buffer_capitalize", slot = Operands.operandValue(ins.operands[1]) }
 end
 
+-- ScrCmd_GiveEgg species, gift-location offset: both operands resolve
+-- like any variable-or-value source operand, there is no result, and
+-- the capacity check inside the service precedes any creation.
+function FieldServiceHandlers.giveEgg(ins)
+  return {
+    op = "give_egg",
+    species = Operands.varRef(ins.operands[1]),
+    locationOffset = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_BufferPlayerUnionAvatarClassName reads the immediate slot and
+-- snapshots the saved avatar's article-bearing class behind it.
+function FieldServiceHandlers.bufferUnionAvatarClass(ins)
+  return { op = "buffer_union_avatar_class", slot = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_BufferUnionRoomAvatarChoices carries no operands: the four
+-- offered plain class names snapshot into slots 0..3 at run time.
+function FieldServiceHandlers.bufferUnionAvatarChoices(_)
+  return { op = "buffer_union_avatar_choices" }
+end
+
+-- ScrCmd_UnionRoomAvatarIdxToTrainerClass (288) and
+-- ScrCmd_UnionRoomAvatarIdxToSprite (558) share the offered-choice
+-- projection: the evaluated choice resolves through the source trainer
+-- table while the writable result carries the class or the native
+-- sprite.
+local function unionAvatarChoice(attribute, ins)
+  return {
+    op = "union_avatar_choice",
+    choice = Operands.varRef(ins.operands[1]),
+    attribute = attribute,
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.unionAvatarChoiceClass(ins)
+  return unionAvatarChoice("class", ins)
+end
+
+function FieldServiceHandlers.unionAvatarChoiceSprite(ins)
+  return unionAvatarChoice("sprite", ins)
+end
+
+-- ScrCmd_SetPlayerProfileAvatar persists the evaluated native sprite as
+-- the normalized profile row: no result, same tick, no visual change.
+function FieldServiceHandlers.setUnionAvatar(ins)
+  return { op = "set_union_avatar", sprite = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_BufferTrainerClassNameIndef buffers the article-bearing class
+-- name behind the immediate slot, mirroring the plain trainer-class
+-- buffer with the indefinite text form.
+function FieldServiceHandlers.bufferTrainerClassNameIndefinite(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = { text = "trainer_class_name_indefinite", value = Operands.varRef(ins.operands[2]) },
+  }
+end
+
 -- ScrCmd_RockSmashItemCheck: whether the follower used the move, then the
 -- found flag and item result variables.
 function FieldServiceHandlers.rockSmashItemCheck(ins)

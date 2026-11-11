@@ -1011,6 +1011,16 @@ function T.field_runtime_covers_both_menu_protocol_banks_without_family_summarie
   Assert.isTrue(set["follower-interactions:global"] == true, "field runtime carries the interaction catalog")
   Assert.isTrue(set["field-entry:global"] == true, "field runtime carries the generated field-entry class")
   Assert.isTrue(set["message-bank:279"] == true, "field runtime carries the region-map bank")
+  -- Word-command and local-center text reads its code-addressed banks
+  -- through the script host: the fixed-phrase pair, the raw Frontier
+  -- intro, the plain and article-bearing trainer classes, the Union
+  -- language bank, and the common-center text both journeys resolve.
+  Assert.isTrue(set["message-bank:46"] == true, "field runtime carries the common-center bank")
+  Assert.isTrue(set["message-bank:202"] == true, "field runtime carries the fixed-phrase bank")
+  Assert.isTrue(set["message-bank:723"] == true, "field runtime carries the Frontier intro bank")
+  Assert.isTrue(set["message-bank:730"] == true, "field runtime carries the trainer-class bank")
+  Assert.isTrue(set["message-bank:731"] == true, "field runtime carries the article trainer-class bank")
+  Assert.isTrue(set["message-bank:738"] == true, "field runtime carries the Union language bank")
   Assert.isNil(set["message-summary:global"], "field runtime enrolls no message summary")
   Assert.isNil(set["audio-summary:global"], "field runtime enrolls no audio summary")
   for key in pairs(set) do
@@ -1020,8 +1030,14 @@ function T.field_runtime_covers_both_menu_protocol_banks_without_family_summarie
         bank == tostring(MenuProtocol.STANDARD_MESSAGE_BANK)
           or bank == tostring(MenuProtocol.START_MENU_MESSAGE_BANK)
           or bank == "40"
+          or bank == "46"
           or bank == "265"
-          or bank == "279",
+          or bank == "279"
+          or bank == "202"
+          or bank == "723"
+          or bank == "730"
+          or bank == "731"
+          or bank == "738",
         "field runtime carries only synchronously addressed message banks: " .. key
       )
     end

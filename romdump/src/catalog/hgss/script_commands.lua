@@ -1000,9 +1000,8 @@ return {
     [138] = {
       name = "ScrCmd_GiveEgg",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "egg creation and hatching need the egg/daycare lifecycle",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1461,6 +1460,7 @@ return {
     },
     [200] = {
       classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_BufferTrainerClassName",
       widths = {
         [1] = 1,
@@ -1468,6 +1468,8 @@ return {
       },
     },
     [201] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_BufferPlayerUnionAvatarClassName",
       widths = {
         [1] = 1,
@@ -2098,22 +2100,24 @@ return {
       widths = {},
     },
     [287] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_BufferUnionRoomAvatarChoices",
       widths = {},
     },
     [288] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_UnionRoomAvatarIdxToTrainerClass",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "union room needs the link transport application",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [289] = {
-      name = "ScrCmd_289",
+      classification = "continue_same_tick",
+      disposition = "supported",
+      name = "ScrCmd_SetPlayerProfileAvatar",
       widths = {
         [1] = 2,
       },
@@ -3775,6 +3779,8 @@ return {
       },
     },
     [498] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_PrimoPasswordCheck1",
       widths = {
         [1] = 2,
@@ -3785,6 +3791,8 @@ return {
       },
     },
     [499] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_PrimoPasswordCheck2",
       widths = {
         [1] = 2,
@@ -4200,6 +4208,8 @@ return {
       },
     },
     [558] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_UnionRoomAvatarIdxToSprite",
       widths = {
         [1] = 2,
@@ -6345,11 +6355,9 @@ return {
       },
     },
     [849] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_BufferTrainerClassNameIndef",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer name buffers need the trainer text application",
       widths = {
         [1] = 1,
         [2] = 2,

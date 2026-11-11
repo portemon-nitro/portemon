@@ -229,11 +229,12 @@ function FieldMessageCompiler.requiredBankIds()
   -- The setup card reads its CHANGE/QUIT context labels from this bank.
   set[PokegearSources.configureMessageBank] = true
   -- Word-command text reads its code-addressed banks through the script
-  -- host: the fixed-phrase pair, the raw Frontier intro bank, the trainer
-  -- class name bank, and the Union language bank.
+  -- host: the fixed-phrase pair, the raw Frontier intro bank, the plain
+  -- and article-bearing trainer class banks, and the Union language bank.
   set[202] = true
   set[723] = true
   set[730] = true
+  set[731] = true
   set[738] = true
   local out = {}
   for bankId in pairs(set) do

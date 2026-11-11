@@ -166,4 +166,35 @@ function EasyChatHandlers.showTrainerHouseIntroMessage(ins)
   }
 end
 
+-- Primo password checks (opcodes 498 wallpaper, 499 egg): the first
+-- source operand is the result, the next four are the checked words.
+-- Inputs stay symbolic through varRef, so an aliased result variable
+-- still evaluates before the runtime writes it.
+---@param ins table<string, unknown> decoded instruction record
+---@param kind string reward family
+---@return table<string, unknown>
+local function primoPasswordCheck(ins, kind)
+  return {
+    op = "primo_password",
+    kind = kind,
+    result = Operands.varRef(ins.operands[1]),
+    word1 = Operands.varRef(ins.operands[2]),
+    word2 = Operands.varRef(ins.operands[3]),
+    word3 = Operands.varRef(ins.operands[4]),
+    word4 = Operands.varRef(ins.operands[5]),
+  }
+end
+
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function EasyChatHandlers.primoPasswordCheck1(ins)
+  return primoPasswordCheck(ins, "wallpaper")
+end
+
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function EasyChatHandlers.primoPasswordCheck2(ins)
+  return primoPasswordCheck(ins, "egg")
+end
+
 return EasyChatHandlers

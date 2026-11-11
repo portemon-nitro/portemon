@@ -66,6 +66,14 @@ local function sourceReferenceBankIds()
   ids[PokegearSources.regionMapMessageBank] = true
   -- The setup card reads its CHANGE/QUIT context labels from this bank.
   ids[PokegearSources.configureMessageBank] = true
+  -- Word-command text reads its code-addressed banks through the script
+  -- host: the fixed-phrase pair, the raw Frontier intro bank, the plain
+  -- and article-bearing trainer class banks, and the Union language bank.
+  ids[202] = true
+  ids[723] = true
+  ids[730] = true
+  ids[731] = true
+  ids[738] = true
   local out = {}
   for bankId in pairs(ids) do
     out[#out + 1] = bankId
@@ -244,6 +252,14 @@ function T.source_references_form_one_sorted_bank_set()
   expected[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
   expected[PokegearSources.regionMapMessageBank] = true
   expected[PokegearSources.configureMessageBank] = true
+  -- Word-command text reads its code-addressed banks through the script
+  -- host: the fixed-phrase pair, the raw Frontier intro bank, the plain
+  -- and article-bearing trainer class banks, and the Union language bank.
+  expected[202] = true
+  expected[723] = true
+  expected[730] = true
+  expected[731] = true
+  expected[738] = true
 
   Assert.deepEqual(required, sourceReferenceBankIds())
 

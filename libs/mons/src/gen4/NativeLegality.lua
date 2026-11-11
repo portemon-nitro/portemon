@@ -3,6 +3,7 @@
 -- widths, encodings, and status combinations before the boxed codec writes.
 
 local MonsErrors = require("libs.mons.src.errors")
+local Mon = require("libs.mons.src.Mon")
 local Personality = require("libs.mons.src.gen4.Personality")
 local StatusCodec = require("libs.mons.src.gen4.StatusCodec")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
@@ -10,7 +11,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@class NativeLegality
 local NativeLegality = {}
 
----@alias NativeLegality.Mon { schema: string, species: string, form: integer, personality: integer, experience: integer, friendship: integer, ability: string, heldItem: string, markings: integer, evs: table<string, integer>, contest: table<string, integer>, moves: { move: string, pp: integer, ppUps: integer }[], ivs: table<string, integer>, isEgg: boolean, nickname?: string, ribbons: { ds1: integer, gba: integer, ds2: integer }, fatefulEncounter: boolean, shinyLeaves: integer, egg: { location: integer, date?: { year: integer, month: integer, day: integer } }, met: { location: integer, date: { year: integer, month: integer, day: integer }, level: integer, terrain: integer }, origin: { trainerId: integer, trainerName: string, trainerGender: integer, game: string, ball: string, language: string }, pokerus: integer, mood: integer, condition?: { currentHp: integer, effects: StatusCodec.Effect[] }, capsule?: table<string, unknown>, mail?: table<string, unknown> }
+---@alias NativeLegality.Mon { schema: string, species: string, form: integer, personality: integer, experience: integer, friendship: integer, ability: string, heldItem: string, markings: integer, evs: table<string, integer>, contest: table<string, integer>, moves: { move: string, pp: integer, ppUps: integer }[], ivs: table<string, integer>, isEgg: boolean, nickname?: string, ribbons: { ds1: integer, gba: integer, ds2: integer }, fatefulEncounter: boolean, shinyLeaves: integer, egg: { location: integer, date?: { year: integer, month: integer, day: integer } }, met: { location: integer, date?: { year: integer, month: integer, day: integer }, level: integer, terrain: integer }, origin: { trainerId: integer, trainerName: string, trainerGender: integer, game: string, ball: string, language: string }, pokerus: integer, mood: integer, condition?: { currentHp: integer, effects: StatusCodec.Effect[] }, capsule?: table<string, unknown>, mail?: table<string, unknown> }
 ---@alias NativeLegality.Projection { personality: integer, speciesId: integer, heldItemId: integer, trainerId: integer, experience: integer, friendship: integer, abilityId: integer, markings: integer, languageId: integer, evs: table<string, integer>, contest: table<string, integer>, ribbonsDs1: integer, moves: { id: integer, pp: integer, ppUps: integer }[], ivs: table<string, integer>, isEgg: boolean, hasNickname: boolean, ribbonsGba: integer, fateful: boolean, genderCode: integer, form: integer, leaves: integer, nicknameText: string, gameId: integer, ribbonsDs2: integer, otText: string, eggYear: integer, eggMonth: integer, eggDay: integer, metYear: integer, metMonth: integer, metDay: integer, eggLocation: integer, metLocation: integer, pokerus: integer, ballId: integer, metLevel: integer, trainerGender: integer, terrain: integer, mood: integer }
 
 NativeLegality.NICKNAME_CAPACITY = 11
@@ -90,9 +91,13 @@ function NativeLegality.project(mon, context)
     genderCode = 2
   end
 
+  -- The default name follows the same record owner party and summary
+  -- views use, so an unnamed egg keeps the localized egg label without a
+  -- custom-nickname bit. A cleared meeting date projects to three zero
+  -- bytes, exactly like the absent egg date already does.
   local nicknameText = mon.nickname
   if nicknameText == nil then
-    nicknameText = species.name
+    nicknameText = Mon.displayName(mon, catalog)
     checkShapedText(nicknameText, context.charmap, NativeLegality.NICKNAME_CAPACITY, "nickname")
   end
 
@@ -146,9 +151,9 @@ function NativeLegality.project(mon, context)
     eggYear = mon.egg.date ~= nil and mon.egg.date.year or 0,
     eggMonth = mon.egg.date ~= nil and mon.egg.date.month or 0,
     eggDay = mon.egg.date ~= nil and mon.egg.date.day or 0,
-    metYear = mon.met.date.year,
-    metMonth = mon.met.date.month,
-    metDay = mon.met.date.day,
+    metYear = mon.met.date ~= nil and mon.met.date.year or 0,
+    metMonth = mon.met.date ~= nil and mon.met.date.month or 0,
+    metDay = mon.met.date ~= nil and mon.met.date.day or 0,
     eggLocation = mon.egg.location,
     metLocation = mon.met.location,
     pokerus = mon.pokerus,

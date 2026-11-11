@@ -666,6 +666,106 @@ function T.item_text_without_a_catalog_stays_unsupported()
   Assert.equal(err.code, "SCRIPT_UNSUPPORTED_REACHABLE")
 end
 
+-- Trainer-class text reads the plain bank 730 and the article-bearing
+-- bank 731, including variable-backed class identities, with the
+-- Capitalize wrapper applying the source first-character rule before
+-- glyph parsing.
+local function trainerTextHost(banks, world)
+  local provider = assert(FieldMessageProvider.new(cacheWith(banks)))
+  local controller = {
+    open = function(self, request)
+      self.request = request
+    end,
+    close = function(self)
+      self.request = nil
+    end,
+    isModal = function(self)
+      return self.request ~= nil
+    end,
+    status = function()
+      return { state = "WAITING_CLOSE", pageIndex = 1, revealedGlyphs = 1 }
+    end,
+  }
+  local hostObject = ScriptDialogueHost.new({
+    controller = controller,
+    yesNoController = FieldYesNoController.new(),
+    provider = provider,
+    layout = function(formatted)
+      return formatted
+    end,
+    fontDef = { charmap = asciiCharmap() },
+    player = {
+      name = function()
+        return "Gold"
+      end,
+      gender = function()
+        return 0
+      end,
+    },
+    world = world,
+  })
+  return hostObject, provider
+end
+
+function T.trainer_class_text_resolves_plain_indefinite_and_variable_forms()
+  local h = trainerTextHost({
+    [542] = bankArtifact(542),
+    [730] = nameBankArtifact(730, "Youngster", "Lass"),
+    [731] = nameBankArtifact(731, "a Youngster", "a Lass"),
+  })
+  Assert.equal(textAt(h, { text = "trainer_class_name", value = 0 }), "Youngster")
+  Assert.equal(textAt(h, { text = "trainer_class_name", value = 1 }), "Lass")
+  Assert.equal(textAt(h, { text = "trainer_class_name_indefinite", value = 1 }), "a Lass")
+  Assert.equal(
+    textAt(h, { text = "capitalized", source = { text = "trainer_class_name_indefinite", value = 1 } }),
+    "A Lass",
+    "capitalization applies before glyph parsing"
+  )
+  Assert.equal(
+    textAt(h, { text = "capitalized", source = { text = "trainer_class_name", value = 0 } }),
+    "Youngster",
+    "capitalization keeps an already capital plain name"
+  )
+  local withWorld = trainerTextHost({
+    [542] = bankArtifact(542),
+    [730] = nameBankArtifact(730, "Youngster", "Lass"),
+    [731] = nameBankArtifact(731, "a Youngster", "a Lass"),
+  }, {
+    getVar = function(_, id)
+      assert(id == "VAR_CLASS")
+      return 1
+    end,
+  })
+  Assert.equal(
+    textAt(withWorld, { text = "trainer_class_name", value = { value = "var", id = "VAR_CLASS" } }),
+    "Lass",
+    "class identities evaluate through the world"
+  )
+end
+
+function T.trainer_class_text_releases_its_bank_on_success_and_failure()
+  local banks = {
+    [542] = bankArtifact(542),
+    [730] = nameBankArtifact(730, "Youngster", "Lass"),
+    [731] = nameBankArtifact(731, "a Youngster", "a Lass"),
+  }
+  local h, provider = trainerTextHost(banks)
+  local before = provider:stats().references
+  textAt(h, { text = "trainer_class_name", value = 0 })
+  textAt(h, { text = "trainer_class_name_indefinite", value = 1 })
+  Assert.equal(provider:stats().references, before, "resolved trainer text releases its bank")
+  local missing = Assert.throws(function()
+    textAt(h, { text = "trainer_class_name", value = 7 })
+  end)
+  Assert.isTrue(Errors.is(missing), "a missing class message stays an attributed fault")
+  Assert.equal(provider:stats().references, before, "a missing message releases its bank")
+  local negative = Assert.throws(function()
+    textAt(h, { text = "trainer_class_name", value = -1 })
+  end)
+  Assert.isTrue(Errors.is(negative), "an invalid class identity stays an attributed fault")
+  Assert.equal(provider:stats().references, before, "an invalid identity acquires no bank")
+end
+
 function T.item_text_with_an_unknown_native_identity_faults()
   local withItems = itemTextHost()
   local err = Assert.throws(function()

@@ -52,6 +52,61 @@ function T.give_spiky_ear_pichu_lowers_to_a_semantic_service_operation()
   Assert.deepEqual(lowered.items[1].op, "give_spiky_ear_pichu", "the spiky-ear gift lowers to its semantic operation")
 end
 
+function T.give_egg_lowers_to_a_resultless_semantic_service_operation()
+  local lowered = SemanticLowering.lowerScript(
+    { instructions = { { opcode = 138, operands = { 172, 14 }, offset = 0 } } },
+    { member = 12, scripts = {}, movements = {} },
+    { stdCatalog = SourceCatalog.catalog() }
+  )
+  Assert.equal(#lowered.items, 1, "the egg command lowers to exactly one semantic step")
+  local node = lowered.items[1]
+  Assert.equal(node.op, "give_egg", "the egg command lowers to the semantic egg operation")
+  Assert.equal(node.species, 172, "the species rides through for the service to resolve once")
+  Assert.equal(node.locationOffset, 14, "the gift offset rides through for the service to narrow")
+  Assert.isNil(node.result, "the egg command carries no result")
+end
+
+function T.give_egg_executes_the_lowered_node_through_the_live_service()
+  local Runtime = require("libs.script.src.Runtime")
+  local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+  local HgssMonService = requireService()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x12345678):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    date = CatalogFixture.metDate(),
+  })
+  local lowered = SemanticLowering.lowerScript(
+    { instructions = { { opcode = 138, operands = { 172, 14 }, offset = 0 } } },
+    { member = 12, scripts = {}, movements = {} },
+    { stdCatalog = SourceCatalog.catalog() }
+  )
+  local run = {
+    instance = { scriptId = "test.give-egg", locals = {}, textArgs = {} },
+    services = { mons = service, world = { getVar = function() end } },
+    semantics = RuntimeValues,
+  }
+  Assert.equal(
+    Runtime.executeNode(lowered.items[1], run),
+    Runtime.OUTCOME_CONTINUE,
+    "the egg command continues in the same tick"
+  )
+  Assert.equal(service:partyCount(), 1, "the lowered egg enters the party")
+  local mon = service:partyMon(0)
+  Assert.isTrue(mon.isEgg, "the lowered gift stays an egg")
+  Assert.equal(mon.species, "PICHU", "the native species resolves once at the service")
+  Assert.equal(mon.egg.location, 2014, "the gift offset narrows against the gift base")
+  Assert.isNil(mon.met.date, "the lowered gift clears its meeting record")
+end
+
 function T.give_mon_creates_adds_and_reports_in_source_order()
   local HgssMonService = requireService()
   local catalog = CatalogFixture.makeCatalog()

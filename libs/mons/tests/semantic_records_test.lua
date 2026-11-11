@@ -278,6 +278,79 @@ function T.unrepresentable_records_fail_with_structured_errors()
   Assert.equal(BoxCodec.decode(BoxCodec.encode(historical, context), context).met.level, 6)
 end
 
+-- The cleared unhatched gift shape admits exactly its cleared meeting
+-- record: location zero, no date, and level zero behind the egg flag.
+-- Older eggs carrying a meeting date keep validating unchanged, while
+-- partial dates, ordinary level-zero meetings, and meetings cleared
+-- outside the egg shape all fail without repair.
+function T.cleared_egg_meetings_admit_only_their_cleared_shape()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local Mon = require("libs.mons.src.Mon")
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local egg = factory:createScriptEgg({
+    species = "PICHU",
+    profile = CatalogFixture.profile(),
+    location = 2014,
+    date = CatalogFixture.metDate(),
+  })
+  local canonical = Mon.validate(egg, context)
+  Assert.isTrue(canonical.isEgg, "the admitted record stays an egg")
+  Assert.isNil(canonical.met.date, "absence stays absent, never a zero-day date")
+  Assert.equal(canonical.met.level, 0)
+  Assert.equal(canonical.met.location, 0)
+  -- Admission copies: mutating the canonical record touches no caller
+  -- state, and the source record validates again unchanged.
+  canonical.met.level = 5
+  Assert.equal(egg.met.level, 0, "admission returns an owned copy")
+  Assert.isNil(Mon.validate(egg, context).met.date)
+
+  -- An older egg carrying its meeting date stays valid as-is.
+  local dated = factory:createNormal(CatalogFixture.normalRequest())
+  dated.isEgg = true
+  local datedCanonical = Mon.validate(dated, context)
+  Assert.notNil(datedCanonical.met.date, "a dated egg keeps its meeting date")
+  Assert.equal(Mon.displayName(datedCanonical, catalog), "EGG")
+  Assert.equal(Mon.displayName(canonical, catalog), "EGG")
+  dated.nickname = "BUBBLES"
+  Assert.equal(Mon.displayName(Mon.validate(dated, context), catalog), "BUBBLES")
+
+  local function invalid(mutator)
+    local altered = copy(egg)
+    mutator(altered)
+    return altered
+  end
+  throwsCode("MON_RECORD_INVALID", function()
+    Mon.validate(
+      invalid(function(mon)
+        mon.met.date = { year = 2009, month = 0, day = 0 }
+      end),
+      context
+    )
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    Mon.validate(
+      invalid(function(mon)
+        mon.met.location = 7
+      end),
+      context
+    )
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    Mon.validate(
+      invalid(function(mon)
+        mon.isEgg = false
+      end),
+      context
+    )
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    local ordinary = factory:createNormal(CatalogFixture.normalRequest())
+    ordinary.met.date = nil
+    Mon.validate(ordinary, context)
+  end)
+end
+
 function T.native_projection_reuses_semantic_derivations()
   local catalog = CatalogFixture.makeCatalog()
   local context = CatalogFixture.domainContext(catalog)

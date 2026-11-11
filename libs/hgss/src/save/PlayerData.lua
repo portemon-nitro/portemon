@@ -119,6 +119,19 @@ local function validate(record, context)
       nationalDex = profile.nationalDex,
     })
   end
+  -- The saved Union avatar row is the absolute source index 0..15: rows
+  -- 0..7 are male and 8..15 female. Only an absent older field takes the
+  -- source new-game default from the trainer identity; an explicit
+  -- malformed value fails like any other gameplay value.
+  local unionAvatar = profile.unionAvatar
+  if unionAvatar == nil then
+    unionAvatar = trainerId % 8 + profile.gender * 8
+  end
+  if not isFiniteInteger(unionAvatar) or unionAvatar < profile.gender * 8 or unionAvatar > profile.gender * 8 + 7 then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player union avatar must match the profile gender half", {
+      unionAvatar = profile.unionAvatar,
+    })
+  end
   for _, flag in ipairs({ "runningShoes", "runningShoesLock" }) do
     if type(profile[flag]) ~= "boolean" then
       Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player " .. flag .. " must be a boolean", {
@@ -158,6 +171,7 @@ local function validate(record, context)
       nationalDex = profile.nationalDex,
       runningShoes = profile.runningShoes,
       runningShoesLock = profile.runningShoesLock,
+      unionAvatar = unionAvatar,
     },
     options = canonicalOptions,
   }

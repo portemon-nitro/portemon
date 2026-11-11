@@ -1431,6 +1431,10 @@ local function standardMenuBegin(ins)
     messageSource = "standard",
     initialCursor = Operands.operandValue(ins.operands[3]),
     cancellable = Operands.operandValue(ins.operands[4]) ~= 0,
+    -- The source B-cancel result as the engine stores it: the unsigned
+    -- halfword behind the source -2 sentinel, matching the decoded
+    -- comparison literals exactly.
+    cancelValue = 0xFFFE,
     result = Operands.varRef(ins.operands[5]),
   }
 end
@@ -1442,6 +1446,10 @@ local function scriptMenuBegin(ins, memberIr)
     messageSource = { kind = "script", bank = memberIr.messageBank },
     initialCursor = Operands.operandValue(ins.operands[3]),
     cancellable = Operands.operandValue(ins.operands[4]) ~= 0,
+    -- The source B-cancel result as the engine stores it: the unsigned
+    -- halfword behind the source -2 sentinel, matching the decoded
+    -- comparison literals exactly.
+    cancelValue = 0xFFFE,
     result = Operands.varRef(ins.operands[5]),
   }
 end
@@ -1771,6 +1779,7 @@ local FieldHandlers = {
   [202] = bufferSpeciesName,
   [203] = bufferStarterSpeciesName,
   [137] = giveMon,
+  [138] = FieldServiceHandlers.giveEgg,
   [778] = giveSpikyEarPichu,
   [125] = giveItem,
   [126] = takeItem,
@@ -2026,6 +2035,16 @@ FieldHandlers[443] = require("romdump.src.digest.script.lowering.EasyChatHandler
 FieldHandlers[492] = require("romdump.src.digest.script.lowering.EasyChatHandlers").promptEasyChatOneWord
 FieldHandlers[493] = require("romdump.src.digest.script.lowering.EasyChatHandlers").promptEasyChat
 FieldHandlers[494] = require("romdump.src.digest.script.lowering.EasyChatHandlers").bufferEasyChatWord
+FieldHandlers[498] = require("romdump.src.digest.script.lowering.EasyChatHandlers").primoPasswordCheck1
+FieldHandlers[499] = require("romdump.src.digest.script.lowering.EasyChatHandlers").primoPasswordCheck2
+-- The local avatar and article-bearing trainer-text entries ride the
+-- cohesive FieldServiceHandlers leaf with the other service lowerings.
+FieldHandlers[201] = FieldServiceHandlers.bufferUnionAvatarClass
+FieldHandlers[287] = FieldServiceHandlers.bufferUnionAvatarChoices
+FieldHandlers[288] = FieldServiceHandlers.unionAvatarChoiceClass
+FieldHandlers[289] = FieldServiceHandlers.setUnionAvatar
+FieldHandlers[558] = FieldServiceHandlers.unionAvatarChoiceSprite
+FieldHandlers[849] = FieldServiceHandlers.bufferTrainerClassNameIndefinite
 FieldHandlers[538] = require("romdump.src.digest.script.lowering.EasyChatHandlers").unlockRandomTrendySaying
 FieldHandlers[540] = require("romdump.src.digest.script.lowering.EasyChatHandlers").checkAllTrendySayingsUnlocked
 FieldHandlers[571] = require("romdump.src.digest.script.lowering.EasyChatHandlers").checkEasyChatWordsMatchFixedPhrase

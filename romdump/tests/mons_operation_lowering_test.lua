@@ -173,4 +173,56 @@ function T.party_buffer_commands_keep_a_variable_slot_as_a_variable_reference()
   Assert.deepEqual(nickname.value, { text = "party_nickname", position = { value = "var", id = 0x800C } })
 end
 
+-- Local avatar and article-bearing trainer-text commands keep their
+-- source operand shapes: immediate slots stay literals, variable
+-- operands stay deferred reads, and the password checks carry the
+-- result first so aliased inputs evaluate before the runtime writes.
+function T.avatar_and_trainer_text_commands_keep_their_source_operand_shapes()
+  local avatarClass = lowerSingle(201, { 0 })
+  Assert.equal(avatarClass.op, "buffer_union_avatar_class")
+  Assert.equal(avatarClass.slot, 0)
+
+  local choices = lowerSingle(287, {})
+  Assert.equal(choices.op, "buffer_union_avatar_choices")
+
+  local toClass = lowerSingle(288, { 0x8004, 0x8005 })
+  Assert.equal(toClass.op, "union_avatar_choice")
+  Assert.deepEqual(toClass.choice, { value = "var", id = 0x8004 })
+  Assert.equal(toClass.attribute, "class")
+  Assert.deepEqual(toClass.result, { value = "var", id = 0x8005 })
+
+  local toSprite = lowerSingle(558, { 0x8004, 0x8005 })
+  Assert.equal(toSprite.op, "union_avatar_choice")
+  Assert.deepEqual(toSprite.choice, { value = "var", id = 0x8004 })
+  Assert.equal(toSprite.attribute, "sprite")
+  Assert.deepEqual(toSprite.result, { value = "var", id = 0x8005 })
+
+  local setAvatar = lowerSingle(289, { 0x8005 })
+  Assert.equal(setAvatar.op, "set_union_avatar")
+  Assert.deepEqual(setAvatar.sprite, { value = "var", id = 0x8005 })
+  Assert.isNil(setAvatar.result, "the avatar selection carries no result")
+
+  local indefinite = lowerSingle(849, { 0, 0x8005 })
+  Assert.equal(indefinite.op, "buffer_text")
+  Assert.equal(indefinite.slot, 0)
+  Assert.deepEqual(indefinite.value, { text = "trainer_class_name_indefinite", value = { value = "var", id = 0x8005 } })
+end
+
+function T.primo_password_checks_carry_the_result_first_with_symbolic_inputs()
+  local wallpaper = lowerSingle(498, { 0x800C, 0x8000, 0x8001, 0x8002, 0x8003 })
+  Assert.equal(wallpaper.op, "primo_password")
+  Assert.equal(wallpaper.kind, "wallpaper")
+  Assert.deepEqual(wallpaper.result, { value = "var", id = 0x800C })
+  Assert.deepEqual(wallpaper.word1, { value = "var", id = 0x8000 })
+  Assert.deepEqual(wallpaper.word2, { value = "var", id = 0x8001 })
+  Assert.deepEqual(wallpaper.word3, { value = "var", id = 0x8002 })
+  Assert.deepEqual(wallpaper.word4, { value = "var", id = 0x8003 })
+
+  local egg = lowerSingle(499, { 0x800C, 1007, 1048, 1050, 1064 })
+  Assert.equal(egg.op, "primo_password")
+  Assert.equal(egg.kind, "egg")
+  Assert.deepEqual(egg.result, { value = "var", id = 0x800C })
+  Assert.equal(egg.word1, 1007, "literal words ride through without variable wrapping")
+end
+
 return { tests = T }

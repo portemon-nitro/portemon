@@ -228,6 +228,9 @@ end
 function M.trainerClassName(v)
   return text("trainer_class_name", { value = v })
 end
+function M.trainerClassNameIndefinite(v)
+  return text("trainer_class_name_indefinite", { value = v })
+end
 function M.starterSpeciesName()
   return text("starter_species_name")
 end
@@ -630,6 +633,24 @@ function M.unionPartnerLanguage(spec)
 end
 function M.trainerHouseIntroMessage(spec)
   return op("trainer_house_intro_message", spec)
+end
+function M.giveEgg(spec)
+  return op("give_egg", spec)
+end
+function M.primoPassword(spec)
+  return op("primo_password", spec)
+end
+function M.bufferUnionAvatarClass(spec)
+  return op("buffer_union_avatar_class", spec)
+end
+function M.bufferUnionAvatarChoices(spec)
+  return op("buffer_union_avatar_choices", spec)
+end
+function M.unionAvatarChoice(spec)
+  return op("union_avatar_choice", spec)
+end
+function M.setUnionAvatar(spec)
+  return op("set_union_avatar", spec)
 end
 function M.showWaitingIcon(spec)
   return op("show_waiting_icon", spec)

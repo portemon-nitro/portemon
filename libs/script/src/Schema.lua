@@ -109,6 +109,13 @@ Schema.ENUMS = {
   -- National dex flag actions: publish ownership or read it.
   national_pokedex_action = { "enable", "check" },
   prop_animation_direction = { "forward", "reverse" },
+  -- Primo password reward families: wallpaper unlocks behind opcode 498
+  -- and egg answers behind 499. Numeric source opcodes never appear past
+  -- the producer boundary.
+  primo_password_kind = { "wallpaper", "egg" },
+  -- Union avatar choice projections: the trainer class behind opcode 288
+  -- or the native sprite behind 558.
+  union_avatar_attribute = { "class", "sprite" },
 }
 
 Schema.ACTOR_SPECIALS = { "player", "self", "last_talked", "partner", "camera_target" }
@@ -187,6 +194,7 @@ Schema.TEXT_VALUES = {
   },
   nature_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   trainer_class_name = { fields = { value = { type = "scalar_or_value", required = true } } },
+  trainer_class_name_indefinite = { fields = { value = { type = "scalar_or_value", required = true } } },
   starter_species_name = { fields = {} },
   map_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   easy_chat_word = {
@@ -790,6 +798,10 @@ Schema.OPERATIONS = {
       messageSource = { type = "serializable", required = true },
       initialCursor = { type = "integer", required = true },
       cancellable = { type = "boolean", required = true },
+      -- The source B-cancel result as the engine stores it: the unsigned
+      -- halfword behind the source -2 sentinel; consumed only when the
+      -- menu actually cancels.
+      cancelValue = { type = "scalar_or_value" },
       result = { type = "value", required = true },
     },
   },
@@ -1528,6 +1540,54 @@ Schema.OPERATIONS = {
   trainer_house_intro_message = {
     fields = {
       index = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- Source gift egg: two u16 operands resolve before the capacity
+  -- check, a full party is a same-tick no-op with no result, and a free
+  -- slot creates exactly one level-1 unhatched egg without dex, stat,
+  -- naming, or hatching effects.
+  give_egg = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+      locationOffset = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- Primo password checks: the result comes first so aliasing writes
+  -- after every input evaluates, exactly like the source same-tick
+  -- commands. Wallpaper answers publish through the box owner; egg
+  -- answers only report their code.
+  primo_password = {
+    fields = {
+      kind = { type = "enum:primo_password_kind", required = true },
+      word1 = { type = "scalar_or_value", required = true },
+      word2 = { type = "scalar_or_value", required = true },
+      word3 = { type = "scalar_or_value", required = true },
+      word4 = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  -- Local avatar text snapshots: the current saved class and the four
+  -- offered class names buffer into ordinary text slots same tick.
+  buffer_union_avatar_class = {
+    fields = {
+      slot = { type = "buffer_slot", required = true },
+    },
+  },
+  buffer_union_avatar_choices = { fields = {} },
+  -- Offered avatar choice projection: the class behind 288 or the
+  -- native sprite behind 558, written to the result same tick.
+  union_avatar_choice = {
+    fields = {
+      choice = { type = "scalar_or_value", required = true },
+      attribute = { type = "enum:union_avatar_attribute", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  -- Saved avatar selection: persists the normalized row for the chosen
+  -- native sprite same tick, with no visual or network effect.
+  set_union_avatar = {
+    fields = {
+      sprite = { type = "scalar_or_value", required = true },
     },
   },
   -- Party-screen selection. The launch node blocks on the party_select
@@ -2640,6 +2700,41 @@ Schema.CONSTRUCTORS = {
         signature = "S.trainerHouseIntroMessage(spec)",
         canonical = "op=trainer_house_intro_message",
         notes = "spec={index}; index 10 reads the source default.",
+      },
+      {
+        signature = "S.giveEgg(spec)",
+        canonical = "op=give_egg",
+        notes = "spec={species, locationOffset}; full party no-ops same tick with no result.",
+      },
+      {
+        signature = "S.primoPassword(spec)",
+        canonical = "op=primo_password",
+        notes = "spec={kind, word1..word4, result}; wallpaper 255/0/1..8, egg 255/8..10.",
+      },
+      {
+        signature = "S.bufferUnionAvatarClass(spec)",
+        canonical = "op=buffer_union_avatar_class",
+        notes = "spec={slot 0..7}; snapshots the saved avatar class with its article.",
+      },
+      {
+        signature = "S.bufferUnionAvatarChoices(spec)",
+        canonical = "op=buffer_union_avatar_choices",
+        notes = "spec optional; snapshots the four offered class names into slots 0..3.",
+      },
+      {
+        signature = "S.unionAvatarChoice(spec)",
+        canonical = "op=union_avatar_choice",
+        notes = "spec={choice, attribute, result}; class or sprite of the offered choice.",
+      },
+      {
+        signature = "S.setUnionAvatar(spec)",
+        canonical = "op=set_union_avatar",
+        notes = "spec={sprite}; persists the normalized row for the chosen sprite.",
+      },
+      {
+        signature = "S.trainerClassNameIndefinite(v)",
+        canonical = 'text="trainer_class_name_indefinite"',
+        notes = "article-bearing class name from bank 731.",
       },
       {
         signature = "S.chooseStarter(spec)",

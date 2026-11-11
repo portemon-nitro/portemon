@@ -379,6 +379,26 @@ function CatalogFixture.buildAssetRoot()
           ),
         },
       }),
+      EGG = speciesEntry({
+        nativeId = 494,
+        name = "EGG",
+        growthCurve = "medium_fast",
+        genderRatio = 255,
+        eggGroups = { "undiscovered", "undiscovered" },
+        baseExpYield = 0,
+        evYield = statSet(0, 0, 0, 0, 0, 0),
+        forms = {
+          [0] = formEntry(
+            statSet(1, 1, 1, 1, 1, 1),
+            { "normal" },
+            { "STATIC" },
+            { "TOXIC" },
+            learnset({ { 1, "TACKLE" } }),
+            "EGG/f0",
+            "EGG/f0/male/plain"
+          ),
+        },
+      }),
     },
     moves = {
       TACKLE = moveEntry(33, "Tackle", "Charges the foe.", "physical", 35, "normal", 95, 35),

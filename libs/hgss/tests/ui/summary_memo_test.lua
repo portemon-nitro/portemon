@@ -507,6 +507,37 @@ function T.current_eggs_follow_ownership_fateful_and_ranger_branches()
   end
 end
 
+-- A real cleared gift egg renders its receipt date at its gift
+-- location with the localized egg label and no meeting date: the egg
+-- branch binds only egg segments, so the absent meeting record is
+-- never read.
+function T.cleared_gift_egg_renders_its_receipt_date_without_a_meeting_date()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  Assert.isTrue(
+    service:giveEgg({ species = "PICHU", locationOffset = 14, date = CatalogFixture.metDate() }),
+    "the setup gift enters the party"
+  )
+  local manifest = SummaryPresentationFixture.manifest()
+  local locations = assert(manifest.memo.locations, "the family carries memo locations")
+  setMon(service, 0, function(mon)
+    Assert.isNil(mon.met.date, "the setup gift clears its meeting record")
+    mon.egg.location = locations.giftEggOrigins[1]
+  end)
+  local facts = build(service, 0, nil, manifest)
+  Assert.isTrue(facts.isEgg, "the gift stays an egg")
+  Assert.equal(facts.memo.condition, "eggGift", "the gift egg reads the gift branch")
+  Assert.equal(facts.identity.displayName, "EGG", "the unnamed gift keeps the localized egg label")
+  Assert.equal(facts.identity.species, "EGG", "the gift portrait keeps the egg identity")
+  local text = memoText(facts.memo.blocks)
+  local receipt = CatalogFixture.metDate()
+  Assert.isTrue(text:find(tostring(receipt.day), 1, true) ~= nil, "the gift memo names the receipt day")
+  Assert.isTrue(
+    text:find(labelOf(manifest, manifest.memo.months[receipt.month]), 1, true) ~= nil,
+    "the gift memo names the receipt month"
+  )
+end
+
 function T.date_templates_expand_through_generated_words_breaks_and_levels()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0xC4C4C4C4)

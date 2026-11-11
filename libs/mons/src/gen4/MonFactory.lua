@@ -240,6 +240,52 @@ function MonFactory:createScriptGift(request)
   return self:_finish(mon)
 end
 
+-- The source script-gift egg (SetEggStats with memo strategy 3 in
+-- get_egg.c): a level-1 form-zero egg in a Poke Ball whose friendship is
+-- the personal egg cycles, whose egg record carries the receipt location
+-- and date, and whose meeting record is cleared to location zero, no
+-- date, and level zero. The biological species stays on the record while
+-- the default display name resolves to the localized egg label, with no
+-- custom nickname, fateful encounter, inherited moves, or forced
+-- personality. Generation draws the exact four normal values; the caller
+-- owns party insertion, including the source capacity check before any
+-- draw.
+---@param request { species: string, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer } }
+---@return table<string, unknown>
+function MonFactory:createScriptEgg(request)
+  assert(type(request) == "table", "script-egg creation requires a request record")
+  local profile = assert(request.profile, "script-egg creation requires an owner profile")
+  local location = assert(request.location, "script-egg creation requires a receipt location")
+  local date = assert(request.date, "script-egg creation requires a receipt date")
+  assert(
+    type(date) == "table"
+      and type(date.year) == "number"
+      and type(date.month) == "number"
+      and type(date.day) == "number",
+    "script-egg creation requires a receipt date record"
+  )
+  local mon = self:_normalRecord({
+    species = request.species,
+    level = 1,
+    form = 0,
+    profile = profile,
+    ball = "POKE_BALL",
+    location = location,
+    terrain = 0,
+    date = date,
+  })
+  mon.friendship = self._catalog:species(request.species).eggCycles
+  mon.isEgg = true
+  mon.nickname = nil
+  mon.fatefulEncounter = false
+  mon.egg = {
+    location = location,
+    date = { year = date.year, month = date.month, day = date.day },
+  }
+  mon.met = { location = 0, level = 0, terrain = 0 }
+  return self:_finish(mon)
+end
+
 -- The source Spiky-Ear Pichu distribution constants in distribution order
 -- (retail ROM): Naughty is nature
 -- 4, and the ability parity must agree with it (source GF_ASSERT).

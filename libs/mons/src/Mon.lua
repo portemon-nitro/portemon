@@ -340,8 +340,23 @@ function Mon.validate(record, context)
 
   checkRecord(record.met, MET_FIELDS, "met record")
   checkU16(record.met.location, "met location")
-  checkDate(record.met.date, "met date")
-  checkIntRange(record.met.level, 1, Stats.MAX_LEVEL, "met level")
+  -- The source unhatched gift shape clears the meeting record: an absent
+  -- date is legal only for an egg whose location and level are also
+  -- cleared. A present date always uses the real date validator, and an
+  -- egg may rest at level zero while ordinary mons keep the minimum one.
+  local metIsEgg = record.isEgg == true
+  if record.met.date == nil then
+    if not metIsEgg or record.met.location ~= 0 or record.met.level ~= 0 then
+      MonsErrors.raise(MonsErrors.RECORD_INVALID, "met date is required outside the cleared egg record", {})
+    end
+  else
+    checkDate(record.met.date, "met date")
+  end
+  if metIsEgg then
+    checkIntRange(record.met.level, 0, Stats.MAX_LEVEL, "met level")
+  else
+    checkIntRange(record.met.level, 1, Stats.MAX_LEVEL, "met level")
+  end
   checkU8(record.met.terrain, "met terrain")
 
   checkOrigin(record.origin, context, catalog)
@@ -400,6 +415,11 @@ function Mon.displayName(record, catalog)
   assert(catalog ~= nil, "display name requires a catalog")
   if record.nickname ~= nil then
     return record.nickname
+  end
+  -- An unnamed egg shows the localized egg label without setting a custom
+  -- nickname; the biological species stays hidden behind the egg display.
+  if record.isEgg == true then
+    return catalog:species("EGG").name
   end
   return catalog:species(record.species).name
 end

@@ -184,6 +184,80 @@ function T.dsl_constructors_compile_to_validated_graphs()
     steps = { { op = "give_mon", species = "CHIKORITA", level = 5, result = 7 } },
   }))
   Assert.isTrue(Errors.is(bad), "a literal result is rejected")
+  local eggStep = S.giveEgg({ species = "PICHU", locationOffset = 14 })
+  Assert.equal(eggStep.op, "give_egg")
+  local eggGraph = assert(Compiler.compile(S.script({ api = 1, id = "test.mons.egg", steps = { eggStep } })))
+  Assert.equal(eggGraph.nodes[eggGraph.entry].op, "give_egg")
+end
+
+-- The source gift egg creates exactly one cleared egg with no result
+-- variable: variable operands resolve through the world, a full party
+-- reports nothing and draws nothing, and a missing mon service is an
+-- attributed fault.
+function T.give_egg_creates_through_the_service_with_no_result()
+  local service = openService()
+  local run = runWith(service)
+  Assert.equal(
+    Runtime.executeNode({ op = "give_egg", species = "PICHU", locationOffset = 14 }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(service:partyCount(), 3, "the created egg enters the party")
+  local mon = service:partyMon(2)
+  Assert.isTrue(mon.isEgg, "the gift stays an egg")
+  Assert.equal(mon.egg.location, 2014, "the gift offset narrows against the gift base")
+  Assert.isNil(mon.met.date, "the gift clears its meeting record")
+end
+
+function T.give_egg_resolves_variable_operands_and_no_ops_on_a_full_party()
+  local catalog = CatalogFixture.makeCatalog()
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xDDDDDDDD):capture())
+  local full = HgssMonService.new({
+    catalog = catalog,
+    bucket = bucket,
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  for _ = 1, Party.MAX do
+    Assert.isTrue(full:giveMon({
+      species = "CHIKORITA",
+      level = 5,
+      heldItem = "NONE",
+      form = 0,
+      location = 7,
+      date = CatalogFixture.metDate(),
+    }))
+  end
+  local callsBefore = full:capture().rng.calls
+  local run = runWith(full, { EGG_SPECIES = "PICHU", EGG_OFFSET = 14 })
+  Assert.equal(
+    Runtime.executeNode({
+      op = "give_egg",
+      species = { value = "var", id = "EGG_SPECIES" },
+      locationOffset = { value = "var", id = "EGG_OFFSET" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(full:partyCount(), 6, "a full party takes no egg")
+  Assert.equal(full:capture().rng.calls, callsBefore, "a full party draws nothing")
+end
+
+function T.give_egg_without_its_service_is_an_attributed_fault()
+  local run = runWith(nil)
+  local ok, err = pcall(function()
+    Runtime.executeNode({ op = "give_egg", species = "PICHU", locationOffset = 14 }, run)
+  end)
+  Assert.isFalse(ok, "a missing mon service must not silently skip the gift")
+  Assert.isTrue(Errors.is(err))
+  ---@cast err Errors.Error
+  Assert.equal(err.code, "SCRIPT_SERVICE_MISSING")
 end
 
 return { tests = T }

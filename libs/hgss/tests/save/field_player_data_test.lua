@@ -48,6 +48,7 @@ local function record(overrides)
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      unionAvatar = 0,
     },
     options = {
       textFrame = 0,
@@ -121,7 +122,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
   Assert.keySet(validated, "options,profile", "canonicalization must drop the extra top-level key")
   Assert.keySet(
     validated.profile,
-    "badges,gender,money,name,nationalDex,rivalName,runningShoes,runningShoesLock,trainerId",
+    "badges,gender,money,name,nationalDex,rivalName,runningShoes,runningShoesLock,trainerId,unionAvatar",
     "canonicalization must drop profile.transientThing"
   )
   Assert.keySet(
@@ -230,17 +231,64 @@ end
 
 function T.gender_is_restricted_to_the_gendered_message_values()
   for _, gender in ipairs({ 0, 1 }) do
-    Assert.notNil(
-      PlayerData.validate(
-        record({ profile = { name = "GOLD", gender = gender, trainerId = 0, money = 3000 } }),
-        context()
-      )
-    )
+    Assert.notNil(PlayerData.validate(
+      record({
+        profile = {
+          name = "GOLD",
+          gender = gender,
+          trainerId = 0,
+          money = 3000,
+          unionAvatar = gender * 8,
+        },
+      }),
+      context()
+    ))
   end
   for _, gender in ipairs({ 2, -1, 0.5, "male" }) do
     throwsCode("PLAYER_DATA_GENDER_INVALID", function()
       local _, err = PlayerData.validate(
         record({ profile = { name = "GOLD", gender = gender, trainerId = 0, money = 3000 } }),
+        context()
+      )
+      error(err)
+    end)
+  end
+end
+
+function T.union_avatar_defaults_once_and_validates_its_gender_half()
+  -- An absent older field takes the source new-game row from the trainer
+  -- identity; an explicit row in the matching gender half persists.
+  local absent = record()
+  absent.profile.unionAvatar = nil
+  absent.profile.trainerId = 12345
+  absent.profile.gender = 0
+  local defaulted = assert(PlayerData.validate(absent, context()))
+  Assert.equal(defaulted.profile.unionAvatar, 12345 % 8, "the male default derives from the trainer identity")
+  local female = record()
+  female.profile.unionAvatar = nil
+  female.profile.trainerId = 12345
+  female.profile.gender = 1
+  local femaleDefaulted = assert(PlayerData.validate(female, context()))
+  Assert.equal(
+    femaleDefaulted.profile.unionAvatar,
+    12345 % 8 + 8,
+    "the female default derives from the trainer identity"
+  )
+  local explicit = record()
+  explicit.profile.trainerId = 12345
+  explicit.profile.gender = 0
+  explicit.profile.unionAvatar = 3
+  Assert.equal(
+    assert(PlayerData.validate(explicit, context())).profile.unionAvatar,
+    3,
+    "an explicit row in the gender half persists"
+  )
+  -- An explicit row from the other gender half, a non-integer, or an
+  -- out-of-range value fails instead of silently resetting.
+  for _, row in ipairs({ 8, -1, 16, 1.5, "3" }) do
+    throwsCode("PLAYER_DATA_INVALID", function()
+      local _, err = PlayerData.validate(
+        record({ profile = { name = "GOLD", gender = 0, trainerId = 12345, money = 3000, unionAvatar = row } }),
         context()
       )
       error(err)

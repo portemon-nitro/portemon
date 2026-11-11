@@ -279,7 +279,13 @@ local function serializeBlocks(projection, context)
   writerD:u8(eggYearByte)
   writerD:u8(projection.eggMonth)
   writerD:u8(projection.eggDay)
-  writerD:u8(projection.metYear - 2000)
+  -- A cleared egg meeting date encodes to three zero bytes, mirroring the
+  -- absent egg date above; a present date keeps its year offset.
+  local metYearByte = 0
+  if projection.metYear ~= 0 or projection.metMonth ~= 0 or projection.metDay ~= 0 then
+    metYearByte = projection.metYear - 2000
+  end
+  writerD:u8(metYearByte)
   writerD:u8(projection.metMonth)
   writerD:u8(projection.metDay)
   writerD:u16(projection.eggLocation)
@@ -536,8 +542,16 @@ function BoxCodec.decode(bytes, context)
     local metYear = readerD:u8(19)
     local metMonth = readerD:u8(20)
     local metDay = readerD:u8(21)
-    if metMonth < 1 or metMonth > 12 or metDay < 1 or metDay > 31 then
-      MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met date is out of range", {})
+    -- An all-zero meeting triple restores to absence for the cleared egg
+    -- shape; any partial zero stays malformed, exactly like the egg date.
+    local metDate = nil
+    if metYear == 0 and metMonth == 0 and metDay == 0 then
+      metDate = nil
+    else
+      if metMonth < 1 or metMonth > 12 or metDay < 1 or metDay > 31 then
+        MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met date is out of range", {})
+      end
+      metDate = { year = metYear + 2000, month = metMonth, day = metDay }
     end
     local eggLocation = readerD:u16le(22)
     local metLocation = readerD:u16le(24)
@@ -554,7 +568,13 @@ function BoxCodec.decode(bytes, context)
     end
     local metLevel = levelByte % 128
     local trainerGender = math.floor(levelByte / 128)
-    if metLevel < 1 or metLevel > Stats.MAX_LEVEL then
+    -- Level zero is the cleared egg meeting level; ordinary mons keep the
+    -- source minimum of one.
+    if isEgg == true then
+      if metLevel < 0 or metLevel > Stats.MAX_LEVEL then
+        MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met level is out of range", {})
+      end
+    elseif metLevel < 1 or metLevel > Stats.MAX_LEVEL then
       MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met level is out of range", {})
     end
     local moodByte = readerD:u8(31)
@@ -614,7 +634,6 @@ function BoxCodec.decode(bytes, context)
       egg = egg,
       met = {
         location = metLocation,
-        date = { year = metYear + 2000, month = metMonth, day = metDay },
         level = metLevel,
         terrain = terrain,
       },
@@ -631,6 +650,11 @@ function BoxCodec.decode(bytes, context)
     }
     if hasNickname then
       projection.nickname = nicknameText
+    end
+    -- The meeting date returns only when the bytes carry one; absence
+    -- stays absent so record admission enforces the cleared-egg shape.
+    if metDate ~= nil then
+      projection.met.date = metDate
     end
 
     -- Boxed records omit party-owned health/status and presentation fields.

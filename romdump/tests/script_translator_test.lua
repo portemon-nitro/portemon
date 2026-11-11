@@ -537,6 +537,7 @@ T["field menu commands lower with exact semantics"] = function()
     messageSource = "standard",
     initialCursor = 2,
     cancellable = true,
+    cancelValue = 0xFFFE,
     result = { value = "var", id = "VAR_0x4002" },
     provenance = { offsets = { 40 }, opcodes = { 749 } },
   })
@@ -545,6 +546,7 @@ T["field menu commands lower with exact semantics"] = function()
     messageSource = { kind = "script", bank = 543 },
     initialCursor = 7,
     cancellable = false,
+    cancelValue = 0xFFFE,
     result = { value = "var", id = "VAR_0x4003" },
     provenance = { offsets = { 48 }, opcodes = { 750 } },
   })

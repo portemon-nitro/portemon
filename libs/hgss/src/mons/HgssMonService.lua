@@ -1053,6 +1053,37 @@ function HgssMonService:giveMon(request)
   return self:_receiveAdmitted(mon)
 end
 
+-- Field-script gift egg (ScrCmd_GiveEgg in retail scrcmd_party.c): the
+-- capacity check runs before any date lookup or generator draw, so a full
+-- party is a complete no-op returning false. With room, the semantic
+-- receipt location is the gift map-section base 2000 plus the source
+-- offset narrowed to u16 (Primo offset 14 yields 2014; the current map
+-- section is never read), and exactly one level-1 unhatched egg enters
+-- through the named factory policy. Receipt publishes the party append
+-- with no dex, stat, naming, or hatching effects; the runtime discards
+-- the internal boolean.
+---@param request { species: string|integer, locationOffset: integer, date?: MonDate|(fun(): MonDate)|nil }
+---@return boolean
+function HgssMonService:giveEgg(request)
+  assert(type(request) == "table", "script-egg receipt requires a request record")
+  if self._party:count() >= Party.MAX then
+    return false
+  end
+  local species = self:_speciesKey(request.species)
+  local offset = request.locationOffset
+  if type(offset) ~= "number" or offset % 1 ~= 0 or offset < 0 or offset > 0xFFFF then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "script-egg gift offset must be an integer in 0..65535", {})
+  end
+  assert(type(offset) == "number", "script-egg gift offset resolved to a u16")
+  local mon = self._factory:createScriptEgg({
+    species = species,
+    profile = self._profile,
+    location = (2000 + offset) % 65536,
+    date = self:_metDate(request),
+  })
+  return self:_receiveAdmitted(mon)
+end
+
 -- Field-script Spiky-Ear Pichu gift in source order:
 -- the party-full refusal reports before any
 -- creation, so unlike the ordinary script gift no generator draws run

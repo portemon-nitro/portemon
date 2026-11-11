@@ -897,6 +897,81 @@ do
     })
   end
 
+  local function handleGiveEgg(node, run)
+    monsFor(run):giveEgg({
+      species = evalField(node, run, "species"),
+      locationOffset = evalField(node, run, "locationOffset"),
+    })
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handlePrimoPassword(node, run)
+    -- The result operand doubles as a possible input, so every word
+    -- evaluates before anything writes, exactly like the source
+    -- same-tick commands under aliasing.
+    local semantics = semanticsFor(run)
+    local words = {
+      semantics.evaluateValue(node.word1, run),
+      semantics.evaluateValue(node.word2, run),
+      semantics.evaluateValue(node.word3, run),
+      semantics.evaluateValue(node.word4, run),
+    }
+    local answer
+    if node.kind == "wallpaper" then
+      answer = easyChatFor(run):checkPrimoWallpaper(words)
+    elseif node.kind == "egg" then
+      answer = easyChatFor(run):checkPrimoEgg(words)
+    else
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "primo checks name their reward family", { kind = node.kind })
+    end
+    assert(answer ~= nil, "primo checks answer their reward code")
+    semantics.writeRef(node.result, answer, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleBufferUnionAvatarClass(node, run)
+    local classId = easyChatFor(run):unionAvatarClass()
+    run.instance.textArgs[node.slot] = { text = "trainer_class_name_indefinite", value = classId }
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleBufferUnionAvatarChoices(_, run)
+    local offered = easyChatFor(run):unionAvatarChoices()
+    local effects = {}
+    for index, record in ipairs(offered) do
+      effects[index - 1] = { text = "trainer_class_name", value = record.classId }
+    end
+    mergeBufferEffects(run, effects)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleUnionAvatarChoice(node, run)
+    local semantics = semanticsFor(run)
+    local choice = semantics.evaluateValue(node.choice, run)
+    local record = easyChatFor(run):unionAvatarChoice(choice)
+    local answer
+    if node.attribute == "class" then
+      answer = record.classId
+    elseif node.attribute == "sprite" then
+      answer = record.spriteId
+    else
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "avatar choices project one owned attribute",
+        { attribute = node.attribute }
+      )
+    end
+    assert(answer ~= nil, "avatar choices project their attribute")
+    semantics.writeRef(node.result, answer, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleSetUnionAvatar(node, run)
+    local sprite = semanticsFor(run).evaluateValue(node.sprite, run)
+    easyChatFor(run):setUnionAvatar(sprite)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
   HANDLERS.easy_chat_edit = handleEasyChatEdit
   HANDLERS.easy_chat_buffer = handleEasyChatBuffer
   HANDLERS.easy_chat_unlock_trendy = handleEasyChatUnlockTrendy
@@ -908,6 +983,12 @@ do
   HANDLERS.union_own_chat_message = handleUnionOwnChatMessage
   HANDLERS.union_partner_language = handleUnionPartnerLanguage
   HANDLERS.trainer_house_intro_message = handleTrainerHouseIntroMessage
+  HANDLERS.give_egg = handleGiveEgg
+  HANDLERS.primo_password = handlePrimoPassword
+  HANDLERS.buffer_union_avatar_class = handleBufferUnionAvatarClass
+  HANDLERS.buffer_union_avatar_choices = handleBufferUnionAvatarChoices
+  HANDLERS.union_avatar_choice = handleUnionAvatarChoice
+  HANDLERS.set_union_avatar = handleSetUnionAvatar
 end
 
 local function handleReturnLoanMon(node, run)
@@ -1901,10 +1982,15 @@ local function handleMenuBegin(node, run)
   if run.instance.menuBuilder ~= nil then
     Errors.raise(ScriptErrors.SCRIPT_MENU_ALREADY_BUILDING, "a script menu is already being built")
   end
+  local cancelValue = nil
+  if node.cancelValue ~= nil then
+    cancelValue = semanticsFor(run).evaluateValue(node.cancelValue, run)
+  end
   run.instance.menuBuilder = requireScriptMenu(run):beginMenu({
     messageSource = node.messageSource,
     initialCursor = node.initialCursor,
     cancellable = node.cancellable,
+    cancelValue = cancelValue,
     result = node.result,
   })
   return Runtime.OUTCOME_YIELD_TICK

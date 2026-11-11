@@ -100,6 +100,11 @@ end
 function PokedexDexFixture.buildMonRoot()
   local root = CatalogFixture.buildAssetRoot()
   assert(type(root.species) == "table", "the mon root carries its species table")
+  -- The dex never tracks the EGG sentinel species: production dex
+  -- catalogs carry no EGG form policy, and GiveEgg has no dex receipt.
+  -- Scope it out of every dex-owner mon root so construction refs match
+  -- the generated dex catalog exactly.
+  root.species.EGG = nil
   local species = root.species --[[@as table<string, table<string, unknown>>]]
   local template = assert(species.CHIKORITA, "the mon root carries its template species")
   for _, extra in ipairs(EXTRA_SPECIES) do

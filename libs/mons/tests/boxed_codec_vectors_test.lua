@@ -246,6 +246,70 @@ function T.boxed_origin_games_round_trip_every_representable_native_identity()
   end
 end
 
+-- The independently derived gift-egg vector: the pinned script-egg
+-- record encodes to a stable 136-byte form whose cleared meeting
+-- triple restores to absence, and malformed cleared dates never
+-- encode. The vector below pins the full ciphered layout while the
+-- semantic assertions carry the independent evidence.
+local EGG_HEX =
+  "710bea8400009dcd4422ec7d9bce92a0fbc89fbc0b6d657164f9b9b48056c188f8dbe334394f69a222c0a1f3398de4160c1a8df8a673a4492fb5a8df123908b34ced7991e7d4d35ee08f12b837e29afffd3a38e7aec735860de96e584c40da5a23b943996cdf416d6907e722e18a5d51a1730093dee0bc994be6cee78669b327fba72c0db2e5db6c"
+
+function T.gift_egg_bytes_carry_the_cleared_meeting_record()
+  local catalog = CatalogFixture.makeCatalog()
+  local context = CatalogFixture.domainContext(catalog)
+  local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
+  local factory = CatalogFixture.makeFactory(0x12345678, catalog)
+  local egg = factory:createScriptEgg({
+    species = "PICHU",
+    profile = CatalogFixture.profile(),
+    location = 2014,
+    date = CatalogFixture.metDate(),
+  })
+  Assert.equal(CatalogFixture.toHex(BoxCodec.encode(egg, context)), EGG_HEX)
+  local decoded = BoxCodec.decode(CatalogFixture.fromHex(EGG_HEX), context)
+  Assert.isTrue(decoded.isEgg, "the vector stays an egg")
+  Assert.isNil(decoded.nickname, "the vector keeps no custom nickname")
+  Assert.equal(decoded.species, "PICHU")
+  Assert.deepEqual(decoded.egg, { location = 2014, date = { year = 2009, month = 9, day = 13 } })
+  Assert.equal(decoded.met.location, 0)
+  Assert.isNil(decoded.met.date, "the all-zero triple restores to absence")
+  Assert.equal(decoded.met.level, 0)
+  Assert.equal(decoded.met.terrain, 0)
+  Assert.equal(decoded.friendship, 20)
+  decoded.condition = { currentHp = 0, effects = {} }
+  decoded.capsule = { id = 0, seals = {} }
+  decoded.mail = {}
+  Assert.equal(CatalogFixture.toHex(BoxCodec.encode(decoded, context)), EGG_HEX)
+
+  -- A single altered bit breaks the checksum before anything publishes,
+  -- exactly like the ordinary vectors.
+  local stored = CatalogFixture.fromHex(EGG_HEX)
+  local last = string.byte(stored, 136)
+  local tampered = stored:sub(1, 135) .. string.char((last + 1) % 256)
+  throwsCode("MON_CODEC_INVALID", function()
+    BoxCodec.decode(tampered, context)
+  end)
+
+  -- Malformed cleared dates never encode: a partial zero triple, a
+  -- zero level on an ordinary mon, and an absent date outside the
+  -- cleared egg shape all fail at admission.
+  throwsCode("MON_RECORD_INVALID", function()
+    local partial = Mon.validate(egg, context)
+    partial.met.date = { year = 2009, month = 0, day = 0 }
+    BoxCodec.encode(partial, context)
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    local ordinary = factory:createNormal(CatalogFixture.normalRequest())
+    ordinary.met.level = 0
+    BoxCodec.encode(ordinary, context)
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    local dateless = factory:createNormal(CatalogFixture.normalRequest())
+    dateless.met.date = nil
+    BoxCodec.encode(dateless, context)
+  end)
+end
+
 function T.decoded_records_are_semantically_admitted_inside_the_codec_boundary()
   local catalog = CatalogFixture.makeCatalog()
   local context = CatalogFixture.domainContext(catalog)

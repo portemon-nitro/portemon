@@ -211,6 +211,7 @@ function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing(
     [711] = { feature = "following_mon", classification = "native_wait", widths = {} },
     [825] = { feature = "mons", classification = "continue_same_tick", widths = { 2, 2 } },
     [826] = { feature = "mons", classification = "continue_same_tick", widths = { 2 } },
+    [138] = { feature = "mons", classification = "continue_same_tick", widths = { 2, 2 } },
   }
   for opcode, expected in pairs(cases) do
     local tagged = entry(opcode)
@@ -223,7 +224,7 @@ function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing(
 end
 
 function T.deferred_commands_lower_to_explicit_unsupported_nodes()
-  for _, opcode in ipairs({ 138, 470 }) do
+  for _, opcode in ipairs({ 776, 470 }) do
     local tagged = entry(opcode)
     Assert.equal(tagged.disposition, "deferred", "opcode " .. opcode .. " is deferred")
     local items = lowerSingle(opcode)

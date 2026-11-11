@@ -132,6 +132,60 @@ function T.script_gift_applies_item_form_and_ability_after_creation()
   end)
 end
 
+-- The source unhatched script-gift egg: a level-1 form-zero egg in a
+-- Poke Ball whose friendship is the personal egg cycles, whose egg
+-- record carries the receipt location and date, and whose meeting
+-- record is cleared to location zero, no date, and level zero. The
+-- biological species stays on the record while the default display
+-- resolves to the localized egg label, with no custom nickname,
+-- fateful encounter, or inherited moves. Generation draws the exact
+-- four normal values; the caller owns party insertion.
+function T.script_egg_pins_the_unhatched_gift_shape()
+  local catalog = CatalogFixture.makeCatalog()
+  local args = CatalogFixture.factoryArgs(0x12345678, catalog)
+  local MonFactory = require("libs.mons.src.gen4.MonFactory")
+  local factory = MonFactory.new(args)
+
+  local mon = factory:createScriptEgg({
+    species = "PICHU",
+    profile = CatalogFixture.profile(),
+    location = 2014,
+    date = { year = 2009, month = 9, day = 13 },
+  })
+
+  Assert.equal(mon.species, "PICHU")
+  Assert.equal(mon.form, 0)
+  Assert.equal(mon.personality, 0x84EA0B71)
+  Assert.deepEqual(mon.ivs, {
+    hp = 10,
+    attack = 12,
+    defense = 22,
+    speed = 0,
+    specialAttack = 7,
+    specialDefense = 29,
+  })
+  Assert.equal(mon.experience, 0)
+  Assert.equal(mon.friendship, 20)
+  Assert.equal(mon.ability, "STATIC")
+  Assert.equal(mon.heldItem, "NONE")
+  Assert.equal(mon.origin.ball, "POKE_BALL")
+  Assert.equal(mon.origin.trainerId, 2271560481)
+  Assert.equal(mon.origin.trainerName, "RED")
+  Assert.isTrue(mon.isEgg)
+  Assert.isNil(mon.nickname)
+  Assert.isFalse(mon.fatefulEncounter)
+  Assert.deepEqual(mon.egg, { location = 2014, date = { year = 2009, month = 9, day = 13 } })
+  Assert.deepEqual(mon.met, { location = 0, level = 0, terrain = 0 })
+  Assert.deepEqual(mon.moves, {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  })
+  Assert.equal(mon.condition.currentHp, 11)
+  Assert.equal(require("libs.mons.src.Mon").displayName(mon, catalog), "EGG")
+  local captured = args.rng:capture()
+  Assert.equal(captured.calls, 4)
+  Assert.equal(captured.state, 0xF4E023DC)
+end
+
 -- The event-locked Spiky-Ear Pichu distribution: a fixed level-30 form-1
 -- Pichu with the source moveset at full power points, the Zap Plate, and
 -- an arithmetically forced Naughty female personality (no generator

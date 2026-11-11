@@ -45,13 +45,16 @@ local FRIEND_NAME_BANK_ID = 445
 -- Read one generated message as substitution glyphs with scoped bank
 -- ownership: the nested bank reference is released after a successful read
 -- and also released before rethrowing the original fault when the bank get,
--- text parsing, or substitution formatting fails.
+-- text parsing, or substitution formatting fails. Capitalization applies
+-- to the raw text before glyph parsing, exactly like the source
+-- Capitalize command upper-casing the buffered first character.
 ---@param provider FieldMessageProvider
 ---@param bankId integer
 ---@param messageId integer
 ---@param fontDef table<string, unknown>
+---@param capitalize boolean? upper-case the first buffered character
 ---@return table<string, unknown> replacementTokens glyph-kind tokens without a terminal marker
-local function scopedNameGlyphs(provider, bankId, messageId, fontDef)
+local function scopedNameGlyphs(provider, bankId, messageId, fontDef, capitalize)
   local acquired, acquireErr = provider:acquireBank(bankId)
   if not acquired then
     error(acquireErr, 0)
@@ -61,13 +64,48 @@ local function scopedNameGlyphs(provider, bankId, messageId, fontDef)
     provider:releaseBank(bankId)
     error(templateErr, 0)
   end
-  local tokens, parseErr = FieldMessageProvider.asciiGlyphTokens(template.text, fontDef)
+  local text = template.text
+  if capitalize == true then
+    assert(type(text) == "string" and text ~= "", "trainer classes carry their display text")
+    text = text:sub(1, 1):upper() .. text:sub(2)
+  end
+  local tokens, parseErr = FieldMessageProvider.asciiGlyphTokens(text, fontDef)
   if not tokens then
     provider:releaseBank(bankId)
     error(parseErr, 0)
   end
   provider:releaseBank(bankId)
   return tokens
+end
+
+-- Trainer class names: the plain form reads bank 730 while the
+-- article-bearing form reads bank 731 (src/message_format.c
+-- BufferTrainerClassName and BufferTrainerClassNameWithArticle). Lookup
+-- ids evaluate through the world exactly like other buffered operands;
+-- missing banks, messages, or parse results fail through the scoped
+-- lease, never as an unexpanded marker.
+local TRAINER_CLASS_BANK_ID = 730
+local TRAINER_CLASS_INDEFINITE_BANK_ID = 731
+
+---@param provider FieldMessageProvider? scoped message bank provider
+---@param classId unknown evaluated class identity
+---@param bankId integer source trainer-class bank
+---@param fontDef table<string, unknown>
+---@param capitalize boolean? upper-case the first buffered character
+---@return table<string, unknown> replacementTokens
+local function trainerClassGlyphs(provider, classId, bankId, fontDef, capitalize)
+  if provider == nil then
+    local context = { class = classId }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "trainer class text requires the message provider", context)
+  end
+  local providerOwner = provider --[[@as FieldMessageProvider]]
+  if type(classId) ~= "number" or classId % 1 ~= 0 or classId < 0 then
+    local context = { class = classId }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "trainer class text reads a class identity", context)
+  end
+  return scopedNameGlyphs(providerOwner, bankId, classId, fontDef, capitalize)
 end
 
 -- Evaluates a text-operand that may be a literal scalar or a variable
@@ -315,11 +353,27 @@ local function resolveTextValue(
     end
     local worldState = world --[[@as { getVar: fun(self: table, id: unknown): unknown }]]
     return FieldMessageProvider.asciiGlyphTokens(tostring(worldState:getVar(value.id)), fontDef)
+  elseif kind == "trainer_class_name" then
+    return trainerClassGlyphs(provider, evaluateTextOperand(value, world), TRAINER_CLASS_BANK_ID, fontDef, false)
+  elseif kind == "trainer_class_name_indefinite" then
+    return trainerClassGlyphs(
+      provider,
+      evaluateTextOperand(value, world),
+      TRAINER_CLASS_INDEFINITE_BANK_ID,
+      fontDef,
+      false
+    )
   elseif kind == "capitalized" then
     -- Buffered-text upper-casing: the wrapped mon or item text resolves to
-    -- its display string, whose first character is upper-cased.
+    -- its display string, whose first character is upper-cased; the
+    -- wrapped trainer-class text resolves through its source bank with
+    -- the same first-character rule applied before glyph parsing.
     local source = descriptor.source
     assert(type(source) == "table" and type(source.text) == "string", "capitalized text wraps a buffered text value")
+    if source.text == "trainer_class_name" or source.text == "trainer_class_name_indefinite" then
+      local bankId = source.text == "trainer_class_name" and TRAINER_CLASS_BANK_ID or TRAINER_CLASS_INDEFINITE_BANK_ID
+      return trainerClassGlyphs(provider, evaluateTextOperand(source.value, world), bankId, fontDef, true)
+    end
     local text = mons ~= nil and resolveMonsTextValue(source.text, source, mons, world) or nil
     if text == nil and items ~= nil then
       text = resolveItemsTextValue(source.text, source, items, world, mons)

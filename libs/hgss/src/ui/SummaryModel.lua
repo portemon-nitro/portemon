@@ -725,7 +725,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
         form = 0,
         personality = assert(mon.personality, "stored mons carry their personality"),
         nickname = nil,
-        displayName = "EGG",
+        displayName = Mon.displayName(mon, catalog),
         otName = eggOtName,
         otGender = origin.trainerGender == 0 and "male" or "female",
         gender = "genderless",

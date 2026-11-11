@@ -695,6 +695,14 @@ local MEMO_BRANCHES = {
     lines = { 0, 1, 0, 0, 6 },
     template = eggSegments,
   },
+  -- An unhatched gift egg kept at its gift location renders its
+  -- receipt date like any other egg, without a meeting date.
+  {
+    key = "eggGift",
+    match = { isEgg = true, fateful = false, mine = true, eggLocation = "giftSet" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
 }
 
 local function memoSection()

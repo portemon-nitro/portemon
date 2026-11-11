@@ -9,6 +9,7 @@
 -- libs/script.
 
 local Errors = require("libs.errors.src.Errors")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 local ScriptErrors = require("libs.script.src.errors")
 
 ---@class EasyChatScriptService
@@ -337,31 +338,56 @@ local function unionContext(self, what)
   return unionRoom --[[@as table<string, unknown>]]
 end
 
+---@alias AvatarAttributeRow table<string, unknown>
+
 -- Maps one trainer sprite to its class through the shared avatar rows:
 -- the gender half is searched for the sprite and the source row zero
--- answers when no row carries it.
+-- answers when no row carries it. Production rows carry named sprite and
+-- class fields while synthetic rows may carry the same positional fields.
 ---@param catalog table<string, unknown> borrowed shared word catalog
 ---@param gender integer player gender half
 ---@param spriteId integer trainer sprite identity
----@param attribute integer 1 or 2
----@return integer attribute value
-local function avatarClassBySprite(catalog, gender, spriteId, attribute)
+---@return integer, AvatarAttributeRow absolute row and its attribute row
+local function avatarRowBySprite(catalog, gender, spriteId)
   local avatars = assert(catalog.unionAvatars, "avatar attributes read the shared avatar rows")
   local rows = assert(avatars.rows, "avatar attributes read sixteen attribute rows")
   local half = (gender == 1) and 8 or 0
   local found = 0
   for index = 0, 7 do
     local row = rows[half + index + 1]
-    if type(row) == "table" and row[1] == spriteId then
+    if type(row) == "table" and (row.spriteId or row[1]) == spriteId then
       found = half + index
       break
     end
   end
-  local row = assert(rows[found + 1], "avatar attributes fall back to the source row zero")
-  if attribute == 2 then
-    return assert(row[2], "avatar attributes carry their class")
+  local row = rows[found + 1]
+  assert(type(row) == "table", "avatar attributes fall back to the source row zero")
+  return found, row
+end
+
+---@param row AvatarAttributeRow attribute row
+---@return integer trainer sprite identity
+local function avatarRowSprite(row)
+  return assert(row.spriteId or row[1], "avatar attribute rows carry their sprite")
+end
+
+---@param row AvatarAttributeRow attribute row
+---@return integer trainer class identity
+local function avatarRowClass(row)
+  return assert(row.classId or row[2], "avatar attribute rows carry their class")
+end
+
+---@param catalog table<string, unknown> borrowed shared word catalog
+---@param gender integer player gender half
+---@param spriteId integer trainer sprite identity
+---@param attribute integer 1 or 2
+---@return integer attribute value
+local function avatarClassBySprite(catalog, gender, spriteId, attribute)
+  local found, row = avatarRowBySprite(catalog, gender, spriteId)
+  if attribute == 0 then
+    return found
   end
-  return assert(row[3], "avatar attributes carry their second attribute")
+  return avatarRowClass(row)
 end
 
 -- Reads one plain class name from its generated bank with scoped
@@ -583,6 +609,290 @@ function EasyChatScriptService:trainerHouseIntro(index)
     )
   end
   return { message = copySentence(set.trainer.introMessage), buffers = {} }
+end
+
+-- Primo password decoding (src/field/primo_password.c): four selected
+-- word identities encode the trainer's visible half, a check value, and
+-- the reward (wallpapers 0..7, eggs 8..10) through the ordered password
+-- bank. Each word converts to its bank index, the first index and each
+-- cyclic delta must fit a byte, the four bytes rotate right five, the
+-- first three are keyed by the duplicated high nibble of the fourth and
+-- rotate right its low nibble, then the reward nibble, visible identity,
+-- high nibble six, and byte checksum decide. Anything else is invalid.
+
+-- Exclusive-or of two byte values through exact integer arithmetic: the
+-- decoder keys its three bytes without a native bit library.
+---@param left integer byte value
+---@param right integer byte value
+---@return integer exclusive-or byte
+local function xorByte(left, right)
+  local result = 0
+  local place = 1
+  local a, b = left, right
+  while a > 0 or b > 0 do
+    if (a % 2) ~= (b % 2) then
+      result = result + place
+    end
+    a = math.floor(a / 2)
+    b = math.floor(b / 2)
+    place = place * 2
+  end
+  return result
+end
+
+---@param bytes integer[] four byte values, mutated in place
+---@param size integer rotated prefix length
+---@param amount integer rotation amount
+local function rotateBitsRight(bytes, size, amount)
+  if amount == 0 then
+    return
+  end
+  local remaining = amount
+  repeat
+    local carry = bytes[size] % 2
+    for index = size, 2, -1 do
+      bytes[index] = math.floor(bytes[index] / 2) + (bytes[index - 1] % 2) * 128
+    end
+    bytes[1] = math.floor(bytes[1] / 2) + carry * 128
+    remaining = remaining - 1
+  until remaining == 0
+end
+
+---@param catalog table<string, unknown> borrowed shared word catalog
+---@param profile table<string, unknown> borrowed player profile
+---@param words integer[] four resolved word identities
+---@return integer decoded reward 0..10, or -1 when invalid
+local function decodePrimoReward(catalog, profile, words)
+  if type(words) ~= "table" or #words ~= 4 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "primo checks read four words", { words = words })
+  end
+  local bank = assert(catalog.primoWords, "primo checks read the shared password bank")
+  assert(type(bank) == "table" and #bank > 0, "primo checks read the ordered password bank")
+  local count = #bank
+  local raw = {}
+  for position = 1, 4 do
+    local word = words[position]
+    if type(word) ~= "number" or word % 1 ~= 0 or word < 0 or word > 0xFFFF then
+      return -1
+    end
+    local found = nil
+    for rank = 1, count do
+      if bank[rank] == word then
+        found = rank - 1
+        break
+      end
+    end
+    if found == nil then
+      return -1
+    end
+    raw[position] = found
+  end
+  local out = {}
+  for position = 1, 4 do
+    if position == 1 then
+      if raw[1] > 0xFF then
+        return -1
+      end
+      out[1] = raw[1]
+    else
+      local delta
+      if raw[position] >= raw[position - 1] then
+        delta = raw[position] - raw[position - 1]
+      else
+        delta = count - (raw[position - 1] - raw[position])
+      end
+      if delta > 0xFF then
+        return -1
+      end
+      out[position] = delta
+    end
+  end
+  rotateBitsRight(out, 4, 5)
+  local fourth = out[4]
+  local high = math.floor(fourth / 16)
+  local key = high * 16 + high
+  for position = 1, 3 do
+    out[position] = xorByte(out[position], key)
+  end
+  rotateBitsRight(out, 3, fourth % 16)
+  local reward = out[1] % 16
+  assert(reward % 1 == 0, "primo rewards decode to an integer")
+  out[2] = xorByte(out[2], out[1])
+  out[3] = xorByte(out[3], out[1])
+  local combined = out[2] * 256 + out[3]
+  if
+    PlayerData.visibleTrainerId(profile.trainerId) == combined
+    and math.floor(out[1] / 16) == 6
+    and out[4] == ((out[1] + out[2]) * out[3]) % 256
+  then
+    return reward
+  end
+  return -1
+end
+
+-- Checks four evaluated words for a first-time wallpaper: invalid input
+-- and egg rewards report 255, an already-unlocked wallpaper reports zero
+-- without touching the boxes, and a first unlock stages exactly its bit
+-- through the existing box preparation and reports its one-based index.
+-- Nothing is drawn and no word state changes.
+---@param words integer[] four resolved word identities
+---@return integer 255 invalid, 0 duplicate, or 1..8 after publication
+function EasyChatScriptService:checkPrimoWallpaper(words)
+  local reward = decodePrimoReward(self._catalog, self._profile, words)
+  if reward < 0 or reward >= 8 then
+    return 255
+  end
+  local mons = self._mons
+  assert(type(mons.boxBonusUnlocks) == "function", "wallpaper checks read the box unlock owner")
+  local unlocks = mons:boxBonusUnlocks()
+  if unlocks[reward + 1] == true then
+    return 0
+  end
+  unlocks[reward + 1] = true
+  assert(type(mons.preparePcChanges) == "function", "wallpaper checks stage their box change")
+  local prep, stale = mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { bonusUnlocks = unlocks })
+  if prep == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SAVE_REVISION_MISMATCH,
+      "wallpaper publication lost its box revision",
+      { stale = stale }
+    )
+  end
+  assert(type(prep) == "table", "wallpaper publication stages its box change")
+  prep.publish()
+  return reward + 1
+end
+
+-- Checks four evaluated words for an egg password: the answer is only a
+-- code, never a gift. Invalid input and wallpaper rewards report 255.
+---@param words integer[] four resolved word identities
+---@return integer 255 invalid, or 8..10 for the corresponding egg
+function EasyChatScriptService:checkPrimoEgg(words)
+  local reward = decodePrimoReward(self._catalog, self._profile, words)
+  if reward < 8 or reward > 10 then
+    return 255
+  end
+  return reward
+end
+
+-- Validates the live trainer identity behind the local avatar selector:
+-- the saved row and the offered choices both key off the trainer id and
+-- the gender half.
+---@param profile table<string, unknown> borrowed player profile
+---@return integer trainerId, integer gender
+local function avatarIdentity(profile)
+  local trainerId = profile.trainerId
+  local gender = profile.gender
+  if type(trainerId) ~= "number" or trainerId % 1 ~= 0 or trainerId < 0 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar choices read the trainer identity", {})
+  end
+  if gender ~= 0 and gender ~= 1 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar choices read the player gender", { gender = gender })
+  end
+  return trainerId, gender --[[@as integer, integer]]
+end
+
+-- Reads the live saved avatar row, defaulting an absent older field to
+-- the source new-game row exactly like player admission.
+---@param profile table<string, unknown> borrowed player profile
+---@return integer absolute row 0..15
+local function savedAvatarRow(profile)
+  local trainerId, gender = avatarIdentity(profile)
+  local row = profile.unionAvatar
+  if row == nil then
+    return trainerId % 8 + gender * 8
+  end
+  if type(row) ~= "number" or row % 1 ~= 0 or row < gender * 8 or row > gender * 8 + 7 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the saved avatar row must match the gender half", {
+      row = row,
+    })
+  end
+  return row
+end
+
+-- Resolves one offered choice to its detached sprite/class record: the
+-- trainer residue selects the source choice row and the gender half
+-- selects the attribute row, preserving the source offered order.
+---@param catalog table<string, unknown> borrowed shared word catalog
+---@param profile table<string, unknown> borrowed player profile
+---@param choice integer offered choice 0..3
+---@return { spriteId: integer, classId: integer } detached offered record
+local function offeredAvatarRecord(catalog, profile, choice)
+  if type(choice) ~= "number" or choice % 1 ~= 0 or choice < 0 or choice > 3 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar choices are offered entries 0..3", { choice = choice })
+  end
+  local trainerId, gender = avatarIdentity(profile)
+  local avatars = assert(catalog.unionAvatars, "avatar choices read the shared avatar rows")
+  local choices = assert(avatars.choices, "avatar choices read the eight source choice rows")
+  local offered = assert(choices[(trainerId % 8) + 1], "avatar choices read the trainer residue row")
+  local spriteIndex = offered[choice + 1]
+  if type(spriteIndex) ~= "number" or spriteIndex % 1 ~= 0 or spriteIndex < 0 or spriteIndex > 7 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar choices carry source indices 0..7", {
+      choice = choice,
+    })
+  end
+  local rows = assert(avatars.rows, "avatar choices read sixteen attribute rows")
+  local row = assert(rows[spriteIndex + gender * 8 + 1], "avatar choices resolve their attribute row")
+  return { spriteId = avatarRowSprite(row), classId = avatarRowClass(row) }
+end
+
+-- Buffers nothing itself: answers the four offered avatar choices in
+-- source order for the text owner to snapshot into slots 0..3. Consumes
+-- no random draws.
+---@return { spriteId: integer, classId: integer }[] four detached offered records
+function EasyChatScriptService:unionAvatarChoices()
+  local offered = {}
+  for choice = 0, 3 do
+    offered[choice + 1] = offeredAvatarRecord(self._catalog, self._profile, choice)
+  end
+  return offered
+end
+
+-- Answers the current saved avatar's trainer class for the plain text
+-- owner to snapshot. Never re-reads a later-mutated profile.
+---@return integer trainer class identity
+function EasyChatScriptService:unionAvatarClass()
+  local rows = assert(self._catalog.unionAvatars, "avatar classes read the shared avatar rows").rows
+  return avatarRowClass(assert(rows[savedAvatarRow(self._profile) + 1], "the saved avatar row resolves its class"))
+end
+
+-- Answers one offered choice: the trainer class behind 288 or the native
+-- sprite behind 558. The choice validates first; nothing mutates.
+---@param choice integer evaluated offered choice
+---@return { spriteId: integer, classId: integer } detached offered record
+function EasyChatScriptService:unionAvatarChoice(choice)
+  return offeredAvatarRecord(self._catalog, self._profile, choice)
+end
+
+-- Persists the selected native sprite as its normalized absolute row in
+-- the live profile. An unknown sprite or one from the other gender half
+-- fails; nothing visual changes and no random draws run.
+---@param spriteId integer evaluated native sprite identity
+function EasyChatScriptService:setUnionAvatar(spriteId)
+  if type(spriteId) ~= "number" or spriteId % 1 ~= 0 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar selection names a sprite identity", {
+      sprite = spriteId,
+    })
+  end
+  local _, gender = avatarIdentity(self._profile)
+  local found, row = avatarRowBySprite(self._catalog, gender, spriteId)
+  -- The row lookup falls back to the source row zero, so membership must
+  -- be rechecked: an unknown sprite never matches its fallback row.
+  if (row.spriteId or row[1]) ~= spriteId then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar selection names an offered sprite", {
+      sprite = spriteId,
+    })
+  end
+  local half = gender * 8
+  if found < half or found > half + 7 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "avatar selection names an offered sprite", {
+      sprite = spriteId,
+    })
+  end
+  self._profile.unionAvatar = found
 end
 
 return EasyChatScriptService
