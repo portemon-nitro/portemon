@@ -458,6 +458,17 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
     -- legs never prepare through it; construction alone keeps the
     -- composition honest without a ROM dump.
     pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in battle-audio tests", 0)
+      end,
+    },
     presentationDisplay = measurement,
     bindPartyIconPreparation = function(_, _, _)
       return 1

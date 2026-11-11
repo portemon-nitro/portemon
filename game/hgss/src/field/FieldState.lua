@@ -1140,6 +1140,13 @@ end
 ---@param appStatus table<string, unknown> the shell status
 function FieldState:_drawPokegearApplication(resources, appStatus)
   assert(type(appStatus) == "table", "the companion application publishes its status")
+  -- An active word editor child draws through its own committed bundle
+  -- first: the retained map card underneath stays parked and no gear
+  -- texture realization, renderer, or application frame runs over it.
+  if type(appStatus.easyChat) == "table" then
+    resources:drawEasyChat(appStatus.easyChat)
+    return
+  end
   local plan = assert(appStatus.presentation, "the companion application publishes its plan")
   assert(type(plan) == "table", "the companion plan stays a record")
   assert(

@@ -62,7 +62,13 @@ ArtifactState.KINDS = {
   party = true,
   pc = true,
   pokegear = true,
-  ["pokegear-word-entry"] = true,
+  -- Two independently published Easy Chat scopes: the semantic data
+  -- catalog (field-runtime prerequisite) and the on-demand editor
+  -- presentation manifest. Each owns its exact payload and marker
+  -- files, never the shared data directory root, so one scope cannot
+  -- erase the other.
+  ["easy-chat-data"] = true,
+  ["easy-chat"] = true,
   -- Two independently published Pokedex scopes: the semantic data catalog
   -- (field-runtime prerequisite) and the on-demand presentation manifest.
   -- Each owns its exact payload and marker files, never the shared data
@@ -188,8 +194,8 @@ local function checkKey(kind, key)
     assert(key == "global", "pokegear artifacts require the global key")
     return
   end
-  if kind == "pokegear-word-entry" then
-    assert(key == "global", "pokegear word-entry artifacts require the global key")
+  if kind == "easy-chat-data" or kind == "easy-chat" then
+    assert(key == "global", "easy chat artifacts require the global key")
     return
   end
   if kind == "pokedex-data" or kind == "pokedex" then

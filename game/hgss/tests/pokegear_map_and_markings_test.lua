@@ -279,76 +279,22 @@ function T.tests.a_word_edit_round_trips_through_the_typed_request()
   Assert.equal(request.mapSymbol, "MAP_A", "the request names the marked location")
   Assert.isNil(box.controller:takeWordRequest(), "a request is taken exactly once")
   Assert.isTrue(box.controller:status().busy, "the card waits for the selector")
-  box.controller:acceptWordResult({ operationId = request.operationId, result = { word = "7" } })
+  box.controller:acceptWordResult({
+    operationId = request.operationId,
+    result = { cancelled = false, word = "7", inputMode = "buttons" },
+  })
   Assert.deepEqual(box.state:capture().markings.MAP_A.words, { "7", false, false, false }, "the chosen word persists")
-  local ok = pcall(
-    box.controller.acceptWordResult,
-    box.controller,
-    { operationId = request.operationId, result = { word = "8" } }
-  )
+  local ok = pcall(box.controller.acceptWordResult, box.controller, {
+    operationId = request.operationId,
+    result = { cancelled = false, word = "8", inputMode = "buttons" },
+  })
   Assert.isFalse(ok, "a replayed result fails without editing")
   Assert.equal(box.state:capture().markings.MAP_A.words[1], "7", "the replay changed nothing")
 end
 
--- The borrowed word selector drives the text edit: requesting a word opens
--- it, ticks step it, and its terminal result commits through the marking.
-local WORD_GROUP_COUNTS = { 496, 468, 18, 124, 38, 38, 107, 104, 47, 32, 23 }
-local WORD_BANKS = { 237, 751, 735, 721, 285, 286, 287, 288, 289, 290, 291 }
-
----@return table catalog with eleven groups in source order
-local function wordCatalog()
-  local catalog = { groups = {} }
-  for index, bank in ipairs(WORD_BANKS) do
-    catalog.groups[index] = { group = index - 1, bank = bank, count = WORD_GROUP_COUNTS[index] }
-  end
-  return catalog
-end
-
--- A handoff backed by the real single-word selector that records its drive.
----@return table handoff, table taps
-local function drivenWordEntry()
-  local WordEntryScreenState = require("game.hgss.src.pokegear.WordEntryScreenState")
-  local taps = { opened = nil, stepped = 0, cancelled = nil }
-  local selector = nil
-  local handoff = {}
-  function handoff.open(request)
-    taps.opened = request
-    selector = WordEntryScreenState.new({
-      operationId = request.operationId,
-      selectedWord = request.oldWord or false,
-      wordCatalog = wordCatalog(),
-      availability = {},
-      assets = {},
-      presentation = { layout = "dual" },
-    })
-  end
-  function handoff.step(events)
-    assert(selector ~= nil, "word edits open before they step")
-    taps.stepped = taps.stepped + 1
-    selector:updateFixed(events)
-  end
-  function handoff.result()
-    if selector == nil then
-      return nil
-    end
-    return selector:takeResult()
-  end
-  function handoff.status()
-    if selector == nil then
-      return nil
-    end
-    return selector:status()
-  end
-  function handoff.cancel(reason)
-    taps.cancelled = reason
-    if selector ~= nil then
-      selector:dispose()
-    end
-    selector = nil
-  end
-  return handoff, taps
-end
-
+-- The pending word edit parks the map behind one settlement authority:
+-- ticks advance nothing, the status carries no nested editor, and only
+-- the matching operation settles exactly once.
 ---@param box table the opened map fixture
 local function openWordSlot(box)
   box.controller:updateFixed({ { type = "confirm" } })
@@ -358,56 +304,60 @@ local function openWordSlot(box)
   box.controller:updateFixed({ { type = "confirm" } })
 end
 
-function T.tests.word_requests_open_and_step_the_borrowed_selector()
-  local handoff, taps = drivenWordEntry()
-  local box = Fixture.openMap({ wordEntry = handoff })
+function T.tests.pending_word_requests_park_the_map_behind_one_settlement()
+  local box = Fixture.openMap()
   openWordSlot(box)
-  Assert.notNil(taps.opened, "requesting a word opens the borrowed selector")
-  assert(taps.opened ~= nil, "selector opened above")
-  Assert.equal(taps.opened.operationId, "map-word-1", "the selector carries the caller operation identity")
-  Assert.equal(taps.opened.slot, 1, "the selector names the one-based word slot")
-  Assert.isTrue(box.controller:status().busy, "the card waits for the selector")
-  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(taps.stepped, 1, "ticks while pending step the selector instead of stalling")
-  local selectorView = view(box.controller).wordEntry
-  Assert.notNil(selectorView, "the status exposes the selector for presentation")
-  Assert.equal(selectorView.mode, "single-word", "the exposed selector names its single-word mode")
-end
-
-function T.tests.selector_choice_commits_and_returns_to_marking()
-  local handoff, taps = drivenWordEntry()
-  local box = Fixture.openMap({ wordEntry = handoff })
-  openWordSlot(box)
-  -- Category level: confirm the first group, walk down three words, pick it twice.
-  box.controller:updateFixed({ { type = "confirm" } })
-  for _ = 1, 3 do
-    box.controller:updateFixed({ { type = "navigate", direction = "down" } })
+  local request = box.controller:takeWordRequest()
+  Assert.notNil(request, "an empty word slot pends a typed request")
+  assert(request ~= nil, "request checked above")
+  Assert.equal(request.slot, 1, "the request names the one-based word slot")
+  Assert.equal(request.mapSymbol, "MAP_A", "the request names the marked location")
+  Assert.equal(request.inputMode, "buttons", "the request carries the entry modality")
+  Assert.isNil(box.controller:takeWordRequest(), "a request is taken exactly once")
+  Assert.isTrue(box.controller:status().busy, "the card waits for the shell-owned editor")
+  Assert.isNil(view(box.controller).wordEntry, "the map status carries no nested editor")
+  local worldBefore = view(box.controller).world
+  for _ = 1, 10 do
+    tick(box.controller)
   end
-  box.controller:updateFixed({ { type = "confirm" } })
-  box.controller:updateFixed({ { type = "confirm" } })
-  Assert.deepEqual(
-    box.state:capture().markings.MAP_A.words,
-    { "3", false, false, false },
-    "the selector choice persists through the marking"
-  )
+  Assert.deepEqual(view(box.controller).world, worldBefore, "ticks while pending move nothing")
+  box.controller:acceptWordResult({
+    operationId = request.operationId,
+    result = { cancelled = false, word = "7", inputMode = "buttons" },
+  })
+  Assert.deepEqual(box.state:capture().markings.MAP_A.words, { "7", false, false, false }, "the answer commits once")
   Assert.isFalse(box.controller:status().busy, "the settled edit leaves the card idle")
   Assert.equal(view(box.controller).mode, "marking", "the settled edit returns to marking mode")
-  Assert.isNil(view(box.controller).wordEntry, "the settled selector leaves the status")
-  -- A second edit opens a fresh selector instead of reusing the settled one.
-  box.controller:updateFixed({ { type = "navigate", direction = "down" } })
-  box.controller:updateFixed({ { type = "confirm" } })
-  Assert.notNil(taps.opened, "the second edit opens the selector again")
-  Assert.equal(taps.opened.operationId, "map-word-2", "the second edit carries a fresh operation identity")
+  local stale = pcall(box.controller.acceptWordResult, box.controller, {
+    operationId = "map-word-999",
+    result = { cancelled = false, word = "8", inputMode = "buttons" },
+  })
+  Assert.isFalse(stale, "a stale operation fails without editing")
+  Assert.equal(box.state:capture().markings.MAP_A.words[1], "7", "the stale answer changed nothing")
 end
 
-function T.tests.selector_cancellation_keeps_the_old_word()
-  local handoff, _ = drivenWordEntry()
-  local box = Fixture.openMap({ wordEntry = handoff })
+function T.tests.cancelled_word_results_preserve_the_marking()
+  local box = Fixture.openMap()
   openWordSlot(box)
-  box.controller:updateFixed({ { type = "cancel" } })
-  Assert.isNil(box.state:capture().markings.MAP_A, "cancelling the selector writes no marking")
+  local request = assert(box.controller:takeWordRequest(), "the word slot pends its request")
+  box.controller:acceptWordResult({
+    operationId = request.operationId,
+    result = { cancelled = true, inputMode = "touch" },
+  })
+  Assert.isNil(box.state:capture().markings.MAP_A, "a cancelled edit writes no marking")
   Assert.isFalse(box.controller:status().busy, "the cancelled edit leaves the card idle")
   Assert.equal(view(box.controller).mode, "marking", "the cancelled edit returns to marking mode")
+end
+
+function T.tests.word_returns_restore_cursor_focus_and_modality()
+  local mode = MarkingMode.new({})
+  mode:resumeWord(1, "touch")
+  Assert.isNil(mode:view().cursor, "touch returns hide the key cursor")
+  mode:resumeWord(0, "buttons")
+  local cursor = mode:view().cursor
+  Assert.notNil(cursor, "button returns reveal the key cursor")
+  assert(cursor ~= nil, "cursor checked above")
+  Assert.equal(cursor.x, 40, "the word return focuses the selected word slot")
 end
 
 function T.tests.live_roamers_appear_only_on_visible_locations()
@@ -563,9 +513,11 @@ end
 
 function T.tests.requesting_a_word_plays_the_decide_tone()
   local effects = {}
-  local box = Fixture.openMap({ effect = function(sequence)
-    effects[#effects + 1] = sequence
-  end })
+  local box = Fixture.openMap({
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
+  })
   box.controller:updateFixed({ { type = "confirm" } })
   Assert.equal(effects[#effects], "SEQ_SE_GS_GEARDECIDE", "opening markings plays the decide tone")
   settle(box.controller)
@@ -608,11 +560,7 @@ function T.tests.touch_waits_for_the_cursor_tween()
   local box = Fixture.openMap()
   box.controller:updateFixed({ { type = "navigate", direction = "right" } })
   box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = 40, y = 16 } })
-  Assert.deepEqual(
-    view(box.controller).cell,
-    { x = 13, y = 10 },
-    "a touch during the cursor tween reselects nothing"
-  )
+  Assert.deepEqual(view(box.controller).cell, { x = 13, y = 10 }, "a touch during the cursor tween reselects nothing")
   tick(box.controller, 2)
   box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = 40, y = 16 } })
   Assert.isFalse(

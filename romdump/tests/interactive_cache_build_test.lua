@@ -1845,9 +1845,15 @@ function T.runtime_milestone_carries_bounded_static_services()
         key == tostring(MenuProtocol.STANDARD_MESSAGE_BANK)
           or key == tostring(MenuProtocol.START_MENU_MESSAGE_BANK)
           or key == "40"
+          or key == "46"
+          or key == "202"
           or key == "265"
-          or key == "279",
-        "runtime carries the protocol, menu and section-name message banks: " .. identityKey
+          or key == "279"
+          or key == "723"
+          or key == "730"
+          or key == "731"
+          or key == "738",
+        "runtime carries the protocol, menu, section-name, and editor message banks: " .. identityKey
       )
     end
   end
@@ -3325,6 +3331,8 @@ local function driveComposedSweep(options)
         [101] = { id = 101, symbol = "SEQ_SE_GS_GEARCANCEL", bankId = 3 },
         [102] = { id = 102, symbol = "SEQ_SE_DP_BAG_004", bankId = 3 },
         [103] = { id = 103, symbol = "SEQ_GS_POKEMON_THEME", bankId = 4 },
+        [104] = { id = 104, symbol = "SEQ_SE_DP_BUTTON9", bankId = 3 },
+        [105] = { id = 105, symbol = "SEQ_SE_DP_CUSTOM06", bankId = 3 },
         [1603] = { id = 1603, bankId = 3 },
       },
       sequenceBySymbol = {
@@ -3332,6 +3340,8 @@ local function driveComposedSweep(options)
         SEQ_SE_GS_GEARCANCEL = 101,
         SEQ_SE_DP_BAG_004 = 102,
         SEQ_GS_POKEMON_THEME = 103,
+        SEQ_SE_DP_BUTTON9 = 104,
+        SEQ_SE_DP_CUSTOM06 = 105,
       },
     },
     bankPlans = { { bankId = 3 }, { bankId = 4 }, { bankId = 250 } },

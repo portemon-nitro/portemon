@@ -29,6 +29,11 @@ local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 ---@field _entered boolean true while focus is inside the active card
 ---@field _transition { kind: string, fade: StandardFade }? the active open/switch fade
 ---@field _result { kind: "close" }? the pending close, consumed once
+---@field _openEasyChat (fun(request: table<string, unknown>): table<string, unknown>)? the injected word editor child factory
+---@field _easyChat table<string, unknown>? the active word editor child over the retained map card
+---@field _easyPhase string? fadeout, open, or fadein behind the word editor child
+---@field _easyRequest table<string, unknown>? the pending word request behind the word editor child
+---@field _easyFade { from: integer, to: integer, steps: integer, t: integer }? the local handoff fade
 ---@field _ticks integer source ticks since open; drives the colon sequence only
 ---@field _pendingChild table<string, unknown>[] the child batch behind the current tick
 ---@field _disposed boolean
@@ -98,6 +103,7 @@ end
 ---@field entry { kind: string } browse opens the remembered card, call forces phone
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field signal boolean? the outgoing-call reception flag
+---@field openEasyChat (fun(request: table<string, unknown>): table<string, unknown>)? the word editor child factory
 
 ---@param opts PokegearScreenState.Options
 ---@return PokegearScreenState
@@ -124,6 +130,10 @@ function PokegearScreenState.new(opts)
   )
   assert(type(opts.measureDisplay) == "function", "the gear shell requires the display facts")
   assert(opts.signal == nil or type(opts.signal) == "boolean", "the gear shell reception flag must be a boolean")
+  assert(
+    opts.openEasyChat == nil or type(opts.openEasyChat) == "function",
+    "the gear shell word editor factory must be a function"
+  )
   -- The source opens with the cursor in the app switch zone
   -- (cursorInAppSwitchZone = 1): a browse open focuses the strip while
   -- the remembered card waits underneath, and only a scripted call
@@ -146,7 +156,13 @@ function PokegearScreenState.new(opts)
     _closed = false,
     _ticks = 0,
     _pendingChild = {},
+    _openEasyChat = opts.openEasyChat,
+    _easyChat = nil,
+    _easyPhase = nil,
+    _easyRequest = nil,
+    _easyFade = nil,
     _disposed = false,
+    uiInput = nil,
   }, PokegearScreenState)
   local preferences = self._state:readPreferences()
   assert(type(preferences) == "table", "the gear shell reads its saved preferences")
@@ -266,6 +282,145 @@ function PokegearScreenState:_switch(tab)
   old:dispose()
   self:_beginTransition("switch")
   self:_playSound(APPLY_SOUND)
+end
+
+-- Takes the map card's pending word request after its tick and parks the
+-- parent session: captures drop, the held map touch clears, and the
+-- source six-step black fade leaves the map. The shared editor answers
+-- through the injected factory after the fade.
+---@param self PokegearScreenState
+---@return boolean claimed
+function PokegearScreenState:_takeWordRequest()
+  if self._easyChat ~= nil or self._easyPhase ~= nil then
+    return false
+  end
+  local child = self._child
+  if type(child) ~= "table" or type(child.takeWordRequest) ~= "function" then
+    return false
+  end
+  local request = child:takeWordRequest()
+  if request == nil then
+    return false
+  end
+  assert(type(request) == "table", "word requests carry their typed record")
+  self._session:cancelPointers()
+  if type(child.cancelPointerCapture) == "function" then
+    child:cancelPointerCapture()
+  end
+  if type(child.cancelWordCapture) == "function" then
+    child:cancelWordCapture()
+  end
+  local wordId = 0xFFFF
+  if request.oldWord ~= nil and request.oldWord ~= false then
+    local parsed = tonumber(request.oldWord)
+    assert(parsed ~= nil, "word requests carry decimal identities")
+    wordId = parsed
+  end
+  self._easyRequest = request
+  self._easyPhase = "fadeout"
+  self._easyFade = { from = 0, to = 16, steps = 6, t = 0 }
+  self._pendingEditorRequest = {
+    mode = 0,
+    words = { wordId, 0xFFFF },
+    promptId = 0,
+    alwaysConfirm = false,
+    inputMode = request.inputMode == "touch" and "touch" or "buttons",
+  }
+  return true
+end
+
+-- Opens the shared editor child once the map has faded out. A factory
+-- or preparation failure unblocks the pending map edit and propagates
+-- the original cause with no fabricated user cancellation.
+---@param self PokegearScreenState
+function PokegearScreenState:_openWordEditor()
+  local factory = assert(self._openEasyChat, "word edits open through the injected editor factory")
+  local editorRequest = assert(self._pendingEditorRequest, "word edits open through their editor request")
+  local ok, child = pcall(factory, editorRequest)
+  if not ok then
+    self:_failWordEdit(child)
+  end
+  assert(type(child) == "table", "the editor factory returns its screen")
+  for _, method in ipairs({ "updateFixed", "status", "takeResult", "dispose" }) do
+    assert(type(child[method]) == "function", "the editor screen needs " .. method)
+  end
+  self._easyChat = child --[[@as table<string, unknown>]]
+  self._easyPhase = "open"
+  self.uiInput = child.uiInput
+  -- Step the child once on open so a ready stub lease commits before the
+  -- next status read; a pending real lease simply stays preparing.
+  child:updateFixed({})
+end
+
+-- Releases a failed editor open or step: disposes any partial child,
+-- marks the pending map operation cancelled to unblock it without
+-- touching the marking, restores shell ownership, and propagates the
+-- original cause. A settlement failure accompanies but never replaces
+-- the original cause.
+---@param self PokegearScreenState
+---@param cause unknown
+function PokegearScreenState:_failWordEdit(cause)
+  local request = self._easyRequest
+  local child = self._easyChat
+  self._easyChat = nil
+  self._easyRequest = nil
+  self._pendingEditorRequest = nil
+  self._easyPhase = nil
+  self._easyFade = nil
+  self.uiInput = nil
+  if child ~= nil then
+    child:dispose()
+  end
+  if request ~= nil then
+    local map = self._child
+    if type(map) == "table" and type(map.acceptWordResult) == "function" then
+      pcall(map.acceptWordResult, map, {
+        operationId = request.operationId,
+        result = { cancelled = true, inputMode = request.inputMode == "touch" and "touch" or "buttons" },
+      })
+    end
+  end
+  error(cause, 0)
+end
+
+-- Settles the exited editor child once: converts the accepted word to
+-- its decimal identity, applies the detached terminal result through the
+-- single map settlement path, then disposes the child and fades the
+-- retained map back before ordinary map input resumes.
+---@param self PokegearScreenState
+---@param result table<string, unknown> detached terminal editor result
+function PokegearScreenState:_settleWordEditor(result)
+  local request = assert(self._easyRequest, "word edits settle their pending request")
+  local child = assert(self._easyChat, "word edits settle their active child")
+  local settled = nil
+  local ok, failure = pcall(function()
+    local payload
+    if result.cancelled == true then
+      payload = { cancelled = true, inputMode = result.inputMode }
+    else
+      local words = assert(result.words, "accepted word edits carry their words")
+      payload = {
+        cancelled = false,
+        word = tostring(assert(words[1], "accepted edits carry word one")),
+        inputMode = result.inputMode,
+      }
+    end
+    local map = self._child
+    assert(type(map) == "table" and type(map.acceptWordResult) == "function", "the map card settles word edits")
+    map:acceptWordResult({ operationId = request.operationId, result = payload })
+    settled = true
+  end)
+  child:dispose()
+  self._easyChat = nil
+  self._easyRequest = nil
+  self._pendingEditorRequest = nil
+  self._easyPhase = "fadein"
+  self._easyFade = { from = 16, to = 0, steps = 6, t = 0 }
+  self.uiInput = nil
+  if not ok then
+    error(failure, 0)
+  end
+  assert(settled, "word edits settle through the map card")
 end
 
 -- Records the single close: remembers the actual last card, including after
@@ -393,11 +548,65 @@ end
 -- One fixed tick: resolve, map once, advance shell selection and the active
 -- card once, advance the presentation timeline, then resolve again for the
 -- resulting snapshot. Status reads and draws never tick clocks, animations,
--- or draw streams.
+-- or draw streams. A word editor child over the retained map card owns the
+-- raw batch exclusively while it is open or fading: the parked map takes
+-- no input and renders underneath nothing until the child exits.
 ---@param uiInput table[]
 function PokegearScreenState:updateFixed(uiInput)
   assert(not self._disposed, "a disposed gear shell steps nothing")
   assert(type(uiInput) == "table", "the gear shell input must be an event list")
+  if self._easyPhase == "fadeout" then
+    local fade = assert(self._easyFade, "the word editor handoff carries its fade")
+    fade.t = fade.t + 1
+    self._ticks = self._ticks + 1
+    if fade.t >= fade.steps then
+      self:_openWordEditor()
+    end
+    local measurement = self:_measured()
+    self._session:resolve(measurement, self:_resolveView())
+    return
+  end
+  if self._easyPhase == "open" then
+    local child = assert(self._easyChat, "word edits step their active child")
+    child:updateFixed(uiInput)
+    local result = child:takeResult()
+    if result ~= nil then
+      self:_settleWordEditor(result)
+    end
+    self._ticks = self._ticks + 1
+    local measurement = self:_measured()
+    self._session:resolve(measurement, self:_resolveView())
+    return
+  end
+  if self._easyPhase == "fadein" then
+    -- The retained map is already back: it steps and answers input
+    -- while the return fade plays purely visually underneath.
+    local measurement = self:_measured()
+    local view = self:_resolveView()
+    self._session:resolve(measurement, view)
+    local mapped = self._session:mapInput(uiInput, view)
+    self._pendingChild = {}
+    self:_handle(mapped, view)
+    self._child:updateFixed(self._pendingChild)
+    self._pendingChild = {}
+    self._ticks = self._ticks + 1
+    local fade = assert(self._easyFade, "the word editor return carries its fade")
+    fade.t = fade.t + 1
+    if fade.t >= fade.steps then
+      self._easyPhase = nil
+      self._easyFade = nil
+    end
+    if self._transition ~= nil then
+      local transition = self._transition.fade
+      transition:updateSourceFrame()
+      if transition.completed then
+        self._transition = nil
+      end
+    end
+    self:_takeWordRequest()
+    self._session:resolve(measurement, self:_resolveView())
+    return
+  end
   local measurement = self:_measured()
   local view = self:_resolveView()
   self._session:resolve(measurement, view)
@@ -414,6 +623,7 @@ function PokegearScreenState:updateFixed(uiInput)
       self._transition = nil
     end
   end
+  self:_takeWordRequest()
   self._session:resolve(measurement, self:_resolveView())
 end
 
@@ -438,8 +648,15 @@ function PokegearScreenState:status()
       completed = self._transition.fade.completed,
     }
   end
+  local easy = nil
+  if self._easyChat ~= nil then
+    easy = self._easyChat:status()
+    assert(type(easy) == "table", "the gear shell reads its word editor status")
+  end
+  local easyActive = easy ~= nil or self._easyPhase ~= nil
   return {
     open = not self._closed and not self._disposed,
+    easyChat = easy,
     tab = self._tab,
     focus = self._focus,
     entered = self._entered,
@@ -456,8 +673,8 @@ function PokegearScreenState:status()
     },
     transition = transition,
     child = childView,
-    busy = childView.busy == true,
-    dismissible = childView.dismissible ~= false and childView.busy ~= true,
+    busy = childView.busy == true or easyActive,
+    dismissible = childView.dismissible ~= false and childView.busy ~= true and not easyActive,
     presentation = self._session:plan(),
   }
 end
@@ -475,6 +692,9 @@ end
 -- loss or an input-mode change.
 function PokegearScreenState:cancelPointerCapture()
   self._session:cancelPointers()
+  if self._easyChat ~= nil then
+    self._easyChat:cancelPointerCapture()
+  end
 end
 
 -- Idempotent release of the logical lifetime: the session and the active
@@ -487,6 +707,13 @@ function PokegearScreenState:dispose()
   self._disposed = true
   self._session:dispose()
   self._child:dispose()
+  if self._easyChat ~= nil then
+    self._easyChat:dispose()
+    self._easyChat = nil
+  end
+  self._easyPhase = nil
+  self._easyFade = nil
+  self._easyRequest = nil
   self._result = nil
 end
 

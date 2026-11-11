@@ -617,6 +617,17 @@ DerivedAssetContract.pokedex = {
   schema = "g4-pokedex-assets-v2",
 }
 
+-- The Easy Chat family carries the semantic word data catalog (dictionary
+-- rows, templates, curated categories, authored initials, interface text,
+-- password words, avatar tables) and the editor presentation manifest
+-- (native layers, buttons, animation sequences, palettes) as two
+-- independently published scopes under one versioned identity.
+DerivedAssetContract.easyChat = {
+  cacheFormat = "hgss-easy-chat-v1",
+  catalogSchema = "hgss-easy-chat-catalog-v1",
+  schema = "hgss-easy-chat-ui-v1",
+}
+
 -- The summary class carries the source-independent native summary
 -- presentation: the canonical panes, group background variants, semantic
 -- windows, background/stamp/picture visuals, lowered text, palette roles,

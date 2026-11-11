@@ -13,6 +13,8 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
+local EasyChatCache = require("libs.assets.src.EasyChatCache")
+local EasyChatCatalog = require("libs.hgss.src.ui.EasyChatCatalog")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 
 local T = {}
@@ -324,6 +326,7 @@ local function bootCoveredField(scope)
   FieldRuntime.new = function(_, _)
     local runtime = setmetatable({
       cacheFs = cache,
+      easyChatCatalog = EasyChatCatalog.new(assert(EasyChatCache.loadCatalog(cache))),
       assetNeeds = AssetNeedsRegistry.new(),
       assetPreparation = assetPreparation,
       imageAssets = imageAssets,

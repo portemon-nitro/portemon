@@ -739,9 +739,35 @@ function T.last_navigation_reports_the_fresh_press_and_held_direction()
   Assert.deepEqual(input:uiSnapshot(0), { { type = "navigate", direction = "up" } }, "the event stream stays unchanged")
   Assert.deepEqual(
     lastSample(input),
-    { tick = 0, active = true, heldDirection = "up", pressedDirection = "up" },
+    { tick = 0, active = true, heldDirection = "up", pressedDirection = "up", buttonsHeld = true },
     "the sample carries the fresh press and the hold"
   )
+end
+
+function T.last_navigation_sample_reports_held_controls_without_consuming_edges()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:uiSnapshot(0)
+  Assert.equal(lastSample(input).buttonsHeld, false, "an idle modal holds no controls")
+  input:pressDirection("north", "key:w")
+  input:uiSnapshot(0)
+  Assert.equal(lastSample(input).buttonsHeld, true, "a held direction counts as a held control")
+  Assert.deepEqual(
+    input:uiSnapshot(1, { heldDirections = true }),
+    { { type = "held", directions = { up = true, down = false, left = false, right = false } } },
+    "the observation never alters the sibling event stream"
+  )
+  input:releaseDirection("key:w")
+  input:pressAction("key:return")
+  input:uiSnapshot(2)
+  Assert.equal(lastSample(input).buttonsHeld, true, "a held action counts as a held control")
+  input:releaseAction("key:return")
+  input:pressUiButton("l", "key:q")
+  input:uiSnapshot(3, { buttons = { l = true } })
+  Assert.equal(lastSample(input).buttonsHeld, true, "a held extra button counts as a held control")
+  input:releaseUiButton("l", "key:q")
+  input:uiSnapshot(4, { buttons = { l = true } })
+  Assert.equal(lastSample(input).buttonsHeld, false, "releasing every source clears the held control")
 end
 
 function T.last_navigation_reads_never_consume_or_retime_the_stream()
@@ -777,7 +803,7 @@ function T.held_only_snapshots_carry_no_fresh_edge()
   Assert.deepEqual(input:uiSnapshot(1), {}, "the hold alone emits no event")
   Assert.deepEqual(
     lastSample(input),
-    { tick = 1, active = true, heldDirection = "up" },
+    { tick = 1, active = true, heldDirection = "up", buttonsHeld = true },
     "the sample carries the hold without a fresh edge"
   )
 end
@@ -807,12 +833,16 @@ function T.inactive_snapshots_record_an_inactive_sample_without_replay()
   local input = FieldInput.new()
   input:pressDirection("north", "key:w")
   Assert.deepEqual(input:uiSnapshot(7), {}, "suspended UI emits nothing")
-  Assert.deepEqual(lastSample(input), { tick = 7, active = false }, "inactive snapshots record an inactive sample")
+  Assert.deepEqual(
+    lastSample(input),
+    { tick = 7, active = false, buttonsHeld = false },
+    "inactive snapshots record an inactive sample"
+  )
   input:beginUi(8)
   Assert.deepEqual(input:uiSnapshot(8), {}, "the suspended fresh edge never replays")
   Assert.deepEqual(
     lastSample(input),
-    { tick = 8, active = true, heldDirection = "up" },
+    { tick = 8, active = true, heldDirection = "up", buttonsHeld = true },
     "the surviving hold carries no stale fresh edge"
   )
 end
@@ -823,7 +853,7 @@ function T.returned_samples_are_copies()
   input:pressDirection("north", "key:w")
   input:uiSnapshot(0)
   local first = lastSample(input)
-  local expected = { tick = 0, active = true, heldDirection = "up", pressedDirection = "up" }
+  local expected = { tick = 0, active = true, heldDirection = "up", pressedDirection = "up", buttonsHeld = true }
   Assert.deepEqual(first, expected, "the sample carries the observation")
   first.heldDirection = "down"
   first.extra = true

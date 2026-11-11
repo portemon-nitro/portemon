@@ -31,10 +31,8 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@field _transition table<string, unknown>? the running mode transition
 ---@field _touch { held: boolean, x: number, y: number }
 ---@field _markingsPressed boolean
----@field _wordEntry table<string, unknown>
 ---@field _wordOutbox table<string, unknown>?
 ---@field _wordPending table<string, unknown>?
----@field _consumed table<string, boolean>
 ---@field _operations integer
 ---@field _unlock integer
 ---@field _rematch table<integer, boolean> rematch and gift facts sampled per map
@@ -90,7 +88,6 @@ end
 ---@field facts table<string, unknown> flypointVisited(index) and the contact facts
 ---@field phoneProjection fun(location: string): table<integer, table<string, unknown>> the shared contact availability query
 ---@field roamerProjection table<integer, table<string, unknown>> the creation-time roamer snapshot
----@field wordEntry table<string, unknown> the narrow word-selector handoff
 ---@field switched boolean? true when the card opens from another tab
 ---@field effect fun(sequence: string)? source UI sound effect boundary
 
@@ -123,11 +120,6 @@ function MapController.new(opts)
   )
   assert(type(opts.phoneProjection) == "function", "the region map reads contacts through the shared phone query")
   assert(type(opts.roamerProjection) == "table", "the region map samples roamers once at creation")
-  local wordEntry = opts.wordEntry
-  assert(type(wordEntry) == "table", "the region map requires its word-entry handoff")
-  for _, method in ipairs({ "open", "step", "result", "status", "cancel" }) do
-    assert(type(wordEntry[method]) == "function", "the word-entry handoff needs " .. method)
-  end
   assert(opts.effect == nil or type(opts.effect) == "function", "the region map sound boundary must be a function")
   local catalog = opts.assets.catalog
   assert(type(catalog) == "table" and type(catalog.regionMap) == "table", "the region map borrows its source tables")
@@ -145,9 +137,7 @@ function MapController.new(opts)
     _mode = "map",
     _touch = { held = false, x = 0, y = 0 },
     _markingsPressed = false,
-    _wordEntry = wordEntry,
     _effect = opts.effect,
-    _consumed = {},
     _operations = 0,
     _ticks = 0,
     _disposed = false,
@@ -512,10 +502,10 @@ function MapController:_markingResult(result, slot)
   end
 end
 
--- Pends one typed word request for the open location and opens the borrowed
--- single-word selector on it; the selector answers through the pending tick
--- and the card returns to marking mode. An open failure keeps the marking
--- mode instead of stranding the card behind a pending edit.
+-- Pends one typed word request for the open location: the shell takes it
+-- once and opens the shared editor over the retained map card. The map
+-- parks behind the pending edit; an open failure keeps the marking mode
+-- instead of stranding the card behind a pending edit.
 ---@param slot integer zero-based word slot
 function MapController:_requestWord(slot)
   if self._wordPending ~= nil then
@@ -531,51 +521,15 @@ function MapController:_requestWord(slot)
     oldWord = oldWord ~= false and oldWord or false,
     operationId = "map-word-" .. tostring(self._operations),
     session = self._world:snapshot(),
+    inputMode = marking:inputMode(),
   }
   self._wordPending = request
   self._wordOutbox = request
-  local ok, err = pcall(self._wordEntry.open, request)
-  if not ok then
-    self._wordPending, self._wordOutbox = nil, nil
-    error(err, 0)
-  end
 end
 
--- Settles the pending edit from the borrowed selector outcome: a selected
--- word writes once, a cancellation keeps the old word, and either way the
--- card returns to its marking mode with a fresh selector behind the next
--- edit. Unknown or consumed operation identities fail without touching the
--- markings.
----@param outcome table<string, unknown> the selector terminal result
-function MapController:_settleWordEdit(outcome)
-  local pending = assert(self._wordPending, "word edits settle their pending request")
-  assert(type(outcome) == "table", "word edits settle through their selector outcome")
-  if self._consumed[outcome.operationId] == true then
-    error("a replayed word result edits nothing: " .. tostring(outcome.operationId), 0)
-  end
-  if pending.operationId ~= outcome.operationId then
-    error("a stale word result edits nothing: " .. tostring(outcome.operationId), 0)
-  end
-  if outcome.kind == "selected" then
-    assert(
-      type(outcome.wordKey) == "string" and outcome.wordKey:match("^[0-9]+$") ~= nil,
-      "selected words carry decimal identities"
-    )
-    local marking = assert(self._marking, "word edits settle inside marking mode")
-    marking:applyWord(pending.slot - 1, outcome.wordKey --[[@as string]])
-    marking:takeEdited()
-    self:_commitMarking(pending.mapSymbol, marking:marking())
-  else
-    assert(outcome.kind == "cancelled", "word edits settle selected or cancelled")
-  end
-  self._wordPending, self._wordOutbox = nil, nil
-  self._consumed[outcome.operationId] = true
-  self._wordEntry.cancel("word edit settled")
-end
-
--- Takes the pending word request for the external selector, exactly once.
--- Production settles through the borrowed selector instead; this stays for
--- test drivers that answer outside the pending tick.
+-- Takes the pending word request for the shell-owned editor, exactly
+-- once. Production settles through acceptWordResult after the child
+-- exits; this stays the single settlement authority.
 ---@return table<string, unknown>? the typed request, or nil when no edit is pending
 function MapController:takeWordRequest()
   local request = self._wordOutbox
@@ -583,35 +537,44 @@ function MapController:takeWordRequest()
   return request
 end
 
--- Applies the external selector result to its edit: a selected word writes
--- once, a cancellation keeps the old word, and either way the card returns to
--- its marking mode. Unknown or consumed operation identities fail without
--- touching the markings.
+-- Applies the shell-owned editor result to its edit: an accepted word
+-- writes once and returns the marking to its retained session with the
+-- returned modality, a cancellation keeps the old word, and either way
+-- the card returns to its marking mode. Unknown or replayed operation
+-- identities fail without touching the markings.
 ---@param answer { operationId: string, result: table<string, unknown> }
 function MapController:acceptWordResult(answer)
   assert(type(answer) == "table" and type(answer.operationId) == "string", "word answers name their operation")
-  assert(type(answer.result) == "table", "word answers carry the selector result")
-  if self._consumed[answer.operationId] == true then
-    error("a replayed word result edits nothing: " .. answer.operationId, 0)
-  end
+  assert(type(answer.result) == "table", "word answers carry the editor result")
   local pending = self._wordPending
   if pending == nil or pending.operationId ~= answer.operationId then
     error("a stale word result edits nothing: " .. tostring(answer.operationId), 0)
   end
   local result = answer.result
+  assert(result.cancelled == true or result.cancelled == false, "word results carry their cancellation verdict")
+  assert(
+    result.inputMode == "buttons" or result.inputMode == "touch",
+    "word results carry their returned input modality"
+  )
+  local marking = assert(self._marking, "word edits settle inside marking mode")
   if result.cancelled ~= true then
     assert(
       type(result.word) == "string" and result.word:match("^[0-9]+$") ~= nil,
       "selected words carry decimal identities"
     )
-    local marking = self._marking --[[@as MarkingMode]]
     marking:applyWord(pending.slot - 1, result.word --[[@as string]])
     marking:takeEdited()
     self:_commitMarking(pending.mapSymbol, marking:marking())
   end
+  marking:resumeWord(pending.slot - 1, result.inputMode)
   self._wordPending, self._wordOutbox = nil, nil
-  self._consumed[answer.operationId] = true
-  self._wordEntry.cancel("external word answer")
+end
+
+-- Drops the held map touch at the editor handoff so a stale press never
+-- drags the parked world while the child owns display.
+function MapController:cancelWordCapture()
+  self._touch = { held = false, x = 0, y = 0 }
+  self._touchNew = false
 end
 
 -- One fixed tick: a running transition gates input, marking mode consumes
@@ -626,14 +589,9 @@ function MapController:updateFixed(events)
     return
   end
   if self._wordPending ~= nil then
-    -- The borrowed selector owns the pending edit: every tick steps it
-    -- and its terminal result settles the marking, including the nested
-    -- cancellation levels the source retreats through.
-    self._wordEntry.step(events)
-    local outcome = self._wordEntry.result()
-    if outcome ~= nil then
-      self:_settleWordEdit(outcome)
-    end
+    -- The shell owns the pending edit over the retained card: the map
+    -- stays parked while the child owns display.
+    self._ticks = self._ticks + 1
     return
   end
   if self._mode == "marking" then
@@ -882,9 +840,6 @@ function MapController:status()
     end
     view.marking = marking
   end
-  if self._wordPending ~= nil then
-    view.wordEntry = self._wordEntry.status()
-  end
   local presentation = {
     content = self:_planContent(),
   }
@@ -915,7 +870,6 @@ function MapController:dispose()
   self._wordOutbox, self._wordPending = nil, nil
   self._transition = nil
   self._disposed = true
-  self._wordEntry.cancel("region map teardown")
 end
 
 return MapController

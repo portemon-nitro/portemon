@@ -283,23 +283,6 @@ function PokegearMapFixture.facts(visited)
   }
 end
 
--- A scripted word selector handoff; the suites answer through the
--- controller's acceptWordResult instead, or inject a driven fake.
----@return table
-function PokegearMapFixture.wordEntry()
-  return {
-    open = function() end,
-    step = function() end,
-    result = function()
-      return nil
-    end,
-    status = function()
-      return nil
-    end,
-    cancel = function() end,
-  }
-end
-
 ---@return table the source-normalized context standing on location A
 function PokegearMapFixture.context()
   return {
@@ -340,7 +323,6 @@ function PokegearMapFixture.openMap(params)
       return {}
     end,
     roamerProjection = params.roamerProjection or {},
-    wordEntry = params.wordEntry or PokegearMapFixture.wordEntry(),
     switched = params.switched,
     effect = params.effect,
   })

@@ -1549,6 +1549,8 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   local identity = { versionId = "heartgold", generationId = GENERATION, producerId = "readiness-producer" }
   writeReceipt(cache, "apricorn-box", "global", "separately-validated-apricorn-family")
   writeReceipt(cache, "bag", "global", "separately-validated-bag-family")
+  writeReceipt(cache, "easy-chat-data", "global", "separately-validated-easy-chat-family")
+  writeReceipt(cache, "easy-chat", "global", "separately-validated-easy-chat-family")
   -- The complete inventory also enumerates the finite battle leaf
   -- families (shared core, evolution bundle, and one trainer/ball leaf
   -- per source selector) ahead of the summaries. This audit isolates
@@ -1574,10 +1576,13 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
       or kind == "battle-evolution"
       or kind == "battle-trainer-picture"
       or kind == "battle-ball"
+      or kind == "easy-chat-data"
+      or kind == "easy-chat"
     then
       -- Apricorn Box readiness has its own source-backed cache contract
-      -- tests, bag readiness stays with the bag unit tests, and the
-      -- battle leaf families stay with the battle compiler/worker tests;
+      -- tests, bag readiness stays with the bag unit tests, the battle
+      -- leaf families stay with the battle compiler/worker tests, and
+      -- the Easy Chat families stay with their compiler/worker tests;
       -- this audit isolates completeness of the field-map inventory.
       return true
     end

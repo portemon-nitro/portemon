@@ -49,6 +49,17 @@ local function stubPresentationRuntime(cache)
     },
     input = FieldInput.new(),
     pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in field-state tests", 0)
+      end,
+    },
     bindPartyIconPreparation = function(_, _, _)
       return 1
     end,

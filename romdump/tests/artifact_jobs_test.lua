@@ -1246,29 +1246,45 @@ function T.unexpected_family_validator_fault_escapes_without_mutation()
   Assert.equal(store[receiptPath], before.receipt, "the receipt remains unchanged")
 end
 
-function T.pokegear_word_entry_registers_a_bounded_global_family()
-  Assert.isTrue(
-    ArtifactState.KINDS["pokegear-word-entry"] == true,
-    "pokegear-word-entry is a recognized generated family"
-  )
-  Assert.equal(
-    ArtifactState.path("pokegear-word-entry", "global"),
-    "data/generated/jobs/pokegear-word-entry/global.lua",
-    "the word-entry family resolves to its receipt path"
-  )
-  Assert.isFalse(pcall(ArtifactState.path, "pokegear-word-entry", "1"), "the word-entry family carries no paged keys")
-  local classes = { normal = true, heavy = true, jumbo = true }
-  Assert.isTrue(
-    classes[ArtifactJobs.sizeClass("pokegear-word-entry")] == true,
-    "the word-entry family resolves to a known size class"
-  )
-  local dependencies, complete = ArtifactJobs.dependencies("pokegear-word-entry", "global", {})
-  Assert.isTrue(complete, "the word-entry closure is statically bounded")
-  local dependencySet = {}
-  for _, job in ipairs(dependencies) do
-    dependencySet[job.kind .. ":" .. job.key] = true
+function T.easy_chat_registers_two_bounded_global_scopes()
+  for _, kind in ipairs({ "easy-chat-data", "easy-chat" }) do
+    Assert.isTrue(ArtifactState.KINDS[kind] == true, kind .. " is a recognized generated family")
+    Assert.equal(
+      ArtifactState.path(kind, "global"),
+      "data/generated/jobs/" .. kind .. "/global.lua",
+      kind .. " resolves to its receipt path"
+    )
+    Assert.isFalse(pcall(ArtifactState.path, kind, "1"), kind .. " carries no paged keys")
+    local classes = { normal = true, heavy = true, jumbo = true }
+    Assert.isTrue(classes[ArtifactJobs.sizeClass(kind)] == true, kind .. " resolves to a known size class")
   end
-  Assert.isTrue(dependencySet["pc:global"] == true, "the word-entry closure declares its dictionary dependency")
+  Assert.isFalse(pcall(ArtifactState.path, "pokegear-word-entry", "global"), "the retired word-entry family is gone")
+
+  local runtimeSet = {}
+  for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
+    runtimeSet[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(runtimeSet["easy-chat-data:global"] == true, "field runtime prepares the easy chat data scope")
+  Assert.isNil(runtimeSet["easy-chat:global"], "the presentation scope stays on demand")
+
+  local dataDependencies, dataComplete = ArtifactJobs.dependencies("easy-chat-data", "global", {})
+  Assert.isTrue(dataComplete, "the data closure is statically bounded")
+  local dataSet = {}
+  for _, job in ipairs(dataDependencies) do
+    dataSet[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(dataSet["mon-catalog:global"] == true, "the data closure joins the resolved mon catalog")
+
+  local uiDependencies, uiComplete = ArtifactJobs.dependencies("easy-chat", "global", {})
+  Assert.isFalse(uiComplete, "the presentation audio closure waits for the adopted audio plan")
+  local uiSet = {}
+  for _, job in ipairs(uiDependencies) do
+    uiSet[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(uiSet["easy-chat-data:global"] == true, "the presentation scope waits for semantic data")
+  Assert.isTrue(uiSet["field-ui:global"] == true, "the presentation scope waits for the field UI family")
+  Assert.isTrue(uiSet["field-font:global"] == true, "the presentation scope waits for the field fonts")
+  Assert.isTrue(uiSet["audio-catalog:global"] == true, "the presentation scope waits for the audio catalog")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

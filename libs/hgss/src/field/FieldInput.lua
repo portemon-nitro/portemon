@@ -557,7 +557,7 @@ end
 ---@param active boolean
 local function observeUiNavigation(input, tick, active)
   if not active then
-    input.lastUiSample = { tick = tick, active = false }
+    input.lastUiSample = { tick = tick, active = false, buttonsHeld = false }
     return
   end
   local sample = { tick = tick, active = true }
@@ -568,6 +568,19 @@ local function observeUiNavigation(input, tick, active)
   if input.uiPressedDirection ~= nil then
     sample.pressedDirection = input.uiPressedDirection
   end
+  -- Read-only held-control fact for modality arbitration: any held UI
+  -- direction, action, cancel, or menu control, or any held extra-button
+  -- source, without consuming or retiming siblings.
+  local heldControl = held ~= nil or input.actionDown == true or input.cancelDown == true or input.menuDown == true
+  if not heldControl then
+    for _, state in pairs(input.uiExtraButtons) do
+      if next(state.sources) ~= nil then
+        heldControl = true
+        break
+      end
+    end
+  end
+  sample.buttonsHeld = heldControl
   input.lastUiSample = sample
 end
 

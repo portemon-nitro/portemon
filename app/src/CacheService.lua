@@ -20,6 +20,7 @@ local VALID_KINDS = {
   ["battle-scene"] = true,
   ["audio-bank"] = true,
   pokedex = true,
+  ["easy-chat"] = true,
   ["battle-effect"] = true,
   ["battle-presentation"] = true,
   ["battle-trainer-picture"] = true,
@@ -155,6 +156,17 @@ local function selectorKey(selector)
     assert(selector.trainerSelector == nil, "pokedex request carries no trainer selector")
     assert(selector.ballSelector == nil, "pokedex request carries no ball selector")
     return "pokedex"
+  elseif kind == "easy-chat" then
+    assert(selector.pageId == nil, "easy chat request carries no page selector")
+    assert(selector.name == nil, "easy chat request carries no milestone selector")
+    assert(selector.mapId == nil, "easy chat request carries no map selector")
+    assert(selector.matrixMemberId == nil, "easy chat request carries no cell selector")
+    assert(selector.index == nil, "easy chat request carries no cell selector")
+    assert(selector.sceneKey == nil, "easy chat request carries no scene selector")
+    assert(selector.bankId == nil, "easy chat request carries no bank selector")
+    assert(selector.trainerSelector == nil, "easy chat request carries no trainer selector")
+    assert(selector.ballSelector == nil, "easy chat request carries no ball selector")
+    return "easy-chat"
   elseif kind == "battle-effect" then
     assert(
       type(selector.effectKey) == "string" and selector.effectKey ~= "" and selector.effectKey:find("/", 1, true) == nil,
@@ -378,6 +390,9 @@ function CacheService:request(epoch, selector)
     command.bankId = selector.bankId
   elseif selector.requestKind == "pokedex" then
     -- The selector-free pokedex demand carries no job, source, page, or
+    -- map identity: the dispatched packet names its kind and urgency only.
+  elseif selector.requestKind == "easy-chat" then
+    -- The selector-free easy chat demand carries no job, source, page, or
     -- map identity: the dispatched packet names its kind and urgency only.
   elseif selector.requestKind == "battle-effect" then
     command.effectKey = selector.effectKey

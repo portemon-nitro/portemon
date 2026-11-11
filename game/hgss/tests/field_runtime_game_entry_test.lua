@@ -241,6 +241,21 @@ local function captureRuntime(overrides)
       PokedexDexFixture.refsForSpecies({ "CHIKORITA" })
     ),
     gameStats = require("libs.hgss.src.mons.GameStats").new({ species = { CHIKORITA = true } }),
+    easyChatState = (function()
+      local EasyChatCatalog = require("libs.hgss.src.ui.EasyChatCatalog")
+      local EasyChatState = require("libs.hgss.src.save.EasyChatState")
+      return EasyChatState.new(
+        "english",
+        EasyChatCatalog.new({
+          words = {},
+          templates = {},
+          groups = {},
+          initials = {},
+          primoWords = {},
+          unionAvatars = { choices = {}, rows = {} },
+        })
+      )
+    end)(),
     pokegearState = require("libs.hgss.src.save.PokegearState").new(
       { seed = 1 },
       { catalog = { contacts = {}, locations = {} } }
@@ -295,7 +310,15 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
   Assert.equal(valid.gameStats.schema, "hgss-stats-v1", "every save captures the stats bucket")
   Assert.equal(valid.pokegear.schema, "hgss-pokegear-v1", "every save captures the companion bucket")
+  Assert.equal(valid.easyChat.schema, "hgss-easy-chat-v1", "every save captures the word bucket")
   Assert.equal(scriptCaptureCalls, 1)
+  valid.easyChat.greetings = 0
+  valid.easyChat.towerMessages[1].words[1] = 7
+  Assert.equal(
+    runtime.easyChatState:capture().greetings,
+    2,
+    "capture detaches the word bucket from the published snapshot"
+  )
 end
 
 function T.captureGameSave_refuses_an_unstable_boundary_without_mutating_state()
@@ -808,11 +831,7 @@ end
 function T.field_boot_restores_game_stats_from_the_save_bucket()
   local runtime = setmetatable({}, FieldRuntime)
   runtime:_composeGameStats({
-    gameStats = statsBucket(
-      { "CHIKORITA", "TOTODILE" },
-      2,
-      GameStats.SCORE_POINTS.register_species_caught * 2
-    ),
+    gameStats = statsBucket({ "CHIKORITA", "TOTODILE" }, 2, GameStats.SCORE_POINTS.register_species_caught * 2),
   }, statsMonRoot())
   local owner = assert(runtime.gameStats, "field boot must own live game stats")
   Assert.isTrue(owner:isCounted("CHIKORITA"))

@@ -48,6 +48,17 @@ local function stubPresentationRuntime(cache)
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
     pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in warmup tests", 0)
+      end,
+    },
     bindPartyIconPreparation = function(_, _, _)
       return 1
     end,

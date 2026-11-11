@@ -165,6 +165,18 @@ function DerivedAssetProvisioner.new(options)
     -- It carries only the existing urgency vocabulary, never a species,
     -- archive, page, or arbitrary job selector. A ready worker result
     -- reads true; anything else reads pending with retained attribution.
+    -- The single bounded Easy Chat presentation demand: the editor lease
+    -- requests presentation through this one semantic method (dot call).
+    -- It carries only the existing urgency vocabulary, never a word,
+    -- template, archive, or arbitrary job selector. A ready worker result
+    -- reads true; anything else reads pending with retained attribution.
+    requestEasyChat = function(urgency)
+      local ready, failure = ask("easy-chat", urgency)
+      if ready then
+        return true
+      end
+      return nil, failure
+    end,
     requestPokedex = function(urgency)
       local ready, failure = ask("pokedex", urgency)
       if ready then

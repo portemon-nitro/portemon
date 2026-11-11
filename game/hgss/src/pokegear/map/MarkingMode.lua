@@ -214,6 +214,34 @@ function MarkingMode:applyWord(slot, word)
   noteEdit(self)
 end
 
+-- Reports the source input modality behind the marking session: touch
+-- while the last input was touch, buttons otherwise.
+---@return string "buttons" or "touch"
+function MarkingMode:inputMode()
+  if self._touchMode then
+    return "touch"
+  end
+  return "buttons"
+end
+
+-- Returns to the top of the marking session after a word return: sets
+-- the main group with the edited word slot focused, clears transient
+-- drag, touch, and trash state, and applies the returned source
+-- modality without changing the marking content.
+---@param slot integer zero-based word slot
+---@param inputMode string "buttons" or "touch"
+function MarkingMode:resumeWord(slot, inputMode)
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0 and slot <= 3, "word returns focus slots 0..3")
+  assert(inputMode == "buttons" or inputMode == "touch", "word returns carry their source modality")
+  self:_returnToTop()
+  self._mainPos = slot * 2 + 1
+  self._dragIcon = 0
+  self._dragOffset = { x = 0, y = 0 }
+  self._touch = nil
+  self._backPressed = false
+  self._touchMode = inputMode == "touch"
+end
+
 function MarkingMode:_returnToTop()
   self._poolPos = 0
   self._group = "main"

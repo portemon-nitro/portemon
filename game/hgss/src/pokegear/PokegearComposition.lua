@@ -181,78 +181,6 @@ local function roamerSnapshot(runtime)
   return projection
 end
 
--- The narrow word-selector handoff behind map markings: opens the real
--- single-word selector over the compiled word family when a marking edit
--- asks for it. The family resolves lazily at open; a missing family
--- fails loudly instead of offering a fabricated list.
----@param runtime table<string, unknown>
----@param assets table<string, unknown>
----@return table<string, unknown> the handoff with open, step, result, status, cancel
-function PokegearComposition.wordEntryHandoff(runtime, assets)
-  local selector = nil
-  local function ensureSelector(request)
-    if selector ~= nil then
-      return selector --[[@as table<string, unknown>]]
-    end
-    local cacheFs = checkOwner(runtime.cacheFs, "the derived asset cache")
-    local PokegearCache = require("libs.assets.src.PokegearCache")
-    local section = cacheFs:loadLua(PokegearCache.wordEntryManifestPath())
-    assert(type(section) == "table", "the word family carries its compiled section")
-    local WordEntryScreenState = require("game.hgss.src.pokegear.WordEntryScreenState")
-    local made = WordEntryScreenState.new({
-      operationId = assert(request.operationId, "word edits carry their operation identity"),
-      selectedWord = request.oldWord or false,
-      wordCatalog = assert(section.groups, "the word family carries its compiled groups"),
-      availability = {},
-      assets = assets,
-      presentation = { mode = "single-word", layout = "dual" },
-    })
-    selector = made
-    return made
-  end
-  local function openHandoff(request)
-    assert(type(request) == "table", "word edits open through their request")
-    ensureSelector(request --[[@as table<string, unknown>]])
-  end
-  local function stepHandoff(events)
-    assert(type(events) == "table", "word edits step their event batch")
-    assert(selector ~= nil, "word edits open before they step");
-    (selector --[[@as table<string, unknown>]]).updateFixed(selector, events)
-  end
-  local function readHandoffResult()
-    assert(selector ~= nil, "word edits open before they read back")
-    local takeResult = (selector --[[@as table<string, unknown>]]).takeResult
-    assert(type(takeResult) == "function", "word edits read back through their selector")
-    return takeResult(selector)
-  end
-  local function readHandoffStatus()
-    if selector == nil then
-      return nil
-    end
-    local status = (selector --[[@as table<string, unknown>]]).status
-    assert(type(status) == "function", "word edits expose their selector status")
-    return status(selector)
-  end
-  local function cancelHandoff(reason)
-    assert(type(reason) == "string", "word edits cancel with a reason")
-    if selector == nil then
-      return
-    end
-    local dispose = (selector --[[@as table<string, unknown>]]).dispose
-    if type(dispose) == "function" then
-      dispose(selector)
-    end
-    selector = nil
-  end
-  return {
-    open = openHandoff,
-    step = stepHandoff,
-    result = readHandoffResult,
-    status = readHandoffStatus,
-    cancel = cancelHandoff,
-  }
-end
-
 -- The broadcast world projection behind the radio card: daily identity,
 -- field events, swarm facts, dex, and bag through their live owners.
 -- Every dependency is required; a missing owner fails loudly instead of
@@ -365,8 +293,9 @@ end
 
 -- The region map's text and flag facts over the live owners: region names,
 -- landmark names, and flavor text read through the field message provider,
--- and the flypoint visited flags through the field event store. Word text
--- stays the stored word identity until the word family resolves strings.
+-- and the flypoint visited flags through the field event store. Saved
+-- marking words are decimal word identities; the shared catalog resolves
+-- their display fragments once through the numeric transport.
 ---@param runtime table<string, unknown>
 ---@return table<string, unknown> messages
 ---@return table<string, unknown> facts
@@ -404,7 +333,25 @@ local function regionMapOwners(runtime)
     return read(273, 7 + index)
   end
   local function wordText(key)
-    return key
+    local catalog = runtime.easyChatCatalog
+    if catalog == nil then
+      return key
+    end
+    local id = tonumber(key)
+    if id == nil then
+      return key
+    end
+    local shared = catalog
+    if type(shared.wordTokens) ~= "function" then
+      local EasyChatCatalog = require("libs.hgss.src.ui.EasyChatCatalog")
+      shared = EasyChatCatalog.new(catalog)
+    end
+    local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+    local ok, resolved = pcall(shared.wordTokens, shared, id)
+    if not ok then
+      error("saved marking word is not a known identity: " .. key, 0)
+    end
+    return FieldMessageText.tokensToText(resolved)
   end
   local messages = {
     region = regionName,
@@ -536,7 +483,6 @@ local function cardFactories(runtime, shared)
       switched = context.switched,
       phoneProjection = phoneProjection,
       roamerProjection = roamerSnapshot(runtime),
-      wordEntry = PokegearComposition.wordEntryHandoff(runtime, assets),
       effect = mapPlay,
     })
   end
@@ -826,6 +772,11 @@ function PokegearComposition.compose(runtime, owners)
     local function measurePresentationDisplay()
       return runtime.presentationDisplay
     end
+    local EasyChatComposition = require("game.hgss.src.easychat.EasyChatComposition")
+    local function openEasyChat(request)
+      assert(type(request) == "table", "word edits open through their typed request")
+      return EasyChatComposition.open(runtime, request)
+    end
     return PokegearScreenState.new({
       state = state,
       assets = assets,
@@ -836,6 +787,7 @@ function PokegearComposition.compose(runtime, owners)
       entry = entry or { kind = "browse" },
       measureDisplay = measurePresentationDisplay,
       signal = outgoingCallSignal(),
+      openEasyChat = openEasyChat,
     })
   end
 

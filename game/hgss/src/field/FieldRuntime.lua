@@ -1477,6 +1477,7 @@ function FieldRuntime:_composeFieldServices(boot)
     boot.cacheFs
   )
   self:_composeGameStats(boot.loadedGame, assert(boot.monRoot, "mon catalog root is required for game stats"))
+  self:_composeEasyChat(boot.loadedGame, boot.cacheFs)
   self.monService = HgssMonService.new({
     catalog = self.monCatalog,
     bucket = monBucket,
@@ -2408,6 +2409,31 @@ function FieldRuntime:unbindSummaryPreparation(binding)
   end
 end
 
+-- Installs the field word editor preparation factory for the presented
+-- lifetime: the logical composition resolves it per editor open because
+-- presentation resources postdate the menu factories. The runtime owns no
+-- graphics here, only the acquire callback plus its binding identity.
+---@param acquire fun(): table<string, unknown> per-open editor lease factory
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindEasyChatPreparation(acquire)
+  assert(type(acquire) == "function", "word editor preparation binding requires its acquire function")
+  assert(self._easyChatPreparation == nil, "one word editor preparation binding owns the presented lifetime")
+  self._easyChatBindingId = (self._easyChatBindingId or 0) + 1
+  self._easyChatPreparation = { id = self._easyChatBindingId, acquire = acquire }
+  return self._easyChatBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a
+-- replacement owner, and editor factories created after disposal fail
+-- at launch instead of presenting without preparation.
+---@param binding integer binding identity from bindEasyChatPreparation
+function FieldRuntime:unbindEasyChatPreparation(binding)
+  local current = self._easyChatPreparation
+  if current ~= nil and current.id == binding then
+    self._easyChatPreparation = nil
+  end
+end
+
 -- Installs the field pokedex preparation factory for the presented
 -- lifetime: the logical composition resolves it per pokedex open because
 -- presentation resources postdate the menu factories. The runtime owns no
@@ -2678,6 +2704,28 @@ function FieldRuntime:_composePokedex(loadedGame, monRoot, cacheFs)
     self.dexKnowledge = PokedexKnowledge.new(refs)
   end
   self.playerData.profile.nationalDex = self.dexKnowledge:hasNationalDex()
+end
+
+-- Composes the one authoritative shared word owner beside dex knowledge:
+-- the immutable generated catalog loads from the already-ready data
+-- scope once monLanguage exists, then Continue restores the nested
+-- bucket (even when absent) while a new game starts from source
+-- defaults. A failed construction or restore fails the boot instead of
+-- leaving the field without its live word owner.
+---@param loadedGame table<string, unknown>?
+---@param cacheFs table<string, unknown> CacheFs-shaped
+function FieldRuntime:_composeEasyChat(loadedGame, cacheFs)
+  local EasyChatCache = require("libs.assets.src.EasyChatCache")
+  local EasyChatState = require("libs.hgss.src.save.EasyChatState")
+  local EasyChatCatalog = require("libs.hgss.src.ui.EasyChatCatalog")
+  local catalog = EasyChatCatalog.new(EasyChatCache.loadCatalog(cacheFs))
+  self.easyChatCatalog = catalog
+  local language = assert(self.monLanguage, "field runtime composes word state after the mon language is known")
+  if loadedGame ~= nil then
+    self.easyChatState = EasyChatState.restore(loadedGame.easyChat, language, catalog)
+  else
+    self.easyChatState = EasyChatState.new(language, catalog)
+  end
 end
 
 -- Composes the one authoritative game-stats owner beside dex knowledge:
@@ -4689,6 +4737,8 @@ function FieldRuntime:_releaseAll()
   self.playerAvatar = nil
   self.windowStyles, self.uiManifest, self.fontDef, self.weatherCatalog = nil, nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
+  self.easyChatCatalog, self.easyChatState = nil, nil
+  self._easyChatPreparation, self._easyChatBindingId = nil, nil
   self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil

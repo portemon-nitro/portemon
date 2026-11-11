@@ -15,6 +15,7 @@ local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryPresentationResources = require("game.hgss.src.field.SummaryPresentationResources")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
+local EasyChatPresentationResources = require("game.hgss.src.easychat.EasyChatPresentationResources")
 local PokedexPresentationResources = require("game.hgss.src.pokedex.PokedexPresentationResources")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
@@ -51,6 +52,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@alias PartyIconCancel fun()
 ---@alias SummaryPreparationAcquire fun(): table<string, unknown>
 ---@alias PokedexPreparationAcquire fun(options: table<string, unknown>): table<string, unknown>
+---@alias EasyChatPreparationAcquire fun(): table<string, unknown>
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
@@ -63,6 +65,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field unbindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime summary preparation unbinding in presented composition
 ---@field bindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: PokedexPreparationAcquire): integer runtime pokedex preparation binding in presented composition
 ---@field unbindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime pokedex preparation unbinding in presented composition
+---@field bindEasyChatPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: EasyChatPreparationAcquire): integer runtime editor preparation binding in presented composition
+---@field unbindEasyChatPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime editor preparation unbinding in presented composition
 ---@field monService table<string, unknown>? the live party mon service behind idle selector prediction
 ---@field monCatalog table<string, unknown>? the resolved mon catalog borrowed by pokedex composition
 ---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind pokedex composition
@@ -109,6 +113,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field _optionsRenderer OptionsRenderer? the one retained per-open options resource owner
 ---@field _pokedexBinding integer? installed pokedex preparation binding identity
 ---@field pokedexResources PokedexPresentationResources? the one lazily owned field pokedex preparation leaf
+---@field _easyChatBinding integer? installed editor preparation binding identity
+---@field easyChatResources EasyChatPresentationResources? the one lazily owned field editor preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field _apricornBoxRenderer ApricornBoxRenderer? owned source graphics and row renderer
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
@@ -630,6 +636,15 @@ function FieldPresentationResources.new(runtime)
       assert(runtime.bindPokedexPreparation, "presented pokedex preparation requires the runtime preparation binding")
     self._pokedexBinding = bindPokedexPreparation(runtime, function(options)
       return self:pokedex():acquire(options)
+    end)
+    -- The editor acquisition binding stays late-bound through the
+    -- runtime because the preparation owner itself is lazy: the factory
+    -- resolves per editor open, when a screen is actually constructed.
+    -- Installing the binding acquires no images and loads no graphics.
+    local bindEasyChatPreparation =
+      assert(runtime.bindEasyChatPreparation, "presented editor preparation requires the runtime preparation binding")
+    self._easyChatBinding = bindEasyChatPreparation(runtime, function()
+      return self:easyChat():acquire()
     end)
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
@@ -1282,10 +1297,12 @@ function FieldPresentationResources:dispose()
   local partyIconBinding = self._partyIconBinding
   local summaryBinding = self._summaryBinding
   local pokedexBinding = self._pokedexBinding
+  local easyChatBinding = self._easyChatBinding
   local presentationRuntime = self._presentationRuntime
   self._partyIconBinding = nil
   self._summaryBinding = nil
   self._pokedexBinding = nil
+  self._easyChatBinding = nil
   self._presentationRuntime = nil
   if partyIconBinding ~= nil and presentationRuntime ~= nil then
     local unbindPreparation = assert(
@@ -1308,9 +1325,20 @@ function FieldPresentationResources:dispose()
     )
     unbindPokedex(presentationRuntime, pokedexBinding)
   end
+  if easyChatBinding ~= nil and presentationRuntime ~= nil then
+    local unbindEasyChat = assert(
+      presentationRuntime.unbindEasyChatPreparation,
+      "the installed editor binding requires its runtime unbinding"
+    )
+    unbindEasyChat(presentationRuntime, easyChatBinding)
+  end
   if self.pokedexResources then
     self.pokedexResources:release()
     self.pokedexResources = nil
+  end
+  if self.easyChatResources then
+    self.easyChatResources:release()
+    self.easyChatResources = nil
   end
   if self.summaryResources then
     self.summaryResources:release()
@@ -1525,6 +1553,57 @@ function FieldPresentationResources:pokedex()
   })
   self.pokedexResources = created
   return created
+end
+
+function FieldPresentationResources:easyChat()
+  local owned = self.easyChatResources
+  if owned ~= nil then
+    return owned
+  end
+  local runtime = assert(self._presentationRuntime, "editor preparation borrows the presented runtime")
+  local created = EasyChatPresentationResources.new({
+    cacheFs = runtime.cacheFs,
+    graphics = love and love.graphics,
+    imagePool = assert(self._imagePool, "editor preparation borrows the shared image owner"),
+    derivedAssets = runtime.derivedAssets or {},
+    uiManifest = runtime.uiManifest,
+    text0 = assert(self.textRenderer, "editor preparation borrows the Font0 renderer"),
+    text1 = assert(self.battleTextRenderers.narration, "editor preparation borrows the Font1 renderer"),
+    text4 = assert(self.battleTextRenderers.menu, "editor preparation borrows the Font4 renderer"),
+    window = assert(self.windowRenderer, "editor preparation borrows the window renderer"),
+  })
+  self.easyChatResources = created
+  return created
+end
+
+-- Draws the committed editor bundle through the supplied application
+-- plan: pending preparation draws black over the editor panes and the
+-- failed state surfaces its cause. Drawing never prepares, acquires, or
+-- paints a generic outer frame.
+---@param status table<string, unknown> committed editor screen status
+function FieldPresentationResources:drawEasyChat(status)
+  assert(type(status) == "table", "the editor application presents its status")
+  local plan = assert(status.presentation, "the editor application presents its plan")
+  local assets = status.assets
+  local hostGraphics = love and love.graphics
+  assert(type(hostGraphics) == "table", "editor drawing requires its host graphics namespace")
+  if assets == nil then
+    if status.preparationError ~= nil then
+      error("editor preparation failed: " .. tostring(status.preparationError), 0)
+    end
+    for _, pane in ipairs(plan.panes or {}) do
+      LogicalSurface.draw(hostGraphics, pane.placement, function()
+        hostGraphics.setColor(0, 0, 0, 1)
+        hostGraphics.rectangle("fill", 0, 0, 256, 192)
+        hostGraphics.setColor(1, 1, 1, 1)
+      end)
+    end
+    return
+  end
+  ApplicationPresentation.draw(hostGraphics, {
+    graphics = hostGraphics,
+    images = assets.images,
+  }, status, plan)
 end
 
 -- Adapts the shared field text owners to the Options source token

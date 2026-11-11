@@ -46,6 +46,7 @@ local PRIORITY = {
 }
 
 local MART_AUDIO_SEQUENCES = { "SEQ_SE_DP_SELECT", "SEQ_SE_GS_GEARCANCEL", "SEQ_SE_DP_BAG_004", 1603 }
+local EASY_CHAT_AUDIO_SEQUENCES = { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_BUTTON9", "SEQ_SE_DP_CUSTOM06" }
 local PARTY_AUDIO_SEQUENCES = {
   "SEQ_SE_DP_POKELIST_001",
   "SEQ_SE_GS_GEARCANCEL",
@@ -328,6 +329,7 @@ local FIELD_RUNTIME_JOBS = {
   "pc:global",
   "pokegear:global",
   "pokedex-data:global",
+  "easy-chat-data:global",
   "mart:global",
   "summary:global",
   "spawns:global",
@@ -841,57 +843,88 @@ local function executePokedexPresentation(artifact, context)
   })
 end
 
--- The word-entry closure is statically bounded: the selector reads its
--- own graphics and message members from the dump and reuses the published
--- PC dictionary identities, so the PC family is its only prerequisite.
+-- The Easy Chat semantic data scope is a small field-runtime
+-- prerequisite: catalog and state compose from its immutable records
+-- before any editor opens, so it waits only for the resolved mon catalog
+-- behind the curated species join.
+---@param key string
 ---@return { kind: string, key: string }[], boolean
-local function dependenciesPokegearWordEntry()
-  return { { kind = "pc", key = "global" } }, true
+local function dependenciesEasyChatData(key)
+  assert(key == "global", "easy-chat-data family only has the global job")
+  return { { kind = "mon-catalog", key = "global" } }, true
 end
 
-local function executePokegearWordEntry(artifact, context)
-  local PokegearWordEntryCompiler = require("romdump.src.digest.ui.PokegearWordEntryCompiler")
-  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
-  local PokegearCache = require("libs.assets.src.PokegearCache")
-  local romFs = assert(context.romFs, "pokegear word-entry jobs require a source reader")
-  local versionId = assert(context.versionId, "pokegear word-entry jobs require a version")
-  local bundle = compileOrRaise(function()
-    return PokegearWordEntryCompiler.compile(romFs, versionId)
-  end, "pokegear word entry")
-  assert(type(bundle.marker) == "string" and bundle.marker ~= "", "word-entry bundle carries no marker")
-  assert(type(bundle.section) == "table", "word-entry bundle carries no section")
-  local assets = bundle.assets ~= nil and bundle.assets or bundle.files
-  assert(type(assets) == "table", "word-entry bundle carries no assets")
-  local validated, schemaErr = PokegearAssetSchema.validateWordEntry(bundle.section)
-  if validated == nil then
-    error(schemaErr, 0)
+local function executeEasyChatData(artifact, context)
+  local EasyChatCompiler = require("romdump.src.digest.ui.EasyChatCompiler")
+  local EasyChatCacheWriter = require("romdump.src.digest.ui.EasyChatCacheWriter")
+  local MonCache = require("libs.assets.src.MonCache")
+  local romFs = assert(context.romFs, "easy-chat-data jobs require a source reader")
+  local versionId = assert(context.versionId, "easy-chat-data jobs require a version")
+  local cacheFs = assert(context.cacheFs, "easy-chat-data jobs require a cache filesystem")
+  local monRoot = MonCache.loadCatalog(cacheFs)
+  local data, dataErr = EasyChatCompiler.compileData(romFs, versionId, monRoot)
+  if data == nil then
+    error(dataErr, 0)
   end
-  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(bundle.section)) do
-    if assets[path] == nil then
-      error("word-entry bundle is missing referenced asset " .. path, 0)
+  return EasyChatCacheWriter.stageData(artifact, data)
+end
+
+-- The Easy Chat presentation scope prepares the complete bounded editor
+-- closure on demand: it waits for semantic data plus the shared field
+-- UI/font families, the audio catalog, and the exact effect banks the
+-- fixed editor cues resolve through.
+---@param key string
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesEasyChat(key, plans)
+  assert(key == "global", "easy-chat family only has the global job")
+  assert(type(plans) == "table", "dependency edges require the session plans")
+  local jobs = {
+    { kind = "easy-chat-data", key = "global" },
+    { kind = "field-ui", key = "global" },
+    { kind = "field-font", key = "global" },
+    { kind = "audio-catalog", key = "global" },
+  }
+  local audioPlan = plans.audioPlan
+  if audioPlan == nil then
+    return sortedJobs(jobs), false
+  end
+  local index = assert(audioPlan.index, "easy chat audio closure requires the adopted audio index")
+  local seen = {}
+  for _, reference in ipairs(EASY_CHAT_AUDIO_SEQUENCES) do
+    local sequenceId = index.sequenceBySymbol[reference]
+    assert(sequenceId ~= nil, "easy chat audio reference has no adopted sequence: " .. reference)
+    local sequence = assert(index.sequences[sequenceId], "easy chat audio reference has no sequence record")
+    local bankId = assert(sequence.bankId, "easy chat audio sequence has no bank")
+    if not seen[bankId] then
+      seen[bankId] = true
+      jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
     end
   end
-  artifact:addOwnedRoot(PokegearCache.assetDir())
-  artifact:addOwnedRoot(PokegearCache.dir())
-  local stage = artifact:stageFs()
-  local cacheFs = artifact:cacheFs()
-  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(bundle.section)) do
-    stage:write(path, assets[path])
+  return sortedJobs(jobs), true
+end
+
+local function executeEasyChatPresentation(artifact, context)
+  local EasyChatCompiler = require("romdump.src.digest.ui.EasyChatCompiler")
+  local EasyChatCache = require("libs.assets.src.EasyChatCache")
+  local EasyChatCacheWriter = require("romdump.src.digest.ui.EasyChatCacheWriter")
+  local romFs = assert(context.romFs, "easy-chat jobs require a source reader")
+  local versionId = assert(context.versionId, "easy-chat jobs require a version")
+  local cacheFs = assert(context.cacheFs, "easy-chat jobs require a cache filesystem")
+  local data = EasyChatCache.loadCatalog(cacheFs)
+  local bundle, bundleErr = EasyChatCompiler.compilePresentation(romFs, versionId, data)
+  if bundle == nil then
+    error(bundleErr, 0)
   end
-  stage:writeLua(PokegearCache.wordEntryManifestPath(), bundle.section)
-  stage:writeLua(PokegearCache.wordEntryProvenancePath(), bundle.provenance or {})
-  local readback = stage:loadLua(PokegearCache.wordEntryManifestPath())
-  local readbackRecord, readbackErr = PokegearAssetSchema.validateWordEntry(readback)
-  if readbackRecord == nil then
-    error(readbackErr or "word-entry section readback is invalid", 0)
-  end
-  for _, path in ipairs(PokegearCache.wordEntryReferencedPaths(bundle.section)) do
-    if not stage:exists(path, "file") and not cacheFs:exists(path, "file") then
-      error("word-entry asset missing after stage: " .. path, 0)
-    end
-  end
-  stage:write(PokegearCache.wordEntryMarkerPath(), bundle.marker)
-  return bundle.marker
+  assert(type(bundle.marker) == "string" and bundle.marker ~= "", "easy-chat bundle carries no marker")
+  assert(type(bundle.manifest) == "table", "easy-chat bundle carries no manifest")
+  assert(type(bundle.assets) == "table", "easy-chat bundle carries no assets")
+  return EasyChatCacheWriter.stagePresentation(artifact, {
+    marker = bundle.marker,
+    manifest = bundle.manifest,
+    assets = bundle.assets,
+    provenance = bundle.provenance or {},
+  })
 end
 
 local function dependenciesPc(key)
@@ -1426,9 +1459,14 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
-local function validatePokegearWordEntry(check)
-  local PokegearCache = require("libs.assets.src.PokegearCache")
-  return PokegearCache.isWordEntryReady(check.cacheFs, check.marker)
+local function validateEasyChatData(check)
+  local EasyChatCache = require("libs.assets.src.EasyChatCache")
+  return EasyChatCache.isDataReady(check.cacheFs, check.marker)
+end
+
+local function validateEasyChat(check)
+  local EasyChatCache = require("libs.assets.src.EasyChatCache")
+  return EasyChatCache.isReady(check.cacheFs, check.marker)
 end
 
 ---@param check ArtifactJobs.ReadinessCheck
@@ -2044,13 +2082,20 @@ DESCRIPTORS = {
     execute = executePokegear,
     validate = validatePokegear,
   },
-  -- Single-word entry: the bounded selector closure over the existing
-  -- dictionary identities, staged beside the core family.
-  ["pokegear-word-entry"] = {
+  -- Easy Chat scopes: semantic data for field boot plus the on-demand
+  -- editor presentation. Each owns its exact payload and marker files,
+  -- so one scope never erases the other.
+  ["easy-chat-data"] = {
     size = "normal",
-    dependencies = dependenciesPokegearWordEntry,
-    execute = executePokegearWordEntry,
-    validate = validatePokegearWordEntry,
+    dependencies = dependenciesEasyChatData,
+    execute = executeEasyChatData,
+    validate = validateEasyChatData,
+  },
+  ["easy-chat"] = {
+    size = "normal",
+    dependencies = dependenciesEasyChat,
+    execute = executeEasyChatPresentation,
+    validate = validateEasyChat,
   },
   -- Pokedex scopes: semantic data for field boot plus on-demand
   -- application presentation. Each owns its exact payload and marker
@@ -2315,6 +2360,8 @@ local COMPLETE_STATIC_GLOBALS = {
   "pokegear",
   "pokedex-data",
   "pokedex",
+  "easy-chat-data",
+  "easy-chat",
   "mart",
   "summary",
   "spawns",

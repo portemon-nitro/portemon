@@ -19,6 +19,7 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local PcCache = require("libs.assets.src.PcCache")
+local EasyChatCache = require("libs.assets.src.EasyChatCache")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
@@ -417,6 +418,18 @@ function FieldStatePresentationFixture.cache()
   for _, path in ipairs(SummaryCache.referencedPaths(summaryData)) do
     cache:write(path, solidPng(32, 32))
   end
+  -- Minimal schema-valid shared word catalog: easy-chat data is a
+  -- field-runtime milestone prerequisite, so every FieldState boot can
+  -- resolve C01 data. Suites that exercise the editor stage the real
+  -- compiled family over this; suites that never open Mail only need
+  -- the schema identity to construct the Mail read path.
+  cache:writeLua(EasyChatCache.catalogPath(), {
+    schema = EasyChatCache.CATALOG_SCHEMA,
+    words = {},
+    templates = {},
+    groups = {},
+    initials = {},
+  })
   cache:writeLua(MonCache.portraitManifestPath(), { entries = {} })
   cache:write(
     FieldActorCache.indexPath(),

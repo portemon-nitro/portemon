@@ -259,7 +259,6 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
       facts = Fixture.facts(),
       phoneProjection = phonePolicy(call, state, contactPlaces),
       roamerProjection = snapshotRoamers(roamers),
-      wordEntry = Fixture.wordEntry(),
     })
   end
 

@@ -751,6 +751,40 @@ end
 
 -- One cry bank demand dispatches the generic audio-bank job keyed by its
 -- numeric bank; a malformed bank fails its own request.
+-- The selector-free editor demand dispatches its registered global job
+-- with urgency alone; extras fail their own request without killing the
+-- controller.
+function T.easy_chat_selector_dispatches_the_global_job()
+  local calls = {}
+  local session = { pumps = 0 }
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session.requestJob(_, kind, key, urgency)
+    calls[#calls + 1] = { kind = kind, key = key, urgency = urgency }
+    return true, nil
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  local worker, replies, queued = pushWorker(session, 7)
+  queued[#queued + 1] = { op = "request", epoch = 7, requestId = 51, requestKind = "easy-chat", urgency = "required" }
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 52, requestKind = "easy-chat", urgency = "required", pageId = 3 }
+  worker:step()
+  worker:step()
+  Assert.equal(calls[1].kind, "easy-chat", "the dispatched job keeps its kind")
+  Assert.equal(calls[1].key, "global", "the dispatched job keys the global job")
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 2, "both requests settle")
+  Assert.equal(results[1].state, "ready", "a ready editor completes through its terminal event")
+  Assert.equal(results[2].state, "failed", "a selector-carrying demand fails its own request")
+  Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
+end
+
 function T.audio_bank_selector_dispatches_the_bank_job()
   local calls = {}
   local session = { pumps = 0 }

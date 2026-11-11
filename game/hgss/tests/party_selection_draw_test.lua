@@ -346,6 +346,41 @@ local function compositionRuntime()
       runtime.pokedexPreparation = nil
     end
   end
+  runtime.bindEasyChatPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "editor preparation binding requires its acquire function")
+    assert(runtime.easyChatPreparation == nil, "one editor preparation binding owns the presented lifetime")
+    runtime.easyChatPreparation = { id = 1, acquire = acquire }
+    return runtime.easyChatPreparation.id
+  end
+  runtime.unbindEasyChatPreparation = function(_, binding)
+    local current = runtime.easyChatPreparation
+    if current ~= nil and current.id == binding then
+      runtime.easyChatPreparation = nil
+    end
+  end
+  runtime.bindMailPreparation = function(_, prepare)
+    assert(type(prepare) == "function", "Mail preparation binding requires its prepare function")
+    assert(runtime.mailPreparation == nil, "one Mail preparation binding owns the presented lifetime")
+    runtime.mailPreparation = { id = 1, prepare = prepare }
+    return runtime.mailPreparation.id
+  end
+  runtime.unbindMailPreparation = function(_, binding)
+    local current = runtime.mailPreparation
+    if current ~= nil and current.id == binding then
+      runtime.mailPreparation = nil
+    end
+  end
+  runtime.easyChatCatalog = {
+    template = function()
+      return nil
+    end,
+    messageStatus = function()
+      return "invalid"
+    end,
+    expandMessage = function()
+      error("no expansion in party draw tests", 0)
+    end,
+  }
   return runtime
 end
 

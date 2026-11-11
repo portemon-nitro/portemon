@@ -676,6 +676,36 @@ end
 -- A cry bank demand travels the selected-game host into one epoch-qualified
 -- worker request that carries its bank id; malformed ids never leave the
 -- game thread.
+-- The single bounded editor presentation demand travels the selected-game
+-- host into one selector-free worker request: urgency alone rides the
+-- registered global job, and extras or malformed urgencies never leave
+-- the game thread.
+function T.easy_chat_demands_reach_the_worker_without_selectors()
+  local Service = requireService()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local gameHost = provisioner:gameHost()
+  local ready, failure = gameHost.requestEasyChat("required")
+  Assert.isNil(ready, "an unbuilt editor observes no readiness")
+  Assert.isNil(failure, "an unbuilt editor observes no failure")
+  Assert.isFalse(pcall(gameHost.requestEasyChat, "soon", "required"), "malformed urgencies stay on the game thread")
+  service:update()
+  local found = nil
+  local command = service._command:pop()
+  while command ~= nil do
+    if command.op == "request" and command.requestKind == "easy-chat" then
+      found = command
+    end
+    command = service._command:pop()
+  end
+  Assert.notNil(found, "the editor demand reaches the worker channel")
+  Assert.equal(found.urgency, "required", "the request carries its urgency")
+  Assert.isNil(found.pageId, "the selector-free demand carries no page selector")
+  service:shutdown()
+end
+
 function T.audio_bank_demands_reach_the_worker_with_their_bank()
   local Service = requireService()
   local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")

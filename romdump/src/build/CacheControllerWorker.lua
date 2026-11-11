@@ -78,6 +78,7 @@ local VALID_KINDS = {
   ["battle-scene"] = true,
   ["audio-bank"] = true,
   pokedex = true,
+  ["easy-chat"] = true,
   ["battle-effect"] = true,
   ["battle-presentation"] = true,
   ["battle-trainer-picture"] = true,
@@ -399,6 +400,24 @@ end
 
 ---@param params table<string, unknown>
 ---@return string? selector error
+local function checkEasyChat(params)
+  -- The selector-free easy chat demand carries no job, source, page, or
+  -- map identity: urgency alone rides the registered global job.
+  return rejectExtraSelectors(params, "easy-chat", {
+    "name",
+    "mapId",
+    "matrixMemberId",
+    "index",
+    "pageId",
+    "sceneKey",
+    "bankId",
+    "trainerSelector",
+    "ballSelector",
+  })
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
 local function checkPokedex(params)
   -- The selector-free pokedex demand carries no job, source, page, or
   -- map identity: urgency alone rides the registered global job.
@@ -541,6 +560,7 @@ local SELECTOR_CHECKS = {
   ["audio-bank"] = checkAudioBank,
   ["battle-scene"] = checkBattleScene,
   pokedex = checkPokedex,
+  ["easy-chat"] = checkEasyChat,
   ["battle-effect"] = checkBattleEffect,
   ["battle-presentation"] = checkBattlePresentation,
   ["battle-trainer-picture"] = checkBattleTrainerPicture,
@@ -588,6 +608,8 @@ function Worker:_invoke(params)
     return session:requestIconPage(params.pageId, urgency)
   elseif kind == "pokedex" then
     return session:requestJob("pokedex", "global", urgency)
+  elseif kind == "easy-chat" then
+    return session:requestJob("easy-chat", "global", urgency)
   elseif kind == "battle-scene" then
     return session:requestJob("battle-scene", params.sceneKey, urgency)
   elseif kind == "battle-effect" then
