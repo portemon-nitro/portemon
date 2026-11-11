@@ -12,6 +12,8 @@
 ---@field private _cursorReturnTicks integer
 ---@field private _returnPhase string?
 ---@field private _action integer
+---@field private _press { action: integer, ticks: integer, elapsed: integer }? active quantity confirm/cancel beat
+---@field private _arrowFlashes table<integer, integer> quantity arrow bounce elapsed ticks by arrow slot
 ---@field private _effect fun(sequence: string|integer)
 ---@field private _prompt YesNoPromptController
 ---@field private _promptPlacement { x: integer, y: integer, shape: string, initialSelection: string }
@@ -23,6 +25,10 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 local SOURCE_SOUND = { browseSelect = 1515, select = 1500, cancel = 1514, touchCancel = 1666 }
 local ROW_SELECTION_DELAY = 4
+-- Retail holds the pressed quantity button for a four-tick beat before
+-- leaving the panel: the timer counts down across four updates and the
+-- transition runs on the fifth.
+local QUANTITY_PRESS_TICKS = 4
 
 local function integer(value, minimum, maximum)
   return type(value) == "number" and value % 1 == 0 and value >= minimum and value <= maximum
@@ -63,6 +69,8 @@ function ApricornBoxController.new(opts)
     _effect = opts.effect,
     _prompt = prompt,
     _promptPlacement = promptPlacement,
+    _press = nil,
+    _arrowFlashes = {},
     _closed = false,
     _result = nil,
   }, ApricornBoxController)
@@ -83,10 +91,9 @@ function ApricornBoxController:_selectRow(index, touch)
     return
   end
   if self._mode == "browse" then
+    -- Retail view only moves the hand cursor; there is no USE/TASTE/CANCEL
+    -- menu in this mode.
     self:_play(touch and SOURCE_SOUND.browseSelect or SOURCE_SOUND.select)
-    self._phase = "actions"
-    self._cursorOffsetY = 6
-    self:_play(SOURCE_SOUND.select)
     return
   end
   self:_play(SOURCE_SOUND.select)
@@ -133,7 +140,8 @@ function ApricornBoxController:_openPrompt()
   self._prompt:open(self._promptPlacement)
 end
 
-local QUANTITY_STEP = { left = -1, right = 1, up = 10, down = -10 }
+-- Retail quantity keys: UP/DOWN step one, RIGHT/LEFT step ten.
+local QUANTITY_STEP = { left = -10, right = 10, up = 1, down = -1 }
 local QUANTITY_CONTROL_STEP = { [3] = 1, [4] = -1, [5] = 10, [6] = -10 }
 
 local function cycle(index, count, direction)
@@ -164,25 +172,63 @@ local function onNavigate(self, event)
     end
   elseif self._phase == "quantity" then
     adjustQuantity(self, QUANTITY_STEP[direction])
-  elseif direction == "up" or direction == "down" then
+  else
+    -- Apricorn columns: odd rows sit left, even rows sit right. Left and
+    -- right switch columns on the same visual row; up and down stay inside
+    -- the column and clamp at the edges instead of wrapping.
     local previous = self._selected
-    self._selected = cycle(previous, #self._keys, direction)
-    if self._selected ~= previous then
+    local selected = previous
+    if direction == "right" then
+      if selected % 2 == 1 then
+        selected = selected == 7 and 6 or selected + 1
+      end
+    elseif direction == "left" then
+      if selected % 2 == 0 then
+        selected = selected - 1
+      end
+    elseif direction == "up" then
+      if selected > 2 then
+        selected = selected - 2
+      end
+    elseif direction == "down" then
+      if selected % 2 == 1 then
+        if selected < 7 then
+          selected = selected + 2
+        end
+      else
+        if selected < 6 then
+          selected = selected + 2
+        end
+      end
+    end
+    if selected ~= previous then
+      self._selected = selected
       self:_play(SOURCE_SOUND.select)
     end
   end
+end
+
+-- Both quantity chrome buttons answer with the source select cue and hold
+-- their pressed art through the panel beat; arrows replay their bounce.
+local function pressQuantityButton(self, action)
+  if self._phase ~= "quantity" or self._press ~= nil then
+    return
+  end
+  assert(action == 1 or action == 2, "quantity chrome presses its confirm buttons")
+  self._press = { action = action, ticks = QUANTITY_PRESS_TICKS, elapsed = 0 }
+  self:_play(SOURCE_SOUND.select)
 end
 
 local function onQuantityControl(self, event)
   if self._phase ~= "quantity" then
     return
   end
-  if event.index == 1 then
-    self:_openPrompt()
-    self:_play(SOURCE_SOUND.select)
-  elseif event.index == 2 then
-    self:_play(SOURCE_SOUND.cancel)
+  if event.index == 1 or event.index == 2 then
+    pressQuantityButton(self, event.index)
   else
+    local slot = event.index - 2
+    assert(slot >= 1 and slot <= 4, "quantity arrows sit behind controls 3-6")
+    self._arrowFlashes[slot] = 0
     adjustQuantity(self, QUANTITY_CONTROL_STEP[event.index])
   end
 end
@@ -199,14 +245,19 @@ local function onConfirm(self)
   if self._phase == "browse" or self._phase == "rows" then
     self:_selectRow(self._selected, false)
   elseif self._phase == "quantity" then
-    self:_openPrompt()
-    self:_play(SOURCE_SOUND.select)
+    pressQuantityButton(self, 1)
   elseif self._phase == "actions" then
     playAndActivate(self)
   end
 end
 
 local function onCancel(self, event)
+  -- The B key mirrors the on-screen CANCEL button while quantity edits;
+  -- anywhere else it keeps its existing close or row-return behavior.
+  if self._phase == "quantity" then
+    pressQuantityButton(self, 2)
+    return
+  end
   self:_play(event.source == "touch" and SOURCE_SOUND.touchCancel or SOURCE_SOUND.cancel)
   if self._phase == "actions" then
     startRowReturn(self, self._mode == "browse" and "browse" or "rows")
@@ -262,10 +313,32 @@ function ApricornBoxController:updateFixed(uiInput)
     self._delay = self._delay - 1
     self._cursorOffsetY = math.min(6, self._cursorOffsetY + 2)
     if self._delay == 0 then
-      self._phase = "actions"
+      -- Kurt goes straight to the quantity panel; there is no intermediate
+      -- action menu in this mode.
+      self._phase = "quantity"
       self._cursorOffsetY = 6
       self:_play(SOURCE_SOUND.select)
     end
+  end
+  for slot, elapsed in pairs(self._arrowFlashes) do
+    self._arrowFlashes[slot] = elapsed + 1
+  end
+  -- The pressed button holds its art through the beat while input waits;
+  -- the transition runs once the beat elapses.
+  if self._press ~= nil then
+    if self._press.ticks == 0 then
+      local action = self._press.action
+      self._press = nil
+      if action == 1 then
+        self:_openPrompt()
+      else
+        self._phase = self._mode == "browse" and "browse" or "rows"
+      end
+      return
+    end
+    self._press.ticks = self._press.ticks - 1
+    self._press.elapsed = self._press.elapsed + 1
+    return
   end
   for _, event in ipairs(uiInput) do
     local handler = assert(EVENT_HANDLERS[event.type], "Box input supports source actions and pointer events")
@@ -286,12 +359,12 @@ function ApricornBoxController:status()
     assert(integer(quantity, 0, 99), "Apricorn stock is bounded by the service contract")
     rows[index] = { apricornKey = key, quantity = quantity }
   end
+  -- Sequence 0 is the close-button sprite, never the hand cursor: idle rows
+  -- and browse both draw the hand sequence.
   local cursorSequenceId = self._phase == "selection_delay" and 4
     or self._phase == "row_return_delay" and 4
     or (self._phase == "actions" or self._phase == "quantity" or self._phase == "confirm") and 5
-    or (self._phase == "rows" or self._phase == "browse") and self._cursorOffsetY ~= 0 and 3
-    or self._phase == "rows" and 3
-    or 0
+    or 3
   return {
     open = not self._closed,
     mode = self._mode,
@@ -305,6 +378,15 @@ function ApricornBoxController:status()
     confirmationPrompt = self._phase == "confirm" and self._prompt:status() or nil,
     cursorSequenceId = cursorSequenceId,
     cursorOffsetY = self._cursorOffsetY,
+    pressedAction = self._press and self._press.action or nil,
+    pressedElapsed = self._press and self._press.elapsed or nil,
+    arrowFlashes = (function()
+      local flashes = {}
+      for slot, elapsed in pairs(self._arrowFlashes) do
+        flashes[slot] = elapsed
+      end
+      return flashes
+    end)(),
   }
 end
 

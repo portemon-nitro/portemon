@@ -53,6 +53,61 @@ local function setWhite(graphics)
   graphics.setColor(1, 1, 1, 1)
 end
 
+local TEXT_LINE_HEIGHT = 16
+
+-- Retail chrome ink follows the decomp color arguments: the title uses
+-- MAKE_TEXT_COLOR(15,2,0) and the quantity buttons (15,3,0)/(15,5,0) from
+-- sApricornBoxConfirmButtonColors, all indexing the runtime field font
+-- palette, while CLOSE MAKE_TEXT_COLOR(1,2,0) indexes BG window palette 9
+-- (compiled into the manifest as closeInk). Headless fakes without a font
+-- palette fall back to these audited retail values. Entries stay in byte
+-- range: the palette shader normalizes by 255.
+local FALLBACK_INKS = {
+  title = { foreground = { r = 255, g = 255, b = 255 }, shadow = { r = 173, g = 189, b = 189 } },
+  ok = { foreground = { r = 255, g = 255, b = 255 }, shadow = { r = 239, g = 33, b = 16 } },
+  cancel = { foreground = { r = 255, g = 255, b = 255 }, shadow = { r = 41, g = 214, b = 25 } },
+}
+
+-- One font palette slot as byte-valued RGB, or nil when the borrowed text
+-- object carries no font palette (headless fakes fall back instead).
+---@param slot integer 0-based palette slot
+---@return { r: number, g: number, b: number }?
+function ApricornBoxRenderer:_fontSlot(slot)
+  local fontDef = self._text.fontDef
+  local palette = fontDef and fontDef.palette
+  local color = palette and palette[slot + 1]
+  if color == nil then
+    return nil
+  end
+  local r = assert(tonumber(color.r or color[1]))
+  local g = assert(tonumber(color.g or color[2]))
+  local b = assert(tonumber(color.b or color[3]))
+  if r <= 1 and g <= 1 and b <= 1 then
+    r, g, b = r * 255, g * 255, b * 255
+  end
+  return { r = r, g = g, b = b }
+end
+
+---@param foregroundSlot integer
+---@param shadowSlot integer
+---@param fallback { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number } }
+function ApricornBoxRenderer:_fontInk(foregroundSlot, shadowSlot, fallback)
+  return {
+    foreground = self:_fontSlot(foregroundSlot) or fallback.foreground,
+    shadow = self:_fontSlot(shadowSlot) or fallback.shadow,
+    background = { r = 0, g = 0, b = 0, a = 0 },
+  }
+end
+
+function ApricornBoxRenderer:_closeInk()
+  local ink = assert(self._manifest.closeInk, "the Box manifest carries its source close ink")
+  return {
+    foreground = assert(ink.foreground, "the close ink carries its foreground"),
+    shadow = assert(ink.shadow, "the close ink carries its shadow"),
+    background = { r = 0, g = 0, b = 0, a = 0 },
+  }
+end
+
 local function imageFor(self, path)
   local lease = self._leases[path]
   if lease == nil then
@@ -76,6 +131,10 @@ function ApricornBoxRenderer.new(opts)
   assert(type(graphics) == "table" and type(graphics.draw) == "function", "Apricorn Box rendering needs love.graphics")
   local text = assert(opts.text, "Apricorn Box rendering borrows the generated field font")
   assert(type(text.drawText) == "function", "Apricorn Box rendering borrows text drawing")
+  assert(
+    type(text.drawTextWithPalette) == "function",
+    "Apricorn Box rendering borrows paletted text drawing for its chrome row"
+  )
   local uiManifest = assert(opts.uiManifest, "Apricorn Box rendering borrows generated prompt art")
   local pool = assert(opts.imagePool, "Apricorn Box renderer borrows its shared image owner")
   assert(
@@ -107,6 +166,230 @@ function ApricornBoxRenderer.new(opts)
   return self
 end
 
+-- Draws source message lines at a tile window origin, one text row per line.
+---@param value string
+---@param window { x: integer, y: integer }
+function ApricornBoxRenderer:_drawMultiline(value, window)
+  if value == "" then
+    return
+  end
+  assert(type(value) == "string", "Box windows print source message text")
+  local y = window.y * 8
+  for line in (value .. "\n"):gmatch("(.-)\n") do
+    setWhite(self._graphics)
+    self._text:drawText(line, window.x * 8, y)
+    y = y + TEXT_LINE_HEIGHT
+  end
+end
+
+-- The lower header carries the mode instruction: Kurt phases reuse the flow
+-- wording while browse prints its own collected header.
+---@param view table<string, unknown>
+function ApricornBoxRenderer:_drawHeader(view)
+  local header = view.flowMessage or view.headerText
+  assert(type(header) == "string", "the lower pane carries the mode header")
+  ---@cast header string
+  local window = assert(self._manifest.headerWindow, "the Box manifest carries its source header window")
+  self:_drawMultiline(header, window)
+end
+
+-- The lower chrome row centers the source title and close labels in their
+-- windows over the background bar and button.
+---@param view table<string, unknown>
+function ApricornBoxRenderer:_drawChrome(view)
+  local title = assert(view.titleText, "the lower pane carries the source title")
+  local close = assert(view.closeText, "the lower pane carries the source close label")
+  local titleWindow = assert(self._manifest.titleWindow, "the Box manifest carries its source title window")
+  local closeWindow = assert(self._manifest.closeWindow, "the Box manifest carries its source close window")
+  self:_drawCloseButton(view)
+  local titleX = titleWindow.x * 8 + math.floor((titleWindow.width * 8 - self._text:textWidth(title)) / 2)
+  local closeX = closeWindow.x * 8 + math.floor((closeWindow.width * 8 - self._text:textWidth(close)) / 2)
+  setWhite(self._graphics)
+  self._text:drawTextWithPalette(title, titleX, titleWindow.y * 8, self:_fontInk(15, 2, FALLBACK_INKS.title))
+  setWhite(self._graphics)
+  self._text:drawTextWithPalette(close, closeX, closeWindow.y * 8, self:_closeInk())
+end
+
+-- The retail close button is an always-drawn sprite behind its label at the
+-- source template anchor. It rests on sequence 0 and dims to sequence 2
+-- while the apricorns hold focus; sequence 1 is the brief close press.
+---@param view table<string, unknown>
+function ApricornBoxRenderer:_drawCloseButton(view)
+  local anchor = assert(self._manifest.closeButton, "the Box manifest carries its source close anchor")
+  local cursor = assert(self._manifest.selectionCursor, "the Box manifest carries its source cursor art")
+  local phase = view.phase
+  local sequenceId = (phase == "browse" or phase == "rows") and 0 or 2
+  local state = assert(cursor.states[sequenceId], "the source close sequence is compiled")
+  local tick = assert(view.animationTick, "Box presentation carries its fixed animation tick")
+  local elapsed = tick % state.totalTicks
+  local frame = state.frames[#state.frames]
+  for _, candidate in ipairs(state.frames) do
+    if elapsed < candidate.durationTicks then
+      frame = candidate
+      break
+    end
+    elapsed = elapsed - candidate.durationTicks
+  end
+  local lease = imageFor(self, frame.image)
+  setWhite(self._graphics)
+  ImageSampling.draw(self._graphics, lease, nil, anchor.x + frame.offsetX, anchor.y + frame.offsetY)
+end
+
+---@param row table<string, unknown> compiled row icon geometry
+---@param tick integer fixed animation tick
+---@param dimmed boolean? translucent pass behind overlay chrome
+function ApricornBoxRenderer:_drawRowSprite(row, tick, dimmed)
+  local icon = assert(row.icon, "Box rows carry source icon geometry")
+  local elapsed = tick % icon.totalTicks
+  local frame = icon.frames[#icon.frames]
+  for _, candidate in ipairs(icon.frames) do
+    if elapsed < candidate.durationTicks then
+      frame = candidate
+      break
+    end
+    elapsed = elapsed - candidate.durationTicks
+  end
+  local sprite = imageFor(self, frame.image)
+  if dimmed then
+    self._graphics.setColor(1, 1, 1, 0.5)
+  else
+    setWhite(self._graphics)
+  end
+  -- Slot centers carry the sprite anchor while compiled frame offsets
+  -- already encode centering, so the draw lands at anchor plus offset.
+  ImageSampling.draw(self._graphics, sprite, nil, icon.x + frame.offsetX, icon.y + frame.offsetY)
+end
+
+-- One quantity chrome sprite at its source anchor: its resting frame without
+-- playback, or the frame an elapsed bounce or press has reached. Forward
+-- playback holds its last frame once the elapsed ticks run past the total.
+---@param sequenceId integer compiled cursor-resource sequence
+---@param x integer source anchor x
+---@param y integer source anchor y
+---@param elapsed integer? playback ticks since the press or touch, absent for rest
+function ApricornBoxRenderer:_drawChromeSprite(sequenceId, x, y, elapsed)
+  local cursor = assert(self._manifest.selectionCursor, "the Box manifest carries its source cursor art")
+  local state = assert(cursor.states[sequenceId], "quantity chrome sequence is compiled")
+  local frame = state.frames[#state.frames]
+  if elapsed == nil then
+    frame = assert(state.frames[1], "quantity chrome shows its resting frame")
+  else
+    local remaining = elapsed
+    for _, candidate in ipairs(state.frames) do
+      if remaining < candidate.durationTicks then
+        frame = candidate
+        break
+      end
+      remaining = remaining - candidate.durationTicks
+    end
+  end
+  local lease = imageFor(self, frame.image)
+  setWhite(self._graphics)
+  ImageSampling.draw(self._graphics, lease, nil, x + frame.offsetX, y + frame.offsetY)
+end
+
+-- The Kurt quantity overlay: the panel, the dimmed stock chrome showing
+-- through it, and the name, digits, message, and button chrome above it.
+---@param view table<string, unknown>
+---@param rows table<string, unknown>[] stock snapshots
+---@param tick integer fixed animation tick
+function ApricornBoxRenderer:_drawQuantity(view, rows, tick)
+  local graphics = self._graphics
+  local layout = assert(self._manifest.quantityLayout, "the Box manifest carries its quantity layout")
+  local panel = assert(self._manifest.quantityPanel, "the Box manifest carries its quantity panel")
+  -- The overlay dims the stock chrome exactly like the retail focus mode.
+  -- MAIN_1 carries the panel above the priority-2 stock sprites, so the
+  -- dimmed rows and cursor draw first and the panel occludes them.
+  for index, row in ipairs(self._manifest.rows) do
+    local stock = assert(rows[index], "stock snapshots preserve the canonical row order")
+    if stock.quantity ~= 0 then
+      self:_drawRowSprite(row, tick, true)
+    end
+  end
+  local selectedIndex = assert(view.selectedIndex, "Box presentation carries selected row")
+  assert(rows[selectedIndex], "selected stock belongs to one canonical row")
+  self:_drawCursor(view, assert(self._manifest.rows[selectedIndex], "selected row has source icon geometry"), tick)
+  local panelLease = imageFor(self, panel.image)
+  setWhite(graphics)
+  ImageSampling.draw(graphics, panelLease, nil, 0, 0)
+  setWhite(graphics)
+  local name = assert(view.selectedName, "the quantity panel names its selected Apricorn")
+  self._text:drawText(name, layout.name.x, layout.name.y)
+  local quantity = assert(view.quantity, "the quantity panel carries its edited quantity")
+  local maximum = assert(view.maximum, "the quantity panel carries its selected stock")
+  assert(quantity >= 1 and quantity <= maximum, "the edited quantity stays inside its selected stock")
+  setWhite(graphics)
+  self._text:drawText(tostring(quantity % 10), layout.unitsDigit.x, layout.unitsDigit.y)
+  if maximum >= 10 then
+    setWhite(graphics)
+    self._text:drawText(tostring(math.floor(quantity / 10)), layout.tensDigit.x, layout.tensDigit.y)
+  end
+  local panelMessage = assert(view.panelMessage, "the quantity panel carries its message line")
+  if panelMessage ~= "" then
+    setWhite(graphics)
+    self._text:drawText(panelMessage, layout.extraMessage.x, layout.extraMessage.y)
+  end
+  local kurtMenu =
+    assert(self._manifest.controls.actions.kurtSelect, "the quantity confirm labels use the Kurt action menu")
+  local okLabel = assert(view.actionLabels[kurtMenu.messageIds[1]], "the panel labels its confirm button")
+  local closeLabel = assert(view.actionLabels[kurtMenu.messageIds[2]], "the panel labels its cancel button")
+  -- The button art sits behind its labels, matching the window above sprite order.
+  local pressed = view.pressedAction
+  local okSprite = layout.buttonOkSprite
+  local closeSprite = layout.buttonCloseSprite
+  self:_drawChromeSprite(
+    pressed == 1 and okSprite.pressedSequence or okSprite.sequence,
+    okSprite.x,
+    okSprite.y,
+    pressed == 1 and view.pressedElapsed or nil
+  )
+  self:_drawChromeSprite(
+    pressed == 2 and closeSprite.pressedSequence or closeSprite.sequence,
+    closeSprite.x,
+    closeSprite.y,
+    pressed == 2 and view.pressedElapsed or nil
+  )
+  local okX = layout.confirmOk.x + math.floor((layout.confirmOk.width - self._text:textWidth(okLabel)) / 2)
+  local closeX = layout.confirmClose.x + math.floor((layout.confirmClose.width - self._text:textWidth(closeLabel)) / 2)
+  setWhite(graphics)
+  self._text:drawTextWithPalette(okLabel, okX, layout.confirmOk.y, self:_fontInk(15, 3, FALLBACK_INKS.ok))
+  setWhite(graphics)
+  self._text:drawTextWithPalette(closeLabel, closeX, layout.confirmClose.y, self:_fontInk(15, 5, FALLBACK_INKS.cancel))
+  local flashes = assert(view.arrowFlashes, "the quantity panel carries its arrow bounce state")
+  for slot, arrow in ipairs(assert(layout.arrows, "the quantity panel carries its arrow anchors")) do
+    self:_drawChromeSprite(arrow.sequence, arrow.x, arrow.y, flashes[slot])
+  end
+end
+
+---@param view table<string, unknown>
+---@param selectedRow table<string, unknown> compiled selected row geometry
+---@param tick integer fixed animation tick
+function ApricornBoxRenderer:_drawCursor(view, selectedRow, tick)
+  local cursor = assert(self._manifest.selectionCursor, "the Box manifest carries its source cursor art")
+  local cursorState = assert(cursor.states[view.cursorSequenceId], "source cursor sequence is compiled")
+  local cursorElapsed = tick % cursorState.totalTicks
+  local cursorFrame = cursorState.frames[#cursorState.frames]
+  for _, candidate in ipairs(cursorState.frames) do
+    if cursorElapsed < candidate.durationTicks then
+      cursorFrame = candidate
+      break
+    end
+    cursorElapsed = cursorElapsed - candidate.durationTicks
+  end
+  local cursorLease = imageFor(self, cursorFrame.image)
+  setWhite(self._graphics)
+  -- The retail cursor hovers up and left of the slot center; the fixed hover
+  -- offset comes from ApricornBoxScreen_UpdateCursor while the tick offset
+  -- replays the hand lift.
+  ImageSampling.draw(
+    self._graphics,
+    cursorLease,
+    nil,
+    selectedRow.icon.x + 4 + cursorFrame.offsetX,
+    selectedRow.icon.y - 16 + cursorFrame.offsetY + view.cursorOffsetY
+  )
+end
+
 ---@param view table<string, unknown>
 ---@param pane { id: string, placement: table<string, unknown> }
 function ApricornBoxRenderer:drawPane(view, pane)
@@ -119,74 +402,38 @@ function ApricornBoxRenderer:drawPane(view, pane)
   local graphics = self._graphics
   setWhite(graphics)
   ImageSampling.draw(graphics, paneLease, nil, 0, 0)
+  -- Retail splits the chrome across the two displays: the upper screen ends
+  -- with the selected description while the lower touchscreen carries the
+  -- header, the stock rows, and the title/close chrome.
   if pane.id ~= "lower" then
+    self:_drawMultiline(
+      assert(view.descriptionText, "the upper pane carries the selected description"),
+      self._manifest.selectedDetail.window
+    )
     return
   end
+  self:_drawHeader(view)
+  self:_drawChrome(view)
   local rows = assert(view.rows, "Box presentation carries the seven stock rows")
   local tick = assert(view.animationTick, "Box presentation carries its fixed animation tick")
   for index, row in ipairs(manifest.rows) do
     local stock = assert(rows[index], "stock snapshots preserve the canonical row order")
-    local icon = row.icon
-    local elapsed = tick % icon.totalTicks
-    local frame
-    for _, candidate in ipairs(icon.frames) do
-      if elapsed < candidate.durationTicks then
-        frame = candidate
-        break
-      end
-      elapsed = elapsed - candidate.durationTicks
+    if stock.quantity ~= 0 then
+      self:_drawRowSprite(row, tick)
+      local count = tostring(stock.quantity)
+      local countWidth = self._text:textWidth(count)
+      local countX = row.quantity.window.x * 8 + (row.quantity.textWidth - countWidth) / 2
+      setWhite(graphics)
+      self._text:drawText(count, countX, row.quantity.window.y * 8)
     end
-    local selected = frame or icon.frames[#icon.frames]
-    local sprite = imageFor(self, selected.image)
-    setWhite(graphics)
-    ImageSampling.draw(
-      graphics,
-      sprite,
-      nil,
-      icon.x - selected.width / 2 + selected.offsetX,
-      icon.y - selected.height / 2 + selected.offsetY
-    )
-    local count = tostring(stock.quantity)
-    local countWidth = self._text:textWidth(count)
-    local countX = row.quantity.window.x * 8 + (row.quantity.textWidth - countWidth) / 2
-    setWhite(graphics)
-    self._text:drawText(count, countX, row.quantity.window.y * 8)
   end
   local selectedIndex = assert(view.selectedIndex, "Box presentation carries selected row")
-  local selected = assert(rows[selectedIndex], "selected stock belongs to one canonical row")
+  assert(rows[selectedIndex], "selected stock belongs to one canonical row")
   local selectedRow = assert(manifest.rows[selectedIndex], "selected row has source icon geometry")
-  local cursor = manifest.selectionCursor
-  local cursorState = assert(cursor.states[view.cursorSequenceId], "source cursor sequence is compiled")
-  local cursorElapsed = tick % cursorState.totalTicks
-  local cursorFrame
-  for _, candidate in ipairs(cursorState.frames) do
-    if cursorElapsed < candidate.durationTicks then
-      cursorFrame = candidate
-      break
-    end
-    cursorElapsed = cursorElapsed - candidate.durationTicks
+  self:_drawCursor(view, selectedRow, tick)
+  if view.phase == "quantity" then
+    self:_drawQuantity(view, rows, tick)
   end
-  local cursorVisible = cursorFrame or cursorState.frames[#cursorState.frames]
-  local cursorLease = imageFor(self, cursorVisible.image)
-  setWhite(graphics)
-  ImageSampling.draw(
-    graphics,
-    cursorLease,
-    nil,
-    selectedRow.icon.x - cursorVisible.width / 2 + cursorVisible.offsetX,
-    selectedRow.icon.y - cursorVisible.height / 2 + cursorVisible.offsetY + view.cursorOffsetY
-  )
-  local detail = self._manifest.selectedDetail.window
-  local name = assert(view.selectedName, "selected detail uses its source message")
-  local quantity = view.mode == "kurt_select" and view.quantity or selected.quantity
-  local label = name .. " " .. tostring(quantity)
-  setWhite(graphics)
-  local detailY = detail.y * 8
-  if view.flowMessage ~= nil then
-    self._text:drawText(view.flowMessage, detail.x * 8, detailY)
-    detailY = detailY + 16
-  end
-  self._text:drawText(label, detail.x * 8, detailY)
   if view.phase == "confirm" then
     self._promptRenderer:draw(assert(view.confirmationPrompt, "confirmation renders its active prompt status"))
   end

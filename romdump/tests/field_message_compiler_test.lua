@@ -46,6 +46,9 @@ local function sourceReferenceBankIds()
   ids[435] = true
   -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
   ids[21] = true
+  -- The Kurt confirm header pluralizes through this bank; see
+  -- FieldMessageCompiler's explicit plural bank set.
+  ids[224] = true
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   ids[203] = true
@@ -223,6 +226,9 @@ function T.source_references_form_one_sorted_bank_set()
   expected[435] = true
   -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
   expected[21] = true
+  -- The Kurt confirm header pluralizes through this bank; see
+  -- FieldMessageCompiler's explicit plural bank set.
+  expected[224] = true
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   expected[203] = true

@@ -170,6 +170,23 @@ end
 
 function T.compiler_emits_source_panes_rows_and_the_action_menu_atlas(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
+  local memberByRole = {}
+  for _, dependency in ipairs(bundle.provenance.dependencies) do
+    if type(dependency.role) == "string" and dependency.role:find("-", 1, true) ~= nil then
+      local memberId = tonumber(string.match(dependency.name, ":member:(%d+)$"))
+      if memberId ~= nil and (dependency.role == "upper-palette" or dependency.role == "upper-char" or dependency.role == "upper-screen" or dependency.role == "lower-palette" or dependency.role == "lower-char" or dependency.role == "lower-screen") then
+        memberByRole[dependency.role] = memberId
+      end
+    end
+  end
+  Assert.deepEqual(memberByRole, {
+    ["upper-palette"] = 0,
+    ["upper-char"] = 1,
+    ["upper-screen"] = 2,
+    ["lower-palette"] = 3,
+    ["lower-char"] = 4,
+    ["lower-screen"] = 5,
+  }, "the display panes follow the retail SUB/MAIN member mapping")
   Assert.equal(bundle.manifest.upper.width, 256)
   Assert.equal(bundle.manifest.upper.height, 192)
   Assert.equal(bundle.manifest.lower.width, 256)
@@ -234,9 +251,13 @@ function T.compiler_emits_source_panes_rows_and_the_action_menu_atlas(romFs, ver
       "the source row uses its matching sprite sequence"
     )
   end
-  for _, sequenceId in ipairs({ 0, 3, 4, 5 }) do
+  for _, sequenceId in ipairs({ 0, 1, 2, 3, 4, 5 }) do
     Assert.isTrue(#bundle.manifest.selectionCursor.states[sequenceId].frames > 0, "source cursor state compiles")
   end
+  Assert.deepEqual(bundle.manifest.closeInk, {
+    foreground = { r = 255, g = 255, b = 255 },
+    shadow = { r = 115, g = 115, b = 115 },
+  }, "CLOSE ink is the lower window palette 9 white/grey pair")
   Assert.equal(bundle.manifest.actionMenu.width, 216)
   Assert.equal(bundle.manifest.actionMenu.height, 8)
   Assert.equal(bundle.manifest.actionMenu.charOffset, 31)
@@ -266,13 +287,13 @@ function T.source_member_dependencies_are_narrow_and_ordered(romFs, versionId)
   for _, memberId in ipairs({ 0, 1 }) do
     Assert.isTrue(names["sbox_gra:member:" .. memberId], "the native list-menu NCLR/NCGR pair is hashed")
   end
-  for _, sequenceId in ipairs({ 3, 4, 5 }) do
+  for _, sequenceId in ipairs({ 0, 1, 2, 3, 4, 5 }) do
     Assert.isTrue(
       names["apricorn_box_resdat:selection-cursor:header:76:animation:" .. sequenceId],
       "visible cursor transition sequence " .. sequenceId .. " is hashed"
     )
   end
-  Assert.isNil(names["apricorn_box_ui:member:6"], "the unused screen member is excluded")
+  Assert.isTrue(names["apricorn_box_ui:member:6"], "the Kurt quantity overlay screen is hashed")
   Assert.equal(ApricornBoxSources.backgroundArchive.narcId, 220)
   Assert.equal(ApricornBoxSources.resdatArchive.narcId, 175)
   Assert.equal(ApricornBoxSources.actionMenuArchive.narcId, 165)

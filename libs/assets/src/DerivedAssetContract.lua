@@ -563,7 +563,7 @@ DerivedAssetContract.moveIcons = {
 
 DerivedAssetContract.apricornBox = {
   cacheFormat = "apricorn-box-cache-v2",
-  schema = "g4-apricorn-box-assets-v3",
+  schema = "g4-apricorn-box-assets-v6",
 }
 
 -- The party class carries the source-independent native party

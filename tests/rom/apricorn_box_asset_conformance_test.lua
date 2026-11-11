@@ -67,9 +67,16 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
     end
   end
   Assert.isTrue(menuVisible, "NARC165 provides visible native rounded list-menu art")
+  Assert.equal(bundle.manifest.pluralBankId, 224, "the confirm plural names resolve through bank 224")
+  local ROW_ITEM_IDS = { 485, 486, 487, 488, 489, 490, 491 }
   for rowIndex, row in ipairs(bundle.manifest.rows) do
     Assert.equal(row.apricornKey, ROW_KEYS[rowIndex], "visible row has its native Apricorn identity")
     Assert.equal(row.nameMessageId, rowIndex + 6, "visible row points to its native source label")
+    Assert.equal(
+      row.itemId,
+      ROW_ITEM_IDS[rowIndex],
+      "visible row carries its native item identity for plural lookup"
+    )
     Assert.equal(messageBundle.bank.messages[row.nameMessageId].text, ROW_LABELS[rowIndex])
     local source = ApricornBoxSources.geometry.rowIcons[rowIndex]
     Assert.equal(row.icon.x, source.x)
@@ -88,10 +95,66 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
     Assert.equal(row.icon.playMode, "forward_loop")
     Assert.isTrue(#row.icon.frames > 0, "source animation " .. source.animation .. " contains frames")
     for _, frame in ipairs(row.icon.frames) do
-      local width, height = PngReader.rgba(assert(bundle.assets[frame.image]))
+      local width, height, rgba = PngReader.rgba(assert(bundle.assets[frame.image]))
       Assert.equal(width, frame.width)
       Assert.equal(height, frame.height)
       Assert.isTrue(width > 0 and height > 0, "sprite frame has visible dimensions")
+    end
+    -- Each row keeps its source cell palette: at least one sprite pixel
+    -- must be chromatic, never the grayscale chrome ramp. Exact palette
+    -- values stay with the compiler; here any saturated pixel proves the
+    -- cell tint survived compilation.
+    local tinted = false
+    for _, frame in ipairs(row.icon.frames) do
+      local _, _, rgba = PngReader.rgba(assert(bundle.assets[frame.image]))
+      for pixel = 1, #rgba - 3, 4 do
+        local red, green, blue, alpha = string.byte(rgba, pixel, pixel + 3)
+        if alpha > 0 then
+          local spread = math.max(red, green, blue) - math.min(red, green, blue)
+          if spread >= 48 then
+            tinted = true
+            break
+          end
+        end
+      end
+      if tinted then
+        break
+      end
+    end
+    Assert.isTrue(tinted, "row " .. rowIndex .. " keeps its source cell palette tint")
+  end
+  local panel = assert(bundle.manifest.quantityPanel, "the Kurt quantity panel is compiled")
+  local panelWidth, panelHeight, panelRgba = PngReader.rgba(assert(bundle.assets[panel.image]))
+  Assert.equal(panelWidth, 256, "the quantity panel covers one native display")
+  Assert.equal(panelHeight, 192, "the quantity panel crops to the visible display")
+  Assert.equal(panel.width, panelWidth)
+  Assert.equal(panel.height, panelHeight)
+  local panelVisible = false
+  for alpha = 4, #panelRgba, 4 do
+    if string.byte(panelRgba, alpha) > 0 then
+      panelVisible = true
+      break
+    end
+  end
+  Assert.isTrue(panelVisible, "NARC 220 member 6 carries the visible quantity panel")
+  for _, sequenceId in ipairs({ 24, 25, 26, 27, 28, 29, 30, 31 }) do
+    local state = assert(
+      bundle.manifest.selectionCursor.states[sequenceId],
+      "quantity chrome sequence " .. sequenceId .. " is compiled"
+    )
+    Assert.isTrue(#state.frames > 0, "quantity chrome sequence " .. sequenceId .. " contains frames")
+    for _, frame in ipairs(state.frames) do
+      local width, height, rgba = PngReader.rgba(assert(bundle.assets[frame.image]))
+      Assert.equal(width, frame.width)
+      Assert.equal(height, frame.height)
+      local frameVisible = false
+      for alpha = 4, #rgba, 4 do
+        if string.byte(rgba, alpha) > 0 then
+          frameVisible = true
+          break
+        end
+      end
+      Assert.isTrue(frameVisible, "quantity chrome sequence " .. sequenceId .. " has visible pixels")
     end
   end
   local cursor = bundle.manifest.selectionCursor

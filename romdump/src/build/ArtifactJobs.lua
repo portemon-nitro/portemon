@@ -669,7 +669,9 @@ end
 
 local function dependenciesApricornBox(key)
   assert(key == "global", "Apricorn Box family only has the global job")
-  return { { kind = "message-bank", key = "21" } }, true
+  -- Labels resolve through bank 21 while the confirm plural names resolve
+  -- through the item plural bank.
+  return { { kind = "message-bank", key = "21" }, { kind = "message-bank", key = "224" } }, true
 end
 
 local function dependenciesParty(key, plans)

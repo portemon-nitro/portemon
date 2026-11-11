@@ -42,6 +42,7 @@ function ApricornBoxAssetCache.referencedPaths(manifest)
     manifest.upper.image,
     manifest.lower.image,
     manifest.actionMenu.image,
+    manifest.quantityPanel.image,
     manifest.selectionCursor.image,
   }
   for _, sequence in pairs(manifest.selectionCursor.states) do

@@ -69,10 +69,14 @@ function T.tests.kurt_selection_is_bounded_and_does_not_spend_stock()
   for _ = 1, 4 do
     controller:updateFixed({})
   end
-  Assert.equal(controller:status().phase, "actions")
+  Assert.equal(controller:status().phase, "quantity")
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
   controller:updateFixed({ { type = "confirm" } })
-  controller:updateFixed({ { type = "navigate", direction = "right" } })
-  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:status().phase, "quantity", "the OK press holds its beat")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(controller:status().phase, "confirm")
   controller:updateFixed({ { type = "confirm" } })
   for _ = 1, 9 do
     controller:updateFixed({})
@@ -99,8 +103,13 @@ function T.tests.source_touch_row_selects_the_matching_semantic_apricorn()
   for _ = 1, 4 do
     controller:updateFixed({})
   end
+  Assert.equal(controller:status().phase, "quantity")
   controller:updateFixed({ { type = "confirm" } })
-  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:status().phase, "quantity", "the OK press holds its beat")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(controller:status().phase, "confirm")
   controller:updateFixed({ { type = "confirm" } })
   for _ = 1, 9 do
     controller:updateFixed({})
@@ -129,13 +138,15 @@ function T.tests.kurt_row_waits_then_adjusts_quantity_and_requires_confirmation(
   end
   Assert.equal(controller:status().phase, "selection_delay")
   controller:updateFixed({})
-  Assert.equal(controller:status().phase, "actions")
-  Assert.equal(controller:status().cursorSequenceId, 5)
-  controller:updateFixed({ { type = "confirm" } })
   Assert.equal(controller:status().phase, "quantity")
-  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(controller:status().cursorSequenceId, 5)
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
   Assert.equal(controller:status().quantity, 2)
   controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:status().phase, "quantity", "the OK press holds its beat")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
   Assert.equal(controller:status().phase, "confirm")
   Assert.isNil(controller:takeResult(), "quantity selection waits for the yes/no decision")
   controller:updateFixed({ { type = "confirm" } })
@@ -147,7 +158,7 @@ function T.tests.kurt_row_waits_then_adjusts_quantity_and_requires_confirmation(
   Assert.equal(result.selected.quantity, 2)
   Assert.equal(
     table.concat(sounds, ","),
-    "1500,1500,1500,1500,1500,SEQ_SE_DP_BUTTON9",
+    "1500,1500,1500,1500,SEQ_SE_DP_BUTTON9",
     "the source prompt owns its own confirmation sound"
   )
   Assert.equal(service:capture().apricorns.WHT_APRICORN, 4, "confirmation never spends stock")
@@ -165,7 +176,10 @@ function T.tests.kurt_confirmation_cancel_returns_to_quantity_without_result()
     controller:updateFixed({})
   end
   controller:updateFixed({ { type = "confirm" } })
-  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:status().phase, "quantity", "the OK press holds its beat")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
   Assert.equal(controller:status().phase, "confirm")
   controller:updateFixed({ { type = "cancel" } })
   for _ = 1, 9 do
@@ -190,31 +204,9 @@ function T.tests.browse_row_navigation_and_touch_produce_source_feedback()
   Assert.equal(controller:status().selectedIndex, 1)
   Assert.equal(
     table.concat(sounds, ","),
-    "1500,1515,1500",
-    "navigation, row selection, and list open use their source cues"
+    "1500,1515",
+    "navigation and row selection use their source cues"
   )
-end
-
-function T.tests.browse_action_menu_disables_use_and_taste_and_starts_on_cancel()
-  local service = serviceWith({ RED_APRICORN = 4 })
-  local controller = newController({ mode = "browse", service = service, apricornKeys = KEYS, effect = silentEffect })
-  controller:updateFixed({ { type = "confirm" } })
-  local status = controller:status()
-  Assert.deepEqual(status.actionsEnabled, { false, false, true })
-  Assert.equal(status.selectedAction, 3, "browse opens on its only implemented action")
-  controller:updateFixed({ { type = "action_control", index = 1 } })
-  Assert.equal(controller:status().phase, "actions", "stale USE activation leaves the menu open")
-  Assert.isNil(controller:takeResult(), "disabled USE cannot publish a selected result")
-  controller:updateFixed({ { type = "action_control", index = 2 } })
-  Assert.equal(controller:status().phase, "actions", "disabled TASTE activation leaves the menu open")
-  controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(controller:status().selectedAction, 3, "navigation cannot focus disabled entries")
-  controller:updateFixed({ { type = "confirm" } })
-  for _ = 1, 4 do
-    controller:updateFixed({})
-  end
-  Assert.equal(controller:status().phase, "browse", "enabled CANCEL returns to the row list")
-  Assert.equal(service:capture().apricorns.RED_APRICORN, 4, "browse actions never consume stock")
 end
 
 function T.tests.confirmation_owns_input_and_publishes_yes_after_prompt_blink()
@@ -225,9 +217,11 @@ function T.tests.confirmation_owns_input_and_publishes_yes_after_prompt_blink()
   for _ = 1, 4 do
     controller:updateFixed({})
   end
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
   controller:updateFixed({ { type = "confirm" } })
-  controller:updateFixed({ { type = "navigate", direction = "right" } })
-  controller:updateFixed({ { type = "confirm" } })
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
   Assert.equal(controller:status().phase, "confirm")
   Assert.equal(controller:status().quantity, 2)
   local prompt = controller:status().confirmationPrompt
@@ -250,6 +244,105 @@ function T.tests.confirmation_owns_input_and_publishes_yes_after_prompt_blink()
   Assert.equal(service:capture().apricorns.BLU_APRICORN, 3, "choice presentation never spends stock")
 end
 
+function T.tests.kurt_quantity_ok_press_holds_its_pressed_frame_before_confirm()
+  local controller = newController({
+    mode = "kurt_select",
+    service = serviceWith({ WHT_APRICORN = 4 }),
+    apricornKeys = KEYS,
+    effect = silentEffect,
+  })
+  controller:updateFixed({ { type = "touch_row", index = 6 } })
+  for _ = 1, 4 do
+    controller:updateFixed({})
+  end
+  Assert.equal(controller:status().phase, "quantity")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:status().phase, "quantity", "the OK press holds quantity for its beat")
+  Assert.equal(controller:status().pressedAction, 1, "the OK button shows pressed")
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(controller:status().quantity, 1, "edits wait out the pressed beat")
+  for _ = 1, 3 do
+    controller:updateFixed({})
+    Assert.equal(controller:status().phase, "quantity")
+    Assert.equal(controller:status().pressedAction, 1)
+  end
+  controller:updateFixed({})
+  Assert.equal(controller:status().phase, "confirm", "the beat releases into confirmation")
+  Assert.isNil(controller:status().pressedAction)
+  Assert.isNil(controller:takeResult(), "confirmation still waits for the prompt decision")
+end
+
+function T.tests.kurt_quantity_cancel_press_returns_to_rows_after_its_beat()
+  local sounds = {}
+  local controller = newController({
+    mode = "kurt_select",
+    service = serviceWith({ WHT_APRICORN = 4 }),
+    apricornKeys = KEYS,
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "touch_row", index = 6 } })
+  for _ = 1, 4 do
+    controller:updateFixed({})
+  end
+  controller:updateFixed({ { type = "quantity_control", index = 2 } })
+  Assert.equal(controller:status().phase, "quantity", "the CANCEL press holds quantity for its beat")
+  Assert.equal(controller:status().pressedAction, 2, "the CANCEL button shows pressed")
+  Assert.equal(sounds[#sounds], 1500, "the CANCEL button uses the source select cue")
+  for _ = 1, 4 do
+    controller:updateFixed({})
+    Assert.equal(controller:status().phase, "quantity")
+  end
+  controller:updateFixed({})
+  Assert.equal(controller:status().phase, "rows", "the beat releases back to row selection")
+  Assert.isNil(controller:status().pressedAction)
+  Assert.isNil(controller:takeResult(), "canceling quantity publishes no selection")
+end
+
+function T.tests.kurt_quantity_b_key_mirrors_the_cancel_button()
+  local controller = newController({
+    mode = "kurt_select",
+    service = serviceWith({ WHT_APRICORN = 4 }),
+    apricornKeys = KEYS,
+    effect = silentEffect,
+  })
+  controller:updateFixed({ { type = "touch_row", index = 6 } })
+  for _ = 1, 4 do
+    controller:updateFixed({})
+  end
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(controller:status().phase, "quantity", "B mirrors the CANCEL button beat")
+  Assert.equal(controller:status().pressedAction, 2)
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(controller:status().phase, "rows")
+end
+
+function T.tests.quantity_arrow_touch_replays_its_bounce()
+  local controller = newController({
+    mode = "kurt_select",
+    service = serviceWith({ WHT_APRICORN = 4 }),
+    apricornKeys = KEYS,
+    effect = silentEffect,
+  })
+  controller:updateFixed({ { type = "touch_row", index = 6 } })
+  for _ = 1, 4 do
+    controller:updateFixed({})
+  end
+  controller:updateFixed({ { type = "quantity_control", index = 4 } })
+  Assert.deepEqual(
+    controller:status().arrowFlashes,
+    { [2] = 0 },
+    "the touched arrow restarts its bounce"
+  )
+  controller:updateFixed({})
+  controller:updateFixed({})
+  Assert.equal(controller:status().arrowFlashes[2], 2, "the bounce advances on fixed ticks")
+  Assert.isNil(controller:status().arrowFlashes[1], "untouched arrows stay on their resting frame")
+end
+
 function T.tests.prompt_no_returns_to_quantity_with_the_same_selection()
   local controller = newController({
     mode = "kurt_select",
@@ -261,8 +354,12 @@ function T.tests.prompt_no_returns_to_quantity_with_the_same_selection()
   for _ = 1, 4 do
     controller:updateFixed({})
   end
-  controller:updateFixed({ { type = "confirm" } })
-  controller:updateFixed({ { type = "navigate", direction = "right" }, { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "up" }, { type = "confirm" } })
+  Assert.equal(controller:status().phase, "quantity", "the OK press holds its beat")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(controller:status().phase, "confirm")
   controller:updateFixed({ { type = "pointer_down", x = 150, y = 142 } })
   for _ = 1, 9 do
     controller:updateFixed({})
@@ -271,6 +368,49 @@ function T.tests.prompt_no_returns_to_quantity_with_the_same_selection()
   Assert.equal(controller:status().selectedIndex, 6)
   Assert.equal(controller:status().quantity, 2)
   Assert.isNil(controller:takeResult(), "No returns to editing without a selection result")
+end
+
+function T.tests.browse_and_kurt_selection_share_the_retail_row_contract()
+  local browse = newController({
+    mode = "browse",
+    service = serviceWith({ RED_APRICORN = 1 }),
+    apricornKeys = KEYS,
+    effect = silentEffect,
+  })
+  Assert.equal(browse:status().cursorSequenceId, 3, "idle browse draws the hand, never the close button")
+  browse:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(browse:status().selectedIndex, 2, "right moves from left column to right column")
+  browse:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(browse:status().selectedIndex, 1, "left returns to the left column")
+  browse:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(browse:status().selectedIndex, 1, "left at the left edge stays put")
+  browse:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(browse:status().selectedIndex, 3, "down stays inside the left column")
+  browse:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(browse:status().selectedIndex, 1, "up stays inside the left column")
+  browse:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(browse:status().selectedIndex, 1, "up at the top stays put instead of wrapping")
+  browse:updateFixed({ { type = "confirm" } })
+  Assert.equal(browse:status().phase, "browse", "retail view has no USE/TASTE/CANCEL menu")
+  local kurt = newController({
+    mode = "kurt_select",
+    service = serviceWith({ WHT_APRICORN = 30 }),
+    apricornKeys = KEYS,
+    effect = silentEffect,
+  })
+  kurt:updateFixed({ { type = "touch_row", index = 6 } })
+  for _ = 1, 4 do
+    kurt:updateFixed({})
+  end
+  Assert.equal(kurt:status().phase, "quantity", "Kurt goes straight to quantity")
+  kurt:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(kurt:status().quantity, 2, "up steps one")
+  kurt:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(kurt:status().quantity, 1, "down steps one")
+  kurt:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(kurt:status().quantity, 11, "right steps ten")
+  kurt:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(kurt:status().quantity, 1, "left steps ten")
 end
 
 return T

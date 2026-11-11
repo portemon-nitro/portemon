@@ -18,6 +18,7 @@ local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresenta
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 local TICK = 1 / 30
@@ -551,13 +552,18 @@ function T.successful_flight_uses_source_variant_and_auto_advances_after_30_tick
       )
     end
     Assert.isFalse(rig.port.leave({}), "successful flight waits for its source interval")
+    -- The tail counts source ticks, not wall updates: the shared 1/30 drive
+    -- quantum drifts against the 1/29.913 source frame, and a periodic
+    -- zero-tick catch-up update would shift an exact wall count. Driving at
+    -- the source quantum keeps one update exactly one source tick whatever
+    -- the accumulated remainder is.
     for _ = 1, 28 do
-      rig.screen:updateFixed(TICK)
+      rig.screen:updateFixed(SourceTick.DT)
     end
     Assert.isFalse(rig.port.leave({}), "the final source wait tick has not elapsed early")
-    rig.screen:updateFixed(TICK)
+    rig.screen:updateFixed(SourceTick.DT)
     Assert.isFalse(rig.port.leave({}), "field return waits until the settled source frame")
-    rig.screen:updateFixed(TICK)
+    rig.screen:updateFixed(SourceTick.DT)
     Assert.isTrue(rig.port.leave({}), "successful flight returns without an acknowledgment")
     rig.envelope:dispose()
   end

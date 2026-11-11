@@ -169,45 +169,8 @@ local function render(scope, cacheFs, manifest, renderer, window, versionId, top
       screen:dispose()
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  if mode == "kurt_select" then
-    for _ = 1, 4 do
-      screen:updateFixed({})
-    end
-    screen:updateFixed({ { type = "confirm" } })
-    screen:updateFixed({ { type = "navigate", direction = "right" } })
-    screen:updateFixed({ { type = "confirm" } })
-  end
-  local view = screen:status()
-  Assert.equal(view.phase, mode == "browse" and "actions" or "confirm", "capture shows the mode's active Box controls")
   local canvas = scope:own(love.graphics.newCanvas(width, height))
-  love.graphics.setCanvas(canvas)
-  love.graphics.clear(BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1)
-  view.presentation.render({ graphics = love.graphics, apricornBoxRenderer = renderer }, view, view.presentation)
-  for _, frame in ipairs(view.presentation.frames) do
-    LogicalSurface.draw(love.graphics, frame.placement, function()
-      window:drawApplicationFrame(frame.contentBox, 0)
-    end)
-  end
-  love.graphics.setCanvas()
-  local image = scope:own(canvas:newImageData())
-  assertVisiblePixels(image:getString())
-  if mode == "kurt_select" then
-    local lowerPane
-    for _, pane in ipairs(view.presentation.panes) do
-      if pane.id == "lower" then
-        lowerPane = pane
-        break
-      end
-    end
-    assertPromptButtons(image, cacheFs, uiManifest, assert(lowerPane).placement, assert(view.confirmationPrompt))
-  end
-  writeCapture(image, versionId .. "-" .. mode .. "-" .. topologyName .. ".png")
-
-  if mode == "kurt_select" then
-    screen:updateFixed({ { type = "navigate", direction = "down" } })
-    view = screen:status()
-    Assert.equal(view.confirmationPrompt.selected, "no", "navigation changes the focused prompt choice")
+  local function capture(view)
     love.graphics.setCanvas(canvas)
     love.graphics.clear(BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1)
     view.presentation.render({ graphics = love.graphics, apricornBoxRenderer = renderer }, view, view.presentation)
@@ -217,15 +180,60 @@ local function render(scope, cacheFs, manifest, renderer, window, versionId, top
       end)
     end
     love.graphics.setCanvas()
-    local noImage = scope:own(canvas:newImageData())
-    local lowerPane
+    return scope:own(canvas:newImageData())
+  end
+  local function lowerPlacement(view)
     for _, pane in ipairs(view.presentation.panes) do
       if pane.id == "lower" then
-        lowerPane = pane
-        break
+        return pane
       end
     end
-    assertPromptButtons(noImage, cacheFs, uiManifest, assert(lowerPane).placement, assert(view.confirmationPrompt))
+    error("the Box plan publishes a lower pane", 0)
+  end
+  screen:updateFixed({ { type = "confirm" } })
+  if mode == "kurt_select" then
+    for _ = 1, 4 do
+      screen:updateFixed({})
+    end
+    screen:updateFixed({ { type = "confirm" } })
+    local quantityView = screen:status()
+    Assert.equal(quantityView.phase, "quantity", "capture shows the Kurt quantity overlay")
+    local quantityImage = capture(quantityView)
+    assertVisiblePixels(quantityImage:getString())
+    writeCapture(quantityImage, versionId .. "-" .. mode .. "-" .. topologyName .. "-quantity.png")
+    screen:updateFixed({ { type = "navigate", direction = "right" } })
+    screen:updateFixed({ { type = "confirm" } })
+    for _ = 1, 5 do
+      screen:updateFixed({})
+    end
+  end
+  local view = screen:status()
+  Assert.equal(view.phase, mode == "browse" and "browse" or "confirm", "capture shows the mode's active Box controls")
+  local image = capture(view)
+  assertVisiblePixels(image:getString())
+  if mode == "kurt_select" then
+    assertPromptButtons(
+      image,
+      cacheFs,
+      uiManifest,
+      assert(lowerPlacement(view)).placement,
+      assert(view.confirmationPrompt)
+    )
+  end
+  writeCapture(image, versionId .. "-" .. mode .. "-" .. topologyName .. ".png")
+
+  if mode == "kurt_select" then
+    screen:updateFixed({ { type = "navigate", direction = "down" } })
+    view = screen:status()
+    Assert.equal(view.confirmationPrompt.selected, "no", "navigation changes the focused prompt choice")
+    local noImage = capture(view)
+    assertPromptButtons(
+      noImage,
+      cacheFs,
+      uiManifest,
+      assert(lowerPlacement(view)).placement,
+      assert(view.confirmationPrompt)
+    )
     writeCapture(noImage, versionId .. "-" .. mode .. "-" .. topologyName .. "-no.png")
   end
 end
@@ -321,6 +329,10 @@ local function trackingGraphics(failAt, failFilterAt)
   return graphics, calls
 end
 
+local function textStub()
+  return { drawText = function() end, drawTextWithPalette = function() end, textWidth = function() return 0 end }
+end
+
 function T.box_renderer_releases_prompt_and_source_images_once(_, context)
   local versions = readyVersions()
   if #versions == 0 then
@@ -346,7 +358,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     local renderer = ApricornBoxRenderer.new({
       cacheFs = cacheFs,
       manifest = manifest,
-      text = { drawText = function() end },
+      text = textStub(),
       uiManifest = uiManifest,
       graphics = successGraphics,
       imagePool = pool,
@@ -376,7 +388,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     local ok, err = pcall(ApricornBoxRenderer.new, {
       cacheFs = cacheFs,
       manifest = manifest,
-      text = { drawText = function() end },
+      text = textStub(),
       uiManifest = uiManifest,
       graphics = failureGraphics,
       imagePool = failingPool,
@@ -401,7 +413,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     local promptFilterOk, promptFilterErr = pcall(ApricornBoxRenderer.new, {
       cacheFs = cacheFs,
       manifest = manifest,
-      text = { drawText = function() end },
+      text = textStub(),
       uiManifest = uiManifest,
       graphics = promptFilterGraphics,
       imagePool = promptPool,
@@ -422,7 +434,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     local leaseOk, leaseErr = pcall(ApricornBoxRenderer.new, {
       cacheFs = cacheFs,
       manifest = manifest,
-      text = { drawText = function() end },
+      text = textStub(),
       uiManifest = uiManifest,
       graphics = leaseGraphics,
       imagePool = leasePool,
@@ -438,11 +450,14 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
   end
 end
 
-function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope, context)
+function T.source_box_renders_browse_and_kurt_modes(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
     context:skip("the Box smoke needs a ready user-owned ROM with a derived cache")
   end
+  -- One native-layout smoke per mode: pane selection across topologies is
+  -- already pinned cheaply by the screen unit tests, so the GPU pass only
+  -- proves the production composition draws visible pixels with its prompt.
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
@@ -462,10 +477,8 @@ function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope, conte
       graphics = love.graphics,
       imagePool = PreparedMonIcons.scopedImagePool(scope, cacheFs),
     }))
-    for _, topology in ipairs({ "native", "wide", "tall", "dual" }) do
-      for _, mode in ipairs({ "browse", "kurt_select" }) do
-        render(scope, cacheFs, manifest, renderer, window, versionId, topology, mode)
-      end
+    for _, mode in ipairs({ "browse", "kurt_select" }) do
+      render(scope, cacheFs, manifest, renderer, window, versionId, "native", mode)
     end
   end
 end

@@ -206,6 +206,10 @@ function FieldMessageCompiler.requiredBankIds()
   set[435] = true
   -- Apricorn Box labels are addressed directly by the generated source manifest.
   set[APRICORN_BOX_MESSAGE_BANK] = true
+  -- The Kurt confirm header pluralizes through bank 224
+  -- (BufferItemNamePlural, ItemSources.messageBanks.namePlural), addressed
+  -- by native item identity rather than any map header or script bank.
+  set[224] = true
   -- Per-caller phone greeting banks ride the same demandable pipeline as
   -- the radio broadcast banks above: each phonebook contact's script
   -- messages live in the contact's own bank behind GetPhoneMessageGmm,

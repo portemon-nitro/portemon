@@ -294,7 +294,10 @@ end
 function T.apricorn_box_job_requires_its_message_bank_member()
   local dependencies, complete = ArtifactJobs.dependencies("apricorn-box", "global", {})
   Assert.isTrue(complete, "the Box job has a final dependency list")
-  Assert.deepEqual(dependencies, { { kind = "message-bank", key = "21" } })
+  Assert.deepEqual(dependencies, {
+    { kind = "message-bank", key = "21" },
+    { kind = "message-bank", key = "224" },
+  })
 end
 
 -- A cold leaf plus an injected staging failure keeps the previous live

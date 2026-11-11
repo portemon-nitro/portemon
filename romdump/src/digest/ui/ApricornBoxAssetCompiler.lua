@@ -7,6 +7,7 @@ local PngWriter = require("romdump.src.digest.PngEncoder")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
+local ItemSources = require("romdump.src.config.ItemSources")
 local NarcCatalog = require("romdump.src.catalog.hgss.narcs")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
@@ -57,6 +58,23 @@ local function u32le(bytes, offset, role)
     + string.byte(bytes, offset + 2) * 256
     + string.byte(bytes, offset + 3) * 65536
     + string.byte(bytes, offset + 4) * 16777216
+end
+
+-- One BG text ink as RGB triples from a decoded NCLR palette: palette slot
+-- selects the 16-color ramp while foreground/shadow select its entries.
+---@param palette G2dRasterizer.PaletteData
+---@param spec { palette: integer, foreground: integer, shadow: integer }
+---@param role string
+---@return { foreground: { r: integer, g: integer, b: integer }, shadow: { r: integer, g: integer, b: integer } }
+local function paletteInk(palette, spec, role)
+  local function entry(index)
+    local color = palette.colors[spec.palette * 16 + index + 1]
+    if color == nil then
+      sourceError("chrome ink references a missing palette entry", { role = role, index = index })
+    end
+    return { r = assert(color.r), g = assert(color.g), b = assert(color.b) }
+  end
+  return { foreground = entry(spec.foreground), shadow = entry(spec.shadow) }
 end
 
 local function parseResourceList(bytes, role)
@@ -205,6 +223,8 @@ local function compileIconRow(char, palette, cell, animation, rowIndex, assets, 
     if type(sourceFrame.duration) ~= "number" or sourceFrame.duration < 1 or sourceFrame.duration % 1 ~= 0 then
       sourceError("Apricorn sprite frame duration is invalid", { animation = source.animation, frame = frameIndex - 1 })
     end
+    -- No palette override: each row's cell carries its own NCLR slot, so the
+    -- compiled sprite keeps its source tint instead of the chrome grayscale.
     local rendered = G2dRasterizer.renderAnimationFrame(
       char,
       palette,
@@ -212,7 +232,7 @@ local function compileIconRow(char, palette, cell, animation, rowIndex, assets, 
       sequence,
       frameIndex,
       { asset = "Apricorn Box", animation = source.animation, frame = frameIndex - 1 },
-      0
+      nil
     )
     local path = ApricornBoxAssetCache.assetDir() .. "/apricorn-" .. rowIndex .. "-frame-" .. frameIndex .. ".png"
     assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
@@ -228,11 +248,18 @@ local function compileIconRow(char, palette, cell, animation, rowIndex, assets, 
   end
   dependencies[#dependencies + 1] = {
     name = "overlay59:row-animation:" .. source.animation,
-    sha1 = Hashing.hashLua({ playMode = sequence.playMode, frames = sequence.frames }),
+    sha1 = Hashing.hashLua({ playMode = sequence.playMode, frames = sequence.frames, palette = "cell" }),
   }
+  local itemId = assert(ApricornBoxSources.itemIds[rowIndex], "the Box row carries its native item identity")
+  assert(
+    ItemSources.itemKeys[itemId] == ApricornBoxSources.itemKeys[rowIndex],
+    "the Box row item identity matches the item catalog"
+  )
   return {
     apricornKey = ApricornBoxSources.itemKeys[rowIndex],
+    itemId = itemId,
     nameMessageId = ApricornBoxSources.messages.itemNames[rowIndex],
+    descriptionMessageId = ApricornBoxSources.messages.itemDescriptions[rowIndex],
     icon = {
       x = source.x,
       y = source.y,
@@ -250,9 +277,13 @@ local function compileIconRow(char, palette, cell, animation, rowIndex, assets, 
   }
 end
 
+-- The shared cursor resource also carries the close-button states, the hand
+-- cursor, and the quantity chrome: close frames 0-2, hand frames 3-5, arrow
+-- frames 24-27, and confirm-button frames 28-31. They compile through the
+-- same states map so the renderer addresses them by source sequence.
 local function compileSelectionCursor(char, palette, cell, animation, assets, dependencies)
   local states = {}
-  for _, sequenceId in ipairs({ 0, 3, 4, 5 }) do
+  for _, sequenceId in ipairs({ 0, 1, 2, 3, 4, 5, 24, 25, 26, 27, 28, 29, 30, 31 }) do
     local sequence = animation.anims[sequenceId + 1]
     if type(sequence) ~= "table" or type(sequence.frames) ~= "table" or #sequence.frames == 0 then
       sourceError("selection cursor animation sequence is missing frames", { animation = sequenceId })
@@ -263,12 +294,19 @@ local function compileSelectionCursor(char, palette, cell, animation, assets, de
       if type(sourceFrame.duration) ~= "number" or sourceFrame.duration < 1 or sourceFrame.duration % 1 ~= 0 then
         sourceError("selection cursor frame duration is invalid", { animation = sequenceId, frame = frameIndex - 1 })
       end
+      -- Close (0-2) and confirm-button (28-31) cells carry their own blue
+      -- NCLR slots (11 and 12); only the hand (3-5) and arrows (24-27)
+      -- live in the grayscale chrome slot zero, so only those pin it.
+      local paletteOverride = nil
+      if (sequenceId >= 3 and sequenceId <= 5) or (sequenceId >= 24 and sequenceId <= 27) then
+        paletteOverride = 0
+      end
       local rendered = G2dRasterizer.renderAnimationFrame(char, palette, cell, sequence, frameIndex, {
         asset = "Apricorn Box",
         role = "selection-cursor",
         resourceHeader = RESDAT.members.header,
         animation = sequenceId,
-      }, 0)
+      }, paletteOverride)
       local path = ApricornBoxAssetCache.assetDir()
         .. "/selection-cursor-sequence-"
         .. sequenceId
@@ -289,7 +327,11 @@ local function compileSelectionCursor(char, palette, cell, animation, assets, de
     states[sequenceId] = { frames = frames, totalTicks = totalTicks, playMode = sequence.playMode }
     dependencies[#dependencies + 1] = {
       name = RESDAT.alias .. ":selection-cursor:header:" .. RESDAT.members.header .. ":animation:" .. sequenceId,
-      sha1 = Hashing.hashLua({ playMode = sequence.playMode, frames = sequence.frames }),
+      sha1 = Hashing.hashLua({
+        playMode = sequence.playMode,
+        frames = sequence.frames,
+        palette = paletteOverride == nil and "source" or "slot0",
+      }),
     }
   end
   local initial = states[0].frames[1]
@@ -437,6 +479,7 @@ function ApricornBoxAssetCompiler.compile(romFs)
   )
   local assets = {}
   local panes = {}
+  local lowerTiles = nil
   for _, paneName in ipairs(PANE_ORDER) do
     local members = BACKGROUNDS.members[paneName]
     local palette = decode(
@@ -471,7 +514,31 @@ function ApricornBoxAssetCompiler.compile(romFs)
     }, { transparentZero = false })
     rendered = RgbaImage.crop(rendered, { x = 0, y = 0, width = 256, height = 192 }, paneName .. " native display")
     panes[paneName] = imageAsset(rendered, paneName .. "-background", assets)
+    if paneName == "lower" then
+      lowerTiles = { char = char, palette = palette }
+    end
   end
+  -- The Kurt quantity overlay shares the lower display tiles and palettes.
+  local panelScreen = decode(
+    "decodeScreen",
+    readMember(uiArchive, BACKGROUNDS.alias, BACKGROUNDS.members.quantityPanel, "quantity-panel-screen", dependencies),
+    "quantity-panel-screen"
+  )
+  ---@cast panelScreen G2dRasterizer.ScreenData
+  if panelScreen.width < 256 or panelScreen.height < 192 then
+    sourceError("quantity panel does not cover one native display", {
+      width = panelScreen.width,
+      height = panelScreen.height,
+    })
+  end
+  local lower = assert(lowerTiles, "the lower display tiles back the quantity overlay")
+  local panelRendered = G2dRasterizer.renderScreen(lower.char, lower.palette, panelScreen, {
+    asset = "Apricorn Box",
+    member = BACKGROUNDS.members.quantityPanel,
+    role = "quantity-panel",
+  }, { transparentZero = true })
+  panelRendered = RgbaImage.crop(panelRendered, { x = 0, y = 0, width = 256, height = 192 }, "quantity panel display")
+  local quantityPanel = imageAsset(panelRendered, "quantity-panel", assets)
 
   local rows = {}
   for rowIndex = 1, ROW_COUNT do
@@ -497,6 +564,8 @@ function ApricornBoxAssetCompiler.compile(romFs)
   local menuPath = ApricornBoxAssetCache.assetDir() .. "/action-menu-tiles.png"
   assets[menuPath] = PngWriter.encode(menuTileImage.width, menuTileImage.height, menuTileImage.pixels)
 
+  local closeInk = paletteInk(lower.palette, ApricornBoxSources.geometry.closeInk, "close-label")
+
   local dependencyHash = Hashing.hashLua(dependencies)
   local manifest = {
     schema = ApricornBoxAssetCache.SCHEMA,
@@ -511,9 +580,21 @@ function ApricornBoxAssetCompiler.compile(romFs)
       charOffset = ApricornBoxSources.geometry.touchMenu.actionCharOffset,
     },
     messageBankId = ApricornBoxSources.messages.bankId,
+    pluralBankId = ItemSources.messageBanks.namePlural,
     rows = rows,
     selectionCursor = selectionCursor,
+    quantityPanel = quantityPanel,
+    quantityLayout = ApricornBoxSources.geometry.quantityLayout,
+    panelMessageId = ApricornBoxSources.messages.panelMessage,
     rowHitboxes = ApricornBoxSources.geometry.rowHitboxes,
+    closeButton = ApricornBoxSources.geometry.closeButton,
+    headerWindow = ApricornBoxSources.geometry.headerWindow,
+    titleWindow = ApricornBoxSources.geometry.titleWindow,
+    closeWindow = ApricornBoxSources.geometry.closeWindow,
+    closeInk = closeInk,
+    titleMessageId = ApricornBoxSources.messages.title,
+    closeMessageId = ApricornBoxSources.messages.close,
+    browseHeaderMessageId = ApricornBoxSources.messages.browseHeader,
     selectedDetail = ApricornBoxSources.geometry.selectedDetail,
     controls = {
       sourceTable = ApricornBoxSources.geometry.touchMenu.sourceTable,

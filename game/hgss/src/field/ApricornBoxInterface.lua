@@ -21,6 +21,11 @@ end
 
 local function mapInput(event, view)
   if event.type == "pointer_down" and event.outside == true then
+    -- Retail ignores touches outside the quantity chrome instead of
+    -- treating them as cancellation.
+    if view.phase == "quantity" then
+      return nil
+    end
     return { type = "cancel", source = "touch" }
   end
   if event.type == "pointer_down" then

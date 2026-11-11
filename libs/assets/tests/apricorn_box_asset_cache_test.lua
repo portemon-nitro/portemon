@@ -1,4 +1,4 @@
--- Readiness follows the complete source-backed two-pane Box artifact.
+-- Readiness follows the complete source-backed Box artifact.
 
 local Assert = require("tests.support.Assert")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
@@ -92,6 +92,13 @@ local function readyCache()
       offsetY = 0,
       states = cursorStates(),
     },
+    quantityPanel = {
+      image = ApricornBoxAssetCache.assetDir() .. "/quantity-panel.png",
+      width = 256,
+      height = 192,
+      offsetX = 0,
+      offsetY = 0,
+    },
     messageBankId = 21,
     actionMessageIds = { 2, 3, 4, 5, 6 },
     flowMessageIds = { selection = 37, quantity = 38, confirmation = 39 },
@@ -144,6 +151,7 @@ local function readyCache()
     [manifest.lower.image] = true,
     [manifest.selectionCursor.image] = true,
     [manifest.actionMenu.image] = true,
+    [manifest.quantityPanel.image] = true,
   }
   for _, row in ipairs(rows) do
     files[row.icon.frames[1].image] = true
