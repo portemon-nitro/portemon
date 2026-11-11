@@ -2431,7 +2431,7 @@ Schema.CONSTRUCTORS = {
         canonical = "op=check_running_shoes",
         notes = "spec={result}; result writes 1 or 0.",
       },
-      { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores the party to full health." },
+      { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores HP, status, and PP." },
       {
         signature = "S.pokedexCount(spec)",
         canonical = "op=pokedex_count",

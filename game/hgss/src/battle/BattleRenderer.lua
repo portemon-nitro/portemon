@@ -2322,7 +2322,8 @@ local function drawBagChild(resources, view, child)
       ))
     or nil
   local anim = type(native) == "table" and native.anim or nil --[[@as table<string, unknown>?]]
-  local animButton = type(anim) == "table" and tonumber(anim.button) or nil
+  local animButtonNumber = type(anim) == "table" and tonumber(anim.button) or nil
+  local animButton = animButtonNumber ~= nil and animButtonNumber % 1 == 0 and math.floor(animButtonNumber) or nil
   local animFrame = type(anim) == "table" and tonumber(anim.frame) or nil
   -- The press dip shifts the pressed control's text and icon together
   -- (ScrollButtonWindows + OffsetButtonSprite): frame 1 lifts 4 pixels,

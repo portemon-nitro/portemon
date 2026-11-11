@@ -8,6 +8,7 @@
 -- Pure domain module: no rendering, actors, assets, or love resources.
 
 local Experience = require("libs.mons.src.gen4.Experience")
+local Moves = require("libs.mons.src.gen4.Moves")
 local Mon = require("libs.mons.src.Mon")
 local Party = require("libs.mons.src.Party")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
@@ -1621,12 +1622,16 @@ function HgssMonService:partySlotWithFatefulEncounter(species)
   end)
 end
 
--- Restores every party mon to full health and clears persistent
--- conditions through the aggregate, one owned mutation per mon.
+-- Restores every party mon to full health, clears persistent conditions,
+-- and restores each move to its maximum power points through the aggregate,
+-- one owned mutation per mon.
 function HgssMonService:healParty()
   for index = 0, self._party:count() - 1 do
     local mon = self._party:get(index)
     mon.condition = { currentHp = self:_maxHp(mon), effects = {} }
+    for _, entry in ipairs(mon.moves) do
+      entry.pp = Moves.maxPp(self._catalog:move(entry.move).basePp, entry.ppUps)
+    end
     self:_store(index, mon)
   end
 end

@@ -328,6 +328,31 @@ function T.heal_party_restores_full_health()
   Assert.equal(service:partyRevision(), revision + 2, "each restored mon is one owned mutation")
 end
 
+function T.heal_party_restores_pp_to_max()
+  local catalog, service = twoMonService()
+  local Moves = require("libs.mons.src.gen4.Moves")
+  for slot = 0, 1 do
+    local mon = service:partyMon(slot)
+    Assert.isTrue(#mon.moves > 0, "setup mon carries a move")
+    mon.moves[1].pp = 0
+    if slot == 1 then
+      mon.moves[1].ppUps = 2
+    end
+    mon.condition.currentHp = 1
+    local staged, reason = service:preparePartyChanges(service:partyRevision(), { { slot = slot, mon = mon } })
+    Assert.notNil(staged, "setup depletion must prepare: " .. tostring(reason))
+    staged.publish()
+  end
+  service:healParty()
+  for slot = 0, 1 do
+    local mon = service:partyMon(slot)
+    for _, entry in ipairs(mon.moves) do
+      local expected = Moves.maxPp(catalog:move(entry.move).basePp, entry.ppUps)
+      Assert.equal(entry.pp, expected, "healed move restores to max PP")
+    end
+  end
+end
+
 function T.derived_display_values_come_from_the_service_owners()
   local _, service = twoMonService()
   local derived = service:partyMonDerived(0)

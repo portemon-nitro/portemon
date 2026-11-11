@@ -777,6 +777,7 @@ local function newBattleBagBrowser(inventory, catalog, intent)
   if type(lastUsed) == "table" and type(lastUsed.item) == "string" then
     local pocket = tonumber(lastUsed.pocket)
     if pocket ~= nil and pocket % 1 == 0 and pocket >= 0 and pocket <= 3 then
+      pocket = math.floor(pocket)
       local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
       for _, entry in ipairs(groups[key]) do
         if entry.item == lastUsed.item then
@@ -901,7 +902,7 @@ local function newBattleBagBrowser(inventory, catalog, intent)
     if type(neighbor) ~= "number" then
       return focus
     end
-    return neighbor
+    return math.floor(neighbor)
   end
   -- Moves the item-list d-pad cursor across its static boxes: the six
   -- cells roam freely (even onto empty cells) with Back as box 6 below
