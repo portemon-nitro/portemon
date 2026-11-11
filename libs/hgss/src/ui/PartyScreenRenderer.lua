@@ -802,7 +802,7 @@ end
 ---@param dx number horizontal swap offset applied to the panel coordinate
 function PartyScreenRenderer:_drawStatusMarker(record, panel, dx)
   local status = assert(record.status, "occupied slots carry a status")
-  if status == "ok" then
+  if status == "ok" or status == "custom" then
     return
   end
   local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
@@ -1064,7 +1064,7 @@ function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, slide, ic
     originY + iconAnchor.y - slide - dims.height / 2
   )
   local status = assert(facts.status, "detail facts carry a status")
-  if status ~= "ok" then
+  if status ~= "ok" and status ~= "custom" then
     local visual = assert(self._manifest.visuals.status[status], "detail status carries its semantic visual")
     local statusAnchor = assert(detail.statusAnchor, "party detail carries the status anchor")
     local width = assert(visual.width, "party status visuals carry widths")

@@ -6,7 +6,8 @@
 -- red otherwise, fainted at zero. The status key projects the semantic
 -- condition records to the source icon order (include/party_menu.h
 -- PartyMonStatusIconId over the native persistent conditions): no HP is
--- fainted, then sleep, poison (including toxic), burn, freeze, paralysis.
+-- fainted, then poison (including toxic/bad-poison), sleep, burn, freeze,
+-- paralysis, matching Pokemon_GetStatusIconId precedence.
 -- Labels reuse the source icon codes. Pure module: no love, no I/O.
 
 ---@class PartyScreenTheme
@@ -122,7 +123,9 @@ end
 
 -- Projects the semantic condition to the source status icon key. Native
 -- visual precedence applies (faint, sleep, poison including toxic, burn,
--- freeze, paralysis); a custom condition resolves to an explicit
+-- freeze, paralysis) matching Pokemon_GetStatusIconId
+-- (pokemon_summary_ui.c): poison/bad-poison, sleep, burn, freeze,
+-- paralysis; a custom condition resolves to an explicit
 -- presentation key instead of borrowing a native icon.
 ---@param condition { currentHp: integer, effects: table<integer, table<string, unknown>> }
 ---@return "ok"|"sleep"|"poison"|"burn"|"freeze"|"paralysis"|"faint"|"custom"
@@ -138,11 +141,11 @@ function PartyScreenTheme.statusKey(condition)
   if currentHp == 0 then
     return "faint"
   end
+  if hasEffect(effects, STATUS_POISON) or hasEffect(effects, STATUS_TOXIC) or hasEffect(effects, "bad-poison") then
+    return "poison"
+  end
   if hasEffect(effects, STATUS_SLEEP) then
     return "sleep"
-  end
-  if hasEffect(effects, STATUS_POISON) or hasEffect(effects, STATUS_TOXIC) then
-    return "poison"
   end
   if hasEffect(effects, STATUS_BURN) then
     return "burn"

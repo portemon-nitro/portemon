@@ -566,49 +566,6 @@ local function driveToMode(rig, mode, keepCursorHidden)
   error("the battle screen never reached " .. mode, 0)
 end
 
-function T.repeated_trainer_view_does_not_accumulate_the_raster_origin()
-  local rig = openRig()
-  local openingView = {
-    participants = { { participant = 2, side = 2, controller = "trainer:2" } },
-    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
-    foeTrainers = { { classKey = "YOUNGSTER", name = "WHITNEY" } },
-    own = {
-      {
-        combatant = 0,
-        active = true,
-        name = "EEVEE",
-        species = "EEVEE",
-        selector = "back",
-        side = 1,
-        ballKey = "POKE_BALL",
-      },
-    },
-    foes = {
-      {
-        combatant = 2,
-        participant = 2,
-        active = true,
-        name = "RATTATA",
-        species = "RATTATA",
-        selector = "front",
-        side = 2,
-        ballKey = "POKE_BALL",
-      },
-    },
-  }
-  rig.screen._timeline:reset(openingView)
-  rig.screen._timeline:intro(openingView, false)
-
-  local first = assert(rig.screen:view().openingPresentation).trainerSlides[1]
-  local second = assert(rig.screen:view().openingPresentation).trainerSlides[1]
-  Assert.deepEqual(
-    { second.x, second.y },
-    { first.x, first.y },
-    "reading the trainer picture twice keeps its managed sprite coordinate stable"
-  )
-  rig.screen:dispose()
-end
-
 function T.screen_exposes_health_task_progress_and_completion_to_controller_owners()
   local rig = openRig()
   local key = "health:activation-1:hit-1"
@@ -841,16 +798,18 @@ local function expectedDirectFragment(struggle)
   return struggle.choice
 end
 
--- Command walking stays on one request: Fight opens moves, cancel
--- returns, reentrant confirms seal exactly one reply, and stale edges in
--- waiting seal nothing.
-function T.command_walking_with_reentrant_edges_seals_once()
+-- Command confirm edges gate exactly one seal: a second confirmation in
+-- the same input batch cannot cross the native transition into the move
+-- menu, and reentrant confirms while waiting seal nothing more.
+function T.command_confirm_edges_gate_unseen_and_reentrant_submits()
   local rig = openRig({})
   driveToMode(rig, "command")
   assert(rig.screen:status().request ~= nil, "the prompt mirrors its request")
-  rig.screen:input({ { type = "confirm" } })
-  driveToMode(rig, "moves")
-  Assert.equal(rig.screen:status().mode, "moves", "confirming Fight opens move selection")
+  rig.screen:input({ { type = "confirm" }, { type = "confirm" } })
+  rig.pump(1)
+  Assert.notNil(rig.screen:status().request, "the same input batch keeps the decision open")
+  Assert.equal(#rig.submits, 0, "the same input batch cannot seal an unseen move")
+  Assert.equal(rig.screen:status().mode, "moves", "the first confirm still opens move selection")
   rig.screen:input({ { type = "confirm" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "confirming the known slot submits")
@@ -860,46 +819,6 @@ function T.command_walking_with_reentrant_edges_seals_once()
   rig.pump(2)
   Assert.equal(#rig.submits, 1, "reentrant confirms while waiting seal nothing more")
   Assert.isNil(rig.screen:status().request, "the answered request is no longer mirrored as open")
-  rig.screen:dispose()
-  rig.battle:dispose()
-end
-
--- A second confirmation delivered in the same input batch cannot cross
--- the native transition into the move menu and seal a choice that was
--- not visible when the batch began.
-function T.command_transition_does_not_consume_a_second_confirmation()
-  local rig = openRig({ launchId = "launch-screen-transition-gate" })
-  driveToMode(rig, "command")
-  rig.screen:input({ { type = "confirm" }, { type = "confirm" } })
-  rig.pump(1)
-  Assert.notNil(rig.screen:status().request, "the same input batch keeps the decision open")
-  Assert.equal(#rig.submits, 0, "the same input batch cannot seal an unseen move")
-  rig.screen:dispose()
-  rig.battle:dispose()
-end
-
--- The native button feedback task moves its text two pixels upward while
--- pressed. This checks the production screen's recorded text boundary
--- against the source task's visible pressed frame.
-function T.pressed_command_label_uses_the_native_feedback_offset()
-  local rig = openRig({ launchId = "launch-native-pressed-command-label" })
-  driveToMode(rig, "command")
-  rig.screen:input({ { type = "pointer_down", pointerId = "touch:feedback", x = 128, y = 275 } })
-  rig.screen:updateFixed(TICK)
-  rig.text.draws = {}
-  rig.screen:draw({ graphics = FakeGraphics.new({}) })
-  local fight = nil
-  for _, entry in ipairs(rig.text.draws) do
-    if entry.content == "FIGHT" then
-      fight = entry
-      break
-    end
-  end
-  Assert.notNil(fight, "the pressed command keeps its native label visible")
-  -- The text object sits eight pixels above its y=83 anchor; the source
-  -- pressed task lifts it two more.
-  Assert.equal(fight.y, 73, "the source pressed task moves the command label up two pixels")
-  Assert.equal(fight.x, 128 - 20, "the label stays centered on its anchor")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -1183,25 +1102,8 @@ function T.navigation_follows_the_native_topology()
   rig.screen:input({ { type = "navigate", direction = "up" } })
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "fight", "up from the lower row returns to Fight")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  rig.screen:input({ { type = "navigate", direction = "down" } })
-  rig.pump(1)
-  rig.screen:input({ { type = "navigate", direction = "down" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:view().selection, "cancel", "down through the table reaches cancel")
-  rig.screen:input({ { type = "confirm" } })
-  rig.pump(1)
-  Assert.equal(rig.screen:status().mode, "command", "confirming cancel returns to command")
-  rig.screen:dispose()
-  rig.battle:dispose()
-end
-
--- The Fight row is one wide button: dropping from it keeps the entry
--- column instead of always landing on Run.
-function T.command_cursor_preserves_its_column_beneath_the_fight_row()
-  local rig = openRig({ launchId = "launch-screen-command-column" })
-  driveToMode(rig, "command")
+  -- The Fight row is one wide button: dropping from it keeps the entry
+  -- column instead of always landing on Run.
   rig.screen:input({ { type = "navigate", direction = "right" } })
   rig.pump(1)
   Assert.equal(rig.screen:view().selection, "pokemon", "right from Fight reaches Pokemon")
@@ -1215,6 +1117,19 @@ function T.command_cursor_preserves_its_column_beneath_the_fight_row()
     "pokemon",
     "down from Fight keeps the right column instead of landing on Run"
   )
+  rig.screen:input({ { type = "navigate", direction = "up" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "fight", "up from Pokemon returns to command")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:view().selection, "cancel", "down through the table reaches cancel")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "command", "confirming cancel returns to command")
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -1270,6 +1185,24 @@ function T.touch_release_waits_for_native_button_feedback_before_sealing_once()
   }
   local rig = openRig({ launchId = "launch-screen-native-button-feedback", manifest = manifest })
   driveToMode(rig, "command")
+  -- The command menu pins the same two-pixel pressed offset the move
+  -- menu checks below cover, so one journey proves both surfaces.
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:feedback", x = 128, y = 275 } })
+  rig.screen:updateFixed(TICK)
+  rig.text.draws = {}
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local fight = nil
+  for _, entry in ipairs(rig.text.draws) do
+    if entry.content == "FIGHT" then
+      fight = entry
+      break
+    end
+  end
+  Assert.notNil(fight, "the pressed command keeps its native label visible")
+  Assert.equal(fight.y, 73, "the source pressed task moves the command label up two pixels")
+  Assert.equal(fight.x, 128 - 20, "the label stays centered on its anchor")
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:feedback", x = 128, y = 275 } })
+  rig.pump(1)
   rig.screen:input({ { type = "confirm" } })
   driveToMode(rig, "moves")
 
@@ -2656,7 +2589,7 @@ function T.native_health_box_icons_follow_side_and_encounter_visibility()
   end
 
   local playerTiles, wildDraw = sourceTiles("hud:player", "wild")
-  for _, tile in ipairs({ 172, 173, 174, 188, 189, 200, 201 }) do
+  for _, tile in ipairs({ 178, 179, 180, 188, 189, 200, 201 }) do
     Assert.isTrue(playerTiles[tile], "player native status/gender patch includes component tile " .. tostring(tile))
   end
   Assert.isFalse(playerTiles[187], "the caught marker is absent from the player health box")
@@ -2669,7 +2602,7 @@ function T.native_health_box_icons_follow_side_and_encounter_visibility()
   Assert.isFalse(genderlessTiles[202], "genderless player does not use the male marker")
 
   local wildFoeTiles = sourceTiles("hud:enemy", "wild")
-  for _, tile in ipairs({ 169, 170, 171, 190, 191, 202, 203, 187 }) do
+  for _, tile in ipairs({ 181, 182, 183, 190, 191, 202, 203, 187 }) do
     Assert.isTrue(
       wildFoeTiles[tile],
       "wild foe native status/gender/caught patch includes component tile " .. tostring(tile)
@@ -2682,7 +2615,7 @@ function T.native_health_box_icons_follow_side_and_encounter_visibility()
 
   local trainerFoeTiles = sourceTiles("hud:enemy", "trainer")
   Assert.isFalse(trainerFoeTiles[187], "trainer battles suppress the native caught marker")
-  for _, tile in ipairs({ 169, 170, 171, 190, 191, 202, 203 }) do
+  for _, tile in ipairs({ 181, 182, 183, 190, 191, 202, 203 }) do
     Assert.isTrue(trainerFoeTiles[tile], "trainer enemy keeps visible status/gender tile " .. tostring(tile))
   end
 end

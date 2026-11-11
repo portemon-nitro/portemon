@@ -674,49 +674,53 @@ function T.experience_task_uses_native_delta_per_visible_pixel_and_resets_at_lev
   Assert.isFalse(scene:gaugeTaskActive("level-up"), "the reset task stops after completing the new level span")
 end
 
-function T.native_hud_icon_patches_follow_status_gender_and_caught_selectors()
-  local patches = BattleScene.hudIconPatchTiles({
+function T.native_hud_icon_selectors_map_status_gender_and_caught()
+  local patchSpans = {
     status = { { sideType = 0, tile = 36, count = 3 } },
     gender = { { sideType = 0, spans = { { tile = 83, count = 2 }, { tile = 91, count = 2 } } } },
     caught = { { sideType = 0, tile = 35, count = 1 } },
-  }, 0, "sleep", "female", true)
-
-  Assert.deepEqual(patches, {
-    { tile = 36, sourceTile = 53 },
-    { tile = 37, sourceTile = 54 },
-    { tile = 38, sourceTile = 55 },
+  }
+  -- One fully-worked combination pins the destination tiles; the loops
+  -- below pin every source component so catalog edits fail loudly.
+  Assert.deepEqual(BattleScene.hudIconPatchTiles(patchSpans, 0, "sleep", "female", true), {
+    { tile = 36, sourceTile = 47 },
+    { tile = 37, sourceTile = 48 },
+    { tile = 38, sourceTile = 49 },
     { tile = 83, sourceTile = 60 },
     { tile = 84, sourceTile = 61 },
     { tile = 91, sourceTile = 72 },
     { tile = 92, sourceTile = 73 },
     { tile = 35, sourceTile = 59 },
   }, "native icons select their raw component tiles and source character destinations")
-end
 
-function T.native_hud_icon_rejects_unmapped_condition_keys()
-  local ok = pcall(BattleScene.hudIconPatchTiles, {
-    status = { { sideType = 0, tile = 36, count = 3 } },
-  }, 0, "PSN", nil, nil)
-  Assert.isFalse(ok, "an unmapped status is not silently drawn as healthy")
-end
-
-function T.native_hud_icon_maps_all_status_and_gender_variants()
-  local patchSpans = {
+  local statuses = {
+    { key = nil, tiles = { 38, 39, 40 } },
+    { key = "paralysis", tiles = { 41, 42, 43 } },
+    { key = "freeze", tiles = { 44, 45, 46 } },
+    { key = "sleep", tiles = { 47, 48, 49 } },
+    { key = "poison", tiles = { 50, 51, 52 } },
+    { key = "burn", tiles = { 53, 54, 55 } },
+  }
+  local variantSpans = {
     status = { { sideType = 0, tile = 10, count = 3 } },
     gender = { { sideType = 0, spans = { { tile = 20, count = 2 }, { tile = 30, count = 2 } } } },
   }
-  local statuses = {
-    { key = nil, tiles = { 38, 39, 40 } },
-    { key = "paralysis", tiles = { 47, 48, 49 } },
-    { key = "freeze", tiles = { 50, 51, 52 } },
-    { key = "sleep", tiles = { 53, 54, 55 } },
-    { key = "poison", tiles = { 44, 45, 46 } },
-    { key = "burn", tiles = { 41, 42, 43 } },
-  }
   for _, status in ipairs(statuses) do
-    local patches = BattleScene.hudIconPatchTiles(patchSpans, 0, status.key, nil, nil)
+    local patches = BattleScene.hudIconPatchTiles(variantSpans, 0, status.key, nil, nil)
     for index, patch in ipairs(patches) do
       Assert.equal(patch.sourceTile, status.tiles[index], "native status selector uses its source component")
+    end
+  end
+  -- Badly-poisoned shares the poisoned health-box icon; battle scripts
+  -- emit BATTLE_ANIMATION_POISONED for both POISON and BAD_POISON.
+  for _, alias in ipairs({ "toxic", "bad-poison" }) do
+    local patches = BattleScene.hudIconPatchTiles(variantSpans, 0, alias, nil, nil)
+    for index, patch in ipairs(patches) do
+      Assert.equal(
+        patch.sourceTile,
+        50 + (index - 1),
+        alias .. " shares the poisoned source component"
+      )
     end
   end
   local genders = {
@@ -725,7 +729,7 @@ function T.native_hud_icon_maps_all_status_and_gender_variants()
     { key = "genderless", tiles = { 64, 65, 76, 77 } },
   }
   for _, gender in ipairs(genders) do
-    local patches = BattleScene.hudIconPatchTiles(patchSpans, 0, nil, gender.key, nil)
+    local patches = BattleScene.hudIconPatchTiles(variantSpans, 0, nil, gender.key, nil)
     for index = 1, 4 do
       Assert.equal(
         patches[index + 3].sourceTile,
@@ -734,6 +738,9 @@ function T.native_hud_icon_maps_all_status_and_gender_variants()
       )
     end
   end
+
+  local ok = pcall(BattleScene.hudIconPatchTiles, variantSpans, 0, "PSN", nil, nil)
+  Assert.isFalse(ok, "an unmapped status is not silently drawn as healthy")
 end
 
 function T.double_player_health_box_mode_is_activation_scoped_and_uses_source_tiles()
@@ -890,57 +897,37 @@ function T.slot_rows_carry_settled_spawn_depth_and_hud_anchors()
 end
 
 -- Records without a native position keep their single-battle row;
--- doubled records take their side row by sorted slot order.
+-- doubled records take their side row by sorted slot order. Resolution
+-- returns the published geometry record itself so layout edits flow
+-- through without hardcoded coordinates.
 function T.slot_resolution_keeps_singles_and_sorted_doubles_rows()
   local rows = slotGeometry()
-  Assert.equal(BattleScene.slotRow({ side = 1 }, nil, rows).sideType, 0, "position-less players keep the single row")
-  Assert.equal(BattleScene.slotRow({ side = 2 }, nil, rows).sideType, 1, "position-less foes keep the single row")
+  local bySideType = {}
+  for _, row in ipairs(rows) do
+    bySideType[row.sideType] = row
+  end
+  Assert.equal(BattleScene.slotRow({ side = 1 }, nil, rows), bySideType[0], "position-less players keep the single row")
+  Assert.equal(BattleScene.slotRow({ side = 2 }, nil, rows), bySideType[1], "position-less foes keep the single row")
   Assert.equal(
-    BattleScene.slotRow({ side = 1, position = 1 }, { 1, 2 }, rows).sideType,
-    2,
+    BattleScene.slotRow({ side = 1, position = 1 }, { 1, 2 }, rows),
+    bySideType[2],
     "the first sorted ally owns the left row"
   )
   Assert.equal(
-    BattleScene.slotRow({ side = 1, position = 2 }, { 1, 2 }, rows).sideType,
-    4,
+    BattleScene.slotRow({ side = 1, position = 2 }, { 1, 2 }, rows),
+    bySideType[4],
     "the second sorted ally owns the right row"
   )
   Assert.equal(
-    BattleScene.slotRow({ side = 2, position = 4 }, { 3, 4 }, rows).sideType,
-    5,
+    BattleScene.slotRow({ side = 2, position = 4 }, { 3, 4 }, rows),
+    bySideType[5],
     "the second sorted foe owns the right row whatever its raw slot"
   )
   Assert.equal(
-    BattleScene.slotRow({ side = 2, position = 9 }, { 3, 4 }, rows).sideType,
-    1,
+    BattleScene.slotRow({ side = 2, position = 9 }, { 3, 4 }, rows),
+    bySideType[1],
     "an unclaimed slot falls back to the single row"
   )
-end
-
-function T.slot_resolution_uses_published_geometry_for_every_side_type()
-  local rows = slotGeometry()
-  rows[1].settledX = 71
-  rows[2].settledX = 193
-  rows[3].settledX = 41
-  rows[4].settledX = 81
-  rows[5].settledX = 217
-  rows[6].settledX = 177
-  local expected = {
-    { side = 1, position = nil, sideType = 0, x = 71 },
-    { side = 2, position = nil, sideType = 1, x = 193 },
-    { side = 1, position = 1, order = { 1, 2 }, sideType = 2, x = 41 },
-    { side = 1, position = 2, order = { 1, 2 }, sideType = 4, x = 81 },
-    { side = 2, position = 3, order = { 3, 4 }, sideType = 3, x = 217 },
-    { side = 2, position = 4, order = { 3, 4 }, sideType = 5, x = 177 },
-  }
-  for _, record in ipairs(expected) do
-    local row = BattleScene.slotRow({ side = record.side, position = record.position }, record.order, rows)
-    Assert.deepEqual(
-      { row.sideType, row.settledX },
-      { record.sideType, record.x },
-      "slot geometry uses the published record for side type " .. record.sideType
-    )
-  end
 end
 
 -- Shadows use their native quad geometry behind every picture plane.

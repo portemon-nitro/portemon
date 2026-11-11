@@ -401,13 +401,24 @@ function BattleScene.expPatchTiles(patchSpans, fills)
   return patches
 end
 
+-- BattleHpBar_Draw maps BATTLE_ANIMATION_* 0..5 to components
+-- 38,47,50,53,44,41 (battle_hp_bar.c): NONE 38, ASLEEP 47, POISONED 50,
+-- BURNED 53, FROZEN 44, PARALYZED 41. Memory order PRZ,FRZ,SLP,PSN,BRN
+-- matches the party icon order, but the battle status ids select
+-- ASLEEP->SLP, POISONED->PSN, BURNED->BRN, FROZEN->FRZ, PARALYZED->PRZ.
 local HUD_STATUS_COMPONENT = {
   healthy = 38,
-  paralysis = 47,
-  freeze = 50,
-  sleep = 53,
-  poison = 44,
-  burn = 41,
+  paralysis = 41,
+  freeze = 44,
+  sleep = 47,
+  poison = 50,
+  burn = 53,
+}
+-- Badly-poisoned shares the poisoned health-box icon; battle scripts emit
+-- BATTLE_ANIMATION_POISONED for both POISON and BAD_POISON applications.
+local HUD_STATUS_ALIASES = {
+  toxic = "poison",
+  ["bad-poison"] = "poison",
 }
 local HUD_GENDER_COMPONENT = {
   male = { 62, 63, 74, 75 },
@@ -454,7 +465,8 @@ function BattleScene.hudIconPatchTiles(patchSpans, sideType, condition, gender, 
     assert(not required or index > 0, "visible icon fields have a source character span")
   end
 
-  local status = condition == nil and HUD_STATUS_COMPONENT.healthy or HUD_STATUS_COMPONENT[condition]
+  local key = condition == nil and "healthy" or (HUD_STATUS_ALIASES[condition] or condition)
+  local status = HUD_STATUS_COMPONENT[key]
   assert(status ~= nil, "displayed battle conditions have a native health-box icon")
   append("status", { status, status + 1, status + 2 }, true)
   if gender ~= nil then

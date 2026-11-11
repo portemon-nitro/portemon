@@ -2127,7 +2127,7 @@ local function snapshotIconAnimation(record)
   local condition = type(record.condition) == "string" and record.condition:lower() or ""
   local animation = 0
   if hp > 0 and condition ~= "sleep" then
-    if condition == "poison" or condition == "bad-poison" then
+    if condition == "poison" or condition == "bad-poison" or condition == "toxic" then
       animation = 5
     elseif maxHp > 0 then
       local pixels = math.max(1, math.floor(hp * 48 / maxHp))

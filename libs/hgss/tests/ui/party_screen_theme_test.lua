@@ -13,19 +13,13 @@ local T = {}
 function T.hp_zone_follows_the_source_bar_thresholds()
   Assert.equal(PartyScreenTheme.hpZone(35, 35), "full")
   Assert.equal(PartyScreenTheme.hpZone(25, 48), "green")
+  -- 24 of 48 pixels is exactly half: green needs strictly more.
+  Assert.equal(PartyScreenTheme.hpZone(24, 48), "yellow")
   Assert.equal(PartyScreenTheme.hpZone(10, 48), "yellow")
+  -- Yellow needs strictly more than a fifth of the bar.
   Assert.equal(PartyScreenTheme.hpZone(9, 48), "red")
   Assert.equal(PartyScreenTheme.hpZone(1, 100), "red")
   Assert.equal(PartyScreenTheme.hpZone(0, 35), "fainted")
-end
-
-function T.hp_zone_quantizes_like_the_source_pixel_bar()
-  -- 24 of 48 pixels is exactly half: green needs strictly more.
-  Assert.equal(PartyScreenTheme.hpZone(24, 48), "yellow")
-  Assert.equal(PartyScreenTheme.hpZone(25, 48), "green")
-  -- Yellow needs strictly more than a fifth of the bar.
-  Assert.equal(PartyScreenTheme.hpZone(9, 48), "red")
-  Assert.equal(PartyScreenTheme.hpZone(10, 48), "yellow")
 end
 
 function T.status_key_follows_the_source_icon_priority()
@@ -37,17 +31,47 @@ function T.status_key_follows_the_source_icon_priority()
   end
   Assert.equal(PartyScreenTheme.statusKey(condition(35, {})), "ok")
   Assert.equal(PartyScreenTheme.statusKey(condition(0, {})), "faint")
-  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("paralysis") })), "paralysis")
-  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("freeze") })), "freeze")
-  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("sleep", { turns = 3 }) })), "sleep")
-  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("poison") })), "poison")
-  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("toxic", { counter = 5 }) })), "poison")
-  Assert.equal(PartyScreenTheme.statusKey(condition(35, { effect("burn") })), "burn")
-  Assert.equal(
-    PartyScreenTheme.statusKey(condition(35, { effect("poison"), effect("paralysis") })),
-    "poison",
-    "poison outranks paralysis"
-  )
+  -- Source precedence (Pokemon_GetStatusIconId): poison (including
+  -- toxic/bad-poison), sleep, burn, freeze, paralysis.
+  local poisonAliases = { "poison", "toxic", "bad-poison" }
+  for _, alias in ipairs(poisonAliases) do
+    Assert.equal(
+      PartyScreenTheme.statusKey(condition(35, { effect(alias) })),
+      "poison",
+      alias .. " shares the poison icon"
+    )
+  end
+  local ordered = {
+    { key = "sleep", state = { turns = 3 } },
+    { key = "burn" },
+    { key = "freeze" },
+    { key = "paralysis" },
+  }
+  for index, higher in ipairs(ordered) do
+    Assert.equal(
+      PartyScreenTheme.statusKey(condition(35, { effect(higher.key, higher.state) })),
+      higher.key,
+      higher.key .. " projects to its own icon"
+    )
+    for laterIndex = index + 1, #ordered do
+      local lower = ordered[laterIndex]
+      Assert.equal(
+        PartyScreenTheme.statusKey(condition(35, {
+          effect(higher.key, higher.state),
+          effect(lower.key, lower.state),
+        })),
+        higher.key,
+        higher.key .. " outranks " .. lower.key
+      )
+    end
+  end
+  for _, higher in ipairs(ordered) do
+    Assert.equal(
+      PartyScreenTheme.statusKey(condition(35, { effect("poison"), effect(higher.key, higher.state) })),
+      "poison",
+      "poison outranks " .. higher.key
+    )
+  end
   Assert.equal(
     PartyScreenTheme.statusKey(condition(0, { effect("poison") })),
     "faint",
