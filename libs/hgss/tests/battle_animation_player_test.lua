@@ -1431,9 +1431,11 @@ function T.serial_completed_occurrences_leave_no_retained_records()
       return true
     end,
   }
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
   local timeline = BattleTimeline.new({
     encounterFadeColor = "white",
     effects = effects,
+    slotGeometry = ManifestFixture.manifest().battlefield.slots,
     messageText = function(_, key)
       return key
     end,
@@ -1490,6 +1492,26 @@ function T.serial_completed_occurrences_leave_no_retained_records()
       observation = { hp = { [1] = 52, [2] = foeHp } },
       after = { hp = { [1] = 52, [2] = foeHp } },
       visualSeed = sequence * 3 + 1,
+      -- Each serial strike is its own source call cycle: the producer
+      -- execution moment admits the visual the lifecycle then drains.
+      presentation = {
+        context = {},
+        execution = {
+          selectedMove = "TACKLE",
+          executedMove = "TACKLE",
+          moment = "use",
+          branch = "default",
+          attacker = { combatant = 1, activation = 1 },
+          defender = { combatant = 2, activation = 2 },
+          targets = { { combatant = 2, activation = 2 } },
+          damage = -14,
+          power = 35,
+          friendship = 70,
+          hitOrdinal = 1,
+          hitCount = 1,
+          hitCycle = 1,
+        },
+      },
     }
   end
   timeline:reset(timelineView(57))

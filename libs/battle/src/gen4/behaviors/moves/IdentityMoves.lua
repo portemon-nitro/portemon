@@ -8,6 +8,7 @@
 
 local BattleErrors = require("libs.battle.src.errors")
 local CalledMoves = require("libs.battle.src.gen4.behaviors.moves.CalledMoves")
+local SequenceMoveState = require("libs.battle.src.gen4.SequenceMoveState")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 
@@ -100,6 +101,99 @@ local function validateInert(state)
     error("inert markers carry their schema version")
   end
   return { version = 1 }
+end
+
+---@param state unknown candidate typed state under the Transform recording
+---@return table<string, unknown> the versioned record
+local function validateTransformState(state)
+  if type(state) ~= "table" or state.version ~= 1 then
+    error("transform markers carry their schema version")
+  end
+  local record = state --[[@as table<string, unknown>]]
+  local donor = record.donor
+  if type(donor) ~= "table" then
+    error("transform markers name their donor entry")
+  end
+  local donorRecord = donor --[[@as table<string, unknown>]]
+  if type(donorRecord.combatant) ~= "number" or donorRecord.combatant % 1 ~= 0 or donorRecord.combatant < 1 then
+    error("transform markers name a positive donor combatant")
+  end
+  if type(donorRecord.activation) ~= "number" or donorRecord.activation % 1 ~= 0 or donorRecord.activation < 1 then
+    error("transform markers name the donor entry token")
+  end
+  local appearance = record.donorAppearance
+  if type(appearance) ~= "table" then
+    error("transform markers carry their detached donor appearance")
+  end
+  local shown = appearance --[[@as table<string, unknown>]]
+  if type(shown.species) ~= "string" or shown.species == "" then
+    error("transform donor appearance names its species")
+  end
+  if type(shown.form) ~= "number" or shown.form % 1 ~= 0 or shown.form < 0 or shown.form > 255 then
+    error("transform donor appearance carries a 0..255 form")
+  end
+  if
+    type(shown.personality) ~= "number"
+    or shown.personality % 1 ~= 0
+    or shown.personality < 0
+    or shown.personality > 4294967295
+  then
+    error("transform donor appearance carries its personality")
+  end
+  local origin = shown.origin
+  if
+    type(origin) ~= "table" or type((origin --[[@as table<string, unknown>]]).trainerId) ~= "number"
+  then
+    error("transform donor appearance carries its origin trainer")
+  end
+  if type(record.sourceActivation) ~= "number" or record.sourceActivation % 1 ~= 0 or record.sourceActivation < 1 then
+    error("transform markers name the source entry token")
+  end
+  return {
+    version = 1,
+    donor = { combatant = donorRecord.combatant, activation = donorRecord.activation },
+    donorAppearance = {
+      species = shown.species,
+      form = shown.form,
+      personality = shown.personality,
+      origin = {
+        trainerId = (origin --[[@as table<string, unknown>]]).trainerId,
+      },
+    },
+    sourceActivation = record.sourceActivation,
+  }
+end
+
+-- Semi-invulnerable charge states behind the source Transform gate:
+-- a defender between the charge and the release of one of these
+-- moves cannot be copied until it lands.
+local HIDE_MOVES = {
+  FLY = true,
+  DIG = true,
+  DIVE = true,
+  BOUNCE = true,
+  SHADOW_FORCE = true,
+}
+
+---@param ctx BattleContext mechanics context under execution
+---@param user integer transforming combatant owning the marker
+---@param donor integer donor combatant behind the copied appearance
+---@param donorAppearance table<string, unknown> detached donor appearance inputs
+---@param sourceActivation integer user entry token behind the marker scope
+---@param donorActivation integer donor entry token behind the copied appearance
+local function markTransform(ctx, user, donor, donorAppearance, sourceActivation, donorActivation)
+  ctx:addBattleEffect({
+    key = "TRANSFORM",
+    stateVersion = 1,
+    validateState = validateTransformState,
+    timings = { { timing = "leave", handler = "TRANSFORM", orderClass = "affliction" } },
+    lifecycle = { stacking = "replace", transfer = "clear", persistent = false },
+  }, { kind = "active", combatant = user, activation = sourceActivation }, { kind = "move", combatant = user }, {
+    version = 1,
+    donor = { combatant = donor, activation = donorActivation },
+    donorAppearance = donorAppearance,
+    sourceActivation = sourceActivation,
+  })
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -279,7 +373,23 @@ local function stepPsychoShift(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local state = status.state --[[@as table<string, unknown>]]
-  if ctx:applyStatus(target, key, state, causeFor(record)) then
+  local shifterEntry = ctx:entryOf(target)
+  local shifterUserEntry = ctx:entryOf(user)
+  if
+    ctx:applyStatus(target, key, state, causeFor(record), {
+      operation = {
+        kind = "status-applied",
+        subject = { combatant = target, activation = shifterEntry.activation },
+        source = {
+          kind = "move",
+          key = record.executingMove,
+          actor = { combatant = user, activation = shifterUserEntry.activation },
+        },
+        condition = key,
+        application = "standard",
+      },
+    })
+  then
     ctx:cureStatus(user, key, causeFor(record))
     local foeAbility = abilities.foe
     if type(foeAbility) == "string" then
@@ -294,7 +404,20 @@ local function stepPsychoShift(ctx, frame)
       )
       for _, event in ipairs(reflected.events) do
         if type(event.reflected) == "string" then
-          ctx:applyStatus(user, event.reflected, state, causeFor(record))
+          local reflectorEntry = ctx:entryOf(user)
+          ctx:applyStatus(user, event.reflected, state, causeFor(record), {
+            operation = {
+              kind = "status-applied",
+              subject = { combatant = user, activation = reflectorEntry.activation },
+              source = {
+                kind = "move",
+                key = record.executingMove,
+                actor = { combatant = user, activation = reflectorEntry.activation },
+              },
+              condition = event.reflected,
+              application = "standard",
+            },
+          })
         end
       end
     end
@@ -328,15 +451,128 @@ local function bind(handler)
 end
 
 -- Transform copies the sampled target identity onto the active entry
--- only: the marker carries the source combatant, leaving discards it with
--- the entry, and the persistent move set is never touched.
+-- only: the Transform-specific marker carries the detached donor
+-- appearance and both entry tokens, leaving discards it with the
+-- entry, and the persistent move set is never touched. The primary
+-- execution moment is marked from the pre-transform context before
+-- the marker lands; the transformed fact carries the applied donor
+-- operation the game-side projection reads.
 local function stepTransform(ctx, frame)
   assert(type(ctx) == "table", "identity changes step through the battle context")
   assert(type(frame) == "table", "identity changes step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(record)
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  markVolatile(ctx, userOf(record), "TRANSFORM")
-  ctx:emit("transformed", causeFor(record), { target = userOf(record), copiedFrom = defender })
+  -- Source 0092 visual-admission gates: a semi-invulnerable or
+  -- already transformed defender fails before any root or marker.
+  if ctx:hasBattleEffect(defender, "TRANSFORM") then
+    return { kind = "complete", result = "failed" }
+  end
+  local charge = SequenceMoveState.read(ctx, defender)
+  if charge ~= nil and HIDE_MOVES[charge.chargeMove] == true then
+    return { kind = "complete", result = "failed" }
+  end
+  local userEntry = ctx:entryOf(user)
+  local donorEntry = ctx:entryOf(defender)
+  if userEntry.activation == nil or donorEntry.activation == nil then
+    error(BattleErrors.invalidState("transform scopes to live entries", { user = user, defender = defender }))
+  end
+  local shown = ctx:entryAppearance(defender)
+  if shown == nil or type(shown.species) ~= "string" then
+    error(BattleErrors.invalidState("transform reads its donor appearance", { defender = defender }))
+  end
+  if type(shown.form) ~= "number" or type(shown.personality) ~= "number" then
+    error(BattleErrors.invalidState("transform reads its donor form and personality", { defender = defender }))
+  end
+  local trainerId = nil
+  if type(shown.origin) == "table" then
+    trainerId = (shown --[[@as table<string, unknown>]])
+      .origin --[[@as table<string, unknown>]]
+      .trainerId
+  end
+  if type(trainerId) ~= "number" then
+    error(BattleErrors.invalidState("transform reads its donor origin trainer", { defender = defender }))
+  end
+  local donorAppearance = {
+    species = shown.species,
+    form = shown.form,
+    personality = shown.personality,
+    origin = { trainerId = trainerId },
+  } --[[@as table<string, unknown>]]
+  markTransform(
+    ctx,
+    user,
+    defender,
+    donorAppearance,
+    userEntry.activation --[[@as integer]],
+    donorEntry.activation --[[@as integer]]
+  )
+  -- The primary execution moment is marked from the pre-transform
+  -- context: the user, donor, and selected identities frozen before
+  -- the marker landed. Transform deals no damage; its move power
+  -- rides the executing move facts.
+  local scope = ctx:moveScope()
+  local hitCycle = 1
+  if type(scope) == "table" and type(scope.hitCycle) == "number" then
+    hitCycle = scope.hitCycle --[[@as integer]]
+  end
+  local moveFacts = nil
+  if type(record.locals) == "table" then
+    moveFacts = (record.locals --[[@as table<string, unknown>]]).move
+  end
+  local power = 0
+  if
+    type(moveFacts) == "table" and type((moveFacts --[[@as table<string, unknown>]]).power) == "number"
+  then
+    power = (moveFacts --[[@as table<string, unknown>]]).power --[[@as integer]]
+  end
+  local friendship = 0
+  if
+    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    friendship = (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  local userRole = { combatant = user, activation = userEntry.activation }
+  local donorRole = { combatant = defender, activation = donorEntry.activation }
+  -- Direct handler calls name only the executing identity; the
+  -- selection falls back to it only when the frame carries no
+  -- requested move of its own.
+  local selectedMove = record.executingMove
+  if type(record.requestedMove) == "string" and record.requestedMove ~= "" then
+    selectedMove = record.requestedMove --[[@as string]]
+  end
+  -- The primary execution moment rides the transformed fact from the
+  -- pre-transform context: the user, donor, and selected identities
+  -- frozen before the marker lands. The accompanying use carries no
+  -- second primary, so the root plays exactly once.
+  ctx:emit("move-used", causeFor(record), { user = user, targets = 1 })
+  ctx:emit("transformed", causeFor(record), { target = user, copiedFrom = defender }, nil, {
+    execution = {
+      selectedMove = selectedMove,
+      executedMove = record.executingMove,
+      moment = "use",
+      branch = "default",
+      attacker = userRole,
+      defender = donorRole,
+      targets = { donorRole },
+      damage = 0,
+      power = power,
+      friendship = friendship,
+      hitOrdinal = 1,
+      hitCount = 1,
+      hitCycle = hitCycle,
+    },
+    operation = {
+      kind = "transform-applied",
+      subject = userRole,
+      source = { kind = "move", key = "TRANSFORM", actor = userRole },
+      donor = donorRole,
+      donorAppearanceInput = donorAppearance,
+    },
+  })
+  if type(scope) == "table" then
+    (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
+  end
   return { kind = "complete", result = "hit" }
 end
 

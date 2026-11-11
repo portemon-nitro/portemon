@@ -192,10 +192,27 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
             if after < StatStages.MIN then
               after = StatStages.MIN
             end
+            local intimidator = context:entryOf(target)
             context:changeStage(foe, "attack", after, {
               kind = "ability",
               key = "INTIMIDATE",
               combatant = target,
+            }, {
+              operation = {
+                kind = "stage-changed",
+                subject = { combatant = foe, activation = entry.activation },
+                source = {
+                  kind = "ability",
+                  key = "INTIMIDATE",
+                  actor = { combatant = target, activation = intimidator.activation },
+                },
+                stat = "attack",
+                before = stages.attack,
+                after = after,
+                method = "delta",
+                profile = "standard",
+                feedbackOwner = true,
+              },
             })
           end
         end
@@ -302,7 +319,24 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
           if after > StatStages.MAX then
             after = StatStages.MAX
           end
-          context:changeStage(target, stat, after, { kind = "ability", key = "DOWNLOAD", combatant = target })
+          local downloader = context:entryOf(target)
+          context:changeStage(target, stat, after, { kind = "ability", key = "DOWNLOAD", combatant = target }, {
+            operation = {
+              kind = "stage-changed",
+              subject = { combatant = target, activation = downloader.activation },
+              source = {
+                kind = "ability",
+                key = "DOWNLOAD",
+                actor = { combatant = target, activation = downloader.activation },
+              },
+              stat = stat,
+              before = stages[stat],
+              after = after,
+              method = "delta",
+              profile = "standard",
+              feedbackOwner = true,
+            },
+          })
         end
       end
     end
@@ -1200,6 +1234,8 @@ local function buildResidualHandlers(facts)
       target = occupant,
       hitIndex = 1,
       damage = dealt,
+      calculated = amount,
+      delayed = true,
     }
   end
   handlers.futuresight = futuresight

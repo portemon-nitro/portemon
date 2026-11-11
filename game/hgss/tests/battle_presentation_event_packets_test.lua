@@ -1,8 +1,10 @@
 -- Event-time playback facts at the application packet boundary: every
 -- delivery names its explicit actor and target identities, ordered
--- checkpoints, move selection, and visual seed so later playback never
--- infers participants from display order, reconstructs narration from a
--- final snapshot, or rolls mechanics randomness for particles. These
+-- checkpoints, and move selection so later playback never infers
+-- participants from display order, reconstructs narration from a final
+-- snapshot, or rolls mechanics randomness for particles. Visual
+-- variation never rides these facts: occurrence-derived seeds are
+-- stripped before they can reach animation cues. These
 -- scenarios run the real application runtime over real native sessions
 -- with a recording port. Each scenario first asserts the missing
 -- boundary, so the run stays red until the provider lands.
@@ -375,9 +377,9 @@ function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
 end
 
 -- Identical seeds with different presentation pacing replay identical
--- mechanics, while particle variation rides an independent visual seed
--- that never advances the combat stream.
-function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing_with_independent_visual_seed()
+-- mechanics. Particle variation never rides these events: cues carry
+-- no occurrence-derived seed, so pacing cannot perturb the outcome.
+function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing()
   local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
   local SessionFixture = require("libs.battle.tests.session_fixture")
   local function runTwin(launchId, seed, delayed)
@@ -477,8 +479,10 @@ function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing_w
         ipairs((packet --[[@as table<string, unknown>]]).events --[[@as table<integer, unknown>]])
       do
         local entry = event --[[@as table<string, unknown>]]
-        local visual = entry.visualSeed
-        Assert.isTrue(type(visual) == "number", "every material event carries its independent visual seed")
+        Assert.isNil(
+          entry.visualSeed,
+          "no material event carries an occurrence-derived seed on kind " .. tostring(entry.kind)
+        )
       end
     end
   end
@@ -676,11 +680,48 @@ local function branchEvent(fields)
   if fields.seed ~= nil then
     event.visualSeed = fields.seed
   end
+  -- Reached source calls carry their producer execution moment;
+  -- unconnected branches omit facts and keep the fallback omit.
+  if fields.execution ~= nil then
+    event.presentation = { context = {}, execution = fields.execution }
+  end
   return event
 end
 
 local function tackleMove()
   return { selected = "TACKLE", executed = "TACKLE", phase = "direct" }
+end
+
+-- Producer execution moment behind one reached branch call: frozen
+-- roles with live entry tokens, signed calculated damage, resolved
+-- power, and friendship beside the closed moment and branch.
+---@param executed string executed move identity behind the call
+---@param moment string closed execution moment behind the call
+---@param attacker table attacker role with its entry token
+---@param defender table native defender role with its entry token
+---@param targets table ordered target roles with entry tokens
+---@param extra table<string, unknown>? damage/power/friendship/hit fields, zeroed when absent
+---@return table<string, unknown> detached execution moment
+local function branchExecution(executed, moment, attacker, defender, targets, extra)
+  local facts = extra or {}
+  local execution = {
+    selectedMove = facts.selected or executed,
+    executedMove = executed,
+    moment = moment,
+    branch = facts.branch or "default",
+    attacker = attacker,
+    defender = defender,
+    targets = targets,
+    damage = facts.damage or 0,
+    power = facts.power or 0,
+    friendship = facts.friendship or 0,
+  }
+  if facts.hitOrdinal ~= nil then
+    execution.hitOrdinal = facts.hitOrdinal
+    execution.hitCount = facts.hitCount
+    execution.hitCycle = facts.hitCycle
+  end
+  return execution
 end
 
 -- Drives one failure/replay/called-move branch through the real
@@ -838,10 +879,11 @@ function T.missed_attack_announces_before_the_result_without_a_move_animation()
 end
 
 -- Failure, replay, and called-move branches stay single-shot: misses
--- announce and wait without starting a move animation, protected attempts
--- keep their documented program, charge and strike halves of one action stay
--- distinct, spread and repeated deliveries play once, and a called move
--- visualizes its executed identity.
+-- announce and wait without starting a move animation, blocked
+-- incoming attacks omit their ordinary root while narrating the block,
+-- charge and strike halves of one action stay distinct, spread
+-- continuations share their call's single visual while repeated hits
+-- replay, and a called move visualizes its executed identity.
 function T.failure_replay_and_called_move_branches_stay_single_shot()
   do
     local started, texts = runBranch("status-use", {
@@ -854,6 +896,7 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         move = { selected = "THUNDER_WAVE", executed = "THUNDER_WAVE", phase = "direct" },
         payload = { user = 1, targets = 1 },
         seed = 101,
+        execution = branchExecution("THUNDER_WAVE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }),
       }),
     })
     Assert.equal(countStarts(started, "THUNDER_WAVE"), 1, "the status use admits one visual")
@@ -889,8 +932,8 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         suppression = { protected = true },
         seed = 103,
       }),
-    })
-    Assert.equal(countStarts(started, "TACKLE"), 1, "the block keeps its documented program")
+    }, false)
+    Assert.equal(countStarts(started, "TACKLE"), 0, "the blocked incoming attack omits its ordinary root")
     Assert.isTrue(textsContain(texts, "protected itself"), "the block narrates its outcome")
   end
   do
@@ -904,6 +947,7 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         move = { selected = "RAZOR_WIND", executed = "RAZOR_WIND", phase = "charge" },
         payload = { target = 1 },
         seed = 104,
+        execution = branchExecution("RAZOR_WIND", "charge-start", { combatant = 1, activation = 1 }, { combatant = 1, activation = 1 }, { { combatant = 1, activation = 1 } }),
       }),
       branchEvent({
         sequence = 2,
@@ -915,6 +959,7 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         payload = { target = 2, damage = 9, hitIndex = 1 },
         hp = { [1] = 60, [2] = 51 },
         seed = 105,
+        execution = branchExecution("RAZOR_WIND", "charge-release", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { damage = -9, power = 80, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }),
       }),
     })
     Assert.equal(countStarts(started, "RAZOR_WIND"), 2, "charge and strike halves stay distinct")
@@ -934,6 +979,7 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         targets = { { combatant = 2 } },
         hp = { [1] = 60, [2] = 52, [4] = 60 },
         seed = 106,
+        execution = branchExecution("TACKLE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { damage = -8, power = 35, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }),
       }),
       branchEvent({
         sequence = 2,
@@ -984,6 +1030,7 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         payload = { target = 2, damage = 8, hitIndex = 1 },
         hp = { [1] = 60, [2] = 52 },
         seed = 108,
+        execution = branchExecution("TACKLE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { damage = -8, power = 35, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }),
       }),
     }
     local first = BattlePresentationModel.packet(
@@ -1023,6 +1070,7 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         move = { selected = "METRONOME", executed = "TACKLE", phase = "direct" },
         payload = { user = 1, targets = 1 },
         seed = 109,
+        execution = branchExecution("TACKLE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { selected = "METRONOME" }),
       }),
     })
     Assert.equal(countStarts(started, "TACKLE"), 1, "the called move visualizes its executed identity")

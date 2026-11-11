@@ -118,7 +118,11 @@ end
 ---@param foeHp integer foe health after the checkpoint under test driving
 ---@return table one struck event carrying its accepted native playback identity
 local function optionStrikeEvent(sequence, effectKey, damage, foeHp)
-  return {
+  -- Reached strikes carry their producer execution moment so the
+  -- selector admits the executed move under the launch scene choice.
+  -- A scoreless strike carries no moment: the source never reached
+  -- its animation call, so the fallback omits it as unconnected.
+  local record = {
     sequence = sequence,
     kind = "struck",
     cause = { key = "TACKLE" },
@@ -132,6 +136,27 @@ local function optionStrikeEvent(sequence, effectKey, damage, foeHp)
     payload = { target = 3, damage = damage },
     after = { hp = { [1] = 52, [3] = foeHp } },
   }
+  if damage ~= 0 then
+    record.presentation = {
+      context = {},
+      execution = {
+        selectedMove = "TACKLE",
+        executedMove = "TACKLE",
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -damage,
+        power = 35,
+        friendship = 70,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = 1,
+      },
+    }
+  end
+  return record
 end
 
 ---@return table detached dynamic view with a live lead and a foe
@@ -194,6 +219,24 @@ local function strikeEvent()
     move = { executed = "TACKLE" },
     payload = { target = 3, damage = 14 },
     after = { hp = { [1] = 52, [3] = 43 } },
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = "TACKLE",
+        executedMove = "TACKLE",
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -14,
+        power = 35,
+        friendship = 70,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = 1,
+      },
+    },
   }
 end
 
@@ -241,8 +284,19 @@ function T.print_pacing_changes_presentation_without_touching_mechanics()
   Assert.equal(battler(slow:battlers(), 3).hp, 43, "the exact final health applies under both pacings")
 end
 
-function T.transform_updates_the_displayed_appearance()
-  local timeline = BattleTimeline.new({})
+function T.transform_queues_its_frozen_request_without_rewriting_appearance()
+  local started = {}
+  local timeline = BattleTimeline.new({
+    effects = {
+      start = function(cue)
+        started[#started + 1] = cue
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+    },
+  })
   timeline:reset(openingView())
   Assert.isTrue(
     timeline:present(packet(1, {
@@ -253,18 +307,59 @@ function T.transform_updates_the_displayed_appearance()
         audience = "public",
         actors = { { combatant = 3 } },
         targets = { { combatant = 3 } },
+        effectKey = "TRANSFORM",
         payload = { target = 3, copiedFrom = 1 },
         after = { hp = { [1] = 52, [3] = 57 } },
+        -- The legal copy carries its execution moment plus the
+        -- detached donor appearance: the selector admits the
+        -- primary and freezes the donor species for the player.
+        presentation = {
+          context = {},
+          execution = {
+            selectedMove = "TRANSFORM",
+            executedMove = "TRANSFORM",
+            moment = "use",
+            branch = "default",
+            attacker = { combatant = 3, activation = 3 },
+            defender = { combatant = 3, activation = 3 },
+            targets = { { combatant = 3, activation = 3 } },
+            damage = 0,
+            power = 0,
+            friendship = 0,
+          },
+          operation = {
+            kind = "transform-applied",
+            subject = { combatant = 3, activation = 3 },
+            source = { kind = "move", key = "TRANSFORM", actor = { combatant = 3, activation = 3 } },
+            donor = { combatant = 1, activation = 1 },
+            donorAppearanceInput = {
+              species = "EEVEE",
+              form = 0,
+              personality = 42,
+              origin = { trainerId = 1 },
+            },
+          },
+        },
       },
     })),
     "the transform packet is accepted"
   )
   drain(timeline, 3000)
   Assert.isTrue(timeline:settled(), "the transform drains fully")
+  Assert.equal(#started, 1, "the transform drains its admitted request")
+  Assert.equal(started[1].effectKey, "TRANSFORM", "the transform cue carries its selected key")
+  local request = assert(started[1].request, "the transform cue carries its ledgered request")
+  Assert.equal(request.disposition, "admit", "the transform admits its root")
+  local appearance = assert(
+    type(request.playback) == "table" and type(request.playback.topology.attacker) == "table"
+      and request.playback.topology.attacker.appearance,
+    "the transform freezes its donor appearance for the player"
+  )
+  Assert.equal(appearance.species, "EEVEE", "the frozen donor appearance names the donor species")
   Assert.equal(
     battler(timeline:battlers(), 3).species,
-    "EEVEE",
-    "the transformed battler displays the copied appearance, even with effects suppressed"
+    "GEODUDE",
+    "the cue player never swaps the displayed appearance synchronously; the visual task owns the picture change"
   )
 end
 
@@ -382,10 +477,10 @@ function T.effect_execution_runs_through_the_animation_player()
   Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the exact checkpoint applies after native completion")
 end
 
--- A strike with move identity but no damage still runs its selected
--- native program without moving any health fact: no-damage visuals route
--- by source effect identity, never by HP delta.
-function T.no_damage_strike_still_runs_its_selected_program()
+-- A strike with move identity but no damage omits its root since the
+-- hit never connected: no native program starts while every health
+-- fact holds still.
+function T.no_damage_strike_starts_no_native_program_while_health_holds()
   local sounds = { played = {} }
   function sounds.sound(cue)
     sounds.played[#sounds.played + 1] = cue
@@ -403,23 +498,20 @@ function T.no_damage_strike_still_runs_its_selected_program()
     "the no-damage strike is accepted"
   )
   for _ = 1, 300 do
-    if #fx.starts > 0 then
-      break
-    end
     drain(timeline, 1)
   end
-  Assert.equal(#fx.starts, 1, "the no-damage visual still starts its selected program")
-  Assert.equal(fx.starts[1].effectKey, "TACKLE", "the no-damage start carries the accepted semantic effect key")
+  Assert.equal(#fx.starts, 0, "the unconnected strike starts no native program")
   drain(timeline, 3000)
   Assert.isTrue(timeline:settled(), "the no-damage visual drains")
   Assert.equal(battler(timeline:battlers(), 3).hp, 57, "no health fact moves without damage")
   Assert.equal(battler(timeline:battlers(), 1).hp, 52, "the attacker health never moves either")
 end
 
--- A Transform event carrying its source effect runs natively and still
--- applies the copied appearance: essential visual updates are never
--- silenced, even on paths where optional artwork is suppressed.
-function T.transformed_appearance_applies_through_the_native_effect()
+-- A Transform event carrying its source effect runs natively and
+-- freezes the donor appearance on its ledgered request: the cue
+-- player never swaps the displayed appearance synchronously, the
+-- visual task owns the picture change at its authored moment.
+function T.transform_freezes_donor_appearance_for_the_native_effect()
   local sounds = { played = {} }
   function sounds.sound(cue)
     sounds.played[#sounds.played + 1] = cue
@@ -445,6 +537,36 @@ function T.transformed_appearance_applies_through_the_native_effect()
         effectKey = "TRANSFORM",
         payload = { target = 3, copiedFrom = 1 },
         after = { hp = { [1] = 52, [3] = 57 } },
+        -- The legal copy carries its execution moment plus the
+        -- detached donor appearance: the selector admits the primary
+        -- and freezes the donor species for the player.
+        presentation = {
+          context = {},
+          execution = {
+            selectedMove = "TRANSFORM",
+            executedMove = "TRANSFORM",
+            moment = "use",
+            branch = "default",
+            attacker = { combatant = 3, activation = 3 },
+            defender = { combatant = 3, activation = 3 },
+            targets = { { combatant = 3, activation = 3 } },
+            damage = 0,
+            power = 0,
+            friendship = 0,
+          },
+          operation = {
+            kind = "transform-applied",
+            subject = { combatant = 3, activation = 3 },
+            source = { kind = "move", key = "TRANSFORM", actor = { combatant = 3, activation = 3 } },
+            donor = { combatant = 1, activation = 1 },
+            donorAppearanceInput = {
+              species = "EEVEE",
+              form = 0,
+              personality = 42,
+              origin = { trainerId = 1 },
+            },
+          },
+        },
       },
     })),
     "the transform packet is accepted"
@@ -457,12 +579,20 @@ function T.transformed_appearance_applies_through_the_native_effect()
   end
   Assert.equal(#fx.starts, 1, "the transform starts its selected native effect")
   Assert.equal(fx.starts[1].effectKey, "TRANSFORM", "the transform start carries its accepted effect key")
+  local frozen = assert(fx.starts[1].request, "the transform cue carries its ledgered request")
+  Assert.equal(frozen.disposition, "admit", "the donor change admits its root")
+  local appearance = assert(
+    type(frozen.playback) == "table" and type(frozen.playback.topology.attacker) == "table"
+      and frozen.playback.topology.attacker.appearance,
+    "the transform freezes its donor appearance for later calls"
+  )
+  Assert.equal(appearance.species, "EEVEE", "the frozen donor appearance names the donor species")
   drain(timeline, 3000)
   Assert.isTrue(timeline:settled(), "the transform drains fully")
   Assert.equal(
     battler(timeline:battlers(), 3).species,
-    "EEVEE",
-    "the transformed battler displays the copied appearance through the native effect"
+    "GEODUDE",
+    "the cue player never swaps the displayed appearance synchronously"
   )
 end
 

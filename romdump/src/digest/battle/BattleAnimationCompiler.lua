@@ -418,6 +418,8 @@ local function decodeParticleOperands(key, stream, offset, start, opcode, label,
     -- (BattleAnimEmitter_AddOffsetForBattlerType): consume all six
     -- [skip, count, offset words] trailers for framing and carry the
     -- ordered blocks so the runtime selects the battler's entry.
+    -- Word order follows BattleAnimEmitterOffsetArgs (ignoreSide first,
+    -- then the offset triple), as read by BattleAnimSystem_ReadScriptArgs.
     if positionMode == 100 or positionMode == 101 then
       local typeOffsets = {}
       for typeIndex = 0, 5 do
@@ -426,10 +428,10 @@ local function decodeParticleOperands(key, stream, offset, start, opcode, label,
           error(decodeError(key, offset, "emitter type offset count disagrees with the source reader"), 0)
         end
         typeOffsets[typeIndex + 1] = {
-          x = signed32(readWord(stream, key, offset + 8)),
-          y = signed32(readWord(stream, key, offset + 12)),
-          z = signed32(readWord(stream, key, offset + 16)),
-          ignoreSide = readWord(stream, key, offset + 20),
+          ignoreSide = readWord(stream, key, offset + 8),
+          x = signed32(readWord(stream, key, offset + 12)),
+          y = signed32(readWord(stream, key, offset + 16)),
+          z = signed32(readWord(stream, key, offset + 20)),
         }
         offset = offset + 8 + blockCount * 4
       end
@@ -457,10 +459,10 @@ local function decodeParticleOperands(key, stream, offset, start, opcode, label,
         error(decodeError(key, offset, "emitter offset count disagrees with the source reader"), 0)
       end
       instruction.emitterOffset = {
-        x = signed32(readWord(stream, key, offset + 8)),
-        y = signed32(readWord(stream, key, offset + 12)),
-        z = signed32(readWord(stream, key, offset + 16)),
-        ignoreSide = readWord(stream, key, offset + 20),
+        ignoreSide = readWord(stream, key, offset + 8),
+        x = signed32(readWord(stream, key, offset + 12)),
+        y = signed32(readWord(stream, key, offset + 16)),
+        z = signed32(readWord(stream, key, offset + 20)),
       }
       offset = offset + 8 + offsetCount * 4
     end

@@ -82,6 +82,12 @@ local T = {
       "battle-effect:SCRATCH",
       "battle-effect:FORESIGHT",
       "battle-effect:DEFENSE_CURL",
+      -- Applied stage changes admit their own stat feedback roots
+      -- (BATTLE_ANIMATION_STAT_BOOST for DEFENSE_CURL, STAT_DROP for
+      -- GROWL, TAIL_WHIP, LEER, and SAND_ATTACK), so both roots stage
+      -- beside the executed move programs instead of wedging pending.
+      "battle-effect:BATTLE_ANIMATION_STAT_BOOST",
+      "battle-effect:BATTLE_ANIMATION_STAT_DROP",
       -- Presented launches demand only their selected leaves: the player
       -- backpic and the lead ball behind every leg. Foe fronts and the
       -- evolution bundle extend this list exactly as journeys name them.

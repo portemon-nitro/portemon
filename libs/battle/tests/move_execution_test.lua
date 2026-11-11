@@ -529,6 +529,150 @@ function T.damage_uses_actual_combatant_facts()
   Assert.equal(unstated.code, "BATTLE_MISSING_BEHAVIOR", "the missing facts name their behavior")
 end
 
+-- The executing strike pins its scope for exactly one handler step:
+-- the previous pin returns on normal completion and on raised failure
+-- alike, so a failed strike never leaks its identities into the next
+-- resumed frame.
+function T.scopes_restore_the_outer_pin_on_success_and_error()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local function tackleNode(extra, drop)
+    local inputs = {
+      actionId = 1,
+      actor = actorRef(0),
+      requestedMove = "TACKLE",
+      executingMove = "TACKLE",
+      ppOwnerSlot = 0,
+      calledBy = nil,
+      selectedTarget = SessionFixture.positionTarget(2),
+      targets = { { combatant = 2 } },
+      moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
+      moveFacts = {
+        TACKLE = { power = 35, accuracy = 95, category = "physical", moveType = "normal" },
+      },
+      combat = {
+        level = 50,
+        attack = 120,
+        defense = 90,
+        rawAttack = 120,
+        rawDefense = 90,
+        attackStage = 0,
+        defenseStage = 0,
+      },
+      burned = false,
+      guts = false,
+      weather = "none",
+      weatherSuppressed = false,
+      abilities = { user = "NONE", foe = "NONE" },
+      attackerTypes = typeFacts().attackerTypes,
+      defenderTypes = typeFacts().defenderTypes,
+      typeChart = typeFacts().typeChart,
+      stream = fixedStream(),
+    }
+    for key, value in pairs(extra or {}) do
+      inputs[key] = value
+    end
+    for _, key in ipairs(drop or {}) do
+      inputs[key] = nil
+    end
+    return Execution.validateFrame(Execution.start(inputs))
+  end
+  local function drain(ctx, node)
+    local outcome = node
+    for _ = 1, 32 do
+      local stepped = Execution.step(ctx, outcome)
+      if stepped.kind == "complete" then
+        return stepped
+      end
+      outcome = stepped.frame or stepped
+    end
+    error("the tackle execution never settles")
+  end
+  do
+    local state = liveState()
+    local ctx = liveContext(state)
+    local outer = { outerPin = true }
+    ctx:setMoveScope(outer)
+    local outcome = drain(ctx, tackleNode())
+    Assert.equal(outcome.result, "hit", "the tackle strike connects")
+    Assert.isTrue(ctx:moveScope() == outer, "a completed strike restores its outer pin by identity")
+  end
+  do
+    local state = liveState()
+    local ctx = liveContext(state)
+    local outer = { outerPin = true }
+    ctx:setMoveScope(outer)
+    local failure = Assert.throws(function()
+      drain(ctx, tackleNode(nil, { "combat" }))
+    end, "a strike without combat facts fails")
+    local message = type(failure) == "table" and failure.message or tostring(failure)
+    Assert.isTrue(
+      type(message) == "string" and message ~= "",
+      "the original handler failure rethrows with its message"
+    )
+    Assert.isTrue(ctx:moveScope() == outer, "a failed strike restores its outer pin by identity")
+  end
+end
+
+-- The pinned scope freezes the actor's entry before the handler can
+-- mutate appearance or field state, and opens the first source
+-- played-flag cycle with no primary moment marked. Spread targets
+-- share that cycle; only a connected hit boundary advances it.
+function T.entry_context_and_hit_cycle_travel_on_the_pinned_scope()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local outer = { outerPin = true }
+  local pins = {}
+  local current = outer
+  local spy = {}
+  function spy:moveScope()
+    return current
+  end
+  function spy:setMoveScope(scope)
+    pins[#pins + 1] = scope
+    current = scope
+  end
+  function spy:entryOf(combatant)
+    Assert.equal(combatant, 1, "the entry context freezes the strike actor")
+    return { side = 1, position = 1, activation = 7, stages = {}, hp = 52, maxHp = 52 }
+  end
+  function spy:entryAppearance(combatant)
+    Assert.equal(combatant, 1, "the entry appearance freezes the strike actor")
+    return { species = "EEVEE", form = 0, personality = 42, origin = { trainerId = 99 } }
+  end
+  local node = Execution.validateFrame(Execution.start({
+    actionId = 1,
+    actor = { combatant = 1 },
+    requestedMove = "TACKLE",
+    executingMove = "TACKLE",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "TACKLE", pp = 35, ppUps = 0 } },
+    moveFacts = {
+      TACKLE = { power = 35, accuracy = 95, category = "physical", moveType = "normal" },
+    },
+    stream = fixedStream(),
+    locals = {},
+  }))
+  -- The native tackle handler runs against a stub that answers no
+  -- mechanics endpoint, so it fails fast; the pinned scope and the
+  -- restoration are what this probe observes.
+  local ok, err = pcall(Execution.step, spy, node)
+  Assert.isFalse(ok, "the stubbed strike fails inside its handler")
+  Assert.isTrue(tostring(err) ~= "", "the failure rethrows")
+  local scope = assert(pins[1], "the step pins its strike scope once")
+  Assert.equal(scope.executingMove, "TACKLE", "the scope carries its executing identity")
+  local entry = assert(scope.entryContext, "the scope freezes its entry context")
+  Assert.equal(entry.combatant, 1, "the entry context names its actor")
+  Assert.equal(entry.activation, 7, "the entry context freezes the pre-handler activation")
+  Assert.equal(entry.position, 1, "the entry context freezes the pre-handler position")
+  Assert.equal(entry.appearance.species, "EEVEE", "the entry context freezes the pre-handler appearance")
+  Assert.equal(entry.appearance.origin.trainerId, 99, "the entry context keeps its origin trainer")
+  Assert.equal(scope.hitCycle, 1, "the scope opens the first played-flag cycle")
+  Assert.isFalse(scope.primaryMomentMarked, "the scope opens with no primary moment marked")
+  Assert.isTrue(spy:moveScope() == outer, "a failed handler restores the previous pin by identity")
+end
+
 -- Registered but unmodeled native semantics never fake success: an
 -- ordinary damage identity without implemented behavior and a condition
 -- identity without implemented behavior both fail explicitly instead of

@@ -1068,10 +1068,15 @@ end
 local function withCondition(packet, condition, packetId)
   packet.packetId = packetId
   packet.after.foes[1].condition = condition
+  -- Synthetic status emissions carry the same identity facts
+  -- production does: the applying lead and the targeted foe resolve
+  -- through the event-time views at selection.
   packet.events = {
     {
       sequence = packetId,
       kind = "status",
+      actors = { { combatant = packet.after.own[1].combatant } },
+      targets = { { combatant = packet.after.foes[1].combatant } },
       payload = { target = packet.after.foes[1].combatant, key = condition },
     },
   }

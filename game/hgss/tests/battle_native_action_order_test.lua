@@ -84,6 +84,8 @@ local function strikeEvent(sequence, foeHp)
     [1] = checkpoint(1, 52, 52),
     [3] = checkpoint(3, foeHp, 57),
   }
+  -- Reached strikes carry their producer execution moment with the
+  -- event hit ordinal, so repeated hits replay once per cycle.
   return {
     sequence = sequence,
     kind = "struck",
@@ -94,6 +96,24 @@ local function strikeEvent(sequence, foeHp)
     move = { executed = "TACKLE" },
     payload = { target = 3, damage = 14, hitIndex = sequence },
     after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = "TACKLE",
+        executedMove = "TACKLE",
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -14,
+        power = 35,
+        friendship = 70,
+        hitOrdinal = sequence,
+        hitCount = sequence,
+        hitCycle = sequence,
+      },
+    },
   }
 end
 
@@ -373,7 +393,11 @@ function T.strike_announcement_precedes_visual_and_checkpoint()
   local struckByAction = {}
   for _, event in ipairs(events) do
     if event.kind == "struck" then
-      Assert.equal(event.effectKey, "TACKLE", "the genuine hit selects its own visual route")
+      local execution = assert(
+        type(event.presentation) == "table" and event.presentation.execution,
+        "the genuine hit carries its execution moment"
+      )
+      Assert.equal(execution.executedMove, "TACKLE", "the genuine hit selects its own visual route")
       struckByAction[event.actionId] = event
     end
   end
@@ -524,21 +548,40 @@ end
 ---@param sequence integer event sequence ordinal under the shared action
 ---@param foeHp integer foe health after this hit
 ---@return table one production-shaped strike event for the shared two-hit action
-local function visualStrike(sequence, foeHp)
+local function visualStrike(sequence, foeHp, executed)
+  local executedMove = executed or "TACKLE"
   return {
     sequence = sequence,
     kind = "struck",
-    cause = { key = "TACKLE", kind = "move" },
+    cause = { key = executedMove, kind = "move" },
     audience = "public",
     actionId = 7,
-    effectKey = "TACKLE",
+    effectKey = executedMove,
     actors = { { combatant = 1 } },
     targets = { { combatant = 3 } },
-    move = { selected = "TACKLE", executed = "TACKLE", phase = "direct" },
+    move = { selected = executedMove, executed = executedMove, phase = "direct", hitOrdinal = sequence },
     payload = { target = 3, damage = 14, hitIndex = sequence },
     observation = { hp = { [1] = 52, [3] = foeHp } },
     after = { hp = { [1] = 52, [3] = foeHp } },
     visualSeed = sequence * 3 + 1,
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = executedMove,
+        executedMove = executedMove,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -14,
+        power = 35,
+        friendship = 70,
+        hitOrdinal = sequence,
+        hitCount = sequence,
+        hitCycle = sequence,
+      },
+    },
   }
 end
 
@@ -547,6 +590,7 @@ function T.move_use_and_strike_of_one_action_announce_only_once()
     local view = openingView()
     local starts = 0
     local timeline = BattleTimeline.new({
+      battleScene = animations,
       effects = {
         start = function(_)
           starts = starts + 1
@@ -567,11 +611,6 @@ function T.move_use_and_strike_of_one_action_announce_only_once()
       launchId = "use-and-strike",
       packetId = 1,
     })
-    if not animations then
-      for _, event in ipairs(packet.events) do
-        event.effectKey = nil
-      end
-    end
     Assert.isTrue(timeline:present(packet), "the action is accepted")
     local texts = collectMessages(timeline)
     Assert.isTrue(timeline:settled(), "the action drains")
@@ -594,18 +633,10 @@ function T.bide_release_uses_selected_message_before_damage()
     },
   })
   timeline:reset(view)
-  local use = visualStrike(1, 57)
+  local use = visualStrike(1, 57, "BIDE")
   use.kind = "move-used"
-  use.cause.key = "BIDE"
-  use.effectKey = "BIDE"
-  use.move.selected = "BIDE"
-  use.move.executed = "BIDE"
   use.payload = { user = 1, targets = 1, phase = "release" }
-  local strike = visualStrike(2, 43)
-  strike.cause.key = "BIDE"
-  strike.effectKey = "BIDE"
-  strike.move.selected = "BIDE"
-  strike.move.executed = "BIDE"
+  local strike = visualStrike(2, 43, "BIDE")
   local packet = BattlePresentationModel.packet(view, { events = { use, strike } }, view, {
     launchId = "bide-release",
     packetId = 1,
@@ -618,7 +649,7 @@ function T.bide_release_uses_selected_message_before_damage()
   Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the stored damage follows the release")
 end
 
-function T.multi_hit_strike_announces_once_before_its_single_visual()
+function T.multi_hit_strike_announces_once_before_each_hit_visual()
   local before = openingView()
   local after = openingView()
   after.foes[1].hp = 30
@@ -684,22 +715,22 @@ function T.multi_hit_strike_announces_once_before_its_single_visual()
     end
   end
   Assert.notNil(announcementTick, "the shared attack announcement becomes readable")
-  Assert.notNil(startTick, "the shared visual starts")
-  Assert.isTrue(announcementTick < startTick, "the multi-hit announcement precedes its single visual")
+  Assert.notNil(startTick, "the first hit visual starts")
+  Assert.isTrue(announcementTick < startTick, "the multi-hit announcement precedes its first visual")
   Assert.isTrue(
     started[1].message:find("used Tackle", 1, true) ~= nil,
-    "the single visual starts behind its attack announcement"
+    "the first visual starts behind its attack announcement"
   )
-  Assert.isTrue(timeline:settled(), "both hits drain fully once the visual completes")
-  Assert.equal(#started, 1, "the two-hit action starts exactly one visual")
+  Assert.isTrue(timeline:settled(), "both hits drain fully once their visuals complete")
+  Assert.equal(#started, 2, "each connected hit starts its own visual")
   Assert.equal(battler(timeline:battlers(), 3).hp, 30, "both hit checkpoints apply in order")
   Assert.equal(countContaining(texts, "used Tackle"), 1, "the shared attack narrates exactly once")
 end
 
--- One action split across two deliveries still plays one visual and
--- narrates once: the occurrence claim survives packet boundaries while
--- each delivery keeps its own checkpoint motion.
-function T.split_action_across_packets_claims_one_visual_and_narrates_once()
+-- One action split across two deliveries plays one visual per hit:
+-- each delivery keeps its own checkpoint motion behind its own
+-- ledgered request.
+function T.split_action_across_packets_plays_each_hit_visual()
   local before = openingView()
   local after = openingView()
   after.foes[1].hp = 30
@@ -770,7 +801,7 @@ function T.split_action_across_packets_claims_one_visual_and_narrates_once()
     end
   end
   Assert.isTrue(timeline:settled(), "the second half drains fully")
-  Assert.equal(#started, 1, "the split action starts exactly one visual")
+  Assert.equal(#started, 2, "each split half starts its own hit visual")
   Assert.equal(battler(timeline:battlers(), 3).hp, 30, "both halves move their checkpoints")
 end
 
@@ -810,27 +841,29 @@ function T.repeated_move_in_later_round_announces_and_animates_again()
   Assert.equal(started, 2, "each turn plays its attack animation")
 end
 
--- A mistyped source action identity fails loudly: the failure names the
--- rejection and no visual is assigned to another user's action.
-function T.malformed_action_identity_fails_loudly_without_assigning_the_visual()
+-- An unresolvable actor fails loudly: the failure names the missing
+-- role and no visual is assigned to another user's action.
+function T.unresolvable_actor_fails_loudly_without_assigning_the_visual()
   local view = openingView()
   local started = {}
   local timeline = BattleTimeline.new({
-    start = function(cue)
-      started[#started + 1] = { effectKey = cue.effectKey }
-      return { phase = "complete" }
-    end,
-    status = function(handle)
-      return handle.phase
-    end,
-    cancel = function(handle)
-      handle.phase = "cancelled"
-      return true
-    end,
+    effects = {
+      start = function(cue)
+        started[#started + 1] = { effectKey = cue.effectKey }
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+      cancel = function(handle)
+        handle.phase = "cancelled"
+        return true
+      end,
+    },
   })
   timeline:reset(view)
   local strike = visualStrike(1, 43)
-  strike.actionId = {}
+  strike.actors = { { combatant = 999, activation = 999 } }
   Assert.throws(function()
     timeline:present({
       launchId = "malformed-probe",
@@ -839,8 +872,8 @@ function T.malformed_action_identity_fails_loudly_without_assigning_the_visual()
       before = view,
       after = view,
     })
-  end, "a mistyped action identity fails instead of skipping its visual silently")
-  Assert.equal(#started, 0, "the malformed identity starts no visual")
+  end, "an unresolvable actor fails instead of skipping its visual silently")
+  Assert.equal(#started, 0, "the unresolvable actor starts no visual")
 end
 
 return { tests = T }

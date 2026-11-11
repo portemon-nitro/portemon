@@ -419,11 +419,23 @@ function T.screen_grows_exact_demand_when_an_appearance_changes()
   screen:dispose()
 end
 
--- A transformed battler must draw the donor's appearance, not the
--- stale pre-transform picture: once the transform event is accepted,
--- the displayed record has to carry the donor's picture selector.
-function T.transformed_appearance_replaces_the_stale_picture()
-  local timeline = BattleTimeline.new({})
+-- A transformed battler freezes the donor's appearance on its
+-- ledgered request without rewriting the displayed record
+-- synchronously: the visual task owns the picture change at its
+-- authored moment, while later calls read the frozen donor facts.
+function T.transformed_request_freezes_the_donor_appearance()
+  local started = {}
+  local timeline = BattleTimeline.new({
+    effects = {
+      start = function(cue)
+        started[#started + 1] = cue
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+    },
+  })
   local view = singlesView()
   view.own[1].portraitSelector = "EEVEE/0/male/plain/back"
   view.foes[1].species = "GEODUDE"
@@ -436,20 +448,60 @@ function T.transformed_appearance_replaces_the_stale_picture()
         kind = "transformed",
         cause = { key = "TRANSFORM" },
         audience = "public",
+        actors = { { combatant = 1 } },
+        targets = { { combatant = 1 } },
+        effectKey = "TRANSFORM",
         payload = { target = 1, copiedFrom = 3 },
+        -- The transform carries its producer execution moment and
+        -- applied operation so the selector admits the primary root
+        -- and freezes the donor appearance from the source marker.
+        presentation = {
+          context = {},
+          execution = {
+            selectedMove = "TRANSFORM",
+            executedMove = "TRANSFORM",
+            moment = "use",
+            branch = "default",
+            attacker = { combatant = 1, activation = 1 },
+            defender = { combatant = 3, activation = 3 },
+            targets = { { combatant = 3, activation = 3 } },
+            damage = 0,
+            power = 0,
+            friendship = 0,
+            hitOrdinal = 1,
+            hitCount = 1,
+            hitCycle = 1,
+          },
+          operation = {
+            kind = "transform-applied",
+            subject = { combatant = 1, activation = 1 },
+            source = { kind = "move", key = "TRANSFORM", actor = { combatant = 1, activation = 1 } },
+            donor = { combatant = 3, activation = 3 },
+            donorAppearanceInput = {
+              species = "GEODUDE",
+              form = 0,
+              personality = 0,
+              origin = { trainerId = 0 },
+            },
+          },
+        },
       },
     }, view, view)),
     "setup: the transform packet is accepted"
   )
   drain(timeline, 3000)
   Assert.isTrue(timeline:settled(), "setup: the transform drains fully")
-  local shown = battler(timeline:battlers(), 1)
-  Assert.equal(shown.species, "GEODUDE", "setup: the displayed species tracks the donor")
-  Assert.equal(
-    shown.portraitSelector,
-    "GEODUDE/0/male/plain/front",
-    "the transformed battler draws the donor picture, never the stale one"
+  Assert.equal(#started, 1, "setup: the transform drains its admitted request")
+  local request = assert(started[1].request, "setup: the cue carries its ledgered request")
+  Assert.equal(request.disposition, "admit", "setup: the transform admits its root")
+  local appearance = assert(
+    type(request.playback) == "table" and type(request.playback.topology.attacker) == "table"
+      and request.playback.topology.attacker.appearance,
+    "setup: the transform freezes its donor appearance for later calls"
   )
+  Assert.equal(appearance.species, "GEODUDE", "setup: the frozen donor appearance names the donor species")
+  local shown = battler(timeline:battlers(), 1)
+  Assert.equal(shown.species, "EEVEE", "the cue player never swaps the displayed appearance synchronously")
 end
 
 -- Shiny variants must resolve distinct picture resources: two

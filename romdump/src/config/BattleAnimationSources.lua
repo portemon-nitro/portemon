@@ -1115,6 +1115,62 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
         returnDurationTicks = packedDurations % 0x10000,
       },
     }
+  elseif selector == 63 then
+    -- BattleAnimFunc_BlendSpritePalette (battle_anim_funcs.c) blends
+    -- the collected sprites' OBJ palette from start to end by step
+    -- after delay ticks, toward color, retiring once the blend reaches
+    -- its end. Flags use the battler-role bits; shipped scripts blend
+    -- the attacker (DISABLE, LUNAR_DANCE) or the defender (TOXIC).
+    if count ~= 6 then
+      return nil, "sprite palette blend callback requires six source operands"
+    end
+    local blendTarget = linearRoleTargets(operands[3])
+    if blendTarget == nil then
+      return nil, "sprite palette blend callback follows its source assertion path"
+    end
+    local delay = signed8(operands[4] or 0)
+    local step = signed8(operands[5] or 0)
+    local start = (operands[6] or 0) % 0x100
+    local finish = (operands[7] or 0) % 0x100
+    -- The native blend task applies its start coefficient first, then
+    -- steps toward its end once per delay period: simulate that loop
+    -- so the compiled duration retires exactly when the source does.
+    local blends = 0
+    local current = start
+    while true do
+      blends = blends + 1
+      if current == finish then
+        break
+      end
+      if blends > 512 then
+        return nil, "sprite palette blend callback never reaches its end coefficient"
+      end
+      local next = current + step
+      local nextS8 = next % 0x100
+      if nextS8 >= 0x80 then
+        nextS8 = nextS8 - 0x100
+      end
+      if step > 0 then
+        current = nextS8 > finish and finish or next
+      else
+        current = nextS8 < finish and finish or next
+      end
+    end
+    local period = delay > 1 and delay or 1
+    return {
+      callback = "pokemon-picture-blend-sprite-palette",
+      taskKind = "pokemon-picture-blend-sprite-palette",
+      context = "pokemon-picture",
+      parameters = {
+        pictureTarget = blendTarget,
+        wait = delay,
+        startCoefficient = start,
+        endCoefficient = finish,
+        nextColor = (operands[8] or 0) % 0x10000,
+        blendStep = step,
+        durationTicks = 1 + (blends - 1) * period,
+      },
+    }
   elseif selector == 77 then
     if count < 3 then
       return nil, "selected picture position transition requires three source operands"
@@ -1461,11 +1517,14 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
     if count ~= 4 then
       return nil, "Pokepic offset transition requires four source operands"
     end
+    -- The opposing-pair word is 272, matching the sibling selector-51
+    -- table and every shipped script: the corpus carries 258/264/272
+    -- for this callback and no 276 anywhere.
     local pictureTargets = {
       [258] = "active-battler",
       [260] = "active-battler-pair-when-enabled",
       [264] = "opposing-battler",
-      [276] = "opposing-battler-pair-when-enabled",
+      [272] = "opposing-battler-pair-when-enabled",
     }
     local pictureTarget = pictureTargets[operands[6]]
     if pictureTarget == nil then

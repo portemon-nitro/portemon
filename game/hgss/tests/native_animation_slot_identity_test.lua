@@ -141,12 +141,14 @@ local STABLE_POSITIONS = {
 }
 
 local function strikeEvent(sequence, actors, targets, extra)
+  local fields = extra or {}
+  local key = fields.effectKey or "probe-strike"
   local event = {
     sequence = sequence,
-    kind = "strike",
-    cause = {},
+    kind = "struck",
+    cause = { kind = "move", key = key },
     audience = "public",
-    payload = {},
+    payload = fields.payload or {},
     actors = actors,
     targets = targets,
     move = { selected = key, executed = key, phase = "direct" },
@@ -172,8 +174,8 @@ local function strikeEvent(sequence, actors, targets, extra)
       },
     },
   }
-  if extra ~= nil then
-    for field, value in pairs(extra) do
+  for field, value in pairs(fields) do
+    if field ~= "payload" then
       event[field] = value
     end
   end
@@ -185,6 +187,24 @@ local function packetFor(before, after, rawEvents, launchId, packetId)
     launchId = launchId,
     packetId = packetId,
   })
+end
+
+-- Builds the player-ready occurrence record behind one frozen request:
+-- launch and packet identity with the sanitized event, its seed, and
+-- the frozen topology and context the single selector published.
+---@param packet table<string, unknown> delivery packet behind the identities
+---@param event table<string, unknown> sanitized event behind the request
+---@param request table<string, unknown> frozen request behind the occurrence
+---@return table<string, unknown> detached player occurrence record
+local function occurrenceFor(packet, event, request)
+  return {
+    launchId = packet.launchId,
+    packetId = packet.packetId,
+    event = event,
+    visualSeed = event.visualSeed,
+    topology = request.playback.topology,
+    context = request.playback.context,
+  }
 end
 
 local function topologyPlayback(packetId, attacker, targets)
@@ -248,22 +268,26 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       suppression = { missed = true },
     }),
   }, "topology-probe", 1)
-  local singlePlayback = BattlePresentationFlow.animationPlayback(singlePacket, singlePacket.events[1], geometry)
-  Assert.equal(singlePlayback.launchId, "topology-probe", "the playback carries its launch identity")
-  Assert.equal(singlePlayback.packetId, 1, "the playback carries its packet identity")
-  Assert.equal(singlePlayback.event.sequence, 4, "the playback carries its event sequence")
-  Assert.equal(singlePlayback.event.actionId, 2, "the playback carries its action identity")
-  Assert.equal(singlePlayback.event.hitIndex, 1, "the playback carries its hit ordinal")
-  Assert.equal(singlePlayback.event.effectKey, "tackle-strike", "the playback carries its effect key")
-  Assert.equal(singlePlayback.visualSeed, 4242, "the playback carries its deterministic visual seed")
-  Assert.deepEqual(singlePlayback.event.suppression, { missed = true }, "the playback carries its suppression facts")
-  local singleAttacker = singlePlayback.topology.attacker
+  local singleRequests = BattlePresentationFlow.animationPlayback(singlePacket, singlePacket.events[1], geometry)
+  Assert.equal(#singleRequests, 1, "the strike selects one frozen request")
+  local singleRequest = singleRequests[1]
+  Assert.equal(singleRequest.identity.launchId, "topology-probe", "the request carries its launch identity")
+  Assert.equal(singleRequest.identity.eventSequence, 4, "the request carries its event sequence")
+  Assert.equal(singleRequest.identity.ordinal, 1, "the first hit numbers its source call from one")
+  Assert.equal(singleRequest.effectKey, "tackle-strike", "the request carries its executed key")
+  Assert.equal(singleRequest.disposition, "admit", "the connected strike admits its root")
+  Assert.equal(
+    singleRequest.anchor.stage,
+    "after-announcement",
+    "the strike anchors after its attack announcement"
+  )
+  local singleAttacker = singleRequest.playback.topology.attacker
   Assert.equal(singleAttacker.combatant, 1, "the single attacker keeps its combatant")
   Assert.equal(singleAttacker.activation, 7, "the single attacker keeps its activation")
   Assert.equal(singleAttacker.slot, "solo-player", "the lone ally takes the solo player slot")
   Assert.equal(singleAttacker.sideType, 0, "the lone ally takes the single player side type")
-  Assert.equal(#singlePlayback.topology.targets, 1, "the single strike addresses one target")
-  local singleTarget = singlePlayback.topology.targets[1]
+  Assert.equal(#singleRequest.playback.topology.targets, 1, "the single strike addresses one target")
+  local singleTarget = singleRequest.playback.topology.targets[1]
   Assert.equal(singleTarget.combatant, 2, "the single target keeps its combatant")
   Assert.equal(singleTarget.activation, 9, "the single target keeps its activation")
   Assert.equal(singleTarget.slot, "solo-enemy", "the lone foe takes the solo enemy slot")
@@ -285,24 +309,25 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       { combatant = 4, activation = 10, side = 2, position = 4 },
     }, { actionId = 3, hitIndex = 1, effectKey = "spread-strike", visualSeed = 5150 }),
   }, "topology-probe", 2)
-  local doublePlayback = BattlePresentationFlow.animationPlayback(doublePacket, doublePacket.events[1], geometry)
-  local spreadAttacker = doublePlayback.topology.attacker
+  local doubleRequests = BattlePresentationFlow.animationPlayback(doublePacket, doublePacket.events[1], geometry)
+  Assert.equal(#doubleRequests, 1, "the spread strike selects one frozen request")
+  local spreadAttacker = doubleRequests[1].playback.topology.attacker
   Assert.equal(spreadAttacker.slot, "player-side-slot-1", "the first sorted ally takes its double slot")
   Assert.equal(spreadAttacker.sideType, 2, "the first sorted ally takes the left double side type")
-  Assert.equal(#doublePlayback.topology.targets, 2, "the spread strike keeps its event target order")
+  Assert.equal(#doubleRequests[1].playback.topology.targets, 2, "the spread strike keeps its event target order")
   Assert.equal(
-    doublePlayback.topology.targets[1].slot,
+    doubleRequests[1].playback.topology.targets[1].slot,
     "enemy-side-slot-1",
     "the first spread target takes its double slot"
   )
-  Assert.equal(doublePlayback.topology.targets[1].sideType, 3, "the first spread target takes its side type")
+  Assert.equal(doubleRequests[1].playback.topology.targets[1].sideType, 3, "the first spread target takes its side type")
   Assert.equal(
-    doublePlayback.topology.targets[2].slot,
+    doubleRequests[1].playback.topology.targets[2].slot,
     "enemy-side-slot-2",
     "the second spread target takes its double slot"
   )
-  Assert.equal(doublePlayback.topology.targets[2].sideType, 5, "the second spread target takes its side type")
-  Assert.equal(doublePlayback.topology.targets[2].activation, 10, "the second spread target keeps its own activation")
+  Assert.equal(doubleRequests[1].playback.topology.targets[2].sideType, 5, "the second spread target takes its side type")
+  Assert.equal(doubleRequests[1].playback.topology.targets[2].activation, 10, "the second spread target keeps its own activation")
 
   local replacedPacket = packetFor({
     own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
@@ -315,16 +340,16 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       { combatant = 2, activation = 9, side = 2, position = 2 },
     }, { actionId = 4, hitIndex = 1, effectKey = "late-hit", visualSeed = 99 }),
   }, "topology-probe", 3)
-  local replacedPlayback = BattlePresentationFlow.animationPlayback(replacedPacket, replacedPacket.events[1], geometry)
+  local replacedRequests = BattlePresentationFlow.animationPlayback(replacedPacket, replacedPacket.events[1], geometry)
   Assert.equal(
-    replacedPlayback.topology.targets[1].activation,
+    replacedRequests[1].playback.topology.targets[1].activation,
     9,
     "a hit against a departed target keeps its pre-event activation"
   )
-  Assert.equal(replacedPlayback.topology.targets[1].slot, "solo-enemy", "the departed target keeps its event-time slot")
+  Assert.equal(replacedRequests[1].playback.topology.targets[1].slot, "solo-enemy", "the departed target keeps its event-time slot")
 
   singlePacket.before.foes[1].activation = 999
-  Assert.equal(singlePlayback.topology.targets[1].activation, 9, "the admitted topology never follows later view edits")
+  Assert.equal(singleRequest.playback.topology.targets[1].activation, 9, "the admitted topology never follows later view edits")
   local replayPacket = packetFor({
     own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
     foes = { { combatant = 2, activation = 12, side = 2, position = 2 } },
@@ -336,14 +361,14 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
       { combatant = 2, activation = 12, side = 2, position = 2 },
     }, { actionId = 9, hitIndex = 2, effectKey = "late-hit", visualSeed = 100 }),
   }, "topology-probe", 4)
-  local replayPlayback = BattlePresentationFlow.animationPlayback(replayPacket, replayPacket.events[1], geometry)
+  local replayRequests = BattlePresentationFlow.animationPlayback(replayPacket, replayPacket.events[1], geometry)
   Assert.equal(
-    replayPlayback.topology.targets[1].activation,
+    replayRequests[1].playback.topology.targets[1].activation,
     12,
     "a replayed sequence resolves against its own packet views"
   )
   Assert.equal(
-    singlePlayback.topology.targets[1].activation,
+    singleRequest.playback.topology.targets[1].activation,
     9,
     "the replay never mutates the earlier admitted occurrence"
   )
@@ -389,7 +414,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     tasks = tasks,
     services = { onNativeFrame = function() end },
   }))
-  local bound = assert(player:start(singlePlayback, {
+  local bound = assert(player:start(occurrenceFor(singlePacket, singlePacket.events[1], singleRequest), {
     entry = "main",
     instructions = {
       { op = "schedule-battle-task", taskKind = "battle-background-blend-transition", values = { 0 } },
@@ -418,7 +443,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     "factory context carries the admitted target slot"
   )
   Assert.equal(captured[1].context.event.sequence, 4, "factory context carries the admitted event identity")
-  local replayBound = assert(player:start(replayPlayback, {
+  local replayBound = assert(player:start(occurrenceFor(replayPacket, replayPacket.events[1], replayRequests[1]), {
     entry = "main",
     instructions = {
       { op = "schedule-battle-task", taskKind = "battle-background-blend-transition", values = { 0 } },
@@ -584,14 +609,17 @@ function T.fainted_target_missing_from_after_view_keeps_event_slot_without_reser
       { combatant = 2, activation = 9, side = 2, position = 2 },
     }, { actionId = 5, hitIndex = 1, effectKey = "faint-strike", visualSeed = 31337 }),
   }, "faint-probe", 9)
-  local playback = BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
-  Assert.equal(playback.topology.attacker.activation, 7, "the switched attacker keeps its striking activation")
-  Assert.equal(playback.topology.attacker.slot, "solo-player", "the switched attacker keeps its event slot")
-  Assert.equal(playback.topology.targets[1].activation, 9, "the fainted target keeps its pre-event activation")
-  Assert.equal(playback.topology.targets[1].slot, "solo-enemy", "the missing target keeps its event-time slot")
+  local requests = BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
+  Assert.equal(#requests, 1, "the fainted-target strike selects one frozen request")
+  local request = requests[1]
+  local frozen = request.playback.topology
+  Assert.equal(frozen.attacker.activation, 7, "the switched attacker keeps its striking activation")
+  Assert.equal(frozen.attacker.slot, "solo-player", "the switched attacker keeps its event slot")
+  Assert.equal(frozen.targets[1].activation, 9, "the fainted target keeps its pre-event activation")
+  Assert.equal(frozen.targets[1].slot, "solo-enemy", "the missing target keeps its event-time slot")
   for _, field in ipairs({ "party", "inventory", "reserves", "kernel", "narcId", "memberId" }) do
-    Assert.isNil(playback[field], "the admitted playback leaks no " .. field)
-    Assert.isNil(playback.event[field], "the admitted event leaks no " .. field)
+    Assert.isNil(request[field], "the admitted request leaks no " .. field)
+    Assert.isNil(packet.events[1][field], "the admitted event leaks no " .. field)
   end
   local Player = playerModule()
   local scene = sceneWithPair()
@@ -634,7 +662,7 @@ function T.fainted_target_missing_from_after_view_keeps_event_slot_without_reser
     tasks = tasks,
     services = { onNativeFrame = function() end },
   }))
-  local bound = assert(player:start(playback, {
+  local bound = assert(player:start(occurrenceFor(packet, packet.events[1], request), {
     entry = "main",
     instructions = {
       { op = "schedule-battle-task", taskKind = "battle-background-blend-transition", values = { 0 } },
@@ -723,15 +751,15 @@ function T.event_time_sides_select_the_side_branches()
       { combatant = 2, activation = 9, side = 2, position = 2 },
     }, { actionId = 11, hitIndex = 1, effectKey = "side-branch-strike", visualSeed = 77 }),
   }, "side-branch-probe", 12)
-  local outwardPlayback = BattlePresentationFlow.animationPlayback(outward, outward.events[1], geometry)
-  Assert.equal(outwardPlayback.topology.attacker.slot, "solo-player", "the outward strike keeps its player-side user")
+  local outwardRequests = BattlePresentationFlow.animationPlayback(outward, outward.events[1], geometry)
+  Assert.equal(outwardRequests[1].playback.topology.attacker.slot, "solo-player", "the outward strike keeps its player-side user")
   local inward = packetFor(views, views, {
     strikeEvent(13, { { combatant = 2, activation = 9, side = 2, position = 2 } }, {
       { combatant = 1, activation = 7, side = 1, position = 1 },
     }, { actionId = 12, hitIndex = 1, effectKey = "side-branch-reply", visualSeed = 78 }),
   }, "side-branch-probe", 13)
-  local inwardPlayback = BattlePresentationFlow.animationPlayback(inward, inward.events[1], geometry)
-  Assert.equal(inwardPlayback.topology.attacker.slot, "solo-enemy", "the reply strike keeps its foe-side user")
+  local inwardRequests = BattlePresentationFlow.animationPlayback(inward, inward.events[1], geometry)
+  Assert.equal(inwardRequests[1].playback.topology.attacker.slot, "solo-enemy", "the reply strike keeps its foe-side user")
   local doubleViews = {
     own = {
       { combatant = 1, activation = 7, side = 1, position = 1 },
@@ -747,8 +775,8 @@ function T.event_time_sides_select_the_side_branches()
       { combatant = 5, activation = 8, side = 1, position = 2 },
     }, { actionId = 13, hitIndex = 1, effectKey = "side-branch-aid", visualSeed = 79 }),
   }, "side-branch-probe", 14)
-  local allyPlayback = BattlePresentationFlow.animationPlayback(allyAid, allyAid.events[1], geometry)
-  Assert.equal(allyPlayback.topology.targets[1].slot, "player-side-slot-2", "the ally aid keeps its same-side target")
+  local allyRequests = BattlePresentationFlow.animationPlayback(allyAid, allyAid.events[1], geometry)
+  Assert.equal(allyRequests[1].playback.topology.targets[1].slot, "player-side-slot-2", "the ally aid keeps its same-side target")
 
   local Player = playerModule()
   local scene = sceneWithPair()
@@ -790,11 +818,11 @@ function T.event_time_sides_select_the_side_branches()
     subprograms = {},
     taskKinds = {},
   }
-  local outwardHandle = assert(player:start(outwardPlayback, predicateProgram))
+  local outwardHandle = assert(player:start(occurrenceFor(outward, outward.events[1], outwardRequests[1]), predicateProgram))
   player:stepSourceTick({ tick = 1 })
   Assert.deepEqual(played, { "user-player-cue" }, "the player-side user takes the ordinary branch")
   Assert.equal(player:status(outwardHandle), "waiting", "the outward predicate settles on its branch")
-  local inwardHandle = assert(player:start(inwardPlayback, predicateProgram))
+  local inwardHandle = assert(player:start(occurrenceFor(inward, inward.events[1], inwardRequests[1]), predicateProgram))
   player:stepSourceTick({ tick = 2 })
   Assert.equal(played[#played], "user-foe-cue", "the foe-side user takes the special branch")
   Assert.equal(player:status(inwardHandle), "waiting", "the reply predicate settles on its branch")
@@ -809,11 +837,11 @@ function T.event_time_sides_select_the_side_branches()
     subprograms = {},
     taskKinds = {},
   }
-  local crossHandle = assert(player:start(outwardPlayback, equalityProgram))
+  local crossHandle = assert(player:start(occurrenceFor(outward, outward.events[1], outwardRequests[1]), equalityProgram))
   player:stepSourceTick({ tick = 3 })
   Assert.equal(played[#played], "cross-side-cue", "the cross-side pair falls through")
   Assert.equal(player:status(crossHandle), "waiting", "the cross-side equality settles on its branch")
-  local allyHandle = assert(player:start(allyPlayback, equalityProgram))
+  local allyHandle = assert(player:start(occurrenceFor(allyAid, allyAid.events[1], allyRequests[1]), equalityProgram))
   player:stepSourceTick({ tick = 4 })
   Assert.equal(played[#played], "equal-side-cue", "the same-side ally pair takes the equal branch")
   Assert.equal(player:status(allyHandle), "waiting", "the ally equality settles on its branch")

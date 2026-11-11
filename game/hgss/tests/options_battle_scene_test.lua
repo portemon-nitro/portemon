@@ -94,6 +94,11 @@ end
 ---@param hit integer? multi-hit ordinal, defaulting to the first hit
 ---@return table one struck event carrying its accepted native playback identity
 local function struckEvent(seq, action, executed, causeKey, target, damage, foeHp, hit)
+  -- Reached strikes carry their producer execution moment: the
+  -- selector admits (or scene-off omits) the executed move, never a
+  -- kind-derived guess. Each hit of a cycle owns its source call
+  -- ordinal, matching the played-flag reset behind repeated hits.
+  local ordinal = hit or 1
   return {
     sequence = seq,
     kind = "struck",
@@ -107,6 +112,24 @@ local function struckEvent(seq, action, executed, causeKey, target, damage, foeH
     effectKey = executed,
     payload = { target = target, damage = damage },
     after = { hp = { [1] = 100, [target] = foeHp } },
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = causeKey or executed,
+        executedMove = executed,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = target, activation = 2 },
+        targets = { { combatant = target, activation = 2 } },
+        damage = -damage,
+        power = 35,
+        friendship = 70,
+        hitOrdinal = ordinal,
+        hitCount = ordinal,
+        hitCycle = ordinal,
+      },
+    },
   }
 end
 
@@ -370,15 +393,24 @@ function T.scene_off_keeps_multi_hit_narration_singular_and_health()
     struckEvent(1, 43, "TACKLE", nil, 2, 10, 90, 1),
     struckEvent(2, 43, "TACKLE", nil, 2, 10, 80, 2),
   }, 1)
+  local announcements = 0
+  for _, cue in ipairs(rig.screen._timeline._queue) do
+    if cue.kind == "message" and tostring(cue.text):find("used Tackle", 1, true) ~= nil then
+      announcements = announcements + 1
+    end
+  end
+  Assert.equal(announcements, 1, "the shared action narrates its attack once")
   driveSettled(rig, 3000)
   Assert.isTrue(rig.screen._timeline:settled(), "the multi-hit launch still drains")
   Assert.equal(battler(rig.screen._timeline:battlers(), 2).hp, 80, "every hit checkpoint applies in order")
   Assert.equal(demandCount(rig.staging.requests, "TACKLE"), 0, "no hit demands the omitted program")
-  local announced = 0
-  for _ in pairs(rig.screen._timeline._announced) do
-    announced = announced + 1
+  local omitted = 0
+  for _, record in pairs(rig.screen._timeline._ledger) do
+    if record.disposition == "omit:scene-off" then
+      omitted = omitted + 1
+    end
   end
-  Assert.equal(announced, 1, "the shared action narrates its attack once")
+  Assert.equal(omitted, 2, "both hits ledger their scene-off omission")
   rig.screen:dispose()
   rig.staging:dispose()
 end
@@ -407,16 +439,60 @@ function T.scene_off_transform_still_plays_and_updates_appearance()
       effectKey = "TRANSFORM",
       payload = { target = 2, copiedFrom = 1 },
       after = { hp = { [1] = 100, [2] = 100 } },
+      -- The legal copy carries its execution moment plus the detached
+      -- donor appearance the sanitizer projects: the selector admits
+      -- the primary even under Scene Off and freezes the donor.
+      presentation = {
+        context = {},
+        execution = {
+          selectedMove = "TRANSFORM",
+          executedMove = "TRANSFORM",
+          moment = "use",
+          branch = "default",
+          attacker = { combatant = 2, activation = 2 },
+          defender = { combatant = 2, activation = 2 },
+          targets = { { combatant = 2, activation = 2 } },
+          damage = 0,
+          power = 0,
+          friendship = 0,
+        },
+        operation = {
+          kind = "transform-applied",
+          subject = { combatant = 2, activation = 2 },
+          source = { kind = "move", key = "TRANSFORM", actor = { combatant = 2, activation = 2 } },
+          donor = { combatant = 1, activation = 1 },
+          donorAppearanceInput = {
+            species = "EEVEE",
+            form = 0,
+            personality = 42,
+            origin = { trainerId = 1 },
+          },
+        },
+      },
     },
   }, 1)
   local _, started = driveSettled(rig, 3000)
   Assert.isTrue(rig.screen._timeline:settled(), "the transform drains fully")
   Assert.equal(demandCount(rig.staging.requests, "TRANSFORM"), 1, "the transform program is still demanded")
   Assert.isTrue(started, "the transform starts its native occurrence")
+  local donorFrozen = false
+  for _, record in pairs(rig.screen._timeline._ledger) do
+    local frozen = record.request ~= nil and record.request.playback or nil
+    local attacker = type(frozen) == "table" and type(frozen.topology) == "table"
+      and frozen.topology.attacker
+      or nil
+    local appearance = type(attacker) == "table" and attacker.appearance or nil
+    if
+      record.disposition == "admit" and type(appearance) == "table" and appearance.species == "EEVEE"
+    then
+      donorFrozen = true
+    end
+  end
+  Assert.isTrue(donorFrozen, "the admitted transform freezes its donor appearance for the player")
   Assert.equal(
     battler(rig.screen._timeline:battlers(), 2).species,
-    "EEVEE",
-    "the transformed battler displays the copied appearance"
+    "PICHU",
+    "the cue player never swaps the displayed appearance synchronously; the visual task owns the picture change"
   )
   rig.screen:dispose()
   rig.staging:dispose()

@@ -88,11 +88,18 @@ local function event(kind, payload, afterHp)
     combatants[combatant] = checkpoint(combatant, health, combatant == 1 and 52 or 57)
     hp[combatant] = health
   end
+  -- Synthetic emissions carry the same identity facts production
+  -- does: the actor behind the cause and the targeted battler resolve
+  -- through the event-time views at selection.
+  local user = payload.user or payload.combatant
+  local target = payload.target or payload.combatant
   return {
     sequence = 1,
     kind = kind,
     cause = { key = "TACKLE" },
     audience = "public",
+    actors = { { combatant = type(user) == "number" and user or 1 } },
+    targets = { { combatant = type(target) == "number" and target or 3 } },
     payload = payload,
     after = { hp = hp, combatants = combatants },
   }

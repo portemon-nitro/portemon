@@ -569,23 +569,30 @@ function T.miss_immunity_charge_substitute_and_transform_select_distinct_request
   )
   local turn = session:advance(1024)
   Assert.isTrue(type(turn.events) == "table" and #turn.events > 0, "the variant turn emits its events")
-  local seenFlow = {}
+  local seenMoments = {}
   for _, event in ipairs(turn.events) do
-    local flow = event.flowKey --[[@as string?]]
-    Assert.isTrue(type(flow) == "string" and flow ~= "", "every material event selects its visual flow key")
-    local effect = event.effectKey --[[@as string?]]
-    if effect ~= nil then
-      Assert.isTrue(type(effect) == "string" and effect ~= "", "effect selections name their key")
+    -- No kind carries route authority: decorated events expose only
+    -- identities and the frozen presentation facts while the selector
+    -- reads the producer's execution/operation records.
+    Assert.isNil(event.flowKey, "no kind writes a flow route: " .. tostring(event.kind))
+    Assert.isNil(event.effectKey, "no kind writes an effect route: " .. tostring(event.kind))
+    Assert.isNil(event.suppression, "no kind writes suppression flags: " .. tostring(event.kind))
+    local presentation = assert(
+      event.presentation,
+      "every material event freezes its presentation facts: " .. tostring(event.kind)
+    )
+    local execution = presentation.execution --[[@as table<string, unknown>?]]
+    if event.kind == "struck" then
+      Assert.isTrue(type(execution) == "table", "connected strikes carry their execution moment")
+      seenMoments[(execution --[[@as table<string, unknown>]]).executedMove .. "\0" .. tostring(event.sequence)] = true
+    elseif event.kind == "missed" or event.kind == "protected" then
+      Assert.isNil(execution, "unconnected branches carry no execution moment: " .. tostring(event.kind))
     end
-    local suppression = event.suppression --[[@as table<string, unknown>?]]
-    if event.kind == "missed" or event.kind == "protected" then
-      Assert.isTrue(type(suppression) == "table", "suppressed actions name their semantic suppression")
+    if event.kind == "move-used" then
+      Assert.isTrue(type(execution) == "table", "reached sequence calls carry their execution moment")
     end
-    seenFlow[
-      flow --[[@as string]]
-    ] = true
   end
-  Assert.isTrue(next(seenFlow) ~= nil, "the variant turn selects at least one visual flow")
+  Assert.isTrue(next(seenMoments) ~= nil, "the variant turn selects at least one execution moment")
   local optionsFn = session.decisionOptions
   if type(optionsFn) == "function" then
     local captured = session:capture()
@@ -602,6 +609,221 @@ function T.miss_immunity_charge_substitute_and_transform_select_distinct_request
     end
   end
   session:dispose()
+end
+
+---@return table live battle state with two entered combatants over real owners
+local function factsState()
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local contracts = SessionFixture.sessionContracts()
+  local scenario = SessionFixture.buildScenario({
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "scripted", { SessionFixture.combatant(1, 11) }),
+      SessionFixture.participant(2, 2, "scripted", { SessionFixture.combatant(2, 23) }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+  })
+  local state = contracts.State.create(contracts.Scenario.validate(scenario))
+  return state
+end
+
+---@return table<string, unknown> connected strike facts behind one multi-hit execution moment
+local function strikeFacts()
+  return {
+    execution = {
+      selectedMove = "TACKLE",
+      executedMove = "TACKLE",
+      moment = "use",
+      branch = "default",
+      attacker = { combatant = 1, activation = 1 },
+      defender = { combatant = 2, activation = 2 },
+      targets = { { combatant = 2, activation = 2 } },
+      damage = -14,
+      power = 35,
+      friendship = 70,
+      hitOrdinal = 1,
+      hitCount = 2,
+      hitCycle = 1,
+    },
+    healthChanges = {
+      { combatant = 2, activation = 2, before = 57, after = 43, maxHp = 57, kind = "body" },
+    },
+  }
+end
+
+-- The optional semantic-facts handoff projects beside the payload:
+-- the frozen context plus the producer's closed execution and
+-- health-change records. Mechanics, draws, and transcripts stay
+-- exactly as emitted.
+function T.emit_projects_optional_semantic_facts_beside_the_payload()
+  local BattleContext = require("libs.battle.src.BattleContext")
+  local state = factsState()
+  local ctx = BattleContext.wrap(state)
+  local event = ctx:emit("struck", { key = "TACKLE", kind = "move", combatant = 1 }, { target = 2, damage = 14 }, nil, strikeFacts())
+  local presentation = assert(event.presentation, "the emission projects its presentation facts")
+  local execution = assert(presentation.execution, "the strike projects its execution moment")
+  Assert.equal(execution.selectedMove, "TACKLE", "the execution keeps its selected identity")
+  Assert.equal(execution.executedMove, "TACKLE", "the execution keeps its executed identity")
+  Assert.equal(execution.moment, "use", "the execution keeps its moment")
+  Assert.equal(execution.hitOrdinal, 1, "the execution keeps its hit ordinal")
+  Assert.equal(execution.hitCount, 2, "the execution keeps its connected total")
+  Assert.equal(execution.hitCycle, 1, "the execution keeps its source played-flag cycle")
+  local changes = assert(presentation.healthChanges, "the strike projects its health changes")
+  Assert.equal(#changes, 1, "the strike keeps its single body change")
+  Assert.equal(changes[1].kind, "body", "the change distinguishes body from substitute")
+  Assert.equal(changes[1].after, 43, "the change keeps its checkpoint")
+  Assert.isTrue(type(presentation.context) == "table", "the emission freezes its battle context")
+  Assert.isNil(presentation.operation, "a strike without an applied operation carries none")
+  Assert.isNil(event.payload.presentation, "the projection rides beside the payload, never inside it")
+  Assert.equal(#state.outbox, 1, "the handoff emits exactly one event")
+end
+
+-- Emissions without producer facts still freeze their battle context;
+-- the optional records simply stay absent.
+function T.emit_without_facts_freezes_context_only()
+  local BattleContext = require("libs.battle.src.BattleContext")
+  local state = factsState()
+  local ctx = BattleContext.wrap(state)
+  local event = ctx:emit("struck", { key = "TACKLE", kind = "move", combatant = 1 }, { target = 2, damage = 14 })
+  local presentation = assert(event.presentation, "every emission freezes its context")
+  Assert.isNil(presentation.execution, "no producer moment means no execution record")
+  Assert.isNil(presentation.operation, "no producer operation means no operation record")
+  Assert.isNil(presentation.healthChanges, "no producer changes means no health records")
+  Assert.isTrue(type(presentation.context.battlers) == "table", "the context snapshots its battlers")
+end
+
+-- Semantic facts are plain data only: functions, metatables, and
+-- non-finite numbers fail at the emission boundary.
+function T.emit_rejects_non_plain_semantic_facts()
+  local BattleContext = require("libs.battle.src.BattleContext")
+  local state = factsState()
+  local ctx = BattleContext.wrap(state)
+  local bad = strikeFacts()
+  bad.execution.attacker = setmetatable({ combatant = 1, activation = 1 }, {})
+  Assert.isFalse(pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, bad), "metatables never enter facts")
+  local fn = strikeFacts()
+  fn.execution.defender = function()
+    return 1
+  end
+  Assert.isFalse(pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, fn), "functions never enter facts")
+  local nan = strikeFacts()
+  nan.execution.damage = 0 / 0
+  Assert.isFalse(pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, nan), "non-finite numbers never enter facts")
+  Assert.equal(#state.outbox, 0, "rejected facts emit nothing")
+end
+
+-- Stage writes return their emitted event sequence beside the
+-- before/after stages so cost links can point backward at the real
+-- stage event; producer operation facts ride the same handoff.
+function T.change_stage_returns_its_event_sequence_for_cost_links()
+  local BattleContext = require("libs.battle.src.BattleContext")
+  local state = factsState()
+  local ctx = BattleContext.wrap(state)
+  local facts = {
+    operation = {
+      kind = "stage-changed",
+      subject = { combatant = 1, activation = 1 },
+      source = { kind = "move", key = "SWORDS_DANCE", actor = { combatant = 1, activation = 1 } },
+      stat = "attack",
+      before = 0,
+      after = 1,
+      method = "delta",
+      profile = "standard",
+      groupFirstSequence = 1,
+      feedbackOwner = true,
+    },
+  }
+  local result = ctx:changeStage(1, "attack", 1, { kind = "probe" }, facts)
+  Assert.equal(result.before, 0, "the stage write keeps its before stage")
+  Assert.equal(result.after, 1, "the stage write keeps its after stage")
+  Assert.equal(result.eventSequence, 1, "the stage write returns its emitted event sequence")
+  local operation = assert(state.outbox[1].presentation.operation, "the stage event carries its operation")
+  Assert.equal(operation.kind, "stage-changed", "the operation keeps its kind")
+  Assert.equal(operation.stat, "attack", "the operation keeps its stat")
+end
+
+-- Status helpers forward the producer's semantic facts to the same
+-- projection; existing call signatures stay valid without facts.
+function T.status_helpers_forward_semantic_facts()
+  local BattleContext = require("libs.battle.src.BattleContext")
+  local state = factsState()
+  local ctx = BattleContext.wrap(state)
+  local applied = ctx:applyStatus(2, "sleep", { turns = 3 }, { kind = "probe" }, {
+    operation = {
+      kind = "status-applied",
+      subject = { combatant = 2, activation = 2 },
+      source = { kind = "move", key = "SLEEP_POWDER", actor = { combatant = 1, activation = 1 } },
+      condition = "sleep",
+      application = "standard",
+    },
+  })
+  Assert.isTrue(applied, "the status application still applies")
+  local operation = assert(state.outbox[1].presentation.operation, "the status event carries its operation")
+  Assert.equal(operation.condition, "sleep", "the operation keeps its applied condition")
+  local cured = ctx:cureStatus(2, "sleep", { kind = "probe" })
+  Assert.isTrue(cured, "the cure still cures without facts")
+  Assert.isNil(state.outbox[2].presentation.operation, "a cure without facts carries no operation")
+end
+
+-- Malformed projections fail at the event boundary instead of
+-- selecting an animation from a guess.
+function T.presentation_shapes_reject_malformed_records()
+  local BattleProtocol = require("libs.battle.src.BattleProtocol")
+  local function eventWith(presentation)
+    return {
+      sequence = 1,
+      kind = "struck",
+      cause = { kind = "move" },
+      audience = "public",
+      payload = {},
+      presentation = presentation,
+    }
+  end
+  local good = strikeFacts()
+  good.context = { battleFormat = "singles" }
+  Assert.isTrue(pcall(BattleProtocol.validateEvent, eventWith(good)), "the closed shape validates")
+  local badMoment = strikeFacts()
+  badMoment.context = {}
+  badMoment.execution.moment = "announcement"
+  Assert.isFalse(
+    pcall(BattleProtocol.validateEvent, eventWith(badMoment)),
+    "execution moments stay in the closed vocabulary"
+  )
+  local partial = strikeFacts()
+  partial.context = {}
+  partial.execution.hitCycle = nil
+  Assert.isFalse(
+    pcall(BattleProtocol.validateEvent, eventWith(partial)),
+    "hit fields travel together or not at all"
+  )
+  local over = strikeFacts()
+  over.context = {}
+  over.execution.hitOrdinal = 3
+  Assert.isFalse(
+    pcall(BattleProtocol.validateEvent, eventWith(over)),
+    "hit ordinals stay within their connected total"
+  )
+  local unknown = { context = {}, operation = { kind = "victory-lap", subject = { combatant = 1, activation = 1 } } }
+  Assert.isFalse(pcall(BattleProtocol.validateEvent, eventWith(unknown)), "operation kinds stay closed")
+  local badKind = { context = {}, healthChanges = { { combatant = 1, before = 1, after = 0, maxHp = 1, kind = "doll" } } }
+  Assert.isFalse(
+    pcall(BattleProtocol.validateEvent, eventWith(badKind)),
+    "health changes distinguish body from substitute only"
+  )
+  Assert.isTrue(
+    pcall(BattleProtocol.validateEvent, {
+      sequence = 1,
+      kind = "struck",
+      cause = {},
+      audience = "public",
+      payload = {},
+    }),
+    "events without presentation stay valid"
+  )
 end
 
 return { tests = T }

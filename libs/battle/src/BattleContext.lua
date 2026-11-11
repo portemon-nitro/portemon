@@ -53,6 +53,48 @@ function BattleContext:moveScope()
   return self._moveScope
 end
 
+-- Detached appearance inputs behind one combatant's current entry:
+-- species, form, personality, and origin trainer when the roster
+-- record names them. Presentation only; mechanics never reads it.
+-- Returns nil when the record names no appearance input.
+---@param combatantId integer combatant under appearance projection
+---@return table<string, unknown>? detached appearance inputs, nil when unknown
+function BattleContext:entryAppearance(combatantId)
+  assert(type(combatantId) == "number", "appearance reads require their combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon
+  if type(mon) ~= "table" then
+    return nil
+  end
+  local record = mon --[[@as table<string, unknown>]]
+  local appearance = {} ---@type table<string, unknown>
+  local known = false
+  if type(record.species) == "string" then
+    appearance.species = record.species
+    known = true
+  end
+  if type(record.form) == "number" then
+    appearance.form = record.form
+    known = true
+  end
+  if type(record.personality) == "number" then
+    appearance.personality = record.personality
+    known = true
+  end
+  local origin = record.origin
+  if type(origin) == "table" then
+    local trainerId = (origin --[[@as table<string, unknown>]]).trainerId
+    if type(trainerId) == "number" then
+      appearance.origin = { trainerId = trainerId }
+      known = true
+    end
+  end
+  if not known then
+    return nil
+  end
+  return appearance
+end
+
 -- Reads the scripted lesson marker for strike law (battle_setup.c
 -- BattleSetup_New_Tutorial, battle_controller_player.c:2425): lesson
 -- strikes never hit while ordinary battles roll their accuracy.
@@ -65,11 +107,15 @@ end
 ---@param cause table<string, unknown>
 ---@param payload table<string, unknown>
 ---@param audience string?
+---@param facts table<string, unknown>? optional producer semantic facts behind the presentation projection
 ---@return table<string, unknown> the emitted event
-function BattleContext:emit(kind, cause, payload, audience)
+function BattleContext:emit(kind, cause, payload, audience, facts)
   assert(type(kind) == "string" and kind ~= "", "emitted events require their kind")
   assert(type(cause) == "table", "emitted events require their cause")
   assert(type(payload) == "table", "emitted events require their payload record")
+  if facts ~= nil then
+    assert(type(facts) == "table", "emitted semantic facts stay records")
+  end
   local sequence = self._state.sequence --[[@as integer]] + 1
   self._state.sequence = sequence
   local event = {
@@ -87,7 +133,9 @@ function BattleContext:emit(kind, cause, payload, audience)
   -- Playback facts ride beside the authoritative payload without
   -- touching it: decoration only adds detached identities, so the
   -- mutation order, draws, and transcripts stay exactly as emitted.
-  PresentationFacts.decorate(self._state, event, self._moveScope)
+  -- The optional producer facts project the closed presentation
+  -- records the animation selector reads; mechanics never reads them.
+  PresentationFacts.decorate(self._state, event, self._moveScope, facts)
   BattleProtocol.validateEvent(event)
   local outbox = self._state.outbox --[[@as table<integer, table<string, unknown>>]]
   outbox[#outbox + 1] = event
@@ -302,8 +350,9 @@ end
 ---@param stat string stage identity under the write
 ---@param stage integer clamped stage value to install
 ---@param cause table<string, unknown> semantic reason ordering the change
----@return table<string, integer> before/after stages around the change
-function BattleContext:changeStage(combatantId, stat, stage, cause)
+---@param facts table<string, unknown>? optional producer semantic facts behind the presentation projection
+---@return table<string, integer> before/after stages around the change plus the emitted event sequence
+function BattleContext:changeStage(combatantId, stat, stage, cause, facts)
   assert(type(combatantId) == "number", "stage writes require their combatant")
   assert(type(cause) == "table", "stage writes carry their cause")
   local known = false
@@ -329,16 +378,18 @@ function BattleContext:changeStage(combatantId, stat, stage, cause)
   stages[
     stat --[[@as string]]
   ] = stage --[[@as integer]]
-  self:emit("stage", cause, { target = combatantId, stat = stat, before = before, after = stage })
-  return { before = before, after = stage }
+  local event =
+    self:emit("stage", cause, { target = combatantId, stat = stat, before = before, after = stage }, nil, facts)
+  return { before = before, after = stage, eventSequence = event.sequence }
 end
 
 ---@param combatantId integer combatant receiving the condition
 ---@param key string native major condition under application
 ---@param state table<string, unknown> candidate typed state for the condition
 ---@param cause table<string, unknown> semantic reason ordering the application
+---@param facts table<string, unknown>? optional producer semantic facts behind the presentation projection
 ---@return boolean true when the condition was applied
-function BattleContext:applyStatus(combatantId, key, state, cause)
+function BattleContext:applyStatus(combatantId, key, state, cause, facts)
   assert(type(combatantId) == "number", "condition writes require their combatant")
   assert(type(cause) == "table", "condition writes carry their cause")
   local combatant = BattleState.combatant(self._state, combatantId)
@@ -358,21 +409,22 @@ function BattleContext:applyStatus(combatantId, key, state, cause)
     return false
   end
   Status.apply(mon --[[@as table<string, unknown>]], key, cause, state)
-  self:emit("status", cause, { target = combatantId, key = key })
+  self:emit("status", cause, { target = combatantId, key = key }, nil, facts)
   return true
 end
 
 ---@param combatantId integer combatant owning the condition
 ---@param key string native major condition under the cure
 ---@param cause table<string, unknown> semantic reason ordering the cure
+---@param facts table<string, unknown>? optional producer semantic facts behind the presentation projection
 ---@return boolean true when a condition was cured
-function BattleContext:cureStatus(combatantId, key, cause)
+function BattleContext:cureStatus(combatantId, key, cause, facts)
   assert(type(combatantId) == "number", "condition cures require their combatant")
   assert(type(cause) == "table", "condition cures carry their cause")
   local combatant = BattleState.combatant(self._state, combatantId)
   local cured = Status.cure(combatant.mon --[[@as table<string, unknown>]], key)
   if cured then
-    self:emit("cured", cause, { target = combatantId, key = key })
+    self:emit("cured", cause, { target = combatantId, key = key }, nil, facts)
   end
   return cured
 end

@@ -133,14 +133,48 @@ local function event(kind, payload, afterHp)
   for combatant, hp in pairs(afterHp) do
     combatants[combatant] = checkpoint(combatant, hp, combatant == 1 and 52 or 57)
   end
-  return {
+  -- Synthetic emissions carry the same identity facts production
+  -- does: the actor behind the cause and the targeted battler resolve
+  -- through the event-time views at selection. Reached strikes also
+  -- carry their producer execution moment with the payload hit
+  -- ordinal, so the selector admits the executed move instead of
+  -- guessing from the kind.
+  local user = payload.user or payload.combatant
+  local target = payload.target or payload.combatant
+  local actorId = type(user) == "number" and user or 1
+  local targetId = type(target) == "number" and target or 3
+  local record = {
     sequence = 1,
     kind = kind,
     cause = { key = "TACKLE" },
     audience = "public",
+    actors = { { combatant = actorId } },
+    targets = { { combatant = targetId } },
     payload = payload,
     after = { hp = afterHp, combatants = combatants },
   }
+  if kind == "struck" then
+    local ordinal = payload.hitIndex or 1
+    record.presentation = {
+      context = {},
+      execution = {
+        selectedMove = "TACKLE",
+        executedMove = "TACKLE",
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = actorId, activation = actorId },
+        defender = { combatant = targetId, activation = targetId },
+        targets = { { combatant = targetId, activation = targetId } },
+        damage = -(payload.damage or 0),
+        power = 35,
+        friendship = 70,
+        hitOrdinal = ordinal,
+        hitCount = ordinal,
+        hitCycle = ordinal,
+      },
+    }
+  end
+  return record
 end
 
 ---@param timeline table cue player under test driving
@@ -878,6 +912,7 @@ function T.first_packet_events_play_after_the_opening_once()
         cause = { key = "BIDE", kind = "move" },
         payload = { user = 1, targets = 1, phase = "release" },
         actors = { { combatant = 1 } },
+        targets = { { combatant = 1 } },
         move = { selected = "BIDE", executed = "BIDE", phase = "direct" },
         messageArgs = { userName = "LEAD" },
       },
@@ -1796,11 +1831,18 @@ local function doubleEvent(kind, payload, health)
     combatants[combatant] = doubleCheckpoint(combatant, facts.position, facts.side, facts.hp, facts.maxHp)
     hp[combatant] = facts.hp
   end
+  -- Synthetic emissions carry the same identity facts production
+  -- does: the actor behind the cause and the targeted battler resolve
+  -- through the event-time views at selection.
+  local user = payload.user or payload.combatant
+  local target = payload.target or payload.combatant
   return {
     sequence = 1,
     kind = kind,
     cause = { key = "TACKLE" },
     audience = "public",
+    actors = { { combatant = type(user) == "number" and user or 1 } },
+    targets = { { combatant = type(target) == "number" and target or 3 } },
     payload = payload,
     after = { hp = hp, combatants = combatants },
   }
@@ -2824,6 +2866,9 @@ local function effectStrike(sequence, actionId, hitIndex, effectKey, foeHp)
     [1] = checkpoint(1, 52, 52),
     [3] = checkpoint(3, foeHp, 57),
   }
+  -- Reached strikes carry their producer execution moment with
+  -- their source-call hit ordinal; the selector reads the moment,
+  -- never the legacy move fields.
   return {
     sequence = sequence,
     kind = "struck",
@@ -2831,12 +2876,30 @@ local function effectStrike(sequence, actionId, hitIndex, effectKey, foeHp)
     audience = "public",
     actors = { { combatant = 1, activation = 1 } },
     targets = { { combatant = 3, activation = 3 } },
-    move = { executed = "TACKLE" },
+    move = { executed = "TACKLE", hitOrdinal = hitIndex },
     actionId = actionId,
     hitIndex = hitIndex,
     effectKey = effectKey,
     payload = { target = 3, damage = 57 - foeHp, hitIndex = hitIndex },
     after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = "TACKLE",
+        executedMove = "TACKLE",
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = foeHp - 57,
+        power = 35,
+        friendship = 70,
+        hitOrdinal = hitIndex,
+        hitCount = hitIndex,
+        hitCycle = hitIndex,
+      },
+    },
   }
 end
 
@@ -2962,7 +3025,7 @@ end
 -- One action plays its full move animation once: a two-hit turn with one
 -- action identity starts a single occurrence, redelivery starts nothing
 -- new, and only a distinct action identity starts its own occurrence.
-function T.native_effect_starts_once_per_action_across_hits_spread_and_redelivery()
+function T.native_effect_starts_once_per_hit_and_never_on_redelivery()
   local sounds = sink()
   local fx = taskAwareEffects(nativeProbeProgram())
   local timeline = BattleTimeline.new({
@@ -2986,9 +3049,9 @@ function T.native_effect_starts_once_per_action_across_hits_spread_and_redeliver
     end
   end
   Assert.isTrue(timeline:settled(), "the two-hit turn drains")
-  Assert.equal(#fx.starts, 1, "one action plays its full move animation once, never once per hit")
+  Assert.equal(#fx.starts, 2, "each connected hit starts its own ledgered occurrence")
   Assert.isFalse(timeline:present(first), "redelivery of the same packet queues nothing new")
-  Assert.equal(#fx.starts, 1, "redelivery starts nothing new")
+  Assert.equal(#fx.starts, 2, "redelivery starts nothing new")
   local later = openingView()
   later.foes[1].hp = 10
   Assert.isTrue(
@@ -3002,7 +3065,7 @@ function T.native_effect_starts_once_per_action_across_hits_spread_and_redeliver
     end
   end
   Assert.isTrue(timeline:settled(), "the next action drains")
-  Assert.equal(#fx.starts, 2, "a distinct action identity starts its own occurrence")
+  Assert.equal(#fx.starts, 3, "a distinct action identity starts its own occurrence")
 end
 
 -- A real source cue with no animation collaborator fails loudly on its
@@ -3014,6 +3077,7 @@ function T.effect_keyed_source_cue_without_a_collaborator_fails_loudly()
     sound = function(cue)
       sounds.sound(cue)
     end,
+    effects = false,
   })
   timeline:reset(openingView())
   local after = openingView()
@@ -3022,6 +3086,12 @@ function T.effect_keyed_source_cue_without_a_collaborator_fails_loudly()
   Assert.throws(function()
     for _ = 1, 600 do
       advance(timeline, TICK)
+      -- Narration acks so the admitted cue reaches its collaborator
+      -- check: the failure belongs to the missing player, never to
+      -- a held announcement.
+      if timeline:messageId() ~= 0 then
+        timeline:ack()
+      end
     end
   end, "a real source cue with no animation collaborator fails instead of holding silently")
 end
@@ -3036,6 +3106,10 @@ local function phaseEvent(sequence, kind, phase, foeHp)
     [1] = checkpoint(1, 52, 52),
     [3] = checkpoint(3, foeHp, 57),
   }
+  -- Charge phases arrive as producer execution moments: the start
+  -- uses the charging turn's call, the release the striking turn's
+  -- native defender, and the source variant follows the moment.
+  local moment = phase == "charge" and "charge-start" or "use"
   return {
     sequence = sequence,
     kind = kind,
@@ -3048,6 +3122,21 @@ local function phaseEvent(sequence, kind, phase, foeHp)
     effectKey = "FLY",
     payload = { target = 3 },
     after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = "FLY",
+        executedMove = "FLY",
+        moment = moment,
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = 0,
+        power = 90,
+        friendship = 70,
+      },
+    },
   }
 end
 

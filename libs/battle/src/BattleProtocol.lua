@@ -6,6 +6,7 @@
 -- combatant entries, side-wide intents, field-wide intents, and passes.
 
 local BattleErrors = require("libs.battle.src.errors")
+local PresentationFacts = require("libs.battle.src.gen4.PresentationFacts")
 
 ---@class BattleProtocol
 local BattleProtocol = {}
@@ -241,6 +242,17 @@ function BattleProtocol.validateEvent(event)
   -- record so snapshots and replays round-trip it as plain data.
   if record.observation ~= nil and type(record.observation) ~= "table" then
     error(BattleErrors.input("battle event observations must be records", {}))
+  end
+  -- Producer semantic facts ride additively beside the payload: the
+  -- frozen context snapshot plus the optional closed execution,
+  -- operation, and health-change records the animation selector
+  -- reads. Events without them stay valid; a present projection must
+  -- satisfy the closed shape before an animation can be selected.
+  if record.presentation ~= nil then
+    local ok, cause = pcall(PresentationFacts.checkPresentation, record.presentation)
+    if not ok then
+      error(BattleErrors.input("battle event presentation stays valid: " .. tostring(cause), {}))
+    end
   end
   for _, field in ipairs({ "actionId", "hitIndex" }) do
     if record[field] ~= nil and not isId(record[field]) then

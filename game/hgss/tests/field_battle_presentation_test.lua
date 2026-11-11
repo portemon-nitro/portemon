@@ -276,6 +276,7 @@ local function syntheticEffectCacheFs(realFs)
       dependencies = {},
       resources = {},
       requiredContext = {},
+      displayPolicy = { suspendHealthbarUpdates = false, updateBattlerG3 = false },
     }
   end
   local wrapper = {}

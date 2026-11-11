@@ -1,8 +1,10 @@
 -- Packet projection over captured event-time facts: sanitized
 -- playback events keep explicit actor/target identities with visible
 -- names and appearance, typed message arguments and branch parameters,
--- ordered checkpoints, and an independent visual seed, while mistyped
--- facts fail loudly and hidden move sets never ride along. Delivery
+-- ordered checkpoints, detached semantic presentation facts, and the
+-- projected donor appearance behind a Transform, while mistyped facts
+-- fail loudly and hidden move sets never ride along. No
+-- occurrence-derived seed ever enters the animation path. Delivery
 -- integration replays a real production battle through the real cue
 -- player: every packet plays once across packet identities, replays and
 -- stale completions never queue again, and legacy emissions without
@@ -75,7 +77,7 @@ function T.full_facts_keep_identities_names_and_checkpoints()
   Assert.equal(public.move.hitOrdinal, 1, "the hit ordinal survives")
   Assert.equal(public.flowKey, "strike", "the route survives")
   Assert.equal(public.effectKey, "TACKLE", "the route selection survives")
-  Assert.equal(public.visualSeed, 99, "the independent visual seed survives untouched")
+  Assert.isNil(public.visualSeed, "a carried seed never enters the animation path")
   Assert.equal(#public.checkpoints, 1, "the ordered checkpoints survive")
   Assert.equal(public.checkpoints[1].hp, 14, "checkpoints keep displayed health")
   Assert.equal(public.checkpoints[1].maxHp, 22, "checkpoints keep the health ceiling")
@@ -88,8 +90,43 @@ function T.full_facts_keep_identities_names_and_checkpoints()
 end
 
 -- Legacy emissions without facts still sanitize: identities stay
--- empty, the route defaults to the kind, and the visual seed defaults
--- deterministically instead of vanishing.
+-- empty, the route defaults to the kind, and no seed is synthesized.
+
+-- The Transform operation projects its detached donor inputs through
+-- the sanitizer: the donor species, form, personality, and origin
+-- survive beside the resolved shiny and the pictured gender, so the
+-- selector freezes the donor picture instead of re-reading the views.
+function T.transform_applied_projects_its_detached_donor_appearance()
+  local pair = views()
+  pair.before.foes[1].gender = "female"
+  local event = struckEvent()
+  event.kind = "transformed"
+  event.payload = { target = 1, copiedFrom = 3 }
+  event.presentation = {
+    context = { battleFormat = "singles" },
+    operation = {
+      kind = "transform-applied",
+      subject = { combatant = 1, activation = 1 },
+      source = { kind = "move", key = "TRANSFORM", actor = { combatant = 1, activation = 1 } },
+      donor = { combatant = 3, activation = 3 },
+      donorAppearanceInput = {
+        species = "EEVEE",
+        form = 0,
+        personality = 42,
+        origin = { trainerId = 99 },
+      },
+    },
+  }
+  local public = Model.sanitizeEvent(event, pair)
+  local projected = assert(public.transformedAppearance, "the transform projects its donor appearance")
+  Assert.equal(projected.species, "EEVEE", "the projection keeps the donor species")
+  Assert.equal(projected.form, 0, "the projection keeps the donor form")
+  Assert.equal(projected.personality, 42, "the projection keeps the donor personality")
+  Assert.equal(projected.origin.trainerId, 99, "the projection keeps the donor origin trainer")
+  Assert.equal(projected.gender, "female", "the projection resolves the pictured donor gender")
+  Assert.isTrue(type(projected.shiny) == "boolean", "the projection resolves the donor shininess")
+  Assert.isNil(public.transformedAppearance.donor, "the projection carries no extra donor binding")
+end
 function T.legacy_emissions_without_facts_still_sanitize()
   local event = {
     sequence = 3,
@@ -103,7 +140,7 @@ function T.legacy_emissions_without_facts_still_sanitize()
   Assert.deepEqual(public.actors, {}, "legacy events keep empty identities instead of guesses")
   Assert.deepEqual(public.targets, {}, "legacy events keep empty targets instead of guesses")
   Assert.equal(public.flowKey, "healed", "the route defaults to the honest kind")
-  Assert.isTrue(type(public.visualSeed) == "number", "legacy events gain their deterministic seed")
+  Assert.isNil(public.visualSeed, "legacy events gain no occurrence-derived seed")
   Assert.isTrue(type(public.messageArgs) == "table", "legacy events carry message arguments")
   Assert.isTrue(type(public.parameters) == "table", "legacy events carry branch parameters")
 end
@@ -371,14 +408,15 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
   battle:dispose()
 end
 
--- Legacy emissions without playback facts still play through the cue
--- player instead of vanishing behind a diagnostic.
-function T.legacy_emissions_without_facts_still_play()
+-- Legacy emissions without playback facts fail loudly instead of
+-- guessing roles: a strike with no actor names its missing role at
+-- selection instead of visualizing another battler's action.
+function T.legacy_emissions_without_facts_fail_naming_the_role()
   local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
   local player = BattleTimeline.new({})
   local view = views().after
   player:reset(views().before)
-  Assert.isTrue(
+  Assert.throws(function()
     player:present({
       launchId = "launch-packets-legacy",
       packetId = 1,
@@ -394,10 +432,8 @@ function T.legacy_emissions_without_facts_still_play()
       },
       before = views().before,
       after = view,
-    }),
-    "a legacy delivery without facts is accepted"
-  )
-  Assert.isTrue(#player._queue > 0, "the legacy delivery queues its visible cues")
+    })
+  end, "a strike without actors fails naming its missing role")
 end
 
 return { tests = T }

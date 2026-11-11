@@ -19,7 +19,6 @@ local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncount
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local MonCache = require("libs.assets.src.MonCache")
-local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
@@ -714,69 +713,6 @@ local function renderFault(fault)
     .. tostring(detail.reason)
 end
 
----@param view table<string, unknown>? event-time view under copying
----@return table<string, unknown>? view copy with defaulted activation and position facts
-local function enrichedViewForTopology(view)
-  if type(view) ~= "table" then
-    return nil
-  end
-  local out = {}
-  for _, group in ipairs({ "own", "foes" }) do
-    local records = view[group]
-    if type(records) == "table" then
-      local filled = {}
-      for index, record in ipairs(records) do
-        if type(record) == "table" then
-          local copy = copyValue(record) --[[@as table<string, unknown>]]
-          -- Legacy emissions predate activation and position facts;
-          -- default to the native combatant identity so the
-          -- visual-topology resolver still binds the event-time slot.
-          -- Records carrying real facts pass through untouched.
-          -- Explicitly benched reserves keep no slot facts: inventing
-          -- positions from combatant identities would pollute the live
-          -- side order (the full own roster pictures bench) with phantom
-          -- slots, failing singles playback or misresolving it as
-          -- doubles. Records predating the active flag read as active.
-          if copy.active ~= false then
-            if copy.activation == nil then
-              copy.activation = copy.combatant
-            end
-            if copy.position == nil then
-              copy.position = copy.combatant
-            end
-          end
-          filled[index] = copy
-        end
-      end
-      out[group] = filled
-    end
-  end
-  return out
-end
-
----@param event table<string, unknown> accepted event carrying its playback facts
----@param visualSeed integer deterministic visual seed behind the occurrence
----@return table<string, unknown> detached event with defaulted actor, target, and seed facts
-local function enrichedEventForTopology(event, visualSeed)
-  local out = copyValue(event) --[[@as table<string, unknown>]]
-  for _, group in ipairs({ "actors", "targets" }) do
-    local entries = out[group]
-    if type(entries) == "table" then
-      for _, entry in
-        ipairs(entries --[[@as table<integer, table<string, unknown>>]])
-      do
-        if type(entry) == "table" and entry.activation == nil then
-          entry.activation = entry.combatant
-        end
-      end
-    end
-  end
-  if out.visualSeed == nil then
-    out.visualSeed = visualSeed
-  end
-  return out
-end
-
 ---@param screen BattleScreenState owning screen behind effect admission
 ---@param record table<string, unknown> loaded staged effect record behind the admission
 ---@param effectKey string catalog key behind diagnosis
@@ -820,7 +756,27 @@ end
 ---@param screen BattleScreenState owning screen behind effect admission
 ---@param cue table<string, unknown> native-effect cue carrying its ledgered frozen request
 ---@return table<string, unknown>? player handle behind the running occurrence, nil on terminal refusal
-local function nativeEffectAdmit(screen, cue, effectKey)
+local function nativeEffectAdmit(screen, cue)
+  local request = cue.request --[[@as table<string, unknown>?]]
+  local effectKey = cue.effectKey
+  if type(request) == "table" and type(request.effectKey) == "string" then
+    effectKey = request.effectKey --[[@as string]]
+  end
+  if type(request) ~= "table" or type(request.playback) ~= "table" then
+    failNative(
+      screen,
+      "battle effect "
+        .. tostring(effectKey)
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": the cue carries no ledgered frozen request"
+    )
+    return nil
+  end
+  if type(effectKey) ~= "string" or effectKey == "" then
+    failNative(screen, "battle effect for launch " .. screen._launchId .. ": the ledgered request names no catalog key")
+    return nil
+  end
   local record, loadFailure = screen._assets:loadEffect(effectKey)
   if record == nil then
     failNative(
@@ -880,14 +836,15 @@ local function nativeEffectAdmit(screen, cue, effectKey)
     end
   end
   -- Required-context probe: a program declaring resolved move power
-  -- admits only a cue carrying the executed unsigned value. A missing
-  -- or malformed fact fails with launch, effect, packet, and event
-  -- provenance before anything stages; effects without the declaration
-  -- start exactly as before.
+  -- admits only a request freezing the executed unsigned value. A
+  -- missing or malformed fact fails with launch, effect, packet, and
+  -- event provenance before anything stages; effects without the
+  -- declaration start exactly as before.
+  local frozen = request.playback --[[@as table<string, unknown>]]
+  local frozenContext = frozen.context --[[@as table<string, unknown>?]]
   local required = record.requiredContext
   if type(required) == "table" and required.movePower ~= nil then
-    local admitted = cue.event.move
-    local power = type(admitted) == "table" and admitted.power or nil
+    local power = type(frozenContext) == "table" and frozenContext.movePower or nil
     if type(power) ~= "number" or power % 1 ~= 0 or power < 0 or power > 65535 then
       failNative(
         screen,
@@ -899,8 +856,8 @@ local function nativeEffectAdmit(screen, cue, effectKey)
           .. tostring(cue.packetId)
           .. " event "
           .. tostring(cue.eventSequence)
-          .. " kind "
-          .. tostring(cue.event.kind)
+          .. " request ordinal "
+          .. tostring((request.identity --[[@as table<string, unknown>]]).ordinal)
       )
       return nil
     end
@@ -948,13 +905,16 @@ local function nativeEffectAdmit(screen, cue, effectKey)
 end
 
 ---@param screen BattleScreenState owning screen behind effect admission
----@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
+---@param cue table<string, unknown> native-effect cue carrying its ledgered frozen request
 ---@return table<string, unknown>? player handle or pending token, nil on terminal refusal
 local function nativeEffectStart(screen, cue)
   if screen._disposed or screen._mode == "failed" then
     return nil
   end
   local effectKey = cue.effectKey
+  if (type(effectKey) ~= "string" or effectKey == "") and type(cue.request) == "table" then
+    effectKey = cue.request.effectKey
+  end
   if type(effectKey) ~= "string" or effectKey == "" then
     return nil
   end
@@ -974,7 +934,7 @@ local function nativeEffectStart(screen, cue)
     screen._nativeHandles[token] = { token = token, pending = true, effectKey = effectKey, cue = cue }
     return token
   end
-  return nativeEffectAdmit(screen, cue, effectKey)
+  return nativeEffectAdmit(screen, cue)
 end
 
 ---@param screen BattleScreenState owning screen behind occurrence polling
@@ -1012,7 +972,7 @@ local function nativeEffectStatus(screen, handleOrToken)
       return "pending"
     end
     track.pending = false
-    local handle = nativeEffectAdmit(screen, track.cue, track.effectKey)
+    local handle = nativeEffectAdmit(screen, track.cue)
     if handle == nil then
       track.failed = true
       return "failed"
@@ -1587,6 +1547,7 @@ function BattleScreenState.new(opts)
     battleScene = launchScene,
     motionFacts = motionFactsFor,
     effects = effects,
+    slotGeometry = self._manifest.battlefield.slots,
     faintAppearance = faintAppearance,
   })
   local cases = nil

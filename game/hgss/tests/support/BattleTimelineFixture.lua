@@ -186,6 +186,35 @@ function BattleTimelineFixture.new(opts)
   opts.speciesName = opts.speciesName or function(species)
     return species
   end
+  -- Headless drivers select frozen requests through the staged slot
+  -- rows and complete admitted visuals instantly unless the test
+  -- owns its recording collaborator: every admitted request still
+  -- starts exactly once behind its ledger identity.
+  if opts.slotGeometry == nil then
+    opts.slotGeometry = BattlePresentationManifestFixture.manifest().battlefield.slots
+  end
+  if opts.effects == nil then
+    opts.effects = {
+      start = function(_)
+        return { phase = "complete" }
+      end,
+      status = function(handle)
+        return handle.phase
+      end,
+      cancel = function(handle)
+        handle.phase = "cancelled"
+        return true
+      end,
+      retire = function(_)
+        return true
+      end,
+    }
+  elseif opts.effects == false then
+    -- An explicit false keeps the collaborator absent while staying
+    -- distinct from a never-provided one: Flow still selects and the
+    -- Timeline still enqueues, so the routed cue with nowhere to run
+    -- fails loudly in beginNativeEffect instead of holding silently.
+  end
   local timeline = BattleTimeline.new(opts)
   local reset = timeline.reset
   function timeline:reset(view)

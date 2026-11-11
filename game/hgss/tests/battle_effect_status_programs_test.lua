@@ -119,15 +119,49 @@ local function topologyPlayback(key)
   }
   local event = {
     sequence = 1,
+    kind = "struck",
+    cause = { kind = "move", key = key },
     actionId = 1,
     hitIndex = 1,
-    effectKey = key,
     actors = { { combatant = 1, activation = 1 } },
     targets = { { combatant = 3, activation = 3 } },
+    move = { selected = key, executed = key, phase = "direct" },
+    payload = { target = 3, hitIndex = 1, damage = 1, calculated = 1 },
     visualSeed = 4242,
+    -- The probe hit carries its producer execution moment so the
+    -- selector admits it; the request freezes the topology the
+    -- player consumes.
+    presentation = {
+      context = {},
+      execution = {
+        selectedMove = key,
+        executedMove = key,
+        moment = "use",
+        branch = "default",
+        attacker = { combatant = 1, activation = 1 },
+        defender = { combatant = 3, activation = 3 },
+        targets = { { combatant = 3, activation = 3 } },
+        damage = -1,
+        power = 0,
+        friendship = 0,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = 1,
+      },
+    },
   }
   local geometry = ManifestFixture.manifest().battlefield.slots
-  return BattlePresentationFlow.animationPlayback(packet, event, geometry)
+  local requests = BattlePresentationFlow.animationPlayback(packet, event, geometry)
+  local request = assert(requests[1], "the selector publishes its frozen request")
+  Assert.equal(request.disposition, "admit", "the connected probe hit admits its request")
+  return {
+    launchId = packet.launchId,
+    packetId = packet.packetId,
+    event = event,
+    visualSeed = event.visualSeed,
+    topology = request.playback.topology,
+    context = request.playback.context,
+  }
 end
 
 local function playerModule()
@@ -551,7 +585,11 @@ local function checkStatusTurn(events, packetId, key, displayName, dependentWord
     end
   end
   Assert.notNil(alphaUsed, key .. " emits its own move-used event")
-  Assert.equal(alphaUsed.effectKey, key, key .. " selects its own visual route")
+  local alphaExecution = assert(
+    type(alphaUsed.presentation) == "table" and alphaUsed.presentation.execution,
+    key .. " reached call carries its execution moment"
+  )
+  Assert.equal(alphaExecution.executedMove, key, key .. " selects its own visual route")
   Assert.equal(alphaUsed.move.executed, key, key .. " visualizes the executed move")
   for _, event in ipairs(events) do
     if event.kind == "struck" then
@@ -657,6 +695,14 @@ local function checkStatusTurn(events, packetId, key, displayName, dependentWord
   tick = 0
   while tick < 3000 and not timeline:settled() do
     tick = tick + 1
+    -- A turn owns its move and its applied feedback as distinct
+    -- visuals: the feedback cue starts behind the held move visual,
+    -- so late starters complete here instead of holding the drain.
+    for _, handle in ipairs(handles) do
+      if handle.phase == "pending" then
+        handle.phase = "complete"
+      end
+    end
     timeline:update(STATUS_TICK, function(_)
       return true
     end)
@@ -742,7 +788,11 @@ function T.named_status_and_stage_events_start_one_native_screen_task()
       end
     end
     Assert.notNil(used, key .. " is emitted by the real battle kernel on success")
-    Assert.equal(used.effectKey, key, key .. " retains the executed move effect key")
+    local usedExecution = assert(
+      type(used.presentation) == "table" and used.presentation.execution,
+      key .. " reached call carries its execution moment"
+    )
+    Assert.equal(usedExecution.executedMove, key, key .. " retains the executed move effect key")
 
     local staging = EffectStagingFixture.new({ launchId = launchId })
     local function stageProgram(effectKey, sourceWords)

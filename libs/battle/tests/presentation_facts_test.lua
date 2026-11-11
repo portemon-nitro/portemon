@@ -50,91 +50,79 @@ local function bareEvent(kind, cause, payload, sequence)
   }
 end
 
--- Every emitted kind selects a distinct non-empty playback route, and
--- unknown kinds keep their honest identity instead of vanishing.
-function T.every_emitted_kind_selects_its_playback_route()
+-- No kind carries route authority: decorated events expose identities
+-- and the frozen context, while root selection reads only the
+-- producer's semantic facts. Unknown kinds keep their honest
+-- identity instead of vanishing.
+function T.no_kind_carries_route_authority()
   local kinds = {
     "move-used",
     "struck",
-    "strike",
     "missed",
     "protected",
     "charged",
     "delayed",
     "substitute-broke",
-    "recoil",
-    "drained",
     "healed",
     "tick",
-    "faint",
     "fainted",
-    "leveled",
     "transformed",
-    "sketched",
-    "mimicked",
     "status",
-    "cured",
     "stage",
     "status-gate",
     "switch",
-    "switch-intent",
-    "item-intent",
     "item",
-    "flee",
-    "acknowledge",
-    "join",
     "exp",
-    "stats",
-    "learn",
-    "declined",
-    "throw",
-    "shake",
-    "caught",
-    "broke_free",
+    "mystery-kind",
   }
+  local state = twoUpState()
   for _, kind in ipairs(kinds) do
-    local route = PresentationFacts.flowKeyFor(kind)
-    Assert.isTrue(type(route) == "string" and route ~= "", "the route names its flow: " .. kind)
+    local event = bareEvent(kind, { key = "TACKLE" }, { target = 2 }, 90)
+    PresentationFacts.decorate(state, event, nil)
+    Assert.isNil(event.flowKey, "no kind writes a flow route: " .. kind)
+    Assert.isNil(event.effectKey, "no kind writes an effect route: " .. kind)
+    Assert.isNil(event.suppression, "no kind writes suppression flags: " .. kind)
+    Assert.isTrue(type(event.presentation) == "table", "every kind freezes its context: " .. kind)
   end
-  Assert.equal(PresentationFacts.flowKeyFor("missed"), "miss", "a miss never shares its route")
-  Assert.equal(PresentationFacts.flowKeyFor("protected"), "protect", "protection never shares its route")
-  Assert.equal(PresentationFacts.flowKeyFor("charged"), "charge", "a charge never shares its route")
-  Assert.equal(
-    PresentationFacts.flowKeyFor("substitute-broke"),
-    "substitute-break",
-    "a substitute break never shares its route"
-  )
-  Assert.equal(PresentationFacts.flowKeyFor("transformed"), "transform", "a transform never shares its route")
-  Assert.equal(PresentationFacts.flowKeyFor("mimicked"), "mimic", "a Mimic move uses its own playback route")
-  Assert.equal(PresentationFacts.flowKeyFor("mystery-kind"), "mystery-kind", "unknown kinds keep their identity")
+  Assert.isNil(PresentationFacts.flowKeyFor, "no kind-derived flow helper remains")
+  Assert.isNil(PresentationFacts.effectKeyFor, "no kind-derived route helper remains")
+  Assert.isNil(PresentationFacts.suppressionFor, "no kind-derived suppression helper remains")
 end
 
--- Suppression flags ride only on suppressed actions; connected actions
--- carry none.
-function T.suppression_flags_mark_only_suppressed_actions()
-  Assert.deepEqual(PresentationFacts.suppressionFor("missed"), { missed = true }, "misses suppress")
-  Assert.deepEqual(PresentationFacts.suppressionFor("protected"), { protected = true }, "protection suppresses")
-  Assert.isNil(PresentationFacts.suppressionFor("struck"), "connected strikes carry no suppression")
-  Assert.isNil(PresentationFacts.suppressionFor("healed"), "recovery carries no suppression")
-end
-
--- Visual seeds are deterministic per identity and never draw from a
--- stream: the same identity always answers the same seed.
-function T.visual_seeds_stay_deterministic_without_stream_draws()
-  Assert.equal(PresentationFacts.visualSeedFor(1), PresentationFacts.visualSeedFor(1), "one identity replays one seed")
-  Assert.isTrue(type(PresentationFacts.visualSeedFor(1)) == "number", "visual seeds stay numeric particle facts")
-  Assert.isTrue(
-    PresentationFacts.visualSeedFor(1) ~= PresentationFacts.visualSeedFor(2),
-    "distinct identities vary their particles"
-  )
+-- Occurrence-derived seeds never enter animation facts: visual
+-- variation flows only from the screen-owned battle visual stream and
+-- the boot SPL stream, never from event identity arithmetic.
+function T.no_occurrence_derived_seed_enters_animation_facts()
+  Assert.isNil(PresentationFacts.visualSeedFor, "no identity-hashed seed helper remains")
+  local state = twoUpState()
+  for _, sequence in ipairs({ 1, 2 }) do
+    local event = bareEvent("struck", { key = "TACKLE" }, { target = 2, hitIndex = 1, damage = 4 }, sequence)
+    PresentationFacts.decorate(state, event, nil)
+    Assert.isNil(event.visualSeed, "sequence " .. sequence .. " decorates with no visual seed")
+  end
+  local seeded = bareEvent("struck", { key = "TACKLE" }, { target = 2, hitIndex = 1, damage = 4 }, 7)
+  seeded.visualSeed = 4242
+  PresentationFacts.decorate(state, seeded, nil)
+  Assert.isNil(seeded.visualSeed, "a carried seed is stripped before it can reach animation cues")
 end
 
 -- Move-route selections name the executed move; other kinds select no route.
 function T.move_routes_name_the_executed_move()
-  Assert.equal(PresentationFacts.effectKeyFor("struck", "TACKLE"), "TACKLE", "strikes route by execution")
-  Assert.equal(PresentationFacts.effectKeyFor("move-used", "TAIL_WHIP"), "TAIL_WHIP", "uses route by execution")
-  Assert.isNil(PresentationFacts.effectKeyFor("healed", "TACKLE"), "recovery selects no route")
-  Assert.isNil(PresentationFacts.effectKeyFor("struck", nil), "a missing execution selects no route")
+  -- Route authority moved with the facts: the selector reads
+  -- event.presentation execution records, never a kind table here.
+  -- This name stays reserved for the execution-identity contract
+  -- below: selected and executed identities travel apart.
+  local state = twoUpState()
+  local scope = {
+    actor = { combatant = 1, activation = 7 },
+    targets = { { combatant = 2 } },
+    requestedMove = "TAIL_WHIP",
+    executingMove = "TAIL_WHIP",
+  }
+  local event = bareEvent("move-used", { key = "TAIL_WHIP" }, { user = 1, targets = 1 }, 31)
+  PresentationFacts.decorate(state, event, scope)
+  Assert.equal(event.move.selected, "TAIL_WHIP", "uses keep their selected identity")
+  Assert.equal(event.move.executed, "TAIL_WHIP", "uses keep their executed identity")
 end
 
 -- Decoration names the true user and recipient from the executing
@@ -159,9 +147,9 @@ function T.decoration_names_the_true_user_and_move_pair()
   Assert.equal(event.move.selected, "METRONOME", "the selected identity survives beside the execution")
   Assert.equal(event.move.executed, "TACKLE", "the executed identity never collapses into the selection")
   Assert.equal(event.move.phase, "direct", "ordinary strikes carry the direct phase")
-  Assert.equal(event.flowKey, "strike", "strikes select their route")
-  Assert.equal(event.effectKey, "TACKLE", "strikes route by execution")
-  Assert.isTrue(type(event.visualSeed) == "number", "strikes carry their independent visual seed")
+  Assert.isNil(event.flowKey, "strikes select no kind-derived route")
+  Assert.isNil(event.effectKey, "strikes route only through producer facts")
+  Assert.isNil(event.visualSeed, "strikes carry no occurrence-derived visual seed")
   Assert.equal(#event.checkpoints, 2, "strikes keep every ordered display checkpoint")
   Assert.equal(event.checkpoints[1].hp, 20, "checkpoints keep displayed health in combatant order")
   Assert.equal(event.checkpoints[1].maxHp, 25, "checkpoints keep the health ceiling")
@@ -243,7 +231,7 @@ function T.replacements_name_arrival_and_departure_apart()
   Assert.equal(#event.targets, 1, "the replacement names its departure")
   Assert.equal(event.targets[1].combatant, 2, "the departure is the prior occupant")
   Assert.equal(event.targets[1].activation, 9, "the departure keeps the token the cause still knows")
-  Assert.equal(event.flowKey, "switch", "replacements select their route")
+  Assert.isNil(event.flowKey, "replacements select no kind-derived route")
 end
 
 -- A resolved variable power snapshots onto the playback move fact only

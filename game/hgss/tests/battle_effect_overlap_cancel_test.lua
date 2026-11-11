@@ -579,21 +579,34 @@ function T.parked_and_running_occurrences_retire_only_at_their_own_completion()
   local phase = screen._player:status(runningHandle)
   Assert.isTrue(phase == "running" or phase == "waiting", "the running occurrence stays live: " .. tostring(phase))
   Assert.equal(#screen._player._occurrences, 1, "only the running cue steps")
-  local parkedCue = {
-    effectKey = "TACKLE",
-    launchId = launchId,
-    packetId = 99,
-    eventSequence = 99,
-    event = overlapStrike("TACKLE", 61, 99),
-    visualSeed = 123,
-    before = overlapView(57),
-    after = overlapView(43),
-  }
-  local parkedToken = collaborator.start(parkedCue)
+  -- An unstaged effect parks behind its pending token through the
+  -- production delivery path: the timeline ledgers the frozen request
+  -- on the cue, so promotion admits against the selected playback
+  -- instead of a bare hand-built cue.
+  presentOverlapStrikes(screen, launchId, 99, { overlapStrike("TACKLE", 61, 99) })
+  local parkedToken = nil
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+    for token, track in pairs(screen._nativeHandles) do
+      if type(track) == "table" and track.pending == true and track.effectKey == "TACKLE" then
+        parkedToken = token
+      end
+    end
+    if parkedToken ~= nil then
+      break
+    end
+  end
   Assert.notNil(parkedToken, "the unstaged cue parks behind its token")
   Assert.equal(collaborator.status(parkedToken), "pending", "the parked token reports pending")
   Assert.isNil(screen._nativeHandles[parkedToken].handle, "the parked token admits no handle yet")
-  Assert.equal(#screen._player._occurrences, 1, "the parked token still stages nothing")
+  -- The running cue may retire while the parked cue waits its turn:
+  -- parking itself stages no occurrence either way, so the player
+  -- holds at most the still-live running occurrence and nothing more.
+  local liveSlow = screen._player:status(runningHandle)
+  Assert.isTrue(
+    #screen._player._occurrences <= 1 and (#screen._player._occurrences == 0 or liveSlow ~= nil),
+    "the parked token stages no occurrence of its own"
+  )
   local retiredSlow = false
   for _ = 1, 1500 do
     screen:updateFixed(1 / 30)
@@ -611,13 +624,9 @@ function T.parked_and_running_occurrences_retire_only_at_their_own_completion()
   Assert.notNil(screen._nativeHandles[parkedToken], "the parked token survives the slow retirement")
   Assert.isNil(screen._nativeHandles[parkedToken].handle, "the parked token still stages nothing")
   Assert.equal(#screen._player._occurrences, 0, "the retired slow cue leaves no occurrence record")
-  for _ = 1, 600 do
-    screen:updateFixed(1 / 30)
-    if screen._timeline:settled() then
-      break
-    end
-  end
-  Assert.isTrue(screen._timeline:settled(), "the slow cue player drains fully")
+  -- Pending resource demand stalls its dependent work: the retired
+  -- slow cue drained, but the parked strike still holds the line.
+  Assert.isFalse(screen._timeline:settled(), "the parked cue holds its dependent work")
   Assert.equal(overlapDisplayedFoeHp(screen:view()), 43, "the slow cue runs to its checkpoint")
   local tackleRecord = EffectStagingFixture.effectRecord("TACKLE", {})
   local tackleProgram = lowered("TACKLE", { 29, 50, 4 })
@@ -642,15 +651,17 @@ function T.parked_and_running_occurrences_retire_only_at_their_own_completion()
   end
   Assert.notNil(fastHandle, "the staged token promotes to its handle")
   Assert.isTrue(screen._nativeHandles[parkedToken] ~= nil, "promotion keeps the stable token identity")
+  -- Only the timeline consumption point releases the occurrence: the
+  -- cue leaves its track once the player run completes through the
+  -- timeline poll, never through a direct test-side release racing it.
   for _ = 1, 1500 do
     screen:updateFixed(1 / 30)
-    if collaborator.status(parkedToken) == "complete" then
+    if screen._nativeHandles[parkedToken] == nil then
       break
     end
   end
-  Assert.equal(collaborator.status(parkedToken), "complete", "the promoted cue completes")
-  Assert.isTrue(collaborator.retire(parkedToken) == true, "the consumer retires its completed cue")
-  Assert.isNil(screen._nativeHandles[parkedToken], "the retired token leaves no track")
+  Assert.isNil(screen._nativeHandles[parkedToken], "the consumed cue releases its track")
+  Assert.isTrue(screen:status().mode ~= "failed", "the consumed cue never fails the launch")
   Assert.isNil(screen._player:status(fastHandle), "the retired fast handle answers nothing")
   Assert.equal(#screen._player._occurrences, 0, "the retired fast cue leaves no occurrence record")
   Assert.isNil(screen._liveEffectHandle, "no live handle outlives its consumption")

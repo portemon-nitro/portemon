@@ -4,8 +4,9 @@
 -- reads these captured facts instead of searching display order,
 -- rereading live state, or replaying combat. The projection is pure over
 -- the supplied state, cause, and payload: it draws nothing from the
--- combat or world random streams (particle variation rides a separately
--- hashed visual seed) and never changes damage, order, or legality.
+-- combat, world, or visual random streams (visual variation flows only
+-- from the screen-owned battle visual stream and the boot SPL stream)
+-- and never changes damage, order, or legality.
 -- Source references: the presentation commands in
 -- src/battle/battle_command.c and the player controller in
 -- src/battle/battle_controller_player.c.
@@ -13,118 +14,10 @@
 ---@class PresentationFacts
 local PresentationFacts = {}
 
--- Closed visual-route mapping for every event kind the native session
--- emits. Each presentation-material kind names its concrete playback
--- route; the purely bookkeeping acknowledgement keeps its silent route.
--- Kinds outside this table keep their own kind as the route so a future
--- emission still carries an honest identity instead of vanishing.
-local FLOW_KEYS = {
-  ["move-used"] = "move-use",
-  struck = "strike",
-  strike = "strike",
-  missed = "miss",
-  ["move-failed"] = "miss",
-  protected = "protect",
-  charged = "charge",
-  delayed = "delay",
-  ["substitute-broke"] = "substitute-break",
-  recoil = "recoil",
-  drained = "drain",
-  healed = "heal",
-  tick = "residual-tick",
-  faint = "faint",
-  fainted = "faint",
-  leveled = "level",
-  transformed = "transform",
-  sketched = "sketch",
-  mimicked = "mimic",
-  status = "status",
-  cured = "cure",
-  stage = "stage",
-  ["status-gate"] = "status-gate",
-  blocked = "status-gate",
-  immune = "miss",
-  ["multi-hit"] = "multi-hit",
-  switch = "switch",
-  ["switch-intent"] = "switch-intent",
-  ["item-intent"] = "item-intent",
-  item = "item",
-  flee = "flee",
-  acknowledge = "acknowledge",
-  join = "join",
-  exp = "experience",
-  stats = "stats",
-  learn = "learn",
-  declined = "decline",
-  throw = "throw",
-  shake = "shake",
-  caught = "catch",
-  broke_free = "break-free",
-}
-
--- Move-route selections name the executed move identity so playback
--- chooses the exact native route and its parameters. Every other kind
--- carries no route selection.
-local MOVE_ROUTES = {
-  ["move-used"] = true,
-  struck = true,
-  missed = true,
-  protected = true,
-  charged = true,
-  delayed = true,
-  mimicked = true,
-  immune = true,
-  ["multi-hit"] = true,
-}
-
----@param kind unknown event kind under route selection
----@return string playback route key for the kind
-function PresentationFacts.flowKeyFor(kind)
-  if type(kind) == "string" and FLOW_KEYS[kind] ~= nil then
-    return FLOW_KEYS[kind] --[[@as string]]
-  end
-  if type(kind) == "string" and kind ~= "" then
-    return kind --[[@as string]]
-  end
-  return "unknown"
-end
-
----@param kind unknown event kind under route selection
----@param executed unknown executed move identity under route selection
----@return string? route selection, nil when the kind carries none
-function PresentationFacts.effectKeyFor(kind, executed)
-  if type(kind) ~= "string" or MOVE_ROUTES[kind] ~= true then
-    return nil
-  end
-  if type(executed) ~= "string" or executed == "" then
-    return nil
-  end
-  return executed --[[@as string]]
-end
-
----@param kind unknown event kind under suppression inspection
----@return table<string, boolean>? semantic suppression flags, nil when the action connects
-function PresentationFacts.suppressionFor(kind)
-  if kind == "missed" then
-    return { missed = true }
-  end
-  if kind == "protected" then
-    return { protected = true }
-  end
-  return nil
-end
-
----@param sequence unknown event sequence ordinal under visual seeding
----@return integer deterministic visual seed scoped to the event identity
-function PresentationFacts.visualSeedFor(sequence)
-  local ordinal = 0
-  if type(sequence) == "number" and sequence % 1 == 0 and sequence >= 0 then
-    ordinal = sequence --[[@as integer]]
-  end
-  -- An independent additive stream: arithmetic over the stable identity
-  -- only, so playback variation never advances the combat stream.
-  return (ordinal * 1103515245 + 12345) % 2147483648
-end
+-- Root authority lives in the producer's semantic facts, never in
+-- kind-derived tables: the selector reads event.presentation
+-- execution and operation records. No route, phase, or suppression
+-- mapping by event kind remains here.
 
 ---@param state table<string, unknown> live battle state under identity resolution
 ---@param id unknown combatant identity under resolution
@@ -348,6 +241,29 @@ local function moveFor(cause, kind, scope, payload)
     )
     move.power = resolved --[[@as integer]]
   end
+  -- Invocation inputs the program reads but mechanics never recomputes
+  -- for presentation: frozen strike-law weather and terrain plus the
+  -- explicit friendship fact. Absent values stay absent; Flow never
+  -- invents them for programs that do not read them.
+  if scope ~= nil then
+    if scope.weather ~= nil then
+      assert(type(scope.weather) == "string", "frozen strike weather stays a named identity")
+      local suppressed = scope.weatherSuppressed == true
+      move.weather = suppressed and "none" or scope.weather --[[@as string]]
+    end
+    if scope.terrain ~= nil then
+      assert(type(scope.terrain) == "string", "frozen terrain stays a named identity")
+      move.terrain = scope.terrain --[[@as string]]
+    end
+    if scope.friendship ~= nil then
+      local friendship = scope.friendship
+      assert(
+        type(friendship) == "number" and friendship % 1 == 0 and friendship >= 0 and friendship <= 255,
+        "frozen friendship stays an unsigned byte"
+      )
+      move.friendship = friendship --[[@as integer]]
+    end
+  end
   if kind == "struck" then
     -- Sequence ordinals come from the move interpreter, so each target's
     -- multi-hit chain starts at one and carries its actual connected total.
@@ -407,18 +323,959 @@ function PresentationFacts.checkpointsFor(observation)
   return out
 end
 
+-- Semantic weather identities by field-instance key. Overworld
+-- environment weather uses the same spellings.
+local WEATHER_BY_FIELD_KEY = {
+  raindance = "rain",
+  sunnyday = "sun",
+  sandstorm = "sand",
+  hail = "hail",
+  fog = "fog",
+}
+
+-- Field-condition keys behind the source no-field-conditions
+-- predicate. Suppressed weather does not count: the source zeroes
+-- the whole field-condition value while suppression holds, so
+-- suppressed rain normalizes to none with no conditions, while
+-- Gravity alone keeps weather none with conditions present.
+local FIELD_CONDITION_KEYS = {
+  raindance = true,
+  sunnyday = true,
+  sandstorm = true,
+  hail = true,
+  fog = true,
+  gravity = true,
+  trickroom = true,
+}
+
+-- Closed execution-moment vocabulary behind one actual move call.
+local EXECUTION_MOMENTS = {
+  use = true,
+  ["charge-start"] = true,
+  ["charge-release"] = true,
+  ["bide-release"] = true,
+  ["transfer-complete"] = true,
+  ["delayed-hit"] = true,
+  ["focus-preparation"] = true,
+  ["snatch-interception"] = true,
+  ["pivot-departure"] = true,
+}
+
+-- Closed execution-branch vocabulary behind one actual move call.
+local EXECUTION_BRANCHES = {
+  default = true,
+  ghost = true,
+  healing = true,
+  ["screens-broken"] = true,
+  ["focused-strike"] = true,
+}
+
+---@param value unknown candidate plain fact under validation
+---@param path string field path behind the diagnostic
+local function checkPlain(value, path)
+  local kind = type(value)
+  if kind == "table" then
+    if getmetatable(value) ~= nil then
+      error("semantic facts carry no metatables at " .. path)
+    end
+    for key, item in pairs(value) do
+      if type(key) ~= "string" and type(key) ~= "number" then
+        error("semantic fact keys stay strings or array indices at " .. path)
+      end
+      checkPlain(item, path .. "." .. tostring(key))
+    end
+    return
+  end
+  if kind == "function" or kind == "thread" or kind == "userdata" then
+    error("semantic facts carry no executable state at " .. path)
+  end
+  if kind == "number" and (value ~= value or math.abs(value) == math.huge) then
+    error("semantic facts carry finite numbers at " .. path)
+  end
+end
+
+---@param state table<string, unknown> live battle state under field-condition reads
+---@return table<integer, string> field-kind condition keys behind the source predicate
+local function fieldConditionKeys(state)
+  local keys = {} ---@type table<integer, string>
+  local bag = state.effectBag
+  if type(bag) ~= "table" then
+    return keys
+  end
+  local capture = bag.capture
+  if type(capture) ~= "function" then
+    return keys
+  end
+  local ok, records = pcall(capture, bag)
+  if not ok or type(records) ~= "table" then
+    return keys
+  end
+  for _, record in ipairs(records) do
+    if type(record) == "table" then
+      local entry = record --[[@as table<string, unknown>]]
+      local scope = entry.scope
+      if type(entry.key) == "string" and type(scope) == "table" and scope.kind == "field" then
+        keys[#keys + 1] = entry.key --[[@as string]]
+      end
+    end
+  end
+  return keys
+end
+
+---@param state table<string, unknown> live battle state under identity resolution
+---@param scope table<string, unknown>? executing strike scope carrying producer-frozen weather
+---@return table<string, unknown> detached semantic battle/battler snapshot
+local function captureContext(state, scope)
+  local context = {} ---@type table<string, unknown>
+  if type(state.format) == "string" and state.format ~= "" then
+    context.battleFormat = state.format
+  end
+  context.isContest = false
+  local weather = nil ---@type string?
+  local suppressed = false
+  local terrain = nil ---@type string?
+  if type(scope) == "table" then
+    if type(scope.weather) == "string" then
+      weather = scope.weather --[[@as string]]
+    end
+    if scope.weatherSuppressed == true then
+      suppressed = true
+    end
+    if type(scope.terrain) == "string" then
+      terrain = scope.terrain --[[@as string]]
+    end
+  end
+  if weather == nil then
+    local environment = state.environment
+    if type(environment) == "table" then
+      local record = environment --[[@as table<string, unknown>]]
+      if type(record.weather) == "string" and WEATHER_BY_FIELD_KEY[record.weather] ~= nil then
+        weather = record.weather --[[@as string]]
+      elseif
+        record.weather == "rain"
+        or record.weather == "sun"
+        or record.weather == "sand"
+        or record.weather == "hail"
+        or record.weather == "fog"
+      then
+        weather = record.weather --[[@as string]]
+      end
+      if terrain == nil and type(record.terrain) == "string" then
+        terrain = record.terrain --[[@as string]]
+      end
+    end
+  end
+  if weather == nil then
+    local instances = fieldConditionKeys(state)
+    for _, key in ipairs(instances) do
+      local named = WEATHER_BY_FIELD_KEY[key]
+      if named ~= nil then
+        weather = named
+        break
+      end
+    end
+  end
+  if type(weather) == "string" then
+    context.effectiveWeather = suppressed and "none" or weather
+    context.weatherSuppressed = suppressed
+  end
+  if type(terrain) == "string" then
+    context.terrain = terrain
+  end
+  -- The source zeroes the whole field-condition value while a living
+  -- Cloud Nine or Air Lock holder suppresses weather, so suppressed
+  -- instances stop counting as conditions.
+  local conditions = 0
+  for _, key in ipairs(fieldConditionKeys(state)) do
+    if FIELD_CONDITION_KEYS[key] == true and not (suppressed and WEATHER_BY_FIELD_KEY[key] ~= nil) then
+      conditions = conditions + 1
+    end
+  end
+  context.noFieldConditions = conditions == 0
+  local battlers = {} ---@type table<integer, table<string, unknown>>
+  local combatants = state.combatants
+  if type(combatants) == "table" then
+    local ids = {} ---@type integer[]
+    for id, combatant in pairs(combatants) do
+      if type(id) == "number" and id % 1 == 0 and type(combatant) == "table" then
+        ids[#ids + 1] = id --[[@as integer]]
+      end
+    end
+    table.sort(ids)
+    local participants = state.participants
+    for _, id in ipairs(ids) do
+      local combatant = (combatants --[[@as table<integer, table<string, unknown>>]])[id]
+      local binding = { combatant = id } ---@type table<string, unknown>
+      if type(combatant.participant) == "number" then
+        binding.participant = combatant.participant
+        if type(participants) == "table" then
+          local participant = (participants --[[@as table<integer, table<string, unknown>>]])[
+            combatant.participant --[[@as integer]]
+          ]
+          if type(participant) == "table" and type(participant.side) == "number" then
+            binding.side = participant.side
+          end
+        end
+      end
+      local active = combatant.active
+      if type(active) == "table" then
+        local entry = active --[[@as table<string, unknown>]]
+        if type(entry.activation) == "number" then
+          binding.activation = entry.activation
+        end
+        if type(entry.position) == "number" then
+          binding.position = entry.position
+        end
+      end
+      local substitute = false
+      local bag = state.effectBag
+      if type(bag) == "table" and type(bag.capture) == "function" then
+        local ok, records = pcall(bag.capture, bag)
+        if ok and type(records) == "table" then
+          for _, record in ipairs(records) do
+            if type(record) == "table" then
+              local instance = record --[[@as table<string, unknown>]]
+              local instanceScope = instance.scope
+              if
+                instance.key == "substitute"
+                and type(instanceScope) == "table"
+                and (instanceScope --[[@as table<string, unknown>]]).combatant == id
+              then
+                substitute = true
+                break
+              end
+            end
+          end
+        end
+      end
+      binding.substitute = substitute
+      local mon = combatant.mon
+      if type(mon) == "table" then
+        local appearance = {} ---@type table<string, unknown>
+        local known = false
+        if type(mon.species) == "string" then
+          appearance.species = mon.species
+          known = true
+        end
+        if type(mon.form) == "number" then
+          appearance.form = mon.form
+          known = true
+        end
+        if type(mon.personality) == "number" then
+          appearance.personality = mon.personality
+          known = true
+        end
+        local origin = mon.origin
+        if type(origin) == "table" then
+          local trainerId = (origin --[[@as table<string, unknown>]]).trainerId
+          if type(trainerId) == "number" then
+            appearance.origin = { trainerId = trainerId }
+            known = true
+          end
+        end
+        if known then
+          binding.appearance = appearance
+        end
+      end
+      battlers[#battlers + 1] = binding
+    end
+  end
+  context.battlers = battlers
+  return context
+end
+
+-- Semantic role behind one execution participant: a positive
+-- combatant with its positive entry token.
+---@param value unknown candidate role under validation
+---@param path string field path behind the diagnostic
+---@return table<string, unknown> detached role
+local function checkSemanticRole(value, path)
+  if type(value) ~= "table" then
+    error("semantic roles stay records at " .. path)
+  end
+  local record = value --[[@as table<string, unknown>]]
+  if type(record.combatant) ~= "number" or record.combatant % 1 ~= 0 or record.combatant < 1 then
+    error("semantic roles name a positive combatant at " .. path)
+  end
+  if type(record.activation) ~= "number" or record.activation % 1 ~= 0 or record.activation < 1 then
+    error("semantic execution roles carry a positive entry token at " .. path)
+  end
+  return { combatant = record.combatant, activation = record.activation }
+end
+
+-- Semantic role behind one operation participant: false activation is
+-- allowed only for a non-active bag-item beneficiary or EXP recipient.
+---@param value unknown candidate role under validation
+---@param path string field path behind the diagnostic
+---@return table<string, unknown> detached role
+local function checkOperationSubject(value, path)
+  if type(value) ~= "table" then
+    error("semantic operation subjects stay records at " .. path)
+  end
+  local record = value --[[@as table<string, unknown>]]
+  if type(record.combatant) ~= "number" or record.combatant % 1 ~= 0 or record.combatant < 1 then
+    error("semantic operation subjects name a positive combatant at " .. path)
+  end
+  local activation = record.activation
+  if activation ~= false then
+    if type(activation) ~= "number" or activation % 1 ~= 0 or activation < 1 then
+      error("semantic operation subjects carry a positive entry token or false at " .. path)
+    end
+  end
+  return { combatant = record.combatant, activation = activation }
+end
+
+---@param value unknown candidate integer under validation
+---@param bound integer inclusive upper bound
+---@param path string field path behind the diagnostic
+---@return integer the validated value
+local function checkBoundedInt(value, bound, path)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > bound then
+    error("semantic facts carry a 0.." .. tostring(bound) .. " integer at " .. path)
+  end
+  return value --[[@as integer]]
+end
+
+---@param value unknown candidate integer under validation
+---@param path string field path behind the diagnostic
+---@return integer the validated value
+local function checkPositiveInt(value, path)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+    error("semantic facts carry a positive integer at " .. path)
+  end
+  return value --[[@as integer]]
+end
+
+---@param value unknown candidate signed damage under validation
+---@param path string field path behind the diagnostic
+---@return integer the validated value
+local function checkDamage(value, path)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < -2147483648 or value > 2147483647 then
+    error("semantic execution damage stays a signed 32-bit integer at " .. path)
+  end
+  return value --[[@as integer]]
+end
+
+---@param value unknown candidate move record under execution validation
+---@param path string field path behind the diagnostic
+---@return table<string, unknown> detached execution moment
+local function checkExecution(value, path)
+  if type(value) ~= "table" then
+    error("semantic execution moments stay records at " .. path)
+  end
+  local record = value --[[@as table<string, unknown>]]
+  if type(record.selectedMove) ~= "string" or record.selectedMove == "" then
+    error("semantic execution names its selected move at " .. path)
+  end
+  if type(record.executedMove) ~= "string" or record.executedMove == "" then
+    error("semantic execution names its executed move at " .. path)
+  end
+  if type(record.moment) ~= "string" or EXECUTION_MOMENTS[record.moment] ~= true then
+    error("semantic execution names a closed moment at " .. path)
+  end
+  if type(record.branch) ~= "string" or EXECUTION_BRANCHES[record.branch] ~= true then
+    error("semantic execution names a closed branch at " .. path)
+  end
+  local out = {
+    selectedMove = record.selectedMove,
+    executedMove = record.executedMove,
+    moment = record.moment,
+    branch = record.branch,
+    attacker = checkSemanticRole(record.attacker, path .. ".attacker"),
+    defender = checkSemanticRole(record.defender, path .. ".defender"),
+  } ---@type table<string, unknown>
+  if type(record.targets) ~= "table" or #record.targets == 0 then
+    error("semantic execution names a nonempty ordered target set at " .. path)
+  end
+  local targets = {} ---@type table<integer, table<string, unknown>>
+  for index, target in ipairs(record.targets) do
+    targets[index] = checkSemanticRole(target, path .. ".targets[" .. index .. "]")
+  end
+  out.targets = targets
+  -- Unused damage/power/friendship fields may be absent only for the
+  -- Focus Punch preparation moment, whose source call has not
+  -- established them; ordinary actual-use moments carry all three.
+  local focusPreparation = record.moment == "focus-preparation"
+  if record.damage ~= nil or not focusPreparation then
+    out.damage = checkDamage(record.damage, path .. ".damage")
+  end
+  if record.power ~= nil or not focusPreparation then
+    out.power = checkBoundedInt(record.power, 65535, path .. ".power")
+  end
+  if record.friendship ~= nil or not focusPreparation then
+    out.friendship = checkBoundedInt(record.friendship, 65535, path .. ".friendship")
+  end
+  local hasOrdinal = record.hitOrdinal ~= nil
+  local hasCount = record.hitCount ~= nil
+  local hasCycle = record.hitCycle ~= nil
+  if hasOrdinal or hasCount or hasCycle then
+    if not (hasOrdinal and hasCount and hasCycle) then
+      error("semantic execution hit fields travel together at " .. path)
+    end
+    local ordinal = checkPositiveInt(record.hitOrdinal, path .. ".hitOrdinal")
+    local count = checkPositiveInt(record.hitCount, path .. ".hitCount")
+    if ordinal > count then
+      error("semantic execution hit ordinals stay within their count at " .. path)
+    end
+    out.hitOrdinal = ordinal
+    out.hitCount = count
+    out.hitCycle = checkPositiveInt(record.hitCycle, path .. ".hitCycle")
+  end
+  if record.costEventSequence ~= nil then
+    out.costEventSequence = checkPositiveInt(record.costEventSequence, path .. ".costEventSequence")
+  end
+  return out
+end
+
+-- Closed operation-condition vocabulary.
+local OPERATION_CONDITIONS = {
+  sleep = true,
+  poison = true,
+  toxic = true,
+  burn = true,
+  freeze = true,
+  paralysis = true,
+  confusion = true,
+  infatuation = true,
+}
+
+-- Closed applied-item effect vocabulary.
+local ITEM_EFFECTS = {
+  ["hp-restore"] = true,
+  ["status-cure"] = true,
+  ["pp-restore"] = true,
+  ["confusion-cure"] = true,
+  ["all-status-cure"] = true,
+  ["stat-boost"] = true,
+  ["stat-sharp-boost"] = true,
+  ["critical-boost"] = true,
+  ["accuracy-boost"] = true,
+  ["stat-reset"] = true,
+  ["infatuation-cure"] = true,
+  ["status-infliction"] = true,
+  ["hp-harm"] = true,
+  ["order-first"] = true,
+  endure = true,
+  resist = true,
+  recoil = true,
+  ["reflect-infatuation"] = true,
+  ["skip-charge"] = true,
+  mist = true,
+  ["focus-energy"] = true,
+}
+
+---@param value unknown candidate operation record under validation
+---@param path string field path behind the diagnostic
+---@return table<string, unknown> detached semantic operation
+local function checkOperation(value, path)
+  if type(value) ~= "table" then
+    error("semantic operations stay records at " .. path)
+  end
+  local record = value --[[@as table<string, unknown>]]
+  if type(record.kind) ~= "string" or record.kind == "" then
+    error("semantic operations name their kind at " .. path)
+  end
+  local kind = record.kind --[[@as string]]
+  local out = {
+    kind = kind,
+    subject = checkOperationSubject(record.subject, path .. ".subject"),
+  } ---@type table<string, unknown>
+  local source = record.source
+  if type(source) ~= "table" then
+    error("semantic operations name their source at " .. path)
+  end
+  local origin = source --[[@as table<string, unknown>]]
+  if
+    origin.kind ~= "move"
+    and origin.kind ~= "ability"
+    and origin.kind ~= "item"
+    and origin.kind ~= "weather"
+    and origin.kind ~= "system"
+  then
+    error("semantic operation sources stay move, ability, item, weather, or system at " .. path)
+  end
+  if type(origin.key) ~= "string" or origin.key == "" then
+    error("semantic operation sources name their key at " .. path)
+  end
+  local detachedSource = { kind = origin.kind, key = origin.key } ---@type table<string, unknown>
+  if origin.actor ~= nil then
+    detachedSource.actor = checkOperationSubject(origin.actor, path .. ".source.actor")
+  elseif origin.kind == "move" or origin.kind == "ability" or origin.kind == "item" then
+    error("semantic move, ability, and item sources name their actor at " .. path)
+  end
+  out.source = detachedSource
+  if kind == "status-applied" then
+    if OPERATION_CONDITIONS[record.condition] ~= true then
+      error("semantic status applications name their condition at " .. path)
+    end
+    out.condition = record.condition
+    if record.application ~= "standard" and record.application ~= "rest" then
+      error("semantic status applications name standard or rest at " .. path)
+    end
+    out.application = record.application
+    if record.itemEventSequence ~= nil then
+      out.itemEventSequence = checkPositiveInt(record.itemEventSequence, path .. ".itemEventSequence")
+    end
+  elseif kind == "status-gate" then
+    local condition = record.condition
+    if
+      condition ~= "sleep"
+      and condition ~= "freeze"
+      and condition ~= "paralysis"
+      and condition ~= "confusion"
+      and condition ~= "infatuation"
+    then
+      error("semantic status gates name their gate condition at " .. path)
+    end
+    out.condition = condition
+    local outcome = record.outcome
+    if
+      outcome ~= "passed"
+      and outcome ~= "blocked"
+      and outcome ~= "self-hit"
+      and outcome ~= "expired"
+      and outcome ~= "cured"
+    then
+      error("semantic status gates name their gate outcome at " .. path)
+    end
+    out.outcome = outcome
+  elseif kind == "confusion-applied" then
+    if record.itemEventSequence ~= nil then
+      out.itemEventSequence = checkPositiveInt(record.itemEventSequence, path .. ".itemEventSequence")
+    end
+  elseif kind == "stage-changed" then
+    local stat = record.stat
+    if
+      stat ~= "attack"
+      and stat ~= "defense"
+      and stat ~= "speed"
+      and stat ~= "specialAttack"
+      and stat ~= "specialDefense"
+      and stat ~= "accuracy"
+      and stat ~= "evasion"
+    then
+      error("semantic stage changes name their stat at " .. path)
+    end
+    out.stat = stat
+    for _, field in ipairs({ "before", "after" }) do
+      local stage = record[field]
+      if type(stage) ~= "number" or stage % 1 ~= 0 or stage < -6 or stage > 6 then
+        error("semantic stage changes carry signed -6..6 stages at " .. path .. "." .. field)
+      end
+      out[field] = stage
+    end
+    if
+      record.method ~= "delta"
+      and record.method ~= "maximize"
+      and record.method ~= "reset"
+      and record.method ~= "copy"
+    then
+      error("semantic stage changes name their method at " .. path)
+    end
+    out.method = record.method
+    if
+      record.profile ~= "standard"
+      and record.profile ~= "belly-drum"
+      and record.profile ~= "anger-point"
+      and record.profile ~= "motor-drive"
+      and record.profile ~= "silent"
+    then
+      error("semantic stage changes name their profile at " .. path)
+    end
+    out.profile = record.profile
+    out.groupFirstSequence = checkPositiveInt(record.groupFirstSequence, path .. ".groupFirstSequence")
+    if type(record.feedbackOwner) ~= "boolean" then
+      error("semantic stage changes name their feedback owner at " .. path)
+    end
+    out.feedbackOwner = record.feedbackOwner
+  elseif kind == "item-applied" then
+    if
+      record.channel ~= "held"
+      and record.channel ~= "bag"
+      and record.channel ~= "thrown"
+      and record.channel ~= "eaten"
+    then
+      error("semantic item applications name their channel at " .. path)
+    end
+    out.channel = record.channel
+    if type(record.itemKey) ~= "string" or record.itemKey == "" then
+      error("semantic item applications name their item at " .. path)
+    end
+    out.itemKey = record.itemKey
+    if ITEM_EFFECTS[record.effect] ~= true then
+      error("semantic item applications name their effect at " .. path)
+    end
+    out.effect = record.effect
+    out.beneficiary = checkOperationSubject(record.beneficiary, path .. ".beneficiary")
+    if type(record.feedbackOwner) ~= "boolean" then
+      error("semantic item applications name their feedback owner at " .. path)
+    end
+    out.feedbackOwner = record.feedbackOwner
+    if record.effect == "order-first" then
+      if type(record.waitingBattlers) ~= "number" or record.waitingBattlers % 1 ~= 0 or record.waitingBattlers < 0 then
+        error("semantic order-first items count their waiting battlers at " .. path)
+      end
+      out.waitingBattlers = record.waitingBattlers
+    end
+    if record.condition ~= nil then
+      if OPERATION_CONDITIONS[record.condition] ~= true then
+        error("semantic item applications name a known condition at " .. path)
+      end
+      out.condition = record.condition
+    end
+    if record.stat ~= nil then
+      out.stat = record.stat
+    end
+    for _, field in ipairs({ "beforeStage", "afterStage" }) do
+      if record[field] ~= nil then
+        local stage = record[field]
+        if type(stage) ~= "number" or stage % 1 ~= 0 or stage < -6 or stage > 6 then
+          error("semantic item stage facts carry signed -6..6 stages at " .. path .. "." .. field)
+        end
+        out[field] = stage
+      end
+    end
+  elseif kind == "hp-restored" then
+    if
+      record.profile ~= "ordinary"
+      and record.profile ~= "weather-recovery"
+      and record.profile ~= "rest"
+      and record.profile ~= "roost"
+      and record.profile ~= "present"
+      and record.profile ~= "drain"
+      and record.profile ~= "absorption"
+    then
+      error("semantic restorations name their profile at " .. path)
+    end
+    out.profile = record.profile
+  elseif kind == "weather-started" then
+    if WEATHER_BY_FIELD_KEY[record.weather] == nil and record.weather ~= "none" then
+      local known = record.weather == "rain"
+        or record.weather == "sun"
+        or record.weather == "sand"
+        or record.weather == "hail"
+        or record.weather == "fog"
+      if not known then
+        error("semantic weather starts name their weather at " .. path)
+      end
+    end
+    out.weather = record.weather
+    if record.origin ~= "overworld" and record.origin ~= "entry-ability" and record.origin ~= "move" then
+      error("semantic weather starts name their origin at " .. path)
+    end
+    out.origin = record.origin
+  elseif kind == "weather-continued" then
+    if
+      record.weather ~= "rain"
+      and record.weather ~= "sun"
+      and record.weather ~= "sand"
+      and record.weather ~= "hail"
+      and record.weather ~= "fog"
+    then
+      error("semantic weather continuations name their weather at " .. path)
+    end
+    out.weather = record.weather
+    out.passOrdinal = checkPositiveInt(record.passOrdinal, path .. ".passOrdinal")
+  elseif kind == "residual" then
+    if
+      record.effect ~= "poison"
+      and record.effect ~= "toxic"
+      and record.effect ~= "burn"
+      and record.effect ~= "curse"
+      and record.effect ~= "nightmare"
+      and record.effect ~= "leech-seed"
+      and record.effect ~= "bind"
+      and record.effect ~= "wish"
+      and record.effect ~= "aqua-ring"
+      and record.effect ~= "ingrain"
+    then
+      error("semantic residuals name their effect at " .. path)
+    end
+    out.effect = record.effect
+    if record.effect == "bind" then
+      if type(record.bindingMove) ~= "string" or record.bindingMove == "" then
+        error("semantic binding residuals name their binding move at " .. path)
+      end
+      out.bindingMove = record.bindingMove
+    end
+    if record.effect == "leech-seed" then
+      out.beneficiary = checkOperationSubject(record.beneficiary, path .. ".beneficiary")
+      if record.transfer ~= "heal" and record.transfer ~= "liquid-ooze" and record.transfer ~= "none" then
+        error("semantic leech-seed residuals name their transfer at " .. path)
+      end
+      out.transfer = record.transfer
+    end
+  elseif kind == "substitute-created" then
+    out.costEventSequence = checkPositiveInt(record.costEventSequence, path .. ".costEventSequence")
+  elseif kind == "substitute-hit" then
+    if type(record.broken) ~= "boolean" then
+      error("semantic substitute hits name their break at " .. path)
+    end
+    out.broken = record.broken
+  elseif kind == "transform-applied" then
+    out.donor = checkSemanticRole(record.donor, path .. ".donor")
+    local input = record.donorAppearanceInput
+    if type(input) ~= "table" then
+      error("semantic transform operations carry their donor appearance at " .. path)
+    end
+    local appearance = input --[[@as table<string, unknown>]]
+    if type(appearance.species) ~= "string" or appearance.species == "" then
+      error("semantic donor appearance names its species at " .. path)
+    end
+    if
+      type(appearance.form) ~= "number"
+      or appearance.form % 1 ~= 0
+      or appearance.form < 0
+      or appearance.form > 255
+    then
+      error("semantic donor appearance carries a 0..255 form at " .. path)
+    end
+    if
+      type(appearance.personality) ~= "number"
+      or appearance.personality % 1 ~= 0
+      or appearance.personality < 0
+      or appearance.personality > 4294967295
+    then
+      error("semantic donor appearance carries its personality at " .. path)
+    end
+    local donorOrigin = appearance.origin
+    if
+      type(donorOrigin) ~= "table" or type((donorOrigin --[[@as table<string, unknown>]]).trainerId) ~= "number"
+    then
+      error("semantic donor appearance carries its origin trainer at " .. path)
+    end
+    out.donorAppearanceInput = {
+      species = appearance.species,
+      form = appearance.form,
+      personality = appearance.personality,
+      origin = {
+        trainerId = (donorOrigin --[[@as table<string, unknown>]]).trainerId,
+      },
+    }
+  elseif kind == "switch-ready" then
+    if record.reason ~= "u-turn" and record.reason ~= "baton-pass" then
+      error("semantic switch readiness names its reason at " .. path)
+    end
+    out.reason = record.reason
+    out.departing = checkSemanticRole(record.departing, path .. ".departing")
+    out.position = checkPositiveInt(record.position, path .. ".position")
+  elseif kind == "switch-applied" then
+    if
+      record.reason ~= "ordinary"
+      and record.reason ~= "forced"
+      and record.reason ~= "u-turn"
+      and record.reason ~= "baton-pass"
+    then
+      error("semantic switch applications name their reason at " .. path)
+    end
+    out.reason = record.reason
+    out.departing = checkSemanticRole(record.departing, path .. ".departing")
+    out.incoming = checkSemanticRole(record.incoming, path .. ".incoming")
+    if record.reason == "u-turn" or record.reason == "baton-pass" then
+      out.readyEventSequence = checkPositiveInt(record.readyEventSequence, path .. ".readyEventSequence")
+    end
+  elseif kind == "entry-ready" then
+    if record.entryKind ~= "opening" and record.entryKind ~= "replacement" then
+      error("semantic entry readiness names its entry kind at " .. path)
+    end
+    out.entryKind = record.entryKind
+    if record.entryStage ~= "before-cry" and record.entryStage ~= "after-picture" then
+      error("semantic entry readiness names its entry stage at " .. path)
+    end
+    out.entryStage = record.entryStage
+  elseif kind == "experience-awarded" then
+    if type(record.active) ~= "boolean" then
+      error("semantic experience awards name their recipient activity at " .. path)
+    end
+    out.active = record.active
+    if type(record.boundaries) ~= "table" then
+      error("semantic experience awards carry their level boundaries at " .. path)
+    end
+    local boundaries = {} ---@type table<integer, table<string, unknown>>
+    for index, boundary in ipairs(record.boundaries) do
+      if type(boundary) ~= "table" then
+        error("semantic experience boundaries stay records at " .. path)
+      end
+      local segment = boundary --[[@as table<string, unknown>]]
+      local fromLevel = segment.fromLevel
+      local toLevel = segment.toLevel
+      if
+        type(fromLevel) ~= "number"
+        or fromLevel % 1 ~= 0
+        or fromLevel < 1
+        or fromLevel > 99
+        or type(toLevel) ~= "number"
+        or toLevel % 1 ~= 0
+        or toLevel ~= fromLevel + 1
+      then
+        error("semantic experience boundaries step one level at " .. path .. "[" .. index .. "]")
+      end
+      boundaries[index] = {
+        fromLevel = fromLevel,
+        toLevel = toLevel,
+        expSegment = checkPositiveInt(segment.expSegment, path .. ".boundaries[" .. index .. "].expSegment"),
+      }
+    end
+    out.boundaries = boundaries
+  elseif kind == "item-escape" then
+    if record.itemKey ~= "POKE_DOLL" and record.itemKey ~= "FLUFFY_TAIL" then
+      error("semantic item escapes name their escape item at " .. path)
+    end
+    out.itemKey = record.itemKey
+  elseif kind == "health-cost" then
+    if
+      record.reason ~= "belly-drum"
+      and record.reason ~= "ghost-curse"
+      and record.reason ~= "substitute"
+      and record.reason ~= "healing-wish"
+      and record.reason ~= "lunar-dance"
+    then
+      error("semantic health costs name their reason at " .. path)
+    end
+    out.reason = record.reason
+    if record.relation ~= "follows-owner" and record.relation ~= "precedes-use" then
+      error("semantic health costs name their cost relation at " .. path)
+    end
+    out.relation = record.relation
+    if record.relation == "follows-owner" then
+      out.ownerEventSequence = checkPositiveInt(record.ownerEventSequence, path .. ".ownerEventSequence")
+    end
+  else
+    error("semantic operations name a closed operation kind at " .. path .. ": " .. tostring(kind))
+  end
+  return out
+end
+
+---@param value unknown candidate health-change list under validation
+---@param path string field path behind the diagnostic
+---@return table<integer, table<string, unknown>> detached health changes
+local function checkHealthChanges(value, path)
+  if type(value) ~= "table" then
+    error("semantic health changes stay arrays at " .. path)
+  end
+  local changes = {} ---@type table<integer, table<string, unknown>>
+  for index, change in ipairs(value) do
+    if type(change) ~= "table" then
+      error("semantic health changes stay records at " .. path .. "[" .. index .. "]")
+    end
+    local record = change --[[@as table<string, unknown>]]
+    local entry = {
+      combatant = checkPositiveInt(record.combatant, path .. "[" .. index .. "].combatant"),
+    } ---@type table<string, unknown>
+    if record.activation ~= nil then
+      entry.activation = checkPositiveInt(record.activation, path .. "[" .. index .. "].activation")
+    end
+    for _, field in ipairs({ "before", "after", "maxHp" }) do
+      local point = record[field]
+      if type(point) ~= "number" or point % 1 ~= 0 or point < 0 then
+        error(
+          "semantic health changes carry non-negative integer checkpoints at " .. path .. "[" .. index .. "]." .. field
+        )
+      end
+      entry[field] = point
+    end
+    if record.kind ~= "body" and record.kind ~= "substitute" then
+      error("semantic health changes distinguish body from substitute at " .. path .. "[" .. index .. "]")
+    end
+    entry.kind = record.kind
+    changes[index] = entry
+  end
+  return changes
+end
+
+-- Projects the detached semantic presentation facts behind one event:
+-- the frozen context snapshot plus the producer's optional execution
+-- moment, applied operation, and ordered health changes. Only plain
+-- data travels; functions, metatables, and non-finite numbers fail
+-- before they can reach the selector. The first changed stat of a
+-- source group may omit its group sequence; it fills with the
+-- assigned event sequence before validation.
+---@param state table<string, unknown> live battle state under context capture
+---@param scope table<string, unknown>? executing strike scope carrying producer-frozen inputs
+---@param facts table<string, unknown>? optional producer semantic facts
+---@param sequence integer? assigned kernel event sequence behind group ownership
+---@return table<string, unknown> detached presentation facts
+function PresentationFacts.projectPresentation(state, scope, facts, sequence)
+  local presentation = { context = captureContext(state, scope) } ---@type table<string, unknown>
+  if facts ~= nil then
+    if type(facts) ~= "table" then
+      error("semantic facts stay records")
+    end
+    checkPlain(facts, "facts")
+    if facts.execution ~= nil then
+      presentation.execution = checkExecution(facts.execution, "facts.execution")
+    end
+    if facts.operation ~= nil then
+      local operation = facts.operation --[[@as table<string, unknown>]]
+      if operation.kind == "stage-changed" and operation.groupFirstSequence == nil then
+        if type(sequence) ~= "number" or sequence % 1 ~= 0 or sequence < 1 then
+          error("semantic stage groups fill their group sequence from a positive event sequence")
+        end
+        -- Fill a detached copy: the producer's input record stays
+        -- untouched while validation reads the completed shape.
+        local filled = {}
+        for key, value in pairs(operation) do
+          filled[key] = value
+        end
+        filled.groupFirstSequence = sequence
+        operation = filled --[[@as table<string, unknown>]]
+      end
+      presentation.operation = checkOperation(operation, "facts.operation")
+    end
+    if facts.healthChanges ~= nil then
+      presentation.healthChanges = checkHealthChanges(facts.healthChanges, "facts.healthChanges")
+    end
+    local operation = presentation.operation
+    if
+      type(operation) == "table" and (operation --[[@as table<string, unknown>]]).kind == "health-cost"
+    then
+      local changes = presentation.healthChanges
+      if type(changes) ~= "table" or #changes ~= 1 or changes[1].kind ~= "body" then
+        error("semantic health costs carry exactly one body health change")
+      end
+    end
+  end
+  return presentation
+end
+
+-- Validates one detached presentation projection at an event boundary:
+-- the frozen context plus the optional closed execution, operation,
+-- and health-change records. Existing events without presentation
+-- stay valid.
+---@param presentation unknown candidate presentation facts under validation
+function PresentationFacts.checkPresentation(presentation)
+  if type(presentation) ~= "table" then
+    error("battle event presentation stays a record")
+  end
+  local record = presentation --[[@as table<string, unknown>]]
+  if type(record.context) ~= "table" then
+    error("battle event presentation carries its frozen context")
+  end
+  if record.execution ~= nil then
+    checkExecution(record.execution, "presentation.execution")
+  end
+  if record.operation ~= nil then
+    checkOperation(record.operation, "presentation.operation")
+  end
+  if record.healthChanges ~= nil then
+    checkHealthChanges(record.healthChanges, "presentation.healthChanges")
+  end
+end
+
 -- Attaches the immutable playback facts beside the authoritative
 -- payload: explicit actor/target identities, executed and selected move
 -- identities with phase and hit ordinals, the playback route and its
 -- suppression flags, the ordered display checkpoints, and the
--- independent visual seed. Existing payload, cause, and observation
--- fields are never rewritten, and present facts are never replaced, so
--- decoration cannot change mechanics, transcripts, or checksums.
+-- detached semantic presentation facts the animation selector reads.
+-- Existing payload, cause, and observation fields are never rewritten,
+-- and present facts are never replaced, so decoration cannot change
+-- mechanics, transcripts, or checksums.
 ---@param state table<string, unknown> live battle state under identity resolution
 ---@param event table<string, unknown> emitted event under decoration
 ---@param scope table<string, unknown>? executing strike scope carrying the authoritative user and recipients
+---@param facts table<string, unknown>? optional producer semantic facts behind the presentation projection
 ---@return table<string, unknown> the same event carrying its playback facts
-function PresentationFacts.decorate(state, event, scope)
+function PresentationFacts.decorate(state, event, scope, facts)
   if type(state) ~= "table" or type(event) ~= "table" then
     return event
   end
@@ -463,34 +1320,20 @@ function PresentationFacts.decorate(state, event, scope)
       event.move = move
     end
   end
-  if event.flowKey == nil then
-    event.flowKey = PresentationFacts.flowKeyFor(kind)
-  end
-  if event.effectKey == nil then
-    local executed = nil
-    if type(event.move) == "table" then
-      local move = event.move --[[@as table<string, unknown>]]
-      if type(move.executed) == "string" then
-        executed = move.executed --[[@as string]]
-      end
-    end
-    local effect = PresentationFacts.effectKeyFor(kind, executed)
-    if effect ~= nil then
-      event.effectKey = effect
-    end
-  end
-  if event.suppression == nil then
-    local suppression = PresentationFacts.suppressionFor(kind)
-    if suppression ~= nil then
-      event.suppression = suppression
-    end
-  end
+  -- No kind-derived route, effect, or suppression writes: root
+  -- authority lives in the producer's semantic facts, which the
+  -- selector below reads from event.presentation. Legacy descriptive
+  -- move, actor, target, and checkpoint facts stay for narration
+  -- and topology, but they never select an animation root.
   if event.checkpoints == nil and type(event.observation) == "table" then
     event.checkpoints = PresentationFacts.checkpointsFor(event.observation --[[@as table<string, unknown>]])
   end
-  if event.visualSeed == nil and type(event.sequence) == "number" then
-    event.visualSeed = PresentationFacts.visualSeedFor(event.sequence)
-  end
+  -- Occurrence-derived seeds never enter the animation path: visual
+  -- variation flows only from the screen-owned battle visual stream
+  -- and the boot SPL stream, never from event identity arithmetic.
+  -- A carried seed is stripped before it can reach animation cues.
+  event.visualSeed = nil
+  event.presentation = PresentationFacts.projectPresentation(state, liveScope, facts, event.sequence)
   return event
 end
 

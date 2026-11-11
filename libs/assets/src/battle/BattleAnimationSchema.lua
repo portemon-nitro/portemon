@@ -138,6 +138,7 @@ local TASK_KINDS = {
   ["pokemon-picture-battle-palette-fade-cycle"] = true,
   ["pokemon-picture-and-battle-palette-fade-cycle"] = true,
   ["pokemon-picture-and-battle-palette-fade"] = true,
+  ["pokemon-picture-blend-sprite-palette"] = true,
   ["pokemon-picture-four-sprite-wave-transition"] = true,
   ["pokemon-picture-z-rotation-transition"] = true,
   ["sprite-affine-scale-and-blend-transition"] = true,
@@ -827,6 +828,27 @@ local ANIMATION_CALLBACKS = {
       startCoefficient = { min = 0, max = 0xFF },
       endCoefficient = { min = 0, max = 0xFF },
       nextColor = { min = 0, max = 0xFFFF },
+    },
+  },
+  ["pokemon-picture-blend-sprite-palette"] = {
+    taskKind = "pokemon-picture-blend-sprite-palette",
+    taskContext = "pokemon-picture",
+    parameters = {
+      pictureTarget = {
+        type = "enum",
+        values = {
+          attacker = true,
+          target = true,
+          ["attacker-related-position-when-paired"] = true,
+          ["target-related-position-when-paired"] = true,
+        },
+      },
+      wait = { min = -0x80, max = 0x7F },
+      startCoefficient = { min = 0, max = 0xFF },
+      endCoefficient = { min = 0, max = 0xFF },
+      nextColor = { min = 0, max = 0xFFFF },
+      blendStep = { min = -0x80, max = 0x7F },
+      durationTicks = { min = 1, max = 0xFFFFFFFF },
     },
   },
   ["pokemon-picture-four-sprite-wave-transition"] = {

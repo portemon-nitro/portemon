@@ -1509,6 +1509,7 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-attacker-dash-afterimages"] = true,
   ["pokemon-picture-battle-palette-fade-cycle"] = true,
   ["pokemon-picture-battler-pair-scale-transition"] = true,
+  ["pokemon-picture-blend-sprite-palette"] = true,
   ["pokemon-picture-cyclic-two-phase-position-transition"] = true,
   ["pokemon-picture-defender-knockback"] = true,
   ["pokemon-picture-double-sprite-scale-settle"] = true,

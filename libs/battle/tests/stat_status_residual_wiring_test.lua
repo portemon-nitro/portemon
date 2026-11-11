@@ -1585,6 +1585,13 @@ function T.u_turn_prompts_for_a_replacement_after_the_strike()
   end
   Assert.notNil(intent, "the successful pivot announces its switch intent before the prompt")
   Assert.equal(intent.payload.mode, "strike-and-leave", "the pivot carries the executor mode")
+  local strike = nil
+  for _, event in ipairs(frame.events) do
+    if event.kind == "struck" and type(event.payload) == "table" and (event.payload.damage or 0) > 0 then
+      strike = event
+    end
+  end
+  Assert.notNil(strike, "the pivot lands its strike before announcing its intent")
   Assert.equal(#frame.request.requests, 1, "only the pivoting actor receives the replacement prompt")
   Assert.equal(frame.request.requests[1].actors[1].combatant, 40, "the pivot prompt addresses its still-active user")
   local request = frame.request.requests[1]

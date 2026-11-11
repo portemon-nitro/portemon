@@ -407,15 +407,56 @@ function MoveExecution.step(ctx, node)
   -- the previous pin returns so resumed frames keep their own scope.
   -- Pinning draws nothing and mutates nothing; emissions only read it.
   local saved = ctx:moveScope()
-  ctx:setMoveScope({
+  local scope = {
     actor = frame.actor,
     targets = frame.targets,
     requestedMove = frame.requestedMove,
     executingMove = frame.executingMove,
-  })
-  local result = handler(ctx, frame)
+  } --[[@as table<string, unknown>]]
+  -- Invocation inputs the program reads but mechanics never recomputes
+  -- for presentation travel on the scope beside the identities: frozen
+  -- strike-law weather and terrain plus the explicit friendship fact.
+  -- Only present values travel; missing facts stay missing.
+  for _, key in ipairs({ "weather", "weatherSuppressed", "terrain", "friendship" }) do
+    local value = locals[key]
+    if value ~= nil then
+      scope[key] = value
+    end
+  end
+  -- The actor's entry context is frozen before the handler can mutate
+  -- appearance or field state, so later presentation reads the
+  -- pre-handler entry even when the strike transforms its user.
+  -- Hit-cycle bookkeeping starts at the first source played-flag
+  -- cycle with no primary moment marked; the hit loop advances the
+  -- cycle per connected hit while spread targets share one cycle.
+  local actorCombatant = frame.actor.combatant
+  local entryContext = { combatant = actorCombatant } ---@type table<string, unknown>
+  if type(actorCombatant) == "number" and actorCombatant % 1 == 0 and actorCombatant >= 1 then
+    local actorId = actorCombatant --[[@as integer]]
+    local entry = ctx:entryOf(actorId)
+    if type(entry.activation) == "number" then
+      entryContext.activation = entry.activation
+    end
+    if type(entry.position) == "number" then
+      entryContext.position = entry.position
+    end
+    local appearance = ctx:entryAppearance(actorId)
+    if appearance ~= nil then
+      entryContext.appearance = appearance
+    end
+  end
+  scope.entryContext = entryContext
+  scope.hitCycle = 1
+  scope.primaryMomentMarked = false
+  ctx:setMoveScope(scope)
+  -- Restoration runs on normal return and on raised failure alike:
+  -- a failed handler must not leak its scope into the resumed frame.
+  local ok, result = pcall(handler, ctx, frame)
   ctx:setMoveScope(saved)
-  return result
+  if not ok then
+    error(result, 0)
+  end
+  return result --[[@as table<string, unknown>]]
 end
 
 return MoveExecution

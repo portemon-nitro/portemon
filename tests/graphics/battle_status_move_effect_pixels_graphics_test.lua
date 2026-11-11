@@ -160,15 +160,26 @@ local function runVersion(scope, versionId)
     }
     local event = {
       sequence = index,
+      kind = "struck",
+      cause = { kind = "move", key = key },
       actionId = index,
       hitIndex = 1,
-      effectKey = key,
       actors = { { combatant = 1, activation = 1 } },
       targets = { { combatant = 3, activation = 3 } },
       move = { selected = key, executed = key, phase = "direct", power = 0 },
+      payload = { target = 3, hitIndex = 1, damage = 1, calculated = 1 },
       visualSeed = 0x5151 + index,
     }
-    local playback = BattlePresentationFlow.animationPlayback(packet, event, slots)
+    local requests = BattlePresentationFlow.animationPlayback(packet, event, slots)
+    local selected = assert(requests[1], key .. " selects its frozen request")
+    local playback = {
+      launchId = packet.launchId,
+      packetId = packet.packetId,
+      event = event,
+      visualSeed = event.visualSeed,
+      topology = selected.playback.topology,
+      context = selected.playback.context,
+    }
     local handle = assert(player:start(playback, effect.program), key .. " admits its source program")
     local pass = scope:own(BattlePicturePass.new(graphics))
     local canvas = scope:own(graphics.newCanvas(256, 192, { format = "rgba8", readable = true, dpiscale = 1 }))

@@ -225,11 +225,14 @@ local function topologyPlayback(key)
   }
   local event = {
     sequence = 1,
+    kind = "struck",
+    cause = { kind = "move", key = key },
     actionId = 1,
     hitIndex = 1,
-    effectKey = key,
     actors = { { combatant = 1, activation = 1 } },
     targets = { { combatant = 3, activation = 3 } },
+    move = { selected = key, executed = key, phase = "direct" },
+    payload = { target = 3, hitIndex = 1, damage = 1, calculated = 1 },
     visualSeed = 4242,
     -- The probe hit carries its producer execution moment so the
     -- selector admits it; the request freezes the topology the
@@ -254,9 +257,22 @@ local function topologyPlayback(key)
     },
   }
   local geometry = ManifestFixture.manifest().battlefield.slots
-  local playback = BattlePresentationFlow.animationPlayback(packet, event, geometry)
-  Assert.equal(playback.launchId, "configured-sprite-probe", "the playback input carries its launch identity")
-  return playback
+  local requests = BattlePresentationFlow.animationPlayback(packet, event, geometry)
+  local request = assert(requests[1], "the selector publishes its frozen request")
+  Assert.equal(request.disposition, "admit", "the connected probe hit admits its request")
+  Assert.equal(
+    request.identity.launchId,
+    "configured-sprite-probe",
+    "the frozen request carries its launch identity"
+  )
+  return {
+    launchId = packet.launchId,
+    packetId = packet.packetId,
+    event = event,
+    visualSeed = event.visualSeed,
+    topology = request.playback.topology,
+    context = request.playback.context,
+  }
 end
 
 local function playerWith(scene, journal, store)

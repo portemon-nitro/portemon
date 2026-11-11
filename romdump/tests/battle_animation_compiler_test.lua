@@ -1363,6 +1363,60 @@ function T.picture_palette_pulse_callback_maps_picture_and_timing_operands()
   Assert.equal(shortProgram.instructions[2].op, "reset-blend-alpha", "five values preserve the callback cursor")
 end
 
+function T.sprite_palette_blend_callback_maps_blend_operands()
+  local Sources = require("romdump.src.config.BattleAnimationSources")
+  -- DISABLE's shipped frame blends the attacker once: start and end
+  -- meet, so the compiled duration is a single tick.
+  local plan = Sources.resolveSourceSelection("battle-animation-callback", { 63, 6, 2, 0, 1, 14, 14, 6342 })
+  Assert.equal(plan.callback, "pokemon-picture-blend-sprite-palette")
+  Assert.equal(plan.taskKind, "pokemon-picture-blend-sprite-palette")
+  Assert.equal(plan.context, "pokemon-picture")
+  Assert.deepEqual(plan.parameters, {
+    pictureTarget = "attacker",
+    wait = 0,
+    startCoefficient = 14,
+    endCoefficient = 14,
+    nextColor = 6342,
+    blendStep = 1,
+    durationTicks = 1,
+  })
+  Assert.isNil(plan.selector, "native callback selector remains producer-only")
+  -- TOXIC's shipped frame walks the defender from zero to ten in unit
+  -- steps, retiring after eleven ticks.
+  local toxic = Sources.resolveSourceSelection("battle-animation-callback", { 63, 6, 8, 0, 1, 0, 10, 31764 })
+  Assert.equal(toxic.parameters.pictureTarget, "target")
+  Assert.equal(toxic.parameters.durationTicks, 11)
+  Assert.equal(toxic.parameters.nextColor, 31764)
+  local program = compiler().compile({
+    key = "sprite-palette-blend",
+    stream = table.concat({
+      u32(45),
+      u32(63),
+      u32(6),
+      u32(2),
+      u32(0),
+      u32(1),
+      u32(14),
+      u32(14),
+      u32(6342),
+      u32(9),
+    }),
+    resolveSourceInput = function(role, operands)
+      return Sources.resolveSourceSelection(role, operands)
+    end,
+  })
+  Assert.equal(program.instructions[1].taskKind, "pokemon-picture-blend-sprite-palette")
+  Assert.equal(program.instructions[1].parameters.pictureTarget, "attacker")
+  Assert.isNil(program.instructions[1].selector, "runtime instruction has no native callback selector")
+  local invalid, reason = Sources.resolveSourceSelection("battle-animation-callback", { 63, 6, 0, 0, 1, 14, 14, 6342 })
+  Assert.isNil(invalid, "a flag word selecting no sprite is rejected")
+  Assert.isTrue(reason:find("assertion", 1, true) ~= nil, "invalid sprite selection keeps the source reason")
+  local badCount, countReason =
+    Sources.resolveSourceSelection("battle-animation-callback", { 63, 5, 2, 0, 1, 14, 14 })
+  Assert.isNil(badCount, "a short blend frame is rejected")
+  Assert.isTrue(countReason:find("six source operands", 1, true) ~= nil, "short frames name their shape")
+end
+
 function T.particle_emitter_curved_path_callback_normalizes_all_source_fields()
   local Sources = require("romdump.src.config.BattleAnimationSources")
   local plan =
@@ -1761,10 +1815,10 @@ function T.configure_from_script_position_modes_with_offsets_carry_their_block()
     cameraMode = 0,
   }, "the six config words ride the instruction in native field order")
   Assert.deepEqual(instruction.emitterOffset, {
-    x = 0,
-    y = -4128,
-    z = 0,
     ignoreSide = 0,
+    x = -4128,
+    y = 0,
+    z = 0,
   }, "position modes with script offsets carry their offset block signed")
   Assert.equal(#program.instructions, 2, "the offset trailer never decodes as opcodes")
   Assert.equal(
@@ -2533,6 +2587,10 @@ function T.selector_57_maps_its_source_battler_and_offset_interpolation()
   }))
   Assert.deepEqual(program.instructions[1].parameters, plan.parameters)
   Assert.equal(program.instructions[2].op, "noop", "the four operands preserve the following cursor")
+  -- DARK_VOID's shipped opposing-pair word resolves like its sibling
+  -- selector-51 table; the corpus carries no 276 for this callback.
+  local pair = assert(Sources.resolveBattleAnimationCallback({ 57, 4, 1, 0, 4, 272 }))
+  Assert.equal(pair.parameters.pictureTarget, "opposing-battler-pair-when-enabled")
 end
 
 function T.selector_36_maps_source_position_mask_and_transition_modes()

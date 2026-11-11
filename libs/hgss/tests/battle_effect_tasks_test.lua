@@ -711,6 +711,48 @@ function T.battler_sprite_active_position_roles_follow_attacker_and_defender_par
   scene:release()
 end
 
+function T.sprite_palette_blend_retires_on_its_compiled_duration()
+  local scene = sceneWithPair()
+  local services = journalServices(scene)
+  -- DISABLE's shipped single-tick flash: start meets end, so one tick retires it.
+  local task = assert(BattleEffectTasks.create("pokemon-picture-blend-sprite-palette", {
+    battlerTarget = "attacker",
+    parameters = {
+      pictureTarget = "attacker",
+      wait = 0,
+      startCoefficient = 14,
+      endCoefficient = 14,
+      nextColor = 6342,
+      blendStep = 1,
+      durationTicks = 1,
+    },
+  }, occurrenceContext(), services))
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "a single-tick blend retires after its compiled tick")
+  task:dispose()
+  -- TOXIC's shipped eleven-tick walk: the blend stays live through
+  -- its compiled duration and retires exactly at its end.
+  local long = assert(BattleEffectTasks.create("pokemon-picture-blend-sprite-palette", {
+    battlerTarget = "target",
+    parameters = {
+      pictureTarget = "target",
+      wait = 0,
+      startCoefficient = 0,
+      endCoefficient = 10,
+      nextColor = 31764,
+      blendStep = 1,
+      durationTicks = 11,
+    },
+  }, occurrenceContext(), services))
+  for _ = 1, 10 do
+    long:stepSourceTick({ tick = 1 })
+    Assert.isTrue(long:status() ~= "complete", "the walk has not completed early")
+  end
+  long:stepSourceTick({ tick = 1 })
+  Assert.equal(long:status(), "complete", "the walk retires on its compiled duration")
+  long:dispose()
+end
+
 function T.palette_pulse_accepts_a_compiled_zero_frame_interval()
   local scene = sceneWithPair()
   local services = journalServices(scene)

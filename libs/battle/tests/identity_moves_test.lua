@@ -136,6 +136,85 @@ local function frameInputs(move, slot)
   }
 end
 
+-- The Transform marker carries its detached donor appearance and both
+-- entry tokens: the primary execution moment is marked from the
+-- pre-transform context and the transformed fact carries the applied
+-- donor operation the game-side projection reads. Leaving and
+-- re-entering clears every copied residue with a fresh activation.
+function T.transform_marks_a_typed_donor_marker_with_appearance_and_activation()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local frame = Execution.validateFrame(Execution.start(frameInputs("TRANSFORM", 0)))
+  local outcome = Execution.step(ctx, frame)
+  Assert.equal(outcome.result, "hit", "the legal transform connects")
+  Assert.isTrue(ctx:hasBattleEffect(1, "TRANSFORM"), "the user carries the transform marker")
+  local kinds = {}
+  for _, event in ipairs(state.outbox) do
+    kinds[#kinds + 1] = event.kind
+  end
+  Assert.deepEqual(kinds, { "move-used", "transformed" }, "the announcement precedes the transformed fact")
+  Assert.isNil(state.outbox[1].presentation.execution, "the announcement carries no second primary")
+  local morphed = state.outbox[2]
+  local execution = assert(morphed.presentation.execution, "the transformed fact marks its primary moment")
+  Assert.equal(execution.executedMove, "TRANSFORM", "the execution names its executed move")
+  Assert.equal(execution.moment, "use", "the execution marks an ordinary use")
+  Assert.equal(execution.attacker.combatant, 1, "the execution freezes the pre-transform user")
+  Assert.equal(execution.defender.combatant, 2, "the execution freezes the donor")
+  Assert.equal(execution.damage, 0, "the execution carries no calculated damage")
+  local morphed = state.outbox[2]
+  local operation = assert(morphed.presentation.operation, "the transformed fact carries its operation")
+  Assert.equal(operation.kind, "transform-applied", "the operation names the applied transform")
+  Assert.equal(operation.donor.combatant, 2, "the operation names its donor")
+  local donorAppearance = assert(operation.donorAppearanceInput, "the operation retains its donor appearance")
+  Assert.equal(type(donorAppearance.species), "string", "the donor appearance names its species")
+  Assert.equal(type(donorAppearance.origin.trainerId), "number", "the donor appearance keeps its origin trainer")
+  Assert.equal(
+    operation.donor.activation,
+    (combatantOf(state, 2).active --[[@as table<string, unknown>]]).activation,
+    "the operation freezes the donor entry token"
+  )
+end
+
+-- Source admission gates fail before any root or marker: an already
+-- transformed or semi-invulnerable defender copies nothing.
+function T.transform_fails_before_root_or_marker_for_gated_defenders()
+  local Execution = executionOwner("the shared move continuation owns hit progression")
+  local SequenceMoveState = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.SequenceMoveState",
+    "sequence state owns its charge facts"
+  )
+  local function transformAs(actor, target)
+    local inputs = frameInputs("TRANSFORM", 0)
+    inputs.actor = { combatant = actor }
+    inputs.targets = { { combatant = target } }
+    return Execution.validateFrame(Execution.start(inputs))
+  end
+  do
+    local state = liveState()
+    local ctx = liveContext(state)
+    Assert.equal(Execution.step(ctx, transformAs(1, 2)).result, "hit", "the first copy connects")
+    local gated = Execution.step(ctx, transformAs(2, 1))
+    Assert.equal(gated.result, "failed", "a transformed donor cannot be copied again")
+    local kinds = {}
+    for _, event in ipairs(state.outbox) do
+      kinds[#kinds + 1] = event.kind
+    end
+    Assert.deepEqual(kinds, { "move-used", "transformed" }, "the gated copy emits no further root")
+  end
+  do
+    local state = liveState()
+    local ctx = liveContext(state)
+    SequenceMoveState.update(ctx, 2, { kind = "probe", combatant = 2 }, function()
+      return { version = 1, chargeMove = "FLY" }
+    end)
+    local hidden = Execution.step(ctx, transformAs(1, 2))
+    Assert.equal(hidden.result, "failed", "a semi-invulnerable defender cannot be copied")
+    Assert.isFalse(ctx:hasBattleEffect(1, "TRANSFORM"), "the gated copy writes no marker")
+    Assert.equal(#state.outbox, 0, "the gated copy emits no root")
+  end
+end
+
 -- Transform copies the target's types, moves, and ability onto the active
 -- entry only: the persistent record stays identical, and leaving and
 -- re-entering clears every copied residue with a fresh activation.

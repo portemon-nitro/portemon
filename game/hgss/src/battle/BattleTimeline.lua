@@ -18,8 +18,12 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class BattleTimeline
 ---@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel/retire
----@field _nativeSeen table<string, boolean> claimed visual occurrences by launch, round, action, effect key, and source phase
----@field _announced table<string, boolean> narrated attack occurrences by the same occurrence identity
+---@field _ledger table<string, table<string, unknown>> selected request records by launch, event sequence, and source-call ordinal, including recorded omissions
+---@field _launchId string? owning launch identity behind the ledger, nil before the first delivery
+---@field _sourceBindings table<string, table<string, unknown>> known source-slot identity/appearance facts by declared side and position, refreshed in event order during the prepass
+---@field _slotGeometry table<integer, table<string, number>>? published native slot rows behind request selection, absent without a screen or fixture owner
+---@field _batchRequests table<string, table<integer, table<string, unknown>>>? frozen requests by event sequence and kind for the batch under translation, nil outside it
+---@field _batchDrained table<string, boolean>? drained source calls by action, kind, ordinal, and catalog key for the batch under translation, nil outside it
 ---@field _battleScene boolean frozen launch scene choice; false omits optional move-animation roots
 ---@field _motionFacts (fun(species: string, foe: boolean): { totalTicks: integer, cryDelay: integer }?)? staged send-out motion hold and cry delay by species, absent without staged motion data
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
@@ -224,6 +228,7 @@ end
 ---@field motionFacts (fun(species: string, foe: boolean): { totalTicks: integer, cryDelay: integer }?)? staged send-out motion hold and cry delay by species, absent without staged motion data
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
+---@field slotGeometry table<integer, table<string, number>>? published native slot rows behind request selection, supplied by the screen or test fixture
 ---@field messageText fun(context: unknown, key: string, substitutions: string[]): string staged retail battle message resolver
 ---@field messageTextContext unknown? explicit owner passed to the staged retail message resolver
 
@@ -267,8 +272,10 @@ function BattleTimeline.new(opts)
     _effects = opts.effects,
     _ballParticleStarts = {},
     _pendingCries = {},
-    _nativeSeen = {},
-    _announced = {},
+    _ledger = {},
+    _launchId = nil,
+    _sourceBindings = {},
+    _slotGeometry = opts.slotGeometry,
     _pendingSounds = {},
     _names = {},
     _addressing = {},
@@ -500,16 +507,27 @@ function BattleTimeline:reset(view)
   self._ballParticleStarts = {}
   self._pendingCries = {}
   self._captureBall = nil
-  -- A fresh opening starts new actions: occurrence and narration claims
-  -- never leak from the previous launch into the next one.
-  self._nativeSeen = {}
-  self._announced = {}
+  -- A fresh opening starts a new launch: the request ledger, its
+  -- launch identity, and the known source bindings never leak from
+  -- the previous launch into the next one.
+  self._ledger = {}
+  self._launchId = nil
+  self._sourceBindings = {}
+  self._batchRequests = nil
+  self._batchDrained = nil
 end
 
 -- Drops transient visual tracks when the owning battle screen is disposed.
+-- The request ledger and source bindings end with the launch: a
+-- cancelled launch never publishes a pending admission into a new one.
 function BattleTimeline:dispose()
   self._queue = {}
   self._active = nil
+  self._ledger = {}
+  self._launchId = nil
+  self._sourceBindings = {}
+  self._batchRequests = nil
+  self._batchDrained = nil
   self._openingPresentation = nil
   self._trainerSlideTracks = {}
   self._terrainSlideTracks = {}
@@ -964,91 +982,363 @@ local function cryCue(species, form, foe, pattern, waitForVoice)
   }
 end
 
----@param sequence unknown event sequence ordinal under visual seeding
----@return integer deterministic visual seed scoped to the event identity
-local function visualSeedFor(sequence)
-  local ordinal = 0
-  if type(sequence) == "number" and sequence % 1 == 0 and sequence >= 0 then
-    ordinal = sequence --[[@as integer]]
-  end
-  -- The canonical stream lives in PresentationFacts.visualSeedFor;
-  -- this mirrors its arithmetic so cue identities stay deterministic
-  -- without pulling the mechanics package into the cue player.
-  return (ordinal * 1103515245 + 12345) % 2147483648
+---@param launchId string owning launch identity behind the ledger entry
+---@param eventSequence integer kernel event sequence behind the ledger entry
+---@param ordinal integer selected source-call ordinal behind the ledger entry
+---@param kind string event kind behind the ledger entry, disambiguating reused sequence numbers
+---@return string ledger identity joining the frozen coordinates
+local function ledgerKeyOf(launchId, eventSequence, ordinal, kind)
+  return launchId .. "\0" .. tostring(eventSequence) .. "\0" .. tostring(ordinal) .. "\0" .. kind
 end
 
----@param event table<string, unknown> sanitized kernel event under inspection
----@return string? accepted semantic effect key, nil when the source names no effect
-local function nativeEffectKeyOf(event)
-  local key = event.effectKey
-  if type(key) == "string" and key ~= "" then
-    return key --[[@as string]]
-  end
-  return nil
-end
-
---- One visual occurrence belongs to one action and one source phase: the
---- launch, round, action identity, executed effect key, and move
---- phase. Every hit of a multi-hit sequence and every recipient of a
---- spread move shares the source action identity, while a distinct action
---- identity starts its own occurrence. The charged and struck halves of a
---- two-turn action stay distinct through their source phases, so the
---- strike half never collapses onto the charge cue. An action without an
---- identity (a strike-only legacy emission) falls back to its event
---- sequence; a present but mistyped action identity is malformed and
---- claims nothing rather than silently visualizing another user's action.
----@param launch string owning launch identity under emission
----@param event table<string, unknown> sanitized kernel event under emission
----@param packet table<string, unknown> delivery carrying event-time views
----@return string? action-scoped occurrence identity, nil when the source action identity is malformed
-local function occurrenceIdentityOf(launch, event, packet)
-  local action = event.actionId
-  if type(action) ~= "number" and type(action) ~= "string" then
-    if action ~= nil then
+-- Compares two frozen request records field by field: a redelivered
+-- occurrence must select byte-identical content, never a revised
+-- decision. Packet identities stay out of the comparison because
+-- delivery numbering is diagnostic only.
+---@param before table<string, unknown> ledgered request behind the comparison
+---@param after table<string, unknown> redelivered request behind the comparison
+---@return boolean identical true when the redelivery changes no earlier decision
+---@return string? mismatch human-readable first difference, nil when identical
+local function compareRequests(before, after)
+  local function compare(path, left, right)
+    if type(left) ~= type(right) then
+      return path .. " changes type from " .. type(left) .. " to " .. type(right)
+    end
+    if type(left) == "table" then
+      for key, value in pairs(left) do
+        if key ~= "packetId" then
+          local difference = compare(path .. "." .. tostring(key), value, right[key])
+          if difference ~= nil then
+            return difference
+          end
+        end
+      end
+      for key, _ in
+        pairs(right --[[@as table<string, unknown>]])
+      do
+        if key ~= "packetId" and left[key] == nil then
+          return path .. "." .. tostring(key) .. " appears only in the redelivery"
+        end
+      end
       return nil
     end
-    action = event.sequence
+    if left ~= right then
+      return path .. " changes from " .. tostring(left) .. " to " .. tostring(right)
+    end
+    return nil
   end
-  local phase = event.kind
-  local move = event.move --[[@as table<string, unknown>?]]
-  if type(move) == "table" and type(move.phase) == "string" then
-    phase = move.phase
-  end
-  local before = packet.before --[[@as table<string, unknown>?]]
-  local after = packet.after --[[@as table<string, unknown>?]]
-  local round = type(before) == "table" and before.round or nil
-  if round == nil and type(after) == "table" then
-    round = after.round
-  end
-  return launch
-    .. "\0"
-    .. tostring(round)
-    .. "\0"
-    .. tostring(action)
-    .. "\0"
-    .. tostring(event.effectKey)
-    .. "\0"
-    .. tostring(phase)
+  local mismatch = compare("request", before, after)
+  return mismatch == nil, mismatch
 end
 
----@param packet table<string, unknown> delivery carrying launch identity
----@return string owning launch identity under emission, empty when unnamed
-local function launchOf(packet)
-  if type(packet.launchId) == "string" then
-    return packet.launchId --[[@as string]]
+-- Records one selected request in the per-launch ledger, including
+-- recorded omissions. A repeated identity with identical content
+-- stays a silent no-op; a repeated identity with different content is
+-- an explicit presentation error instead of a revised decision.
+---@param self BattleTimeline
+---@param request table<string, unknown> frozen request behind the ledger entry
+---@param kind string event kind behind the ledger entry, disambiguating reused sequence numbers
+---@return boolean fresh true when the identity is recorded for the first time
+local function ledgerRecord(self, request, kind)
+  local identity = assert(request.identity, "ledgered requests carry their occurrence identity") --[[@as table<string, unknown>]]
+  local launchId = assert(identity.launchId, "ledgered requests name their launch") --[[@as string]]
+  local eventSequence = assert(identity.eventSequence, "ledgered requests name their event sequence") --[[@as integer]]
+  local ordinal = assert(identity.ordinal, "ledgered requests number their source call") --[[@as integer]]
+  local key = ledgerKeyOf(launchId, eventSequence, ordinal, kind)
+  local known = self._ledger[key]
+  if known ~= nil then
+    local identical, mismatch = compareRequests(known.request --[[@as table<string, unknown>]], request)
+    if not identical then
+      error(
+        "native request " .. key .. " for launch " .. launchId .. " reselects different content: " .. tostring(mismatch),
+        0
+      )
+    end
+    return false
   end
-  return ""
+  self._ledger[key] = {
+    identity = copyValue(identity),
+    disposition = request.disposition,
+    effectKey = request.effectKey,
+    request = copyValue(request),
+  }
+  return true
 end
 
--- Demands the exact selected effect the first time its source event is
--- admitted, once its announcement has played. The cue itself stays
--- ordered behind the event narration and ahead of its hit and health
--- work, and still holds every later cue until the player occurrence
--- actually completes. Emission is exactly once per launch, action,
--- executed effect key, and source phase: later hits, spread recipients,
--- and redeliveries of the same action queue nothing new. Generic impact
--- and effectiveness voices stay silent on this path because the selected
--- program owns audio timing.
+-- Defaulted legacy identity facts for one actor/target entry: records
+-- predating activation facts bind their native combatant identity, so
+-- long-standing emissions without activation keep resolving the same
+-- event-time slot. Records carrying real facts pass through
+-- untouched; nothing here invents an entry that is absent.
+---@param entry table<string, unknown> actor/target identity under selection
+local function defaultEntryIdentity(entry)
+  if entry.activation == nil then
+    entry.activation = entry.combatant
+  end
+  if entry.position == nil then
+    entry.position = entry.combatant
+  end
+end
+
+-- Defaulted legacy slot facts for one event-time view record: active
+-- records without activation or position bind their native combatant
+-- identity, matching the actor/target rule above. Benched reserves
+-- keep no slot facts: inventing positions from combatant identities
+-- would pollute the live side order with phantom slots.
+---@param record table<string, unknown> event-time view record under selection
+local function defaultViewRecord(record)
+  if record.active ~= false then
+    if record.activation == nil then
+      record.activation = record.combatant
+    end
+    if record.position == nil then
+      record.position = record.combatant
+    end
+  end
+end
+
+-- Detached selection input for one event: the event with defaulted
+-- legacy identity facts and detached views with defaulted legacy slot
+-- facts. Production facts already carry real activation and position
+-- values and pass through untouched; the packet itself is never
+-- mutated.
+---@param event table<string, unknown> sanitized event under selection
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
+---@return table<string, unknown> detached event behind selection
+---@return table<string, unknown> detached envelope behind selection
+local function selectionInput(event, packet)
+  local detached = copyValue(event) --[[@as table<string, unknown>]]
+  for _, group in ipairs({ "actors", "targets" }) do
+    local entries = detached[group]
+    if type(entries) == "table" then
+      for _, entry in
+        ipairs(entries --[[@as table<integer, table<string, unknown>>]])
+      do
+        if type(entry) == "table" then
+          defaultEntryIdentity(entry)
+        end
+      end
+    end
+  end
+  local envelope = {
+    launchId = packet.launchId,
+    packetId = packet.packetId,
+    before = copyValue(packet.before),
+    after = copyValue(packet.after),
+  } --[[@as table<string, unknown>]]
+  for _, name in ipairs({ "before", "after" }) do
+    local view = envelope[name] --[[@as table<string, unknown>?]]
+    if type(view) == "table" then
+      for _, group in ipairs({ "own", "foes" }) do
+        local records = view[group]
+        if type(records) == "table" then
+          for _, record in
+            ipairs(records --[[@as table<integer, table<string, unknown>>]])
+          do
+            if type(record) == "table" then
+              defaultViewRecord(record)
+            end
+          end
+        end
+      end
+    end
+  end
+  return detached, envelope
+end
+
+-- Indexes backward cost links carried by the fresh batch: an owning
+-- event sequence pointing at its actual cost-health event sequence.
+-- Links must stay inside one launch and one action and name the same
+-- subject activation; a missing, duplicate, cross-action,
+-- cross-activation, or future-guess link is a presentation error.
+-- No producer carries cost facts yet, so live batches index empty.
+---@param launch string owning launch identity behind the batch
+---@param fresh table<integer, table<string, unknown>> fresh events in sequence order
+---@return table<integer, integer> costLinks owning event sequence to cost event sequence
+local function indexCostLinks(launch, fresh)
+  local bySequence = {} ---@type table<integer, table<string, unknown>>
+  for _, event in ipairs(fresh) do
+    if type(event.sequence) == "number" then
+      bySequence[
+        event.sequence --[[@as integer]]
+      ] = event
+    end
+  end
+  local costLinks = {} ---@type table<integer, integer>
+  for _, event in ipairs(fresh) do
+    local presentation = type(event.presentation) == "table" and event.presentation or nil
+    local links = {} ---@type table<integer, unknown>
+    if type(presentation) == "table" then
+      local execution = presentation.execution --[[@as table<string, unknown>?]]
+      if type(execution) == "table" and type(execution.costEventSequence) == "number" then
+        links[
+          event.sequence --[[@as integer]]
+        ] = execution.costEventSequence
+      end
+      local operation = presentation.operation --[[@as table<string, unknown>?]]
+      if
+        type(operation) == "table"
+        and operation.kind == "health-cost"
+        and type(operation.ownerEventSequence) == "number"
+      then
+        links[
+          operation.ownerEventSequence --[[@as integer]]
+        ] = event.sequence
+      end
+      if
+        type(operation) == "table"
+        and operation.kind == "substitute-created"
+        and type(operation.costEventSequence) == "number"
+      then
+        links[
+          event.sequence --[[@as integer]]
+        ] = operation.costEventSequence
+      end
+    end
+    for ownerSequence, costSequence in pairs(links) do
+      local cost = costSequence --[[@as integer]]
+      local owner = bySequence[
+        ownerSequence --[[@as integer]]
+      ]
+      local costEvent = bySequence[cost]
+      if owner == nil or costEvent == nil then
+        error("cost link " .. tostring(ownerSequence) .. " for launch " .. launch .. " names a missing event", 0)
+      end
+      if cost >= ownerSequence then
+        error("cost link " .. tostring(ownerSequence) .. " for launch " .. launch .. " guesses a future cost event", 0)
+      end
+      if owner.actionId ~= costEvent.actionId then
+        error("cost link " .. tostring(ownerSequence) .. " for launch " .. launch .. " crosses actions", 0)
+      end
+      if
+        costLinks[
+          ownerSequence --[[@as integer]]
+        ] ~= nil
+      then
+        error("cost link " .. tostring(ownerSequence) .. " for launch " .. launch .. " has a duplicate cost", 0)
+      end
+      costLinks[
+        ownerSequence --[[@as integer]]
+      ] = cost
+    end
+  end
+  return costLinks
+end
+
+-- Refreshes the known source-slot facts from the batch views in event
+-- order and snapshots them for one selector call. Retired bindings
+-- persist until the same declared position pictures a replacement;
+-- redelivered facts never advance the map because only fresh batches
+-- refresh it.
+---@param self BattleTimeline
+---@param packet table<string, unknown> delivery carrying event-time views
+---@return table<integer, table<string, unknown>> detached source-slot snapshot in declared slot order
+local function snapshotSourceBindings(self, packet)
+  local function refresh(view)
+    if type(view) ~= "table" then
+      return
+    end
+    for _, group in ipairs({ "own", "foes" }) do
+      local records = view[group] --[[@as table<integer, table<string, unknown>>?]]
+      if type(records) == "table" then
+        for _, record in ipairs(records) do
+          if type(record) == "table" and type(record.side) == "number" and type(record.position) == "number" then
+            local key = tostring(record.side) .. "\0" .. tostring(record.position)
+            self._sourceBindings[key] = {
+              side = record.side,
+              position = record.position,
+              combatant = record.combatant,
+              activation = record.activation,
+              appearance = copyValue(record.species ~= nil and {
+                species = record.species,
+                form = record.form,
+                gender = record.gender,
+                shiny = record.shiny,
+                personality = record.personality,
+              } or nil),
+            }
+          end
+        end
+      end
+    end
+  end
+  refresh(packet.before)
+  refresh(packet.after)
+  local snapshot = {} ---@type table<integer, table<string, unknown>>
+  for _, binding in pairs(self._sourceBindings) do
+    snapshot[#snapshot + 1] = copyValue(binding)
+  end
+  table.sort(snapshot, function(left, right)
+    local leftSide = left.side --[[@as integer]]
+    local rightSide = right.side --[[@as integer]]
+    if leftSide ~= rightSide then
+      return leftSide < rightSide
+    end
+    local leftPosition = left.position --[[@as integer]]
+    local rightPosition = right.position --[[@as integer]]
+    return leftPosition < rightPosition
+  end)
+  return snapshot
+end
+
+-- Selects the frozen requests for every fresh event exactly once and
+-- records each in the per-launch ledger, including omissions. The
+-- selector runs once per event; redelivery replays identical content
+-- and queues nothing new.
+---@param self BattleTimeline
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
+---@param fresh table<integer, table<string, unknown>> fresh events in sequence order
+---@return table<string, table<integer, table<string, unknown>>> frozen requests by event sequence and kind
+local function prepassRequests(self, packet, fresh)
+  local launch = packet.launchId --[[@as string]]
+  local slots = self._slotGeometry
+  if slots == nil then
+    error("native requests for launch " .. launch .. " need their published slot geometry", 0)
+  end
+  local costLinks = indexCostLinks(launch, fresh)
+  local perEvent = {} ---@type table<string, table<integer, table<string, unknown>>>
+  for _, event in ipairs(fresh) do
+    local detached, envelope = selectionInput(event, packet)
+    local bindings = snapshotSourceBindings(self, packet)
+    local ok, selected = pcall(BattlePresentationFlow.animationPlayback, envelope, detached, slots, {
+      battleScene = self._battleScene,
+      sourceBindings = bindings,
+      costLinks = costLinks,
+    })
+    if not ok then
+      error(
+        "native requests for launch "
+          .. launch
+          .. " event "
+          .. tostring(event.sequence)
+          .. " kind "
+          .. tostring(event.kind)
+          .. " fail selection: "
+          .. tostring(selected),
+        0
+      )
+    end
+    local requests = selected --[[@as table<integer, table<string, unknown>>]]
+    for _, request in ipairs(requests) do
+      ledgerRecord(self, request, event.kind --[[@as string]])
+    end
+    if type(event.sequence) == "number" and type(event.kind) == "string" then
+      perEvent[
+        tostring(event.sequence) .. "\0" .. event.kind --[[@as string]]
+      ] = requests
+    end
+  end
+  return perEvent
+end
+
+-- Demands the exact selected effect behind one ledgered request cue.
+-- The cue itself stays ordered behind the event narration and ahead
+-- of its hit and health work, and still holds every later cue until
+-- the player occurrence actually completes. Each admitted request
+-- queues exactly one cue; redeliveries replay identical ledger
+-- content and queue nothing new. Generic impact and effectiveness
+-- voices stay silent on this path because the selected program owns
+-- audio timing.
 ---@param self BattleTimeline
 ---@param cue table<string, unknown> native-effect cue under admission
 local function beginNativeEffect(self, cue)
@@ -1056,7 +1346,13 @@ local function beginNativeEffect(self, cue)
     return
   end
   cue.startAttempted = true
-  if self._effects == nil then
+  -- Without a usable animation collaborator the routed cue fails
+  -- loudly with provenance: a declined (false) or missing
+  -- collaborator never holds forever or settles as a silent
+  -- generic success. A never-provided collaborator never reaches
+  -- this boundary because enqueue skips native cues entirely.
+  local collaborator = self._effects
+  if type(collaborator) ~= "table" then
     error(
       "native effect "
         .. tostring(cue.effectKey)
@@ -1066,7 +1362,7 @@ local function beginNativeEffect(self, cue)
       0
     )
   end
-  local starter = self._effects.start --[[@as fun(cue: table<string, unknown>): table<string, unknown>?]]
+  local starter = collaborator.start --[[@as fun(cue: table<string, unknown>): table<string, unknown>?]]
   if type(starter) ~= "function" then
     error(
       "native effect "
@@ -1093,107 +1389,112 @@ local function beginNativeEffect(self, cue)
   end
 end
 
--- Source scene gate behind BtlCmd_PlayMoveAnimation: only the optional
--- move-animation roots obey the frozen launch choice, keyed on the
--- executed move rather than the selected command so indirect calls
--- follow the move actually performed. Transform always plays, and
--- non-move cues (status, entry, capture, arrival, decisions) always play.
--- The gated set mirrors the kernel move routes that select a visual
--- program; the disabled route contributes no synthetic wait because the
--- source subscript_0291_WaitMoveAnimation is End alone.
-local SCENE_GATED_ORIGINS = {
-  ["move-used"] = true,
-  struck = true,
-  missed = true,
-  protected = true,
-  charged = true,
-  delayed = true,
-  mimicked = true,
-  immune = true,
-  ["multi-hit"] = true,
-  strike = true,
-}
-
----@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
----@return string? executed move identity, nil when no move was executed
-local function executedMoveOf(event)
-  local move = event.move --[[@as table<string, unknown>?]]
-  if type(move) == "table" and type(move.executed) == "string" and move.executed ~= "" then
-    return move.executed --[[@as string]]
-  end
-  return nil
-end
-
----@param self BattleTimeline
----@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
----@return boolean admitted true unless Scene Off omits this optional root
-local function sceneAdmitsEffect(self, event)
-  if self._battleScene ~= false then
-    return true
-  end
-  if SCENE_GATED_ORIGINS[event.kind] ~= true then
-    return true
-  end
-  local executed = executedMoveOf(event)
-  if executed == nil or executed == "TRANSFORM" then
-    return true
-  end
-  return false
-end
-
--- Queues one native-effect cue for an effect-keyed source event behind
--- its attack announcement and ahead of the event's hit and health work.
--- A malformed source action identity fails loudly instead of assigning
--- another user's visual or skipping silently. A Scene Off omission still
--- claims the occurrence so redeliveries and later hits queue nothing new.
----@param self BattleTimeline
----@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
----@param packet table<string, unknown> delivery carrying launch identity and event-time views
-local function enqueueNativeEffect(self, event, packet)
-  local launch = launchOf(packet)
-  local identity = occurrenceIdentityOf(launch, event, packet)
-  if identity == nil then
-    error(
-      "native effect "
-        .. tostring(event.effectKey)
-        .. " for launch "
-        .. tostring(packet.launchId)
-        .. " names no usable action identity",
-      0
-    )
-  end
-  if self._nativeSeen[identity] == true then
-    return
-  end
-  self._nativeSeen[identity] = true
-  if not sceneAdmitsEffect(self, event) then
-    return
-  end
-  local hitOrdinal = event.hitIndex
-  if type(hitOrdinal) ~= "number" then
-    local payload = event.payload --[[@as table<string, unknown>?]]
-    if type(payload) == "table" and type(payload.hitIndex) == "number" then
-      hitOrdinal = payload.hitIndex
+-- Whether the use announcement owns its action's visual: an attack
+-- announcement alone never proves a source animation call, so a use
+-- event sharing its action with a hit event in the same batch only
+-- narrates while the hit drains the visual. A use with no hit in the
+-- batch is a no-strike execution and drains its own selected call.
+-- Uses whose hit lands in a later batch can still double-play; that
+-- needs producer execution moments to close.
+---@param fresh table<integer, table<string, unknown>> fresh events in sequence order
+---@return table<string, boolean> actions owning at least one hit event in this batch
+local function batchHitActions(fresh)
+  local hits = {} ---@type table<string, boolean>
+  for _, event in ipairs(fresh) do
+    if event.kind == "struck" then
+      local action = event.actionId
+      if type(action) ~= "number" and type(action) ~= "string" then
+        action = event.sequence
+      end
+      hits[tostring(action)] = true
     end
   end
-  local seed = event.visualSeed
-  if type(seed) ~= "number" then
-    seed = visualSeedFor(event.sequence)
+  return hits
+end
+
+-- Queues one native-effect cue per admitted frozen request of the
+-- event, behind its narration and ahead of its hit and health work.
+-- Omitted requests occupy their ledger identities but enqueue no cue
+-- and no invented wait. A use event with a hit sibling only
+-- narrates; the hit owns the action's visual. Every admitted request
+-- selected by the sole Flow selector drains exactly one cue from the
+-- per-batch ledger: omitted requests occupy their identities but
+-- enqueue nothing, and narration/health-only emissions translate
+-- without a cue. A draining cue without a collaborator fails loudly
+-- at its first tick instead of holding silently.
+---@param self BattleTimeline
+---@param event table<string, unknown> sanitized kernel event under translation
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
+---@param fresh table<integer, table<string, unknown>>? fresh batch behind the use/hit rule, nil outside batch translation
+local function enqueueNativeEffect(self, event, packet, fresh)
+  -- Without an animation collaborator the screen presents the
+  -- established generic cue vocabulary: narration and health
+  -- translate, and no native cue is ever queued behind a
+  -- collaborator that will never arrive.
+  if self._effects == nil then
+    return
   end
-  local cue = {
-    kind = "native-effect",
-    launchId = packet.launchId,
-    packetId = packet.packetId,
-    eventSequence = event.sequence,
-    actionId = event.actionId,
-    hitOrdinal = hitOrdinal,
-    effectKey = event.effectKey,
-    event = event,
-    visualSeed = seed,
-    before = packet.before,
-    after = packet.after,
-  }
-  enqueue(self, cue)
+  local requests = self._batchRequests ~= nil
+      and type(event.sequence) == "number"
+      and type(event.kind) == "string"
+      and self._batchRequests[
+        tostring(event.sequence) .. "\0" .. event.kind --[[@as string]]
+      ]
+    or nil
+  local hits = fresh ~= nil and batchHitActions(fresh) or nil
+  if requests == nil then
+    return
+  end
+  for _, request in ipairs(requests) do
+    if request.disposition == "admit" then
+      local drains = true
+      if event.kind == "move-used" and hits ~= nil then
+        local action = event.actionId
+        if type(action) ~= "number" and type(action) ~= "string" then
+          action = event.sequence
+        end
+        drains = hits[tostring(action)] ~= true
+      end
+      -- One source call drains one cue: admitted siblings sharing
+      -- the action, kind, selected-call ordinal, and catalog key are
+      -- spread continuations of the same call, never new calls.
+      -- Repeated hits carry distinct ordinals and still replay.
+      if drains and self._batchDrained ~= nil then
+        local identity = request.identity --[[@as table<string, unknown>]]
+        local action = event.actionId
+        if type(action) ~= "number" and type(action) ~= "string" then
+          action = event.sequence
+        end
+        local callKey = tostring(action)
+          .. "\0"
+          .. tostring(event.kind)
+          .. "\0"
+          .. tostring(identity.ordinal)
+          .. "\0"
+          .. tostring(request.effectKey)
+        if self._batchDrained[callKey] == true then
+          drains = false
+        else
+          self._batchDrained[callKey] = true
+        end
+      end
+      if drains then
+        -- Animation cues carry no occurrence-derived seed: visual
+        -- variation flows only from the screen-owned battle visual
+        -- stream and the boot SPL stream.
+        enqueue(self, {
+          kind = "native-effect",
+          launchId = packet.launchId,
+          packetId = packet.packetId,
+          eventSequence = event.sequence,
+          actionId = event.actionId,
+          effectKey = request.effectKey,
+          request = copyValue(request),
+          event = event,
+        })
+      end
+    end
+  end
 end
 
 ---@param text string narration wording under presentation
@@ -1563,7 +1864,8 @@ end
 ---@param event table<string, unknown> sanitized kernel event under translation
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
 ---@param narrated table<string, boolean>? attack keys already narrated in this delivery
-local function translateStruck(self, event, packet, narrated)
+---@param fresh table<integer, table<string, unknown>>? fresh batch behind request draining
+local function translateStruck(self, event, packet, narrated, fresh)
   local payload = event.payload --[[@as table<string, unknown>]]
   -- Explicit playback facts name the true attacker and recipient;
   -- only legacy emissions without them fall back to display order.
@@ -1587,38 +1889,20 @@ local function translateStruck(self, event, packet, narrated)
   end
   local moveKey = explicitMove(event)
   local wording = moveUseText(self, attacker, moveKey)
-  -- One attack occurrence narrates once across its hits: the first
-  -- strike voices the attack while later hits keep their impact,
-  -- sound, and checkpoint motion in native order. The announcement
-  -- runs before the visual, and the visual runs once per action and
-  -- phase behind that announcement. Strikes without an effect key
-  -- keep generic voices; their action identity still scopes narration.
-  local nativeKey = nativeEffectKeyOf(event)
-  local occurrence = nil
-  if nativeKey ~= nil or event.actionId ~= nil then
-    occurrence = occurrenceIdentityOf(launchOf(packet), event, packet)
-  end
-  if occurrence ~= nil then
-    if self._announced[occurrence] ~= true then
-      self._announced[occurrence] = true
-      enqueueMessage(self, wording, false, 0)
-    end
-    if nativeKey ~= nil then
-      enqueueNativeEffect(self, event, packet)
-    end
-  else
-    local narrationKey = BattlePresentationFlow.attackKey(attacker, moveKey)
-    local already = narrated ~= nil and narrated[narrationKey] == true
-    if not already then
-      enqueueMessage(self, wording, false, 0)
-      if narrated ~= nil then
-        narrated[narrationKey] = true
-      end
-    end
-    if nativeKey ~= nil then
-      enqueueNativeEffect(self, event, packet)
+  -- One attack narrates once across its hits: the first strike
+  -- voices the attack while later hits keep their impact, sound,
+  -- and checkpoint motion in native order. The announcement runs
+  -- before the visuals, and every admitted hit drains its own
+  -- ledgered request behind that announcement.
+  local narrationKey = BattlePresentationFlow.attackKey(attacker, moveKey)
+  local already = narrated ~= nil and narrated[narrationKey] == true
+  if not already then
+    enqueueMessage(self, wording, false, 0)
+    if narrated ~= nil then
+      narrated[narrationKey] = true
     end
   end
+  enqueueNativeEffect(self, event, packet, fresh)
   -- subscript_0002_UpdateHp: every landed hit plays one impact voice
   -- chosen by effectiveness and panned toward the struck side
   -- (OpponentData_PlayMoveSE), whether or not the move has a program.
@@ -2850,13 +3134,16 @@ local function moveOutcome(messageKey, targetField, moveField)
 end
 
 ---@param self BattleTimeline
----@param event table<string, unknown>
+---@param event table<string, unknown> sanitized kernel event under translation
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
-local function translateTransformed(self, event, packet)
-  -- The transform narration runs before its selected native program
-  -- while the essential appearance below still applies synchronously:
-  -- the visual update is never silenced, even on paths where optional
-  -- artwork is suppressed.
+---@param fresh table<integer, table<string, unknown>>? fresh batch behind request draining
+local function translateTransformed(self, event, packet, fresh)
+  -- The selected program runs before its transformed line, and the
+  -- visual task owns the picture change at its authored moment: the
+  -- cue player never swaps the displayed appearance synchronously
+  -- here. The frozen request carries the donor appearance for the
+  -- player and later calls.
+  enqueueNativeEffect(self, event, packet, fresh)
   local payload = event.payload --[[@as table<string, unknown>]]
   local target = payload.target
   assert(type(target) == "number", "transform target is named")
@@ -2870,32 +3157,6 @@ local function translateTransformed(self, event, packet)
     assert(type(speciesName) == "string" and speciesName ~= "", "transform source tags resolve the species name")
     -- subscript_0092_Transform prints the line with WaitButtonABTime 30.
     enqueueMessage(self, messageText(self, "battle/narration/transformed", { who, speciesName }), false, 30, true)
-  end
-  if nativeEffectKeyOf(event) ~= nil then
-    enqueueNativeEffect(self, event, packet)
-  end
-  -- The displayed appearance tracks the copied battler even when
-  -- effects are suppressed: the disabled animation path still applies
-  -- the essential visual update behind its native wait.
-  local donorId = BattlePresentationFlow.transformDonor(event)
-  if donorId ~= nil then
-    local donor = self:_shown(donorId --[[@as integer]])
-    local shown = self:_shown(target --[[@as integer]])
-    if donor ~= nil and shown ~= nil and type(donor.species) == "string" then
-      shown.species = donor.species
-      if type(donor.form) == "number" then
-        shown.form = donor.form
-      end
-      -- The transformed battler draws the donor's picture, never the
-      -- stale pre-transform selector: the exact canonical selector
-      -- switches to the donor's alongside the species and form.
-      if type(donor.portraitSelector) == "string" and donor.portraitSelector ~= "" then
-        shown.portraitSelector = donor.portraitSelector
-      end
-      if donor.gender == "male" or donor.gender == "female" or donor.gender == "genderless" then
-        shown.gender = donor.gender
-      end
-    end
   end
 end
 
@@ -3668,48 +3929,48 @@ local OTHER_TRANSLATORS = {
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
 ---@param packet table<string, unknown> delivery carrying launch identity and event-time views
-local function translateOther(self, event, packet)
+---@param fresh table<integer, table<string, unknown>>? fresh batch behind request draining
+---@param narrated table<string, boolean>? attack keys already narrated in this delivery
+local function translateOther(self, event, packet, fresh, narrated)
   local kind = event.kind --[[@as string]]
   if kind == "move-used" then
-    -- A successful no-strike execution admits its visual behind its own
-    -- use announcement. A striking action owns the same occurrence
-    -- through its strike, so whichever event claims it first wins and
-    -- the other stays silent: one action still plays one visual.
+    -- The use event voices its attack announcement, which the batch
+    -- grouping moves ahead of its action's execution moments.
     -- subscript_0076_AttackMessageAndAnimation prints the line, waits
     -- only for the link barrier, and starts the move animation, so the
-    -- announcement carries no hold of its own.
-    local nativeKey = nativeEffectKeyOf(event)
-    local occurrence = (nativeKey ~= nil or event.actionId ~= nil)
-        and occurrenceIdentityOf(launchOf(packet), event, packet)
-      or nil
-    if occurrence == nil or self._announced[occurrence] ~= true then
-      translateMoveUsed(self, event, 0)
-      if occurrence ~= nil then
-        self._announced[occurrence] = true
+    -- announcement carries no hold of its own. The visual drains from
+    -- the ledgered request behind the same boundary: a hit sibling
+    -- owns the action's visual, while a use without hits drains its
+    -- own selected call. The announcement marks the batch narration
+    -- set so the owning hit never voices it twice.
+    translateMoveUsed(self, event, 0)
+    if narrated ~= nil then
+      local usePayload = event.payload --[[@as table<string, unknown>?]]
+      local user = explicitActor(event)
+      if user == nil and type(usePayload) == "table" and type(usePayload.user) == "number" then
+        user = usePayload.user --[[@as integer]]
       end
+      if user == nil then
+        user = moveOwner(self, explicitMove(event))
+      end
+      narrated[BattlePresentationFlow.attackKey(user, explicitMove(event))] = true
     end
-    if nativeKey ~= nil then
-      enqueueNativeEffect(self, event, packet)
-    end
+    enqueueNativeEffect(self, event, packet, fresh)
     return
   end
   if kind == "transformed" then
-    translateTransformed(self, event, packet)
+    translateTransformed(self, event, packet, fresh)
     return
   end
-  -- Any effect-keyed source event narrates before its selected native
-  -- program, except misses and failed moves: HGSS subscript_0007
-  -- announces and waits but does not start a move animation. Other
-  -- source-attributed kinds keep their selected programs instead of
-  -- collapsing onto a generic hit.
+  -- Every remaining event narrates before its selected native
+  -- program: misses and failed moves omit through their ledgered
+  -- disposition instead of a kind check here.
   local translate = OTHER_TRANSLATORS[kind]
   if translate == nil then
     error("unrepresentable effect: " .. kind, 0)
   end
   translate(self, event, packet)
-  if kind ~= "missed" and kind ~= "move-failed" and nativeEffectKeyOf(event) ~= nil then
-    enqueueNativeEffect(self, event, packet)
-  end
+  enqueueNativeEffect(self, event, packet, fresh)
 end
 
 -- Accepts one delivery packet in order: unseen identities translate
@@ -3727,6 +3988,17 @@ function BattleTimeline:present(packet, sourceMessages)
     return false
   end
   local launch = type(packet.launchId) == "string" and packet.launchId or ""
+  -- The ledger is per launch: a delivery naming a new launch without
+  -- an opening reset still starts a new ledger instead of merging
+  -- decisions across launches.
+  if self._launchId == nil then
+    self._launchId = launch
+  elseif self._launchId ~= launch then
+    self._launchId = launch
+    self._ledger = {}
+    self._seen = {}
+    self._sourceBindings = {}
+  end
   local events = {} ---@type table<integer, table<string, unknown>>
   if type(packet.events) == "table" then
     for _, event in
@@ -3793,12 +4065,25 @@ function BattleTimeline:present(packet, sourceMessages)
     self._latest = packet.after
   end
   indexFacts(self, packet.after)
-  -- The use event of a no-strike execution closes its action: within
-  -- each action group it translates first, so its announcement and
-  -- visual lead the action's cue block and stage or status siblings
-  -- of the same action never play ahead of the visual they belong to.
-  -- Grouping never crosses actions and never rewrites kernel event
-  -- identities; only cue scheduling changes.
+  -- The request prepass selects every fresh event's frozen requests
+  -- once and ledgers them, including omissions, before any cue
+  -- enqueues. Only sequenced events carry a ledger identity;
+  -- unsequenced emissions translate narration-only.
+  local sequenced = {} ---@type table<integer, table<string, unknown>>
+  for _, event in ipairs(fresh) do
+    if type(event.sequence) == "number" and event.sequence % 1 == 0 and event.sequence >= 1 then
+      sequenced[#sequenced + 1] = event
+    end
+  end
+  self._batchRequests = prepassRequests(self, packet, sequenced)
+  self._batchDrained = {}
+  -- Announcement-ahead grouping: within each action group the use
+  -- event translates first, so its announcement leads the action's
+  -- cue block. Grouping moves only the announcement; the visual
+  -- drains from the ledgered request at its own event boundary, so
+  -- an early use never steals its hit's occurrence. Grouping never
+  -- crosses actions and never rewrites kernel event identities; only
+  -- cue scheduling changes.
   local groups = {} ---@type table<integer, table<integer, table<string, unknown>>>
   local groupIndex = {} ---@type table<string, integer>
   for _, event in ipairs(fresh) do
@@ -3833,14 +4118,14 @@ function BattleTimeline:present(packet, sourceMessages)
       end
     end
   end
-  -- One attack occurrence narrates once per delivery: the set lives
+  -- One attack narrates once per delivery: the set lives
   -- only for this packet so later packets narrate their own attacks.
   local narrated = {} ---@type table<string, boolean>
   for _, event in ipairs(fresh) do
     if type(event.kind) == "string" then
       local kind = event.kind --[[@as string]]
       if kind == "struck" then
-        translateStruck(self, event, packet, narrated)
+        translateStruck(self, event, packet, narrated, fresh)
       elseif kind == "faint" then
         translateFaint(self, event)
       elseif kind == "exp" then
@@ -3848,10 +4133,12 @@ function BattleTimeline:present(packet, sourceMessages)
       elseif kind == "stats" then
         translateStats(self, event)
       else
-        translateOther(self, event, packet)
+        translateOther(self, event, packet, fresh, narrated)
       end
     end
   end
+  self._batchRequests = nil
+  self._batchDrained = nil
   -- Headless opening and terminal sequencing behind the same packet
   -- boundary: the screen already queued its introduction through its
   -- explicit entry, so a delivery that arrives after that entry never

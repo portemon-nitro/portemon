@@ -283,6 +283,110 @@ local function targetOf(entry)
   return record.combatant --[[@as integer]]
 end
 
+-- Semantic execution moment behind one reached sequence call: the
+-- actual source call with its frozen roles, resolved power, and
+-- friendship. Only reached calls mark a moment; failed preconditions
+-- return before emitting, and wrapper subcalls share the marked
+-- cycle instead of manufacturing a second primary.
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@param moment string? closed execution moment, ordinary use when absent
+---@param branch string? closed execution branch, default when absent
+---@return table<string, unknown> detached execution facts behind the emission
+local function sequenceExecution(ctx, record, moment, branch)
+  local user = userOf(record)
+  local userEntry = ctx:entryOf(user)
+  local attacker = { combatant = user, activation = userEntry.activation }
+  local targets = {} ---@type table<integer, table<string, unknown>>
+  for _, entry in ipairs(record.targets) do
+    local id = targetOf(entry)
+    local targetEntry = ctx:entryOf(id)
+    targets[#targets + 1] = { combatant = id, activation = targetEntry.activation }
+  end
+  local defender = targets[1] or attacker
+  local power = 0
+  local locals = record.locals
+  if type(locals) == "table" then
+    local facts = (locals --[[@as table<string, unknown>]]).move
+    if
+      type(facts) == "table" and type((facts --[[@as table<string, unknown>]]).power) == "number"
+    then
+      power = (facts --[[@as table<string, unknown>]]).power --[[@as integer]]
+    end
+  end
+  local scope = ctx:moveScope()
+  local friendship = 0
+  if
+    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    friendship = (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  if type(scope) == "table" then
+    (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
+  end
+  return {
+    selectedMove = record.requestedMove or record.executingMove,
+    executedMove = record.executingMove,
+    moment = moment or "use",
+    branch = branch or "default",
+    attacker = attacker,
+    defender = defender,
+    targets = targets,
+    damage = 0,
+    power = power,
+    friendship = friendship,
+  }
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@param target integer combatant owning the stages under the write
+---@param stat string stage identity under the write
+---@param next integer clamped stage value to install
+---@param method string? closed stage method, delta when absent
+---@param groupFirst integer? first changed stat's event sequence within one source group
+---@return integer? assigned event sequence, nil when the write is capped
+local function sequenceChangeStage(ctx, record, target, stat, next, method, groupFirst)
+  local user = userOf(record)
+  local entry = ctx:entryOf(target)
+  local userEntry = ctx:entryOf(user)
+  local facts = {
+    operation = {
+      kind = "stage-changed",
+      subject = { combatant = target, activation = entry.activation },
+      source = {
+        kind = "move",
+        key = record.executingMove,
+        actor = { combatant = user, activation = userEntry.activation },
+      },
+      stat = stat,
+      before = entry.stages[stat],
+      after = next,
+      method = method or "delta",
+      profile = "standard",
+      feedbackOwner = groupFirst == nil,
+    },
+  }
+  if groupFirst ~= nil then
+    (facts.operation --[[@as table<string, unknown>]]).groupFirstSequence = groupFirst
+  end
+  local result = ctx:changeStage(target, stat, next, causeFor(record), facts)
+  return result.eventSequence
+end
+
+-- Emits one reached sequence call with its execution moment. The
+-- moment and branch stay ordinary unless the source call selects a
+-- named variant (charge start, screens-broken follow-up).
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@param moment string? closed execution moment, ordinary use when absent
+---@param branch string? closed execution branch, default when absent
+local function emitMoveUsed(ctx, record, moment, branch)
+  ctx:emit("move-used", causeFor(record), { user = userOf(record), targets = #record.targets }, nil, {
+    execution = sequenceExecution(ctx, record, moment, branch),
+  })
+end
+
 ---@param state unknown candidate typed state under the inert recording
 ---@return table<string, unknown> the versioned record
 local function validateInert(state)
@@ -444,14 +548,45 @@ local function stepSubstitute(ctx, frame)
   then
     return { kind = "complete", result = "failed" }
   end
-  ctx:damage(user, cost, causeFor(record))
+  -- The creation cost is emitted first as its own health-cost event;
+  -- the later creation moment points backward at it instead of
+  -- duplicating the checkpoint.
+  local health = ctx:damage(user, cost, causeFor(record))
+  local userRole = { combatant = user, activation = entry.activation }
+  local costEvent = ctx:emit("health-cost", causeFor(record), { target = user }, nil, {
+    operation = {
+      kind = "health-cost",
+      subject = userRole,
+      source = { kind = "move", key = record.executingMove, actor = userRole },
+      reason = "substitute",
+      relation = "precedes-use",
+    },
+    healthChanges = {
+      {
+        combatant = user,
+        activation = entry.activation,
+        before = health.before,
+        after = health.after,
+        maxHp = maxHp,
+        kind = "body",
+      },
+    },
+  })
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("substitute"),
     { kind = "active", combatant = user, activation = entry.activation },
     { kind = "move", combatant = user },
     { version = 1, hp = cost }
   )
-  ctx:emit("move-used", causeFor(record), { user = userOf(record), targets = 1 })
+  ctx:emit("move-used", causeFor(record), { user = userOf(record), targets = 1 }, nil, {
+    execution = sequenceExecution(ctx, record, nil, nil),
+    operation = {
+      kind = "substitute-created",
+      subject = userRole,
+      source = { kind = "move", key = record.executingMove, actor = userRole },
+      costEventSequence = costEvent.sequence,
+    },
+  })
   return { kind = "complete", result = "hit" }
 end
 
@@ -478,8 +613,10 @@ end
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
 ---@param override integer|nil ramped power under the source doubling rule; when absent the compiled base resolves
+---@param release boolean? true when this strike releases a charged move, marking the release payload
+---@param branch string? closed execution branch behind the strike variant
 ---@return integer damage dealt by the strike
-local function strikeTarget(ctx, frame, defender, override)
+local function strikeTarget(ctx, frame, defender, override, release, branch)
   local record = frame --[[@as table<string, unknown>]]
   local combat = combatOf(record)
   local power = override
@@ -526,10 +663,75 @@ local function strikeTarget(ctx, frame, defender, override)
     local entry = ctx:entryOf(defender)
     assert(entry.stages ~= nil, "Rage reads the defender's live stages")
     if ctx:hasBattleEffect(defender, "rage") and entry.stages.attack < 6 then
-      ctx:changeStage(defender, "attack", entry.stages.attack + 1, causeFor(record))
+      sequenceChangeStage(ctx, record, defender, "attack", entry.stages.attack + 1)
     end
   end
-  ctx:emit("struck", causeFor(record), { target = defender, hitIndex = 1, damage = outcome.before - outcome.after })
+  -- Charge releases mark their release moment; ordinary sequence
+  -- strikes mark an ordinary use. Focused strikes name their branch
+  -- so the selector maps the release variant without re-reading the
+  -- deleted charge marker.
+  local moment = "use"
+  if release == true then
+    moment = "charge-release"
+  end
+  local strikeBranch = "default"
+  if type(branch) == "string" and branch ~= "" then
+    strikeBranch = branch --[[@as string]]
+  end
+  local userEntry = ctx:entryOf(userOf(record))
+  local defenderEntry = ctx:entryOf(defender)
+  local attacker = { combatant = userOf(record), activation = userEntry.activation }
+  local nativeDefender = { combatant = defender, activation = defenderEntry.activation }
+  local scope = ctx:moveScope()
+  local cycle = 1
+  if
+    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).hitCycle) == "number"
+  then
+    cycle = (scope --[[@as table<string, unknown>]]).hitCycle --[[@as integer]]
+  end
+  local friendship = 0
+  if
+    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    friendship = (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  local semantic = {
+    execution = {
+      selectedMove = record.requestedMove or record.executingMove,
+      executedMove = record.executingMove,
+      moment = moment,
+      branch = strikeBranch,
+      attacker = attacker,
+      defender = nativeDefender,
+      targets = { nativeDefender },
+      damage = -(outcome.before - outcome.after),
+      power = strikePowerOf(record),
+      friendship = friendship,
+      hitOrdinal = 1,
+      hitCount = 1,
+      hitCycle = cycle,
+    },
+    healthChanges = {
+      {
+        combatant = defender,
+        activation = defenderEntry.activation,
+        before = outcome.before,
+        after = outcome.after,
+        maxHp = defenderEntry.maxHp,
+        kind = "body",
+      },
+    },
+  }
+  if type(scope) == "table" then
+    (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
+  end
+  ctx:emit("struck", causeFor(record), {
+    target = defender,
+    hitIndex = 1,
+    damage = outcome.before - outcome.after,
+    calculated = outcome.before - outcome.after,
+    release = release == true and true or nil,
+  }, nil, semantic)
   return outcome.before - outcome.after
 end
 
@@ -599,7 +801,12 @@ local function makeChargeStrike()
         return current
       end
       SequenceMoveState.update(ctx, user, causeFor(record), beginCharge)
-      ctx:emit("charged", causeFor(record), { target = user })
+      -- The charge start owns the turn's primary moment; the
+      -- accompanying use carries no second primary, so the ordinary
+      -- root cannot steal the charge call.
+      ctx:emit("charged", causeFor(record), { target = user }, nil, {
+        execution = sequenceExecution(ctx, record, "charge-start", nil),
+      })
       ctx:emit("move-used", causeFor(record), { user = user, targets = #record.targets })
       return { kind = "complete", result = "hit" }
     end
@@ -609,7 +816,7 @@ local function makeChargeStrike()
     end
     SequenceMoveState.update(ctx, user, causeFor(record), finishCharge)
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender)
+    strikeTarget(ctx, record, defender, nil, true)
     return { kind = "complete", result = "hit" }
   end
   return stepChargeStrike
@@ -820,9 +1027,11 @@ local function makeProtection(guarded)
       { version = 1, turns = 1 }
     )
     if guarded then
-      ctx:emit("protected", causeFor(record), { target = user })
+      ctx:emit("protected", causeFor(record), { target = user }, nil, {
+        execution = sequenceExecution(ctx, record, nil, nil),
+      })
     else
-      ctx:emit("move-used", causeFor(record), { user = user, targets = 1 })
+      emitMoveUsed(ctx, record)
     end
     return { kind = "complete", result = "hit" }
   end
@@ -830,7 +1039,9 @@ local function makeProtection(guarded)
 end
 
 -- Focus Punch resolves its strike unless the frame records a hit taken
--- while focusing; without that record the focus holds.
+-- while focusing; without that record the focus holds. The connected
+-- strike names its focused branch so the release variant maps without
+-- re-reading deleted focus state.
 local function stepFocusPunch(ctx, frame)
   assert(type(ctx) == "table", "sequences step through the battle context")
   assert(type(frame) == "table", "sequences step from their move frame")
@@ -840,7 +1051,7 @@ local function stepFocusPunch(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender)
+  strikeTarget(ctx, record, defender, nil, nil, "focused-strike")
   return { kind = "complete", result = "hit" }
 end
 
@@ -1035,7 +1246,9 @@ local function makeDelayed()
       activation = sourceEntry.activation,
       turn = launchTurn,
     })
-    ctx:emit("delayed", causeFor(record), { target = defender })
+    ctx:emit("delayed", causeFor(record), { target = defender }, nil, {
+      execution = sequenceExecution(ctx, record, nil, nil),
+    })
     return { kind = "complete", result = "hit" }
   end
   return stepDelayed
@@ -1063,10 +1276,7 @@ local function makeReactive(marker)
       causeFor(record),
       { version = 1, turns = 1 }
     )
-    ctx:emit("move-used", causeFor(record), {
-      user = userOf(record),
-      targets = #record.targets,
-    })
+    emitMoveUsed(ctx, record)
     return { kind = "complete", result = "hit" }
   end
   return stepReactive
@@ -1082,6 +1292,7 @@ local function stepStockpile(ctx, frame)
   local entry = ctx:entryOf(user)
   assert(entry.activation ~= nil, "Stockpile scopes to its live entry")
   local updated = nil
+  local groupFirst = nil ---@type integer?
   local function updateStockpile(state)
     if state.count >= 3 then
       return state
@@ -1094,11 +1305,14 @@ local function stepStockpile(ctx, frame)
     local defenseBoosts = state.defenseBoosts
     local specialDefenseBoosts = state.specialDefenseBoosts
     if defense > oldDefense then
-      ctx:changeStage(user, "defense", defense, causeFor(record))
+      sequenceChangeStage(ctx, record, user, "defense", defense, nil, groupFirst)
       defenseBoosts = defenseBoosts + 1
     end
     if specialDefense > oldSpecialDefense then
-      ctx:changeStage(user, "specialDefense", specialDefense, causeFor(record))
+      local sequence = sequenceChangeStage(ctx, record, user, "specialDefense", specialDefense, nil, groupFirst)
+      if groupFirst == nil and sequence ~= nil then
+        groupFirst = sequence --[[@as integer]]
+      end
       specialDefenseBoosts = specialDefenseBoosts + 1
     end
     updated = { version = 1, count = count, defenseBoosts = defenseBoosts, specialDefenseBoosts = specialDefenseBoosts }
@@ -1111,10 +1325,13 @@ local function stepStockpile(ctx, frame)
     local defense = StatStages.change(oldDefense, 1)
     local specialDefense = StatStages.change(oldSpecialDefense, 1)
     if defense > oldDefense then
-      ctx:changeStage(user, "defense", defense, causeFor(record))
+      sequenceChangeStage(ctx, record, user, "defense", defense, nil, groupFirst)
     end
     if specialDefense > oldSpecialDefense then
-      ctx:changeStage(user, "specialDefense", specialDefense, causeFor(record))
+      local sequence = sequenceChangeStage(ctx, record, user, "specialDefense", specialDefense, nil, groupFirst)
+      if groupFirst == nil and sequence ~= nil then
+        groupFirst = sequence --[[@as integer]]
+      end
     end
     updated = {
       version = 1,
@@ -1131,10 +1348,7 @@ local function stepStockpile(ctx, frame)
   elseif updated == nil then
     return { kind = "complete", result = "failed" }
   end
-  ctx:emit("move-used", causeFor(record), {
-    user = user,
-    targets = #record.targets,
-  })
+  emitMoveUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
 
@@ -1152,11 +1366,15 @@ local function stepStockpileRelease(ctx, frame)
   local defense = math.max(-6, entry.stages.defense --[[@as integer]] - stored.defenseBoosts --[[@as integer]])
   local specialDefense =
     math.max(-6, entry.stages.specialDefense --[[@as integer]] - stored.specialDefenseBoosts --[[@as integer]])
+  local groupFirst = nil ---@type integer?
   if defense ~= entry.stages.defense then
-    ctx:changeStage(user, "defense", defense, causeFor(record))
+    sequenceChangeStage(ctx, record, user, "defense", defense, nil, groupFirst)
   end
   if specialDefense ~= entry.stages.specialDefense then
-    ctx:changeStage(user, "specialDefense", specialDefense, causeFor(record))
+    local sequence = sequenceChangeStage(ctx, record, user, "specialDefense", specialDefense, nil, groupFirst)
+    if groupFirst == nil and sequence ~= nil then
+      groupFirst = sequence --[[@as integer]]
+    end
   end
   if record.executingMove == "SPIT_UP" then
     local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
@@ -1176,7 +1394,7 @@ local function stepStockpileRelease(ctx, frame)
     end
     ctx:emit("healed", causeFor(record), { target = user, restored = healed.after - healed.before, noBlink = true })
   end
-  ctx:emit("move-used", causeFor(record), { user = user, targets = #record.targets })
+  emitMoveUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
 
@@ -1216,7 +1434,7 @@ local function makeCooperation(marker)
       local oldSpecialDefense = entry.stages.specialDefense --[[@as integer]]
       local newSpecialDefense = StatStages.change(oldSpecialDefense, 1)
       if newSpecialDefense > oldSpecialDefense then
-        ctx:changeStage(user, "specialDefense", newSpecialDefense, causeFor(record))
+        sequenceChangeStage(ctx, record, user, "specialDefense", newSpecialDefense)
       end
       local function armElectricBoost(state)
         state.electricBoost = true
@@ -1226,10 +1444,7 @@ local function makeCooperation(marker)
     else
       markVolatile(ctx, user, marker)
     end
-    ctx:emit("move-used", causeFor(record), {
-      user = userOf(record),
-      targets = #record.targets,
-    })
+    emitMoveUsed(ctx, record)
     return { kind = "complete", result = "hit" }
   end
   return stepCooperation

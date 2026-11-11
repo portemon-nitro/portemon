@@ -832,6 +832,42 @@ local function userOf(frame)
   return actor.combatant --[[@as integer]]
 end
 
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param target integer combatant owning the stages under the write
+---@param stat string stage identity under the write
+---@param next integer clamped stage value to install
+---@param method string? closed stage method, delta when absent
+---@param groupFirst integer? first changed stat's event sequence within one source group
+---@return integer? assigned event sequence, nil when the write is capped
+local function damageChangeStage(ctx, frame, target, stat, next, method, groupFirst)
+  local entry = ctx:entryOf(target)
+  local user = userOf(frame)
+  local userEntry = ctx:entryOf(user)
+  local facts = {
+    operation = {
+      kind = "stage-changed",
+      subject = { combatant = target, activation = entry.activation },
+      source = {
+        kind = "move",
+        key = frame.executingMove,
+        actor = { combatant = user, activation = userEntry.activation },
+      },
+      stat = stat,
+      before = entry.stages[stat],
+      after = next,
+      method = method or "delta",
+      profile = "standard",
+      feedbackOwner = groupFirst == nil,
+    },
+  }
+  if groupFirst ~= nil then
+    (facts.operation --[[@as table<string, unknown>]]).groupFirstSequence = groupFirst
+  end
+  local result = ctx:changeStage(target, stat, next, causeFor(frame), facts)
+  return result.eventSequence
+end
+
 ---@param entry unknown target entry under resolution
 ---@return integer defender combatant receiving the hit
 local function targetOf(entry)
@@ -950,18 +986,184 @@ end
 
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> attacker role with its live entry token
+local function strikeActor(ctx, frame)
+  local user = userOf(frame)
+  return { combatant = user, activation = ctx:entryOf(user).activation }
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the hit
+---@return table<string, unknown> attacker role
+---@return table<string, unknown> native defender role
+---@return table<integer, table<string, unknown>> ordered target roles with live entry tokens
+local function strikeRoles(ctx, frame, defender)
+  local attacker = strikeActor(ctx, frame)
+  local defenderEntry = ctx:entryOf(defender)
+  local nativeDefender = { combatant = defender, activation = defenderEntry.activation }
+  local targets = {} ---@type table<integer, table<string, unknown>>
+  for _, entry in ipairs(frame.targets) do
+    local id = targetOf(entry)
+    local targetEntry = ctx:entryOf(id)
+    targets[#targets + 1] = { combatant = id, activation = targetEntry.activation }
+  end
+  return attacker, nativeDefender, targets
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@return integer resolved strike power behind the execution moment
+local function strikePower(ctx, frame)
+  local scope = ctx:moveScope()
+  if type(scope) == "table" then
+    local animated = (scope --[[@as table<string, unknown>]]).animationPower
+    if type(animated) == "number" then
+      return animated --[[@as integer]]
+    end
+  end
+  local locals = frame.locals
+  if type(locals) == "table" then
+    local moveFacts = (locals --[[@as table<string, unknown>]]).move
+    if
+      type(moveFacts) == "table" and type((moveFacts --[[@as table<string, unknown>]]).power) == "number"
+    then
+      return (moveFacts --[[@as table<string, unknown>]]).power --[[@as integer]]
+    end
+  end
+  return 0
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@return integer friendship fact behind the execution moment, zero when the frame carries none
+local function strikeFriendship(ctx, frame)
+  local scope = ctx:moveScope()
+  if
+    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    return (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  local locals = frame.locals
+  if
+    type(locals) == "table" and type((locals --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    return (locals --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  return 0
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param defender integer defender combatant under the hit
+---@param bodyBefore integer body health before the hit
+---@param bodyAfter integer body health after the hit
+---@param dollBefore integer? doll health before the hit, nil when no doll absorbed it
+---@param dollAfter integer? doll health after the hit
+---@return table<integer, table<string, unknown>>? ordered health changes, nil when no checkpoint moved
+local function strikeHealthChanges(ctx, defender, bodyBefore, bodyAfter, dollBefore, dollAfter)
+  local entry = ctx:entryOf(defender)
+  local changes = {} ---@type table<integer, table<string, unknown>>
+  if bodyAfter ~= bodyBefore then
+    changes[#changes + 1] = {
+      combatant = defender,
+      activation = entry.activation,
+      before = bodyBefore,
+      after = bodyAfter,
+      maxHp = entry.maxHp,
+      kind = "body",
+    }
+  end
+  if dollBefore ~= nil and dollAfter ~= nil and dollAfter ~= dollBefore then
+    changes[#changes + 1] = {
+      combatant = defender,
+      activation = entry.activation,
+      before = dollBefore,
+      after = dollAfter,
+      maxHp = dollBefore,
+      kind = "substitute",
+    }
+  end
+  if #changes == 0 then
+    return nil
+  end
+  return changes
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the hit
 ---@param hitIndex integer ordinal of the hit in the sequence
 ---@param amount integer staged damage amount under application
----@param facts { critical: boolean, effectiveness: "super"|"weak"|"neutral" }? presentation facts of a typed strike
+---@param facts { critical: boolean, effectiveness: "super"|"weak"|"neutral", calculated: integer, branch: string?, bodyBefore: integer?, bodyAfter: integer?, dollBefore: integer?, dollAfter: integer? }? presentation facts of a typed strike, carrying the pre-clamp calculated damage beside the applied amount
 ---@param sequenceEvents table[]? event records to annotate after the sequence finishes
 local function emitStruck(ctx, frame, defender, hitIndex, amount, facts, sequenceEvents)
-  local payload = { target = defender, hitIndex = hitIndex, damage = amount }
+  local calculated = amount
+  local branch = "default"
+  local bodyBefore, bodyAfter, dollBefore, dollAfter = nil, nil, nil, nil
+  if facts ~= nil then
+    if facts.calculated ~= nil then
+      assert(
+        type(facts.calculated) == "number" and facts.calculated % 1 == 0 and facts.calculated >= 0,
+        "strikes freeze their calculated damage as an unsigned integer"
+      )
+      calculated = facts.calculated --[[@as integer]]
+    end
+    if facts.branch ~= nil then
+      branch = facts.branch --[[@as string]]
+    end
+    bodyBefore, bodyAfter = facts.bodyBefore, facts.bodyAfter
+    dollBefore, dollAfter = facts.dollBefore, facts.dollAfter
+  end
+  local payload = { target = defender, hitIndex = hitIndex, damage = amount, calculated = calculated }
   if facts ~= nil then
     payload.critical = facts.critical
     payload.effectiveness = facts.effectiveness
   end
-  local event = ctx:emit("struck", causeFor(frame), payload)
+  -- Health checkpoints ride every connected hit in source order.
+  -- The first primary moment per source played-flag cycle carries
+  -- the execution; continuing spread hits share the cycle and ride
+  -- without a new primary, so they never replay the root.
+  local semantic = nil ---@type table<string, unknown>?
+  if bodyBefore ~= nil and bodyAfter ~= nil then
+    local changes = strikeHealthChanges(ctx, defender, bodyBefore, bodyAfter, dollBefore, dollAfter)
+    if changes ~= nil then
+      semantic = { healthChanges = changes }
+    end
+  end
+  local scope = ctx:moveScope()
+  if
+    type(scope) ~= "table" or (scope --[[@as table<string, unknown>]]).primaryMomentMarked ~= true
+  then
+    local attacker, nativeDefender, targets = strikeRoles(ctx, frame, defender)
+    local cycle = 1
+    if
+      type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).hitCycle) == "number"
+    then
+      cycle = (scope --[[@as table<string, unknown>]]).hitCycle --[[@as integer]]
+    end
+    if semantic == nil then
+      semantic = {}
+    end
+    semantic.execution = {
+      selectedMove = frame.requestedMove,
+      executedMove = frame.executingMove,
+      moment = "use",
+      branch = branch,
+      attacker = attacker,
+      defender = nativeDefender,
+      targets = targets,
+      damage = -calculated,
+      power = strikePower(ctx, frame),
+      friendship = strikeFriendship(ctx, frame),
+      hitOrdinal = 1,
+      hitCount = 1,
+      hitCycle = cycle,
+    }
+    if type(scope) == "table" then
+      (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
+    end
+  end
+  local event = ctx:emit("struck", causeFor(frame), payload, nil, semantic)
   if sequenceEvents ~= nil then
     sequenceEvents[#sequenceEvents + 1] = event
   end
@@ -978,25 +1180,62 @@ end
 ---@param amount integer staged damage amount under application
 ---@param hitIndex integer ordinal of the hit in the sequence
 ---@param sequenceEvents table[]? event records to annotate after the sequence finishes
+---@param bodyBefore integer? body health before the hit, carried for the doll-hit checkpoints
 ---@return boolean true when a live doll absorbed the hit
-local function substituteTakesHit(ctx, frame, defender, amount, hitIndex, sequenceEvents)
+local function substituteTakesHit(ctx, frame, defender, amount, hitIndex, sequenceEvents, bodyBefore)
+  local dollBefore, dollAfter = nil, nil
   local outcome = ctx:updateBattleEffect(defender, NativeEffectHandlers.definitionFor("substitute"), function(state)
+    dollBefore = state.hp --[[@as integer]]
     local remaining = state.hp --[[@as integer]] - amount
     if remaining > 0 then
+      dollAfter = remaining
       return { version = 1, hp = remaining }
     end
+    dollAfter = 0
     return nil
   end)
   if outcome == nil then
     return false
   end
+  -- A breaking doll keeps its primary invocation as well as the
+  -- break: the strike plays before the picture restoration, with
+  -- doll health distinguished from unchanged body health.
+  local facts = nil ---@type table<string, unknown>?
+  if bodyBefore ~= nil and dollBefore ~= nil and dollAfter ~= nil then
+    facts = {
+      calculated = amount,
+      bodyBefore = bodyBefore,
+      bodyAfter = bodyBefore,
+      dollBefore = dollBefore,
+      dollAfter = dollAfter,
+    }
+  end
   if outcome == "removed" then
-    local event = ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex })
+    local scope = ctx:moveScope()
+    local markPrimary = type(scope) ~= "table" or (scope --[[@as table<string, unknown>]]).primaryMomentMarked ~= true
+    if markPrimary then
+      emitStruck(ctx, frame, defender, hitIndex, 0, facts, sequenceEvents)
+    end
+    local brokeFacts = nil ---@type table<string, unknown>?
+    if bodyBefore ~= nil and dollBefore ~= nil and dollAfter ~= nil then
+      local entry = ctx:entryOf(defender)
+      brokeFacts = {
+        operation = {
+          kind = "substitute-hit",
+          subject = { combatant = defender, activation = entry.activation },
+          source = { kind = "move", key = frame.executingMove, actor = strikeActor(ctx, frame) },
+          broken = true,
+        },
+        healthChanges = strikeHealthChanges(ctx, defender, bodyBefore, bodyBefore, dollBefore, dollAfter),
+      }
+    end
+    local event =
+      ctx:emit("substitute-broke", causeFor(frame), { target = defender, hitIndex = hitIndex }, nil, brokeFacts)
     if sequenceEvents ~= nil then
       sequenceEvents[#sequenceEvents + 1] = event
     end
   else
-    emitStruck(ctx, frame, defender, hitIndex, amount, nil, sequenceEvents)
+    emitStruck(ctx, frame, defender, hitIndex, amount, facts, sequenceEvents)
   end
   return true
 end
@@ -1590,7 +1829,7 @@ local function noteStrikeDamage(ctx, frame, defender, dealt)
     and ctx:hasBattleEffect(defender, "rage")
     and target.stages.attack < 6
   then
-    ctx:changeStage(defender, "attack", target.stages.attack + 1, causeFor(frame))
+    damageChangeStage(ctx, frame, defender, "attack", target.stages.attack + 1)
   end
 end
 
@@ -1649,7 +1888,23 @@ local function applySecondaryStatus(ctx, frame, defender, status)
   elseif status == "toxic" then
     state = { counter = 0 }
   end
-  if not ctx:applyStatus(defender, status, state, causeFor(record)) then
+  local defenderEntry = ctx:entryOf(defender)
+  local userEntry = ctx:entryOf(userOf(frame))
+  if
+    not ctx:applyStatus(defender, status, state, causeFor(record), {
+      operation = {
+        kind = "status-applied",
+        subject = { combatant = defender, activation = defenderEntry.activation },
+        source = {
+          kind = "move",
+          key = record.executingMove,
+          actor = { combatant = userOf(frame), activation = userEntry.activation },
+        },
+        condition = status,
+        application = "standard",
+      },
+    })
+  then
     return false
   end
   if foeAbility ~= nil then
@@ -1662,7 +1917,20 @@ local function applySecondaryStatus(ctx, frame, defender, status)
       if
         type((event --[[@as table<string, unknown>]]).reflected) == "string"
       then
-        ctx:applyStatus(userOf(frame), status, state, causeFor(record))
+        local reflectorEntry = ctx:entryOf(userOf(frame))
+        ctx:applyStatus(userOf(frame), status, state, causeFor(record), {
+          operation = {
+            kind = "status-applied",
+            subject = { combatant = userOf(frame), activation = reflectorEntry.activation },
+            source = {
+              kind = "move",
+              key = record.executingMove,
+              actor = { combatant = userOf(frame), activation = reflectorEntry.activation },
+            },
+            condition = status,
+            application = "standard",
+          },
+        })
       end
     end
   end
@@ -1707,7 +1975,7 @@ local function markSecondaryFlinch(ctx, frame, defender)
       and answer.stat == "speed"
       and ctx:entryOf(defender).stages.speed < 6
     then
-      ctx:changeStage(defender, "speed", 1, causeFor(frame))
+      damageChangeStage(ctx, frame, defender, "speed", ctx:entryOf(defender).stages.speed + 1)
     end
   end
 end
@@ -1762,6 +2030,7 @@ local function applySecondaryStages(ctx, frame, target, changes)
   local targetIsUser = target == userOf(frame)
   local targetAbility = liveAbility(targetIsUser and abilities.user or abilities.foe)
   local attackerAbility = liveAbility(abilities.user)
+  local groupFirst = nil ---@type integer?
   for _, change in ipairs(changes) do
     local stat = change[1] --[[@as string]]
     local delta = change[2] --[[@as integer]]
@@ -1791,7 +2060,32 @@ local function applySecondaryStages(ctx, frame, target, changes)
       end
       local next = StatStages.change(current[stat] --[[@as integer]], delta)
       if next ~= current[stat] then
-        ctx:changeStage(target, stat, next, causeFor(frame))
+        local entry = ctx:entryOf(target)
+        local user = userOf(frame)
+        local facts = {
+          operation = {
+            kind = "stage-changed",
+            subject = { combatant = target, activation = entry.activation },
+            source = {
+              kind = "move",
+              key = frame.executingMove,
+              actor = { combatant = user, activation = ctx:entryOf(user).activation },
+            },
+            stat = stat,
+            before = current[stat],
+            after = next,
+            method = "delta",
+            profile = "standard",
+            feedbackOwner = groupFirst == nil,
+          },
+        }
+        if groupFirst ~= nil then
+          (facts.operation --[[@as table<string, unknown>]]).groupFirstSequence = groupFirst
+        end
+        local result = ctx:changeStage(target, stat, next, causeFor(frame), facts)
+        if groupFirst == nil then
+          groupFirst = result.eventSequence
+        end
         current[stat] = next
       end
     end
@@ -2074,7 +2368,7 @@ local function strikeWarded(ctx, frame, defender, power, moveType, effectiveness
         local stages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
         local before = stages[stat] --[[@as integer]]
         if before < 6 then
-          ctx:changeStage(defender, stat, before + 1, causeFor(frame))
+          damageChangeStage(ctx, frame, defender, stat, before + 1)
         end
       elseif foeAbility == "FLASH_FIRE" then
         if moveType == "fire" then
@@ -2467,7 +2761,7 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
       and ctx:damage(defender, 0, causeFor(frame)).after > 0
       and ctx:entryOf(defender).stages.attack < 6
     then
-      ctx:changeStage(defender, "attack", 6 - ctx:entryOf(defender).stages.attack, causeFor(frame))
+      damageChangeStage(ctx, frame, defender, "attack", StatStages.MAX, "maximize")
       announceAbility(answer.key --[[@as string]])
     end
   end
@@ -3029,8 +3323,10 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   end
   -- Doll damage still counts as dealt for the strike follow-ups: drain
   -- and recoil answer the inflicted amount, while only bodily harm arms
-  -- the revenge ledger.
-  if substituteTakesHit(ctx, frame, defender, amount, hitIndex, sequenceEvents) then
+  -- the revenge ledger. Body checkpoints freeze before any doll or
+  -- health write so the emitted changes stay in source order.
+  local bodyProbe = ctx:damage(defender, 0, causeFor(frame))
+  if substituteTakesHit(ctx, frame, defender, amount, hitIndex, sequenceEvents, bodyProbe.before) then
     return amount, true
   end
   local dealt = applyHit(ctx, frame, defender, amount)
@@ -3045,6 +3341,9 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   emitStruck(ctx, frame, defender, hitIndex, dealt, {
     critical = critical.multiplier > 1,
     effectiveness = classification,
+    calculated = result.amount,
+    bodyBefore = bodyProbe.before,
+    bodyAfter = bodyProbe.before - dealt,
   }, sequenceEvents)
   noteStrikeDamage(ctx, frame, defender, dealt)
   applyAfterHitAbilities(
@@ -3396,6 +3695,20 @@ local function runStriker(ctx, frame, params)
       local sequenceEvents = {} ---@type table[]
       local sequenceHits = 0
       for hitIndex = 1, hits --[[@as integer]] do
+        if hitIndex > 1 then
+          -- A repeated hit opens a new source played-flag cycle:
+          -- the primary bookkeeping resets so the connected hit
+          -- replays, while spread targets keep their shared cycle.
+          local scopeNow = ctx:moveScope()
+          if type(scopeNow) == "table" then
+            local pinned = scopeNow --[[@as table<string, unknown>]]
+            pinned.hitCycle = (
+              (type(pinned.hitCycle) == "number" and pinned.hitCycle or 1) --[[@as integer]]
+              + 1
+            )
+            pinned.primaryMomentMarked = false
+          end
+        end
         local damage, landed = stagedHit(ctx, frame, defender, power, hitIndex, #targets, owned, sequenceEvents)
         if not landed then
           break
@@ -3411,13 +3724,23 @@ local function runStriker(ctx, frame, params)
       if sequenceHits > 0 then
         connected = true
         for index, event in ipairs(sequenceEvents) do
-          local payload = event.payload --[[@as table<string, unknown>]]
+          local record = event --[[@as table<string, unknown>]]
+          local payload = record.payload --[[@as table<string, unknown>]]
           payload.sequenceHitIndex = index
           payload.sequenceHitTotal = sequenceHits
           local move = event.move
           if type(move) == "table" then
             move.hitOrdinal = index
             move.hitCount = sequenceHits
+          end
+          local presentation = record.presentation
+          if type(presentation) == "table" then
+            local execution = (presentation --[[@as table<string, unknown>]]).execution
+            if type(execution) == "table" then
+              local moment = execution --[[@as table<string, unknown>]]
+              moment.hitOrdinal = index
+              moment.hitCount = sequenceHits
+            end
           end
         end
         if sequenceHits > 1 then
@@ -3494,9 +3817,14 @@ local function runFixed(ctx, frame, amount)
   local targets = record.targets --[[@as table<integer, unknown>]]
   for hitIndex = 1, #targets do
     local defender = targetOf(targets[hitIndex])
-    if not substituteTakesHit(ctx, record, defender, result.amount, hitIndex) then
+    local probe = ctx:damage(defender, 0, causeFor(record))
+    if not substituteTakesHit(ctx, record, defender, result.amount, hitIndex, nil, probe.before) then
       local dealt = applyHit(ctx, record, defender, result.amount)
-      emitStruck(ctx, record, defender, hitIndex, dealt)
+      emitStruck(ctx, record, defender, hitIndex, dealt, {
+        calculated = result.amount,
+        bodyBefore = probe.before,
+        bodyAfter = probe.before - dealt,
+      })
       noteStrikeDamage(ctx, record, defender, dealt)
     end
   end
@@ -3524,9 +3852,13 @@ local function stepSuperFang(ctx, frame)
     if amount < 1 then
       amount = 1
     end
-    if not substituteTakesHit(ctx, record, defender, amount, hitIndex) then
+    if not substituteTakesHit(ctx, record, defender, amount, hitIndex, nil, probe.before) then
       local dealt = applyHit(ctx, record, defender, amount)
-      emitStruck(ctx, record, defender, hitIndex, dealt)
+      emitStruck(ctx, record, defender, hitIndex, dealt, {
+        calculated = amount,
+        bodyBefore = probe.before,
+        bodyAfter = probe.before - dealt,
+      })
       noteStrikeDamage(ctx, record, defender, dealt)
     end
   end
@@ -3544,7 +3876,11 @@ local function stepEndeavor(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local dealt = applyHit(ctx, record, defender, foeHealth.before - userHealth.before)
-  emitStruck(ctx, record, defender, 1, dealt)
+  emitStruck(ctx, record, defender, 1, dealt, {
+    calculated = foeHealth.before - userHealth.before,
+    bodyBefore = foeHealth.before,
+    bodyAfter = foeHealth.before - dealt,
+  })
   noteStrikeDamage(ctx, record, defender, dealt)
   return { kind = "complete", result = "hit" }
 end
@@ -3660,7 +3996,7 @@ local function stepBeatUp(ctx, frame)
     end
     if not substituteTakesHit(ctx, record, target, amount, hitIndex) then
       local dealt = applyHit(ctx, record, target, amount)
-      emitStruck(ctx, record, target, hitIndex, dealt)
+      emitStruck(ctx, record, target, hitIndex, dealt, { calculated = amount })
       noteStrikeDamage(ctx, record, target, dealt)
     end
     if (ctx:damage(target, 0, causeFor(record))).after == 0 then
@@ -3941,6 +4277,23 @@ local function stepFeint(ctx, frame)
   return runStriker(ctx, record, {})
 end
 
+-- U-turn strikes through the shared striker before pivoting: the strike
+-- keeps its damage, accuracy, and contact followups, and only a
+-- connected hit publishes the existing departure intent for the
+-- executor's alive/reserve/terminal gates. A missed, protected, or
+-- immune strike never reaches the pivot. Source references:
+-- battle_util.c:3589-3677 and subscript_0175_PivotMove.s.
+local function stepUTurn(ctx, frame)
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
+  local outcome = runStriker(ctx, record, {})
+  if outcome.result ~= "hit" then
+    return outcome
+  end
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  ctx:emit("switch-intent", causeFor(record), { target = defender, mode = "strike-and-leave" })
+  return outcome
+end
+
 -- Thunder and Blizzard share one weather-accuracy rule beside their own
 -- condition secondary: rain always lands thunder and hail always lands
 -- blizzard, while harsh sun halves thunder accuracy. Source references:
@@ -4074,7 +4427,7 @@ local function makeReaction(category)
       return { kind = "complete", result = "hit" }
     end
     local dealt = applyHit(ctx, record, defender, backlash)
-    emitStruck(ctx, record, defender, 1, dealt)
+    emitStruck(ctx, record, defender, 1, dealt, { calculated = backlash })
     noteStrikeDamage(ctx, record, defender, dealt)
     return { kind = "complete", result = "hit" }
   end
@@ -4123,7 +4476,7 @@ local function stepOhko(ctx, frame)
     return { kind = "complete", result = "hit" }
   end
   local dealt = applyHit(ctx, record, defender, remaining)
-  emitStruck(ctx, record, defender, 1, dealt)
+  emitStruck(ctx, record, defender, 1, dealt, { calculated = remaining })
   noteStrikeDamage(ctx, record, defender, dealt)
   return { kind = "complete", result = "hit" }
 end
@@ -4382,7 +4735,7 @@ local function stepMetalBurst(ctx, frame)
     return { kind = "complete", result = "hit" }
   end
   local dealt = applyHit(ctx, record, defender, backlash)
-  emitStruck(ctx, record, defender, 1, dealt)
+  emitStruck(ctx, record, defender, 1, dealt, { calculated = backlash })
   noteStrikeDamage(ctx, record, defender, dealt)
   return { kind = "complete", result = "hit" }
 end
@@ -4476,6 +4829,46 @@ local function stepPresent(ctx, frame)
     local amount = math.floor(ceiling / 4)
     if amount < 1 then
       amount = 1
+    end
+    -- The healing branch marks its own primary with the healing
+    -- branch: the chosen RNG branch reuses the existing draw and
+    -- plays the healing variant before the recovery display.
+    local userEntry = ctx:entryOf(userOf(record))
+    local defenderEntry = ctx:entryOf(defender)
+    local healer = { combatant = userOf(record), activation = userEntry.activation }
+    local healedRole = { combatant = defender, activation = defenderEntry.activation }
+    local scope = ctx:moveScope()
+    local presentCycle = 1
+    if
+      type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).hitCycle) == "number"
+    then
+      presentCycle = (scope --[[@as table<string, unknown>]]).hitCycle --[[@as integer]]
+    end
+    local friendship = 0
+    if
+      type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
+    then
+      friendship = (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+    end
+    ctx:emit("move-used", causeFor(record), { user = userOf(record), targets = 1 }, nil, {
+      execution = {
+        selectedMove = record.requestedMove,
+        executedMove = record.executingMove,
+        moment = "use",
+        branch = "healing",
+        attacker = healer,
+        defender = healedRole,
+        targets = { healedRole },
+        damage = 0,
+        power = 0,
+        friendship = friendship,
+        hitOrdinal = 1,
+        hitCount = 1,
+        hitCycle = presentCycle,
+      },
+    })
+    if type(scope) == "table" then
+      (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
     end
     local outcome = ctx:heal(defender, amount, causeFor(record))
     ctx:emit("healed", causeFor(record), {
@@ -4789,7 +5182,7 @@ local function applyFlingEffectImpl(ctx, frame, target, effect, effectId, item)
     local stat = FLING_STAT_EFFECTS[effect]
     local stages = ctx:entryOf(target).stages --[[@as table<string, integer>]]
     if stages[stat] < 6 then
-      ctx:changeStage(target, stat, stages[stat] + 1, cause)
+      damageChangeStage(ctx, frame, target, stat, stages[stat] + 1)
     end
   elseif effect == "random-up" then
     local stages = ctx:entryOf(target).stages --[[@as table<string, integer>]]
@@ -4802,13 +5195,13 @@ local function applyFlingEffectImpl(ctx, frame, target, effect, effectId, item)
     if #eligible > 0 then
       local stream = checkSecondaryStream(record.stream)
       local stat = eligible[stream:nextU16("fling_random_stat", cause) % #eligible + 1]
-      ctx:changeStage(target, stat, stages[stat] + 1, cause)
+      damageChangeStage(ctx, frame, target, stat, stages[stat] + 1)
     end
   elseif effect == "reset-stats" then
     local stages = ctx:entryOf(target).stages --[[@as table<string, integer>]]
     for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
       if stages[stat] < 0 then
-        ctx:changeStage(target, stat, 0, cause)
+        damageChangeStage(ctx, frame, target, stat, 0, "reset")
       end
     end
   elseif effect == "critical-up" then
@@ -5080,6 +5473,7 @@ define("THIEF", stealBinding("steal"))
 define("BUG_BITE", stealBinding("eat"))
 define("FALSE_SWIPE", strikerBinding({ leaveOne = true }))
 define("FEINT", { step = stepFeint })
+define("U_TURN", { step = stepUTurn })
 define("THUNDER", weatherStrikeBinding({ secondaries = { { status = "paralysis" } } }, "raindance", "sunnyday"))
 define("BLIZZARD", weatherStrikeBinding({ secondaries = { { status = "freeze" } } }, "hail", nil))
 define("REVENGE", { step = stepRevenge })

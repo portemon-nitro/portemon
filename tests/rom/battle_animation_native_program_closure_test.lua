@@ -77,6 +77,21 @@ function T.follower_enter_and_recall_close_through_their_own_members(romFs, vers
   end
 end
 
+-- Programs that once failed closure for source-reading reasons close
+-- through their own members with factory-supported tasks: ERUPTION
+-- carries a side-ignoring emitter offset, DARK_VOID an opposing-pair
+-- picture word, and DISABLE, TOXIC, and LUNAR_DANCE blend their
+-- sprites' palettes.
+function T.previously_unclosed_roots_close_with_supported_tasks(romFs, versionId)
+  local kinds = factory()
+  for _, effectKey in ipairs({ "ERUPTION", "DARK_VOID", "DISABLE", "TOXIC", "LUNAR_DANCE" }) do
+    local effect = closeEffect(romFs, versionId, effectKey)
+    for _, taskKind in ipairs(effect.program.taskKinds) do
+      Assert.isTrue(kinds.supportsKind(taskKind), effectKey .. " stages only factory-supported tasks: " .. taskKind)
+    end
+  end
+end
+
 local readyVersions = {}
 for _, versionId in ipairs(GameVersion.ORDER) do
   if RomImporter.isReady(versionId) then

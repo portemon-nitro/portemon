@@ -911,15 +911,34 @@ local function checkMove(move)
       detached[key] = record[key]
     end
   end
-  -- The resolved variable power crosses the projection detached from
-  -- the kernel outbox: present values keep their unsigned range while
-  -- absent values stay absent for effects that never require one.
+  -- Invocation inputs frozen at event time ride beside the strike
+  -- identity: effective strike-law weather, terrain, and the explicit
+  -- friendship fact. Absent values stay absent; mistyped facts fail
+  -- instead of publishing a guess.
   if record.power ~= nil then
     assert(
       type(record.power) == "number" and record.power % 1 == 0 and record.power >= 0 and record.power <= 65535,
       "playback move power stays an unsigned sixteen-bit integer"
     )
     detached.power = record.power
+  end
+  if record.weather ~= nil then
+    assert(type(record.weather) == "string", "frozen strike weather stays a named identity")
+    detached.weather = record.weather
+  end
+  if record.terrain ~= nil then
+    assert(type(record.terrain) == "string", "frozen terrain stays a named identity")
+    detached.terrain = record.terrain
+  end
+  if record.friendship ~= nil then
+    assert(
+      type(record.friendship) == "number"
+        and record.friendship % 1 == 0
+        and record.friendship >= 0
+        and record.friendship <= 255,
+      "frozen friendship stays an unsigned byte"
+    )
+    detached.friendship = record.friendship
   end
   return detached
 end
@@ -1024,14 +1043,70 @@ local function parametersFor(event)
   return parameters
 end
 
----@param sequence unknown event sequence ordinal under visual seeding
----@return integer deterministic visual seed scoped to the event identity
-local function visualSeedFor(sequence)
-  local ordinal = 0
-  if type(sequence) == "number" and sequence % 1 == 0 and sequence >= 0 then
-    ordinal = sequence --[[@as integer]]
+---@param operation table<string, unknown> transform-applied operation under projection
+---@param views table<string, unknown>? detached before/after views picturing the donor
+---@return table<string, unknown>? detached transformed appearance inputs, nil for other operations
+local function transformedAppearanceFor(operation, views)
+  if operation.kind ~= "transform-applied" then
+    return nil
   end
-  return (ordinal * 1103515245 + 12345) % 2147483648
+  local input = operation.donorAppearanceInput
+  if type(input) ~= "table" then
+    return nil
+  end
+  local shown = input --[[@as table<string, unknown>]]
+  if type(shown.species) ~= "string" or shown.species == "" then
+    return nil
+  end
+  local appearance = {
+    species = shown.species,
+    form = shown.form,
+    personality = shown.personality,
+  } ---@type table<string, unknown>
+  local origin = shown.origin
+  if
+    type(origin) == "table" and type((origin --[[@as table<string, unknown>]]).trainerId) == "number"
+  then
+    local trainerId = (origin --[[@as table<string, unknown>]]).trainerId --[[@as integer]]
+    appearance.origin = { trainerId = trainerId }
+    if type(shown.personality) == "number" then
+      local ok, shiny = pcall(Personality.shiny, trainerId, shown.personality --[[@as integer]])
+      if ok and type(shiny) == "boolean" then
+        appearance.shiny = shiny
+      end
+    end
+  end
+  -- Gender resolves from the donor's pictured view record: the kernel
+  -- inputs carry no catalog for the gender ratio, and the same frozen
+  -- donor record pictured the donor before the copy.
+  local donor = operation.donor
+  if
+    type(donor) == "table"
+    and type((donor --[[@as table<string, unknown>]]).combatant) == "number"
+    and type(views) == "table"
+  then
+    local id = (donor --[[@as table<string, unknown>]]).combatant --[[@as integer]]
+    for _, viewKey in ipairs({ "after", "before" }) do
+      local view = (views --[[@as table<string, unknown>]])[viewKey]
+      if type(view) == "table" then
+        for _, groupKey in ipairs({ "own", "foes" }) do
+          local group = (view --[[@as table<string, unknown>]])[groupKey]
+          if type(group) == "table" then
+            for _, record in ipairs(group) do
+              if
+                type(record) == "table"
+                and (record --[[@as table<string, unknown>]]).combatant == id
+                and type((record --[[@as table<string, unknown>]]).gender) == "string"
+              then
+                appearance.gender = (record --[[@as table<string, unknown>]]).gender
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return appearance
 end
 
 ---@param event table<string, unknown> native event under sanitizing
@@ -1084,11 +1159,23 @@ function BattlePresentationModel.sanitizeEvent(event, views)
   if type(event.suppression) == "table" then
     public.suppression = copyValue(event.suppression)
   end
-  if type(event.visualSeed) == "number" then
-    public.visualSeed = event.visualSeed
-  else
-    public.visualSeed = visualSeedFor(event.sequence)
+  -- Producer semantic facts ride detached beside the payload: the
+  -- frozen context plus the optional closed execution, operation, and
+  -- health-change records the animation selector reads. The copy keeps
+  -- the packet detached from the kernel outbox; validation rejects
+  -- malformed projections at this boundary.
+  if type(event.presentation) == "table" then
+    public.presentation = copyValue(event.presentation)
+    local operation = (event.presentation --[[@as table<string, unknown>]]).operation
+    if type(operation) == "table" then
+      local projected = transformedAppearanceFor(operation --[[@as table<string, unknown>]], views)
+      if projected ~= nil then
+        public.transformedAppearance = projected
+      end
+    end
   end
+  -- Occurrence-derived seeds never enter animation cues: the sanitizer
+  -- drops any carried seed instead of synthesizing one.
   public.messageArgs = messageArgsFor(public, views)
   public.parameters = parametersFor(public)
   if type(event.options) == "table" then

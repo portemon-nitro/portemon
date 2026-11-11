@@ -226,8 +226,11 @@ end
 ---@param target integer combatant receiving a stage delta
 ---@param stat string native stage being changed
 ---@param delta integer signed stage delta before ability modifiers
----@return boolean true when the stage moved
-local function changeStage(ctx, frame, target, stat, delta)
+---@param method string? stage method, ordinary delta when absent
+---@param profile string? stage profile, standard when absent
+---@param groupFirst integer? emitted sequence of the group's first change, nil for the group owner
+---@return integer? emitted event sequence of the change, nil when capped
+local function changeStage(ctx, frame, target, stat, delta, method, profile, groupFirst)
   local attacker = userOf(frame)
   local role = target == attacker and "user" or "foe"
   if delta < 0 and target ~= attacker and abilityOf(frame, "user") ~= "MOLD_BREAKER" then
@@ -237,7 +240,7 @@ local function changeStage(ctx, frame, target, stat, delta)
       accuracyDrop = stat == "accuracy",
     })
     if prevented then
-      return false
+      return nil
     end
   end
   local ability = abilityOf(frame, role)
@@ -254,23 +257,168 @@ local function changeStage(ctx, frame, target, stat, delta)
       end
     end
   end
-  local current = ctx:entryOf(target).stages --[[@as table<string, integer>]]
+  local entry = ctx:entryOf(target)
+  local current = entry.stages --[[@as table<string, integer>]]
   local next = StatStages.change(current[stat] --[[@as integer]], delta)
   if next == current[stat] then
-    return false
+    return nil
   end
-  ctx:changeStage(target, stat, next, causeFor(frame))
-  return true
+  -- Only the first actually changed stat per source group owns the
+  -- feedback: a capped first stat never consumes the group's root.
+  -- The owner omits its group sequence and the decorator fills it
+  -- with the assigned event sequence.
+  local user = userOf(frame)
+  local facts = {
+    operation = {
+      kind = "stage-changed",
+      subject = { combatant = target, activation = entry.activation },
+      source = {
+        kind = "move",
+        key = frame.executingMove,
+        actor = { combatant = user, activation = ctx:entryOf(user).activation },
+      },
+      stat = stat,
+      before = current[stat],
+      after = next,
+      method = method or "delta",
+      profile = profile or "standard",
+      feedbackOwner = groupFirst == nil,
+    },
+  }
+  if groupFirst ~= nil then
+    (facts.operation --[[@as table<string, unknown>]]).groupFirstSequence = groupFirst
+  end
+  local result = ctx:changeStage(target, stat, next, causeFor(frame), facts)
+  return result.eventSequence
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@return table<string, unknown> attacker role with its live entry token
+local function conditionActor(ctx, record)
+  local user = userOf(record)
+  return { combatant = user, activation = ctx:entryOf(user).activation }
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@return integer resolved move power behind the execution moment
+local function conditionPower(ctx, record)
+  local scope = ctx:moveScope()
+  if type(scope) == "table" then
+    local animated = (scope --[[@as table<string, unknown>]]).animationPower
+    if type(animated) == "number" then
+      return animated --[[@as integer]]
+    end
+  end
+  local locals = record.locals
+  if type(locals) == "table" then
+    local facts = (locals --[[@as table<string, unknown>]]).move
+    if
+      type(facts) == "table" and type((facts --[[@as table<string, unknown>]]).power) == "number"
+    then
+      return (facts --[[@as table<string, unknown>]]).power --[[@as integer]]
+    end
+  end
+  return 0
+end
+
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@return integer friendship fact behind the execution moment, zero when the frame carries none
+local function conditionFriendship(ctx, record)
+  local scope = ctx:moveScope()
+  if
+    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    return (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  local locals = record.locals
+  if
+    type(locals) == "table" and type((locals --[[@as table<string, unknown>]]).friendship) == "number"
+  then
+    return (locals --[[@as table<string, unknown>]]).friendship --[[@as integer]]
+  end
+  return 0
+end
+
+-- Semantic execution moment behind one reached condition call: the
+-- actual source call with its frozen roles, resolved power, and
+-- friendship. Failed preconditions return before emitting, so only
+-- reached calls mark their primary.
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@param branch string? closed execution branch, default when absent
+---@return table<string, unknown> detached execution facts behind the emission
+local function conditionExecution(ctx, record, branch)
+  local attacker = conditionActor(ctx, record)
+  local targets = {} ---@type table<integer, table<string, unknown>>
+  for _, entry in ipairs(record.targets) do
+    local id = targetOf(entry)
+    targets[#targets + 1] = { combatant = id, activation = ctx:entryOf(id).activation }
+  end
+  local defender = targets[1] or attacker
+  local scope = ctx:moveScope()
+  if type(scope) == "table" then
+    (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
+  end
+  local selectedMove = record.executingMove
+  if type(record.requestedMove) == "string" and record.requestedMove ~= "" then
+    selectedMove = record.requestedMove --[[@as string]]
+  end
+  return {
+    selectedMove = selectedMove,
+    executedMove = record.executingMove,
+    moment = "use",
+    branch = branch or "default",
+    attacker = attacker,
+    defender = defender,
+    targets = targets,
+    damage = 0,
+    power = conditionPower(ctx, record),
+    friendship = conditionFriendship(ctx, record),
+  }
 end
 
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
-local function emitUsed(ctx, frame)
+---@param branch string? closed execution branch, default when absent
+---@param operation table<string, unknown>? closed applied operation riding the same call, nil for plain calls
+---@return table<string, unknown> the emitted move-used event
+local function emitUsed(ctx, frame, branch, operation)
   local record = frame --[[@as table<string, unknown>]]
-  ctx:emit("move-used", causeFor(record), {
+  local facts = {
+    execution = conditionExecution(ctx, record, branch),
+  }
+  if operation ~= nil then
+    facts.operation = operation
+  end
+  return ctx:emit("move-used", causeFor(record), {
     user = userOf(record),
     targets = #record.targets,
-  })
+  }, nil, facts)
+end
+
+-- Applied confusion operation behind one newly confused defender:
+-- the marker insertion owns the feedback, so the same call selects
+-- the confusion root after its primary.
+---@param ctx BattleContext mechanics context under execution
+---@param record table<string, unknown> move frame under execution
+---@param defender integer newly confused combatant
+---@return table<string, unknown> detached confusion-applied operation
+local function confusionOperation(ctx, record, defender)
+  local user = userOf(record)
+  local defenderEntry = ctx:entryOf(defender)
+  local userEntry = ctx:entryOf(user)
+  return {
+    kind = "confusion-applied",
+    subject = { combatant = defender, activation = defenderEntry.activation },
+    source = {
+      kind = "move",
+      key = record.executingMove,
+      actor = { combatant = user, activation = userEntry.activation },
+    },
+  }
 end
 
 ---@param stream unknown battle stream under the roll
@@ -407,7 +555,21 @@ local function synchronize(ctx, frame, holder, status)
   )
   for _, event in ipairs(outcome.events) do
     if type(event.reflected) == "string" then
-      ctx:applyStatus(userOf(frame), event.reflected, {}, causeFor(frame))
+      local user = userOf(frame)
+      local userEntry = ctx:entryOf(user)
+      ctx:applyStatus(user, event.reflected, {}, causeFor(frame), {
+        operation = {
+          kind = "status-applied",
+          subject = { combatant = user, activation = userEntry.activation },
+          source = {
+            kind = "move",
+            key = frame.executingMove,
+            actor = { combatant = user, activation = userEntry.activation },
+          },
+          condition = event.reflected,
+          application = "standard",
+        },
+      })
     end
   end
 end
@@ -480,11 +642,16 @@ local function makeStage(spec)
       end
     end
     local moved = false
+    local groupFirst = nil ---@type integer?
     for _, change in ipairs(spec.changes) do
       local stat = change[1] --[[@as string]]
       local delta = change[2] --[[@as integer]]
-      if changeStage(ctx, record, target, stat, delta) then
+      local sequence = changeStage(ctx, record, target, stat, delta, nil, nil, groupFirst)
+      if sequence ~= nil then
         moved = true
+        if groupFirst == nil then
+          groupFirst = sequence --[[@as integer]]
+        end
       end
     end
     if not moved then
@@ -664,7 +831,22 @@ local function makeStatus(status)
         elseif status == "toxic" then
           state = { counter = 0 }
         end
-        if ctx:applyStatus(defender, status, state, causeFor(record)) then
+        local defenderEntry = ctx:entryOf(defender)
+        local userEntry = ctx:entryOf(userOf(record))
+        local statusFacts = {
+          operation = {
+            kind = "status-applied",
+            subject = { combatant = defender, activation = defenderEntry.activation },
+            source = {
+              kind = "move",
+              key = record.executingMove,
+              actor = { combatant = userOf(record), activation = userEntry.activation },
+            },
+            condition = status,
+            application = "standard",
+          },
+        }
+        if ctx:applyStatus(defender, status, state, causeFor(record), statusFacts) then
           applied = true
           synchronize(ctx, record, defender, status)
         end
@@ -747,8 +929,12 @@ local function stepMemento(ctx, frame)
   if not foeAccuracy(ctx, record, defender) then
     return { kind = "complete", result = "missed" }
   end
+  local groupFirst = nil ---@type integer?
   for _, stat in ipairs({ "attack", "specialAttack" }) do
-    changeStage(ctx, record, defender, stat, -2)
+    local sequence = changeStage(ctx, record, defender, stat, -2, nil, nil, groupFirst)
+    if sequence ~= nil and groupFirst == nil then
+      groupFirst = sequence --[[@as integer]]
+    end
   end
   emitUsed(ctx, record)
   ctx:damage(userOf(record), 999999, causeFor(record))
@@ -804,13 +990,19 @@ local function stepCurse(ctx, frame)
     end
   end
   if not ghost then
-    local moved = false
-    for _, change in ipairs({ { "speed", -1 }, { "attack", 1 }, { "defense", 1 } }) do
+    -- The speed drop owns a separate group ahead of the grouped
+    -- Attack/Defense raises; a capped first change never consumes
+    -- its group's feedback.
+    local moved = changeStage(ctx, record, user, "speed", -1, nil, nil, nil) ~= nil
+    local groupFirst = nil ---@type integer?
+    for _, change in ipairs({ { "attack", 1 }, { "defense", 1 } }) do
       local stat = change[1] --[[@as string]]
-      if
-        changeStage(ctx, record, user, stat, change[2] --[[@as integer]])
-      then
+      local sequence = changeStage(ctx, record, user, stat, change[2] --[[@as integer]], nil, nil, groupFirst)
+      if sequence ~= nil then
         moved = true
+        if groupFirst == nil then
+          groupFirst = sequence --[[@as integer]]
+        end
       end
     end
     if not moved then
@@ -823,15 +1015,40 @@ local function stepCurse(ctx, frame)
   if ctx:hasBattleEffect(defender, "substitute") or ctx:hasBattleEffect(defender, "curse") then
     return { kind = "complete", result = "failed" }
   end
-  local ceiling = ctx:entryOf(user).maxHp --[[@as integer]]
+  local userEntry = ctx:entryOf(user)
+  local ceiling = userEntry.maxHp --[[@as integer]]
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("curse"),
     activeScope(ctx, defender),
     moveSource(user),
     { version = 1 }
   )
-  emitUsed(ctx, record)
-  ctx:damage(user, math.floor(ceiling / 2), causeFor(record))
+  local usedEvent = emitUsed(ctx, record, "ghost")
+  local userRole = { combatant = user, activation = userEntry.activation }
+  -- The ghost cost follows its owning use: the health event points
+  -- backward at the already emitted move event through its owner
+  -- link instead of mutating it.
+  local health = ctx:damage(user, math.floor(ceiling / 2), causeFor(record))
+  ctx:emit("health-cost", causeFor(record), { target = user }, nil, {
+    operation = {
+      kind = "health-cost",
+      subject = userRole,
+      source = { kind = "move", key = record.executingMove, actor = userRole },
+      reason = "ghost-curse",
+      relation = "follows-owner",
+      ownerEventSequence = usedEvent.sequence,
+    },
+    healthChanges = {
+      {
+        combatant = user,
+        activation = userEntry.activation,
+        before = health.before,
+        after = health.after,
+        maxHp = ceiling,
+        kind = "body",
+      },
+    },
+  })
   return { kind = "complete", result = "hit" }
 end
 
@@ -906,14 +1123,37 @@ local function stepSacrificeWish(ctx, frame, mode)
     return { kind = "complete", result = "failed" }
   end
   local user = userOf(record)
-  local side = ctx:entryOf(user).side
+  local userEntry = ctx:entryOf(user)
+  local side = userEntry.side
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("sacrificewish"),
     { kind = "side", side = side },
     moveSource(user),
     { version = 1, mode = mode }
   )
-  ctx:damage(user, 999999, causeFor(record))
+  -- The sacrifice zeroes the user before the primary: the cost
+  -- precedes the use, so it carries no owner link.
+  local sacrificeRole = { combatant = user, activation = userEntry.activation }
+  local health = ctx:damage(user, 999999, causeFor(record))
+  ctx:emit("health-cost", causeFor(record), { target = user }, nil, {
+    operation = {
+      kind = "health-cost",
+      subject = sacrificeRole,
+      source = { kind = "move", key = record.executingMove, actor = sacrificeRole },
+      reason = mode == "lunar" and "lunar-dance" or "healing-wish",
+      relation = "precedes-use",
+    },
+    healthChanges = {
+      {
+        combatant = user,
+        activation = userEntry.activation,
+        before = health.before,
+        after = health.after,
+        maxHp = userEntry.maxHp,
+        kind = "body",
+      },
+    },
+  })
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end
@@ -1080,10 +1320,17 @@ local function stepPsychUp(ctx, frame)
   local mine = ctx:entryOf(user).stages --[[@as table<string, integer>]]
   local theirs = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   local copied = false
+  local groupFirst = nil ---@type integer?
   for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
     if mine[stat] ~= theirs[stat] then
-      ctx:changeStage(user, stat, theirs[stat] --[[@as integer]], causeFor(record))
-      copied = true
+      local sequence =
+        changeStage(ctx, record, user, stat, (theirs[stat] - mine[stat]) --[[@as integer]], "copy", nil, groupFirst)
+      if sequence ~= nil then
+        copied = true
+        if groupFirst == nil then
+          groupFirst = sequence --[[@as integer]]
+        end
+      end
     end
   end
   if not copied then
@@ -1100,12 +1347,19 @@ local function stepHaze(ctx, frame)
   assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
   local cleared = false
+  local groupFirst = nil ---@type integer?
   for _, combatant in ipairs(ctx:activeCombatants()) do
     local stages = ctx:entryOf(combatant).stages --[[@as table<string, integer>]]
     for _, stat in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
       if stages[stat] ~= 0 then
-        ctx:changeStage(combatant, stat, 0, causeFor(record))
-        cleared = true
+        local sequence =
+          changeStage(ctx, record, combatant, stat, -stages[stat] --[[@as integer]], "reset", nil, groupFirst)
+        if sequence ~= nil then
+          cleared = true
+          if groupFirst == nil then
+            groupFirst = sequence --[[@as integer]]
+          end
+        end
       end
     end
   end
@@ -1241,7 +1495,7 @@ local function stepConfuse(ctx, frame)
   if not applyConfusion(ctx, record, defender) then
     return { kind = "complete", result = "failed" }
   end
-  emitUsed(ctx, record)
+  emitUsed(ctx, record, nil, confusionOperation(ctx, record, defender))
   return { kind = "complete", result = "hit" }
 end
 
@@ -1458,7 +1712,22 @@ local function stepRest(ctx, frame)
   if prior ~= nil then
     ctx:cureStatus(user, prior, causeFor(record))
   end
-  ctx:applyStatus(user, "sleep", { turns = 2 }, causeFor(record))
+  -- Rest sleeps through its own move program: the application carries
+  -- the rest mark so the selector suppresses the extra sleep root.
+  local restEntry = ctx:entryOf(user)
+  ctx:applyStatus(user, "sleep", { turns = 2 }, causeFor(record), {
+    operation = {
+      kind = "status-applied",
+      subject = { combatant = user, activation = restEntry.activation },
+      source = {
+        kind = "move",
+        key = record.executingMove,
+        actor = { combatant = user, activation = restEntry.activation },
+      },
+      condition = "sleep",
+      application = "rest",
+    },
+  })
   local outcome = ctx:heal(user, entry.maxHp --[[@as integer]], causeFor(record))
   ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before, noBlink = true })
   emitUsed(ctx, record)
@@ -1517,9 +1786,46 @@ local function stepBellyDrum(ctx, frame)
   then
     return { kind = "complete", result = "failed" }
   end
-  ctx:changeStage(user, "attack", StatStages.MAX, causeFor(record))
-  ctx:damage(user, math.floor(ceiling / 2), causeFor(record))
+  local bellyRole = { combatant = user, activation = entry.activation }
   emitUsed(ctx, record)
+  -- The maximized stage owns the group's feedback; the health cost
+  -- follows it and points backward through the owner link, so the
+  -- timeline presents cost HP before the stat text without mutating
+  -- the already emitted stage event.
+  local stageResult = ctx:changeStage(user, "attack", StatStages.MAX, causeFor(record), {
+    operation = {
+      kind = "stage-changed",
+      subject = bellyRole,
+      source = { kind = "move", key = record.executingMove, actor = bellyRole },
+      stat = "attack",
+      before = entry.stages.attack,
+      after = StatStages.MAX,
+      method = "maximize",
+      profile = "belly-drum",
+      feedbackOwner = true,
+    },
+  })
+  local health = ctx:damage(user, math.floor(ceiling / 2), causeFor(record))
+  ctx:emit("health-cost", causeFor(record), { target = user }, nil, {
+    operation = {
+      kind = "health-cost",
+      subject = bellyRole,
+      source = { kind = "move", key = record.executingMove, actor = bellyRole },
+      reason = "belly-drum",
+      relation = "follows-owner",
+      ownerEventSequence = stageResult.eventSequence,
+    },
+    healthChanges = {
+      {
+        combatant = user,
+        activation = entry.activation,
+        before = health.before,
+        after = health.after,
+        maxHp = ceiling,
+        kind = "body",
+      },
+    },
+  })
   return { kind = "complete", result = "hit" }
 end
 
@@ -1830,7 +2136,7 @@ local function swaggerLike(spec)
     if misted(ctx, defender) then
       return { kind = "complete", result = "failed" }
     end
-    local climbed = false
+    local climbed = nil ---@type integer?
     if spec.stat ~= nil then
       local stat = spec.stat --[[@as string]]
       climbed = changeStage(ctx, record, defender, stat, spec.delta --[[@as integer]])
@@ -1839,7 +2145,11 @@ local function swaggerLike(spec)
     if not climbed and not danced then
       return { kind = "complete", result = "failed" }
     end
-    emitUsed(ctx, record)
+    local swaggerOperation = nil ---@type table<string, unknown>?
+    if danced then
+      swaggerOperation = confusionOperation(ctx, record, defender)
+    end
+    emitUsed(ctx, record, nil, swaggerOperation)
     return { kind = "complete", result = "hit" }
   end
   return stepSwaggerLike
@@ -2027,7 +2337,7 @@ local function stepDefog(ctx, frame)
     return { kind = "complete", result = "missed" }
   end
   local entry = ctx:entryOf(defender)
-  local changed = changeStage(ctx, record, defender, "evasion", -1)
+  local changed = changeStage(ctx, record, defender, "evasion", -1) ~= nil
   for _, key in ipairs(DEFOG_SIDE_EFFECTS) do
     if ctx:sideEffect(entry.side, key) ~= nil then
       ctx:removeBattleEffect(defender, key)

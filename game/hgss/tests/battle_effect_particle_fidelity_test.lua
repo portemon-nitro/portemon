@@ -247,6 +247,7 @@ local function probeEffectRecord(archivePath, texturePath, archiveIdentity, text
       },
     },
     requiredContext = {},
+    displayPolicy = { suspendHealthbarUpdates = false, updateBattlerG3 = false },
   }
 end
 

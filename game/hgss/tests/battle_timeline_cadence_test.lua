@@ -100,6 +100,8 @@ local function event(kind, fields)
     kind = kind,
     cause = { key = "TACKLE" },
     audience = "public",
+    actors = { { combatant = 1 } },
+    targets = { { combatant = 3 } },
     payload = {},
     after = { hp = {}, combatants = {} },
   }
