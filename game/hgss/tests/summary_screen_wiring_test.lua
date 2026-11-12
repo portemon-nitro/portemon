@@ -583,6 +583,67 @@ local function openProductionPartyFlow(versionId, summaryManifest)
     partyActions = PartyActions.new({ mons = service, bag = bag }),
     mailActions = mailActions,
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
+    pcManifest = pcManifest,
+    fieldMoves = {
+      check = function(_)
+        return { kind = "ok" }
+      end,
+    },
+    assets = {
+      bagManifest = {},
+      partyManifest = PartyCache.loadManifest(CacheFs.forVersion(versionId)),
+      summaryManifest = summaryManifest,
+      uiManifest = FieldUiFixture.manifest(),
+      monCatalog = {
+        moveByNativeId = function()
+          error("the return journey opens no move picker", 0)
+        end,
+      },
+      itemCatalog = bag:catalog(),
+      heroGender = "male",
+    },
+    measureDisplay = function()
+      return measurementFor("nativeLike")
+    end,
+    prepareIcons = function(_)
+      return true, nil
+    end,
+    cancelIconPreparation = function() end,
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
+    textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
+    summaryContext = function()
+      return context
+    end,
+    readSummaryNavigation = function()
+      return nil
+    end,
+    acquireSummaryPreparation = function()
+      leases = leases + 1
+      return ownerLease(Owner)
+    end,
+  })
+  local flow = PartyMenuFlow.new({
+    root = "party",
+    mons = service,
+    bag = bag,
+    bagCursor = BagCursor.new(),
+    partyActions = PartyActions.new({ mons = service, bag = bag }),
+    mailActions = mailActions,
+    mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
@@ -990,6 +1051,41 @@ local function fprRuntime(versionId)
       runtime._pokedexPreparation = nil
     end
   end
+  runtime.bindEasyChatPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "editor preparation binding requires its acquire function")
+    assert(runtime._easyChatPreparation == nil, "one editor preparation binding owns the presented lifetime")
+    runtime._easyChatPreparation = { id = 1, acquire = acquire }
+    return runtime._easyChatPreparation.id
+  end
+  runtime.unbindEasyChatPreparation = function(_, binding)
+    local current = runtime._easyChatPreparation
+    if current ~= nil and current.id == binding then
+      runtime._easyChatPreparation = nil
+    end
+  end
+  runtime.bindMailPreparation = function(_, prepare)
+    assert(type(prepare) == "function", "Mail preparation binding requires its prepare function")
+    assert(runtime._mailPreparation == nil, "one Mail preparation binding owns the presented lifetime")
+    runtime._mailPreparation = { id = 1, prepare = prepare }
+    return runtime._mailPreparation.id
+  end
+  runtime.unbindMailPreparation = function(_, binding)
+    local current = runtime._mailPreparation
+    if current ~= nil and current.id == binding then
+      runtime._mailPreparation = nil
+    end
+  end
+  runtime.easyChatCatalog = {
+    template = function()
+      return nil
+    end,
+    messageStatus = function()
+      return "invalid"
+    end,
+    expandMessage = function()
+      error("no expansion in summary wiring tests", 0)
+    end,
+  }
   return runtime
 end
 

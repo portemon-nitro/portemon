@@ -53,6 +53,7 @@ end
 function T.fresh_owner_counts_nothing_with_a_zero_score()
   local owner = newOwner()
   Assert.equal(owner:uniqueCount(), 0, "fresh stats count no registration")
+  Assert.equal(owner:mailWrittenCount(), 0, "fresh stats count no written Mail")
   Assert.equal(owner:score(), 0, "fresh stats carry a zero score")
   Assert.equal(owner:revision(), 0, "fresh stats start at the initial revision")
   Assert.isFalse(owner:isCounted("CHIKORITA"), "fresh stats count no species")
@@ -133,6 +134,9 @@ function T.invalid_observation_aborts_the_whole_batch_without_mutation()
     owner:prepareChanges({ observations = { { kind = "seen", species = "CHIKORITA" } } })
   end, "unknown observation kinds never stage")
   assertInvalid(function()
+    owner:prepareChanges({ observations = { { kind = "mail_written", species = "CHIKORITA" } } })
+  end, "written-Mail observations carry no species")
+  assertInvalid(function()
     owner:prepareChanges({
       observations = { { kind = "score", event = "no_such_event", points = 1 } },
     })
@@ -196,22 +200,24 @@ function T.score_accumulates_per_registration_and_caps_at_the_retail_ceiling()
   local points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT]
   Assert.equal(owner:score(), points * 2, "each fresh registration awards its register points")
   local nearCap = GameStats.restore({
-    schema = "hgss-stats-v1",
-    stateVersion = 1,
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
     uniqueCaught = { "EEVEE" },
     uniqueTotal = 1,
     score = GameStats.SCORE_CAP - 10,
+    mailWritten = 0,
   }, refs())
   local clamped = nearCap:prepareChanges({ observations = registerObservations("CHIKORITA") })
   Assert.isTrue(clamped.changed, "a registration below the ceiling still reports a change")
   clamped.publish()
   Assert.equal(nearCap:score(), GameStats.SCORE_CAP, "the total never exceeds the retail ceiling")
   local capped = GameStats.restore({
-    schema = "hgss-stats-v1",
-    stateVersion = 1,
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = GameStats.SCORE_CAP,
+    mailWritten = 0,
   }, refs())
   local revision = capped:revision()
   local held = capped:prepareChanges({ observations = { scoreObservation("CHIKORITA") } })
@@ -224,29 +230,111 @@ end
 
 function T.restore_rebuilds_from_a_bucket_and_missing_starts_empty()
   local restored = GameStats.restore({
-    schema = "hgss-stats-v1",
-    stateVersion = 1,
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
     uniqueCaught = { "TOTODILE", "CHIKORITA" },
     uniqueTotal = 5,
     score = 40,
+    mailWritten = 9,
   }, refs())
   Assert.isTrue(restored:isCounted("CHIKORITA"), "every saved registration survives restore")
   Assert.isTrue(restored:isCounted("TOTODILE"), "every saved registration survives restore")
   Assert.isFalse(restored:isCounted("EEVEE"), "restore invents no unregistered species")
   Assert.equal(restored:uniqueCount(), 5, "restore keeps the blind total independently of the set")
   Assert.equal(restored:score(), 40, "restore keeps the saved score")
+  Assert.equal(restored:mailWrittenCount(), 9, "restore keeps the written-Mail total")
   Assert.equal(restored:revision(), 0, "restore starts at the initial revision")
   local missing = GameStats.restore(nil, refs())
   Assert.equal(missing:uniqueCount(), 0, "a missing bucket counts nothing")
   Assert.equal(missing:score(), 0, "a missing bucket scores nothing")
+  Assert.equal(missing:mailWrittenCount(), 0, "a missing bucket counts no written Mail")
   local bucket = restored:bucket()
-  Assert.equal(bucket.schema, "hgss-stats-v1", "the bucket publishes the current schema")
-  Assert.equal(bucket.stateVersion, 1, "the bucket publishes the current state version")
+  Assert.equal(bucket.schema, "hgss-stats-v2", "the bucket publishes the current schema")
+  Assert.equal(bucket.stateVersion, 2, "the bucket publishes the current state version")
   Assert.deepEqual(bucket.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "the bucket sorts its registrations")
   Assert.equal(bucket.uniqueTotal, 5, "the bucket carries the blind total")
   Assert.equal(bucket.score, 40, "the bucket carries the live score")
+  Assert.equal(bucket.mailWritten, 9, "the bucket carries the written-Mail total")
   bucket.uniqueCaught[1] = "EEVEE"
   Assert.isFalse(restored:isCounted("EEVEE"), "the canonical bucket never aliases live state")
+end
+
+function T.written_mail_counts_once_with_its_score_and_no_species_freshness()
+  local owner = newOwner()
+  local staged = owner:prepareChanges({ observations = { { kind = "mail_written" } } })
+  Assert.isTrue(staged.changed, "a fresh write reports a change")
+  staged.publish()
+  Assert.equal(owner:mailWrittenCount(), 1, "one write increments its count once")
+  Assert.equal(owner:score(), 1, "one write increments the score by one")
+  Assert.isFalse(owner:isCounted("CHIKORITA"), "a write marks no species as counted")
+  Assert.equal(owner:revision(), 1, "one write advances the revision exactly once")
+end
+
+function T.written_mail_caps_at_its_retail_ceiling_without_resetting_score()
+  local owner = GameStats.restore({
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = GameStats.SCORE_CAP - 3,
+    mailWritten = 999998,
+  }, refs())
+  owner:prepareChanges({ observations = { { kind = "mail_written" } } }):publish()
+  Assert.equal(owner:mailWrittenCount(), 999999, "writes stop at the retail count ceiling")
+  Assert.equal(owner:score(), GameStats.SCORE_CAP - 2, "the capped write still scores once")
+  local capped = GameStats.restore({
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = GameStats.SCORE_CAP,
+    mailWritten = 999999,
+  }, refs())
+  local revision = capped:revision()
+  local held = capped:prepareChanges({ observations = registerObservations("CHIKORITA") })
+  Assert.isTrue(held.changed, "a capped write still reports its registration change")
+  held.publish()
+  held = capped:prepareChanges({ observations = { { kind = "mail_written" } } })
+  Assert.isFalse(held.changed, "writes at both ceilings report no change")
+  held.publish()
+  Assert.equal(capped:mailWrittenCount(), 999999, "the count never exceeds its ceiling")
+  Assert.equal(capped:score(), GameStats.SCORE_CAP, "the score never exceeds its ceiling")
+  Assert.equal(capped:revision(), revision + 1, "only the registration advanced the revision")
+end
+
+function T.written_mail_joins_mixed_batches_atomically()
+  local owner = newOwner()
+  local revision = owner:revision()
+  local mixed = owner:prepareChanges({
+    observations = {
+      { kind = "unique_caught", species = "CHIKORITA" },
+      { kind = "mail_written" },
+    },
+  })
+  Assert.isTrue(mixed.changed, "a mixed batch reports a change")
+  mixed.publish()
+  Assert.equal(owner:uniqueCount(), 1, "the mixed batch counts its registration")
+  Assert.equal(owner:mailWrittenCount(), 1, "the mixed batch counts its write")
+  Assert.isTrue(owner:isCounted("CHIKORITA"), "the mixed batch marks its species")
+  Assert.equal(owner:revision(), revision + 1, "a mixed batch advances the revision exactly once")
+  assertInvalid(function()
+    owner:prepareChanges({
+      observations = {
+        { kind = "mail_written" },
+        { kind = "unique_caught", species = "MISSINGNO" },
+      },
+    })
+  end, "a later invalid observation fails the whole batch")
+  Assert.equal(owner:mailWrittenCount(), 1, "a failed batch adds no write")
+  Assert.equal(owner:revision(), revision + 1, "a failed batch never advances the revision")
+  local stale = owner:prepareChanges({ observations = registerObservations("TOTODILE") })
+  local write = owner:prepareChanges({ observations = { { kind = "mail_written" } } })
+  write.publish()
+  Assert.isFalse(stale.isCurrent(), "the write publication moves past the older candidate")
+  assertInvalid(function()
+    stale.publish()
+  end, "a stale candidate never publishes after a write")
+  Assert.equal(owner:mailWrittenCount(), 2, "only the current write lands")
 end
 
 return { tests = T }

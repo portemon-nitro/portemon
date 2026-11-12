@@ -181,7 +181,10 @@ end
 -- unchanged inventory slots (register/unregister-or-toss at one, move at
 -- three, implicit cancel at four). Use appears for any cataloged party
 -- effect including deferred ones, which report later without consuming;
--- Give needs a holdable non-machine non-mail item.
+-- Give needs a holdable non-machine item, or stationery: authored Mail
+-- attaches only through the composition boundary, never through raw
+-- custody, so Give eligibility for stationery is the narrow Mail-or-
+-- ordinary rule while generated holdability metadata stays unchanged.
 ---@param facts BagActionFieldFacts
 ---@return { id: string, enabled: boolean, slot: integer }[]
 function BagActionPolicy.actionsForField(facts)
@@ -202,7 +205,9 @@ function BagActionPolicy.actionsForField(facts)
     then
       actions[#actions + 1] = { id = "use", enabled = true, slot = 0 }
     end
-    if targetsExist and facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail" then
+    local giveableMail = facts.pocket == "mail" and targetsExist
+    local giveableOrdinary = targetsExist and facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail"
+    if giveableMail or giveableOrdinary then
       actions[#actions + 1] = { id = "give", enabled = true, slot = 2 }
     end
   end
@@ -221,18 +226,24 @@ function BagActionPolicy.actionsForField(facts)
   return actions
 end
 
--- Held-item picker eligibility from semantic metadata: hidden machines,
--- key items, and mail never enter a mon's hold slot, while ordinary
--- teachable disks stay giveable. The picker selects directly, so this is
--- a predicate rather than a menu.
+-- Held-item picker eligibility from semantic metadata: hidden machines
+-- and key items never enter a mon's hold slot, while ordinary teachable
+-- disks stay giveable. Stationery enters only through the explicit Mail
+-- composition capability: Storage keeps the capability false and retains
+-- its custody refusal, while the Party Give picker enables composition.
+-- The picker selects directly, so this is a predicate rather than a menu.
 ---@param facts BagActionFieldFacts
+---@param mailComposition boolean? explicit stationery composition capability (default false)
 ---@return boolean
-function BagActionPolicy.isPickable(facts)
+function BagActionPolicy.isPickable(facts, mailComposition)
   assert(type(facts) == "table", "picker eligibility needs its semantic facts")
   if facts.itemKey == nil then
     return false
   end
-  return facts.canHold == true and facts.isHm ~= true and facts.pocket ~= "mail"
+  if facts.pocket == "mail" then
+    return mailComposition == true
+  end
+  return facts.canHold == true and facts.isHm ~= true
 end
 
 -- Binds the field projection to one live inventory service: Use and Give

@@ -187,14 +187,14 @@ end
 
 local function mailRecord()
   return {
-    schema = "g4-mail-v1",
+    schema = "g4-mail-v2",
     type = 0,
     author = { trainerId = 54321, name = "MISTY", gender = 1, language = 2, game = 8 },
-    icons = { false, false, false },
+    icons = { "CHIKORITA/f0", false, false },
     lines = {
-      { template = "mail.line.first", words = { "word.water", false } },
-      { template = "mail.line.second", words = { "word.friend", false } },
-      { template = "mail.line.third", words = { "word.goodbye", false } },
+      { template = "mail-template:2:4", words = { "1371", "1417" } },
+      { template = "mail-template:3:1", words = { "1479", false } },
+      false,
     },
   }
 end

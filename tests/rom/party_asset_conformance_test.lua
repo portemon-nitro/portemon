@@ -79,7 +79,7 @@ function T.every_selected_member_is_attributable_and_frames_resolve(romFs, versi
     end
   end
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-party-presentation-v6")
+  Assert.equal(manifest.schema, "g4-party-presentation-v7")
   local referenced = PartyCache.referencedPaths(manifest)
   Assert.isTrue(#referenced > 0, "the manifest references realized images")
   for _, path in ipairs(referenced) do
@@ -950,7 +950,7 @@ end
 
 function T.generated_party_manifest_declares_the_full_bag_schema(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v6")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
   Assert.notNil(bundle.manifest.text.templates.bagFull, "the full-bag template resolves")
 end
 

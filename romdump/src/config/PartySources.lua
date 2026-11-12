@@ -451,6 +451,9 @@ PartySources.messages = {
     noEffect = { bank = 300, index = 102 },
     takeNoItem = { bank = 300, index = 82 },
     bagFull = { bank = 300, index = 84 },
+    -- The held-Mail refusal for a fresh letter addressed to a mon that
+    -- already carries Mail (party_menu.c source held-Mail refusal).
+    heldMail = { bank = 300, index = 78 },
     switchHeldPrompt = { bank = 300, index = 79 },
     switchHeldResult = { bank = 300, index = 85 },
     giveHeldItem = { bank = 300, index = 107 },

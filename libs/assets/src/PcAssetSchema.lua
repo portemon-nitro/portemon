@@ -119,36 +119,6 @@ local function checkWallpaperSwatches(swatches)
   checkColor(swatches.locked, "storage.wallpaperSwatches.locked")
 end
 
-local function checkWordDictionary(value)
-  if type(value) ~= "table" then
-    fail("mail.wordDictionary must be a record")
-  end
-  for wordId = 0, 1494 do
-    local key = tostring(wordId)
-    local tokens = value[key]
-    if type(tokens) ~= "table" or #tokens == 0 then
-      fail("mail.wordDictionary is missing source word " .. wordId)
-    end
-    for index, token in ipairs(tokens) do
-      if type(token) ~= "table" or type(token.kind) ~= "string" then
-        fail("mail.wordDictionary[" .. wordId .. "][" .. index .. "] is not a text token")
-      end
-    end
-  end
-  for wordId in pairs(value) do
-    local numericWordId = type(wordId) == "string" and tonumber(wordId) or nil
-    if
-      numericWordId == nil
-      or numericWordId % 1 ~= 0
-      or numericWordId < 0
-      or numericWordId > 1494
-      or tostring(numericWordId) ~= wordId
-    then
-      fail("mail.wordDictionary contains an unsupported word key")
-    end
-  end
-end
-
 local function checkTextBanks(value)
   if type(value) ~= "table" then
     fail("text.banks must be a record")
@@ -227,44 +197,68 @@ local function checkMessageTokens(value, label)
   end
 end
 
-local function checkMailTemplates(mailText, rootText)
-  exactKeys(mailText, { sourceBanks = true, templates = true }, "mail.text")
-  if type(mailText.sourceBanks) ~= "table" or #mailText.sourceBanks ~= 5 then
-    fail("mail.text.sourceBanks must retain the five MailMessage bank identities")
+-- Strict write-chrome record for one stationery type: the native write
+-- composite, the top-display backdrop, five cursor-ordered highlight
+-- frame sets of fourteen RGB5-blended levels each, and five rect-local
+-- binary touch masks.
+---@param write table<string, unknown>
+---@param label string
+local function checkStationeryWrite(write, label)
+  exactKeys(write, { background = true, backdrop = true, highlights = true, hitMasks = true }, label)
+  checkVisual(write.background, label .. ".background")
+  if write.background.width ~= 256 or write.background.height ~= 192 then
+    fail(label .. ".background must be the native 256x192 write composite")
   end
-  if type(rootText) ~= "table" or type(rootText.banks) ~= "table" then
-    fail("text.banks are required for compiled Mail templates")
+  checkVisual(write.backdrop, label .. ".backdrop")
+  if write.backdrop.width ~= 256 or write.backdrop.height ~= 192 then
+    fail(label .. ".backdrop must be the native 256x192 top-display raster")
   end
-  local templates = mailText.templates
-  if type(templates) ~= "table" then
-    fail("mail.text.templates must be a record")
+  if type(write.highlights) ~= "table" or #write.highlights ~= 5 then
+    fail(label .. ".highlights must carry five cursor-ordered entries")
   end
-  local expectedCount = 0
-  for mailBankIndex, sourceBankId in ipairs(mailText.sourceBanks) do
-    if type(sourceBankId) ~= "number" or sourceBankId % 1 ~= 0 or sourceBankId < 0 then
-      fail("mail.text.sourceBanks must contain source bank identities")
+  for position, highlight in ipairs(write.highlights) do
+    local highlightLabel = label .. ".highlights[" .. position .. "]"
+    exactKeys(highlight, { x = true, y = true, width = true, height = true, frames = true }, highlightLabel)
+    for _, key in ipairs({ "x", "y", "width", "height" }) do
+      if type(highlight[key]) ~= "number" or highlight[key] % 1 ~= 0 or highlight[key] < 0 then
+        fail(highlightLabel .. "." .. key .. " must be a non-negative integer")
+      end
     end
-    local messages = rootText.banks[sourceBankId]
-    if type(messages) ~= "table" or #messages == 0 then
-      fail("mail.text.sourceBanks references an uncompiled message bank")
+    if highlight.width <= 0 or highlight.height <= 0 then
+      fail(highlightLabel .. " must crop a non-empty changed-pixel rectangle")
     end
-    for messageIndex = 0, #messages - 1 do
-      local key = "mail-template:" .. (mailBankIndex - 1) .. ":" .. messageIndex
-      checkMessageTokens(templates[key], "mail.text.templates." .. key)
-      expectedCount = expectedCount + 1
+    if type(highlight.frames) ~= "table" or #highlight.frames ~= 14 then
+      fail(highlightLabel .. ".frames must carry fourteen blend levels")
+    end
+    for level, frame in ipairs(highlight.frames) do
+      checkVisual(frame, highlightLabel .. ".frames[" .. level .. "]")
+      if frame.width ~= highlight.width or frame.height ~= highlight.height then
+        fail(highlightLabel .. ".frames[" .. level .. "] must match the cropped rectangle")
+      end
     end
   end
-  local actualCount = 0
-  for key, tokens in pairs(templates) do
-    local bankIndex = type(key) == "string" and key:match("^mail%-template:(%d+):(%d+)$")
-    if bankIndex == nil then
-      fail("mail.text.templates contains an unsupported key")
-    end
-    checkMessageTokens(tokens, "mail.text.templates." .. key)
-    actualCount = actualCount + 1
+  if type(write.hitMasks) ~= "table" or #write.hitMasks ~= 5 then
+    fail(label .. ".hitMasks must carry five cursor-ordered masks")
   end
-  if actualCount ~= expectedCount then
-    fail("mail.text.templates must contain every and only compiled source message")
+  for position, mask in ipairs(write.hitMasks) do
+    local maskLabel = label .. ".hitMasks[" .. position .. "]"
+    exactKeys(mask, { x = true, y = true, width = true, height = true, rows = true }, maskLabel)
+    for _, key in ipairs({ "x", "y", "width", "height" }) do
+      if type(mask[key]) ~= "number" or mask[key] % 1 ~= 0 or mask[key] < 0 then
+        fail(maskLabel .. "." .. key .. " must be a non-negative integer")
+      end
+    end
+    if mask.width <= 0 or mask.height <= 0 then
+      fail(maskLabel .. " must cover a non-empty control rectangle")
+    end
+    if type(mask.rows) ~= "table" or #mask.rows ~= mask.height then
+      fail(maskLabel .. ".rows must carry exactly height binary strings")
+    end
+    for row, bits in ipairs(mask.rows) do
+      if type(bits) ~= "string" or #bits ~= mask.width or bits:find("[^01]") ~= nil then
+        fail(maskLabel .. ".rows[" .. row .. "] must be a binary string of exactly width characters")
+      end
+    end
   end
 end
 
@@ -289,11 +283,12 @@ local function checkStationery(value)
   local count = 0
   for stationeryType = 0, 11 do
     local stationery = value[stationeryType]
-    exactKeys(stationery, { background = true, itemKey = true }, "mail.stationery." .. stationeryType)
+    exactKeys(stationery, { background = true, itemKey = true, write = true }, "mail.stationery." .. stationeryType)
     checkVisual(stationery.background, "mail.stationery." .. stationeryType .. ".background")
     if stationery.itemKey ~= itemKeys[stationeryType + 1] then
       fail("mail.stationery." .. stationeryType .. ".itemKey has an invalid semantic item key")
     end
+    checkStationeryWrite(stationery.write, "mail.stationery." .. stationeryType .. ".write")
     count = count + 1
   end
   for stationeryType in pairs(value) do
@@ -493,10 +488,10 @@ function PcAssetSchema.assertManifest(manifest)
   end
 
   local mail = root.mail --[[@as table<string, unknown>]]
-  exactKeys(mail, { stationery = true, geometry = true, text = true, wordDictionary = true }, "mail")
+  exactKeys(mail, { stationery = true, geometry = true }, "mail")
   checkStationery(mail.stationery)
-  if type(mail.geometry) ~= "table" or type(mail.text) ~= "table" then
-    fail("mail geometry and text records are required")
+  if type(mail.geometry) ~= "table" then
+    fail("mail geometry record is required")
   end
   if
     mail.geometry.iconSlots ~= 3
@@ -511,8 +506,31 @@ function PcAssetSchema.assertManifest(manifest)
       fail("mail.geometry.iconLocations[" .. index .. "] must use logical pixel coordinates")
     end
   end
-  checkMailTemplates(mail.text, root.text)
-  checkWordDictionary(mail.wordDictionary)
+  -- The MailView chrome rides the ordinary text banks: bank 233 carries
+  -- exactly its four source messages and no Easy Chat catalog.
+  if type(root.text) ~= "table" or type(root.text.banks) ~= "table" then
+    fail("text.banks are required for the MailView chrome")
+  end
+  local mailViewBank = root.text.banks[233]
+  if type(mailViewBank) ~= "table" then
+    fail("text.banks.233 must carry the four MailView messages")
+  end
+  local mailViewCount = 0
+  for messageId, tokens in pairs(mailViewBank) do
+    if type(messageId) ~= "number" or messageId % 1 ~= 0 or messageId < 0 then
+      fail("text.banks.233 has a non-source message key")
+    end
+    checkMessageTokens(tokens, "text.banks.233." .. messageId)
+    mailViewCount = mailViewCount + 1
+  end
+  if mailViewCount ~= 4 then
+    fail("text.banks.233 must carry the four MailView messages")
+  end
+  for messageId = 0, 3 do
+    if mailViewBank[messageId] == nil then
+      fail("text.banks.233 is missing MailView message " .. messageId)
+    end
+  end
 
   local photoAlbum = root.photoAlbum --[[@as table<string, unknown>]]
   exactKeys(photoAlbum, { ui = true }, "photoAlbum")

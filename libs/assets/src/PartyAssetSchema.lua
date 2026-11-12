@@ -18,7 +18,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v6"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v7"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -61,6 +61,7 @@ local REQUIRED_RUNTIME_TEMPLATES = {
   "bagFull",
   "switchHeldPrompt",
   "switchHeldResult",
+  "heldMail",
   "giveHeldItem",
   "fieldMoveNotHere",
   "fieldMoveNeedBadge",

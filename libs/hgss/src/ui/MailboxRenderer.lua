@@ -7,6 +7,7 @@
 ---@field _pool table<string, unknown> the borrowed shared image owner behind every visual
 ---@field _tokens table<string, unknown> enrolled but unacquired borrows by path
 ---@field released boolean
+---@field catalog table<string, unknown> the shared word catalog behind Mail reads
 local MailboxRenderer = {}
 MailboxRenderer.__index = MailboxRenderer
 local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")
@@ -84,6 +85,8 @@ end
 function MailboxRenderer.new(opts)
   assert(type(opts) == "table", "mailbox renderer requires options")
   local manifest = assert(opts.manifest, "mailbox renderer borrows the PC manifest")
+  local catalog = assert(opts.catalog, "mailbox renderer reads the shared word catalog")
+  assert(type(catalog.expandMessage) == "function", "the word catalog expands stored lines")
   local graphics = assert(opts.graphics, "mailbox renderer borrows the graphics namespace")
   local pool = assert(opts.imagePool, "mailbox renderer borrows its shared image owner")
   assert(
@@ -99,6 +102,7 @@ function MailboxRenderer.new(opts)
     images = {},
     leases = {},
     manifest = manifest,
+    catalog = catalog,
     _pool = pool,
     _tokens = {},
     released = false,
@@ -232,6 +236,16 @@ local function requiredPaths(manifest, status)
   end
   if status.viewMode == "read" and status.letter ~= nil then
     add(assert(manifest.mail.stationery[status.letter.type]).background.image)
+  elseif status.viewMode == "write" and status.stationeryType ~= nil then
+    local write = assert(manifest.mail.stationery[status.stationeryType]).write
+    assert(type(write) == "table", "write chrome is compiled for the composed stationery")
+    add(assert(write.background, "write chrome carries its composite").image)
+    add(assert(write.backdrop, "write chrome carries its top backdrop").image)
+    for _, highlight in ipairs(assert(write.highlights, "write chrome carries its five highlights")) do
+      for _, frame in ipairs(assert(highlight.frames, "write highlights carry fourteen levels")) do
+        add(assert(frame.image, "write highlight frames carry compiled paths"))
+      end
+    end
   elseif status.mode == "mailbox" then
     add(assert(manifest.mailbox.background.main, "Mailbox background is compiled").image)
     for _, row in ipairs(status.rows or {}) do
@@ -424,12 +438,7 @@ function MailboxRenderer:draw(status, resources)
     for index, line in ipairs(letter.lines) do
       if line ~= false then
         local placement = assert(geometry.lines[index], "each Mail line uses its source window anchor")
-        drawMailLine(
-          text,
-          MailTemplate.expandLine(line, self.manifest.mail.text, self.manifest.mail.wordDictionary),
-          placement.x,
-          placement.y
-        )
+        drawMailLine(text, MailTemplate.expandLine(line, self.catalog), placement.x, placement.y)
       end
     end
     for index, location in ipairs(self.manifest.mail.geometry.iconLocations) do
@@ -561,6 +570,163 @@ function MailboxRenderer:draw(status, resources)
       presentation = assert(status.presentation, "confirmations use the source box geometry"),
     }, assert(status.prompt, "destructive Mail operations carry their source prompt"), true)
   end
+end
+
+-- Draws one MailView pane for the read/write stationery views: the top
+-- pane shows the source backdrop raster, the interaction pane shows the
+-- native composite with its text, focus highlight, icons, and modals.
+-- Source geometry (line windows, button labels, author anchor) arrives
+-- through resources so the single game-side interface stays the only
+-- geometry owner; the manifest carries the compiled visuals and masks.
+---@param self MailboxRenderer
+---@param view table<string, unknown> read/write snapshot
+---@param paneId string|nil "upper" for the top display, interaction content otherwise
+---@param resources table<string, unknown>
+function MailboxRenderer:drawMailPane(view, paneId, resources)
+  assert(not self.released, "disposed mailbox renderer cannot draw")
+  assert(type(view) == "table", "stationery pane drawing needs its snapshot")
+  assert(type(resources) == "table", "stationery pane drawing borrows field presentation resources")
+  local graphics = self.graphics
+  local geometry = assert(resources.mailViewGeometry, "stationery panes use the shared MailView geometry")
+  local stationeryType = assert(view.stationeryType, "stationery panes draw their compiled type")
+  local write = assert(self.manifest.mail.stationery[stationeryType], "stationery panes draw compiled types").write
+  assert(type(write) == "table", "stationery panes draw compiled write chrome")
+  if paneId == "upper" then
+    local backdrop = assert(write.backdrop, "the top pane draws the write backdrop")
+    graphics.setColor(1, 1, 1, 1)
+    ImageSampling.draw(graphics, self:_prepared(backdrop), nil, backdrop.anchorX, backdrop.anchorY)
+    return
+  end
+  if view.mode == "read" then
+    self:_drawMailPaneRead(view, resources, geometry)
+  else
+    self:_drawMailPaneWrite(view, resources, geometry)
+  end
+  local fade = view.fadeCoefficient
+  if type(fade) == "number" and fade > 0 then
+    graphics.setColor(0, 0, 0, fade / 16)
+    graphics.rectangle("fill", 0, 0, 256, 192)
+    graphics.setColor(1, 1, 1, 1)
+  end
+end
+
+-- Draws the read interaction pane: the stationery background, the stored
+-- author at the source anchor, the catalog-expanded lines, the stored
+-- string icons, and the close label.
+---@param self MailboxRenderer
+---@param view table<string, unknown>
+---@param resources table<string, unknown>
+---@param geometry table<string, unknown>
+function MailboxRenderer:_drawMailPaneRead(view, resources, geometry)
+  local graphics = self.graphics
+  local letter = assert(view.letter, "the read pane draws the authored letter")
+  local visual = assert(self.manifest.mail.stationery[letter.type]).background
+  graphics.setColor(1, 1, 1, 1)
+  ImageSampling.draw(graphics, self:_prepared(visual), nil, visual.anchorX, visual.anchorY)
+  local text = assert(resources.textRenderer, "read drawing borrows the field text renderer")
+  local author = assert(geometry.author, "read drawing uses the source author anchor")
+  text:drawText(letter.author.name, author.x, author.y)
+  local lines = assert(geometry.lines, "read drawing uses the source line windows")
+  for index, line in ipairs(letter.lines) do
+    if line ~= false then
+      local placement = assert(lines[index], "each Mail line uses its source window anchor")
+      drawMailLine(text, MailTemplate.expandLine(line, self.catalog), placement.x, placement.y)
+    end
+  end
+  for index, location in ipairs(self.manifest.mail.geometry.iconLocations) do
+    local icon = view.icons and view.icons[index]
+    if icon ~= nil and icon.iconKey ~= nil then
+      local provider = assert(resources.monIconProvider, "read icons borrow the shared mon icon provider")
+      graphics.setColor(1, 1, 1, 1)
+      ImageSampling.draw(
+        graphics,
+        provider:handleFor(icon.iconKey),
+        provider:quadFor(icon.iconKey, 1),
+        location.x,
+        location.y
+      )
+    end
+  end
+  if view.closeLabel ~= false then
+    local bank = assert(self.manifest.text.banks[232], "the read close label comes from source bank 232")
+    text:drawLine(assert(bank[CLOSE_MESSAGE_ID], "the letter close button has a compiled source label"), 200, 168)
+  end
+end
+
+-- Draws the write interaction pane: the native write composite, the
+-- draft sentence windows with the shared-catalog expansion, the source
+-- Confirm/Cancel labels, the cursor-ordered pulse highlight, and the
+-- all-blank or quit modal when the draft owns one. Author and captured
+-- icons never draw in write mode; they ride the accepted letter.
+---@param self MailboxRenderer
+---@param view table<string, unknown>
+---@param resources table<string, unknown>
+---@param geometry table<string, unknown>
+function MailboxRenderer:_drawMailPaneWrite(view, resources, geometry)
+  local graphics = self.graphics
+  local stationeryType = assert(view.stationeryType, "the write pane draws its compiled type")
+  local write = assert(self.manifest.mail.stationery[stationeryType], "the write pane draws compiled types").write
+  assert(type(write) == "table", "the write pane draws compiled write chrome")
+  local background = assert(write.background, "write chrome carries its composite")
+  graphics.setColor(1, 1, 1, 1)
+  ImageSampling.draw(graphics, self:_prepared(background), nil, background.anchorX, background.anchorY)
+  local text = assert(resources.textRenderer, "write drawing borrows the field text renderer")
+  local lines = assert(geometry.lines, "write drawing uses the source line windows")
+  for index, line in ipairs(assert(view.lines, "the write pane draws its three draft lines")) do
+    if line ~= false then
+      local placement = assert(lines[index], "each Mail line uses its source window anchor")
+      drawMailLine(text, MailTemplate.expandLine(line, self.catalog), placement.x, placement.y)
+    end
+  end
+  local bank233 = assert(self.manifest.text.banks[233], "write labels come from source bank 233")
+  local function centeredLabel(tokens, window)
+    local parts = {}
+    for _, token in ipairs(tokens) do
+      if token.kind == "glyph" then
+        parts[#parts + 1] = token.text
+      end
+    end
+    local width = text:textWidth(table.concat(parts))
+    local x = window.x + math.floor((window.width - width) / 2)
+    text:drawLine(tokens, x, window.y + 2)
+  end
+  local confirmWindow = assert(geometry.confirm, "write drawing uses the source Confirm window")
+  centeredLabel(assert(bank233[0], "the write Confirm label is compiled"), confirmWindow)
+  local cancelWindow = assert(geometry.cancel, "write drawing uses the source Cancel window")
+  centeredLabel(assert(bank233[1], "the write Cancel label is compiled"), cancelWindow)
+  local focus = assert(view.focusPos, "write drawing highlights its focused control")
+  local highlights = assert(write.highlights, "write chrome carries its five highlights")
+  local highlight = assert(highlights[focus + 1], "the focused control carries its highlight")
+  local level = view.pulseLevel or 0
+  assert(level >= 0 and level <= 13, "write highlights pulse through coefficients 0..13")
+  local frame = assert(highlight.frames[level + 1], "write highlights carry fourteen levels")
+  graphics.setColor(1, 1, 1, 1)
+  ImageSampling.draw(graphics, self:_prepared(frame), nil, frame.anchorX + highlight.x, frame.anchorY + highlight.y)
+  if view.warning then
+    self:_drawMailPaneModal(resources, bank233[2])
+  elseif view.quit ~= nil then
+    self:_drawMailPaneModal(resources, bank233[3])
+    local quit = view.quit
+    local cursor = assert(quit.cursor, "the quit prompt carries its cursor")
+    assert(cursor == "yes" or cursor == "no", "the quit cursor answers yes or no")
+    text:drawText("YES", 192, 88)
+    text:drawText("NO", 192, 112)
+    local markerY = cursor == "yes" and 88 or 112
+    text:drawText(">", 180, markerY)
+  end
+end
+
+-- Draws the write modal window: the all-blank warning or the quit
+-- confirmation message in the source window.
+---@param resources table<string, unknown>
+---@param tokens table[] compiled source message tokens
+function MailboxRenderer:_drawMailPaneModal(resources, tokens)
+  local text = assert(resources.textRenderer, "write modals borrow the field text renderer")
+  local window = assert(resources.windowRenderer, "write modals borrow the shared field-window renderer")
+  local frameIndex = resources.applicationFrameIndex
+  local box = { x = 16, y = 152, width = 216, height = 32 }
+  window:drawWindow(box, frameIndex, text:windowBackgroundColor())
+  drawMailLine(text, assert(tokens, "write modals carry their compiled source message"), box.x + 8, box.y + 8)
 end
 
 function MailboxRenderer:release()

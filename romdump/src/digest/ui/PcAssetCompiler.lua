@@ -327,6 +327,321 @@ local function mergeSequences(first, second)
   return first
 end
 
+-- 4bpp character pixel index through one decoded tile set, honoring the
+-- entry flips. Follows the shared rasterizer's tile layout exactly
+-- (depth 3 selects 32 bytes per tile, four bytes per row).
+local function charPixelIndex(charData, entry, x, y)
+  assert(charData.depth == 3, "stationery write chrome uses 4bpp tiles")
+  local tileBytes = 32
+  local tileCount = math.floor(#charData.tiles / tileBytes)
+  if entry.tile < 0 or entry.tile >= tileCount then
+    error("stationery write chrome references tile " .. entry.tile .. " of " .. tileCount, 0)
+  end
+  local lx, ly = x, y
+  if entry.flipH then
+    lx = 7 - x
+  end
+  if entry.flipV then
+    ly = 7 - y
+  end
+  local byte = string.byte(charData.tiles, entry.tile * tileBytes + ly * 4 + math.floor(lx / 2) + 1)
+  assert(byte ~= nil, "stationery write chrome tile bytes are present")
+  if lx % 2 == 0 then
+    return byte % 16
+  end
+  return math.floor(byte / 16)
+end
+
+-- Exact RGB5 blend-to-white (decomp BlendColor): new = old + ((31 - old) *
+-- level >> 4) per channel, computed in 5-bit source space from the
+-- decoded 8-bit palette colors.
+local function blendChannelToWhite(channel, level)
+  local channel5 = math.floor((channel * 31 + 127) / 255)
+  if channel5 < 0 then
+    channel5 = 0
+  elseif channel5 > 31 then
+    channel5 = 31
+  end
+  local blended5 = channel5 + (math.floor((31 - channel5) * level / 16))
+  if blended5 > 31 then
+    blended5 = 31
+  end
+  return math.floor((blended5 * 255 + 15) / 31)
+end
+
+local function blendColorToWhite(color, level)
+  return {
+    r = blendChannelToWhite(color.r, level),
+    g = blendChannelToWhite(color.g, level),
+    b = blendChannelToWhite(color.b, level),
+  }
+end
+
+-- Compiles one stationery type's write chrome: the native BG2-over-BG3
+-- composite background, the repeated top-display backdrop, the five
+-- cursor-ordered cropped highlight frame sets, and the five rect-local
+-- touch masks. Source basis: application/mail_view.c
+-- MailView_LoadBgGraphics (write palette bytes 0x60..0x7F at display
+-- bank 1, shared member-36 button tilemap over the type character set,
+-- G2_SetBlendAlpha(BG2, BG3, 16, 4) after hardware saturation, SUB
+-- tile-1/palette-2 backdrop fill, cursor pulse on display entry
+-- 0x22+cursorPos, touch rejection on BG2 pixel index 1).
+---@param archive Narc the decoded stationery NARC
+---@param fileId integer selected archive file identity for provenance
+---@param stationeryType integer
+---@param assets table<string, string> generated image accumulator
+---@param dependencies table<string, unknown>[] generated provenance accumulator
+---@param selections table<string, table<string, unknown>> generated selection accumulator
+---@return table<string, unknown> write record { background, backdrop, highlights, hitMasks }
+local function compileStationeryWrite(archive, fileId, stationeryType, assets, dependencies, selections)
+  local write = PcSources.stationeryWrite
+  local function memberRecord(memberId, kind, role)
+    local bytes, digest = unpackMember(archive, memberId)
+    dependencies[#dependencies + 1] = { role = role, sha1 = digest }
+    return decode(kind, bytes, role)
+  end
+  local role = "mail.write." .. stationeryType
+  local palData =
+    memberRecord(PcSources.stationeryMembers.paletteBase + stationeryType, "decodePalette", role .. ".palette")
+  local charData =
+    memberRecord(PcSources.stationeryMembers.characterBase + stationeryType, "decodeChar", role .. ".character")
+  local bgScreen =
+    memberRecord(PcSources.stationeryMembers.screenBase + stationeryType, "decodeScreen", role .. ".background")
+  local buttonScreen = memberRecord(write.buttonScreen, "decodeScreen", role .. ".buttons")
+  selections[role] = {
+    path = PcSources.archives.stationery.path,
+    fileId = fileId,
+    members = {
+      palette = PcSources.stationeryMembers.paletteBase + stationeryType,
+      character = PcSources.stationeryMembers.characterBase + stationeryType,
+      screen = PcSources.stationeryMembers.screenBase + stationeryType,
+      buttons = write.buttonScreen,
+    },
+  }
+  if #palData.colors < 64 then
+    error("stationery write palette carries fewer than 64 source colors", 0)
+  end
+  if bgScreen.width ~= 256 or bgScreen.height ~= 192 then
+    error("stationery background screen is not the native 256x192 surface", 0)
+  end
+  if buttonScreen.width ~= 256 or buttonScreen.height ~= 192 then
+    error("stationery button screen is not the native 256x192 surface", 0)
+  end
+  if #bgScreen.entries ~= 768 or #buttonScreen.entries ~= 768 then
+    error("stationery write screens carry incomplete tilemaps", 0)
+  end
+  -- Display palette view: the write mode reseats source bytes 0x60..0x7F
+  -- (decoded colors 48..63) at display bank 1 (indices 16..31).
+  local view = {}
+  for index, color in ipairs(palData.colors) do
+    view[index] = color
+  end
+  for bankIndex = 0, 15 do
+    view[17 + bankIndex] = assert(palData.colors[49 + bankIndex], "stationery write palette covers bytes 0x60..0x7F")
+  end
+  local function screenEntry(screen, x, y)
+    return screen.entries[math.floor(y / 8) * 32 + math.floor(x / 8) + 1]
+  end
+  local function layerColor(screen, x, y)
+    local entry = screenEntry(screen, x, y)
+    local index = charPixelIndex(charData, entry, x % 8, y % 8)
+    if index == 0 then
+      return nil, index
+    end
+    local color = view[entry.palette * 16 + index + 1]
+    if color == nil then
+      error("stationery write chrome references an uncovered palette entry", 0)
+    end
+    return color, index
+  end
+  -- Native write composite: BG2 over BG3 with the saturated hardware
+  -- coefficients (16, 4) over a divisor of 16, clamped to the byte.
+  local composite = {}
+  for y = 0, 191 do
+    composite[y + 1] = {}
+    for x = 0, 255 do
+      local top, _ = layerColor(buttonScreen, x, y)
+      local bottom, _ = layerColor(bgScreen, x, y)
+      local pixel
+      if top ~= nil then
+        local base = bottom or view[1]
+        pixel = {
+          r = math.min(255, math.floor((top.r * write.blendEvA + base.r * write.blendEvB) / write.blendDivisor)),
+          g = math.min(255, math.floor((top.g * write.blendEvA + base.g * write.blendEvB) / write.blendDivisor)),
+          b = math.min(255, math.floor((top.b * write.blendEvA + base.b * write.blendEvB) / write.blendDivisor)),
+        }
+      elseif bottom ~= nil then
+        pixel = { r = bottom.r, g = bottom.g, b = bottom.b }
+      else
+        local backdrop = view[1]
+        pixel = { r = backdrop.r, g = backdrop.g, b = backdrop.b }
+      end
+      composite[y + 1][x + 1] = pixel
+    end
+  end
+  local function encodeRgba(pixels, width, height, transparent)
+    local parts = {}
+    for y = 1, height do
+      for x = 1, width do
+        local pixel = pixels[y][x]
+        if pixel == nil then
+          parts[#parts + 1] = transparent
+        else
+          parts[#parts + 1] = string.char(pixel.r, pixel.g, pixel.b, 255)
+        end
+      end
+    end
+    return table.concat(parts)
+  end
+  local backgroundPath = PcCache.assetDir() .. "/stationery-" .. stationeryType .. "-write-background.png"
+  assets[backgroundPath] = PngWriter.encode(256, 192, encodeRgba(composite, 256, 192))
+  -- Top-display backdrop: source tile 1 at palette 2, repeated over the
+  -- native surface with tile transparency preserved.
+  local backdropTile = {}
+  for y = 0, 7 do
+    backdropTile[y + 1] = {}
+    for x = 0, 7 do
+      local index = charPixelIndex(charData, { tile = write.backdropTile, flipH = false, flipV = false }, x, y)
+      if index == 0 then
+        backdropTile[y + 1][x + 1] = nil
+      else
+        local color = view[write.backdropPalette * 16 + index + 1]
+        if color == nil then
+          error("stationery backdrop references an uncovered palette entry", 0)
+        end
+        backdropTile[y + 1][x + 1] = { r = color.r, g = color.g, b = color.b }
+      end
+    end
+  end
+  local backdrop = {}
+  for y = 1, 192 do
+    backdrop[y] = {}
+    for x = 1, 256 do
+      backdrop[y][x] = backdropTile[(y - 1) % 8 + 1][(x - 1) % 8 + 1]
+    end
+  end
+  local backdropPath = PcCache.assetDir() .. "/stationery-" .. stationeryType .. "-write-backdrop.png"
+  assets[backdropPath] = PngWriter.encode(256, 192, encodeRgba(backdrop, 256, 192, string.char(0, 0, 0, 0)))
+  -- Touch masks: five rect-local binary strings in cursor order, eligible
+  -- unless the decoded BG2 character pixel index is the rejected 1.
+  local hitMasks = {}
+  for _, control in ipairs(write.controls) do
+    local rows = {}
+    for y = 0, control.height - 1 do
+      local bits = {}
+      for x = 0, control.width - 1 do
+        local entry = screenEntry(buttonScreen, control.x + x, control.y + y)
+        local index = charPixelIndex(charData, entry, (control.x + x) % 8, (control.y + y) % 8)
+        bits[#bits + 1] = index == write.touchRejectIndex and "0" or "1"
+      end
+      rows[#rows + 1] = table.concat(bits)
+    end
+    hitMasks[#hitMasks + 1] = {
+      x = control.x,
+      y = control.y,
+      width = control.width,
+      height = control.height,
+      rows = rows,
+    }
+  end
+  -- Focus highlights: the changed pixels are the BG2 users of the
+  -- control's pulse entry, cropped to their actual bounding rectangle
+  -- (never the assumed button bounds); each of the 14 levels blends
+  -- that entry to white and recomposites the frame.
+  local highlights = {}
+  for position = 0, 4 do
+    local entry = write.highlightEntryBase + position
+    local bank = math.floor(entry / 16)
+    local value = entry % 16
+    local minX, minY, maxX, maxY = 256, 192, -1, -1
+    local changed = {}
+    for y = 0, 191 do
+      for x = 0, 255 do
+        local screenEntryValue = screenEntry(buttonScreen, x, y)
+        if screenEntryValue.palette == bank then
+          local index = charPixelIndex(charData, screenEntryValue, x % 8, y % 8)
+          if index == value and index ~= 0 then
+            changed[y * 256 + x] = true
+            if x < minX then
+              minX = x
+            end
+            if x > maxX then
+              maxX = x
+            end
+            if y < minY then
+              minY = y
+            end
+            if y > maxY then
+              maxY = y
+            end
+          end
+        end
+      end
+    end
+    if maxX < minX then
+      error("stationery write highlight has no source pixels for cursor position " .. position, 0)
+    end
+    local width, height = maxX - minX + 1, maxY - minY + 1
+    local frames = {}
+    for level = 0, write.highlightLevelMax do
+      local blended = blendColorToWhite(view[entry + 1], level)
+      local frame = {}
+      for y = 0, height - 1 do
+        frame[y + 1] = {}
+        for x = 0, width - 1 do
+          local gx, gy = minX + x, minY + y
+          if changed[gy * 256 + gx] then
+            local bottom, bottomIndex = layerColor(bgScreen, gx, gy)
+            if bottomIndex == 0 then
+              bottom = view[1]
+            end
+            assert(bottom ~= nil, "stationery highlight resolves its backdrop color")
+            frame[y + 1][x + 1] = {
+              r = math.min(
+                255,
+                math.floor((blended.r * write.blendEvA + bottom.r * write.blendEvB) / write.blendDivisor)
+              ),
+              g = math.min(
+                255,
+                math.floor((blended.g * write.blendEvA + bottom.g * write.blendEvB) / write.blendDivisor)
+              ),
+              b = math.min(
+                255,
+                math.floor((blended.b * write.blendEvA + bottom.b * write.blendEvB) / write.blendDivisor)
+              ),
+            }
+          else
+            frame[y + 1][x + 1] = nil
+          end
+        end
+      end
+      local framePath = PcCache.assetDir()
+        .. "/stationery-"
+        .. stationeryType
+        .. "-highlight-"
+        .. position
+        .. "-"
+        .. level
+        .. ".png"
+      assets[framePath] = PngWriter.encode(width, height, encodeRgba(frame, width, height, string.char(0, 0, 0, 0)))
+      frames[#frames + 1] = {
+        image = framePath,
+        width = width,
+        height = height,
+        anchorX = 0,
+        anchorY = 0,
+      }
+    end
+    highlights[#highlights + 1] = { x = minX, y = minY, width = width, height = height, frames = frames }
+  end
+  return {
+    background = { image = backgroundPath, width = 256, height = 192, anchorX = 0, anchorY = 0 },
+    backdrop = { image = backdropPath, width = 256, height = 192, anchorX = 0, anchorY = 0 },
+    highlights = highlights,
+    hitMasks = hitMasks,
+  }
+end
+
 local function openSource(romFs, key, dependencies)
   local spec = PcSources.archives[key]
   local archive, err = romFs:openNarc(spec.alias)
@@ -364,22 +679,18 @@ local function compileText(romFs, dependencies)
     error(err or "PC message archive is unavailable", 0)
   end
   local banks, boxLabels = {}, {}
+  -- The Easy Chat word/template catalog belongs to the shared Easy Chat
+  -- family: PC text compiles only its own chrome banks, including the
+  -- four MailView messages on bank 233.
   local ids = {
     PcSources.mailText.albumBank,
     PcSources.mailText.landmarkBank,
     24,
     25,
     232,
+    PcSources.mailText.mailViewBank,
     PcSources.mailText.partyMailBank,
-    292,
-    293,
-    294,
-    295,
-    296,
   }
-  for _, wordBank in ipairs(PcSources.mailText.wordBanks) do
-    ids[#ids + 1] = wordBank.messageBank
-  end
   table.sort(ids)
   for _, bankId in ipairs(ids) do
     local bytes, memberError = archive:readMember(bankId)
@@ -390,19 +701,6 @@ local function compileText(romFs, dependencies)
     local bank, decodeError = FieldMessageBank.decode(bytes, { label = "pc-message-bank-" .. bankId })
     if not bank then
       error(decodeError, 0)
-    end
-    local expectedWords
-    for _, wordBank in ipairs(PcSources.mailText.wordBanks) do
-      if wordBank.messageBank == bankId then
-        expectedWords = wordBank.wordCount
-        break
-      end
-    end
-    if expectedWords ~= nil and #bank.messages ~= expectedWords then
-      error(
-        "PC Easy Chat source bank " .. bankId .. " has " .. #bank.messages .. " entries; expected " .. expectedWords,
-        0
-      )
     end
     local output = {}
     for messageId, message in ipairs(bank.messages) do
@@ -442,29 +740,11 @@ local function compileText(romFs, dependencies)
     end
     boxNames[ordinal] = label.text
   end
-  local wordDictionary, templates = {}, {}
-  for mailBankIndex, bankId in ipairs(PcSources.mailText.lineBanks) do
-    local bank = assert(banks[bankId], "every MailMessage source bank is compiled")
-    for messageIndex, tokens in ipairs(bank) do
-      templates["mail-template:" .. (mailBankIndex - 1) .. ":" .. (messageIndex - 1)] = tokens
-    end
-  end
-  for _, wordBank in ipairs(PcSources.mailText.wordBanks) do
-    local bank = assert(banks[wordBank.messageBank], "every source Easy Chat bank is compiled")
-    for messageIndex = 0, wordBank.wordCount - 1 do
-      local wordId = wordBank.firstWordId + messageIndex
-      wordDictionary[tostring(wordId)] = assert(bank[messageIndex], "Easy Chat word has a decoded source message")
-    end
-  end
-  return { banks = banks },
-    boxNames,
-    {
-      prefix = first.prefix,
-      suffix = first.suffix,
-      firstNumber = 1,
-    },
-    wordDictionary,
-    templates
+  return { banks = banks }, boxNames, {
+    prefix = first.prefix,
+    suffix = first.suffix,
+    firstNumber = 1,
+  }
 end
 
 local function _compile(romFs)
@@ -544,6 +824,14 @@ local function _compile(romFs)
     stationery[stationeryType] = {
       background = renderBackground(stationeryArchive, members, "stationery-" .. stationeryType, assets, dependencies),
       itemKey = assert(PcSources.stationeryItemKeys[stationeryType + 1]),
+      write = compileStationeryWrite(
+        stationeryArchive,
+        archives.stationery.fileId,
+        stationeryType,
+        assets,
+        dependencies,
+        selections
+      ),
     }
   end
 
@@ -597,7 +885,7 @@ local function _compile(romFs)
   end
   albumUi.backgrounds = albumBackgrounds
 
-  local text, boxNames, expansionNameFormat, wordDictionary, mailTemplates = compileText(romFs, dependencies)
+  local text, boxNames, expansionNameFormat = compileText(romFs, dependencies)
   local sequences = mergeSequences(albumSequences, mailboxSequences)
 
   local defaultStationery = assert(stationery[0])
@@ -623,8 +911,6 @@ local function _compile(romFs)
     mail = {
       stationery = stationery,
       geometry = { iconSlots = 3, iconLocations = PcSources.geometry.stationeryIconLocations },
-      text = { sourceBanks = PcSources.mailText.lineBanks, templates = mailTemplates },
-      wordDictionary = wordDictionary,
     },
     photoAlbum = {
       ui = albumUi,

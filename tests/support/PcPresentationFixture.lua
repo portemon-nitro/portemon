@@ -13,6 +13,50 @@ local function visual(role)
   }
 end
 
+local function writeVisual(role, width, height)
+  return {
+    image = "assets/generated/pc/test-" .. role .. ".png",
+    width = width,
+    height = height,
+    anchorX = 0,
+    anchorY = 0,
+  }
+end
+
+-- Minimal source-shaped write chrome per stationery type: the native
+-- composite, the top backdrop, five cursor-ordered highlight frame sets,
+-- and five rect-local binary touch masks.
+local function writeRecord(stationeryType)
+  local highlights, hitMasks = {}, {}
+  local controls = {
+    { x = 24, y = 24, width = 208, height = 32 },
+    { x = 24, y = 64, width = 208, height = 32 },
+    { x = 24, y = 104, width = 208, height = 32 },
+    { x = 24, y = 148, width = 64, height = 24 },
+    { x = 160, y = 148, width = 64, height = 24 },
+  }
+  for _, control in ipairs(controls) do
+    local frames = {}
+    for _ = 1, 14 do
+      frames[#frames + 1] = writeVisual("stationery-" .. stationeryType .. "-highlight", control.width, control.height)
+    end
+    highlights[#highlights + 1] =
+      { x = control.x, y = control.y, width = control.width, height = control.height, frames = frames }
+    local rows = {}
+    for _ = 1, control.height do
+      rows[#rows + 1] = string.rep("1", control.width)
+    end
+    hitMasks[#hitMasks + 1] =
+      { x = control.x, y = control.y, width = control.width, height = control.height, rows = rows }
+  end
+  return {
+    background = writeVisual("stationery-" .. stationeryType .. "-write", 256, 192),
+    backdrop = writeVisual("stationery-" .. stationeryType .. "-backdrop", 256, 192),
+    highlights = highlights,
+    hitMasks = hitMasks,
+  }
+end
+
 function PcPresentationFixture.manifest()
   local function sourceVisual(role, width, height)
     return {
@@ -53,6 +97,7 @@ function PcPresentationFixture.manifest()
     stationery[stationeryType] = {
       background = visual("stationery-" .. stationeryType),
       itemKey = stationeryItems[stationeryType + 1],
+      write = writeRecord(stationeryType),
     }
   end
   local windowFrames = { standard = {}, accent = {} }
@@ -73,16 +118,13 @@ function PcPresentationFixture.manifest()
     }
   end
   local textBanks = {}
-  local sourceBanks = { 0, 279, 280, 281, 282 }
-  local mailTemplates = {}
-  for mailBankIndex, bankId in ipairs(sourceBanks) do
+  for _, bankId in ipairs({ 0, 279, 280, 281, 282, 233 }) do
     local tokens = { { kind = "text", value = "fixture" } }
-    textBanks[bankId] = { [0] = tokens, [1] = tokens }
-    mailTemplates["mail-template:" .. (mailBankIndex - 1) .. ":0"] = tokens
-  end
-  local wordDictionary = {}
-  for wordId = 0, 1494 do
-    wordDictionary[tostring(wordId)] = { { kind = "text", value = "fixture" } }
+    if bankId == 233 then
+      textBanks[bankId] = { [0] = tokens, [1] = tokens, [2] = tokens, [3] = tokens }
+    else
+      textBanks[bankId] = { [0] = tokens, [1] = tokens }
+    end
   end
   local photoSprites = {}
   for index = 1, 5 do
@@ -160,8 +202,6 @@ function PcPresentationFixture.manifest()
     mail = {
       stationery = stationery,
       geometry = { iconSlots = 3, iconLocations = { { x = 0, y = 0 }, { x = 8, y = 0 }, { x = 16, y = 0 } } },
-      text = { sourceBanks = sourceBanks, templates = mailTemplates },
-      wordDictionary = wordDictionary,
     },
     photoAlbum = {
       ui = {

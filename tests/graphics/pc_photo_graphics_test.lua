@@ -1040,6 +1040,25 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
         end,
       },
       bag = {},
+      easyChatCatalog = {
+        template = function()
+          return nil
+        end,
+        messageStatus = function()
+          return "invalid"
+        end,
+        expandMessage = function()
+          error("no expansion in photo tests", 0)
+        end,
+      },
+      openEasyChat = function()
+        error("photo tests open no editor", 0)
+      end,
+      prepareMail = function()
+        return true
+      end,
+      monLanguage = "english",
+      gameStats = require("libs.hgss.src.mons.GameStats").new({ species = { CHIKORITA = true } }),
       bagCursor = BagCursor.new(),
       itemCatalog = {},
       monCatalog = catalog,

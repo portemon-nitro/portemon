@@ -149,8 +149,51 @@ end
 ---@return { party: Party, boxes: Boxes, rng: Gen4Lcrng }
 function MonsSave.restore(bucket, context, options)
   assert(type(context) == "table", "mons restore requires a context")
+  local Mail = require("libs.mons.src.gen4.Mail")
   local party = Party.restore(bucket.party, context)
-  local boxes = Boxes.restore(bucket.boxes, options)
+  -- Boxed mons normalize explicit legacy nested Mail on a detached
+  -- boxes snapshot before the Boxes owner restores; the extra copy is
+  -- allocated only when a legacy letter actually exists.
+  local boxesSnapshot = bucket.boxes
+  local needsBoxesCopy = false
+  if type(boxesSnapshot) == "table" and type(boxesSnapshot.boxes) == "table" then
+    for _, box in ipairs(boxesSnapshot.boxes) do
+      if type(box) == "table" and type(box.slots) == "table" then
+        for _, mon in ipairs(box.slots) do
+          if
+            type(mon) == "table"
+            and type(mon.mail) == "table"
+            and next(mon.mail) ~= nil
+            and mon.mail.schema ~= Mail.SCHEMA
+          then
+            needsBoxesCopy = true
+            break
+          end
+        end
+      end
+      if needsBoxesCopy then
+        break
+      end
+    end
+  end
+  if needsBoxesCopy then
+    boxesSnapshot = copyValue(boxesSnapshot)
+    for _, box in ipairs(boxesSnapshot.boxes) do
+      if type(box) == "table" and type(box.slots) == "table" then
+        for index, mon in ipairs(box.slots) do
+          if
+            type(mon) == "table"
+            and type(mon.mail) == "table"
+            and next(mon.mail) ~= nil
+            and mon.mail.schema ~= Mail.SCHEMA
+          then
+            box.slots[index].mail = Mail.normalize(mon.mail, context)
+          end
+        end
+      end
+    end
+  end
+  local boxes = Boxes.restore(boxesSnapshot, options)
   local rng = Lcrng.restore(bucket.rng)
   return { party = party, boxes = boxes, rng = rng }
 end

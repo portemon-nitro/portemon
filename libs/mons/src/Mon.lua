@@ -385,7 +385,10 @@ function Mon.validate(record, context)
   end
 
   local canonical = copyValue(record)
-  canonical.mail = Mail.validate(record.mail, context)
+  -- Nested Mail admits explicit legacy records through the same
+  -- catalog choice the Mailbox viewer displays; current v2 records
+  -- validate without rewriting.
+  canonical.mail = Mail.normalize(record.mail, context)
   return canonical
 end
 
@@ -395,7 +398,10 @@ function Mon.migrateV1(record)
   assert(type(record) == "table" and record.schema == Mon.LEGACY_SCHEMA, "Mon.migrateV1 requires a v1 record")
   local migrated = copyValue(record)
   migrated.schema = Mon.SCHEMA
-  migrated.mail = Mail.validate(migrated.mail)
+  -- The nested Mail value stays detached for context-aware admission
+  -- at the owner restore boundary: no contextless conversion here and
+  -- no catalog argument cascade through the mon migration.
+  migrated.mail = copyValue(record.mail)
   -- Legacy conditions carry the opaque native status word; current records
   -- carry the decoded semantic effect list alongside current health.
   assert(type(migrated.condition) == "table", "legacy mon migration requires its condition record")

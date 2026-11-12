@@ -1492,7 +1492,8 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.mailbox = Mailbox.new(
     boot.loadedGame and boot.loadedGame.mailbox
-      or assert(boot.activeGame.mailbox, "finalized game mailbox bucket is required")
+      or assert(boot.activeGame.mailbox, "finalized game mailbox bucket is required"),
+    { catalog = self.monCatalog, charmap = boot.fontDef.charmap }
   )
   self.photoAlbum = PhotoAlbum.new(
     boot.loadedGame and boot.loadedGame.photoAlbum
@@ -2460,6 +2461,31 @@ function FieldRuntime:unbindEasyChatPreparation(binding)
   local current = self._easyChatPreparation
   if current ~= nil and current.id == binding then
     self._easyChatPreparation = nil
+  end
+end
+
+-- Installs the Mail stationery preparation factory for the presented
+-- lifetime: the logical composition resolves it per Mail open because
+-- presentation resources postdate the menu factories. The runtime owns no
+-- graphics here, only the acquire callback plus its binding identity.
+---@param prepare fun(status: table<string, unknown>): boolean, string? per-open Mail preparation
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindMailPreparation(prepare)
+  assert(type(prepare) == "function", "mail preparation binding requires its prepare function")
+  assert(self._mailPreparation == nil, "one mail preparation binding owns the presented lifetime")
+  self._mailBindingId = (self._mailBindingId or 0) + 1
+  self._mailPreparation = { id = self._mailBindingId, prepare = prepare }
+  return self._mailBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a
+-- replacement owner, and Mail factories created after disposal fail at
+-- launch instead of presenting without preparation.
+---@param binding integer binding identity from bindMailPreparation
+function FieldRuntime:unbindMailPreparation(binding)
+  local current = self._mailPreparation
+  if current ~= nil and current.id == binding then
+    self._mailPreparation = nil
   end
 end
 

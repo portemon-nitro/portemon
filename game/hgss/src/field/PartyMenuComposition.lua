@@ -57,6 +57,11 @@ local PartyMenuComposition = {}
 ---@field versionId string selected game version
 ---@field cacheFs table<string, unknown>? selected version cache reader
 ---@field derivedAssets table<string, function> semantic asset host
+---@field easyChatCatalog table<string, unknown> the shared word catalog behind Mail composition
+---@field openEasyChat fun(request: table<string, unknown>): table<string, unknown> the shared sentence editor opener
+---@field prepareMail fun(status: table<string, unknown>): boolean, string? the late-bound Mail preparation
+---@field monLanguage string the semantic language key behind fresh Mail authors
+---@field gameStats table<string, unknown> the shared stats owner behind written-Mail counts
 ---@field charmap table<string, unknown> generated HGSS character map
 ---@field heroGender string "male" or "female"
 ---@field measureDisplay fun(): table<string, unknown> current display facts
@@ -171,8 +176,100 @@ function PartyMenuComposition.create(deps)
     assert(type(deps.makeApricornBox) == "function", "the menu composition carries its Apricorn Box factory")
   end
 
+  -- Fresh Mail composition borrows the shared word catalog, the C02
+  -- open callback, the late-bound Mail preparation, the current
+  -- language key, and the shared stats owner. Missing collaborators
+  -- fail construction, never a silent optional branch.
+  local easyChatCatalog = assert(deps.easyChatCatalog, "the menu composition borrows the shared word catalog")
+  assert(
+    type(easyChatCatalog.template) == "function" and type(easyChatCatalog.messageStatus) == "function",
+    "the menu composition needs the shared word catalog"
+  )
+  local openEasyChat = assert(deps.openEasyChat, "the menu composition borrows the shared editor opener")
+  assert(type(openEasyChat) == "function", "the shared editor opens through its factory")
+  local prepareMail = assert(deps.prepareMail, "the menu composition borrows the Mail preparation")
+  assert(type(prepareMail) == "function", "Mail preparation resolves per update")
+  local monLanguage = assert(deps.monLanguage, "the menu composition needs the current language key")
+  assert(type(monLanguage) == "string", "the menu composition needs the current language key")
+  local gameStats = assert(deps.gameStats, "the menu composition borrows the shared stats owner")
+  assert(type(gameStats.prepareChanges) == "function", "the menu composition needs stats preparation")
   local partyActions = PartyActions.new({ mons = mons, bag = bag })
-  local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
+  local mailActions = MailActions.new({
+    mons = mons,
+    mailbox = mailbox,
+    bag = bag,
+    manifest = pcManifest,
+    catalog = easyChatCatalog,
+    gameStats = gameStats,
+  })
+  local HgssMonServiceOwner = require("libs.hgss.src.mons.HgssMonService")
+  local MonCacheOwner = require("libs.assets.src.MonCache")
+  -- One local fresh-letter factory for the Bag/Party flow and the
+  -- Mailbox child: verifies the captured revisions, snapshots the
+  -- current author and the recipient plus next-two icon selectors, and
+  -- constructs one composer over an all-false draft. Custody stays with
+  -- the caller's MailActions submission; the factory mutates nothing.
+  local function makeMailComposer(request)
+    assert(type(request) == "table", "fresh composition carries its request")
+    local targetSlot = assert(request.targetSlot, "fresh composition names its recipient slot")
+    local itemKey = assert(request.itemKey, "fresh composition carries its stationery")
+    if request.partyRevision ~= mons:partyRevision() then
+      error("fresh composition requires the current party revision", 0)
+    end
+    if request.bagRevision ~= bag:revision() then
+      error("fresh composition requires the current bag revision", 0)
+    end
+    local compositionProfile = assert(profile, "fresh composition reads the live profile")
+    local languageId =
+      assert(HgssMonServiceOwner.LANGUAGES[monLanguage], "fresh composition resolves the current language identity")
+    local gameId = assert(HgssMonServiceOwner.GAMES[versionId], "fresh composition resolves the current game identity")
+    local stationeryType = nil
+    for candidate = 0, 11 do
+      if pcManifest.mail.stationery[candidate] ~= nil and pcManifest.mail.stationery[candidate].itemKey == itemKey then
+        stationeryType = candidate
+      end
+    end
+    assert(stationeryType ~= nil, "fresh composition resolves its stationery type")
+    local icons = {}
+    for offset = 0, 2 do
+      local slot = targetSlot + offset
+      if slot >= mons:partyCount() then
+        icons[offset + 1] = false
+      else
+        local subject = mons:partyMon(slot)
+        if subject.isEgg then
+          icons[offset + 1] = MonCacheOwner.iconSelector(subject.species, subject.form, true)
+        else
+          icons[offset + 1] = monCatalog:iconSelection(subject)
+        end
+      end
+    end
+    local letter = {
+      schema = require("libs.mons.src.gen4.Mail").SCHEMA,
+      type = stationeryType,
+      author = {
+        trainerId = compositionProfile.trainerId,
+        name = compositionProfile.name,
+        gender = compositionProfile.gender,
+        language = languageId,
+        game = gameId,
+      },
+      icons = icons,
+      lines = { false, false, false },
+    }
+    local audio = deps.effect ~= nil and { play = deps.effect } or nil
+    return require("game.hgss.src.pc.MailComposeState").new({
+      letter = letter,
+      catalog = easyChatCatalog,
+      openEasyChat = openEasyChat,
+      prepare = prepareMail,
+      manifest = pcManifest,
+      measureDisplay = measureDisplay,
+      audio = audio,
+      inputMode = request.inputMode or "buttons",
+      readNavigation = deps.readSummaryNavigation,
+    })
+  end
   local ports = {}
   for key, port in pairs(worldPorts) do
     ports[key] = port
@@ -261,6 +358,8 @@ function PartyMenuComposition.create(deps)
       bagCursor = bagCursor,
       partyActions = partyActions,
       mailActions = mailActions,
+      makeMailComposer = makeMailComposer,
+      prepareMail = prepareMail,
       mailbox = mailbox,
       pcManifest = pcManifest,
       fieldMoves = { check = checkPort },
@@ -291,7 +390,29 @@ function PartyMenuComposition.create(deps)
     return makeFlow("party")
   end
   local function makeMailboxChild()
-    local function makePartyPicker()
+    -- One picker factory with an explicit role: stored letters move
+    -- through the current pick behavior, while a new composition uses
+    -- the give-target context with the erased stationery facts so the
+    -- existing Party controller asks replacement and reports feedback.
+    local function makePartyPicker(role, facts)
+      if role == "compose" then
+        local composed = assert(facts, "new compositions carry their item facts")
+        return PartyScreenState.new({
+          service = mons,
+          manifest = partyManifest,
+          uiManifest = uiManifest,
+          context = "give_target",
+          targetPromptKey = "giveTarget",
+          item = {
+            key = assert(composed.itemKey, "new compositions carry their stationery"),
+            bagRevision = assert(composed.bagRevision, "new compositions carry the bag revision"),
+          },
+          measureDisplay = measureDisplay,
+          prepareIcons = prepareIcons,
+          cancelIconPreparation = cancelIconPreparation,
+          effect = deps.effect,
+        })
+      end
       return PartyScreenState.new({
         service = mons,
         manifest = partyManifest,
@@ -308,6 +429,8 @@ function PartyMenuComposition.create(deps)
       partyHasMembers = mons:partyCount() > 0,
       mailbox = mailbox,
       mailActions = mailActions,
+      makeMailComposer = makeMailComposer,
+      mons = mons,
       manifest = pcManifest,
       itemCatalog = itemCatalog,
       monCatalog = monCatalog,
@@ -493,6 +616,8 @@ function PartyMenuComposition.create(deps)
     fieldTravel = deps.fieldTravel,
     makeBagFlow = makeBagFlow,
     makePartyFlow = makePartyFlow,
+    makeMailComposer = makeMailComposer,
+    prepareMail = prepareMail,
     makeMailboxChild = makeMailboxChild,
     makeStorageChild = makeStorageChild,
     makePhotoAlbumChild = makePhotoAlbumChild,

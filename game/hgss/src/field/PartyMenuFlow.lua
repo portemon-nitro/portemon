@@ -31,6 +31,7 @@ local PAGE = {
   MAIL_READ = "mail_read",
   MAIL_CONFIRM = "mail_confirm",
   MAIL_ERASE_CONFIRM = "mail_erase_confirm",
+  MAIL_COMPOSE = "mail_compose",
 }
 
 ---@class PartyMenuFlow
@@ -43,7 +44,10 @@ local PAGE = {
 ---@field private _bagCursor table<string, unknown>
 ---@field private _partyActions table<string, unknown>
 ---@field private _mailActions table<string, unknown>
+---@field private _makeMailComposer fun(request: table<string, unknown>): table<string, unknown>
+---@field private _prepareMail fun(status: table<string, unknown>): boolean, string?
 ---@field private _mailbox table<string, unknown>
+---@field private _mailParked table<string, unknown>? parked Party child while one Mail child runs
 ---@field private _pcManifest table<string, unknown>
 ---@field private _fieldMoves table<string, unknown>
 ---@field private _assets table<string, unknown>
@@ -89,7 +93,17 @@ PartyMenuFlow.__index = PartyMenuFlow
 ---@field inputKey string? retained app pane role during menu return
 ---@field panes table[]? retained pane placements during menu return
 
----@alias PartyMenuFlow.Transition PartyMenuFlow.ReplacementTransition|PartyMenuFlow.TerminalTransition
+---@class PartyMenuFlow.MailOpenTransition
+---@field kind "mail_open"
+---@field phase "app_exit"
+---@field fade StandardFade
+---@field page string
+---@field continuation table<string, unknown>?
+---@field child table<string, unknown>
+---@field childStatus table<string, unknown>? the last drawable outgoing child status
+---@field parked table<string, unknown> parked Party give child while one Mail child runs
+
+---@alias PartyMenuFlow.Transition PartyMenuFlow.ReplacementTransition|PartyMenuFlow.TerminalTransition|PartyMenuFlow.MailOpenTransition
 
 local function checkServices(opts)
   local mons = assert(opts.mons, "the menu flow borrows the live mon service")
@@ -297,6 +311,8 @@ function PartyMenuFlow.new(opts)
     _bagCursor = cursor,
     _partyActions = actions,
     _mailActions = assert(opts.mailActions, "the menu flow borrows Mail actions"),
+    _makeMailComposer = assert(opts.makeMailComposer, "the menu flow borrows the fresh Mail factory"),
+    _prepareMail = assert(opts.prepareMail, "the menu flow borrows the Mail preparation"),
     _mailbox = assert(opts.mailbox, "the menu flow borrows the Mailbox"),
     _pcManifest = assert(opts.pcManifest, "the menu flow borrows the PC manifest"),
     _fieldMoves = fieldMoves,
@@ -320,8 +336,10 @@ function PartyMenuFlow.new(opts)
     _lastChildStatus = nil,
     _transition = nil,
     _mailOutcome = nil,
+    _mailParked = nil,
     _terminalChildStatus = nil,
     _disposed = false,
+    uiInput = nil,
   }, PartyMenuFlow)
   self._child = self:_openPage(self._page, nil)
   self._lastChildStatus = assert(self._child):status()
@@ -369,6 +387,9 @@ function PartyMenuFlow:_openPage(page, continuation)
       measureDisplay = measureDisplay,
       context = "pick_held",
       partyEmpty = self._mons:partyCount() == 0,
+      -- Only this flow's Party Give picker composes stationery; the
+      -- Storage picker keeps the default ordinary-only eligibility.
+      mailComposition = true,
       effect = self._effect,
       textPolicy = self._textPolicy,
     })
@@ -477,6 +498,8 @@ function PartyMenuFlow:_openPage(page, continuation)
       monCatalog = self._assets.monCatalog,
       measureDisplay = measureDisplay,
       audio = { play = self._effect },
+      prepareIcons = self._prepareIcons,
+      prepareMail = self._prepareMail,
     })
   end
   if page == PAGE.MAIL_CONFIRM or page == PAGE.MAIL_ERASE_CONFIRM then
@@ -709,9 +732,26 @@ function PartyMenuFlow:_routePick(intent)
     bagRevision = assert(intent.bagRevision, "picks snapshot the bag revision"),
     item = assert(intent.item, "picks snapshot their item"),
   }
-  local decision = self._partyActions:preview(request)
-  if decision.kind ~= "ready" and decision.kind ~= "needs_confirmation" then
-    return
+  -- Party-origin stationery joins the Mail boundary instead of the
+  -- ordinary held-item preview: only a ready or consent-pending
+  -- preflight stages the existing give_resume Party child, while the
+  -- held-item refusal and every other structured refusal hold the
+  -- picker open.
+  if self:_isMailItem(request.item) then
+    local mailDecision = self._mailActions:previewComposition({
+      targetSlot = request.slot,
+      itemKey = request.item,
+      partyRevision = request.partyRevision,
+      bagRevision = request.bagRevision,
+    })
+    if mailDecision.kind ~= "ready" and mailDecision.kind ~= "needs_confirmation" then
+      return
+    end
+  else
+    local ordinary = self._partyActions:preview(request)
+    if ordinary.kind ~= "ready" and ordinary.kind ~= "needs_confirmation" then
+      return
+    end
   end
   local slot = assert(continuation.slot, "give operations capture their slot")
   local staged = {
@@ -739,6 +779,249 @@ function PartyMenuFlow:_routePick(intent)
   self._picker = nil
 end
 
+-- Answers whether one item key is stationery: authored Mail attaches
+-- only through the composition boundary, never through raw custody.
+---@param itemKey string
+---@return boolean
+function PartyMenuFlow:_isMailItem(itemKey)
+  local definition = self._assets.itemCatalog:item(itemKey)
+  return definition.pocket == "mail"
+end
+
+-- Maps a Mail preflight refusal onto the existing Party feedback shape:
+-- a full return pocket reports the generated bagFull template, a
+-- held-Mail recipient reports the generated heldMail template, and
+-- every other refusal returns silently with its kind.
+---@param reason string
+---@param disposition "party"|"bag"
+---@return table<string, unknown>
+function PartyMenuFlow:_mailRefusalCompletion(reason, disposition)
+  if reason == "bag_full" then
+    return { kind = "bag_full", disposition = disposition, message = { templateKey = "bagFull" } }
+  end
+  if reason == "recipient_holds_mail" then
+    return { kind = "recipient_holds_mail", disposition = disposition, message = { templateKey = "heldMail" } }
+  end
+  return { kind = reason, disposition = disposition }
+end
+
+-- Routes a bag-originated stationery target selection through the Mail
+-- preflight instead of the ordinary held-item preview: replacement
+-- consent returns through the existing Party question, readiness parks
+-- the target child and stages the fresh composer.
+---@param intent table<string, unknown>
+---@param continuation table<string, unknown>
+---@param itemKey string
+function PartyMenuFlow:_routeMailTargetIntent(intent, continuation, itemKey)
+  local slot = assert(intent.slot, "target selections name their slot")
+  local decision = self._mailActions:previewComposition({
+    targetSlot = slot,
+    itemKey = itemKey,
+    partyRevision = assert(intent.partyRevision, "target selections carry the party revision"),
+    bagRevision = assert(intent.bagRevision, "target selections carry the bag revision"),
+    confirmed = intent.confirmed == true or nil,
+  })
+  continuation.slot = slot
+  continuation.partyRevision = assert(intent.partyRevision, "target selections carry the party revision")
+  continuation.bagRevision = assert(intent.bagRevision, "target selections carry the bag revision")
+  if decision.kind == "needs_confirmation" then
+    local heldKey = assert(self._mons:partyMon(slot).heldItem, "the target mon carries its held item")
+    local heldItem = self._assets.itemCatalog:item(heldKey)
+    local heldItemName = assert(heldItem.name, "the item catalog publishes its display name")
+    self:_completeParty({
+      kind = "needs_confirmation",
+      disposition = "bag",
+      message = {
+        templateKey = "switchHeldPrompt",
+        displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
+        itemNames = { heldItemName },
+      },
+    })
+    return
+  end
+  if decision.kind ~= "ready" then
+    self:_completeParty(self:_mailRefusalCompletion(decision.reason, "bag"))
+    return
+  end
+  self:_stageMailComposer({
+    targetSlot = slot,
+    itemKey = itemKey,
+    partyRevision = continuation.partyRevision,
+    bagRevision = continuation.bagRevision,
+    confirmed = intent.confirmed == true or nil,
+  }, continuation, "bag")
+end
+
+-- Routes a party-originated stationery give intent through the Mail
+-- preflight: the held-item picker already resolved the stationery, so
+-- the recipient preflight decides between the replacement question, a
+-- structured refusal, and the parked composer.
+---@param intent table<string, unknown>
+---@param continuation table<string, unknown>
+---@param itemKey string
+function PartyMenuFlow:_routeMailGiveIntent(intent, continuation, itemKey)
+  local slot = assert(continuation.slot, "held-item requests capture their slot")
+  assert(intent.slot == slot, "held-item continuation keeps its original slot")
+  local disposition = continuation.returnPage == PAGE.PARTY_BROWSE and "party" or "bag"
+  local decision = self._mailActions:previewComposition({
+    targetSlot = slot,
+    itemKey = itemKey,
+    partyRevision = assert(intent.partyRevision, "held-item requests carry the party revision"),
+    bagRevision = assert(intent.bagRevision, "held-item requests carry the bag revision"),
+    confirmed = intent.confirmed == true or nil,
+  })
+  if decision.kind == "needs_confirmation" then
+    local oldKey = assert(self._mons:partyMon(slot).heldItem, "the target mon carries its held item")
+    local oldItem = self._assets.itemCatalog:item(oldKey)
+    local oldItemName = assert(oldItem.name, "the item catalog publishes its display name")
+    self:_completeParty({
+      kind = "needs_confirmation",
+      disposition = disposition,
+      message = {
+        templateKey = "switchHeldPrompt",
+        displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
+        itemNames = { oldItemName },
+      },
+    })
+    return
+  end
+  if decision.kind ~= "ready" then
+    self:_completeParty(self:_mailRefusalCompletion(decision.reason, disposition))
+    return
+  end
+  self:_stageMailComposer({
+    targetSlot = slot,
+    itemKey = itemKey,
+    partyRevision = intent.partyRevision,
+    bagRevision = intent.bagRevision,
+    confirmed = intent.confirmed == true or nil,
+  }, continuation, disposition)
+end
+
+-- Parks the live Party give child in waiting_action without disposing
+-- it, cancels its pointer capture, and fades the outgoing native parent
+-- through a bounded mail-open transition. The composer begins only
+-- after cutover; a factory failure leaves the old child usable.
+---@param request table<string, unknown> fresh composition request
+---@param continuation table<string, unknown> parked caller continuation
+---@param disposition "party"|"bag" where the parked child reports back
+function PartyMenuFlow:_stageMailComposer(request, continuation, disposition)
+  local child = assert(self._child, "composition parks a live Party child")
+  child:cancelPointerCapture()
+  local ok, composer = pcall(self._makeMailComposer, request)
+  if not ok then
+    error(composer, 0)
+  end
+  assert(type(composer) == "table", "the fresh factory builds one composer")
+  local staged = {
+    operation = "mail_compose",
+    targetSlot = assert(request.targetSlot, "composition requests name their recipient slot"),
+    itemKey = assert(request.itemKey, "composition requests carry their stationery"),
+    partyRevision = assert(request.partyRevision, "composition requests carry the party revision"),
+    bagRevision = assert(request.bagRevision, "composition requests carry the bag revision"),
+    confirmed = request.confirmed,
+  }
+  self._transition = {
+    kind = "mail_open",
+    phase = "app_exit",
+    fade = StandardFade.new({ direction = "out", color = 0 }),
+    page = PAGE.MAIL_COMPOSE,
+    continuation = staged,
+    child = composer,
+    childStatus = self._lastChildStatus or child:status(),
+    parked = { page = self._page, continuation = continuation, disposition = disposition, request = staged },
+  }
+end
+
+-- Routes one finished letter: an accepted letter previews and commits
+-- exactly once through MailActions, then reports the existing give
+-- feedback on a fresh Party browse focused on the recipient; a
+-- cancelled letter resumes the parked Party child with its original
+-- disposition so it unwinds to its origin.
+---@param result table<string, unknown> composer one-shot result
+function PartyMenuFlow:_routeMailResult(result)
+  local parked = assert(self._mailParked, "letter results resume their parked Party child")
+  local continuation = assert(parked.continuation, "parked Mail keeps its caller continuation")
+  local composer = assert(self._child, "letter results dispose their composer")
+  assert(self._page == PAGE.MAIL_COMPOSE, "letter results arrive on the compose page")
+  if result.kind == "cancelled" then
+    composer:dispose()
+    self._child = parked.child
+    self._page = parked.page
+    self._continuation = continuation
+    self._mailParked = nil
+    parked.child:completeAction({ kind = "cancelled", disposition = parked.disposition })
+    return
+  end
+  assert(result.kind == "submitted", "letters submit or cancel")
+  local letter = assert(result.letter, "submitted letters carry their authored value")
+  local staged = assert(parked.request, "parked Mail keeps its composition request")
+  local intent = self._mailActions:preview({
+    kind = "composeGiveMail",
+    targetSlot = staged.targetSlot,
+    itemKey = staged.itemKey,
+    partyRevision = staged.partyRevision,
+    bagRevision = staged.bagRevision,
+    confirmed = staged.confirmed,
+    letter = letter,
+  })
+  if intent.kind ~= "ready" then
+    -- Consent drift or a failed draft replays through the parked Party
+    -- controller: a fresh confirmation re-preflights and stages a new
+    -- composer, while a hard refusal unwinds silently with custody
+    -- unchanged.
+    if intent.kind == "needs_confirmation" then
+      composer:dispose()
+      self._child = parked.child
+      self._page = parked.page
+      self._continuation = continuation
+      self._mailParked = nil
+      parked.child:completeAction({
+        kind = "needs_confirmation",
+        disposition = parked.disposition,
+        message = {
+          templateKey = "switchHeldPrompt",
+          displayName = Mon.displayName(self._mons:partyMon(staged.targetSlot), self._mons:catalog()),
+          itemNames = {
+            assert(
+              self._assets.itemCatalog:item(assert(self._mons:partyMon(staged.targetSlot).heldItem)).name,
+              "the item catalog publishes its display name"
+            ),
+          },
+        },
+      })
+      return
+    end
+    local refusal = self:_mailRefusalCompletion(intent.reason, parked.disposition)
+    composer:dispose()
+    self._child = parked.child
+    self._page = parked.page
+    self._continuation = continuation
+    self._mailParked = nil
+    parked.child:completeAction(refusal)
+    return
+  end
+  local outcome = self._mailActions:commit(intent)
+  if outcome.kind ~= "changed" then
+    local refusal = self:_mailRefusalCompletion(outcome.reason or outcome.kind, parked.disposition)
+    composer:dispose()
+    self._child = parked.child
+    self._page = parked.page
+    self._continuation = continuation
+    self._mailParked = nil
+    parked.child:completeAction(refusal)
+    return
+  end
+  local completion = self:_giveCompletion(outcome, staged.targetSlot, staged.itemKey, parked.disposition)
+  composer:dispose()
+  parked.child:dispose()
+  self._mailParked = nil
+  self:_replace(PAGE.PARTY_BROWSE, {
+    focusSlot = staged.targetSlot,
+    initialMessage = assert(completion.message, "committed letters report their give feedback"),
+  })
+end
+
 -- Routes a party target selection for a bag-originated operation: the
 -- item identity rides the continuation, the mon rides the intent.
 ---@param intent table<string, unknown>
@@ -752,6 +1035,10 @@ function PartyMenuFlow:_routeTargetIntent(intent)
   end
   local itemKey = assert(continuation.itemKey, "bag operations capture their item")
   if operation == "give" then
+    if self:_isMailItem(itemKey) then
+      self:_routeMailTargetIntent(intent, continuation, itemKey)
+      return
+    end
     if intent.confirmed == true then
       continuation.slot = assert(intent.slot, "confirmed target requests name their slot")
       continuation.partyRevision = assert(intent.partyRevision, "confirmed target requests carry their party revision")
@@ -818,12 +1105,17 @@ function PartyMenuFlow:_routeGiveIntent(intent)
     end
     return
   end
+  local pickedItem = assert(intent.item, "held-item requests name their item")
+  if self:_isMailItem(pickedItem) then
+    self:_routeMailGiveIntent(intent, continuation, pickedItem)
+    return
+  end
   local request = {
     kind = "give",
     slot = assert(intent.slot, "held-item requests name their slot"),
     partyRevision = assert(intent.partyRevision, "held-item requests carry their party revision"),
     bagRevision = assert(intent.bagRevision, "held-item requests carry their bag revision"),
-    item = assert(intent.item, "held-item requests name their item"),
+    item = pickedItem,
     confirmed = intent.confirmed == true or nil,
   }
   assert(request.slot == slot, "held-item continuation keeps its original slot")
@@ -1394,6 +1686,23 @@ function PartyMenuFlow:updateFixed(uiInput)
         self._continuation = transition.continuation
         self._lastChildStatus = assert(self._child):status()
         self._transition = nil
+      elseif transition.kind == "mail_open" then
+        -- The parked Party give child stays owned and untouched while
+        -- one Mail child runs: parked children receive no updates or
+        -- events, and only the composer disposes at its own result.
+        local parked = assert(transition.parked, "mail opens park their Party caller")
+        self._mailParked = {
+          child = previous,
+          page = parked.page or self._page,
+          continuation = parked.continuation,
+          disposition = assert(parked.disposition, "parked Mail keeps its return disposition"),
+          request = assert(parked.request, "parked Mail keeps its composition request"),
+        }
+        self._child = transition.child
+        self._page = transition.page
+        self._continuation = transition.continuation
+        self._lastChildStatus = assert(self._child):status()
+        self._transition = nil
       else
         assert(transition.kind == "terminal", "active transitions have a replacement or terminal owner")
         if transition.result.kind == "close" then
@@ -1425,7 +1734,9 @@ function PartyMenuFlow:updateFixed(uiInput)
           self._transition = nil
         end
       end
-      previous:dispose()
+      if transition.kind ~= "mail_open" then
+        previous:dispose()
+      end
     end
     return
   end
@@ -1440,6 +1751,17 @@ function PartyMenuFlow:updateFixed(uiInput)
   then
     self._lastChildStatus = currentChildStatus
   end
+  if self._page == PAGE.MAIL_COMPOSE then
+    local mailResult = child:takeResult()
+    if mailResult ~= nil then
+      self:_routeMailResult(mailResult)
+    end
+    -- The nested shared editor profile rides the controller object for
+    -- the host session; every other page keeps the default cadence.
+    self.uiInput = child.uiInput
+    return
+  end
+  self.uiInput = nil
   local intent = self:_takeIntent()
   if intent ~= nil then
     self:_routeIntent(intent)
@@ -1542,7 +1864,11 @@ function PartyMenuFlow:dispose()
   if child ~= nil then
     child:dispose()
   end
-  if transition ~= nil and transition.kind == "replacement" then
+  if self._mailParked ~= nil then
+    self._mailParked.child:dispose()
+    self._mailParked = nil
+  end
+  if transition ~= nil and (transition.kind == "replacement" or transition.kind == "mail_open") then
     transition.child:dispose()
   end
 end

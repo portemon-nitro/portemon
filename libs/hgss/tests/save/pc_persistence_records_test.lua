@@ -12,10 +12,10 @@ end
 
 local function mailRecord()
   return {
-    schema = "g4-mail-v1",
+    schema = "g4-mail-v2",
     type = 2,
     author = { trainerId = 1, name = "GOLD", gender = 0, language = 2, game = 7 },
-    icons = { { species = "CHIKORITA", form = 0, palette = 0 }, false, false },
+    icons = { "CHIKORITA/f0", false, false },
     lines = { { template = "GREET", words = { "HELLO", false } }, false, false },
   }
 end

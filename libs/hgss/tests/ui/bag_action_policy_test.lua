@@ -205,7 +205,10 @@ end
 function T.field_escape_rope_offers_use_without_party_targets()
   Assert.isTrue(has(BagActionPolicy.actionsForField(fieldFacts({ itemKey = "ESCAPE_ROPE", useKind = "none" })), "use"))
   Assert.isTrue(
-    has(BagActionPolicy.actionsForField(fieldFacts({ itemKey = "ESCAPE_ROPE", useKind = "none", partyEmpty = true })), "use"),
+    has(
+      BagActionPolicy.actionsForField(fieldFacts({ itemKey = "ESCAPE_ROPE", useKind = "none", partyEmpty = true })),
+      "use"
+    ),
     "the rope needs no party target"
   )
 end
@@ -252,7 +255,7 @@ function T.field_apricorn_box_use_is_the_only_empty_party_exception()
   )
 end
 
-function T.field_give_needs_holdable_non_hm_non_mail()
+function T.field_give_needs_holdable_non_hm_item_or_stationery()
   Assert.isFalse(
     has(BagActionPolicy.actionsForField(fieldFacts({ canHold = false })), "give"),
     "an unholdable item offers no Give"
@@ -261,7 +264,14 @@ function T.field_give_needs_holdable_non_hm_non_mail()
     has(BagActionPolicy.actionsForField(fieldFacts({ isHm = true })), "give"),
     "a hidden machine offers no Give"
   )
-  Assert.isFalse(has(BagActionPolicy.actionsForField(fieldFacts({ pocket = "mail" })), "give"), "mail offers no Give")
+  Assert.isTrue(
+    has(BagActionPolicy.actionsForField(fieldFacts({ pocket = "mail", canHold = false })), "give"),
+    "stationery offers Give through the narrow Mail rule with a party present"
+  )
+  Assert.isFalse(
+    has(BagActionPolicy.actionsForField(fieldFacts({ pocket = "mail", canHold = false, partyEmpty = true })), "give"),
+    "stationery offers no Give without a party member to target"
+  )
   Assert.isTrue(
     has(BagActionPolicy.actionsForField(fieldFacts({ useKind = "machine", isHm = false })), "give"),
     "an ordinary teachable disk stays giveable"
@@ -272,7 +282,14 @@ function T.pick_held_marks_eligibility_without_nested_actions()
   Assert.isTrue(BagActionPolicy.isPickable(fieldFacts()), "an ordinary holdable item is pickable")
   Assert.isFalse(BagActionPolicy.isPickable(fieldFacts({ isHm = true })), "a hidden machine is not pickable")
   Assert.isFalse(BagActionPolicy.isPickable(fieldFacts({ canHold = false })), "key items are not pickable")
-  Assert.isFalse(BagActionPolicy.isPickable(fieldFacts({ pocket = "mail" })), "mail is not pickable")
+  Assert.isFalse(
+    BagActionPolicy.isPickable(fieldFacts({ pocket = "mail", canHold = false })),
+    "stationery stays unpickable without the explicit composition capability"
+  )
+  Assert.isTrue(
+    BagActionPolicy.isPickable(fieldFacts({ pocket = "mail", canHold = false }), true),
+    "stationery composes only through the explicit Mail capability"
+  )
   Assert.isTrue(
     BagActionPolicy.isPickable(fieldFacts({ useKind = "machine", isHm = false })),
     "an ordinary teachable disk stays pickable"

@@ -262,9 +262,29 @@ local function openHarness()
   local harness
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local Composition = require("game.hgss.src.field.PartyMenuComposition")
+  local GameStats = require("libs.hgss.src.mons.GameStats")
   local composition = Composition.create({
     mons = openMons(),
     bag = bag,
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in adoption tests", 0)
+      end,
+    },
+    openEasyChat = function()
+      error("adoption tests open no editor", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
+    monLanguage = "english",
+    gameStats = GameStats.new({ species = { CHIKORITA = true } }),
     bagCursor = BagCursor.new(),
     itemCatalog = bag:catalog(),
     monCatalog = CatalogFixture.makeCatalog(),
@@ -458,7 +478,6 @@ function T.tests.adopted_values_reach_every_next_use_without_a_reload()
   before.dispose()
 end
 
-
 function T.tests.preparation_validates_without_mutating_and_applies_exactly_once()
   local harness = openHarness()
   local before = PlayerData.validate(
@@ -595,7 +614,6 @@ function T.tests.ownership_contention_refuses_without_mutation()
   harness.partyMenu.dispose()
   starterBusy.partyMenu.dispose()
 end
-
 
 function T.tests.legacy_save_without_new_options_opens_with_defaults()
   local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")

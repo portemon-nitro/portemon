@@ -464,7 +464,11 @@ function T.tests.failed_return_warp_fabricates_nothing()
     Assert.equal(settled.player.fieldZ, before.player.fieldZ, "failure must not jump position")
     Assert.deepEqual(travel:capture().specialSpawn, special, "failure must leave travel intact")
     Assert.isFalse(runtime.screenFade:isOpaque(), "a failed warp never strands the covered screen")
-    Assert.equal(runtime.camera:distanceTiles(), assert(runtime.cameraProfiles[runtime.runtimeMap.cameraType]).distanceTiles, "a failed warp restores the camera")
+    Assert.equal(
+      runtime.camera:distanceTiles(),
+      assert(runtime.cameraProfiles[runtime.runtimeMap.cameraType]).distanceTiles,
+      "a failed warp restores the camera"
+    )
   end, "MAP_ROUTE_46")
 end
 
@@ -510,6 +514,12 @@ local function openPartyFlow(game, checkDouble)
     partyActions = actions,
     mailActions = mailActions,
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = checkDouble,
     assets = {

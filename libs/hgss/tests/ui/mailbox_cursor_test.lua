@@ -125,7 +125,22 @@ local function harness(customManifest)
     end
   end
   local lg = FakeGraphics.new({})
-  local renderer = MailboxRenderer.new({ manifest = customManifest or manifest(), graphics = lg, imagePool = pool })
+  local renderer = MailboxRenderer.new({
+    manifest = customManifest or manifest(),
+    graphics = lg,
+    imagePool = pool,
+    catalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function(tokens)
+        return tokens
+      end,
+    },
+  })
   return pool, lg, renderer
 end
 

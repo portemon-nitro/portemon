@@ -241,9 +241,29 @@ end
 local function compositionDeps(overrides)
   local mons = openMons(90210)
   local bag = openBag()
+  local GameStats = require("libs.hgss.src.mons.GameStats")
   local deps = {
     mons = mons,
     bag = bag,
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in wiring tests", 0)
+      end,
+    },
+    openEasyChat = function()
+      error("wiring tests open no editor", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
+    monLanguage = "english",
+    gameStats = GameStats.new({ species = { CHIKORITA = true } }),
     bagCursor = BagCursor.new(),
     itemCatalog = bag:catalog(),
     monCatalog = CatalogFixture.makeCatalog(),
@@ -842,6 +862,19 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
     fontDef = { charmap = CatalogFixture.CHARMAP },
     monService = deps.mons,
     bagService = deps.bag,
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in wiring tests", 0)
+      end,
+    },
+    gameStats = require("libs.hgss.src.mons.GameStats").new({ species = { CHIKORITA = true } }),
+    monLanguage = "english",
     mailbox = mailbox,
     photoAlbum = PhotoAlbum.new(),
     bagCursor = deps.bagCursor,

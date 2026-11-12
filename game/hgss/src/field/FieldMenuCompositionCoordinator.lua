@@ -706,8 +706,26 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
       overrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.apricorn_box or nil,
     })
   end
+  -- The shared word editor opens through the same C02 factory the
+  -- script host uses, resolved against the live runtime per open.
+  local EasyChatComposition = require("game.hgss.src.easychat.EasyChatComposition")
+  local function openEasyChat(request)
+    return EasyChatComposition.open(runtime, request)
+  end
+  -- The Mail preparation binding stays late-bound through the runtime
+  -- because presentation resources postdate this composition: the closure
+  -- resolves per composer open, when a screen is actually constructed.
+  local function prepareMail(status)
+    local binding = assert(runtime._mailPreparation, "mail opens require the presented preparation binding")
+    return binding.prepare(status)
+  end
   runtime.partyMenu = PartyMenuComposition.create({
     effect = playBagSequence,
+    easyChatCatalog = assert(runtime.easyChatCatalog, "the menu composition requires the shared word catalog"),
+    openEasyChat = openEasyChat,
+    prepareMail = prepareMail,
+    monLanguage = assert(runtime.monLanguage, "the menu composition requires the current language key"),
+    gameStats = assert(runtime.gameStats, "the menu composition requires the shared stats owner"),
     playCry = playSummaryCry,
     isCryFinished = isFieldCryFinished,
     textPolicyForOpen = textPolicyForOpen,

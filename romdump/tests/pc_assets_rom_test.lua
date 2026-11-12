@@ -92,7 +92,7 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   for _, expected in ipairs({
     { key = "storage", path = "a/0/1/9", memberCount = 87, selectedMemberCount = 87 },
     { key = "mailbox", path = "a/2/5/0", memberCount = 11, selectedMemberCount = 11 },
-    { key = "stationery", path = "a/0/7/9", memberCount = 37, selectedMemberCount = 36 },
+    { key = "stationery", path = "a/0/7/9", memberCount = 37, selectedMemberCount = 37 },
     { key = "photoAlbum", path = "a/1/7/1", memberCount = 13, selectedMemberCount = 13 },
   }) do
     local archive = assert(archives[expected.key], "the compiler records " .. expected.key .. " archive provenance")
@@ -264,37 +264,153 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
     assertSelection(romFs, selections, expected.selector, "a/1/7/1", expected.members, nil, expected.bg)
   end
 
-  local dictionary = assert(manifest.mail.wordDictionary, "mail compiles the complete Easy Chat word dictionary")
-  local dictionaryCount = 0
-  for _ in pairs(dictionary) do
-    dictionaryCount = dictionaryCount + 1
+  -- The retired duplicate catalog is gone: Easy Chat words and templates
+  -- belong to the shared family, never to the PC manifest.
+  Assert.isNil(manifest.mail.text, "PC mail carries no duplicate template catalog")
+  Assert.isNil(manifest.mail.wordDictionary, "PC mail carries no duplicate word dictionary")
+  Assert.isNil(manifest.text.banks[292], "PC text drops the retired MailMessage banks")
+  Assert.isNil(manifest.text.banks[294], "PC text drops the retired MailMessage banks")
+  local mailViewBank = assert(manifest.text.banks[233], "the MailView chrome rides ordinary text bank 233")
+  local mailViewCount = 0
+  for _ in pairs(mailViewBank) do
+    mailViewCount = mailViewCount + 1
   end
-  Assert.equal(dictionaryCount, 1495, "all source Easy Chat word references resolve")
-  for _, wordId in ipairs({ 0, 496, 964, 982, 1106, 1494 }) do
-    Assert.isTrue(
-      type(dictionary[tostring(wordId)]) == "table" and #dictionary[tostring(wordId)] > 0,
-      "word reference resolves: " .. wordId
+  Assert.equal(mailViewCount, 4, "bank 233 carries exactly its four MailView messages")
+
+  -- The write chrome is compiled per stationery type from the source
+  -- members: the native BG2-over-BG3 composite, the repeated top-display
+  -- backdrop, five cursor-ordered fourteen-level highlight sets, and five
+  -- rect-local touch masks. Masks re-derive from independently decoded
+  -- source character pixel indices: eligible unless the index is 1.
+  local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+  local stationeryArchive = assert(romFs:openNarc("NARC_a_0_7_9"), "stationery source opens")
+  local writeControls = {
+    { x = 24, y = 24, width = 208, height = 32 },
+    { x = 24, y = 64, width = 208, height = 32 },
+    { x = 24, y = 104, width = 208, height = 32 },
+    { x = 24, y = 148, width = 64, height = 24 },
+    { x = 160, y = 148, width = 64, height = 24 },
+  }
+  for stationeryType = 0, 11 do
+    local write = assert(
+      manifest.mail.stationery[stationeryType].write,
+      "stationery " .. stationeryType .. " carries its write chrome"
     )
-  end
-  local templates = assert(manifest.mail.text.templates, "MailMessage templates have semantic identities")
-  local templateCount = 0
-  for bankIndex, bankId in ipairs({ 294, 296, 292, 293, 295 }) do
-    local messages = assert(manifest.text.banks[bankId], "the source line bank is compiled")
-    for messageIndex = 0, #messages - 1 do
-      local templateKey = "mail-template:" .. (bankIndex - 1) .. ":" .. messageIndex
-      Assert.deepEqual(
-        templates[templateKey],
-        messages[messageIndex + 1],
-        "Mail template maps its source bank and message"
+    Assert.equal(write.background.width, 256, "the write composite keeps the native surface")
+    Assert.equal(write.background.height, 192, "the write composite keeps the native surface")
+    Assert.equal(write.backdrop.width, 256, "the top backdrop keeps the native surface")
+    Assert.equal(write.backdrop.height, 192, "the top backdrop keeps the native surface")
+    Assert.isTrue(#write.highlights == 5, "write chrome carries five cursor-ordered highlights")
+    Assert.isTrue(#write.hitMasks == 5, "write chrome carries five rect-local touch masks")
+    local charBytes = assert(stationeryArchive:readMember(12 + stationeryType))
+    local charData = assert(G2dDecoder.decodeChar(charBytes, { label = "pc-test-char" }))
+    assert(charData.depth == 3, "stationery write chrome uses 4bpp tiles")
+    local buttonBytes = assert(stationeryArchive:readMember(36))
+    local buttonScreen = assert(G2dDecoder.decodeScreen(buttonBytes, { label = "pc-test-buttons" }))
+    local columns = math.floor(buttonScreen.width / 8)
+    for position, control in ipairs(writeControls) do
+      local mask = assert(write.hitMasks[position], "mask order follows source cursor order")
+      Assert.equal(mask.x, control.x, "mask " .. position .. " keeps its source x")
+      Assert.equal(mask.y, control.y, "mask " .. position .. " keeps its source y")
+      Assert.equal(mask.width, control.width, "mask " .. position .. " keeps its source width")
+      Assert.equal(mask.height, control.height, "mask " .. position .. " keeps its source height")
+      Assert.equal(#mask.rows, control.height, "mask rows match the control height")
+      for y = 0, control.height - 1 do
+        local bits = assert(mask.rows[y + 1], "mask rows are dense")
+        Assert.equal(#bits, control.width, "mask rows match the control width")
+        Assert.isTrue(bits:find("[^01]") == nil, "mask rows are binary strings")
+        for x = 0, control.width - 1 do
+          local entry =
+            buttonScreen.entries[math.floor((control.y + y) / 8) * columns + math.floor((control.x + x) / 8) + 1]
+          local lx, ly = (control.x + x) % 8, (control.y + y) % 8
+          if entry.flipH then
+            lx = 7 - lx
+          end
+          if entry.flipV then
+            ly = 7 - ly
+          end
+          local byte = string.byte(charData.tiles, entry.tile * 32 + ly * 4 + math.floor(lx / 2) + 1)
+          local index = (lx % 2 == 0) and (byte % 16) or math.floor(byte / 16)
+          local expected = index == 1 and "0" or "1"
+          Assert.equal(
+            bits:sub(x + 1, x + 1),
+            expected,
+            "mask bit rejects only source pixel index 1 at " .. control.x + x .. "," .. control.y + y
+          )
+        end
+      end
+      local highlight = assert(write.highlights[position], "highlight order follows source cursor order")
+      Assert.equal(#highlight.frames, 14, "highlight " .. position .. " carries fourteen blend levels")
+      Assert.isTrue(
+        highlight.width > 0 and highlight.height > 0,
+        "highlight " .. position .. " crops a non-empty rectangle"
       )
-      templateCount = templateCount + 1
+      for _, frame in ipairs(highlight.frames) do
+        Assert.equal(frame.width, highlight.width, "highlight frames match their cropped rectangle")
+        Assert.equal(frame.height, highlight.height, "highlight frames match their cropped rectangle")
+        Assert.isTrue(
+          type(bundle.assets[frame.image]) == "string",
+          "highlight frame stages its compiled visual: " .. frame.image
+        )
+      end
+      Assert.isTrue(
+        bundle.assets[highlight.frames[1].image] ~= bundle.assets[highlight.frames[14].image],
+        "the pulse visibly blends highlight " .. position .. " toward white"
+      )
+      -- The cropped rectangle matches the independently decoded users
+      -- of the control pulse entry 0x22+position.
+      local entry = 0x22 + position - 1
+      local bank, value = math.floor(entry / 16), entry % 16
+      local minX, minY, maxX, maxY = 256, 192, -1, -1
+      for y = 0, 191 do
+        for x = 0, 255 do
+          local screenEntry = buttonScreen.entries[math.floor(y / 8) * columns + math.floor(x / 8) + 1]
+          if screenEntry.palette == bank then
+            local lx, ly = x % 8, y % 8
+            if screenEntry.flipH then
+              lx = 7 - lx
+            end
+            if screenEntry.flipV then
+              ly = 7 - ly
+            end
+            local pixel = string.byte(charData.tiles, screenEntry.tile * 32 + ly * 4 + math.floor(lx / 2) + 1)
+            local index = (lx % 2 == 0) and (pixel % 16) or math.floor(pixel / 16)
+            if index == value and index ~= 0 then
+              minX = math.min(minX, x)
+              minY = math.min(minY, y)
+              maxX = math.max(maxX, x)
+              maxY = math.max(maxY, y)
+            end
+          end
+        end
+      end
+      Assert.isTrue(maxX >= minX, "pulse entry 0x22+" .. (position - 1) .. " has source pixels")
+      Assert.equal(highlight.x, minX, "highlight crops to actual changed pixels, not assumed bounds")
+      Assert.equal(highlight.y, minY, "highlight crops to actual changed pixels, not assumed bounds")
+      Assert.equal(highlight.width, maxX - minX + 1, "highlight crops to actual changed pixels, not assumed bounds")
+      Assert.equal(highlight.height, maxY - minY + 1, "highlight crops to actual changed pixels, not assumed bounds")
     end
+    assertSelection(romFs, selections, "mail.write." .. stationeryType, "a/0/7/9", {
+      palette = stationeryType,
+      character = stationeryType + 12,
+      screen = stationeryType + 24,
+      buttons = 36,
+    })
   end
-  local actualTemplateCount = 0
-  for _ in pairs(templates) do
-    actualTemplateCount = actualTemplateCount + 1
+  Assert.isTrue(PcAssetSchema.isValidManifest(manifest), "the write chrome stays schema-compatible")
+  local function staleCopy(value)
+    if type(value) ~= "table" then
+      return value
+    end
+    local out = {}
+    for key, child in pairs(value) do
+      out[key] = staleCopy(child)
+    end
+    return out
   end
-  Assert.equal(actualTemplateCount, templateCount, "Mail template catalog has no unsupported keys")
+  local staleManifest = staleCopy(manifest)
+  staleManifest.schema = "g4-pc-v3"
+  Assert.isFalse(PcAssetSchema.isValidManifest(staleManifest), "stale PC manifests rebuild instead of aliasing")
 end
 
 function T.real_source_compiles_party_mail_bank_and_sprite_roles(romFs, _)
@@ -338,32 +454,28 @@ function T.real_source_compiles_party_mail_bank_and_sprite_roles(romFs, _)
       "bank 300 msg " .. expected.id .. " keeps its source text"
     )
   end
-  Assert.deepEqual(
-    PcSources.mailboxSpriteRoles,
-    {
-      cursor = { animations = { 4, 5 } },
-      pagePrevious = { animation = 0 },
-      pageNext = { animation = 1 },
-      cursorGrid = {
-        closeInput = 10,
-        cells = {
-          { x = 64, y = 16 },
-          { x = 192, y = 16 },
-          { x = 64, y = 48 },
-          { x = 192, y = 48 },
-          { x = 64, y = 80 },
-          { x = 192, y = 80 },
-          { x = 64, y = 112 },
-          { x = 192, y = 112 },
-          { x = 64, y = 144 },
-          { x = 192, y = 144 },
-          { x = 224, y = 176 },
-        },
+  Assert.deepEqual(PcSources.mailboxSpriteRoles, {
+    cursor = { animations = { 4, 5 } },
+    pagePrevious = { animation = 0 },
+    pageNext = { animation = 1 },
+    cursorGrid = {
+      closeInput = 10,
+      cells = {
+        { x = 64, y = 16 },
+        { x = 192, y = 16 },
+        { x = 64, y = 48 },
+        { x = 192, y = 48 },
+        { x = 64, y = 80 },
+        { x = 192, y = 80 },
+        { x = 64, y = 112 },
+        { x = 192, y = 112 },
+        { x = 64, y = 144 },
+        { x = 192, y = 144 },
+        { x = 224, y = 176 },
       },
-      sprite3 = { animation = 2, x = 224, y = 176 },
     },
-    "mailbox sprite roles pin the decomp cursor/page-arrow animation ids"
-  )
+    sprite3 = { animation = 2, x = 224, y = 176 },
+  }, "mailbox sprite roles pin the decomp cursor/page-arrow animation ids")
   local animations = assert(manifest.mailbox.ui.animations, "mailbox UI animations are compiled")
   for _, animId in ipairs({ 0, 1, 2, 4, 5 }) do
     local entry = assert(animations[animId], "the sprite role animation is compiled: " .. animId)

@@ -142,6 +142,17 @@ local function compositionRuntime(versionId, helper)
     -- icons, Summary, and PC visuals: the injected pool keeps the real
     -- Summary owner working without a second worker beside the doubles.
     imageAssets = helper.imagePool,
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in summary tests", 0)
+      end,
+    },
     derivedAssets = helper.derivedAssets,
     bindSummaryCalls = 0,
     unbindSummaryCalls = {},
@@ -189,6 +200,44 @@ local function compositionRuntime(versionId, helper)
     local current = runtime._pokedexPreparation
     if current ~= nil and current.id == binding then
       runtime._pokedexPreparation = nil
+    end
+  end
+  -- The recording editor seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.easyChatBindCalls = 0
+  runtime.easyChatUnbindCalls = {}
+  runtime.bindEasyChatPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "editor preparation binding requires its acquire function")
+    assert(runtime._easyChatPreparation == nil, "one editor preparation binding owns the presented lifetime")
+    runtime.easyChatBindCalls = runtime.easyChatBindCalls + 1
+    runtime._easyChatPreparation = { id = runtime.easyChatBindCalls, acquire = acquire }
+    return runtime._easyChatPreparation.id
+  end
+  runtime.unbindEasyChatPreparation = function(_, binding)
+    runtime.easyChatUnbindCalls[#runtime.easyChatUnbindCalls + 1] = binding
+    local current = runtime._easyChatPreparation
+    if current ~= nil and current.id == binding then
+      runtime._easyChatPreparation = nil
+    end
+  end
+  -- The recording Mail seam mirrors the production runtime binding:
+  -- one live prepare callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.mailBindCalls = 0
+  runtime.mailUnbindCalls = {}
+  runtime.bindMailPreparation = function(_, prepare)
+    assert(type(prepare) == "function", "Mail preparation binding requires its prepare function")
+    assert(runtime._mailPreparation == nil, "one Mail preparation binding owns the presented lifetime")
+    runtime.mailBindCalls = runtime.mailBindCalls + 1
+    runtime._mailPreparation = { id = runtime.mailBindCalls, prepare = prepare }
+    return runtime._mailPreparation.id
+  end
+  runtime.unbindMailPreparation = function(_, binding)
+    runtime.mailUnbindCalls[#runtime.mailUnbindCalls + 1] = binding
+    local current = runtime._mailPreparation
+    if current ~= nil and current.id == binding then
+      runtime._mailPreparation = nil
     end
   end
   return runtime
@@ -472,6 +521,12 @@ local function openProductionPartyFlow(versionId, summaryManifest, runtime, coun
     partyActions = PartyActions.new({ mons = service, bag = bag }),
     mailActions = MailActions.new({ mons = service, mailbox = mailbox, bag = bag, manifest = pcManifest }),
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)

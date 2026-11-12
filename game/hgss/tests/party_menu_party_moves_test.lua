@@ -109,6 +109,12 @@ local function openPartyFlow(mons)
     },
     mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest }),
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = {
       check = function(request)

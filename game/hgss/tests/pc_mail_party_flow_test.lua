@@ -66,19 +66,44 @@ end
 
 local function letter()
   return {
-    schema = "g4-mail-v1",
+    schema = "g4-mail-v2",
     type = 0,
     author = { trainerId = 54321, name = "MISTY", gender = 1, language = 2, game = 8 },
-    icons = {
-      { species = "CHIKORITA", form = 0, palette = 2 },
-      false,
-      { species = "TOTODILE", form = 0, palette = 1 },
-    },
+    icons = { "CHIKORITA/f0", false, "TOTODILE/f0" },
     lines = {
-      { template = "mail.line.first", words = { "word.water", false } },
-      { template = "mail.line.second", words = { "word.friend", false } },
-      { template = "mail.line.third", words = { "word.goodbye", false } },
+      { template = "mail-template:2:4", words = { "1371", "1417" } },
+      { template = "mail-template:3:1", words = { "1479", false } },
+      false,
     },
+  }
+end
+
+-- Faithful C01 double for composition wiring: one two-substitution template.
+local function fakeCatalog()
+  return {
+    template = function(_, bank, number)
+      if bank == 0 and number == 0 then
+        return { bank = 0, number = 0, wordCount = 2, tokens = {} }
+      end
+      return nil
+    end,
+    messageStatus = function(_, message)
+      if type(message) ~= "table" or message.bank ~= 0 or message.number ~= 0 then
+        return "invalid"
+      end
+      for _, id in ipairs(message.words) do
+        if id ~= 0 and id ~= 1 and id ~= 65535 then
+          return "invalid"
+        end
+      end
+      if message.words[1] == 65535 or message.words[2] == 65535 then
+        return "incomplete"
+      end
+      return "complete"
+    end,
+    expandMessage = function(_, message)
+      return { { kind = "glyph", text = "w" .. tostring(message.words[1]) } }
+    end,
   }
 end
 
@@ -207,12 +232,22 @@ local function makeComposition(attachMail)
 
   local bag = HgssBagService.new({ catalog = items })
   local mailbox = Mailbox.new()
+  local GameStats = require("libs.hgss.src.mons.GameStats")
   local composition = PartyMenuComposition.create({
     mons = mons,
     bag = bag,
     mailbox = mailbox,
     photoAlbum = PhotoAlbum.new(),
     pcManifest = pcManifest(),
+    easyChatCatalog = fakeCatalog(),
+    openEasyChat = function()
+      error("party flow tests open no real editor", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
+    monLanguage = "english",
+    gameStats = GameStats.new({ species = { CHIKORITA = true, TOTODILE = true } }),
     cacheFs = {
       read = function()
         return ""

@@ -322,9 +322,17 @@ end
 ---@return Party
 function Party.restore(snapshot, context)
   assert(type(context) == "table", "party restore requires a context")
+  local Mail = require("libs.mons.src.gen4.Mail")
   local mons = {}
   for _, mon in ipairs(snapshot.mons) do
-    mons[#mons + 1] = copyValue(mon)
+    local restored = copyValue(mon)
+    -- Trusted current records copy through untouched; only explicit
+    -- legacy or unknown nonempty nested Mail normalizes through the
+    -- catalog choice the Mailbox viewer displays.
+    if type(restored.mail) == "table" and next(restored.mail) ~= nil and restored.mail.schema ~= Mail.SCHEMA then
+      restored.mail = Mail.normalize(restored.mail, context)
+    end
+    mons[#mons + 1] = restored
   end
   return build(mons, #mons)
 end

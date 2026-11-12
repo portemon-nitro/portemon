@@ -128,7 +128,7 @@ function T.summary_family_carries_the_v4_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.party.schema,
-    "g4-party-presentation-v6",
+    "g4-party-presentation-v7",
     "the party sibling identity survives the summary schema change"
   )
   Assert.equal(
@@ -140,7 +140,7 @@ end
 
 function T.party_contract_advertises_the_v6_presentation_schema()
   Assert.equal(DerivedAssetContract.party.cacheFormat, "party-cache-v1")
-  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v6")
+  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v7")
 end
 
 -- The corrected cursor rasterization invalidates every earlier summary

@@ -10,9 +10,10 @@ PcSources.provenance = {
 PcSources.archives = {
   storage = { alias = "NARC_a_0_1_9", path = "a/0/1/9", memberCount = 87, selectedMemberCount = 87 },
   mailbox = { alias = "NARC_a_2_5_0", path = "a/2/5/0", memberCount = 11, selectedMemberCount = 11 },
-  -- Member 36 is present in the archive but unused by all twelve source
-  -- stationery triplets (palette 0..11, character 12..23, screen 24..35).
-  stationery = { alias = "NARC_a_0_7_9", path = "a/0/7/9", memberCount = 37, selectedMemberCount = 36 },
+  -- Member 36 is the shared write-mode button tilemap: the write chrome
+  -- pairs it with each type's own character tile set (palette 0..11,
+  -- character 12..23, screen 24..35).
+  stationery = { alias = "NARC_a_0_7_9", path = "a/0/7/9", memberCount = 37, selectedMemberCount = 37 },
   photoAlbum = { alias = "NARC_a_1_7_1", path = "a/1/7/1", memberCount = 13, selectedMemberCount = 13 },
 }
 
@@ -72,6 +73,37 @@ PcSources.photoAlbumBackgrounds = {
 }
 PcSources.wallpaperMembers = { characterBase = 16, paletteBase = 40, screen = 15 }
 PcSources.stationeryMembers = { paletteBase = 0, characterBase = 12, screenBase = 24 }
+-- Write-mode source selection behind the stationery write chrome
+-- (application/mail_view.c MailView_LoadBgGraphics): member 36 carries
+-- the shared button tilemap; the write palette views the type palette's
+-- bytes 0x60..0x7F at display bank 1; the cursor pulse modifies display
+-- entry 0x22 plus the cursor position through an RGB5 blend to white;
+-- the top display repeats tile 1 at palette 2. The five highlight
+-- controls follow source cursor order: three line windows, Confirm,
+-- then Cancel. Geometry is logical source pixels.
+PcSources.stationeryWrite = {
+  buttonScreen = 36,
+  writePaletteByteBase = 0x60,
+  writePaletteBank = 1,
+  highlightEntryBase = 0x22,
+  highlightLevelMax = 13,
+  backdropTile = 1,
+  backdropPalette = 2,
+  controls = {
+    { x = 24, y = 24, width = 208, height = 32 },
+    { x = 24, y = 64, width = 208, height = 32 },
+    { x = 24, y = 104, width = 208, height = 32 },
+    { x = 24, y = 148, width = 64, height = 24 },
+    { x = 160, y = 148, width = 64, height = 24 },
+  },
+  -- G2_SetBlendAlpha(BG2, BG3, 28, 4): the hardware saturates the
+  -- coefficients to 16 and 4 over a divisor of 16.
+  blendEvA = 16,
+  blendEvB = 4,
+  blendDivisor = 16,
+  -- The touch pixel test rejects BG2 character pixel index 1.
+  touchRejectIndex = 1,
+}
 -- ov14_021F5950 selects the byte offsets; member65 banks0/1 load to
 -- MAIN_BG slots12/13, and Window.paletteNum selects the palette.
 PcSources.storageWindowFrames = {
@@ -182,27 +214,17 @@ PcSources.terminal = {
 PcSources.mailText = {
   storageBanks = { 24, 25 },
   mailboxBank = 232,
+  -- The MailView chrome: Confirm/Cancel labels (0, 1), the all-blank
+  -- warning (2), and the whole-letter quit confirmation (3).
+  mailViewBank = 233,
   -- Bank 300 carries the party-menu TakeMail custody messages
   -- (party_menu_list_items.c): 44 send-to-PC confirm, 48 erase
-  -- follow-up, 47 sent, 51 mailbox full, 52 taken, 84 bag full.
+  -- follow-up, 47 sent, 51 mailbox full, 52 taken, 78 held-Mail
+  -- refusal, 84 bag full.
   partyMailBank = 300,
   albumBank = 0,
   -- The retail ROM resolves native map sections through this bank.
   landmarkBank = 279,
-  lineBanks = { 294, 296, 292, 293, 295 },
-  wordBanks = {
-    { messageBank = 237, firstWordId = 0, wordCount = 496 },
-    { messageBank = 751, firstWordId = 496, wordCount = 468 },
-    { messageBank = 735, firstWordId = 964, wordCount = 18 },
-    { messageBank = 721, firstWordId = 982, wordCount = 124 },
-    { messageBank = 285, firstWordId = 1106, wordCount = 38 },
-    { messageBank = 286, firstWordId = 1144, wordCount = 38 },
-    { messageBank = 287, firstWordId = 1182, wordCount = 107 },
-    { messageBank = 288, firstWordId = 1289, wordCount = 104 },
-    { messageBank = 289, firstWordId = 1393, wordCount = 47 },
-    { messageBank = 290, firstWordId = 1440, wordCount = 32 },
-    { messageBank = 291, firstWordId = 1472, wordCount = 23 },
-  },
 }
 
 -- Logical display geometry follows the DS 256x192 source screen. These

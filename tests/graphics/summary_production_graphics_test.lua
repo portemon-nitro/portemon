@@ -10,6 +10,8 @@ local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local RosterIconStandIn = require("tests.support.RosterIconStandIn")
 local CacheFs = require("libs.storage.src.CacheFs")
+local EasyChatCache = require("libs.assets.src.EasyChatCache")
+local EasyChatCatalog = require("libs.hgss.src.ui.EasyChatCatalog")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -186,6 +188,12 @@ local function openProductionPartyFlow(versionId, summaryManifest, class, specie
     partyActions = PartyActions.new({ mons = service, bag = bag }),
     mailActions = MailActions.new({ mons = service, mailbox = mailbox, bag = bag, manifest = pcManifest }),
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)
@@ -572,8 +580,10 @@ end
 ---@param versionId string
 ---@return table<string, unknown> production-shaped presentation runtime over the real cache
 local function fprRuntime(versionId)
+  local cacheFs = CacheFs.forVersion(versionId)
   local runtime = {
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = cacheFs,
+    easyChatCatalog = EasyChatCatalog.new(assert(EasyChatCache.loadCatalog(cacheFs))),
     uiManifest = FieldUiFixture.manifest(),
     playerData = { options = { textFrame = 0 } },
     windowStyles = {},
@@ -629,6 +639,36 @@ local function fprRuntime(versionId)
     local current = runtime._pokedexPreparation
     if current ~= nil and current.id == binding then
       runtime._pokedexPreparation = nil
+    end
+  end
+  -- The recording editor seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.bindEasyChatPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "editor preparation binding requires its acquire function")
+    assert(runtime._easyChatPreparation == nil, "one editor preparation binding owns the presented lifetime")
+    runtime._easyChatPreparation = { id = 1, acquire = acquire }
+    return runtime._easyChatPreparation.id
+  end
+  runtime.unbindEasyChatPreparation = function(_, binding)
+    local current = runtime._easyChatPreparation
+    if current ~= nil and current.id == binding then
+      runtime._easyChatPreparation = nil
+    end
+  end
+  -- The recording Mail seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.bindMailPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "Mail preparation binding requires its acquire function")
+    assert(runtime._mailPreparation == nil, "one Mail preparation binding owns the presented lifetime")
+    runtime._mailPreparation = { id = 1, acquire = acquire }
+    return runtime._mailPreparation.id
+  end
+  runtime.unbindMailPreparation = function(_, binding)
+    local current = runtime._mailPreparation
+    if current ~= nil and current.id == binding then
+      runtime._mailPreparation = nil
     end
   end
   return runtime

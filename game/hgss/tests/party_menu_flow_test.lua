@@ -285,6 +285,12 @@ local function openFlow(Flow, opts)
       manifest = pcManifest,
     }),
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = opts.fieldMoves or {
       check = function(_)

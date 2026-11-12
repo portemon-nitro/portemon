@@ -71,13 +71,16 @@ local function rivalMailFor(gender, versionId)
 end
 
 local function populateRivalMailbox(candidate, gender)
-  local box = Mailbox.new()
-  local preparation = assert(
-    box:prepareChanges(box:revision(), { { slot = 0, value = rivalMailFor(gender, candidate.versionId) } }),
-    "rival mail preparation must succeed"
-  )
-  preparation.publish()
-  candidate.mailbox = box:capture()
+  -- The rival seed stays in its v1 icon shape here on purpose: prepared
+  -- Mailbox changes admit current v2 only, while the explicit v1 to v2
+  -- migration at the restore boundary preserves this exact seed. The
+  -- snapshot shape stays trivially valid (twenty slots); admission and
+  -- icon conversion happen at restore, never at seeding.
+  local slots = {}
+  for slot = 1, Mailbox.CAPACITY do
+    slots[slot] = slot == 1 and rivalMailFor(gender, candidate.versionId) or false
+  end
+  candidate.mailbox = { schema = Mailbox.SCHEMA, slots = slots }
 end
 
 local FACING = {

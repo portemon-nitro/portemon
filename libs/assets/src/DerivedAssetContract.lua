@@ -575,9 +575,11 @@ DerivedAssetContract.apricornBox = {
 -- dpad/touch navigation tables, lowered bank-300 text, source numeric glyphs,
 -- and Shiny Leaf/crown badge frames. Species icons stay in the mon class;
 -- the party manifest references no icon pixels.
+-- v7 requires the heldMail refusal template (source bank-300 message 78)
+-- for fresh-letter recipients that already carry Mail.
 DerivedAssetContract.party = {
   cacheFormat = "party-cache-v1",
-  schema = "g4-party-presentation-v6",
+  schema = "g4-party-presentation-v7",
 }
 
 -- The PC family retains its source-independent Storage, Mailbox, Mail and
@@ -585,9 +587,14 @@ DerivedAssetContract.party = {
 -- v3 requires the drawn Mailbox sprite roles (previous arrow 0, next
 -- arrow 1, static close 2, CLOSE cursor 4, row cursor 5) with usable
 -- rendered frames; a stale v2 cache without that guarantee rebuilds.
+-- v4 requires the MailView write chrome per stationery type (the native
+-- write composite, the top-display backdrop, five cursor-ordered cropped
+-- highlight frame sets, and the rect-local touch masks) plus the four
+-- source bank-233 messages; the duplicate Easy Chat template/word
+-- producer is retired with it.
 DerivedAssetContract.pc = {
   cacheFormat = "pc-cache-v1",
-  schema = "g4-pc-v3",
+  schema = "g4-pc-v4",
 }
 
 -- The Pokegear family carries the source-independent shell, Configure,

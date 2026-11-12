@@ -108,6 +108,11 @@ local function openFlow(game, root)
     bagCursor = assert(runtime.bagCursor, "field runtime owns the live bag cursor"),
     partyActions = actions,
     mailActions = assert(runtime.partyMenu).mailActions,
+    makeMailComposer = assert(
+      assert(runtime.partyMenu).makeMailComposer,
+      "field composition owns the fresh Mail factory"
+    ),
+    prepareMail = assert(assert(runtime.partyMenu).prepareMail, "field composition owns the Mail preparation"),
     mailbox = assert(runtime.mailbox),
     pcManifest = assert(runtime.partyMenu).pcManifest,
     fieldMoves = {

@@ -313,9 +313,9 @@ local function textRoleTriple(fg, sh, bg)
   return { foreground = fg, shadow = sh, background = bg }
 end
 
-local function v6manifest()
+local function v7manifest()
   local data = v3manifest()
-  data.schema = "g4-party-presentation-v6"
+  data.schema = "g4-party-presentation-v7"
   local commandRaised = textRoleTriple(colorRef(248, 248, 248), colorRef(88, 88, 88), colorRef(0, 0, 0))
   local commandDepressed = textRoleTriple(colorRef(248, 248, 248), colorRef(88, 88, 88), colorRef(40, 40, 40))
   local fieldRaised = textRoleTriple(colorRef(132, 197, 247), colorRef(0, 82, 165), colorRef(0, 0, 0))
@@ -341,6 +341,7 @@ local function v6manifest()
     { "itemAction", "What to do with the item?" },
     { "switchHeldPrompt", "Switch the held items?" },
     { "switchHeldResult", "Switched the held items." },
+    { "heldMail", "That POKEMON already holds Mail." },
     { "giveHeldItem", "Gave the item to hold." },
     { "fieldMoveNotHere", "You can't use that here." },
     { "fieldMoveNeedBadge", "This can't be used until a new Badge is obtained." },
@@ -356,7 +357,7 @@ local function v6manifest()
 end
 
 function T.valid_manifest_passes_schema()
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the assembled family is valid")
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the assembled family is valid")
 end
 
 function T.runtime_required_sequence_prefixes_are_mandatory()
@@ -368,7 +369,7 @@ function T.runtime_required_sequence_prefixes_are_mandatory()
   }
   local accepted = {}
   for _, case in ipairs(cases) do
-    local bad = v6manifest()
+    local bad = v7manifest()
     local sequences = bad.visuals[case.name].sequences
     while #sequences > case.count do
       table.remove(sequences)
@@ -386,11 +387,11 @@ function T.runtime_required_sequence_prefixes_are_mandatory()
     end
   end
   Assert.isTrue(#accepted == 0, "incomplete runtime prefixes passed: " .. table.concat(accepted, ", "))
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the complete runtime prefixes are valid")
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the complete runtime prefixes are valid")
 end
 
 function T.rejects_sequence_group_with_non_array_keys()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.visuals.balls.sequences.extra = bad.visuals.balls.sequences[1]
   Assert.isFalse(
     PartyAssetSchema.isValidManifest(bad),
@@ -403,7 +404,7 @@ function T.rejects_sequence_group_with_non_array_keys()
 end
 
 function T.rejects_sequence_group_with_a_hole_before_later_sequences()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.visuals.held.sequences[1] = nil
   Assert.isFalse(
     PartyAssetSchema.isValidManifest(bad),
@@ -416,7 +417,7 @@ function T.rejects_sequence_group_with_a_hole_before_later_sequences()
 end
 
 function T.producer_tail_sequences_remain_validated()
-  local currentProducer = v6manifest()
+  local currentProducer = v7manifest()
   currentProducer.visuals.buttons.sequences[3] = {
     frames = { frameRef("assets/generated/party/button-2.png") },
     loopFrom = 1,
@@ -454,7 +455,7 @@ function T.schema_rejects_non_integer_durations()
 end
 
 function T.schema_rejects_a_missing_panel_state()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.panels[6] = nil
   Assert.throws(function()
     PartyAssetSchema.assertManifest(bad)
@@ -463,57 +464,57 @@ end
 
 function T.schema_rejects_each_missing_panel_chrome_state()
   for _, state in ipairs({ "normal", "selected", "fainted", "selectedFainted", "switchSelection" }) do
-    local bad = v6manifest()
+    local bad = v7manifest()
     bad.panels[1].chrome[state] = nil
     Assert.isFalse(PartyAssetSchema.isValidManifest(bad), state .. " panel chrome is required")
   end
 end
 
 function T.schema_rejects_missing_v2_presentation_facts()
-  local missingGeometry = v6manifest()
+  local missingGeometry = v7manifest()
   missingGeometry.panels[1].iconAnchor = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingGeometry), "panel sprite geometry is required")
 
-  local missingControl = v6manifest()
+  local missingControl = v7manifest()
   missingControl.controls.cancel.anchor = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingControl), "the Cancel anchor is required")
 
-  local missingHp = v6manifest()
+  local missingHp = v7manifest()
   missingHp.visuals.hpBars = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingHp), "source HP strips are required")
 
-  local missingDetail = v6manifest()
+  local missingDetail = v7manifest()
   missingDetail.detail.statusAnchor = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingDetail), "upper detail geometry is required")
 end
 
 function T.schema_requires_exact_semantic_status_visuals()
-  local missing = v6manifest()
+  local missing = v7manifest()
   missing.visuals.status.poison = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "every semantic status visual is required")
 
-  local extra = v6manifest()
+  local extra = v7manifest()
   extra.visuals.status.ok = imageRef("assets/generated/party/status-ok.png", 24, 8)
   Assert.isFalse(PartyAssetSchema.isValidManifest(extra), "healthy status is not a runtime visual")
 
-  local wrongDimensions = v6manifest()
+  local wrongDimensions = v7manifest()
   wrongDimensions.visuals.status.faint = imageRef("assets/generated/party/status-faint.png", 24, 9)
   Assert.isFalse(PartyAssetSchema.isValidManifest(wrongDimensions), "status visuals keep their 24x8 size")
 end
 
 function T.schema_accepts_strict_detail_points_beyond_the_visible_pane()
-  local complete = v6manifest()
+  local complete = v7manifest()
   Assert.isTrue(PartyAssetSchema.isValidManifest(complete), "rest geometry extends into the full detail surface")
 
-  local extra = v6manifest()
+  local extra = v7manifest()
   extra.detail.sourceSequence = 1
   Assert.isFalse(PartyAssetSchema.isValidManifest(extra), "detail geometry has no source sequence field")
 
-  local fractional = v6manifest()
+  local fractional = v7manifest()
   fractional.detail.statusAnchor.x = 50.5
   Assert.isFalse(PartyAssetSchema.isValidManifest(fractional), "detail points are integral")
 
-  local outOfRange = v6manifest()
+  local outOfRange = v7manifest()
   outOfRange.detail.heldItemTextOrigin.y = 256
   Assert.isFalse(PartyAssetSchema.isValidManifest(outOfRange), "detail points fit the 256-pixel source surface")
 end
@@ -536,24 +537,24 @@ function T.schema_rejects_a_v1_manifest()
 end
 
 function T.schema_rejects_off_pane_hitboxes_but_permits_negative_crop_offsets()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.hitboxes.touch.default[1] = touch(0, 48, 200, 128)
   Assert.throws(function()
     PartyAssetSchema.assertManifest(bad)
   end)
-  local cropped = v6manifest()
+  local cropped = v7manifest()
   cropped.visuals.held.sequences[1].frames[1].offset = { x = -4, y = -2 }
   Assert.isTrue(PartyAssetSchema.isValidManifest(cropped), "negative sprite crop offsets stay valid")
 end
 
 function T.modded_animated_visuals_pass_without_a_fixed_frame_count()
-  local modded = v6manifest()
+  local modded = v7manifest()
   modded.visuals.balls.sequences[1].frames[2] = frameRef("assets/generated/party/ball-1.png", 40, 40, 12)
   Assert.isTrue(PartyAssetSchema.isValidManifest(modded), "animated visual frame counts and sizes remain flexible")
 end
 
 function T.schema_rejects_source_identities_in_the_runtime_manifest()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.visuals.cursor.sequences[1].frames[1].memberId = 5
   Assert.throws(function()
     PartyAssetSchema.assertManifest(bad)
@@ -561,13 +562,13 @@ function T.schema_rejects_source_identities_in_the_runtime_manifest()
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v6")
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
 end
 
-function T.complete_v6_family_passes_schema()
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the complete v6 family is valid")
+function T.complete_v7_family_passes_schema()
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the complete v7 family is valid")
 end
 
 function T.stale_v2_manifest_is_rejected()
@@ -578,66 +579,66 @@ function T.stale_v2_manifest_is_rejected()
   Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
 end
 
-function T.schema_identity_matches_the_party_contract_at_v6()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v6")
+function T.schema_identity_matches_the_party_contract_at_v7()
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
   Assert.equal(PartyCache.FORMAT, "party-cache-v1")
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
 end
 
 function T.rejects_a_manifest_missing_icon_timelines()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.iconAnimations = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(bad), "exact icon timelines are required")
 end
 
 function T.rejects_icon_frames_outside_the_two_frame_contract()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.iconAnimations.sequences[1][1].iconFrame = 3
   Assert.isFalse(PartyAssetSchema.isValidManifest(bad), "timelines reference the two atlas frames only")
-  local mistimed = v6manifest()
+  local mistimed = v7manifest()
   mistimed.iconAnimations.sequences[2][1].durationTicks = 0
   Assert.isFalse(PartyAssetSchema.isValidManifest(mistimed), "timeline durations stay positive")
 end
 
 function T.rejects_unsupported_menu_counts()
-  local extra = v6manifest()
+  local extra = v7manifest()
   extra.contextMenu.topLevel[9] = menuLayout(2, true)
   Assert.isFalse(PartyAssetSchema.isValidManifest(extra), "top-level counts stop at eight")
-  local missing = v6manifest()
+  local missing = v7manifest()
   missing.contextMenu.topLevel[2] = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "top-level layouts are count-complete")
-  local extraSub = v6manifest()
+  local extraSub = v7manifest()
   extraSub.contextMenu.subcontext[6] = menuLayout(2, false)
   Assert.isFalse(PartyAssetSchema.isValidManifest(extraSub), "subcontext counts stop at five")
 end
 
 function T.rejects_menu_entries_missing_navigation_touch_or_frame_shape()
-  local noTouch = v6manifest()
+  local noTouch = v7manifest()
   noTouch.contextMenu.topLevel[2][1].touch = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(noTouch), "menu touch targets are required")
-  local noLateral = v6manifest()
+  local noLateral = v7manifest()
   noLateral.contextMenu.topLevel[2][1].left = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(noLateral), "top-level lateral navigation is required")
-  local badShape = v6manifest()
+  local badShape = v7manifest()
   badShape.contextMenu.subcontext[2][1].frameShape = "wide"
   Assert.isFalse(PartyAssetSchema.isValidManifest(badShape), "frame shapes stay native")
 end
 
 function T.rejects_malformed_text_role_colors()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.text.roles.ordinary.foreground.r = 300
   Assert.isFalse(PartyAssetSchema.isValidManifest(bad), "role colors stay inside the byte range")
-  local missing = v6manifest()
+  local missing = v7manifest()
   missing.text.roles.male = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "every text role is required")
-  local noLabels = v6manifest()
+  local noLabels = v7manifest()
   noLabels.text.labels.male = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(noLabels), "gender labels are required")
 end
 
 function T.rejects_runtime_records_leaking_source_identities()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.contextMenu.topLevel[2][1].memberId = 5
   local err = Assert.throws(function()
     PartyAssetSchema.assertManifest(bad)
@@ -646,38 +647,38 @@ function T.rejects_runtime_records_leaking_source_identities()
 end
 
 function T.schema_rejects_panels_missing_or_misplacing_the_gender_origin()
-  local missing = v6manifest()
+  local missing = v7manifest()
   missing.panels[1].text.gender = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "the fixed gender origin is required")
   local err = Assert.throws(function()
     PartyAssetSchema.assertManifest(missing)
   end)
   Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
-  local malformed = v6manifest()
+  local malformed = v7manifest()
   malformed.panels[1].text.gender = { x = "112", y = 8 }
   Assert.isFalse(PartyAssetSchema.isValidManifest(malformed), "the gender origin stays an integral point")
 end
 
 function T.rejects_a_manifest_missing_a_context_visual()
-  local bad = v6manifest()
+  local bad = v7manifest()
   bad.contextMenu.frames.standard.selected = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(bad), "every frame state visual is required")
 end
 
 function T.context_text_roles_cover_command_field_and_cancel_states()
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "complete semantic roles are valid")
-  local missing = v6manifest()
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "complete semantic roles are valid")
+  local missing = v7manifest()
   missing.contextMenu.textRoles = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "semantic text roles are required")
   for _, name in ipairs({ "command", "field", "cancel" }) do
-    local partial = v6manifest()
+    local partial = v7manifest()
     partial.contextMenu.textRoles[name] = nil
     Assert.isFalse(PartyAssetSchema.isValidManifest(partial), "the " .. name .. " role is required")
-    local flat = v6manifest()
+    local flat = v7manifest()
     flat.contextMenu.textRoles[name].raised.foreground = nil
     Assert.isFalse(PartyAssetSchema.isValidManifest(flat), "the " .. name .. " role keeps its triple")
   end
-  local complete = v6manifest()
+  local complete = v7manifest()
   local fieldInk = complete.contextMenu.textRoles.field.raised.foreground
   local commandInk = complete.contextMenu.textRoles.command.raised.foreground
   Assert.isTrue(
@@ -687,11 +688,11 @@ function T.context_text_roles_cover_command_field_and_cancel_states()
 end
 
 function T.switch_selection_chrome_is_required()
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the extended presentation family is valid")
-  local missingChrome = v6manifest()
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the extended presentation family is valid")
+  local missingChrome = v7manifest()
   missingChrome.panels[1].chrome.switchSelection = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingChrome), "switch-selection chrome is required")
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v6")
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
   Assert.isFalse(PartyAssetSchema.isValidManifest(v3manifest()), "the previous presentation contract is stale")
 end
@@ -715,10 +716,10 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
     "fieldMoveAlreadySurfing",
     "fieldMoveNotNow",
   }
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v6manifest()), "the complete family is valid")
+  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the complete family is valid")
   local accepted = {}
   for _, name in ipairs(required) do
-    local bad = v6manifest()
+    local bad = v7manifest()
     bad.text.templates[name] = nil
     if PartyAssetSchema.isValidManifest(bad) then
       accepted[#accepted + 1] = name
@@ -730,33 +731,33 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
     end
   end
   Assert.isTrue(#accepted == 0, "incomplete families passed: " .. table.concat(accepted, ", "))
-  local hollow = v6manifest()
+  local hollow = v7manifest()
   hollow.text.templates.takeNoItem = { segments = {} }
   Assert.isFalse(PartyAssetSchema.isValidManifest(hollow), "a required template without segments stays invalid")
 end
 
 function T.unlisted_message_templates_remain_valid()
-  local complete = v6manifest()
+  local complete = v7manifest()
   Assert.notNil(complete.text.templates.switchPrompt, "the fixture carries an unlisted template")
   Assert.isTrue(PartyAssetSchema.isValidManifest(complete), "unlisted valid templates stay accepted")
 end
 
 function T.lower_message_role_is_required()
-  local missing = v6manifest()
+  local missing = v7manifest()
   missing.text.messageRole = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missing), "the lower-message role is required")
-  local malformed = v6manifest()
+  local malformed = v7manifest()
   malformed.text.messageRole = { foreground = colorRef(248, 248, 248) }
   Assert.isFalse(PartyAssetSchema.isValidManifest(malformed), "the lower-message role keeps its triple")
 end
 
-function T.party_contract_identity_is_v6_and_previous_schema_is_stale()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v6")
-  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v6")
-  Assert.equal(PartyCache.SCHEMA, "g4-party-presentation-v6")
+function T.party_contract_identity_is_v7_and_previous_schema_is_stale()
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
+  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v7")
+  Assert.equal(PartyCache.SCHEMA, "g4-party-presentation-v7")
   Assert.equal(PartyCache.FORMAT, "party-cache-v1")
-  local stale = v6manifest()
-  stale.schema = "g4-party-presentation-v5"
+  local stale = v7manifest()
+  stale.schema = "g4-party-presentation-v6"
   Assert.isFalse(PartyAssetSchema.isValidManifest(stale), "the previous presentation contract is stale")
 end
 

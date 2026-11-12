@@ -287,9 +287,29 @@ local function dependencies(overrides)
     "setup gift must enter the party"
   )
   local bag = openBag()
+  local GameStats = require("libs.hgss.src.mons.GameStats")
   local deps = {
     mons = mons,
     bag = bag,
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in composition tests", 0)
+      end,
+    },
+    openEasyChat = function()
+      error("composition tests open no editor", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
+    monLanguage = "english",
+    gameStats = GameStats.new({ species = { CHIKORITA = true } }),
     bagCursor = BagCursor.new(),
     itemCatalog = bag:catalog(),
     monCatalog = CatalogFixture.makeCatalog(),
@@ -355,6 +375,11 @@ function T.tests.missing_required_collaborators_fail_before_any_window_opens()
   local required = {
     "mons",
     "bag",
+    "easyChatCatalog",
+    "openEasyChat",
+    "prepareMail",
+    "monLanguage",
+    "gameStats",
     "bagCursor",
     "itemCatalog",
     "monCatalog",

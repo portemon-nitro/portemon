@@ -32,6 +32,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _counted table<string, boolean> species ever staged in a published batch
 ---@field private _unique integer blind unique-registration total
 ---@field private _score integer
+---@field private _mailWritten integer written-Mail total
 ---@field private _revision integer
 local GameStats = {}
 GameStats.__index = GameStats
@@ -51,8 +52,10 @@ GameStats.SCORE_POINTS = {
 
 -- Retail score ceiling enforced by GameStats_AddScore
 -- (src/game_stats.c:371-379). Unique registrations need no ceiling: the
--- admitted species set bounds them.
+-- admitted species set bounds them. The written-Mail counter caps at
+-- 999999 (src/game_stats.c:276-287).
 GameStats.SCORE_CAP = 99999999
+GameStats.MAIL_WRITTEN_CAP = 999999
 
 ---@param message string
 ---@param context table<string, unknown>
@@ -134,6 +137,7 @@ function GameStats.new(args)
     _counted = {},
     _unique = 0,
     _score = 0,
+    _mailWritten = 0,
     _revision = 0,
   }, GameStats)
 end
@@ -156,6 +160,7 @@ function GameStats.restore(bucket, refs)
   end
   stats._unique = valid.uniqueTotal
   stats._score = valid.score
+  stats._mailWritten = valid.mailWritten
   return stats
 end
 
@@ -200,6 +205,13 @@ end
 ---@return integer
 function GameStats:score()
   return self._score
+end
+
+-- Reads the written-Mail total: one per successful new-letter custody,
+-- capped at the retail ceiling.
+---@return integer
+function GameStats:mailWrittenCount()
+  return self._mailWritten
 end
 
 ---@return integer
@@ -272,6 +284,16 @@ function GameStats:prepareChanges(changes)
       end
       local species = checkKey(allowed, staged.species)
       observations[index] = { kind = "score", species = species, event = event, points = staged.points }
+    elseif staged.kind == "mail_written" then
+      -- One written letter adds one to the Mail count under its own
+      -- ceiling and one to the score under the shared ceiling, without
+      -- marking any species as counted.
+      for key in pairs(staged) do
+        if key ~= "kind" then
+          fail("stats observations carry kind and payload records", { field = key })
+        end
+      end
+      observations[index] = { kind = "mail_written" }
     else
       fail("stats observation names an unknown kind", { kind = staged.kind })
     end
@@ -279,12 +301,26 @@ function GameStats:prepareChanges(changes)
   local scratchCounted = copySet(self._counted)
   local scratchUnique = self._unique
   local scratchScore = self._score
+  local scratchMailWritten = self._mailWritten
   local changed = false
   for _, observation in ipairs(observations) do
     if observation.kind == "unique_caught" then
       scratchUnique = scratchUnique + 1
       scratchCounted[observation.species] = true
       changed = true
+    elseif observation.kind == "mail_written" then
+      if scratchMailWritten < GameStats.MAIL_WRITTEN_CAP then
+        scratchMailWritten = scratchMailWritten + 1
+        changed = true
+      end
+      local total = scratchScore + 1
+      if total > GameStats.SCORE_CAP then
+        total = GameStats.SCORE_CAP
+      end
+      if total ~= scratchScore then
+        scratchScore = total
+        changed = true
+      end
     else
       local total = scratchScore + observation.points
       if total > GameStats.SCORE_CAP then
@@ -313,6 +349,7 @@ function GameStats:prepareChanges(changes)
     self._counted = scratchCounted
     self._unique = scratchUnique
     self._score = scratchScore
+    self._mailWritten = scratchMailWritten
     if changed then
       self._revision = self._revision + 1
     end
@@ -321,9 +358,10 @@ function GameStats:prepareChanges(changes)
 end
 
 -- Reads the persistable bucket: the sorted registration set (freshness
--- authority), the blind unique total, and the bounded score. The result
--- is detached; callers cannot mutate live owner state through it.
----@return table<string, unknown> detached canonical v1 bucket
+-- authority), the blind unique total, the bounded score, and the
+-- bounded written-Mail total. The result is detached; callers cannot
+-- mutate live owner state through it.
+---@return table<string, unknown> detached canonical v2 bucket
 function GameStats:bucket()
   local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
   local uniqueCaught = {}
@@ -337,6 +375,7 @@ function GameStats:bucket()
     uniqueCaught = uniqueCaught,
     uniqueTotal = self._unique,
     score = self._score,
+    mailWritten = self._mailWritten,
   }
 end
 

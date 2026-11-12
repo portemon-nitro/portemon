@@ -319,7 +319,12 @@ local function buildDoubles(sink, calls)
     },
     ["libs.hgss.src.ui.MailboxRenderer"] = {
       new = function(_)
-        return releasable(calls, "mailbox")
+        local renderer = releasable(calls, "mailbox")
+        function renderer:drawMailPane(view, paneId, _)
+          calls.mailPanes = calls.mailPanes or {}
+          calls.mailPanes[#calls.mailPanes + 1] = { view = view, pane = paneId }
+        end
+        return renderer
       end,
     },
     ["libs.hgss.src.ui.PhotoAlbumRenderer"] = {
@@ -483,6 +488,55 @@ local function compositionRuntime()
       runtime.pokedexPreparation = nil
     end
   end
+  -- The recording editor seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.easyChatBindCalls = {}
+  runtime.easyChatUnbindCalls = {}
+  runtime.bindEasyChatPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "editor preparation binding requires its acquire function")
+    assert(runtime.easyChatPreparation == nil, "one editor preparation binding owns the presented lifetime")
+    runtime.easyChatBindCalls[#runtime.easyChatBindCalls + 1] = acquire
+    runtime.easyChatPreparation = { id = #runtime.easyChatBindCalls, acquire = acquire }
+    return runtime.easyChatPreparation.id
+  end
+  runtime.unbindEasyChatPreparation = function(_, binding)
+    runtime.easyChatUnbindCalls[#runtime.easyChatUnbindCalls + 1] = binding
+    local current = runtime.easyChatPreparation
+    if current ~= nil and current.id == binding then
+      runtime.easyChatPreparation = nil
+    end
+  end
+  -- The recording Mail seam mirrors the production runtime binding:
+  -- one live prepare callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.mailBindCalls = {}
+  runtime.mailUnbindCalls = {}
+  runtime.bindMailPreparation = function(_, prepare)
+    assert(type(prepare) == "function", "Mail preparation binding requires its prepare function")
+    assert(runtime.mailPreparation == nil, "one Mail preparation binding owns the presented lifetime")
+    runtime.mailBindCalls[#runtime.mailBindCalls + 1] = prepare
+    runtime.mailPreparation = { id = #runtime.mailBindCalls, prepare = prepare }
+    return runtime.mailPreparation.id
+  end
+  runtime.unbindMailPreparation = function(_, binding)
+    runtime.mailUnbindCalls[#runtime.mailUnbindCalls + 1] = binding
+    local current = runtime.mailPreparation
+    if current ~= nil and current.id == binding then
+      runtime.mailPreparation = nil
+    end
+  end
+  runtime.easyChatCatalog = {
+    template = function()
+      return nil
+    end,
+    messageStatus = function()
+      return "invalid"
+    end,
+    expandMessage = function()
+      error("no expansion in dispatch tests", 0)
+    end,
+  }
   return runtime
 end
 
@@ -3031,6 +3085,89 @@ function T.blocked_display_hides_the_admitted_parent_until_a_supported_topology_
     Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual and icon lease")
   end)
   clearTransitionDisplay()
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Native MailView panes draw through the shared stationery renderer with
+-- no generic outer frame: the source chrome is already self-framed, and
+-- drawing never acquires images.
+function T.menu_flow_mail_view_routes_to_the_stationery_renderer()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local view = { mode = "write", stationeryType = 0 }
+      local child = {
+        view = view,
+        presentation = {
+          panes = {
+            {
+              id = "lower",
+              placement = { frame = { x = 0, y = 0, width = 256, height = 192 }, scale = 1 },
+              interactive = true,
+            },
+          },
+          content = {},
+          inputKey = "mail-view",
+          render = function()
+            error("MailView plans draw through the stationery renderer, never a leaf callback", 0)
+          end,
+          mapInput = function()
+            return nil
+          end,
+          frames = {},
+        },
+      }
+      local presentation = { open = true, root = "party", page = "mail_compose", child = child }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      local panes = assert(calls.mailPanes, "the MailView branch draws its panes through the stationery renderer")
+      Assert.equal(#panes, 1, "the single interaction pane draws exactly once")
+      Assert.equal(panes[1].pane, "lower", "the interaction pane carries its source pane identity")
+      Assert.isTrue(panes[1].view == view, "the pane draws the published detached view")
+      Assert.isNil(calls.mailbox, "drawing never releases the borrowed stationery renderer")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- The nested shared editor draws through its own renderer and readiness:
+-- the menu flow never remaps its pointer events through Mailbox
+-- coordinates and never draws a generic frame over its native UI.
+function T.menu_flow_easy_chat_routes_to_the_shared_editor_draw()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local child = {
+        preparationState = "ready",
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "easy-chat",
+          render = function()
+            error("shared editor plans draw through the editor renderer, never a leaf callback", 0)
+          end,
+          mapInput = function()
+            return nil
+          end,
+          frames = {},
+        },
+      }
+      local presentation = { open = true, root = "party", page = "mail_compose", child = child }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      Assert.equal(#sink, 0, "a pending editor draws only its own readiness cover")
+      resources:dispose()
+    end)
+  end)
   rawset(_G, "love", savedLove)
   if not ok then
     error(err, 0)

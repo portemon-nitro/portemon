@@ -3,6 +3,9 @@ local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local Mail = require("libs.mons.src.gen4.Mail")
 
+---@class Mailbox
+---@field _slots table<integer, unknown> fixed twenty-slot Mailbox records by one-based index
+---@field _revision integer prepared-publication revision
 local Mailbox = {}
 Mailbox.__index = Mailbox
 Mailbox.SCHEMA = "g4-mailbox-v1"
@@ -40,7 +43,10 @@ local function validate(snapshot, context)
     if value == false then
       result[index] = false
     else
-      local ok, checked = pcall(Mail.validate, value, context)
+      -- Explicit validation admits legacy nested Mail through the
+      -- supplied context without mutating the caller snapshot; new
+      -- prepared writes stay v2-only at prepareChanges.
+      local ok, checked = pcall(Mail.normalize, value, context)
       if not ok then
         invalid("mailbox slot contains invalid Mail")
       end
@@ -53,7 +59,10 @@ local function validate(snapshot, context)
   return result
 end
 
-function Mailbox.new(snapshot)
+---@param snapshot table<string, unknown>?
+---@param context table<string, unknown>? icon catalog context for explicit legacy admission
+---@return Mailbox
+function Mailbox.new(snapshot, context)
   if snapshot == nil then
     local slots = {}
     for index = 1, Mailbox.CAPACITY do
@@ -66,7 +75,17 @@ function Mailbox.new(snapshot)
   local slots = {}
   for index = 1, Mailbox.CAPACITY do
     local value = source[index]
-    slots[index] = value == false and false or copy(value)
+    if value == false then
+      slots[index] = false
+    elseif context ~= nil and type(value) == "table" and next(value) ~= nil and value.schema ~= Mail.SCHEMA then
+      -- Trusted current v2 copies stay untouched; only explicit legacy
+      -- nested Mail normalizes through the supplied context. Without a
+      -- context the snapshot copies through verbatim and explicit
+      -- admission migrates it later.
+      slots[index] = Mail.normalize(value, context)
+    else
+      slots[index] = copy(value)
+    end
   end
   return setmetatable({ _slots = slots, _revision = 0 }, Mailbox)
 end

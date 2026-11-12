@@ -81,6 +81,7 @@ end
 ---@field battlePolicy BattleSelectionPolicy? the native selection policy, required for battle
 ---@field saleSession table<string, unknown>? required for sell context
 ---@field partyEmpty boolean? true when no party member exists to target (field contexts hide Use/Give)
+---@field mailComposition boolean? stationery composition capability, admitted only in pick_held (default false)
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
@@ -256,8 +257,24 @@ function BagScreenState.new(opts)
   elseif context ~= "inventory" then
     resolveActions = BagActionPolicy.forField(service, opts.partyEmpty)
   end
+  -- Stationery enters the held-item picker only through the explicit
+  -- Mail composition capability, admitted solely for the held-item
+  -- picker; every other context keeps the default ordinary-only
+  -- eligibility and Storage keeps its custody refusal.
+  local mailComposition = opts.mailComposition
+  if mailComposition == nil then
+    mailComposition = false
+  end
+  assert(
+    type(mailComposition) == "boolean",
+    "the bag screen carries its stationery composition capability as a boolean"
+  )
+  assert(
+    mailComposition == false or context == "pick_held",
+    "stationery composition is admitted only in the held-item picker"
+  )
   local function pickable(itemKey)
-    return BagActionPolicy.isPickable(BagActionPolicy.fieldFacts(service, itemKey))
+    return BagActionPolicy.isPickable(BagActionPolicy.fieldFacts(service, itemKey), mailComposition)
   end
   local isPickable = nil
   if context == "pick_held" then

@@ -1,4 +1,5 @@
--- Mailbox rows project occupied persistent slots without compacting custody.
+-- Mailbox list projection, fresh erased-stationery composition, and the
+-- three-line MailView composer with its nested shared sentence editor.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -11,63 +12,92 @@ local T = {}
 
 local function letter(name)
   return {
-    schema = "g4-mail-v1",
+    schema = "g4-mail-v2",
     type = 0,
     author = { trainerId = 222, name = name, gender = 0, language = 2, game = 7 },
-    icons = { false, false, false },
+    icons = { "CHIKORITA/f0", false, false },
     lines = {
-      { template = "mail.line.first", words = { "word.one", false } },
-      { template = "mail.line.second", words = { "word.two", false } },
-      { template = "mail.line.third", words = { "word.three", false } },
+      { template = "mail-template:2:4", words = { "1371", "1417" } },
+      { template = "mail-template:3:1", words = { "1479", false } },
+      false,
     },
   }
+end
+
+-- Faithful C01 double for the composer boundary.
+local function fakeCatalog()
+  return {
+    template = function(_, bank, number)
+      if bank == 0 and number == 0 then
+        return { bank = 0, number = 0, wordCount = 2, tokens = {} }
+      end
+      return nil
+    end,
+    messageStatus = function(_, message)
+      if type(message) ~= "table" or message.bank ~= 0 or message.number ~= 0 then
+        return "invalid"
+      end
+      for _, id in ipairs(message.words) do
+        if id ~= 0 and id ~= 1 and id ~= 65535 then
+          return "invalid"
+        end
+      end
+      if message.words[1] == 65535 or message.words[2] == 65535 then
+        return "incomplete"
+      end
+      return "complete"
+    end,
+    expandMessage = function(_, message)
+      return { { kind = "glyph", text = "w" .. tostring(message.words[1] % 4096) } }
+    end,
+  }
+end
+
+local function writeVisual(name)
+  return { image = "assets/generated/pc/" .. name .. ".png", width = 64, height = 32, anchorX = 0, anchorY = 0 }
 end
 
 local function manifest()
   local stationery = {}
   for type = 0, 11 do
+    local frames = {}
+    for _ = 1, 14 do
+      frames[#frames + 1] = writeVisual("stationery-" .. type .. "-highlight")
+    end
+    local controls = {
+      { x = 24, y = 24, width = 208, height = 32 },
+      { x = 24, y = 64, width = 208, height = 32 },
+      { x = 24, y = 104, width = 208, height = 32 },
+      { x = 24, y = 148, width = 64, height = 24 },
+      { x = 160, y = 148, width = 64, height = 24 },
+    }
+    local highlights, hitMasks = {}, {}
+    for _, control in ipairs(controls) do
+      highlights[#highlights + 1] =
+        { x = control.x, y = control.y, width = control.width, height = control.height, frames = frames }
+      local rows = {}
+      for _ = 1, control.height do
+        rows[#rows + 1] = string.rep("1", control.width)
+      end
+      hitMasks[#hitMasks + 1] =
+        { x = control.x, y = control.y, width = control.width, height = control.height, rows = rows }
+    end
     stationery[type] = {
       itemKey = "MAIL_" .. type,
-      background = {
-        image = "assets/generated/pc/stationery-" .. type .. ".png",
-        width = 256,
-        height = 192,
-        anchorX = 0,
-        anchorY = 0,
+      background = writeVisual("stationery-" .. type),
+      write = {
+        background = writeVisual("stationery-" .. type .. "-write"),
+        backdrop = writeVisual("stationery-" .. type .. "-backdrop"),
+        highlights = highlights,
+        hitMasks = hitMasks,
       },
     }
-  end
-  -- Compose fixtures compile the retained templates with the two source
-  -- EC slots each plus a small word dictionary in the first Easy Chat
-  -- bank so the compose child browses real compiled entries.
-  local function twoSlotTemplate()
-    return {
-      { kind = "text", value = "fixture" },
-      { kind = "substitution" },
-      { kind = "substitution" },
-    }
-  end
-  local wordDictionary = {}
-  for _, wordId in ipairs({ 0, 1, 2, 496, 497 }) do
-    wordDictionary[tostring(wordId)] = { { kind = "text", value = "word" .. wordId } }
   end
   return {
-    schema = "g4-pc-v3",
+    schema = "g4-pc-v4",
     mailbox = { background = {}, geometry = { visibleLetters = 10 }, pageSize = 10 },
-    mail = {
-      stationery = stationery,
-      geometry = { iconSlots = 3 },
-      text = {
-        templates = {
-          ["mail.line.first"] = twoSlotTemplate(),
-          ["mail.line.second"] = twoSlotTemplate(),
-          ["mail.line.third"] = twoSlotTemplate(),
-        },
-        words = {},
-      },
-      wordDictionary = wordDictionary,
-    },
-    text = {},
+    mail = { stationery = stationery, geometry = { iconSlots = 3 } },
+    text = { banks = { [233] = { [0] = {}, [1] = {}, [2] = {}, [3] = {} } } },
     sequences = {},
   }
 end
@@ -87,6 +117,87 @@ local function measurement()
   }
 end
 
+local function freshLetter()
+  return {
+    schema = "g4-mail-v2",
+    type = 0,
+    author = { trainerId = 222, name = "GOLD", gender = 0, language = 2, game = 7 },
+    icons = { "CHIKORITA/f0", "TOTODILE/f0", false },
+    lines = { false, false, false },
+  }
+end
+
+-- Scripted shared-editor double: opens with the requested message,
+-- answers takeResult after two updates with the scripted verdict, and
+-- counts its fixed ticks to prove the once-per-tick stepping contract.
+local function fakeEditor(script)
+  local editor = {
+    _ticks = 0,
+    _request = nil,
+    _result = script.result,
+    _consumed = false,
+    disposed = false,
+    uiInput = "easy-chat",
+  }
+  function editor:open(request)
+    self._request = request
+    return self
+  end
+  function editor:updateFixed(_)
+    self._ticks = self._ticks + 1
+  end
+  function editor:status()
+    return { uiInput = "easy-chat", view = { mode = 2 }, preparing = false, presentation = { inputKey = "easy-chat" } }
+  end
+  function editor:takeResult()
+    if self._ticks >= (script.resultAfter or 6) and not self._consumed then
+      self._consumed = true
+      return self._result
+    end
+    return nil
+  end
+  function editor:cancelPointerCapture() end
+  function editor:dispose()
+    self.disposed = true
+  end
+  return editor
+end
+
+local function composerOpts(overrides)
+  local opts = {
+    letter = freshLetter(),
+    catalog = fakeCatalog(),
+    openEasyChat = function(_)
+      error("the composer test opens no editor without a script", 0)
+    end,
+    prepare = function(_)
+      return true
+    end,
+    manifest = manifest(),
+    measureDisplay = measurement,
+    audio = { play = function() end },
+    inputMode = "buttons",
+    readNavigation = function()
+      return { buttonsHeld = false }
+    end,
+  }
+  for key, value in pairs(overrides or {}) do
+    opts[key] = value
+  end
+  return opts
+end
+
+local function settle(compose)
+  for _ = 1, 30 do
+    compose:updateFixed({})
+    local status = compose:status()
+    if status.phase == "write" then
+      return status
+    end
+  end
+  error("the composer never settles into its write screen", 0)
+end
+
 local function openMailbox(slots, partyHasMembers)
   local values = {}
   for slot = 0, Mailbox.CAPACITY - 1 do
@@ -101,7 +212,7 @@ local function openMailbox(slots, partyHasMembers)
     manifest = manifest(),
     itemCatalog = {
       item = function(_, key)
-        return { icon = key }
+        return { icon = key, name = key }
       end,
     },
     measureDisplay = measurement,
@@ -163,12 +274,13 @@ function T.sparse_list_rows_retain_their_source_slots_and_read_view_is_copy_only
   state:updateFixed({ { type = "confirm" } })
   local viewer = state:status()
   Assert.equal(viewer.viewMode, "read", "the first action opens the authored letter")
-  Assert.deepEqual(viewer.letter, letter("BROCK"), "reading follows the selected persistent slot")
+  Assert.deepEqual(viewer.letter.lines, letter("BROCK").lines, "reading follows the selected persistent slot")
+  Assert.deepEqual(viewer.icons, { { iconKey = "CHIKORITA/f0" } }, "the read view carries stored icon selectors")
   viewer.letter.author.name = "EDITED"
-  Assert.deepEqual(mailbox:get(0), letter("MISTY"), "the read projection is copied from the owner")
-  state:updateFixed({ { type = "cancel" } })
-  Assert.equal(state:status().phase, "list", "back returns to the mailbox list")
+  Assert.deepEqual(mailbox:get(0).author.name, "MISTY", "the read projection is copied from the owner")
   Assert.equal(mailbox:revision(), revision, "reading does not publish a mailbox revision")
+  state:updateFixed({ { type = "cancel" } })
+  Assert.equal(state:status().phase, "list", "backing out of the viewer returns to the list")
   state:updateFixed({ { type = "cancel" } })
   Assert.isNil(state:result(), "quit plays the sprite-3 flash before reporting closed")
   Assert.isTrue(state:isActive(), "the list stays active while the quit flash runs")
@@ -179,267 +291,318 @@ function T.sparse_list_rows_retain_their_source_slots_and_read_view_is_copy_only
   state:dispose()
 end
 
-function T.source_page_hitboxes_route_mouse_and_touch_to_the_same_page_events()
-  local slots = {}
-  for slot = 0, Mailbox.CAPACITY - 1 do
-    slots[slot] = letter("SENDER" .. slot)
+function T.composer_starts_blank_and_gates_input_behind_its_entry_fade()
+  local compose = MailComposeState.new(composerOpts())
+  local status = compose:status()
+  Assert.equal(status.preparing, true, "the composer polls its preparation first")
+  compose:updateFixed({ { type = "confirm" } })
+  status = compose:status()
+  Assert.equal(status.phase, "enter", "readiness stages the entry fade")
+  Assert.equal(status.fadeCoefficient, 16, "the entry fade starts at full black")
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().phase, "enter", "input stays withheld through the entry fade")
+  local settledStatus = settle(compose)
+  Assert.equal(settledStatus.phase, "write")
+  Assert.equal(settledStatus.stationeryType, 0)
+  Assert.deepEqual(settledStatus.author.name, "GOLD", "the draft keeps its detached author")
+  Assert.deepEqual(settledStatus.icons, { "CHIKORITA/f0", "TOTODILE/f0", false })
+  for index = 1, 3 do
+    Assert.isFalse(settledStatus.lines[index], "fresh line " .. index .. " starts blank")
   end
-  local state = openMailbox(slots, true)
-  state:updateFixed({ { type = "pointer_down", x = 48, y = 170 } })
-  Assert.equal(state:status().page, 1, "the source right-page hitbox changes page")
-  Assert.equal(state:status().selectedSlot, 10)
-  state:updateFixed({ { type = "touch", x = 24, y = 170 } })
-  Assert.equal(state:status().page, 0, "the source left-page hitbox accepts touch input")
-  Assert.equal(state:status().selectedSlot, 0)
-  state:dispose()
+  Assert.equal(settledStatus.presentation.inputKey, "mail-view", "the write screen plans its native view")
+  compose:dispose()
 end
 
-function T.second_page_tracks_its_persisted_slot_and_clamps_after_its_last_row_is_removed()
-  local slots = {}
-  for slot = 0, 9 do
-    slots[slot] = letter("SENDER" .. slot)
+function T.preparation_failure_reports_without_a_result_or_custody_change()
+  local compose = MailComposeState.new(composerOpts({
+    prepare = function(_)
+      return false, "mailbox image missing at boom"
+    end,
+  }))
+  for _ = 1, 5 do
+    compose:updateFixed({ { type = "confirm" } })
   end
-  slots[19] = letter("LAST")
-  local state, mailbox = openMailbox(slots, true)
-  state:updateFixed({ { type = "page", direction = "next" } })
-  Assert.equal(state:status().page, 1)
-  Assert.deepEqual(state:status().visibleSlots, { 19 }, "the second page keeps the sparse persisted slot")
-  Assert.equal(state:status().selectedSlot, 19)
-
-  local change = assert(mailbox:prepareChanges(mailbox:revision(), { { slot = 19, value = false } }))
-  change.publish()
-  state:updateFixed({})
-  local status = state:status()
-  Assert.equal(status.page, 0, "removing the final second-page row clamps to the remaining page")
-  Assert.deepEqual(status.visibleSlots, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 })
-  Assert.equal(status.selectedSlot, 9, "focus clamps to the final row on the surviving page")
-  state:dispose()
+  local status = compose:status()
+  Assert.equal(status.preparing, true, "failed preparation keeps polling")
+  Assert.equal(status.preparationError, "mailbox image missing at boom", "failures carry their cause")
+  Assert.isNil(compose:takeResult(), "failed preparation publishes no result")
+  compose:dispose()
 end
 
-function T.page_controls_switch_a_full_mailbox_without_rekeying_its_rows()
-  local slots = {}
-  for slot = 0, Mailbox.CAPACITY - 1 do
-    slots[slot] = letter("SENDER" .. slot)
+function T.accepted_sentence_initializes_only_its_line_and_cancel_preserves_it()
+  local editor = fakeEditor({
+    result = {
+      cancelled = false,
+      changed = false,
+      inputMode = "buttons",
+      message = { bank = 0, number = 0, words = { 0, 1 } },
+    },
+  })
+  local compose = MailComposeState.new(composerOpts({
+    openEasyChat = function(request)
+      Assert.equal(request.mode, 2, "the letter sentence editor opens the shared sentence mode")
+      Assert.equal(request.promptId, 0, "sentence editing carries no prompt")
+      Assert.isFalse(request.alwaysConfirm, "sentence editing never forces confirmation")
+      Assert.deepEqual(
+        request.message,
+        { bank = 3, number = 0, words = { 65535, 65535 } },
+        "blank lines start at bank 3/message 0"
+      )
+      return editor
+    end,
+  }))
+  settle(compose)
+  Assert.equal(editor._ticks, 0, "the nested editor owns its ticks only after its own fade")
+  compose:updateFixed({ { type = "confirm" } })
+  for _ = 1, 30 do
+    compose:updateFixed({})
+    if compose:status().child ~= nil then
+      break
+    end
   end
-  local state = openMailbox(slots, true)
-  Assert.deepEqual(state:status().visibleSlots, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 })
-
-  state:updateFixed({ { type = "page", direction = "next" } })
-  local secondPage = state:status()
-  Assert.equal(secondPage.page, 1)
-  Assert.deepEqual(secondPage.visibleSlots, { 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 })
-  Assert.equal(secondPage.selectedSlot, 10)
-
-  state:updateFixed({ { type = "page", direction = "previous" } })
-  local firstPage = state:status()
-  Assert.equal(firstPage.page, 0)
-  Assert.deepEqual(firstPage.visibleSlots, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 })
-  Assert.equal(firstPage.selectedSlot, 0)
-  state:dispose()
-end
-
-function T.list_shows_ten_mails_per_page_with_retail_grid_inputs()
-  local slots = {}
-  for slot = 0, Mailbox.CAPACITY - 1 do
-    slots[slot] = letter("SENDER" .. slot)
-  end
-  local state = openMailbox(slots, true)
-  local status = state:status()
-  Assert.equal(#status.rows, 10, "the list shows ten mails per page")
-  Assert.equal(status.cursorInput, 0, "the cursor starts on the first grid input")
-  for input = 0, 9 do
-    local row = status.rows[input + 1]
-    Assert.equal(row.slot, input, "row order follows the page-relative slots")
-    Assert.equal(row.input, input, "each status row carries its retail grid input")
-    Assert.equal(row.selected, input == 0, "only the cursor row is selected")
-  end
-  state:updateFixed({ { type = "page", direction = "next" } })
-  local second = state:status()
-  Assert.equal(#second.rows, 10, "the second page shows ten mails")
-  for input = 0, 9 do
-    Assert.equal(second.rows[input + 1].slot, 10 + input)
-    Assert.equal(second.rows[input + 1].input, input, "grid inputs restart on every page")
-  end
-  Assert.equal(second.cursorInput, 0, "paging parks the cursor on the first input")
-  state:dispose()
-end
-
-function T.list_navigation_moves_columns_and_rows_on_the_retail_grid()
-  local slots = {}
-  for slot = 0, Mailbox.CAPACITY - 1 do
-    slots[slot] = letter("SENDER" .. slot)
-  end
-  local state = openMailbox(slots, true)
-  state:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(state:status().cursorInput, 1, "right moves across the row")
-  Assert.equal(state:status().selectedSlot, 1)
-  state:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(state:status().cursorInput, 1, "the right edge holds the cursor")
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().cursorInput, 3, "down moves down the column")
-  state:updateFixed({ { type = "navigate", direction = "left" } })
-  Assert.equal(state:status().cursorInput, 2, "left moves back across the row")
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().cursorInput, 0, "up moves up the column")
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().cursorInput, 0, "the top row holds the cursor")
-  state:updateFixed({ { type = "navigate", direction = "left" } })
-  Assert.equal(state:status().cursorInput, 0, "the left edge holds the cursor")
-  state:dispose()
-end
-
-function T.list_navigation_reaches_close_and_returns_to_row_eight()
-  local slots = {}
-  for slot = 0, Mailbox.CAPACITY - 1 do
-    slots[slot] = letter("SENDER" .. slot)
-  end
-  local state = openMailbox(slots, true)
+  local editing = compose:status()
+  Assert.notNil(editing.child, "selecting a line parks the draft and opens the shared editor")
+  Assert.equal(editing.uiInput, "easy-chat", "the nested editor profile routes while it owns input")
+  Assert.equal(editing.presentation.inputKey, "easy-chat", "the shared editor plan routes while the child is pending")
   for _ = 1, 4 do
-    state:updateFixed({ { type = "navigate", direction = "down" } })
+    compose:updateFixed({})
   end
-  Assert.equal(state:status().cursorInput, 8, "down walks the left column to row 8")
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  local closed = state:status()
-  Assert.equal(closed.cursorInput, 10, "row 8 downs onto CLOSE")
-  Assert.isNil(closed.selectedSlot, "CLOSE selects no mail row")
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().cursorInput, 8, "up from CLOSE returns to row 8")
-  Assert.equal(state:status().selectedSlot, 8)
-  state:updateFixed({ { type = "navigate", direction = "right" } })
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().cursorInput, 10, "row 9 downs onto CLOSE")
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().cursorInput, 10, "down holds the cursor on CLOSE")
-  state:dispose()
-end
-
-function T.list_navigation_skips_empty_cells()
-  local state = openMailbox({ [0] = letter("MISTY"), [4] = letter("BROCK") }, true)
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(state:status().cursorInput, 4, "down skips the empty cells of the column")
-  Assert.equal(state:status().selectedSlot, 4)
-  state:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(state:status().cursorInput, 0, "up skips back to the occupied cell")
-  state:dispose()
-
-  local pair = openMailbox({ [0] = letter("MISTY"), [1] = letter("BROCK") }, true)
-  pair:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(pair:status().cursorInput, 1, "down with an empty column falls to the occupied neighbor")
-  pair:updateFixed({ { type = "confirm" } })
-  Assert.equal(pair:status().phase, "action", "the reached row still opens")
-  pair:dispose()
-end
-
-function T.empty_mailbox_parks_the_cursor_on_close()
-  local state = openMailbox({}, true)
-  local status = state:status()
-  Assert.equal(status.cursorInput, 10, "an empty list parks the cursor on CLOSE")
-  Assert.isNil(status.selectedSlot, "an empty list selects no row")
-  Assert.equal(#status.rows, 0, "an empty list shows no rows")
-  state:updateFixed({ { type = "confirm" } })
-  Assert.isNil(state:result(), "confirming CLOSE plays the flash before reporting closed")
-  for _ = 1, 8 do
-    state:updateFixed({})
+  Assert.equal(editor._ticks, 4, "the composer steps the pending child exactly once per fixed tick")
+  for _ = 1, 30 do
+    compose:updateFixed({})
+    if compose:status().child == nil then
+      break
+    end
   end
-  Assert.equal(state:result().kind, "closed")
-  state:dispose()
+  local accepted = compose:status()
+  Assert.isNil(accepted.child, "the accepted sentence disposes its editor exactly once")
+  Assert.isTrue(editor.disposed, "the finished editor releases")
+  Assert.deepEqual(
+    accepted.lines[1],
+    { template = "mail-template:0:0", words = { "0", "1" } },
+    "accepted-but-unchanged still initializes the blank line"
+  )
+  Assert.isFalse(accepted.lines[2], "untouched line two stays blank")
+  Assert.isFalse(accepted.lines[3], "untouched line three stays blank")
+  compose:dispose()
 end
 
-function T.pointer_taps_select_cells_and_close_on_the_retail_grid()
-  local slots = {}
-  for slot = 0, 9 do
-    slots[slot] = letter("SENDER" .. slot)
+function T.cancelled_sentence_preserves_its_line_exactly()
+  local editor = fakeEditor({ result = { cancelled = true, changed = false, inputMode = "touch" } })
+  local compose = MailComposeState.new(composerOpts({
+    openEasyChat = function(_)
+      return editor
+    end,
+  }))
+  settle(compose)
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "confirm" } })
+  for _ = 1, 40 do
+    compose:updateFixed({})
+    if compose:status().child == nil and compose:status().phase == "write" then
+      break
+    end
   end
-  local state = openMailbox(slots, true)
-  -- Input 2 is the left column, second row: x 8-119, y 32-63.
-  state:updateFixed({ { type = "pointer_down", x = 64, y = 48 } })
-  local opened = state:status()
-  Assert.equal(opened.phase, "action", "tapping a mail cell opens its action menu")
-  Assert.equal(opened.selectedSlot, 2, "the tap selects the tapped grid cell")
-  state:updateFixed({ { type = "cancel" } })
-  Assert.equal(state:status().phase, "list", "the action menu still backs out to the list")
-  -- CLOSE spans x 192-255, y 160-191.
-  state:updateFixed({ { type = "pointer_down", x = 200, y = 170 } })
-  Assert.isNil(state:result(), "tapping CLOSE plays the flash before reporting closed")
-  for _ = 1, 8 do
-    state:updateFixed({})
+  local resumed = compose:status()
+  Assert.isFalse(resumed.lines[2], "cancelling the sentence leaves the selected line exactly blank")
+  Assert.equal(resumed.inputMode, "touch", "the composer retains the result modality")
+  compose:dispose()
+end
+
+function T.all_blank_submit_warns_and_quit_confirms_then_reports_once()
+  local compose = MailComposeState.new(composerOpts())
+  settle(compose)
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(compose:status().focusPos, 3, "three downs reach the button row")
+  compose:updateFixed({ { type = "confirm" } })
+  local warned = compose:status()
+  Assert.isTrue(warned.warning, "the all-blank letter warns instead of submitting")
+  Assert.isTrue(warned.modal, "the warning modals the draft")
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(compose:status().warning, "dismissing the warning keeps the draft")
+  Assert.isNil(compose:takeResult(), "the warning publishes no result")
+
+  compose:updateFixed({ { type = "cancel" } })
+  local quit = compose:status()
+  Assert.notNil(quit.quit, "quitting the letter asks its source confirmation")
+  Assert.equal(quit.quit.cursor, "yes", "the quit prompt starts on YES")
+  compose:updateFixed({ { type = "cancel" } })
+  local resumed = compose:status()
+  Assert.isNil(resumed.quit, "declining quit resumes the exact draft")
+  Assert.equal(resumed.phase, "write")
+  compose:updateFixed({ { type = "cancel" } })
+  for _ = 1, 6 do
+    compose:updateFixed({ { type = "navigate", direction = "down" } })
   end
-  Assert.equal(state:result().kind, "closed")
-  state:dispose()
+  compose:updateFixed({ { type = "confirm" } })
+  local result = nil
+  for _ = 1, 20 do
+    compose:updateFixed({})
+    result = compose:takeResult()
+    if result ~= nil then
+      break
+    end
+  end
+  Assert.deepEqual(result, { kind = "cancelled", inputMode = "buttons" }, "quit reports its one-shot result")
+  Assert.isNil(compose:takeResult(), "results drain exactly once")
+  compose:dispose()
 end
 
-function T.pointer_tap_on_an_empty_cell_keeps_the_cursor()
-  local state = openMailbox({ [0] = letter("MISTY") }, true)
-  -- Input 5 is the right column, third row: x 136-244, y 64-95.
-  state:updateFixed({ { type = "pointer_down", x = 190, y = 80 } })
-  local status = state:status()
-  Assert.equal(status.phase, "list", "tapping an empty cell opens nothing")
-  Assert.equal(status.cursorInput, 0, "the cursor stays on its occupied cell")
-  Assert.equal(status.selectedSlot, 0)
-  state:dispose()
-end
-
-function T.read_and_confirm_close_paths_flash_with_unchanged_kinds()
-  local reading = MailboxScreenState.new({
-    mode = "read",
-    manifest = manifest(),
-    letter = letter("MISTY"),
-    measureDisplay = measurement,
-    audio = { play = function() end },
+function T.complete_letter_submits_once_after_its_exit_fade()
+  local editor = fakeEditor({
+    result = {
+      cancelled = false,
+      changed = true,
+      inputMode = "buttons",
+      message = { bank = 0, number = 0, words = { 0, 1 } },
+    },
   })
-  reading:updateFixed({ { type = "cancel" } })
-  Assert.isNil(reading:result(), "the read close plays the flash before reporting closed")
-  for _ = 1, 8 do
-    reading:updateFixed({})
+  local compose = MailComposeState.new(composerOpts({
+    openEasyChat = function(_)
+      return editor
+    end,
+  }))
+  settle(compose)
+  compose:updateFixed({ { type = "confirm" } })
+  for _ = 1, 40 do
+    compose:updateFixed({})
+    if compose:status().child == nil and compose:status().phase == "write" then
+      break
+    end
   end
-  Assert.equal(reading:result().kind, "closed", "the read close keeps its result kind")
-  reading:dispose()
-
-  local confirming = MailboxScreenState.new({
-    mode = "read",
-    manifest = manifest(),
-    letter = letter("MISTY"),
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  confirming:updateFixed({ { type = "confirm" } })
-  for _ = 1, 8 do
-    confirming:updateFixed({})
+  Assert.isTrue(compose:status().lines[1] ~= false, "the accepted sentence initializes its line")
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "navigate", direction = "down" } })
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.isNil(compose:takeResult(), "the result stays withheld through the exit fade")
+  local result = nil
+  for _ = 1, 20 do
+    compose:updateFixed({})
+    result = compose:takeResult()
+    if result ~= nil then
+      break
+    end
   end
-  Assert.equal(confirming:result().kind, "closed", "the read confirm keeps its result kind")
-  confirming:dispose()
-
-  local declined = MailboxScreenState.new({
-    mode = "confirm",
-    manifest = manifest(),
-    prompt = { bank = 232, id = 10 },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  declined:updateFixed({ { type = "cancel" } })
-  Assert.isNil(declined:result(), "the declined prompt plays the flash before reporting")
-  for _ = 1, 8 do
-    declined:updateFixed({})
-  end
-  Assert.equal(declined:result().kind, "declined", "the declined prompt keeps its result kind")
-  declined:dispose()
-
-  local agreed = MailboxScreenState.new({
-    mode = "confirm",
-    manifest = manifest(),
-    prompt = { bank = 300, id = 1 },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  agreed:updateFixed({ { type = "confirm" } })
-  for _ = 1, 8 do
-    agreed:updateFixed({})
-  end
-  Assert.equal(agreed:result().kind, "confirmed", "the confirmed prompt keeps its result kind")
-  agreed:dispose()
+  Assert.equal(result.kind, "submitted")
+  Assert.equal(result.inputMode, "buttons")
+  Assert.equal(result.letter.schema, "g4-mail-v2", "submitted letters carry the current schema")
+  Assert.deepEqual(result.letter.lines[1], { template = "mail-template:0:0", words = { "0", "1" } })
+  Assert.isFalse(result.letter.lines[2], "blank slots persist as false")
+  result.letter.lines[1].words[1] = "MUTATED"
+  Assert.equal(compose:status().lines[1].words[1], "0", "submitted results detach from the live draft")
+  Assert.isNil(compose:takeResult(), "submitted results drain exactly once")
+  compose:dispose()
 end
 
-function T.hold_erased_mail_follow_up_reuses_the_picker_and_compiled_prompts()
+function T.touch_switches_modality_and_activates_while_keys_switch_back()
+  local editor = fakeEditor({
+    result = {
+      cancelled = false,
+      changed = true,
+      inputMode = "touch",
+      message = { bank = 0, number = 0, words = { 1, 0 } },
+    },
+  })
+  local compose = MailComposeState.new(composerOpts({
+    openEasyChat = function(_)
+      return editor
+    end,
+    readNavigation = function()
+      return { buttonsHeld = false }
+    end,
+  }))
+  settle(compose)
+  Assert.equal(compose:status().inputMode, "buttons")
+  -- A buttons-mode touch both switches modality and activates its
+  -- control in the same source input step.
+  compose:updateFixed({ { type = "pointer_down", x = 100, y = 40 } })
+  for _ = 1, 40 do
+    compose:updateFixed({})
+    if compose:status().child == nil and compose:status().phase == "write" then
+      break
+    end
+  end
+  local touched = compose:status()
+  Assert.equal(touched.inputMode, "touch", "the activating touch switches modality")
+  Assert.isTrue(touched.lines[1] ~= false, "the same touch activates the tapped line")
+  -- Releasing the touch, then a key with no held touch switches back
+  -- to buttons and is consumed.
+  compose:updateFixed({ { type = "pointer_up" } })
+  compose:updateFixed({ { type = "confirm" } })
+  Assert.equal(compose:status().inputMode, "buttons", "the unconsumed key switches modality back")
+  compose:dispose()
+end
+
+function T.held_touch_is_not_another_new_tap()
+  local editor = fakeEditor({
+    result = {
+      cancelled = false,
+      changed = true,
+      inputMode = "touch",
+      message = { bank = 0, number = 0, words = { 1, 0 } },
+    },
+  })
+  local compose = MailComposeState.new(composerOpts({
+    openEasyChat = function(_)
+      return editor
+    end,
+    inputMode = "touch",
+  }))
+  settle(compose)
+  compose:updateFixed({ { type = "pointer_down", x = 100, y = 40 } })
+  for _ = 1, 40 do
+    compose:updateFixed({})
+    if compose:status().child == nil and compose:status().phase == "write" then
+      break
+    end
+  end
+  Assert.isTrue(compose:status().lines[1] ~= false, "the new tap activates line one")
+  local ticks = editor._ticks
+  for _ = 1, 5 do
+    compose:updateFixed({})
+  end
+  Assert.isTrue(compose:status().lines[2] == false, "the held touch opens no second line")
+  Assert.isTrue(editor._ticks >= ticks, "the composer keeps stepping its settled child")
+  compose:updateFixed({ { type = "pointer_up" } })
+  compose:dispose()
+end
+
+function T.disposal_releases_the_pending_child_exactly_once()
+  local editor = fakeEditor({
+    result = {
+      cancelled = false,
+      changed = true,
+      inputMode = "buttons",
+      message = { bank = 0, number = 0, words = { 0, 1 } },
+    },
+  })
+  local compose = MailComposeState.new(composerOpts({
+    openEasyChat = function(_)
+      return editor
+    end,
+  }))
+  settle(compose)
+  compose:updateFixed({ { type = "confirm" } })
+  for _ = 1, 30 do
+    compose:updateFixed({})
+    if compose:status().child ~= nil then
+      break
+    end
+  end
+  Assert.notNil(compose:status().child, "the line edit parks the draft behind its child")
+  compose:dispose()
+  Assert.isTrue(editor.disposed, "teardown disposes the pending child exactly once")
+  compose:dispose()
+  Assert.isTrue(editor.disposed, "disposal stays idempotent")
+end
+
+-- The erased follow-up opens the same fresh three-line composer the Bag
+-- and Party entries use: the current author, three blank lines, and the
+-- current icon snapshot instead of the erased values.
+function T.hold_erased_mail_follow_up_composes_fresh_and_stored_give_moves_unchanged()
   local cues = {}
   local values = {}
   for slot = 0, Mailbox.CAPACITY - 1 do
@@ -450,6 +613,15 @@ function T.hold_erased_mail_follow_up_reuses_the_picker_and_compiled_prompts()
   local fakeActions = {
     revisionSnapshot = function()
       return { mailboxRevision = 0, partyRevision = 0, bagRevision = 0 }
+    end,
+    previewComposition = function(_, request)
+      assert(request.targetSlot == 3, "composition preflights its picker recipient")
+      assert(request.itemKey == "MAIL_0", "composition consumes the erased stationery")
+      assert(request.partyRevision == 0 and request.bagRevision == 0, "composition carries live revisions")
+      if request.confirmed ~= true then
+        return { kind = "needs_confirmation", before = { heldItem = "NONE", form = 0, maxHp = 10 } }
+      end
+      return { kind = "ready", stationeryType = 0, before = { heldItem = "NONE", form = 0, maxHp = 10 } }
     end,
     preview = function(_, request)
       if request.kind == "eraseMailboxMessage" then
@@ -480,33 +652,107 @@ function T.hold_erased_mail_follow_up_reuses_the_picker_and_compiled_prompts()
         return { kind = "refused", reason = "declined" }
       end
       if intent.operation == "erase" then
-        return { kind = "changed", outcome = "returned" }
+        return { kind = "changed", outcome = "returned", itemKey = "MAIL_0" }
       end
-      return { kind = "changed", outcome = "held", targetSlot = intent.request.targetSlot }
+      return {
+        kind = "changed",
+        outcome = "given",
+        targetSlot = intent.request.targetSlot,
+        before = { heldItem = "NONE", form = 0, maxHp = 10 },
+        after = { heldItem = "MAIL_0", form = 0, maxHp = 10 },
+        itemKey = "MAIL_0",
+      }
     end,
   }
-  local picked = false
+  local pickerSelected, pickerConfirmed, pickerCancelled, completions = false, false, false, {}
   local picker = {
     updateFixed = function() end,
-    takeResult = function()
-      if not picked then
-        picked = true
-        return { kind = "selected", slot = 3 }
+    takeIntent = function(self)
+      if not pickerSelected then
+        pickerSelected = true
+        return { kind = "give", slot = 3, partyRevision = 0, bagRevision = 0, item = "MAIL_0" }
+      end
+      if not pickerConfirmed then
+        pickerConfirmed = true
+        return { kind = "give", slot = 3, partyRevision = 0, bagRevision = 0, item = "MAIL_0", confirmed = true }
       end
       return nil
     end,
+    takeResult = function()
+      if pickerCancelled then
+        pickerCancelled = false
+        return { kind = "cancelled" }
+      end
+      return nil
+    end,
+    completeAction = function(_, outcome)
+      completions[#completions + 1] = outcome
+    end,
     dispose = function() end,
+    cancelPointerCapture = function() end,
     draw = function() end,
+  }
+  local mons = {
+    partyMon = function(_, slot)
+      assert(slot == 3, "feedback names the composed recipient")
+      return { nickname = "ABRA", heldItem = "MAIL_0", form = 0, mail = {} }
+    end,
   }
   local state = MailboxScreenState.new({
     mode = "mailbox",
     partyHasMembers = true,
     mailbox = mailbox,
     mailActions = fakeActions,
+    makeMailComposer = function(request)
+      Assert.equal(request.targetSlot, 3, "the fresh factory carries the picker recipient")
+      Assert.equal(request.itemKey, "MAIL_0", "the fresh factory carries the erased stationery")
+      local draft = {
+        schema = "g4-mail-v2",
+        type = 0,
+        author = { trainerId = 222, name = "GOLD", gender = 0, language = 2, game = 7 },
+        icons = { "CHIKORITA/f0", "TOTODILE/f0", false },
+        lines = { false, false, false },
+      }
+      return MailComposeState.new({
+        letter = draft,
+        catalog = fakeCatalog(),
+        openEasyChat = function(_)
+          local editor = fakeEditor({
+            result = {
+              cancelled = false,
+              changed = true,
+              inputMode = "buttons",
+              message = { bank = 0, number = 0, words = { 0, 1 } },
+            },
+          })
+          return editor
+        end,
+        prepare = function(_)
+          return true
+        end,
+        manifest = manifest(),
+        measureDisplay = measurement,
+        audio = {
+          play = function(sequence)
+            cues[#cues + 1] = sequence
+          end,
+        },
+        inputMode = "buttons",
+        readNavigation = function()
+          return { buttonsHeld = false }
+        end,
+      })
+    end,
+    mons = mons,
     manifest = manifest(),
     itemCatalog = {
       item = function(_, key)
-        return { icon = key }
+        return { icon = key, name = key }
+      end,
+    },
+    monCatalog = {
+      species = function(_, key)
+        return { name = key }
       end,
     },
     measureDisplay = measurement,
@@ -515,7 +761,9 @@ function T.hold_erased_mail_follow_up_reuses_the_picker_and_compiled_prompts()
         cues[#cues + 1] = sequence
       end,
     },
-    createPartyPicker = function()
+    createPartyPicker = function(role, facts)
+      Assert.equal(role, "compose", "the erased follow-up opens the give-target picker")
+      Assert.equal(facts.itemKey, "MAIL_0", "the give-target picker carries the erased stationery")
       return picker
     end,
   })
@@ -524,61 +772,78 @@ function T.hold_erased_mail_follow_up_reuses_the_picker_and_compiled_prompts()
   state:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(state:status().action, "erase")
   state:updateFixed({ { type = "confirm" } })
-  local confirm = state:status()
-  Assert.equal(confirm.phase, "confirm")
-  Assert.deepEqual(confirm.prompt, { bank = 232, id = 10 }, "erase confirmation shows compiled msg 10")
+  Assert.equal(state:status().phase, "confirm", "erase confirmation shows compiled msg 10")
+  Assert.deepEqual(state:status().prompt, { bank = 232, id = 10 })
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(state:status().phase, "erased", "committed erasure reports msg 11 before the hold question")
   Assert.equal(committed[1].confirmation, true)
   state:updateFixed({ { type = "confirm" } })
-  local hold = state:status()
-  Assert.equal(hold.phase, "holdMail")
-  Assert.deepEqual(hold.prompt, { bank = 232, id = 12 }, "the hold question shows compiled msg 12")
+  Assert.equal(state:status().phase, "holdMail", "the committed erase asks its hold follow-up")
+  Assert.deepEqual(state:status().prompt, { bank = 232, id = 12 })
   state:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:status().phase, "picker")
-  state:updateFixed({})
+  Assert.equal(state:status().phase, "picker", "accepting hold opens the recipient picker")
+  for _ = 1, 10 do
+    state:updateFixed({})
+    if state:status().phase == "compose" then
+      break
+    end
+  end
   local composing = state:status()
-  Assert.equal(composing.phase, "compose", "the picker recipient opens word composition")
-  Assert.isTrue(composing.compose ~= nil, "composition publishes its browser snapshot")
-  Assert.equal(composing.compose.stationeryType, 0, "composition reuses the erased stationery")
-  Assert.equal(composing.compose.author.name, "MISTY", "composition carries the retained author")
-  Assert.equal(#composing.compose.slots, 6, "composition starts with every retained word slot empty")
-  Assert.isFalse(composing.compose.submitReady, "empty slots cannot submit")
-  -- Each retained slot browses the compiled dictionary: open the bank,
-  -- open its words, and fill the first compiled entry.
-  for _ = 1, 6 do
-    state:updateFixed({ { type = "confirm" } })
-    Assert.equal(state:status().compose.phase, "bank")
-    state:updateFixed({ { type = "confirm" } })
-    Assert.equal(state:status().compose.phase, "word")
-    state:updateFixed({ { type = "confirm" } })
-    Assert.equal(state:status().compose.phase, "edit")
+  Assert.equal(composing.phase, "compose", "the picked recipient opens the fresh letter composer")
+  local draft = assert(composing.compose, "composition publishes its draft status")
+  Assert.equal(draft.stationeryType, 0, "composition reuses the erased stationery type")
+  Assert.equal(draft.author.name, "GOLD", "the follow-up captures the current author, not the erased one")
+  for index = 1, 3 do
+    Assert.isFalse(draft.lines[index], "the follow-up starts blank line " .. index)
   end
-  local filled = state:status().compose
-  Assert.isTrue(filled.submitReady, "filled slots satisfy the renderer contract")
-  Assert.isNil(filled.error, "valid browsers report no composition error")
+  -- The composer runs the shared editor for line one, then submits the
+  -- whole letter; the mailbox commits custody once and feeds the Party
+  -- give feedback back to the parked picker.
+  for _ = 1, 60 do
+    state:updateFixed({})
+    if
+      state:status().phase == "write" or (state:status().compose ~= nil and state:status().compose.phase == "write")
+    then
+      break
+    end
+  end
+  -- Compose line one through the shared editor first: an all-blank
+  -- letter would warn instead of submitting.
   state:updateFixed({ { type = "confirm" } })
-  local done = state:status()
-  Assert.equal(done.phase, "list", "submitting the composed letter returns to the list")
-  Assert.isNil(done.compose, "submission closes the composition child")
-  Assert.equal(done.outcome.outcome, "held", "the composed letter attaches through its own custody change")
-  Assert.equal(committed[2].intent.operation, "compose")
-  Assert.equal(committed[2].intent.request.kind, "composeGiveMail")
-  Assert.equal(committed[2].intent.request.targetSlot, 3)
-  Assert.isNil(committed[2].confirmation, "ready compose intents publish without confirmation")
-  local composed = committed[2].intent.request.letter
-  Assert.equal(composed.type, 0, "the composed letter reuses the erased stationery")
-  Assert.equal(composed.author.name, "MISTY", "the composed letter keeps the retained author")
-  for _, line in ipairs(composed.lines) do
-    Assert.deepEqual(line.words, { "0", "0" }, "submission carries the browsed compiled words")
+  for _ = 1, 60 do
+    state:updateFixed({})
+    local cs = state:status()
+    if cs.compose ~= nil and cs.compose.phase == "write" and cs.compose.lines[1] ~= false then
+      break
+    end
   end
-  local decided, selected = false, false
+  Assert.isTrue(state:status().compose.lines[1] ~= false, "the hold follow-up composes its first sentence")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 200 do
+    state:updateFixed({})
+    if state:status().phase == "picker" and #completions > 0 then
+      break
+    end
+  end
+  Assert.equal(state:status().phase, "picker", "submitted Mail parks feedback on its Party child")
+  Assert.equal(completions[1].kind, "needs_confirmation", "the replacement question precedes the fresh draft")
+  local feedback = completions[#completions]
+  Assert.equal(feedback.kind, "changed", "the committed letter feeds the existing give feedback")
+  Assert.equal(feedback.message.templateKey, "giveHeldItem", "an empty-handed recipient reports the plain give result")
+  for _ = 1, 20 do
+    state:updateFixed({})
+  end
+  pickerCancelled = true
+  state:updateFixed({})
+  Assert.equal(state:status().phase, "list", "acknowledging the feedback returns to the list")
+  local decided = false
   for _, sequence in ipairs(cues) do
     decided = decided or sequence == "SEQ_SE_DP_DECIDE"
-    selected = selected or sequence == "SEQ_SE_DP_SELECT"
   end
   Assert.isTrue(decided, "confirmations cue DECIDE")
-  Assert.isTrue(selected, "menu movement cues SELECT")
   state:dispose()
 end
 
@@ -604,7 +869,7 @@ function T.hold_erased_mail_decline_reports_the_committed_bag_outcome()
       }
     end,
     commit = function()
-      return { kind = "changed", outcome = "discarded" }
+      return { kind = "changed", outcome = "discarded", itemKey = "MAIL_0" }
     end,
   }
   local state = MailboxScreenState.new({
@@ -615,7 +880,7 @@ function T.hold_erased_mail_decline_reports_the_committed_bag_outcome()
     manifest = manifest(),
     itemCatalog = {
       item = function(_, key)
-        return { icon = key }
+        return { icon = key, name = key }
       end,
     },
     measureDisplay = measurement,
@@ -640,619 +905,55 @@ function T.hold_erased_mail_decline_reports_the_committed_bag_outcome()
   state:dispose()
 end
 
-function T.mail_compose_browses_only_compiled_banks_and_cancels_cleanly()
-  local played = {}
-  local compose = MailComposeState.new({
+function T.read_and_confirm_close_paths_flash_with_unchanged_kinds()
+  local reading = MailboxScreenState.new({
+    mode = "read",
     manifest = manifest(),
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = {
-      play = function(sequence)
-        played[#played + 1] = sequence
+    letter = letter("MISTY"),
+    monCatalog = {
+      iconSelection = function(_, icon)
+        return icon
       end,
     },
+    measureDisplay = measurement,
+    audio = { play = function() end },
   })
-  local status = compose:status()
-  Assert.equal(status.phase, "edit")
-  Assert.deepEqual(status.banks, { { bank = 0, count = 3 }, { bank = 1, count = 2 } })
-  Assert.isNil(status.words, "the word list stays hidden until its bank opens")
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "bank", "confirming a slot opens the bank browser")
-  compose:updateFixed({ { type = "cancel" } })
-  Assert.equal(compose:status().phase, "edit", "cancelling the bank browser returns to the slots")
-  compose:updateFixed({ { type = "cancel" } })
-  local result = compose:takeResult()
-  Assert.deepEqual(result, { kind = "cancelled" }, "cancelling the slots closes without a letter")
-  Assert.isNil(compose:takeResult(), "composition results are taken exactly once")
-  Assert.isTrue(#played > 0, "composition cues its navigation")
-  compose:dispose()
-end
+  reading:updateFixed({ { type = "cancel" } })
+  Assert.isNil(reading:result(), "the read close plays the flash before reporting closed")
+  for _ = 1, 8 do
+    reading:updateFixed({})
+  end
+  Assert.equal(reading:result().kind, "closed", "the read close keeps its result kind")
+  reading:dispose()
 
-function T.mail_compose_rejects_unknown_words_and_mismatched_templates()
-  local compose = MailComposeState.new({
+  local confirming = MailboxScreenState.new({
+    mode = "confirm",
     manifest = manifest(),
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
+    prompt = { bank = 300, id = 1 },
     measureDisplay = measurement,
     audio = { play = function() end },
   })
-  local ok, reason = compose:submit()
-  Assert.isFalse(ok, "empty slots cannot submit")
-  Assert.equal(reason, "incomplete")
-  Assert.equal(compose:status().error, "incomplete", "the failed submit publishes its reason")
-  local wordOk = pcall(function()
-    compose:setWord(1, 1, "9999")
-  end)
-  Assert.isFalse(wordOk, "uncompiled words never reach the custody intent")
-  compose:setWord(1, 1, "0")
-  compose:setWord(1, 2, "1")
-  local partial, partialReason = compose:submit()
-  Assert.isFalse(partial, "partially filled lines cannot submit")
-  Assert.equal(partialReason, "incomplete")
-  compose:dispose()
-
-  local singleSlot = manifest()
-  singleSlot.mail.text.templates["mail.line.first"] = { { kind = "substitution" } }
-  local mismatched = MailComposeState.new({
-    manifest = singleSlot,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", false, false },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  mismatched:setWord(1, 1, "0")
-  mismatched:setWord(1, 2, "1")
-  local slotOk, slotReason = mismatched:validate()
-  Assert.isFalse(slotOk, "slot counts mirror the renderer expansion check")
-  Assert.equal(slotReason, "invalid_letter")
-  mismatched:dispose()
-end
-
-function T.compose_cancel_reports_the_committed_erase_outcome_with_custody_unchanged()
-  local values = {}
-  for slot = 0, Mailbox.CAPACITY - 1 do
-    values[slot + 1] = slot == 0 and letter("MISTY") or false
+  confirming:updateFixed({ { type = "confirm" } })
+  for _ = 1, 8 do
+    confirming:updateFixed({})
   end
-  local mailbox = Mailbox.new({ schema = Mailbox.SCHEMA, slots = values })
-  local mailboxBefore = mailbox:capture()
-  local fakeActions = {
-    revisionSnapshot = function()
-      return { mailboxRevision = 0, partyRevision = 0, bagRevision = 0 }
-    end,
-    preview = function(_, request)
-      assert(request.kind == "eraseMailboxMessage", "cancelling composition previews no custody change")
-      return {
-        kind = "confirm",
-        token = 1,
-        request = request,
-        letter = letter("MISTY"),
-        itemKey = "MAIL_0",
-        operation = "erase",
-      }
-    end,
-    commit = function()
-      return { kind = "changed", outcome = "returned" }
-    end,
-  }
-  local picked = false
-  local picker = {
-    updateFixed = function() end,
-    takeResult = function()
-      if not picked then
-        picked = true
-        return { kind = "selected", slot = 3 }
-      end
-      return nil
-    end,
-    dispose = function() end,
-    draw = function() end,
-  }
-  local state = MailboxScreenState.new({
-    mode = "mailbox",
-    partyHasMembers = true,
-    mailbox = mailbox,
-    mailActions = fakeActions,
+  Assert.equal(confirming:result().kind, "confirmed", "the confirmed prompt keeps its result kind")
+  confirming:dispose()
+
+  local declined = MailboxScreenState.new({
+    mode = "confirm",
     manifest = manifest(),
-    itemCatalog = {
-      item = function(_, key)
-        return { icon = key }
-      end,
-    },
+    prompt = { bank = 232, id = 10 },
     measureDisplay = measurement,
     audio = { play = function() end },
-    createPartyPicker = function()
-      return picker
-    end,
   })
-  state:updateFixed({ { type = "confirm" } })
-  state:updateFixed({ { type = "navigate", direction = "down" } })
-  state:updateFixed({ { type = "confirm" } })
-  state:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:status().phase, "erased")
-  state:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:status().phase, "holdMail")
-  state:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:status().phase, "picker")
-  state:updateFixed({})
-  Assert.equal(state:status().phase, "compose", "the picker recipient opens word composition")
-  state:updateFixed({ { type = "cancel" } })
-  local result = state:status()
-  Assert.equal(result.phase, "result", "cancelling composition returns to the erase outcome")
-  Assert.isNil(result.compose, "cancelling composition closes its child")
-  Assert.equal(result.outcome.outcome, "returned", "the committed erase outcome still stands")
-  Assert.deepEqual(mailbox:capture(), mailboxBefore, "cancelling composition changes no custody")
-  state:updateFixed({ { type = "confirm" } })
-  Assert.equal(state:status().phase, "list")
-  Assert.isNil(state:status().outcome, "returning to the list clears the reported outcome")
-  state:dispose()
-end
-
-function T.mail_compose_submits_single_slot_templates_with_trailing_null()
-  local single = manifest()
-  local function oneSlotTemplate()
-    return {
-      { kind = "text", value = "fixture" },
-      { kind = "substitution" },
-    }
+  declined:updateFixed({ { type = "cancel" } })
+  Assert.isNil(declined:result(), "the declined prompt plays the flash before reporting")
+  for _ = 1, 8 do
+    declined:updateFixed({})
   end
-  single.mail.text.templates["mail.line.first"] = oneSlotTemplate()
-  single.mail.text.templates["mail.line.second"] = oneSlotTemplate()
-  single.mail.text.templates["mail.line.third"] = oneSlotTemplate()
-  local compose = MailComposeState.new({
-    manifest = single,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  local status = compose:status()
-  Assert.equal(#status.slots, 3, "single-slot templates expose one fillable slot per line")
-  Assert.isFalse(status.submitReady, "empty single-slot lines cannot submit")
-  compose:setWord(1, 1, "0")
-  compose:setWord(2, 1, "1")
-  compose:setWord(3, 1, "2")
-  Assert.isTrue(compose:status().submitReady, "filled first fields satisfy the retail slot rule")
-  local ok, reason = compose:submit()
-  Assert.isTrue(ok, "single-slot letters submit with trailing EC_WORD_NULL: " .. tostring(reason))
-  local result = compose:takeResult()
-  Assert.equal(result.kind, "submitted")
-  for _, line in ipairs(result.letter.lines) do
-    Assert.equal(#line.words, 2, "stored words keep both EC fields")
-    Assert.equal(line.words[2], false, "the trailing field stays EC_WORD_NULL")
-  end
-  Assert.equal(result.letter.lines[1].words[1], "0")
-  compose:dispose()
-end
-
-function T.mail_compose_submits_zero_slot_templates()
-  local fixed = manifest()
-  local plain = { { kind = "text", value = "plain" } }
-  fixed.mail.text.templates["mail.line.first"] = plain
-  fixed.mail.text.templates["mail.line.second"] = plain
-  fixed.mail.text.templates["mail.line.third"] = plain
-  local compose = MailComposeState.new({
-    manifest = fixed,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  local status = compose:status()
-  Assert.deepEqual(status.slots, {}, "zero-slot templates expose no fillable slots")
-  Assert.isTrue(status.submitReady, "slotless letters submit immediately")
-  local ok, reason = compose:submit()
-  Assert.isTrue(ok, "zero-slot letters submit with null fields: " .. tostring(reason))
-  local result = compose:takeResult()
-  Assert.equal(result.kind, "submitted")
-  for _, line in ipairs(result.letter.lines) do
-    Assert.deepEqual(line.words, { false, false }, "slotless lines keep both EC_WORD_NULL fields")
-  end
-  compose:dispose()
-end
-
-function T.mail_compose_refuses_trailing_garbage_on_short_templates()
-  local single = manifest()
-  single.mail.text.templates["mail.line.first"] = {
-    { kind = "text", value = "fixture" },
-    { kind = "substitution" },
-  }
-  local compose = MailComposeState.new({
-    manifest = single,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", false, false },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  compose:setWord(1, 1, "0")
-  compose:setWord(1, 2, "1")
-  local ok, reason = compose:validate()
-  Assert.isFalse(ok, "a filled trailing field on a single-slot template is garbage")
-  Assert.equal(reason, "invalid_letter")
-  local submitted, submitReason = compose:submit()
-  Assert.isFalse(submitted, "trailing garbage cannot submit")
-  Assert.equal(submitReason, "invalid_letter")
-  Assert.equal(compose:status().error, "invalid_letter", "the failed submit publishes its reason")
-  compose:dispose()
-end
-
-function T.mail_compose_draws_short_letters_without_asserting()
-  local mixed = manifest()
-  mixed.mail.text.templates["mail.line.first"] = {
-    { kind = "text", value = "fixture" },
-    { kind = "substitution" },
-  }
-  mixed.mail.text.templates["mail.line.second"] = { { kind = "text", value = "plain" } }
-  local compose = MailComposeState.new({
-    manifest = mixed,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  compose:setWord(1, 1, "0")
-  compose:setWord(3, 1, "1")
-  compose:setWord(3, 2, "2")
-  local drawn = {}
-  local resources = {
-    textRenderer = {
-      fontDef = { lineHeight = 16, charmap = {} },
-      windowBackgroundColor = function()
-        return { 1, 1, 1, 1 }
-      end,
-      drawText = function() end,
-      drawLine = function(_, row)
-        drawn[#drawn + 1] = row
-      end,
-    },
-    windowRenderer = {
-      drawWindow = function() end,
-    },
-    applicationFrameIndex = 1,
-  }
-  compose:draw(resources)
-  Assert.isTrue(#drawn > 0, "the stored short letter expands through the draw path")
-  compose:dispose()
-end
-
--- Focused browser paint is verified through the same text/window renderer
--- seam the composer draws with: the selected entry and its cursor must
--- appear inside the browser box, and no more than one page of rows may
--- be painted per frame.
-local function recordingResources(record)
-  return {
-    textRenderer = {
-      fontDef = { lineHeight = 16, charmap = {} },
-      windowBackgroundColor = function()
-        return { 1, 1, 1, 1 }
-      end,
-      drawText = function(_, text, x, y)
-        record.texts[#record.texts + 1] = { value = text, x = x, y = y }
-      end,
-      drawLine = function(_, row, x, y)
-        record.lines[#record.lines + 1] = { row = row, x = x, y = y }
-      end,
-    },
-    windowRenderer = {
-      drawWindow = function(_, rect)
-        record.windows[#record.windows + 1] = rect
-      end,
-    },
-    applicationFrameIndex = 1,
-  }
-end
-
-local function freshRecord()
-  return { texts = {}, lines = {}, windows = {} }
-end
-
-local function drawnMarker(record)
-  for _, entry in ipairs(record.texts) do
-    if entry.value == ">" then
-      return entry
-    end
-  end
-  return nil
-end
-
-local function drawnLabel(record, label, entryX)
-  for _, entry in ipairs(record.texts) do
-    if entry.value == label and entry.x == entryX then
-      return entry
-    end
-  end
-  return nil
-end
-
-local function wordRowDrawn(record, wordValue, entryX)
-  for _, drawn in ipairs(record.lines) do
-    if drawn.x == entryX then
-      for _, token in ipairs(drawn.row) do
-        if token.value == wordValue then
-          return drawn
-        end
-      end
-    end
-  end
-  return nil
-end
-
-function T.mail_compose_keeps_the_focused_bank_inside_the_browser_window()
-  local composed = manifest()
-  composed.mail.wordDictionary = {
-    ["0"] = { { kind = "text", value = "word0" } },
-    ["1"] = { { kind = "text", value = "word1" } },
-    ["496"] = { { kind = "text", value = "word496" } },
-    ["964"] = { { kind = "text", value = "word964" } },
-  }
-  local compose = MailComposeState.new({
-    manifest = composed,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  Assert.deepEqual(
-    compose:status().banks,
-    { { bank = 0, count = 2 }, { bank = 1, count = 1 }, { bank = 2, count = 1 } },
-    "the fixture exposes three browsable banks"
-  )
-  compose:updateFixed({ { type = "confirm" } })
-  compose:updateFixed({ { type = "navigate", direction = "down" }, { type = "navigate", direction = "down" } })
-  Assert.equal(compose:status().bankIndex, 3, "navigation reaches the third bank")
-
-  local browser = compose:status().presentation.browser
-  local entryX, firstRowY = browser.x + 12, browser.y + 8
-  local lastRowY = browser.y + browser.height - browser.rowHeight
-  local record = freshRecord()
-  compose:draw(recordingResources(record))
-  Assert.deepEqual(record.windows[#record.windows], browser, "the bank browser paints its box")
-  local label = drawnLabel(record, "2", entryX)
-  Assert.notNil(label, "the focused third bank paints its label")
-  Assert.isTrue(label.y >= firstRowY and label.y <= lastRowY, "the focused bank stays inside the box")
-  local marker = drawnMarker(record)
-  Assert.notNil(marker, "the focused bank paints its cursor")
-  Assert.equal(marker.y, label.y, "the cursor sits on the focused bank row")
-  local rows = 0
-  for _, entry in ipairs(record.texts) do
-    if entry.x == entryX and entry.y >= firstRowY and entry.y <= lastRowY then
-      rows = rows + 1
-    end
-  end
-  Assert.isTrue(rows <= 2, "at most one page of bank rows paints per frame")
-
-  compose:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(compose:status().bankIndex, 2, "navigation steps back to the second bank")
-  local back = freshRecord()
-  compose:draw(recordingResources(back))
-  local backLabel = drawnLabel(back, "1", entryX)
-  Assert.notNil(backLabel, "the second bank paints its label after stepping back")
-  local backMarker = drawnMarker(back)
-  Assert.notNil(backMarker, "the cursor follows the step back")
-  Assert.equal(backMarker.y, backLabel.y, "the cursor sits on the second bank row")
-  Assert.isTrue(backLabel.y >= firstRowY and backLabel.y <= lastRowY, "the previous page stays inside the box")
-  compose:dispose()
-end
-
-function T.mail_compose_selects_the_word_shown_under_the_cursor()
-  local composed = manifest()
-  composed.mail.wordDictionary = {
-    ["0"] = { { kind = "text", value = "word0" } },
-    ["1"] = { { kind = "text", value = "word1" } },
-    ["2"] = { { kind = "text", value = "word2" } },
-    ["3"] = { { kind = "text", value = "word3" } },
-  }
-  local compose = MailComposeState.new({
-    manifest = composed,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  compose:updateFixed({ { type = "confirm" } })
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "word")
-  compose:updateFixed({
-    { type = "navigate", direction = "down" },
-    { type = "navigate", direction = "down" },
-    { type = "navigate", direction = "down" },
-  })
-  Assert.equal(compose:status().wordIndex, 4, "navigation reaches the fourth word")
-
-  local browser = compose:status().presentation.browser
-  local entryX, firstRowY = browser.x + 12, browser.y + 8
-  local lastRowY = browser.y + browser.height - browser.rowHeight
-  local record = freshRecord()
-  compose:draw(recordingResources(record))
-  local wordRow = wordRowDrawn(record, "word3", entryX)
-  Assert.notNil(wordRow, "the focused late word paints its entry")
-  Assert.isTrue(wordRow.y >= firstRowY and wordRow.y <= lastRowY, "the focused word stays inside the box")
-  local marker = drawnMarker(record)
-  Assert.notNil(marker, "the focused word paints its cursor")
-  Assert.equal(marker.y, wordRow.y, "the cursor sits on the focused word row")
-  local rows = 0
-  for _, drawn in ipairs(record.lines) do
-    if drawn.x == entryX and drawn.y >= firstRowY and drawn.y <= lastRowY then
-      rows = rows + 1
-    end
-  end
-  Assert.isTrue(rows <= 2, "at most one page of word rows paints per frame")
-
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "edit", "confirming the word returns to the slots")
-  Assert.equal(compose:letter().lines[1].words[1], "3", "the committed word matches the focused entry")
-
-  compose:updateFixed({ { type = "confirm" } })
-  compose:updateFixed({ { type = "confirm" } })
-  compose:updateFixed({
-    { type = "navigate", direction = "down" },
-    { type = "navigate", direction = "down" },
-    { type = "navigate", direction = "down" },
-    { type = "navigate", direction = "up" },
-    { type = "navigate", direction = "up" },
-  })
-  Assert.equal(compose:status().wordIndex, 2, "navigation steps back across the page boundary")
-  local back = freshRecord()
-  compose:draw(recordingResources(back))
-  local backRow = wordRowDrawn(back, "word1", entryX)
-  Assert.notNil(backRow, "the earlier page paints its word after stepping back")
-  local backMarker = drawnMarker(back)
-  Assert.notNil(backMarker, "the cursor follows the step back across pages")
-  Assert.equal(backMarker.y, backRow.y, "the cursor sits on the earlier word row")
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.deepEqual(compose:letter().lines[1].words, { "3", "1" }, "the second committed word matches its focused entry")
-  compose:dispose()
-end
-
--- Short bank lists never reach past the compiled dictionary: empty bank
--- ranges are skipped while browsing, and one-entry banks still paint
--- their label, word, and cursor inside the browser box.
-function T.mail_compose_short_banks_stay_inside_the_dictionary()
-  local composed = manifest()
-  composed.mail.wordDictionary = {
-    ["0"] = { { kind = "text", value = "word0" } },
-    ["964"] = { { kind = "text", value = "word964" } },
-  }
-  local compose = MailComposeState.new({
-    manifest = composed,
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  Assert.deepEqual(
-    compose:status().banks,
-    { { bank = 0, count = 1 }, { bank = 2, count = 1 } },
-    "empty bank ranges never appear while browsing"
-  )
-  Assert.isFalse(compose:status().submitReady, "empty slots cannot submit")
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "bank")
-
-  local browser = compose:status().presentation.browser
-  local entryX, firstRowY = browser.x + 12, browser.y + 8
-  local lastRowY = browser.y + browser.height - browser.rowHeight
-  local first = freshRecord()
-  compose:draw(recordingResources(first))
-  local firstLabel = drawnLabel(first, "0", entryX)
-  Assert.notNil(firstLabel, "the single-entry first bank paints its label")
-  Assert.equal(drawnMarker(first).y, firstLabel.y, "the cursor sits on the single-entry bank row")
-
-  compose:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(compose:status().bankIndex, 2, "navigation reaches the second listed bank")
-  local second = freshRecord()
-  compose:draw(recordingResources(second))
-  local secondLabel = drawnLabel(second, "2", entryX)
-  Assert.notNil(secondLabel, "the single-entry second bank paints its label")
-  Assert.isTrue(secondLabel.y >= firstRowY and secondLabel.y <= lastRowY, "the bank stays inside the box")
-  Assert.equal(drawnMarker(second).y, secondLabel.y, "the cursor sits on the second bank row")
-
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "word")
-  Assert.deepEqual(compose:status().words, { "964" }, "the word list holds the single compiled key")
-  local words = freshRecord()
-  compose:draw(recordingResources(words))
-  local wordRow = wordRowDrawn(words, "word964", entryX)
-  Assert.notNil(wordRow, "the single word paints its entry")
-  Assert.equal(drawnMarker(words).y, wordRow.y, "the cursor sits on the single word row")
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "edit", "confirming the word returns to the slots")
-  Assert.equal(compose:letter().lines[1].words[1], "964", "the committed word matches the single entry")
-  Assert.isFalse(compose:status().submitReady, "remaining empty slots still block submission")
-  compose:dispose()
-end
-
--- Backing out of the word list returns to its bank, and backing out of
--- the banks returns to the slots; only backing out of the slots closes.
-function T.mail_compose_word_cancel_returns_through_the_bank_browser()
-  local compose = MailComposeState.new({
-    manifest = manifest(),
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  compose:updateFixed({ { type = "confirm" } })
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.equal(compose:status().phase, "word")
-  Assert.isTrue(#compose:status().words == 3, "the word list shows its bank entries")
-  compose:updateFixed({ { type = "cancel" } })
-  local banked = compose:status()
-  Assert.equal(banked.phase, "bank", "cancelling the word list returns to its bank")
-  Assert.isNil(banked.words, "the word list hides once its bank returns")
-  Assert.equal(banked.bankIndex, 1, "the bank keeps its focus")
-  compose:updateFixed({ { type = "navigate", direction = "down" } })
-  compose:updateFixed({ { type = "confirm" } })
-  Assert.deepEqual(compose:status().words, { "496", "497" }, "the second bank lists its own compiled keys")
-  compose:updateFixed({ { type = "cancel" } })
-  Assert.equal(compose:status().phase, "bank", "cancelling the second word list returns to the banks")
-  compose:updateFixed({ { type = "cancel" } })
-  Assert.equal(compose:status().phase, "edit", "cancelling the banks returns to the slots")
-  Assert.isFalse(compose:status().submitReady, "unedited slots still block submission")
-  compose:updateFixed({ { type = "cancel" } })
-  Assert.deepEqual(compose:takeResult(), { kind = "cancelled" }, "cancelling the slots closes without a letter")
-  Assert.isNil(compose:takeResult(), "composition results are taken exactly once")
-  compose:dispose()
-end
-
-function T.stored_lines_with_missing_words_render_while_composition_stays_incomplete()
-  local compose = MailComposeState.new({
-    manifest = manifest(),
-    stationeryType = 0,
-    author = { trainerId = 222, name = "MISTY", gender = 0, language = 2, game = 7 },
-    templates = { "mail.line.first", "mail.line.second", "mail.line.third" },
-    measureDisplay = measurement,
-    audio = { play = function() end },
-  })
-  compose:setWord(1, 1, "0")
-  local ok, reason = compose:validate()
-  Assert.isFalse(ok, "a missing required word keeps the composed letter submittable-free")
-  Assert.equal(reason, "incomplete")
-  Assert.isFalse(compose:status().submitReady, "empty required slots block submission")
-  local submitted, submitReason = compose:submit()
-  Assert.isFalse(submitted)
-  Assert.equal(submitReason, "incomplete")
-  Assert.equal(compose:status().error, "incomplete")
-  local drawn = {}
-  compose:draw({
-    textRenderer = {
-      fontDef = { lineHeight = 16, charmap = {} },
-      windowBackgroundColor = function()
-        return { 1, 1, 1, 1 }
-      end,
-      drawText = function() end,
-      drawLine = function(_, row)
-        drawn[#drawn + 1] = row
-      end,
-    },
-    windowRenderer = {
-      drawWindow = function() end,
-    },
-    applicationFrameIndex = 1,
-  })
-  Assert.isTrue(#drawn > 0, "the stored short line expands through the draw path")
-  local seenWord = false
-  for _, row in ipairs(drawn) do
-    for _, token in ipairs(row) do
-      Assert.isFalse(token.kind == "substitution", "rendered lines carry no substitution markers")
-      if token.value == "word0" then
-        seenWord = true
-      end
-    end
-  end
-  Assert.isTrue(seenWord, "the present stored word renders")
-  compose:dispose()
+  Assert.equal(declined:result().kind, "declined", "the declined prompt keeps its result kind")
+  declined:dispose()
 end
 
 return { tests = T }

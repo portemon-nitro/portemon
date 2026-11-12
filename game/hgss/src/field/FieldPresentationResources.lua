@@ -43,6 +43,7 @@ local PokemonCenterHealRenderer = require("libs.hgss.src.presentation.PokemonCen
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local MailboxRenderer = require("libs.hgss.src.ui.MailboxRenderer")
+local MailViewInterface = require("game.hgss.src.pc.MailViewInterface")
 local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 local FieldMapNameRenderer = require("game.hgss.src.field.FieldMapNameRenderer")
 local OptionsRenderer = require("game.hgss.src.options.OptionsRenderer")
@@ -67,6 +68,9 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field unbindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime pokedex preparation unbinding in presented composition
 ---@field bindEasyChatPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: EasyChatPreparationAcquire): integer runtime editor preparation binding in presented composition
 ---@field unbindEasyChatPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime editor preparation unbinding in presented composition
+---@field bindMailPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: fun(status: table<string, unknown>): boolean, string?): integer runtime Mail preparation binding in presented composition
+---@field unbindMailPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime Mail preparation unbinding in presented composition
+---@field easyChatCatalog table<string, unknown>? the shared word catalog behind Mail reads
 ---@field monService table<string, unknown>? the live party mon service behind idle selector prediction
 ---@field monCatalog table<string, unknown>? the resolved mon catalog borrowed by pokedex composition
 ---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind pokedex composition
@@ -114,6 +118,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field _pokedexBinding integer? installed pokedex preparation binding identity
 ---@field pokedexResources PokedexPresentationResources? the one lazily owned field pokedex preparation leaf
 ---@field _easyChatBinding integer? installed editor preparation binding identity
+---@field _mailBinding integer? installed Mail preparation binding identity
 ---@field easyChatResources EasyChatPresentationResources? the one lazily owned field editor preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field _apricornBoxRenderer ApricornBoxRenderer? owned source graphics and row renderer
@@ -409,6 +414,26 @@ local function buildPresenters(owner)
         graphics = hostGraphics,
         apricornBoxRenderer = owner:getApricornBoxRenderer(),
       }, status, plan)
+    elseif inputKey == "mail-view" or inputKey == "mail-view-inactive" then
+      -- Native MailView panes draw through the shared stationery
+      -- renderer with no generic outer frame: the source chrome is
+      -- already self-framed.
+      local view = assert(status.view, "the MailView application presents its detached view")
+      local geometry = MailViewInterface.TEXT
+      local renderer = assert(owner.mailboxRenderer, "MailView drawing borrows its owned renderer")
+      for _, pane in ipairs(plan.panes) do
+        LogicalSurface.draw(hostGraphics, pane.placement, function()
+          renderer:drawMailPane(view, pane.id, {
+            textRenderer = assert(owner.textRenderer, "MailView drawing borrows the field text renderer"),
+            windowRenderer = assert(owner.windowRenderer, "MailView drawing borrows the shared field-window renderer"),
+            monIconProvider = assert(owner.monIconProvider, "MailView drawing borrows the shared mon icon provider"),
+            applicationFrameIndex = assert(owner.applicationFrameIndex, "MailView drawing borrows the selected frame"),
+            mailViewGeometry = geometry,
+          })
+        end)
+      end
+    elseif inputKey == "easy-chat" or inputKey == "easy-chat-inactive" then
+      owner:drawEasyChat(status)
     else
       error("the " .. applicationId .. " application cannot present plan " .. tostring(inputKey), 0)
     end
@@ -695,8 +720,16 @@ function FieldPresentationResources.new(runtime)
       graphics = graphics,
       cacheFs = runtime.cacheFs,
       manifest = self.pcManifest,
+      catalog = assert(runtime.easyChatCatalog, "Mail reads expand through the shared word catalog"),
       imagePool = sharedImages,
     })
+    -- The Mail preparation binding resolves per Mail open because the
+    -- menu factories postdate these resources: composers and read leaves
+    -- poll the bound renderer preparation without owning its leases.
+    local mailboxOwner = assert(self.mailboxRenderer, "Mail preparation borrows its owned renderer")
+    self._mailBinding = runtime:bindMailPreparation(function(status)
+      return mailboxOwner:prepare(status)
+    end)
     self.photoAlbumRenderer = PhotoAlbumRenderer.new({
       graphics = graphics,
       cacheFs = runtime.cacheFs,
@@ -1004,6 +1037,22 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
     end
     return true
   elseif status.app == "mailbox" then
+    -- A composing PC child prepares only its active Mail leaf: while the
+    -- shared editor owns the leaf its own lease governs readiness and no
+    -- unrelated PC image is awaited.
+    if status.compose ~= nil then
+      if status.compose.child ~= nil then
+        return true
+      end
+      local ready, failure = assert(self.mailboxRenderer, "Mailbox borrows its owned renderer"):prepare({
+        viewMode = "write",
+        stationeryType = assert(status.compose.stationeryType, "composition prepares its stationery"),
+      })
+      if not ready then
+        return false, failure
+      end
+      return true
+    end
     for _, icon in ipairs(assert(status.icons, "Mailbox status publishes message icon snapshots")) do
       iconKeys[#iconKeys + 1] = icon.iconKey
     end
@@ -1025,7 +1074,13 @@ end
 ---@param runtime FieldRuntime runtime owners borrowed by the app renderers
 ---@return table<string, unknown>
 function FieldPresentationResources:pcApplicationResources(runtime)
+  local owner = self
+  local function drawEasyChat(childStatus)
+    return owner:drawEasyChat(childStatus)
+  end
   return {
+    drawEasyChat = drawEasyChat,
+    mailViewGeometry = MailViewInterface.TEXT,
     icons = assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"),
     itemIcons = assert(self.itemIconProvider, "Storage borrows the shared item icon provider"),
     storageRenderer = assert(self.storageRenderer, "Storage borrows its owned renderer"),
@@ -1298,11 +1353,13 @@ function FieldPresentationResources:dispose()
   local summaryBinding = self._summaryBinding
   local pokedexBinding = self._pokedexBinding
   local easyChatBinding = self._easyChatBinding
+  local mailBinding = self._mailBinding
   local presentationRuntime = self._presentationRuntime
   self._partyIconBinding = nil
   self._summaryBinding = nil
   self._pokedexBinding = nil
   self._easyChatBinding = nil
+  self._mailBinding = nil
   self._presentationRuntime = nil
   if partyIconBinding ~= nil and presentationRuntime ~= nil then
     local unbindPreparation = assert(
@@ -1331,6 +1388,11 @@ function FieldPresentationResources:dispose()
       "the installed editor binding requires its runtime unbinding"
     )
     unbindEasyChat(presentationRuntime, easyChatBinding)
+  end
+  if mailBinding ~= nil and presentationRuntime ~= nil then
+    local unbindMail =
+      assert(presentationRuntime.unbindMailPreparation, "the installed Mail binding requires its runtime unbinding")
+    unbindMail(presentationRuntime, mailBinding)
   end
   if self.pokedexResources then
     self.pokedexResources:release()

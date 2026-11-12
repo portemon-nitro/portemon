@@ -360,6 +360,25 @@ local function boxDeps(overrides)
   local deps = {
     mons = mons,
     bag = bag,
+    easyChatCatalog = {
+      template = function()
+        return nil
+      end,
+      messageStatus = function()
+        return "invalid"
+      end,
+      expandMessage = function()
+        error("no expansion in dex tests", 0)
+      end,
+    },
+    openEasyChat = function()
+      error("dex tests open no editor", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
+    monLanguage = "english",
+    gameStats = require("libs.hgss.src.mons.GameStats").new({ species = { CHIKORITA = true } }),
     bagCursor = BagCursor.new(),
     itemCatalog = bag:catalog(),
     monCatalog = CatalogFixture.makeCatalog(),

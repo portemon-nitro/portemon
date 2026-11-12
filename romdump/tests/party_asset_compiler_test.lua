@@ -184,7 +184,7 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local PartyCache = require("libs.assets.src.PartyCache")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v6")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
   Assert.deepEqual(bundle.manifest.controls.cancel.textRect, { x = 208, y = 168, width = 40, height = 16 })
   Assert.equal(bundle.manifest.controls.cancel.align, "center")
   local menu = bundle.manifest.contextMenu
@@ -317,7 +317,7 @@ end
 function T.compiled_presentation_carries_the_full_bag_template(romFs, _)
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v6")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
   local template = bundle.manifest.text.templates.bagFull
   Assert.notNil(template, "the full-bag template resolves")
   local words = {}
@@ -335,10 +335,27 @@ function T.compiled_presentation_carries_the_full_bag_template(romFs, _)
   Assert.isNil(template.index, "runtime templates omit source message identity")
 end
 
+function T.compiled_held_mail_template_comes_from_source_bank300_message78(romFs, _)
+  local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
+  local bundle = assert(PartyAssetCompiler.compile(romFs))
+  local template = assert(
+    bundle.manifest.text.templates.heldMail,
+    "the source held-Mail refusal resolves through the generic template path"
+  )
+  for _, segment in ipairs(assert(template.segments, "the held-Mail template carries segments")) do
+    Assert.isTrue(
+      segment.kind == "text" or segment.kind == "lineBreak",
+      "the held-Mail refusal stays plain display text"
+    )
+  end
+  Assert.isNil(template.bank, "runtime templates omit source bank identity")
+  Assert.isNil(template.index, "runtime templates omit source message identity")
+end
+
 function T.compiled_party_manifest_declares_the_full_bag_schema(romFs, _)
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v6")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
   Assert.notNil(bundle.manifest.text.templates.bagFull, "the full-bag template resolves")
 end
 

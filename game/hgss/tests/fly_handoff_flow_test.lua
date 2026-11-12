@@ -135,6 +135,12 @@ local function openFlow(Flow, opts)
     partyActions = assert(opts.partyActions, "the flow borrows the action coordinator"),
     mailActions = MailActions.new({ mons = opts.mons, mailbox = mailbox, bag = opts.bag, manifest = pcManifest }),
     mailbox = mailbox,
+    makeMailComposer = function()
+      error("flow tests open no Mail composer", 0)
+    end,
+    prepareMail = function()
+      return true
+    end,
     pcManifest = pcManifest,
     fieldMoves = {
       check = function(_)

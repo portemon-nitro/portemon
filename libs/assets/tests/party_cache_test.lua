@@ -114,7 +114,7 @@ local function manifest()
     return { image = path, width = width, height = height }
   end
   return {
-    schema = "g4-party-presentation-v6",
+    schema = "g4-party-presentation-v7",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -270,6 +270,7 @@ local function manifest()
         bagFull = { segments = { { kind = "text", value = "The Bag is full." } } },
         switchHeldPrompt = { segments = { { kind = "text", value = "Switch the held items?" } } },
         switchHeldResult = { segments = { { kind = "text", value = "Switched the held items." } } },
+        heldMail = { segments = { { kind = "text", value = "That POKEMON already holds Mail." } } },
         giveHeldItem = { segments = { { kind = "text", value = "Gave the item to hold." } } },
         fieldMoveNotHere = { segments = { { kind = "text", value = "You cannot use that here." } } },
         fieldMoveNeedBadge = { segments = { { kind = "text", value = "Need a Badge." } } },
@@ -319,7 +320,7 @@ local function writeReady(cache, marker)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v6" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
@@ -327,7 +328,7 @@ function T.missing_image_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
   cache:writeLua(PartyCache.manifestPath(), manifest())
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v6" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
   cache:write(PartyCache.markerPath(), marker)
   Assert.isFalse(PartyCache.isReady(cache, marker), "referenced images must all exist")
 end
@@ -345,7 +346,7 @@ function T.missing_marker_is_not_ready()
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v6" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
   Assert.isFalse(PartyCache.isReady(cache, PartyCache.marker("abc", "dep")), "no marker means not ready")
 end
 
@@ -355,16 +356,16 @@ function T.current_valid_family_is_ready()
   writeReady(cache, marker)
   Assert.isTrue(PartyCache.isReady(cache, marker), "the complete family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v6")
+  Assert.equal(loaded.schema, "g4-party-presentation-v7")
 end
 
 -- The presentation contract under test extends the synthetic family with
 -- exact icon timelines, text roles, numeric placement, semantic windows,
 -- count-complete menu layouts, and the six generated frame visuals.
 -- Values are synthetic; only readiness participation is under test.
-local function v6manifest()
+local function v7manifest()
   local data = manifest()
-  data.schema = "g4-party-presentation-v6"
+  data.schema = "g4-party-presentation-v7"
   local sequences = {}
   for sequenceNo = 1, 6 do
     sequences[sequenceNo] =
@@ -464,31 +465,31 @@ local function contextFramePaths()
 end
 
 local function writeReadyV6(cache, marker)
-  local data = v6manifest()
+  local data = v7manifest()
   cache:writeLua(PartyCache.manifestPath(), data)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v6" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
-function T.complete_v6_family_is_ready()
+function T.complete_v7_family_is_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
   writeReadyV6(cache, marker)
-  Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v6 family reads as ready")
+  Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v7 family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v6")
+  Assert.equal(loaded.schema, "g4-party-presentation-v7")
 end
 
 function T.stale_v3_family_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
-  for _, path in ipairs(PartyCache.referencedPaths(v6manifest())) do
+  for _, path in ipairs(PartyCache.referencedPaths(v7manifest())) do
     cache:write(path, "pixels")
   end
-  local stale = v6manifest()
+  local stale = v7manifest()
   stale.schema = "g4-party-presentation-v3"
   stale.contextMenu.textRoles = nil
   stale.contextMenu.textPalette = {
@@ -520,7 +521,7 @@ end
 
 function T.context_frame_paths_are_referenced_exactly_once()
   local counts = {}
-  for _, path in ipairs(PartyCache.referencedPaths(v6manifest())) do
+  for _, path in ipairs(PartyCache.referencedPaths(v7manifest())) do
     counts[path] = (counts[path] or 0) + 1
   end
   for _, path in ipairs(contextFramePaths()) do
