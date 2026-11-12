@@ -1402,9 +1402,13 @@ function FieldSession:updateFixed(inputSnapshot)
   -- field update path does not couple map-prop animation progression to
   -- dialogue ownership, so wind/machines keep running while a message box
   -- is up.
-  -- Script-owned boxes are exempt: the script scheduler steps them from its
-  -- own async phase and the script phase owns the tick instead.
-  if self.dialogue:isModal() and not (self.dialogue.isScriptOwned and self.dialogue:isScriptOwned()) then
+  -- Script-owned boxes are exempt while their foreground owner lives: the
+  -- script scheduler steps them from its own async phase and the script
+  -- phase owns the tick instead. An orphaned script-owned box (no
+  -- foreground owner) returns to field ownership so a final close press
+  -- can still dismiss it instead of stranding the field modal.
+  local scriptOwned = self.dialogue.isScriptOwned and self.dialogue:isScriptOwned()
+  if self.dialogue:isModal() and (not scriptOwned or not isForegroundActive(self.scriptScheduler)) then
     self.currentMap:updateAnimated()
     self.dialogue:step(inputSnapshot)
     self:_advanceTick()

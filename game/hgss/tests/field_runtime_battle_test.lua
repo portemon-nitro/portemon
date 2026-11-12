@@ -2049,6 +2049,8 @@ local function validEntry(versionId)
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),
     bag = require("libs.hgss.src.save.BagSave").empty(),
     mart = require("libs.hgss.src.save.MartSave").empty(),
+    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
+    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
   }
   return entry
 end

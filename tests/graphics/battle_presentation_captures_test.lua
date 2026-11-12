@@ -1096,8 +1096,8 @@ local function assertStatusSourceFamilies(cacheFs, versionId)
   local patchSpans = assert(manifest.hud.patchSpans, versionId .. " carries source HUD patch spans")
   local firstStatusSpan = assert(patchSpans.status[1], versionId .. " carries status component destinations")
   local expected = {
-    { key = "sleep", tiles = { 53, 54, 55 } },
-    { key = "burn", tiles = { 41, 42, 43 } },
+    { key = "sleep", tiles = { 47, 48, 49 } },
+    { key = "burn", tiles = { 53, 54, 55 } },
   }
   for _, status in ipairs(expected) do
     local patches = BattleScene.hudIconPatchTiles(patchSpans, firstStatusSpan.sideType, status.key, nil, nil)

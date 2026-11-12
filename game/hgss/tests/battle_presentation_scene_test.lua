@@ -1202,8 +1202,8 @@ function T.health_box_fields_render_every_native_fact_in_span()
     },
   })
   local illDrawn = hudBoxTexts(ill)
-  Assert.deepEqual(nativeMarks(illDrawn, "hud:player"), { 44, 45, 46 }, "poison uses its native component tiles")
-  Assert.deepEqual(nativeMarks(illDrawn, "hud:enemy"), { 53, 54, 55 }, "sleep uses its native component tiles")
+  Assert.deepEqual(nativeMarks(illDrawn, "hud:player"), { 50, 51, 52 }, "poison uses its native component tiles")
+  Assert.deepEqual(nativeMarks(illDrawn, "hud:enemy"), { 47, 48, 49 }, "sleep uses its native component tiles")
 
   local long = snapshot({
     battlers = {

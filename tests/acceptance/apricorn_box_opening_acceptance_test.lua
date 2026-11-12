@@ -403,51 +403,24 @@ function T.tests.route_30_apricorn_box_is_obtained_and_used_without_a_party_targ
     Assert.deepEqual(mart:capture(), martBefore, "the read-only Box does not publish mart state")
 
     pressConfirm(game)
-    game:advanceUntil("selecting stock opens the browse action menu", function()
-      local current = apricornBoxView(game)
-      return current.phase == "actions"
-    end, 120)
-    boxView = apricornBoxView(game)
-    Assert.isFalse(type(boxView.flowMessage) == "string", "the browse action menu never shows Kurt-only wording")
-    Assert.isTrue(type(boxView.actionLabels[2]) == "string", "the native USE label remains visible")
-    Assert.isTrue(type(boxView.actionLabels[3]) == "string", "the native TASTE label remains visible")
-    Assert.isTrue(type(boxView.actionLabels[4]) == "string", "the native CANCEL label remains visible")
-    Assert.deepEqual(boxView.actionsEnabled, { false, false, true }, "only browse CANCEL is enabled")
-    Assert.equal(boxView.selectedAction, 3, "focus starts on the only enabled browse action")
-    for _, direction in ipairs({ "up", "down" }) do
-      tapDirection(game, state, ({ up = "w", down = "s" })[direction])
-      boxView = apricornBoxView(game)
-      Assert.equal(boxView.selectedAction, 3, "disabled browse actions cannot receive keyboard focus")
+    -- Retail browse keeps no USE/TASTE/CANCEL menu: selecting a stocked
+    -- row only moves the hand cursor and stays in browse.
+    for _ = 1, 10 do
+      game:step()
     end
-
-    local disabledRevision = bag:revision()
-    local disabledMart = mart:capture()
-    tapBrowseAction(game, boxView, 1)
     boxView = apricornBoxView(game)
-    Assert.equal(boxView.phase, "actions", "touching disabled USE leaves the Box open")
-    Assert.equal(boxView.selectedAction, 3, "touching disabled USE cannot move focus")
-    tapBrowseAction(game, boxView, 2)
-    boxView = apricornBoxView(game)
-    Assert.equal(boxView.phase, "actions", "touching disabled TASTE leaves the Box open")
-    Assert.equal(boxView.selectedAction, 3, "touching disabled TASTE cannot move focus")
-    Assert.equal(bag:revision(), disabledRevision, "disabled actions do not change Bag state")
-    Assert.equal(bag:quantity(BOX_KEY), 1, "disabled actions do not consume the Box")
-    Assert.deepEqual(mart:capture(), disabledMart, "disabled actions do not change Apricorn or Kurt state")
-    Assert.equal(mart:apricornTotal(), apricornBefore, "disabled actions leave stock untouched")
+    Assert.equal(boxView.phase, "browse", "retail browse keeps no action menu on selection")
+    Assert.isFalse(type(boxView.flowMessage) == "string", "retail browse never shows Kurt-only wording")
+    Assert.equal(boxView.selectedIndex, 1, "retail browse keeps the selected stock row")
+    Assert.equal(boxView.mode, "browse", "retail browse stays in browse mode")
+    Assert.deepEqual(boxView.actionsEnabled, { false, false, true }, "browse keeps its retail action enablement")
+    Assert.equal(boxView.selectedAction, 3, "browse keeps focus on its retail action")
+    Assert.equal(mart:apricornTotal(), apricornBefore, "browsing stock leaves stock untouched")
+    Assert.deepEqual(mart:capture(), martBefore, "browsing stock does not publish mart state")
     Assert.equal(
       hostStatus(game).application.page,
       "apricorn_box",
-      "disabled actions do not publish a close or success result"
-    )
-
-    pressConfirm(game)
-    game:advanceUntil("the enabled browse CANCEL returns to stock", function()
-      return apricornBoxView(game).phase == "browse"
-    end, 120)
-    Assert.equal(apricornBoxView(game).selectedIndex, 1, "CANCEL returns to the selected stock row")
-    Assert.isFalse(
-      type(apricornBoxView(game).flowMessage) == "string",
-      "returning to browse still hides Kurt-only wording"
+      "browsing does not publish a close or success result"
     )
 
     game.runtime:pressCancel()

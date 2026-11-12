@@ -647,6 +647,19 @@ function T.tests.standard_clerk_reasks_after_buy_and_quits_through_goodbye_line(
       end
     end
     Assert.isNil(game:snapshot().foregroundScript, "declining the re-asked menu quits the clerk")
+    -- The goodbye line can outlive the script release by a tick: drain its
+    -- close press before asserting the field is quiet.
+    for _ = 1, 60 do
+      if not game.runtime.dialogue:isModal() then
+        break
+      end
+      local dialogue = game.runtime.dialogue:status().state
+      if dialogue == "WAITING_BOUNDARY" or dialogue == "WAITING_CLOSE" then
+        game:pressAction()
+      else
+        game:step()
+      end
+    end
     Assert.isFalse(game.runtime.dialogue:isModal(), "quitting closes the clerk dialogue")
   end)
 end

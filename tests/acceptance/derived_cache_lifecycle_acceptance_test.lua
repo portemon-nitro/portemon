@@ -625,6 +625,8 @@ local function labHarness()
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = BagSave.empty(),
         mart = require("libs.hgss.src.save.MartSave").empty(),
+        mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
+        photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
       }
     end,
   })
