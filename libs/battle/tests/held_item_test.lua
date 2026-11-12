@@ -599,9 +599,9 @@ function T.power_items_halve_speed_like_macho_brace()
   end
 end
 
--- Flavor berries confuse holders that dislike the flavor instead of
--- healing: the native script runs the dislike branch from personality,
--- so a disliked holder gains confusion and no health.
+-- Flavor berries confuse disliked holders while still healing: the native
+-- dislike script restores an eighth first and then confuses, so a disliked
+-- holder gains confusion beside the recovery.
 function T.flavor_berries_confuse_disliked_holders_instead_of_healing()
   local handlers = nativeHandlers("native passive registration owns the item binding set")
 
@@ -625,8 +625,9 @@ function T.flavor_berries_confuse_disliked_holders_instead_of_healing()
 
   local confused = eaten(true)
   Assert.equal(#confused, 1, "the disliked berry still triggers")
-  Assert.isTrue(confused[1].confused, "the disliked berry confuses instead of healing")
-  Assert.isNil(confused[1].recovered, "the disliked berry restores no health")
+  Assert.isTrue(confused[1].confused, "the disliked berry confuses beside healing")
+  Assert.isTrue(confused[1].recovered, "the disliked berry still restores health")
+  Assert.equal(confused[1].restored, 12, "the disliked berry restores an eighth")
   local healed = eaten(false)
   Assert.equal(#healed, 1, "the liked berry still triggers")
   Assert.isTrue(healed[1].recovered, "the liked berry restores health")
@@ -970,6 +971,148 @@ function T.embargo_suppresses_the_effective_holding_through_the_bridge()
   Assert.equal(staleBridge:effectiveHeldItem(1), "QUICK_CLAW", "a stale entry token never inherits the cover")
   local freed = staleBridge:orderFacts(1, { moveUse = { user = 1 }, rawOrderRoll = 0 })
   Assert.isTrue(freed.first, "the uncovered claw orders first again")
+end
+
+-- HP berries carry their native amounts: Oran restores a flat 10,
+-- Berry Juice a flat 20, and Sitrus a quarter of maximum health.
+-- All three answer at half health and spend the berry.
+function T.hp_berries_carry_their_native_amounts()
+  local handlers = nativeHandlers("native passive registration owns the berry binding set")
+
+  ---@param key string berry identity under test
+  ---@param maxHp integer holder maximum health under test
+  ---@return table[] emitted recovery events for the pass
+  local function eaten(key, maxHp)
+    local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
+    local half = math.floor(maxHp / 2)
+    local outcome = runPassive(
+      bag,
+      handlers,
+      "residual",
+      passiveContext({ health = { [1] = half, [2] = 30, [3] = 30 }, maxHealth = { [1] = maxHp, [2] = 30, [3] = 30 } })
+    )
+    Assert.isTrue(outcome.done, "the berry pass runs to completion")
+    return outcome.events
+  end
+
+  local oran = eaten("ORAN_BERRY", 100)
+  Assert.equal(#oran, 1, "oran answers at half health")
+  Assert.equal(oran[1].restored, 10, "oran restores a flat 10")
+  Assert.isTrue(oran[1].consumed, "oran spends the berry")
+
+  local juice = eaten("BERRY_JUICE", 100)
+  Assert.equal(#juice, 1, "berry juice answers at half health")
+  Assert.equal(juice[1].restored, 20, "berry juice restores a flat 20")
+
+  local sitrus = eaten("SITRUS_BERRY", 100)
+  Assert.equal(#sitrus, 1, "sitrus answers at half health")
+  Assert.equal(sitrus[1].restored, 25, "sitrus restores a quarter of maximum health")
+
+  local sitrusOdd = eaten("SITRUS_BERRY", 90)
+  Assert.equal(sitrusOdd[1].restored, 22, "sitrus floors the quarter restoration")
+end
+
+-- Every consumable berry spends itself: status, pinch, accuracy, priority,
+-- resist, recoil, and restoration berries all call RemoveItem natively,
+-- so each trigger carries the spend flag beside its effect.
+function T.consumable_berries_mark_their_spend()
+  local handlers = nativeHandlers("native passive registration owns the berry binding set")
+  local stream = {
+    nextU16 = function(_, _, _)
+      return 0
+    end,
+  }
+
+  local function fired(key, timing, extra)
+    local bag = bagWith(key, timing, EffectFixture.activeScope(1, 1))
+    local base = {
+      health = { [1] = 25, [2] = 30, [3] = 30 },
+      maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+      stream = stream,
+    }
+    if extra ~= nil then
+      for name, value in pairs(extra) do
+        base[name] = value
+      end
+    end
+    local outcome = runPassive(bag, handlers, timing, passiveContext(base))
+    Assert.isTrue(outcome.done, "the berry pass runs to completion")
+    return outcome.events
+  end
+
+  local cheri = fired("CHERI_BERRY", "residual", { status = "paralysis" })
+  Assert.equal(#cheri, 1, "cheri answers paralysis")
+  Assert.isTrue(cheri[1].consumed, "cheri spends the berry")
+
+  local lum = fired("LUM_BERRY", "residual", { status = "burn" })
+  Assert.isTrue(lum[1].consumed, "lum spends the berry")
+
+  local persim = fired("PERSIM_BERRY", "residual", { confusion = true })
+  Assert.isTrue(persim[1].consumed, "persim spends the berry")
+
+  local leppa = fired("LEPPA_BERRY", "residual", { ppZero = true })
+  Assert.isTrue(leppa[1].consumed, "leppa spends the berry")
+
+  local enigma = fired("ENIGMA_BERRY", "residual", { moveType = "fire", superEffective = true })
+  Assert.isTrue(enigma[1].consumed, "enigma spends the berry")
+
+  local micle = fired("MICLE_BERRY", "residual", {})
+  Assert.isTrue(micle[1].consumed, "micle spends the berry")
+
+  local occa = fired("OCCA_BERRY", "residual", { moveType = "fire", superEffective = true })
+  Assert.isTrue(occa[1].consumed, "occa spends the berry")
+
+  local chilan = fired("CHILAN_BERRY", "residual", { moveType = "normal" })
+  Assert.isTrue(chilan[1].consumed, "chilan spends the berry")
+
+  local jaboca = fired("JABOCA_BERRY", "residual", { dealtDamage = true, split = "physical" })
+  Assert.isTrue(jaboca[1].consumed, "jaboca spends the berry")
+end
+
+-- Single-use survivors spend themselves: Focus Sash and the White,
+-- Mental, and Power Herbs are consumed on use, while Focus Band persists.
+function T.single_use_survivors_spend_themselves()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+  local stream = {
+    nextU16 = function(_, _, _)
+      return 0
+    end,
+  }
+
+  local function fired(key, extra)
+    local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
+    local base = {
+      health = { [1] = 100, [2] = 30, [3] = 30 },
+      maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+      stream = stream,
+      lethal = true,
+    }
+    if extra ~= nil then
+      for name, value in pairs(extra) do
+        base[name] = value
+      end
+    end
+    local outcome = runPassive(bag, handlers, "residual", passiveContext(base))
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  local sash = fired("FOCUS_SASH", {})
+  Assert.equal(#sash, 1, "sash answers lethal damage at full health")
+  Assert.isTrue(sash[1].consumed, "sash spends itself")
+
+  local band = fired("FOCUS_BAND", {})
+  Assert.equal(#band, 1, "band answers the low roll")
+  Assert.isNil(band[1].consumed, "band persists")
+
+  local white = fired("WHITE_HERB", { statsLowered = true })
+  Assert.isTrue(white[1].consumed, "white herb spends itself")
+
+  local mental = fired("MENTAL_HERB", { infatuated = true })
+  Assert.isTrue(mental[1].consumed, "mental herb spends itself")
+
+  local power = fired("POWER_HERB", { charging = true })
+  Assert.isTrue(power[1].consumed, "power herb spends itself")
 end
 
 return { tests = T }

@@ -141,10 +141,12 @@ local SILENT_BERRY = {
   "BELUE_BERRY",
 }
 
---- Restores a quarter of maximum health once the holder drops to half
---- or below; healthy holders keep the item without failing. The
---- announcement carries the exact restoration and the spend, so live
---- checkpoints apply and consume without re-reading the berry identity.
+--- Restores native HP once the holder drops to half or below: Oran a
+--- flat 10, Berry Juice a flat 20, and Sitrus a quarter of maximum
+--- health through the native divide (floor, minimum 1). Healthy holders
+--- keep the item without failing. The announcement carries the exact
+--- restoration and the spend, so live checkpoints apply and consume
+--- without re-reading the berry identity.
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> residual context under handling
 ---@return table<string, unknown>? recovery announcement, or nil when inapplicable
@@ -161,12 +163,23 @@ local function hpBerry(instance, context)
   then
     return nil
   end
+  local restored
+  if instance.key == "ORAN_BERRY" then
+    restored = 10
+  elseif instance.key == "BERRY_JUICE" then
+    restored = 20
+  else
+    restored = math.floor(maxHp --[[@as integer]] * 25 / 100)
+    if restored < 1 then
+      restored = 1
+    end
+  end
   return {
     kind = "trigger",
     key = instance.key,
     combatant = holderOf(instance),
     recovered = true,
-    restored = math.floor(maxHp --[[@as integer]] / 4),
+    restored = restored,
     consumed = true,
   }
 end
@@ -185,16 +198,28 @@ local function statusBerry(instance, context)
   if cured == "any" then
     local status = context.status
     if type(status) == "string" then
-      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = status }
+      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = status, consumed = true }
     end
     if context.confusion == true then
-      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = "confusion" }
+      return {
+        kind = "trigger",
+        key = instance.key,
+        combatant = holderOf(instance),
+        cured = "confusion",
+        consumed = true,
+      }
     end
     return nil
   end
   if cured == "confusion" then
     if context.confusion == true or context.status == "confusion" then
-      return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = "confusion" }
+      return {
+        kind = "trigger",
+        key = instance.key,
+        combatant = holderOf(instance),
+        cured = "confusion",
+        consumed = true,
+      }
     end
     return nil
   end
@@ -205,7 +230,7 @@ local function statusBerry(instance, context)
   if status ~= cured then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = status }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = status, consumed = true }
 end
 
 ---@param context table<string, unknown> residual context under handling
@@ -275,11 +300,19 @@ local function pinchBerry(instance, context)
     then
       return nil
     end
-    -- A disliked flavor confuses instead of healing: the native
-    -- script runs the dislike branch from personality. The eaten
+    -- A disliked flavor confuses beside healing: the native dislike
+    -- script restores an eighth first and then confuses. The eaten
     -- berry is spent either way.
     if context.dislikedFlavor == true then
-      return { kind = "trigger", key = instance.key, combatant = holder, confused = true, consumed = true }
+      return {
+        kind = "trigger",
+        key = instance.key,
+        combatant = holder,
+        confused = true,
+        recovered = true,
+        restored = math.floor(maxHp --[[@as integer]] / 8),
+        consumed = true,
+      }
     end
     return {
       kind = "trigger",
@@ -331,12 +364,12 @@ local function resistBerry(instance, context)
     if context.moveType ~= "normal" then
       return nil
     end
-    return { kind = "trigger", key = instance.key, combatant = holderOf(instance), resisted = true }
+    return { kind = "trigger", key = instance.key, combatant = holderOf(instance), resisted = true, consumed = true }
   end
   if context.moveType ~= warded or context.superEffective ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), resisted = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), resisted = true, consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -346,7 +379,7 @@ local function leppaBerry(instance, context)
   if context.ppZero ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), restored = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), restored = true, consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -356,7 +389,7 @@ local function enigmaBerry(instance, context)
   if context.superEffective ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recovered = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recovered = true, consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -375,7 +408,7 @@ local function micleBerry(instance, context)
   -- Micle defers its boost to the following accuracy check: the native
   -- flag multiplies the next move, so the announcement arms the next
   -- check rather than applying an immediate boost.
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), accuracyNext = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), accuracyNext = true, consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -416,7 +449,7 @@ local function jabocaBerry(instance, context)
   if instance.key == "ROWAP_BERRY" and context.split ~= "special" then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recoil = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recoil = true, consumed = true }
 end
 
 --- Recovers a sixteenth of maximum health at the end of the turn while
@@ -534,7 +567,7 @@ local function focusSash(instance, context)
   then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), endured = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), endured = true, consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -589,7 +622,7 @@ local function whiteHerb(instance, context)
   if context.statsLowered ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), restored = true }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), restored = true, consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -599,7 +632,7 @@ local function mentalHerb(instance, context)
   if context.infatuated ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = "infatuation" }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), cured = "infatuation", consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -609,7 +642,7 @@ local function powerHerb(instance, context)
   if context.charging ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), charged = "skipped" }
+  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), charged = "skipped", consumed = true }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
