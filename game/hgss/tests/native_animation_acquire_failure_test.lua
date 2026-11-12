@@ -123,7 +123,7 @@ function T.construction_failure_releases_every_acquisition_once_and_stays_silent
   local tasks = {}
   function tasks.create(_kind, _args, _context, _services)
     attempts = attempts + 1
-    if attempts == 2 then
+    if attempts == 1 then
       log.failed[#log.failed + 1] = attempts
       error("synthetic child construction failure")
     end

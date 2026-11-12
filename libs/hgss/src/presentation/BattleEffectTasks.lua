@@ -299,9 +299,21 @@ end
 -- verified synchronous-marker set, and fails every other kind closed.
 -- Completion times come only from the source parameters the producer
 -- emitted, never from a fixed budget.
+-- Fixed source lifetimes behind operand-free native bodies, keyed by
+-- task kind: WobbleDefenderOnBg (pokemon-picture-target-background-slide)
+-- runs three phases of one setup tick plus seventeen wobble ticks and
+-- one teardown tick (battle_anim_effects.c BattleAnimTask_WobbleDefenderOnBg),
+-- 3 * (1 + 17) + 1. The timed body below owns only that source lifetime;
+-- the scanline wobble pixels themselves are not reproduced.
+local WOBBLE_DEFENDER_ON_BG_TICKS = 55
+
 ---@param parameters table<string, unknown> compiled task parameters
+---@param kind string normalized task kind behind fixed source lifetimes
 ---@return integer? source ticks behind completion, absent for timing-less spawns
-local function visualDuration(parameters)
+local function visualDuration(parameters, kind)
+  if kind == "pokemon-picture-target-background-slide" then
+    return WOBBLE_DEFENDER_ON_BG_TICKS
+  end
   if isPositiveInt(parameters.durationTicks) then
     return parameters.durationTicks
   end
@@ -2892,7 +2904,7 @@ local function newNativeVisualTask(kind, args, context, services)
   if parameters == nil then
     parameters = {}
   end
-  local duration = visualDuration(parameters)
+  local duration = visualDuration(parameters, kind)
   local activation = plannedActivation(args, context or {})
   if parameters.exitOwnSide == true then
     parameters = directedOffscreenParameters(parameters, activation, context or {}, kind)
@@ -4610,182 +4622,6 @@ local BACKGROUND_TASK_CONSTRUCTORS = {
   ["battle-presentation-resource-cleanup"] = newBackgroundResourceCleanupTask,
 }
 
--- Curved emitter path with lazy handle binding: construction validates
--- its operands, the first tick binds the occurrence handle, and an
--- absent emitter completes at once while a bound emitter runs the
--- source linear-plus-half-cosine arc against the occurrence-bound handle.
----@class BattleEmitterArcTask
----@field _kind string task kind behind the run
----@field _context table<string, unknown> occurrence-bound playback context behind handle binding
----@field _systemSlot integer logical particle system slot behind handle binding
----@field _slot integer emitter slot behind handle binding
----@field _duration integer source ticks behind the arc
----@field _bound boolean an emitter backs the path
----@field _handle table<string, unknown>? bound emitter handle, nil before binding
----@field _linear table<string, integer>? fixed-point linear motion under advancement, nil before binding
----@field _sin table<string, integer>? fixed-point sine motion under advancement, nil before binding
----@field _origin table<string, integer>? bound emitter origin, nil before binding
----@field _fx PresentationFxMath? fixed-point arithmetic behind the arc, nil before binding
----@field _ticks integer source ticks advanced
----@field _state string pending, running, complete, or cancelled
----@field _disposed boolean release has run
-local BattleEmitterArcTask = {}
-BattleEmitterArcTask.__index = BattleEmitterArcTask
-
----@param kind string task kind under construction
----@param args table<string, unknown> instruction-derived construction arguments
----@param context table<string, unknown> occurrence-bound playback context
----@param services table<string, unknown> scene, audio, and resource collaborators
----@return BattleEmitterArcTask runnable arc task
-local function newEmitterArcTask(kind, args, context, services)
-  local _ = services
-  if type(args) ~= "table" then
-    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its path operands as a record", 0)
-  end
-  local parameters = args.parameters
-  if type(parameters) ~= "table" then
-    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its path operands as a record", 0)
-  end
-  local duration = parameters.durationTicks
-  if type(duration) ~= "number" or duration % 1 ~= 0 or duration < 1 then
-    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " arcs over a positive duration", 0)
-  end
-  local slot = parameters.emitterSlot
-  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 15 then
-    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " arcs an emitter slot in 0..15", 0)
-  end
-  return setmetatable({
-    _kind = kind,
-    _context = context,
-    _systemSlot = parameters.systemSlot or 0,
-    _slot = slot,
-    _duration = duration,
-    _bound = false,
-    _handle = nil,
-    _linear = nil,
-    _sin = nil,
-    _ticks = 0,
-    _state = "pending",
-    _disposed = false,
-  }, BattleEmitterArcTask)
-end
-
----@param self BattleEmitterArcTask arc task under handle binding
----@return boolean bound true while an emitter backs the path
-local function bindEmitterArc(self)
-  local ParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
-  local ok, handle = pcall(ParticleSystems.getEmitterHandle, self._context, self._systemSlot, self._slot)
-  if not ok or type(handle) ~= "table" then
-    return false
-  end
-  self._handle = handle
-  local Fx = require("libs.hgss.src.presentation.PresentationFxMath")
-  local position = handle:getPositionFx32()
-  self._linear = { x = 0, y = 0, curX = 0, curY = 0, stepX = 0, stepY = 0, remaining = self._duration }
-  self._sin = {
-    angleX = 0,
-    angleY = 0,
-    stepX = math.floor(16383 / self._duration),
-    stepY = math.floor(49151 / self._duration),
-    remaining = self._duration,
-  }
-  self._origin = { x = position.x, y = position.y }
-  self._fx = Fx
-  self._bound = true
-  return true
-end
-
----@param motion table<string, integer> fixed-point linear motion under advancement
----@return boolean advanced true while motion remains
-local function advanceArcLinear(motion)
-  if motion.remaining ~= 0 then
-    motion.curX = motion.curX + motion.stepX
-    motion.curY = motion.curY + motion.stepY
-    motion.x = math.floor(motion.curX / 4096)
-    motion.y = math.floor(motion.curY / 4096)
-    motion.remaining = motion.remaining - 1
-    return true
-  end
-  return false
-end
-
----@param self BattleEmitterArcTask arc task under sine advancement
----@return boolean advanced true while the arc remains
-local function advanceArcSine(self)
-  local sin = self._sin
-  assert(sin ~= nil, "bound emitter arcs advance their sine motion")
-  if sin.remaining == 0 then
-    return false
-  end
-  sin.angleX = (sin.angleX + sin.stepX) % 65536
-  sin.angleY = (sin.angleY + sin.stepY) % 65536
-  sin.remaining = sin.remaining - 1
-  return true
-end
-
----@param self BattleEmitterArcTask arc task under advancement
----@param tick table<string, unknown>? source tick under advancement
-function BattleEmitterArcTask:stepSourceTick(tick)
-  local _ = tick
-  if self._disposed or self._state == "complete" or self._state == "cancelled" then
-    return
-  end
-  self._state = "running"
-  if not self._bound then
-    if not bindEmitterArc(self) then
-      -- No emitter backs the slot: the source-null path completes at
-      -- once instead of refusing to construct.
-      self._state = "complete"
-      return
-    end
-  end
-  self._ticks = self._ticks + 1
-  local linearActive = advanceArcLinear(self._linear)
-  local sineActive = advanceArcSine(self)
-  local active = false
-  local ok, isActive = pcall(self._handle.isActive, self._handle)
-  if ok then
-    active = isActive
-  end
-  if not linearActive and not sineActive and not active then
-    pcall(self._handle.delete, self._handle)
-    self._state = "complete"
-    return
-  end
-  local okPosition, position = pcall(self._handle.getPositionFx32, self._handle)
-  if okPosition and type(position) == "table" then
-    pcall(self._handle.setPositionFx32, self._handle, {
-      x = self._origin.x + self._linear.x,
-      y = self._origin.y + self._linear.y,
-    })
-  end
-end
-
----@param self BattleEmitterArcTask
----@return string
-function BattleEmitterArcTask:status()
-  assert(VALID_TASK_STATES[self._state] == true, "curved emitter paths report a known run state")
-  return self._state
-end
-
----@param self BattleEmitterArcTask
----@param reason string cancellation cause under diagnosis
-function BattleEmitterArcTask:cancel(reason)
-  local _ = reason
-  if self._state == "complete" then
-    return
-  end
-  self._state = "cancelled"
-end
-
----@param self BattleEmitterArcTask
-function BattleEmitterArcTask:dispose()
-  if self._disposed then
-    return
-  end
-  self._disposed = true
-end
-
 -- Reports whether the factory constructs a real task for a kind. The
 -- predicate is a direct view of the constructor dispatch below: only
 -- emitted producer kinds with implemented bodies are admitted.
@@ -4871,7 +4707,7 @@ function BattleEffectTasks.create(kind, args, context, services)
     return BattleParticleSystems.newPathTask(args or {}, context or {})
   end
   if kind == BattleEffectTasks.EMITTER_CURVED_PATH_KIND then
-    return newEmitterArcTask(kind, args or {}, context or {}, services or {})
+    return BattleParticleSystems.newCurveTask(args or {}, context or {})
   end
   if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
     assert(type(services) == "table", "picture animations require their services record")

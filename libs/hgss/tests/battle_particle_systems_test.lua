@@ -412,6 +412,25 @@ local function pathArgs(overrides)
   return { parameters = parameters }
 end
 
+local function curveArgs(overrides)
+  local parameters = {
+    emitterContextSlot = 0,
+    horizontalOffset = 0,
+    verticalOffset = 0,
+    durationTicks = 0,
+    curveControl = 14,
+    curveScale = 16,
+    battlerOrder = "attacker-target",
+    initialInterpolationSteps = 0,
+    completionLimit = 255,
+    sinusoidalOffset = false,
+  }
+  for key, value in pairs(overrides or {}) do
+    parameters[key] = value
+  end
+  return { parameters = parameters }
+end
+
 function T.path_task_moves_the_emitter_between_battlers_and_removes_it_when_done()
   local scene = BattleScene.new()
   local ctx = context()
@@ -441,23 +460,39 @@ function T.path_task_moves_the_emitter_between_battlers_and_removes_it_when_done
   system:dispose()
 end
 
-function T.path_task_fails_without_an_emitter_and_the_curved_path_binds_lazily()
+function T.path_task_fails_without_an_emitter_and_the_curved_path_needs_one_staged()
   local scene = BattleScene.new()
   local ctx = context()
-  local system = loadSystem(scene, nil, ctx)
+  local system = loadSystem(scene, payload({ emitterRecord({ persistent = true, particleLife = 3 }) }), ctx)
   Assert.throws(function()
     BattleEffectTasks.create(BattleEffectTasks.EMITTER_BATTLER_PATH_KIND, pathArgs(), ctx, {})
   end, "a path over an empty emitter slot fails")
-  local curved = assert(
-    BattleEffectTasks.create(BattleEffectTasks.EMITTER_CURVED_PATH_KIND, pathArgs({ durationTicks = 4 }), ctx, {}),
-    "the curved path constructs with its operands and binds its emitter lazily"
-  )
-  curved:stepSourceTick({ tick = 1 })
-  Assert.equal(curved:status(), "complete", "the curved path over an empty slot completes at once")
   Assert.throws(function()
-    createEmitter(ctx)
-    BattleEffectTasks.create(BattleEffectTasks.EMITTER_BATTLER_PATH_KIND, pathArgs({ durationTicks = 0 }), ctx, {})
-  end, "a zero-duration path fails")
+    BattleEffectTasks.create(BattleEffectTasks.EMITTER_CURVED_PATH_KIND, curveArgs(), ctx, {})
+  end, "a curve over an empty emitter slot fails like the straight path")
+  createEmitter(ctx)
+  local curved = assert(
+    BattleEffectTasks.create(BattleEffectTasks.EMITTER_CURVED_PATH_KIND, curveArgs(), ctx, {}),
+    "the curved path constructs once its emitter slot holds a persistent emitter"
+  )
+  local runtime = system.simulation.emitters[1]
+  local startX = runtime.x
+  system:stepSourceTick({ tick = 1 })
+  curved:stepSourceTick({ tick = 1 })
+  Assert.isTrue(runtime.x ~= startX, "the staged curve moves its emitter instead of standing still")
+  for tick = 2, 60 do
+    system:stepSourceTick({ tick = tick })
+    curved:stepSourceTick({ tick = tick })
+  end
+  Assert.equal(curved:status(), "complete", "the curve completes once its motion ends and the particles fade")
+  Assert.throws(function()
+    BattleEffectTasks.create(
+      BattleEffectTasks.EMITTER_CURVED_PATH_KIND,
+      curveArgs({ curveControl = 0 }),
+      ctx,
+      {}
+    )
+  end, "a zero-duration curve fails")
   system:dispose()
 end
 

@@ -2037,8 +2037,6 @@ end
 -- BattleAnimFunc_MoveEmitter: moves a persistent emitter between the attacker
 -- and target emitter placements over the callback duration, then removes it
 -- once its motion ends and its oldest particle is on its last tick.
--- The curved emitter path is not reproduced: the factory dispatch fails
--- loudly at construction instead of keeping a silently unmoved emitter.
 
 ---@param args table<string, unknown> instruction arguments carrying the path parameters
 ---@param context table<string, unknown> occurrence-bound playback context
@@ -2160,6 +2158,205 @@ end
 
 ---@param self BattleParticlePathTask
 function PathTask:dispose()
+  self._state = self._state == "running" and "cancelled" or self._state
+end
+
+---@class BattleParticleCurveTask
+---@field _handle table<string, unknown> emitter handle being moved
+---@field _linear table<string, integer> linear motion state
+---@field _sin table<string, integer> sine motion state
+---@field _registry BattleParticleRegistry
+---@field _state string running or complete or cancelled
+local CurveTask = {}
+CurveTask.__index = CurveTask
+
+-- Source sine motion step behind the arc: half-cosine-period vertical
+-- offset of the compiled amplitude, both angles advancing per tick.
+---@param sin table<string, integer> sine motion state
+---@return boolean moved
+local function updateSin(sin)
+  if sin.duration == 0 then
+    return false
+  end
+  local Fx = require("libs.hgss.src.presentation.PresentationFxMath")
+  sin.angleX = (sin.angleX + sin.stepX) % 65536
+  sin.angleY = (sin.angleY + sin.stepY) % 65536
+  sin.duration = sin.duration - 1
+  sin.x = math.floor(Fx.fxMul(Fx.sinIdx(sin.angleX), sin.ampX) / FX_ONE)
+  sin.y = math.floor(Fx.fxMul(Fx.cosIdx(sin.angleY), sin.ampY) / FX_ONE)
+  return true
+end
+
+-- Source linear-plus-sine step: both motions advance, then the sine
+-- offset folds into the linear position for this tick.
+---@param linear table<string, integer> linear motion state
+---@param sin table<string, integer> sine motion state
+---@return boolean moved
+local function updateLinearSin(linear, sin)
+  local linearActive = updateLinear(linear)
+  local sinActive = updateSin(sin)
+  linear.x = linear.x + sin.x
+  linear.y = linear.y + sin.y
+  if linearActive == sinActive then
+    if not linearActive then
+      return false
+    end
+  end
+  return true
+end
+
+-- BattleAnimFunc_MoveEmitterArc: moves a persistent emitter between the
+-- attacker and target emitter placements along a linear path plus a
+-- half-cosine-period vertical arc of the compiled amplitude, side
+-- adjusted like the straight path, then removes it once its motion ends
+-- and its oldest particle is on its last tick. The positional delay
+-- operand stays inert: the source arc task never consults it.
+---@param args table<string, unknown> instruction arguments carrying the arc parameters
+---@param context table<string, unknown> occurrence-bound playback context
+---@return BattleParticleCurveTask
+function BattleParticleSystems.newCurveTask(args, context)
+  local kind = BattleParticleSystems.CURVED_PATH_KIND
+  local Fx = require("libs.hgss.src.presentation.PresentationFxMath")
+  local parameters = args.parameters --[[@as table<string, unknown>?]]
+  if type(parameters) ~= "table" then
+    error(malformedMessage(kind, "carries its arc operands as a record"), 0)
+  end
+  local registry = registryOf(context, kind)
+  local handle = registry.emitters[parameters.emitterContextSlot]
+  if handle == nil then
+    error(malformedMessage(kind, "arcs an emitter slot that holds no persistent emitter"), 0)
+  end
+  -- The producer names the source operands verbatim: curveControl is the
+  -- positional motion duration, curveScale the positional amplitude, and
+  -- the battler order selects the source direction.
+  local duration = parameters.curveControl --[[@as integer]]
+  if type(duration) ~= "number" or duration % 1 ~= 0 or duration < 1 then
+    error(malformedMessage(kind, "arcs over a positive duration"), 0)
+  end
+  local fromRole, toRole = "attacker", "target"
+  if parameters.battlerOrder == "target-attacker" then
+    fromRole, toRole = "target", "attacker"
+  elseif parameters.battlerOrder ~= "attacker-target" then
+    error(malformedMessage(kind, "arcs between a known battler order"), 0)
+  end
+  local offsetX = parameters.horizontalOffset --[[@as integer]]
+  local offsetY = parameters.verticalOffset --[[@as integer]]
+  if type(offsetX) ~= "number" or type(offsetY) ~= "number" then
+    error(malformedMessage(kind, "arcs toward numeric sided offsets"), 0)
+  end
+  local amplitude = parameters.curveScale --[[@as integer]]
+  if type(amplitude) ~= "number" then
+    error(malformedMessage(kind, "arcs with a numeric amplitude"), 0)
+  end
+  local startFrame = parameters.initialInterpolationSteps --[[@as integer]]
+  if type(startFrame) ~= "number" or startFrame % 1 ~= 0 or startFrame < 0 then
+    error(malformedMessage(kind, "pre-rolls a nonnegative start frame"), 0)
+  end
+  local endFrame = parameters.completionLimit --[[@as integer]]
+  if type(endFrame) ~= "number" or endFrame % 1 ~= 0 or endFrame < 1 then
+    error(malformedMessage(kind, "limits completion to a positive end frame"), 0)
+  end
+  local attackerSlot = battlerPosition(context, "attacker", kind) --[[@as string]]
+  local fromSlot = battlerPosition(context, fromRole, kind) --[[@as string]]
+  local toSlot = battlerPosition(context, toRole, kind)
+  local payload = handle.system.payload --[[@as table<string, unknown>]]
+  local perspective = handle.perspective --[[@as integer]]
+  local from = placementOf(payload, fromSlot, perspective, kind, handle.kind or 0)
+  local to = placementOf(payload, toSlot, perspective, kind, handle.kind or 0)
+  -- Native side sign behind the attacker in retail mode: the enemy side
+  -- reads -1, the player side +1.
+  local side = sideSign(attackerSlot)
+  local function pixel(world)
+    return toS16(cdiv(math.floor(world * FX_ONE + 0.5), EMITTER_PIXEL_RAW))
+  end
+  local startX, startY = pixel(from.x), pixel(from.y)
+  local endX = toS16(pixel(to.x) + offsetX * side)
+  local endY = toS16(pixel(to.y) + offsetY * side)
+  local linear = {
+    x = startX,
+    y = startY,
+    duration = duration,
+    stepX = cdiv((endX - startX) * FX_ONE, duration),
+    stepY = cdiv((endY - startY) * FX_ONE, duration),
+    curX = startX * FX_ONE,
+    curY = startY * FX_ONE,
+  }
+  -- InitSinMotion(0, 0, 0x3FFF, 0xBFFF, ampX 0, amplitude, duration): the
+  -- horizontal amplitude stays zero, so only the vertical cosine arc of
+  -- the negated compiled amplitude moves the emitter.
+  local sin = {
+    angleX = 0,
+    ampX = 0,
+    angleY = 0,
+    ampY = Fx.s32(-(amplitude * FX_ONE)),
+    duration = duration,
+    stepX = cdiv(0x3FFF, duration),
+    stepY = cdiv(0xBFFF, duration),
+    x = 0,
+    y = 0,
+  }
+  for _ = 1, startFrame do
+    updateLinearSin(linear, sin)
+  end
+  local self = setmetatable({
+    _handle = handle,
+    _linear = linear,
+    _sin = sin,
+    _registry = registry,
+    _state = "running",
+  }, CurveTask)
+  -- The retail setup writes the position before the first task tick.
+  local runtime = handle.runtime --[[@as table<string, unknown>]]
+  runtime.x = linear.x * EMITTER_PIXEL_RAW / FX_ONE
+  runtime.y = linear.y * EMITTER_PIXEL_RAW / FX_ONE
+  return self
+end
+
+---@param self BattleParticleCurveTask
+---@param tick table<string, unknown>? source tick under advancement
+function CurveTask:stepSourceTick(tick)
+  local _ = tick
+  if self._state ~= "running" then
+    return
+  end
+  local handle = self._handle
+  local simulation = handle.system.simulation --[[@as SplParticleSimulation]]
+  if not SplParticleSimulation.hasEmitter(simulation, handle.runtime) then
+    self._state = "complete"
+    return
+  end
+  local active = emitterActive(handle.runtime --[[@as table<string, unknown>]])
+  if not updateLinearSin(self._linear, self._sin) and not active then
+    SplParticleSimulation.removeEmitter(simulation, handle.runtime)
+    if self._registry.emitters[handle.slot] == handle then
+      self._registry.emitters[handle.slot] = nil
+    end
+    self._state = "complete"
+    return
+  end
+  local runtime = handle.runtime --[[@as table<string, unknown>]]
+  runtime.x = self._linear.x * EMITTER_PIXEL_RAW / FX_ONE
+  runtime.y = self._linear.y * EMITTER_PIXEL_RAW / FX_ONE
+end
+
+---@param self BattleParticleCurveTask
+---@return string
+function CurveTask:status()
+  return self._state
+end
+
+---@param self BattleParticleCurveTask
+---@param reason string cancellation cause under diagnosis
+function CurveTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+end
+
+---@param self BattleParticleCurveTask
+function CurveTask:dispose()
   self._state = self._state == "running" and "cancelled" or self._state
 end
 

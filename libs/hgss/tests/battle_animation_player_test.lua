@@ -430,9 +430,12 @@ function T.stream_end_with_unfinished_voices_fails_loudly()
     tasks = helpers.tasks,
     services = { onNativeFrame = function() end },
   }))
-  local handle = assert(player:start(packet(), programOf({
-    { op = "play-sound", sound = "lingering-cue" },
-  })))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      { op = "play-sound", sound = "lingering-cue" },
+    })
+  ))
   for _ = 1, 300 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "failed" then
@@ -506,16 +509,19 @@ function T.parameterized_emitter_spawns_carry_their_script_config()
     },
   }))
   player:stepSourceTick({ tick = 1 })
-  Assert.deepEqual(
-    helpers.log.spawnArgs,
+  Assert.deepEqual(helpers.log.spawnArgs, {
     {
-      {
-        kind = "battler-effect-continuation",
-        args = { actionProfile = "particle-emitter-battler-class-camera-position", systemIndex = 0, emitter = 3, continuationSlot = nil, emitterConfig = config, emitterOffset = nil },
+      kind = "battler-effect-continuation",
+      args = {
+        actionProfile = "particle-emitter-battler-class-camera-position",
+        systemIndex = 0,
+        emitter = 3,
+        continuationSlot = nil,
+        emitterConfig = config,
+        emitterOffset = nil,
       },
     },
-    "configured emitter spawns carry their script config words"
-  )
+  }, "configured emitter spawns carry their script config words")
 end
 
 function T.missing_context_reads_fail_before_side_effects()
@@ -534,28 +540,67 @@ function T.missing_context_reads_fail_before_side_effects()
 end
 
 function T.counter_waits_track_the_general_group_only()
-  local player, handle, helpers = startNew(programOf({
-    {
-      op = "wait-interpreter-counter",
-      branchTarget = 1,
-      cursorRule = "pending-redispatch-current-opcode; zero-advances-past-current-opcode",
-    },
-    {
-      op = "schedule-battle-task",
-      taskKind = "battle-background-blend-transition",
-      taskInputRule = "raw-rule",
-      values = { 1 },
-    },
-    { op = "reset-blend-alpha" },
+  -- The interpreter-counter wait observes only the general group: a
+  -- pending uncounted raw task never parks it, while the stream end
+  -- still drains that same raw task before completing.
+  local helpers = collaborators()
+  function helpers.tasks.create(kind, args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    helpers.log.spawnArgs[#helpers.log.spawnArgs + 1] = { kind = kind, args = args }
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      helpers.log.steps[#helpers.log.steps + 1] = kind
+      task._state = "complete"
+    end
+    function task.status()
+      return task._state
+    end
+    function task.finish()
+      task._state = "complete"
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+      helpers.log.cancelled[#helpers.log.cancelled + 1] = kind
+    end
+    function task.dispose()
+      helpers.log.disposed[#helpers.log.disposed + 1] = kind
+    end
+    return task
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
   }))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      {
+        op = "schedule-battle-task",
+        taskKind = "battle-background-blend-transition",
+        taskInputRule = "raw-rule",
+        values = { 1 },
+      },
+      {
+        op = "wait-interpreter-counter",
+        branchTarget = 2,
+        cursorRule = "pending-redispatch-current-opcode; zero-advances-past-current-opcode",
+      },
+      { op = "reset-blend-alpha" },
+    })
+  ))
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(#helpers.log.created, 1, "the raw task still constructs")
   for _ = 1, 5 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "complete" then
       break
     end
   end
-  Assert.equal(player:status(handle), "complete", "uncounted raw tasks never hold the counter wait")
-  Assert.equal(#helpers.log.created, 1, "the raw task still constructs")
+  Assert.equal(player:status(handle), "complete", "the drained raw task releases the stream end")
+  Assert.isNil(player:failure(handle), "the drained stream end carries no failure")
 end
 
 function T.cancel_and_dispose_stay_silent_and_exact()
@@ -660,7 +705,7 @@ function T.construction_failures_release_every_acquisition_once()
   local helpers = collaborators()
   function helpers.tasks.create(_kind, _args, _context, _services)
     attempts = attempts + 1
-    if attempts == 2 then
+    if attempts == 1 then
       error("synthetic child construction failure")
     end
     local task = { _state = "running" }
@@ -701,12 +746,12 @@ function T.construction_failures_release_every_acquisition_once()
       break
     end
   end
-  Assert.equal(player:status(handle), "failed", "the second construction fails the occurrence")
+  Assert.equal(player:status(handle), "failed", "the failing construction fails the occurrence")
   local fault = player:failure(handle)
   Assert.notNil(fault, "failure carries occurrence and instruction detail")
   Assert.equal(fault.op, "schedule-battle-task", "the detail names the failing instruction")
-  Assert.equal(#helpers.log.played, 1, "the staged voice starts once")
-  Assert.equal(#helpers.log.stopped, 1, "the staged voice stops once")
+  Assert.equal(#helpers.log.played, 0, "the sound wait invents no voice")
+  Assert.equal(#helpers.log.stopped, 0, "unstaged voices stop nothing")
   Assert.equal(#helpers.log.acquired, 0, "the staged voice stages no holder lease")
   Assert.equal(#helpers.log.released, 0, "unstaged voices release nothing")
 end
@@ -1679,6 +1724,251 @@ function T.carved_out_context_families_stay_loud_on_any_phase()
     Assert.equal(fault.op, probe.op, probe.op .. " names the failing instruction")
     Assert.equal(#helpers.log.created, 0, probe.op .. " constructs no child")
   end
+end
+
+function T.stream_end_holds_uncounted_tasks_then_retires_everything_once()
+  -- Uncounted raw work holds the stream end instead of leaking past
+  -- it: completion retires every owned record, voice, and lease exactly
+  -- once.
+  local helpers = collaborators()
+  local finishesAt = { [1] = 3 }
+  local ticks = 0
+  function helpers.tasks.create(kind, args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    local id = #helpers.log.created
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      ticks = ticks + 1
+      helpers.log.steps[#helpers.log.steps + 1] = kind
+      if ticks >= (finishesAt[id] or 1) then
+        task._state = "complete"
+      end
+    end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+      helpers.log.cancelled[#helpers.log.cancelled + 1] = kind
+    end
+    function task.dispose()
+      helpers.log.disposed[#helpers.log.disposed + 1] = kind
+    end
+    return task
+  end
+  function helpers.audio.isFinished(_name)
+    return true
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      {
+        op = "schedule-battle-task",
+        taskKind = "battle-background-blend-transition",
+        taskInputRule = "tail-rule",
+        values = { 1 },
+      },
+      { op = "reset-blend-alpha" },
+    })
+  ))
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "the live tail holds the stream end")
+  player:stepSourceTick({ tick = 2 })
+  Assert.equal(player:status(handle), "waiting", "the tail still holds the stream end")
+  for _ = 1, 6 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the drained tail releases the stream end")
+  Assert.equal(#helpers.log.disposed, 1, "the tail task disposes exactly once")
+  Assert.equal(#helpers.log.cancelled, 0, "completion cancels nothing")
+  Assert.isTrue(player:retire(handle), "the terminal occurrence retires")
+  Assert.isTrue(not player:retire(handle), "retirement never repeats")
+end
+
+function T.effects_waits_stay_parked_until_every_raw_task_drains()
+  -- Two overlapping raw tasks: the first completion must not release a
+  -- wait that still names running work.
+  local helpers = collaborators()
+  local finishesAt = { 2, 5 }
+  local ticks = 0
+  function helpers.tasks.create(kind, _args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    local id = #helpers.log.created
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      ticks = ticks + 1
+      if ticks >= finishesAt[id] then
+        task._state = "complete"
+      end
+    end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+    end
+    function task.dispose() end
+    return task
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      {
+        op = "schedule-battle-task",
+        taskKind = "battle-background-blend-transition",
+        taskInputRule = "brief-rule",
+        values = { 1 },
+      },
+      {
+        op = "schedule-battle-task",
+        taskKind = "battle-palette-fade",
+        taskInputRule = "long-rule",
+        values = { 1 },
+      },
+      { op = "wait-for-battler-effects" },
+      { op = "reset-blend-alpha" },
+    })
+  ))
+  for tick = 1, 4 do
+    player:stepSourceTick({ tick = tick })
+    Assert.equal(player:status(handle), "waiting", "the long task holds the wait on tick " .. tick)
+  end
+  for _ = 1, 6 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the drained pair releases the wait")
+end
+
+function T.sound_waits_create_no_sound_and_escape_stuck_voices()
+  -- A wait with no pending sound work advances without playing
+  -- anything; a stuck voice holds only until the source 90-tick escape
+  -- releases past the wait, and the stream end still fails loudly.
+  local played = {}
+  local helpers = collaborators()
+  function helpers.audio.play(name)
+    played[#played + 1] = name
+  end
+  function helpers.audio.isFinished(_name)
+    return false
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      { op = "wait-for-sound", values = { 90 } },
+      { op = "play-sound", sound = "after-wait-cue" },
+    })
+  ))
+  player:stepSourceTick({ tick = 1 })
+  Assert.deepEqual(played, { "after-wait-cue" }, "the empty wait invents no voice")
+  local stuck = assert(player:start(
+    packet(),
+    programOf({
+      { op = "play-sound", sound = "stuck-cue" },
+      { op = "wait-for-sound", values = { 90 } },
+      { op = "play-sound", sound = "downstream-cue" },
+    })
+  ))
+  for tick = 1, 95 do
+    player:stepSourceTick({ tick = tick })
+  end
+  Assert.isTrue(
+    #played >= 3 and played[#played] == "downstream-cue",
+    "the stuck voice escapes past the wait instead of parking forever"
+  )
+  for _ = 1, 200 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(stuck) == "failed" then
+      break
+    end
+  end
+  Assert.equal(player:status(stuck), "failed", "the stuck stream end still fails loudly")
+  Assert.notNil(player:failure(stuck), "the stuck stream end carries its failure detail")
+end
+
+function T.overlapping_occurrences_retire_cancelled_work_without_touching_survivors()
+  -- A cancelled long occurrence disposes its live tail exactly once
+  -- while a short overlapping occurrence still completes on its own.
+  local helpers = collaborators()
+  local ticks = 0
+  function helpers.tasks.create(kind, _args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      ticks = ticks + 1
+      helpers.log.steps[#helpers.log.steps + 1] = kind
+      if kind == "battle-palette-fade" then
+        task._state = "complete"
+      end
+    end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+      helpers.log.cancelled[#helpers.log.cancelled + 1] = kind
+    end
+    function task.dispose()
+      helpers.log.disposed[#helpers.log.disposed + 1] = kind
+    end
+    return task
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local function spawn(kind)
+    return assert(player:start(
+      packet(),
+      programOf({
+        { op = "schedule-battle-task", taskKind = kind, taskInputRule = "tail-rule", values = { 1 } },
+        { op = "reset-blend-alpha" },
+      })
+    ))
+  end
+  local long = spawn("battle-background-blend-transition")
+  local short = spawn("battle-palette-fade")
+  player:stepSourceTick({ tick = 1 })
+  player:cancel(long, "withdrawn")
+  for _ = 1, 8 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(short) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(long), "cancelled", "the withdrawn occurrence stays cancelled")
+  Assert.equal(player:status(short), "complete", "the survivor completes on its own")
+  Assert.equal(#helpers.log.disposed, 2, "both tails dispose exactly once")
+  Assert.equal(#helpers.log.cancelled, 1, "only the withdrawn tail cancels")
 end
 
 return { tests = T }

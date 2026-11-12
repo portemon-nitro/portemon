@@ -100,6 +100,8 @@ function BattleScene.new()
     _healthBoxModes = {},
     _effects = {},
     _battlerSpriteSlots = {},
+    _animationSprites = {},
+    _animationSpriteManagers = {},
     _nextEffect = 1,
     _particleSystems = {},
     _nextParticleSystem = 1,
@@ -777,6 +779,7 @@ local FIELD_CHECKS = {
   shadowVisible = checkBoolean,
   affineMode = checkBoolean,
   pictureVisible = checkBoolean,
+  layoutMode = checkFiniteNumber,
   shadowAffine = checkBoolean,
   shadowAdjustX = checkBoolean,
   shadowAdjustY = checkBoolean,
@@ -2574,6 +2577,76 @@ function BattleScene:releaseBattlerSpriteSlots(ownerKey, spriteSlot)
   self._battlerSpriteSlots[ownerKey] = nil
 end
 
+-- Records one source battler-sprite draw flag in the system-global slot
+-- registry the native battlerSprites array owns: slots start drawn and
+-- SetBattlerSpriteVisible/StopBattlerSpriteDraw clear or set them by
+-- source slot, independent of the occurrence that staged the sprite.
+---@param slot integer source battler-sprite slot under flagging
+---@param draw boolean visible while true, hidden while false
+function BattleScene:setAnimationSpriteDrawFlag(slot, draw)
+  assert(not self._released, "released scenes flag no battler sprites")
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "sprite draw flags name a source slot")
+  assert(type(draw) == "boolean", "sprite draw flags carry a draw flag")
+  local record = self._animationSprites[slot]
+  if record == nil then
+    record = { draw = true, followStopped = false }
+    self._animationSprites[slot] = record
+  end
+  record.draw = draw
+end
+
+-- Records one stopped sprite-follow binding: the native StopFollowTask
+-- frees the follow work of one battler-sprite slot while the sprite
+-- itself stays alive.
+---@param slot integer source battler-sprite slot whose follow stops
+function BattleScene:stopAnimationSpriteFollow(slot)
+  assert(not self._released, "released scenes stop no sprite follow")
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "stopped follows name a source slot")
+  local record = self._animationSprites[slot]
+  if record == nil then
+    record = { draw = true, followStopped = false }
+    self._animationSprites[slot] = record
+  end
+  record.followStopped = true
+end
+
+-- Returns a detached copy of one slot record, absent before any native
+-- draw or follow transition names the slot.
+---@param slot integer source battler-sprite slot under reading
+---@return { draw: boolean, followStopped: boolean }? detached slot record
+function BattleScene:animationSprite(slot)
+  assert(not self._released, "released scenes expose no battler sprites")
+  local record = self._animationSprites[slot]
+  if record == nil then
+    return nil
+  end
+  return { draw = record.draw, followStopped = record.followStopped }
+end
+
+-- Records one sprite-manager lifetime transition by name: the battler
+-- manager and the indexed sprite managers allocate once and free once
+-- per native manager call, independent of occurrence journals.
+---@param name string manager identity behind the transition
+---@param present boolean allocated while true, freed while false
+function BattleScene:setAnimationSpriteManager(name, present)
+  assert(not self._released, "released scenes track no sprite managers")
+  assert(type(name) == "string" and name ~= "", "sprite managers carry their identity")
+  assert(type(present) == "boolean", "sprite managers carry their presence")
+  if present then
+    self._animationSpriteManagers[name] = true
+  else
+    self._animationSpriteManagers[name] = nil
+  end
+end
+
+-- Reports whether one sprite manager is currently allocated.
+---@param name string manager identity under reading
+---@return boolean present true while allocated
+function BattleScene:animationSpriteManagerPresent(name)
+  assert(not self._released, "released scenes expose no sprite managers")
+  return self._animationSpriteManagers[name] == true
+end
+
 -- Publishes detached effect records in launch allocation order.
 ---@return table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> renderable effect snapshot
 function BattleScene:effectViews()
@@ -2695,6 +2768,8 @@ function BattleScene:release()
   self._animationPlanes = {}
   self._animationCompositor = {}
   self._animationJournals = {}
+  self._animationSprites = {}
+  self._animationSpriteManagers = {}
   self._scanlineRows = nil
 end
 

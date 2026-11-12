@@ -131,6 +131,8 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
     4,
     5,
     6,
+    5,
+    1918,
     29,
     50,
     4,
@@ -144,6 +146,7 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
     "interpreter-wait",
     "schedule-battle-task",
     "schedule-battle-task",
+    "play-sound",
     "wait-for-sound",
     "wait-for-battler-effects",
     "reset-battle-presentation",
@@ -172,10 +175,13 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
   audio.finish(audio.played[1])
   player:stepSourceTick({ tick = 2 })
   Assert.equal(player:status(handle), "waiting", "the effect wait holds while its tasks run")
-  for _, kind in ipairs(log.created) do
-    log.completeAfter[kind] = #log.steps + 1
-  end
+  -- Both schedules lower to one task kind, so the completion threshold
+  -- refreshes every tick: each pass retires exactly the next task to
+  -- step until the shared kind drains.
   for _ = 1, 10 do
+    for _, kind in ipairs(log.created) do
+      log.completeAfter[kind] = #log.steps + 1
+    end
     player:stepSourceTick({ tick = 3 })
     if player:status(handle) == "complete" then
       break
@@ -184,7 +190,10 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
   Assert.equal(player:status(handle), "complete", "each wait releases on its own named condition")
 end
 
-function T.unawaited_children_stay_owned_after_the_main_stream_ends()
+function T.unawaited_children_hold_the_main_stream_end_until_they_drain()
+  -- Uncounted children hold the stream end instead of leaking past it:
+  -- the main stream waits while the child runs, completes once it
+  -- drains, and retires it exactly once at completion.
   local program = lowered("unawaited-child-form", {
     34,
     7,
@@ -212,16 +221,22 @@ function T.unawaited_children_stay_owned_after_the_main_stream_ends()
     services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
+  player:stepSourceTick({ tick = 1 })
+  player:stepSourceTick({ tick = 2 })
+  Assert.equal(player:status(handle), "waiting", "the live child holds the stream end")
+  for _, kind in ipairs(log.created) do
+    log.completeAfter[kind] = #log.steps + 1
+  end
   for _ = 1, 10 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "complete" then
       break
     end
   end
-  Assert.equal(player:status(handle), "complete", "the main stream completes")
-  Assert.equal(#log.disposed, 0, "the unawaited child is not retired with the main stream")
+  Assert.equal(player:status(handle), "complete", "the drained child releases the main stream")
+  Assert.equal(#log.disposed, 1, "completion retires the drained child exactly once")
   player:dispose()
-  Assert.equal(#log.disposed, 1, "release retires the still-owned child exactly once")
+  Assert.equal(#log.disposed, 1, "release after completion retires nothing again")
 end
 
 return { tests = T }

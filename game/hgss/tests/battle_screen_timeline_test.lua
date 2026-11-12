@@ -2771,7 +2771,7 @@ end
 ---@return table<string, unknown> compiled resourceless native program completing in three source ticks
 local function nativeProbeProgram()
   local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
-  return assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 29, 50, 4 }) }))
+  return assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 5, 1918, 29, 50, 4 }) }))
 end
 
 ---@param program table<string, unknown> exact compiled program the collaborator admits

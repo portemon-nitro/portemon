@@ -30,10 +30,7 @@
 ---@field unfinishedVoice fun(): string? most recent unfinished owned sound voice, when present
 ---@field unfinishedCry fun(): string? most recent unfinished owned cry voice, when present
 ---@field cryFinished fun(): boolean? true once owned cry voices need no further wait
----@field stageVoice fun(index: integer): string? stage, start, and monitor one awaited voice
----@field retireVoiceMonitor fun(voice: string) dispose the monitor behind a released voice wait
 ---@field count fun(group: string): integer owned unretired tasks behind one native counter
----@field rawCompleted fun(): boolean true once a raw task retired through completion
 ---@field getParam fun(slot: integer): integer read one scratch parameter
 ---@field setParam fun(slot: integer, value: integer) write one scratch parameter
 ---@field zeroParams fun() clear the ten-slot scratch context
@@ -43,6 +40,14 @@
 ---@field loopBegin fun(count: integer, start: integer): boolean claim one free loop slot
 ---@field loopAdvance fun(): string advance the innermost active loop
 ---@field loopStart fun(): integer rewind destination behind the innermost active loop
+---@field writePlane fun(engine: string, plane: string, patch: table<string, unknown>): boolean persist one animation plane binding
+---@field writeCompositor fun(engine: string, patch: table<string, unknown>): boolean persist one animation compositor record
+---@field writePicture fun(activation: table<string, unknown>, patch: table<string, unknown>): boolean persist one picture write
+---@field restorePicture fun(activation: table<string, unknown>): boolean restore one persisted picture snapshot
+---@field writeBlend fun(eva: integer, evb: integer): boolean move the main-screen sprite-blend coefficients
+---@field setSpriteDrawFlag fun(slot: integer, draw: boolean): boolean record one battler-sprite draw flag
+---@field stopSpriteFollow fun(slot: integer): boolean record one stopped sprite-follow binding
+---@field setSpriteManager fun(name: string, present: boolean): boolean record one sprite-manager lifetime transition
 ---@field activationFor fun(selector: integer): table<string, unknown>? resolve one battler identity
 ---@field contestMode fun(): integer retail-zeroed contest-mode indicator behind opcode-71 branches
 ---@field movePhase fun(): string? admitted occurrence move phase ("charge" or "direct"), when carried
@@ -323,16 +328,31 @@ local function executeStagingWait(exec, instruction, index)
   return exec.park({ kind = "staging", index = index, remaining = 2 })
 end
 
+-- Native WaitForSoundTasks (battle_anim_system.c): while the sound-task
+-- counter is nonzero the script holds without consuming the SE escape
+-- budget; otherwise an actually playing SE holds until it stops or the
+-- 90-tick escape releases past the wait. The command creates no sound:
+-- with no pending task and no unfinished voice it advances at once.
 local function executeSoundWait(exec, instruction, index)
-  local _ = instruction
+  local values = instruction.values --[[@as table<integer, integer>?]]
+  local escape = 90
+  if type(values) == "table" and type(values[1]) == "number" and values[1] > 0 then
+    escape = values[1]
+  end
+  if exec.count("sound") ~= 0 then
+    local wait = exec.wait()
+    if wait == nil or wait.kind ~= "sound-tasks" or wait.index ~= index then
+      local parked = { kind = "sound-tasks", index = index }
+      exec.setWait(parked)
+      return exec.park(parked)
+    end
+    return exec.park(wait)
+  end
   local voice = exec.unfinishedVoice()
   if voice == nil then
-    -- First execution arms the wait and lets the immediate chain
-    -- proceed: downstream work, including the tasks a later effects
-    -- wait names, must still construct in this quantum. A later visit
-    -- parks while the staged voice remains unfinished.
-    if exec.stageVoice(index) == nil then
-      return "done"
+    local wait = exec.wait()
+    if wait ~= nil and (wait.kind == "sound-tasks" or wait.kind == "voice") and wait.index == index then
+      exec.clearWait()
     end
     exec.advance()
     return "continue"
@@ -348,15 +368,15 @@ local function executeSoundWait(exec, instruction, index)
     return "done"
   end
   if finished then
-    exec.retireVoiceMonitor(voice)
     exec.clearWait()
     exec.advance()
     return "continue"
   end
   wait.parked = wait.parked + 1
-  if wait.parked > 90 then
-    exec.fail("voice wait for " .. voice .. " never completed")
-    return "done"
+  if wait.parked > escape then
+    exec.clearWait()
+    exec.advance()
+    return "continue"
   end
   return exec.park(wait)
 end
@@ -405,10 +425,11 @@ local function handleWaitForBattlerEffects(exec, instruction, index)
       exec.clearWait()
     end
   end
-  -- Particle work drains completely; raw visual work releases on its
-  -- first completion because unawaited raw tasks stay owned past the
-  -- main stream by design.
-  if exec.count("particle") == 0 and (exec.count("raw") == 0 or exec.rawCompleted()) then
+  -- Native opcodes 5/26 drain particle work and every visual task the
+  -- stream owns: the wait releases only once both counters read empty.
+  -- A single completion never releases a wait that names still-running
+  -- work, so an early task cannot satisfy a later wait for a longer one.
+  if exec.count("particle") == 0 and exec.count("raw") == 0 then
     released(exec.wait())
     exec.advance()
     return "continue"
@@ -462,12 +483,12 @@ local function handleWaitForBattlePhase(exec, instruction, index)
     end
   end
   -- Native op19/20 poll the background-switch task state (bgSwitchState ==
-  -- 2 for loaded, == 0 for complete): with no unretired raw work the
-  -- awaited switch phase already passed, so the occurrence advances instead
-  -- of failing on a condition the packet never carried. A genuinely
-  -- pending switch parks, then fails loudly once the park outlives the
-  -- source horizon instead of releasing the wait silently.
-  if exec.count("raw") == 0 or exec.rawCompleted() then
+  -- 2 for loaded, == 0 for complete, battle_anim_system.c): the unretired
+  -- raw count is the owned switch work, so the wait releases only once no
+  -- raw task remains. A genuinely pending switch parks, then fails loudly
+  -- once the park outlives the source horizon instead of releasing the
+  -- wait silently.
+  if exec.count("raw") == 0 then
     released(exec.wait())
     exec.advance()
     return "continue"
@@ -1222,6 +1243,80 @@ local function handleDestroyBattlerEffect(exec, instruction, index)
 end
 Handlers["destroy-battler-effect"] = handleDestroyBattlerEffect
 
+-- Resolves the attacker activation behind attacker-owned picture
+-- operations (Change/RestoreBattlerPic always address the attacker): a
+-- missing topology fails closed instead of guessing a battler.
+---@param exec BattleAnimationExec player capability facade behind one occurrence
+---@return table<string, unknown>? attacker activation, nil after failing the occurrence
+local function attackerActivation(exec)
+  local identity = exec.activationFor(0)
+  if identity == nil then
+    exec.fail("attacker picture operations need a battler topology the packet does not carry")
+    return nil
+  end
+  return identity
+end
+
+-- Collects the activations behind one vanished picture write: active
+-- sets name the attacker, opposing/other sets name the event targets,
+-- and the all-positions set names every battler. An unresolvable named
+-- set fails closed instead of vanishing the wrong picture.
+---@param exec BattleAnimationExec player capability facade behind one occurrence
+---@param pictureSets table<integer, string> producer picture sets behind the write
+---@return table<integer, table<string, unknown>>? activations behind the write, nil after failing
+local function vanishActivations(exec, pictureSets)
+  local topology = exec.topology()
+  local targets = type(topology) == "table" and topology.targets or nil
+  local targetCount = type(targets) == "table" and #targets or 0
+  local identities = {}
+  local function add(identity)
+    if identity == nil then
+      return false
+    end
+    identities[#identities + 1] = identity
+    return true
+  end
+  for _, set in ipairs(pictureSets) do
+    if set == "all-battler-positions" then
+      if not add(exec.activationFor(0)) then
+        exec.fail("vanished pictures need an attacker the packet does not carry")
+        return nil
+      end
+      for ordinal = 1, targetCount do
+        if not add(exec.activationFor(ordinal)) then
+          exec.fail("vanished pictures need an event target the packet does not carry")
+          return nil
+        end
+      end
+    elseif set == "other-battler-positions" or set == "opposing-battler-pair-when-enabled" then
+      for ordinal = 1, targetCount do
+        if not add(exec.activationFor(ordinal)) then
+          exec.fail("vanished pictures need an event target the packet does not carry")
+          return nil
+        end
+      end
+    elseif set == "active-battler" or set == "active-battler-pair-when-enabled" then
+      if not add(exec.activationFor(0)) then
+        exec.fail("vanished pictures need an attacker the packet does not carry")
+        return nil
+      end
+    elseif set == "opposing-battler" then
+      if targetCount < 1 or not add(exec.activationFor(1)) then
+        exec.fail("vanished pictures need an event target the packet does not carry")
+        return nil
+      end
+    else
+      exec.fail("vanished pictures name an unknown picture set " .. tostring(set))
+      return nil
+    end
+  end
+  if #identities == 0 then
+    exec.fail("vanished pictures resolve no battler activation")
+    return nil
+  end
+  return identities
+end
+
 local function handleShowPokemonPicture(exec, instruction, index)
   local values = instruction.values --[[@as table<integer, integer>]]
   local identity = exec.activationFor(values[1])
@@ -1236,6 +1331,13 @@ local function handleShowPokemonPicture(exec, instruction, index)
       activation = identity,
     })
     if record == nil then
+      return "done"
+    end
+  else
+    -- Mode zero copies the battler picture onto the background plane
+    -- synchronously: the plane binding records the shown selector for
+    -- the composition consumer.
+    if not exec.writePlane("main", "battler-picture", { battlerSelector = values[1], mode = values[2] }) then
       return "done"
     end
   end
@@ -1266,6 +1368,23 @@ end
 Handlers["create-pokemon-sprite"] = handleCreatePokemonSprite
 
 local function handleSetPokemonPictureVanished(exec, instruction, index)
+  if type(instruction.vanished) ~= "boolean" then
+    exec.fail("vanished pictures carry a visibility flag")
+    return "done"
+  end
+  if type(instruction.pictureSets) ~= "table" then
+    exec.fail("vanished pictures name their picture sets")
+    return "done"
+  end
+  local identities = vanishActivations(exec, instruction.pictureSets)
+  if identities == nil then
+    return "done"
+  end
+  for _, identity in ipairs(identities) do
+    if not exec.writePicture(identity, { vanished = instruction.vanished }) then
+      return "done"
+    end
+  end
   exec.note({
     op = "set-pokemon-picture-vanished",
     index = index,
@@ -1278,7 +1397,20 @@ end
 Handlers["set-pokemon-picture-vanished"] = handleSetPokemonPictureVanished
 
 local function handleSetBlendAlpha(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native SetSubScreenBlend drives the sub-screen blend registers: the
+  -- write lands on the sub-engine compositor, while the main-screen
+  -- sprite blend stays under the reset-blend-alpha overlay.
+  local values = instruction.values --[[@as table<integer, integer>]]
+  if type(values[1]) ~= "number" or type(values[2]) ~= "number" then
+    exec.fail("sub-screen blends carry two blend coefficients")
+    return "done"
+  end
+  if not exec.writeCompositor("sub", { blendEva = values[1], blendEvb = values[2] }) then
+    return "done"
+  end
+  exec.note({ op = "set-blend-alpha", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["set-blend-alpha"] = handleSetBlendAlpha
 
@@ -1286,65 +1418,189 @@ local function handleResetBlendAlpha(exec, instruction, index)
   -- The retail reset restores blend hardware inline when the script
   -- stream reaches it; the held sprite-blend overlay drops here the
   -- same way so facts fall back to base alpha. The journal entry stays
-  -- for observability, and the sub-screen set-blend-alpha half keeps
-  -- its journal-only form: it names no main-screen sprite state.
+  -- for observability.
   exec.resetBlendCoefficients()
   return noteVisual(exec, instruction, index)
 end
 Handlers["reset-blend-alpha"] = handleResetBlendAlpha
 
 local function handleSetBackgroundComponent(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native SetBgScroll selects its scroll register by component: 0/1
+  -- drive the delta registers, 2/3 the position register. Components
+  -- outside the source switch have no effect in retail either, so they
+  -- journal the intent and advance instead of failing.
+  local values = instruction.values --[[@as table<integer, integer>]]
+  local component, value = values[1], values[2]
+  if type(component) ~= "number" or type(value) ~= "number" then
+    exec.fail("background components carry a component and a value")
+    return "done"
+  end
+  local patch = nil ---@type table<string, integer>?
+  if component == 0 then
+    patch = { bgScrollDx = value }
+  elseif component == 1 then
+    patch = { bgScrollDy = value }
+  elseif component == 2 or component == 3 then
+    patch = { bgScrollX = value }
+  end
+  if patch ~= nil then
+    if not exec.writeCompositor("main", patch) then
+      return "done"
+    end
+  end
+  exec.note({ op = "set-background-component", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["set-background-component"] = handleSetBackgroundComponent
 
-local function handleClearBackgroundPlane(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+local function handleClearBackgroundPlane(exec, _, index)
+  -- Native ClearBattlerBg fills the main-engine battler plane and stops
+  -- its follow binding: the plane binding records the clear for the
+  -- composition consumer in the same quantum the source program clears
+  -- it, so the EXTRASENSORY clear lands on its precise source tick.
+  if not exec.writePlane("main", "bg2", { cleared = true }) then
+    return "done"
+  end
+  exec.note({ op = "clear-background-plane", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["clear-background-plane"] = handleClearBackgroundPlane
 
-local function handleCopyMainBackgroundPaletteToFadeBuffer(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+local function handleCopyMainBackgroundPaletteToFadeBuffer(exec, _, index)
+  if not exec.writeCompositor("main", { paletteFadeBuffer = "copied" }) then
+    return "done"
+  end
+  exec.note({ op = "copy-main-background-palette-to-fade-buffer", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["copy-main-background-palette-to-fade-buffer"] = handleCopyMainBackgroundPaletteToFadeBuffer
 
-local function handleGrayscaleMainBackgroundFadeBuffer(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+local function handleGrayscaleMainBackgroundFadeBuffer(exec, _, index)
+  if not exec.writeCompositor("main", { paletteGrayscale = true }) then
+    return "done"
+  end
+  exec.note({ op = "grayscale-main-background-fade-buffer", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["grayscale-main-background-fade-buffer"] = handleGrayscaleMainBackgroundFadeBuffer
 
 local function handleSubmitPresentationLayout(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native ChangeBattlerPic always addresses the attacker picture: the
+  -- selector records which picture variant displays until the update
+  -- restores the base snapshot.
+  local values = instruction.values --[[@as table<integer, integer>]]
+  if type(values[1]) ~= "number" then
+    exec.fail("presentation layouts carry their picture selector")
+    return "done"
+  end
+  local identity = attackerActivation(exec)
+  if identity == nil then
+    return "done"
+  end
+  if not exec.writePicture(identity, { layoutMode = values[1] }) then
+    return "done"
+  end
+  exec.note({ op = "submit-presentation-layout", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["submit-presentation-layout"] = handleSubmitPresentationLayout
 
-local function handleSubmitPresentationUpdate(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+local function handleSubmitPresentationUpdate(exec, _, index)
+  local identity = attackerActivation(exec)
+  if identity == nil then
+    return "done"
+  end
+  if not exec.restorePicture(identity) then
+    return "done"
+  end
+  exec.note({ op = "submit-presentation-update", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["submit-presentation-update"] = handleSubmitPresentationUpdate
 
+local function drawSlot(instruction)
+  local values = instruction.values --[[@as table<integer, integer>]]
+  if type(values[1]) ~= "number" or values[1] % 1 ~= 0 or values[1] < 0 then
+    return nil
+  end
+  return values[1]
+end
+
 local function handleSetManagedSpriteDrawFlag(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native SetBattlerSpriteVisible flips one system-global battler
+  -- sprite draw flag by source slot.
+  local slot = drawSlot(instruction)
+  if slot == nil or type(instruction.values[2]) ~= "number" then
+    exec.fail("managed sprite draw flags carry a slot and a flag")
+    return "done"
+  end
+  if not exec.setSpriteDrawFlag(slot, instruction.values[2] ~= 0) then
+    return "done"
+  end
+  exec.note({ op = "set-managed-sprite-draw-flag", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["set-managed-sprite-draw-flag"] = handleSetManagedSpriteDrawFlag
 
+-- Schema-reserved operations no producer route emits: they fail closed
+-- with their identity instead of succeeding silently, so a future
+-- producer must lower them to a real effect before they can run.
+local function handleUnloweredOperation(exec, instruction, index)
+  exec.fail("operation " .. tostring(instruction.op) .. " has no producer lowering")
+  local _ = index
+  return "done"
+end
+
 local function handleSetSpriteDrawFlag(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local _ = instruction
+  return handleUnloweredOperation(exec, instruction, index)
 end
 Handlers["set-sprite-draw-flag"] = handleSetSpriteDrawFlag
 
 local function handleClearSpriteSlot(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local _ = instruction
+  return handleUnloweredOperation(exec, instruction, index)
 end
 Handlers["clear-sprite-slot"] = handleClearSpriteSlot
 
 local function handleClearEffectSlot(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native StopBattlerSpriteDraw stops drawing one battler sprite by
+  -- source slot while the sprite itself stays alive.
+  local slot = drawSlot(instruction)
+  if slot == nil then
+    exec.fail("effect slot clears carry a source slot")
+    return "done"
+  end
+  if not exec.setSpriteDrawFlag(slot, false) then
+    return "done"
+  end
+  exec.note({ op = "clear-effect-slot", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["clear-effect-slot"] = handleClearEffectSlot
 
 local function handleDestroyEffectSlot(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native StopFollowTask frees the follow binding of one battler
+  -- sprite slot while the sprite itself stays alive.
+  local slot = drawSlot(instruction)
+  if slot == nil then
+    exec.fail("effect slot destroys carry a source slot")
+    return "done"
+  end
+  if not exec.stopSpriteFollow(slot) then
+    return "done"
+  end
+  exec.note({ op = "destroy-effect-slot", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["destroy-effect-slot"] = handleDestroyEffectSlot
 
@@ -1363,32 +1619,81 @@ end
 Handlers["delete-managed-sprite"] = handleDeleteManagedSprite
 
 local function handleDisposeSpriteManager(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local values = instruction.values --[[@as table<integer, integer>]]
+  if type(values[1]) ~= "number" or values[1] % 1 ~= 0 or values[1] < 0 then
+    exec.fail("sprite manager disposals carry a manager index")
+    return "done"
+  end
+  if not exec.setSpriteManager("manager-" .. tostring(values[1]), false) then
+    return "done"
+  end
+  exec.note({ op = "dispose-sprite-manager", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["dispose-sprite-manager"] = handleDisposeSpriteManager
 
 local function handleDisposeSharedSpriteManager(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local _ = instruction
+  if not exec.setSpriteManager("battler-sprite-manager", false) then
+    return "done"
+  end
+  exec.note({ op = "dispose-shared-sprite-manager", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["dispose-shared-sprite-manager"] = handleDisposeSharedSpriteManager
 
 local function handleCreateManagedSpriteManager(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local _ = instruction
+  if not exec.setSpriteManager("battler-sprite-manager", true) then
+    return "done"
+  end
+  exec.note({ op = "create-managed-sprite-manager", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["create-managed-sprite-manager"] = handleCreateManagedSpriteManager
 
 local function handleCreateSpriteManager(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local values = instruction.values --[[@as table<integer, integer>]]
+  if type(values[1]) ~= "number" or values[1] % 1 ~= 0 or values[1] < 0 then
+    exec.fail("sprite manager creations carry a manager index")
+    return "done"
+  end
+  if not exec.setSpriteManager("manager-" .. tostring(values[1]), true) then
+    return "done"
+  end
+  exec.note({ op = "create-sprite-manager", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["create-sprite-manager"] = handleCreateSpriteManager
 
 local function handleClearPokemonPicture(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  local _ = instruction
+  return handleUnloweredOperation(exec, instruction, index)
 end
 Handlers["clear-pokemon-picture"] = handleClearPokemonPicture
 
 local function handleStartBrightnessTransition(exec, instruction, index)
-  return noteVisual(exec, instruction, index)
+  -- Native BrightnessFlash initializes the all-screen brightness data
+  -- for a step count: both engines record the flash length in the same
+  -- quantum the source program requests it.
+  local values = instruction.values --[[@as table<integer, integer>]]
+  if type(values[1]) ~= "number" then
+    exec.fail("brightness transitions carry a step count")
+    return "done"
+  end
+  if not exec.writeCompositor("main", { brightnessSteps = values[1] }) then
+    return "done"
+  end
+  if not exec.writeCompositor("sub", { brightnessSteps = values[1] }) then
+    return "done"
+  end
+  exec.note({ op = "start-brightness-transition", index = index })
+  exec.advance()
+  return "continue"
 end
 Handlers["start-brightness-transition"] = handleStartBrightnessTransition
 

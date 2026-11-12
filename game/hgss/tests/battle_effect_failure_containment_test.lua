@@ -1061,7 +1061,9 @@ function T.unanswerable_voice_query_fails_the_live_screen_with_provenance()
     return true
   end
   local screen = openFailingScreen(launchId, staging, portless)
-  local program = lowered("TACKLE", { 29, 50, 4 })
+  -- The play stages a real source-timed voice; the wait then parks on
+  -- it until the missing query port fails the occurrence.
+  local program = lowered("TACKLE", { 5, 1918, 29, 50, 4 })
   local record = EffectStagingFixture.effectRecord("TACKLE", {})
   record.program = {
     entry = program.entry,
@@ -1185,10 +1187,7 @@ function T.worker_ready_effect_demands_without_preloading_its_payload()
   local ready, failure = envelope._services.requestEffect("probe-effect")
   Assert.isTrue(ready, "a worker-ready effect is demandable without preloading its payload: " .. tostring(failure))
   for _, touch in ipairs(touched) do
-    Assert.isNil(
-      touch:find("probe-tex", 1, true),
-      "effect entrance never probes the requested payload: " .. touch
-    )
+    Assert.isNil(touch:find("probe-tex", 1, true), "effect entrance never probes the requested payload: " .. touch)
   end
   local loaded, loadFailure = envelope._services.loadEffect("probe-effect")
   Assert.isNil(loadFailure, "the staged effect record loads on execution")

@@ -391,10 +391,14 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
         -- bodies without an owned activation hold their boundary, and
         -- both repeat deterministically across seeded runs without
         -- publishing pictures or staging leases. An addressed timed run
-        -- that stays imageless is only accepted for the two documented
+        -- that stays imageless is only accepted for the three documented
         -- holds below: the sinusoidal motion carries cycles but no
-        -- amplitude operand, and the selected-position transition moves
-        -- between anchors with no magnitude operand.
+        -- amplitude operand, the selected-position transition moves
+        -- between anchors with no magnitude operand, and the
+        -- target-background slide owns only the fixed 55-tick native
+        -- wobble lifetime (three phases of one setup plus seventeen
+        -- wobble ticks, then teardown) while its scanline wobble pixels
+        -- stay unreproduced.
         while task:status() ~= "complete" and ticks < 600 do
           task:stepSourceTick({ tick = 1 })
           ticks = ticks + 1
@@ -404,7 +408,8 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
         if ticks > 1 and args.activation ~= nil and kind ~= "pokemon-picture-animation" then
           Assert.isTrue(
             kind == "pokemon-picture-sinusoidal-position-motion"
-              or kind == "pokemon-picture-selected-position-transition",
+              or kind == "pokemon-picture-selected-position-transition"
+              or kind == "pokemon-picture-target-background-slide",
             "addressed timed runs show pixels unless documented: " .. kind
           )
         end

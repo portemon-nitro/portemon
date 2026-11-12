@@ -1634,8 +1634,16 @@ local function backgroundPlayback(scene, journal, attackerSide, defenderSide, ar
       targets = { { combatant = 2, activation = 2, sideType = defenderSide } },
     },
   }, program))
-  player:stepSourceTick({ tick = 1 })
-  player:stepSourceTick({ tick = 2 })
+  -- The stream end drains the uncounted background load before
+  -- completing, so playback steps until the occurrence settles instead
+  -- of assuming a fixed tick count.
+  for _ = 1, 600 do
+    local phase = player:status(handle)
+    if phase ~= "running" and phase ~= "waiting" and phase ~= "preparing" then
+      break
+    end
+    player:stepSourceTick({ tick = 1 })
+  end
   return player, handle
 end
 

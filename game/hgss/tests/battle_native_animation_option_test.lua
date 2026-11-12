@@ -39,7 +39,7 @@ end
 ---@return table<string, unknown> compiled resourceless native program completing in three source ticks
 local function optionProbeProgram()
   local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
-  return assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 29, 50, 4 }) }))
+  return assert(BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 5, 1918, 29, 50, 4 }) }))
 end
 
 ---@param program table<string, unknown> exact compiled program the collaborator admits
@@ -351,7 +351,8 @@ function T.transform_queues_its_frozen_request_without_rewriting_appearance()
   local request = assert(started[1].request, "the transform cue carries its ledgered request")
   Assert.equal(request.disposition, "admit", "the transform admits its root")
   local appearance = assert(
-    type(request.playback) == "table" and type(request.playback.topology.attacker) == "table"
+    type(request.playback) == "table"
+      and type(request.playback.topology.attacker) == "table"
       and request.playback.topology.attacker.appearance,
     "the transform freezes its donor appearance for the player"
   )
@@ -582,7 +583,8 @@ function T.transform_freezes_donor_appearance_for_the_native_effect()
   local frozen = assert(fx.starts[1].request, "the transform cue carries its ledgered request")
   Assert.equal(frozen.disposition, "admit", "the donor change admits its root")
   local appearance = assert(
-    type(frozen.playback) == "table" and type(frozen.playback.topology.attacker) == "table"
+    type(frozen.playback) == "table"
+      and type(frozen.playback.topology.attacker) == "table"
       and frozen.playback.topology.attacker.appearance,
     "the transform freezes its donor appearance for later calls"
   )

@@ -74,6 +74,9 @@ local function taskFactory(log)
     function task.stepSourceTick(_tick)
       task._steps = task._steps + 1
       log.steps[#log.steps + 1] = kind
+      if log.completeAfter ~= nil and log.completeAfter[kind] == #log.steps then
+        task._state = "complete"
+      end
     end
     function task.status()
       return task._state
@@ -196,6 +199,14 @@ function T.branch_call_zero_wait_and_terminal_reset_keep_their_normalized_form()
   local previous = nil
   for _ = 1, 60 do
     player:stepSourceTick({ tick = 1 })
+    -- The terminal reset drains the scheduled child before completing,
+    -- so the child finishes on its next step once it exists.
+    for _, kind in ipairs(log.created) do
+      log.completeAfter = log.completeAfter or {}
+      if log.completeAfter[kind] == nil then
+        log.completeAfter[kind] = #log.steps + 1
+      end
+    end
     local state = player:status(handle)
     if state ~= previous then
       trace[#trace + 1] = state
