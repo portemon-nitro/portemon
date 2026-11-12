@@ -615,8 +615,9 @@ end
 -- button labels on composition, category and initial labels plus tab
 -- labels in the browser, word fragments in the list, prompt text over
 -- the confirmation, and the expanded sentence for the zero-field
--- template. Each level draws its tokens through the borrowed text
--- owners; an empty draw call proves the seam dropped its content.
+-- template. The two mode-0 journeys share one rig: composition draws,
+-- then the browser journey covers list, categories, and prompt without
+-- paying a second ROM compile and stage per version.
 function T.committed_bundle_tokens_reach_draw_calls(scope, context)
   for _, versionId in ipairs(readyVersionIds(context)) do
     do
@@ -645,38 +646,12 @@ function T.committed_bundle_tokens_reach_draw_calls(scope, context)
       counts.text0, counts.text1, counts.text4 = nil, nil, nil
       draw(scope, rig)
       Assert.isTrue((counts.text0 or 0) > 0, versionId .. " the word list draws its word fragments")
-      rig.screen:dispose()
-      Assert.equal(rig.releases(), 1, versionId .. " the list screen releases its lease exactly once")
-      rig.closeBundles()
-    end
-    do
-      local rig = openScreen(scope, versionId, "dual", {
-        mode = 0,
-        words = { NULL_WORD, NULL_WORD },
-        promptId = 0,
-        alwaysConfirm = false,
-        inputMode = "buttons",
-      })
-      waitReady(rig)
-      settleEntry(rig)
-      local assets = assert(rig.screen:status().assets, versionId .. " commits its bundle before drawing")
-      local counts = {}
-      recordDraws(assert(assets.text0), counts, "text0")
-      recordDraws(assert(assets.text1), counts, "text1")
-      recordDraws(assert(assets.text4), counts, "text4")
-      rig.screen:updateFixed({ { type = "confirm" } })
-      waitLevel(rig, "categories", 20)
+      rig.screen:updateFixed({ { type = "cancel" } })
+      waitLevel(rig, "categories", 30)
       counts.text0, counts.text1, counts.text4 = nil, nil, nil
       draw(scope, rig)
       Assert.isTrue((counts.text0 or 0) > 0, versionId .. " categories draw their labels")
       Assert.isTrue((counts.text4 or 0) > 0, versionId .. " the browser draws its tab labels")
-      focusConfirmButton(rig)
-      for _ = 1, 20 do
-        rig.screen:updateFixed({})
-        if editorLevel(rig) == "categories" then
-          break
-        end
-      end
       rig.screen:updateFixed({ { type = "cancel" } })
       waitLevel(rig, "composition", 30)
       focusConfirmButton(rig)
@@ -686,7 +661,7 @@ function T.committed_bundle_tokens_reach_draw_calls(scope, context)
       draw(scope, rig)
       Assert.isTrue((counts.text1 or 0) > 0, versionId .. " the prompt draws its prompt text")
       rig.screen:dispose()
-      Assert.equal(rig.releases(), 1, versionId .. " the prompt screen releases its lease exactly once")
+      Assert.equal(rig.releases(), 1, versionId .. " the shared screen releases its lease exactly once")
       rig.closeBundles()
     end
     do

@@ -8,6 +8,22 @@
 local Mail = require("libs.mons.src.gen4.Mail")
 local MailTemplate = require("libs.hgss.src.field.MailTemplate")
 local MailViewInterface = require("game.hgss.src.pc.MailViewInterface")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+
+-- Quit-prompt YES/NO hitboxes in native 256x192 logical coordinates,
+-- matching the drawn labels (YES at 192,88 and NO at 192,112 in
+-- MailboxRenderer:_drawMailPaneWrite). The modal owns interaction while
+-- open: touches here never fall through to the write-screen controls.
+local QUIT_YES = { x = 184, y = 80, width = 64, height = 24 }
+local QUIT_NO = { x = 184, y = 104, width = 64, height = 24 }
+
+---@param rect table<string, integer>
+---@param x number
+---@param y number
+---@return boolean
+local function inQuitRect(rect, x, y)
+  return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
+end
 
 ---@class MailComposeState
 ---@field _letter table<string, unknown> detached draft with three line slots
@@ -563,19 +579,57 @@ function MailComposeState:updateFixed(events)
     return
   end
   if self._phase == "quit" then
+    -- Touch answers the visible YES/NO pair directly: YES discards the
+    -- draft, NO resumes writing with the draft intact. Raw pointer
+    -- coordinates are hit-tested against the drawn prompt geometry;
+    -- the ordinary write-screen controls stay inactive behind the modal.
+    for _, event in ipairs(events) do
+      if type(event) == "table" and (event.type == "pointer_down" or event.type == "touch") then
+        local x, y = event.x, event.y
+        if type(x) == "number" and type(y) == "number" then
+          local lx, ly = x, y
+          local hasLogical = true
+          local interactive = nil
+          for _, pane in ipairs(plan.panes or {}) do
+            if pane.interactive then
+              interactive = pane
+              break
+            end
+          end
+          if interactive ~= nil and interactive.placement ~= nil then
+            local cx, cy = LayoutGeometry.hostToLogical(interactive.placement, x, y)
+            if cx ~= nil and cy ~= nil then
+              lx, ly = cx, cy
+            else
+              hasLogical = false
+            end
+          end
+          if hasLogical then
+            if inQuitRect(QUIT_YES, lx, ly) then
+              self._quitCursor = "yes"
+              self._inputMode = "touch"
+              self._touchHeld = true
+              self._pendingResult = { kind = "cancelled", inputMode = self._inputMode }
+              self._phase = "exit"
+              self._fadeIndex = 0
+              cue(self, "SEQ_SE_DP_DECIDE")
+              return
+            elseif inQuitRect(QUIT_NO, lx, ly) then
+              self._quitCursor = "no"
+              self._inputMode = "touch"
+              self._touchHeld = true
+              self._phase = "write"
+              cue(self, "SEQ_SE_DP_DECIDE")
+              return
+            end
+          end
+        end
+      end
+    end
     for _, event in ipairs(mapped) do
       if event.source == "touch" then
-        if event.type == "confirm" then
-          self._quitCursor = "yes"
-        elseif event.type == "cancel" then
-          self._quitCursor = "no"
-        else
-          break
-        end
-        self._pendingResult = { kind = "cancelled", inputMode = self._inputMode }
-        self._phase = "exit"
-        self._fadeIndex = 0
-        cue(self, "SEQ_SE_DP_DECIDE")
+        -- A touch that misses both YES and NO is consumed by the modal
+        -- and never reaches the write controls behind it.
         break
       elseif event.type == "cancel" or event.type == "close" then
         self._phase = "write"

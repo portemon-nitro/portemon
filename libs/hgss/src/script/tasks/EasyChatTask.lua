@@ -147,7 +147,6 @@ function EasyChatTask.create(spec, ctx)
       RuntimeValues.writeRef(node.word2, EasyChatTask.NULL_WORD, run)
     end
   end
-  lifecycleFor(ctx):leave()
   local service = serviceFor(ctx)
   local request = nil
   if op == "greeting" then
@@ -155,6 +154,9 @@ function EasyChatTask.create(spec, ctx)
   else
     request = service:requestForKind(kind, "buttons")
   end
+  -- Suspend the field only after the request is fully constructed: a
+  -- request-construction failure must never strand the lifecycle.
+  lifecycleFor(ctx):leave()
   return {
     op = op,
     kind = kind,
@@ -171,16 +173,22 @@ end
 
 ---@param state table<string, unknown>
 ---@param ctx table<string, unknown>
+local function restoreOnce(state, ctx)
+  if state.leftWorld == true and state.restored ~= true then
+    lifecycleFor(ctx):restore()
+    state.restored = true
+  end
+end
+
+---@param state table<string, unknown>
+---@param ctx table<string, unknown>
 ---@return table<string, unknown>? live child handle
 local function openChild(state, ctx)
   local host = hostFor(ctx)
   local request = assert(state.request, "word editor task maps its request before opening")
   local ok, openErr = pcall(host.open, host, request)
   if not ok then
-    if state.leftWorld == true and state.restored ~= true then
-      lifecycleFor(ctx):restore()
-      state.restored = true
-    end
+    restoreOnce(state, ctx)
     error(openErr, 0)
   end
   state.opened = true
@@ -267,6 +275,10 @@ end
 ---@return table<string, unknown> completion
 local function finishEdit(state, ctx, result)
   publishEdit(state, ctx, result)
+  -- Ordinary edits own no fade: restore the suspended field exactly
+  -- once before closing, whether the draft was accepted, unchanged,
+  -- or cancelled, so gameplay resumes after the script completes.
+  restoreOnce(state, ctx)
   hostFor(ctx):close(liveHandle(state, ctx))
   state.phase = "done"
   state.completed = true
@@ -352,10 +364,7 @@ function EasyChatTask.poll(state, ctx)
   assert(type(events) == "table", "word editor consumes scheduler UI events")
   local ok, stepErr = pcall(host.step, host, handle, events)
   if not ok then
-    if state.leftWorld == true and state.restored ~= true then
-      lifecycleFor(ctx):restore()
-      state.restored = true
-    end
+    restoreOnce(state, ctx)
     error(stepErr, 0)
   end
   local result = host:result(handle)

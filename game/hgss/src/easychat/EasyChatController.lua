@@ -37,6 +37,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _inputMode string entry modality
 ---@field _touchHeld boolean touch capture held
 ---@field _sliderHeld boolean slider capture held
+---@field _sliderDragX number slider drag anchor x
 ---@field _repeatDirection string? held repeat direction
 ---@field _repeatStart integer tick the held repeat started
 ---@field _repeatLast integer tick the held repeat last fired
@@ -240,6 +241,7 @@ function EasyChatController.new(opts)
     _inputMode = opts.request.inputMode,
     _touchHeld = false,
     _sliderHeld = false,
+    _sliderDragX = 0,
     _repeatDirection = nil,
     _repeatStart = 0,
     _repeatLast = 0,
@@ -811,8 +813,19 @@ function EasyChatController:_stepComposition(events, observation)
         self:_moveComposition(event.direction)
       elseif kind == "button" then
         self:_pressButton(event.button)
-      elseif kind == "touch" and event.phase == "down" then
-        self:_pressCompositionTouch(event.x, event.y, event.pane)
+      elseif kind == "touch" then
+        if event.phase == "down" then
+          if self:_pressCompositionTouch(event.x, event.y) then
+            if self._transition > 0 or self._level ~= "composition" then
+              return
+            end
+          end
+        elseif (event.phase == "move" or event.phase == "up" or event.phase == "cancel") and self._sliderHeld then
+          self:_dragSliderTouch(event.x, event.y, event.phase)
+          if self._transition > 0 or self._level ~= "composition" then
+            return
+          end
+        end
       end
     end
   end
@@ -896,32 +909,60 @@ end
 ---@param self EasyChatController
 ---@param x number
 ---@param y number
----@param pane string?
-function EasyChatController:_pressCompositionTouch(x, y, pane)
-  if pane == "information" then
-    if self._mode == 0 and inBox(x, y, { 80, 176, 16, 32 }) then
-      self._slot = 1
-      self._focus = 1
-      self:_openBrowser()
-    elseif self._mode == 1 then
-      if inBox(x, y, { 24, 120, 16, 32 }) then
-        self._slot = 1
-        self._focus = 1
-        self:_openBrowser()
-      elseif inBox(x, y, { 136, 232, 16, 32 }) then
-        self._slot = 2
-        self._focus = 2
-        self:_openBrowser()
-      end
-    elseif self._mode == 2 then
-      if inBox(x, y, { 8, 40, 52, 76 }) then
-        self:_moveTemplate(-1)
-      elseif inBox(x, y, { 216, 248, 52, 76 }) then
-        self:_moveTemplate(1)
-      end
-    end
+---@param phase string touch release phase
+function EasyChatController:_dragSliderTouch(x, y, phase)
+  if self._mode ~= 2 then
+    self._sliderHeld = false
     return
   end
+  if phase == "up" or phase == "cancel" then
+    self._sliderHeld = false
+    return
+  end
+  if type(x) ~= "number" or type(y) ~= "number" then
+    self._sliderHeld = false
+    return
+  end
+  -- Retail drag window (IsTouchInSliderRange): x 18..236 with the
+  -- pointer near the thumb row. Leaving it releases the capture.
+  if x < 18 or x >= 236 or y < 40 or y >= 88 then
+    self._sliderHeld = false
+    return
+  end
+  local clamped = x
+  if clamped < 28 then
+    clamped = 28
+  elseif clamped > 226 then
+    clamped = 226
+  end
+  local distance = clamped - (self._sliderDragX or clamped)
+  if distance < 0 then
+    distance = -distance
+  end
+  if distance < 2 then
+    return
+  end
+  self._sliderDragX = clamped
+  local index = math.floor((clamped - 28) / 2)
+  if index < 0 then
+    index = 0
+  elseif index > 99 then
+    index = 99
+  end
+  local bank = math.floor(index / 20)
+  local number = index % 20
+  if bank ~= self._draft.bank or number ~= self._draft.number then
+    self._draft.bank = bank
+    self._draft.number = number
+    self:_play(SELECT_SOUND)
+  end
+end
+
+---@param self EasyChatController
+---@param x number
+---@param y number
+---@return boolean consumed
+function EasyChatController:_pressCompositionTouch(x, y)
   if inBox(x, y, { 192, 256, 112, 128 }) then
     local entries = self:_compositionEntries()
     for index, entry in ipairs(entries) do
@@ -931,9 +972,224 @@ function EasyChatController:_pressCompositionTouch(x, y, pane)
       end
     end
     self:_confirmComposition()
-  elseif inBox(x, y, { 192, 256, 136, 152 }) then
-    self:_openPrompt("quit", "no")
+    return true
   end
+  if inBox(x, y, { 192, 256, 136, 152 }) then
+    self:_openPrompt("quit", "no")
+    return true
+  end
+  -- Word slots live on either pane: the renderer draws the sentence on
+  -- both surfaces, so a controls-only touch journey must also open the
+  -- browser without reaching for the information pane.
+  if self._mode == 0 then
+    if inBox(x, y, { 80, 176, 16, 32 }) then
+      self._slot = 1
+      self._focus = 1
+      self:_openBrowser()
+      return true
+    end
+    return false
+  end
+  if self._mode == 1 then
+    if inBox(x, y, { 24, 120, 16, 32 }) then
+      self._slot = 1
+      self._focus = 1
+      self:_openBrowser()
+      return true
+    end
+    if inBox(x, y, { 136, 232, 16, 32 }) then
+      self._slot = 2
+      self._focus = 2
+      self:_openBrowser()
+      return true
+    end
+    return false
+  end
+  -- Sentence mode: template arrows, slider-thumb drag start, then the
+  -- sentence strip halves for the one or two word slots.
+  if inBox(x, y, { 8, 40, 52, 76 }) then
+    self:_moveTemplate(-1)
+    return true
+  end
+  if inBox(x, y, { 216, 248, 52, 76 }) then
+    self:_moveTemplate(1)
+    return true
+  end
+  local thumbX = self:_templateIndex() * 2 + 28
+  if x >= thumbX - 10 and x < thumbX + 10 and y >= 64 - 12 and y < 64 + 12 then
+    self._sliderHeld = true
+    self._sliderDragX = x
+    self:_play(SELECT_SOUND)
+    return true
+  end
+  local template = self._catalog:template(self._draft.bank, self._draft.number)
+  local arity = template ~= nil and template.wordCount or 0
+  if arity == 1 then
+    if inBox(x, y, { 24, 232, 8, 48 }) then
+      self._slot = 1
+      self:_openBrowser()
+      return true
+    end
+  elseif arity == 2 then
+    if inBox(x, y, { 24, 136, 8, 48 }) then
+      self._slot = 1
+      self:_openBrowser()
+      return true
+    end
+    if inBox(x, y, { 136, 232, 8, 48 }) then
+      self._slot = 2
+      self:_openBrowser()
+      return true
+    end
+  end
+  return false
+end
+
+---@param self EasyChatController
+---@param x number
+---@param y number
+---@return boolean consumed
+function EasyChatController:_pressBrowserTouch(x, y)
+  if inBox(x, y, { 196, 252, 164, 186 }) then
+    self:_play(SELECT_SOUND)
+    self:_backBrowser()
+    return true
+  end
+  if inBox(x, y, { 16, 104, 0, 42 }) then
+    if self._tab ~= "groups" then
+      self._tab = "groups"
+      self._group = 0
+      self._prevGroup = 0
+      self._transition = 16
+      self._pendingLevel = "categories"
+      self:_play(TAB_SOUND)
+      return true
+    end
+    return false
+  end
+  if inBox(x, y, { 152, 240, 0, 42 }) then
+    if self._tab ~= "abc" then
+      self._tab = "abc"
+      self._group = 0
+      self._prevGroup = 0
+      self._transition = 16
+      self._pendingLevel = "categories"
+      self:_play(TAB_SOUND)
+      return true
+    end
+    return false
+  end
+  if self._tab == "groups" then
+    for row = 0, 3 do
+      for col = 0, 2 do
+        if inBox(x, y, { 12 + col * 80, 12 + col * 80 + 72, 56 + row * 24, 56 + row * 24 + 16 }) then
+          local index = row * 3 + col
+          if self._group ~= 0xFE then
+            self._prevGroup = self._group
+          end
+          self._group = index
+          self:_openList()
+          return true
+        end
+      end
+    end
+    return false
+  end
+  local grid = assert(self._menu.grid, "the per-open menu carries its initial grid geometry")
+  for index = 0, 26 do
+    local cell = grid[index + 1]
+    if cell ~= nil and type(cell.x) == "number" and type(cell.y) == "number" then
+      if inBox(x, y, { cell.x + 20, cell.x + 20 + 16, cell.y + 64, cell.y + 64 + 16 }) then
+        if self._group ~= 0xFE then
+          self._prevGroup = self._group
+        end
+        self._group = index
+        self:_openList()
+        return true
+      end
+    end
+  end
+  return false
+end
+
+---@param self EasyChatController
+---@param index integer zero-based word offset
+---@return boolean consumed
+function EasyChatController:_chooseListIndex(index)
+  local offered = self:_browserOffered()
+  local wordId = offered[index + 1]
+  if wordId == nil then
+    return false
+  end
+  if self._mode == 2 then
+    self._draft.words[self._slot] = wordId
+  else
+    self._draft[self._slot] = wordId
+  end
+  self:_play(SELECT_SOUND)
+  self._list = nil
+  self._transition = 12
+  self._pendingLevel = "composition"
+  return true
+end
+
+---@param self EasyChatController
+---@param x number
+---@param y number
+---@return boolean consumed
+function EasyChatController:_pressListTouch(x, y)
+  local list = assert(self._list, "list touches resolve their cursor")
+  if inBox(x, y, { 196, 252, 164, 186 }) then
+    self:_play(SELECT_SOUND)
+    self._list = nil
+    self._transition = 12
+    self._pendingLevel = "categories"
+    self._level = "transition"
+    return true
+  end
+  if inBox(x, y, { 16, 104, 0, 42 }) then
+    if self._tab ~= "groups" then
+      self:_play(TAB_SOUND)
+      self._list = nil
+      self._tab = "groups"
+      self._group = 0
+      self._transition = 16
+      self._pendingLevel = "categories"
+      self._level = "transition"
+      return true
+    end
+    return false
+  end
+  if inBox(x, y, { 152, 240, 0, 42 }) then
+    if self._tab ~= "abc" then
+      self:_play(TAB_SOUND)
+      self._list = nil
+      self._tab = "abc"
+      self._group = 0
+      self._transition = 16
+      self._pendingLevel = "categories"
+      self._level = "transition"
+      return true
+    end
+    return false
+  end
+  if inBox(x, y, { 228, 252, 48, 104 }) then
+    self:_pageList(list, -1)
+    return true
+  end
+  if inBox(x, y, { 228, 252, 104, 160 }) then
+    self:_pageList(list, 1)
+    return true
+  end
+  local topRow = list.topRow or 0
+  for row = 0, 4 do
+    for col = 0, 1 do
+      if inBox(x, y, { 32 + col * 104, 32 + col * 104 + 72, 48 + row * 24, 48 + row * 24 + 16 }) then
+        return self:_chooseListIndex(topRow * 2 + row * 2 + col)
+      end
+    end
+  end
+  return false
 end
 
 ---@param self EasyChatController
@@ -954,7 +1210,9 @@ function EasyChatController:_stepBrowser(events, observation)
       elseif kind == "button" then
         self:_pressButton(event.button)
       elseif kind == "touch" and event.phase == "down" then
-        -- Touch taps resolve through the same focus graph next frame.
+        if self:_pressBrowserTouch(event.x, event.y) then
+          return
+        end
       end
     end
   end
@@ -986,6 +1244,10 @@ function EasyChatController:_stepList(events, observation)
         self:_moveListCursor(list, event.direction)
       elseif kind == "button" then
         self:_pressButton(event.button)
+      elseif kind == "touch" and event.phase == "down" then
+        if self:_pressListTouch(event.x, event.y) then
+          return
+        end
       end
     end
   end

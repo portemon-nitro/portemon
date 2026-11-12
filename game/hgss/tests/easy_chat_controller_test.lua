@@ -160,6 +160,61 @@ local function takeResult(controller)
   error("the editor never publishes its terminal result after exit", 0)
 end
 
+-- Polls until the editor reaches the wanted level instead of assuming a
+-- fixed transition length, so retail tick-count changes move both sides.
+---@param controller table
+---@param want string
+---@param budget integer?
+local function waitLevel(controller, want, budget)
+  for _ = 1, (budget or 30) do
+    if view(controller).level == want then
+      return
+    end
+    send(controller, {})
+  end
+  error("the editor never reaches " .. want .. " (" .. tostring(view(controller).level) .. ")", 0)
+end
+
+---@param controller table
+---@param x number
+---@param y number
+local function tap(controller, x, y)
+  send(controller, { { type = "touch", phase = "down", x = x, y = y, pane = "controls" } })
+end
+
+-- Opens a touch-modality single-word editor and settles its entry fade.
+---@return table controller
+local function openTouchComposition()
+  local controller = openEditor(realCatalog(), {
+    mode = 0,
+    words = { NULL_WORD, NULL_WORD },
+    promptId = 0,
+    alwaysConfirm = false,
+    inputMode = "touch",
+  }, nil)
+  for _ = 1, 10 do
+    send(controller, {})
+  end
+  return controller
+end
+
+-- Taps the composition word slot, settles the browser transition, and
+-- asserts the categories level. Shared by every touch-browser journey.
+---@param controller table
+local function tapWordSlot(controller)
+  tap(controller, 128, 24)
+  waitLevel(controller, "categories")
+end
+
+-- Maps a sentence template identity to its slider-thumb center using the
+-- same 2px-per-index retail mapping the controller hit-tests against.
+-- Single helper so a mapping change updates one place on both sides.
+---@param template table
+---@return integer thumbX
+local function thumbXFor(template)
+  return (template.bank * 20 + template.number) * 2 + 28
+end
+
 function T.tests.mode0_word_choice_confirms_yes_with_changed_identity()
   local catalog = realCatalog()
   local controller = openEditor(catalog, {
@@ -573,6 +628,73 @@ function T.tests.prompt_verdicts_publish_after_the_confirmation_blink_only()
   Assert.isNil(controller:takeResult(), "no result publishes before the blink completes")
   local result = takeResult(controller)
   Assert.isFalse(result.cancelled, "the blinked YES accepts")
+end
+
+-- A pointer-only journey completes the editor: tapping the word slot
+-- opens the browser, tapping a category cell opens its word list,
+-- tapping a list word returns to composition, and tapping the drawn
+-- CONFIRM answers YES without any button navigation.
+function T.tests.touch_only_journey_selects_a_word_and_confirms()
+  local controller = openTouchComposition()
+  tapWordSlot(controller)
+  tap(controller, 48, 64)
+  waitLevel(controller, "list")
+  tap(controller, 68, 56)
+  waitLevel(controller, "composition")
+  Assert.equal(view(controller).inputMode, "touch", "the pointer journey stays in touch modality")
+  tap(controller, 224, 120)
+  Assert.equal(view(controller).level, "prompt", "tapping CONFIRM asks its answer")
+  tap(controller, 224, 112)
+  local result = takeResult(controller)
+  Assert.isFalse(result.cancelled, "tapping YES accepts the word")
+  Assert.equal(result.words[1], 42, "the touched word reaches the terminal result")
+end
+
+-- The ABC tab and its authored grid cells answer touch: switching tabs
+-- resets the selection, and tapping the first initial opens its list.
+function T.tests.touch_switches_tabs_and_selects_an_abc_cell()
+  local controller = openTouchComposition()
+  tapWordSlot(controller)
+  tap(controller, 196, 21)
+  waitLevel(controller, "abc", 30)
+  local browser = view(controller).browser
+  Assert.equal(browser.tab, "abc", "tapping the right tab switches to ABC")
+  Assert.equal(browser.group, 0, "switching tabs resets the selection")
+  -- Synthetic grid cell 0 sits at x=0,y=0, so its screen box opens at
+  -- (20,64) with a 16px extent.
+  tap(controller, 24, 68)
+  waitLevel(controller, "list", 30)
+  tap(controller, 68, 56)
+  waitLevel(controller, "composition", 30)
+end
+
+-- Sentence-mode template arrows answer touch on either pane, and the
+-- slider thumb drags the template index without opening the browser.
+function T.tests.touch_template_arrows_and_slider_drag()
+  local catalog = realCatalog()
+  local controller = openEditor(catalog, {
+    mode = 2,
+    message = { bank = 0, number = 1, words = { 42, 7 } },
+    promptId = 0,
+    alwaysConfirm = false,
+    inputMode = "touch",
+  }, nil)
+  for _ = 1, 10 do
+    send(controller, {})
+  end
+  local before = view(controller).template
+  tap(controller, 24, 64)
+  local afterArrow = view(controller).template
+  Assert.isTrue(afterArrow.bank ~= before.bank or afterArrow.number ~= before.number, "the left arrow moves the template")
+  local thumbX = thumbXFor(afterArrow)
+  send(controller, { { type = "touch", phase = "down", x = thumbX, y = 64, pane = "controls" } })
+  send(controller, { { type = "touch", phase = "move", x = thumbX + 20, y = 64, pane = "controls" } })
+  send(controller, { { type = "touch", phase = "up", x = thumbX + 20, y = 64, pane = "controls" } })
+  local afterDrag = view(controller).template
+  Assert.isTrue(
+    afterDrag.bank ~= afterArrow.bank or afterDrag.number ~= afterArrow.number,
+    "dragging the slider thumb moves the template index"
+  )
 end
 
 return T

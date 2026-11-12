@@ -199,15 +199,35 @@ function T.tests.pair_editor_publishes_result_before_words_with_alias_safety()
   Assert.equal(world:getVar("VAR_UNK_407C"), 42, "a repeated poll never republishes")
 end
 
--- Cancellation and unchanged acceptance both write result zero and leave
--- word outputs pending, without touching domain state.
-function T.tests.cancelled_and_unchanged_edits_write_zero_and_hold_words()
+-- Ordinary edit terminals share one lifecycle and publication contract:
+-- accepting, cancelling, or leaving the draft unchanged restores the
+-- suspended field exactly once, closes the child exactly once, stays
+-- complete on repeat polls, and publishes ordered outputs (result one
+-- plus both words on change, result zero with words held otherwise).
+function T.tests.ordinary_edits_restore_once_and_publish_ordered_outputs()
   local Task = requireTask()
   local Dsl = require("libs.script.src.Dsl")
-  for _, terminal in ipairs({
-    { mode = 1, words = { 41, 42 }, cancelled = true, changed = false },
-    { mode = 1, words = { 41, 42 }, cancelled = false, changed = false },
-  }) do
+  local cases = {
+    {
+      terminal = { mode = 1, words = { 41, 42 }, cancelled = false, changed = true },
+      resultVar = 1,
+      words = { 41, 42 },
+      commits = 1,
+    },
+    {
+      terminal = { mode = 1, words = { 41, 42 }, cancelled = true, changed = false },
+      resultVar = 0,
+      words = { NULL_WORD, NULL_WORD },
+      commits = 0,
+    },
+    {
+      terminal = { mode = 1, words = { 41, 42 }, cancelled = false, changed = false },
+      resultVar = 0,
+      words = { NULL_WORD, NULL_WORD },
+      commits = 0,
+    },
+  }
+  for _, case in ipairs(cases) do
     local service, record = stubService({ mode = 1 })
     local node = compileStep(Dsl.easyChatEdit({
       kind = 1,
@@ -215,14 +235,50 @@ function T.tests.cancelled_and_unchanged_edits_write_zero_and_hold_words()
       word1 = Dsl.var("VAR_UNK_407D"),
       word2 = Dsl.var("VAR_UNK_407F"),
     }))
-    local ctx, _, _, world = contextWithHost(terminal)
+    local ctx, host, overworld, world = contextWithHost(case.terminal)
     ctx.services.easyChatService = service
     local state = Task.create({ node = node }, ctx)
+    Assert.equal(overworld.leaves, 1, "creating the task suspends the field once")
+    Assert.equal(overworld.restores, 0, "creation suspends without restoring")
     Assert.isFalse(Task.poll(state, ctx).complete, "the task waits while the editor owns the child")
     Assert.isTrue(Task.poll(state, ctx).complete, "the terminal result completes the task")
-    Assert.equal(world:getVar("VAR_UNK_407C"), 0, "a cancelled or unchanged edit writes result zero")
-    Assert.isTrue(#record.commits <= 1, "the wrapper commit path runs at most once")
+    Assert.equal(overworld.restores, 1, "a finished ordinary edit restores the field once")
+    Assert.equal(host.closes, 1, "the consumed child closes exactly once")
+    Assert.equal(world:getVar("VAR_UNK_407C"), case.resultVar, "the result output names the terminal verdict")
+    Assert.equal(world:getVar("VAR_UNK_407D"), case.words[1], "the first word keeps its source-ordered write")
+    Assert.equal(world:getVar("VAR_UNK_407F"), case.words[2], "the second word keeps its source-ordered write")
+    Assert.equal(#record.commits, case.commits, "the wrapper commit runs only on accepted change")
+    Assert.isTrue(Task.poll(state, ctx).complete, "a completed poll stays complete")
+    Assert.equal(overworld.restores, 1, "a repeated poll never restores again")
+    Assert.equal(world:getVar("VAR_UNK_407C"), case.resultVar, "a repeated poll never republishes")
   end
+end
+
+-- A request-construction failure never suspends the field: the lifecycle
+-- stays present when the service cannot build the editor request.
+function T.tests.request_failure_never_suspends_the_field()
+  local Task = requireTask()
+  local Dsl = require("libs.script.src.Dsl")
+  local node = compileStep(Dsl.easyChatEdit({
+    kind = 1,
+    result = Dsl.var("VAR_UNK_407C"),
+    word1 = Dsl.var("VAR_UNK_407D"),
+    word2 = Dsl.var("VAR_UNK_407F"),
+  }))
+  local ctx, _, overworld, _ = contextWithHost(nil, 100)
+  ctx.services.easyChatService = {
+    requestForKind = function(_)
+      error("injected request failure", 0)
+    end,
+    requestForGreeting = function(_)
+      error("injected request failure", 0)
+    end,
+  }
+  local ok, err = pcall(Task.create, { node = node }, ctx)
+  Assert.isFalse(ok, "a failing request propagates its error")
+  Assert.isTrue(tostring(err):find("injected request failure", 1, true) ~= nil)
+  Assert.equal(overworld.leaves, 0, "a failed request never suspends the field")
+  Assert.equal(overworld.restores, 0, "a failed request never restores either")
 end
 
 -- Launch initializes both pair words to empty before the editor opens:

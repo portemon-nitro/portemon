@@ -354,19 +354,43 @@ function EasyChatRenderer:_drawControls(graphics, view, catalog, assets, pane)
           drawTokens(font, label, 12 + column * 80 + (72 - width) / 2, 56 + row * 24, color[1], color[2])
         end
       else
+        local grid = menu.grid or {}
         for index, initial in ipairs(menu.initials or {}) do
           local label = initial.labelTokens or {}
           local width = measureTokens(label, font.fontDef)
-          drawTokens(font, label, 20 + ((index - 1) % 10) * 16 + (16 - width) / 2, 64, 1, 2)
+          local cell = grid[index]
+          -- Authored 27-cell grid geometry (cell.x/y + touch origin
+          -- 20/64): every initial owns its distinct cell, never the
+          -- 10-column category overlay.
+          local baseX, baseY = 20 + ((index - 1) % 10) * 16, 64
+          local cellW = 16
+          if cell ~= nil and type(cell.x) == "number" and type(cell.y) == "number" then
+            baseX, baseY = cell.x + 20, cell.y + 64
+          end
+          drawTokens(font, label, baseX + (cellW - width) / 2, baseY, 1, 2)
         end
       end
     end
     if visible and view.browser ~= nil then
       local group = view.browser.group
       if type(group) == "number" and group ~= 0xFE then
-        local column = group % 3
-        local row = math.floor(group / 3)
-        self:_drawSequenceFrame(graphics, "categoryCursorActive", math.floor(time / 1), 48 + column * 80, 64 + row * 24)
+        if level == "abc" then
+          local grid = menu ~= nil and menu.grid or {}
+          local cell = grid[group + 1]
+          if cell ~= nil and type(cell.x) == "number" and type(cell.y) == "number" then
+            self:_drawSequenceFrame(graphics, "categoryCursorActive", math.floor(time / 1), cell.x + 26, cell.y + 72)
+          end
+        else
+          local column = group % 3
+          local row = math.floor(group / 3)
+          self:_drawSequenceFrame(
+            graphics,
+            "categoryCursorActive",
+            math.floor(time / 1),
+            48 + column * 80,
+            64 + row * 24
+          )
+        end
       end
     end
   elseif level == "list" then

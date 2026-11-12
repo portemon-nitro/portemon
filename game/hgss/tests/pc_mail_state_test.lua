@@ -450,6 +450,49 @@ function T.all_blank_submit_warns_and_quit_confirms_then_reports_once()
   compose:dispose()
 end
 
+function T.quit_touch_answers_the_drawn_yes_no_pair()
+  -- Hitboxes mirror the drawn YES/NO labels in MailboxRenderer: YES at
+  -- (184,80,64x24), NO at (184,104,64x24). Centers keep the contract
+  -- readable; a renderer layout move updates these two points only.
+  local YES_CENTER = { x = 216, y = 92 }
+  local NO_CENTER = { x = 216, y = 116 }
+  local function tap(compose, point)
+    compose:updateFixed({ { type = "pointer_down", x = point.x, y = point.y } })
+  end
+  local compose = MailComposeState.new(composerOpts())
+  settle(compose)
+  compose:updateFixed({ { type = "cancel" } })
+  Assert.notNil(compose:status().quit, "quitting the letter asks its confirmation")
+  -- Tapping the visible NO label resumes writing with the draft intact
+  -- instead of discarding it or ignoring the press.
+  tap(compose, NO_CENTER)
+  local resumed = compose:status()
+  Assert.isNil(resumed.quit, "tapping NO dismisses the quit prompt")
+  Assert.equal(resumed.phase, "write", "tapping NO returns to the write screen")
+  Assert.isNil(compose:takeResult(), "declining quit publishes no result")
+  Assert.equal(resumed.inputMode, "touch", "the answering touch switches modality")
+  -- A touch that misses both YES and NO is consumed by the modal and
+  -- never reaches the write controls behind it.
+  compose:updateFixed({ { type = "cancel" } })
+  Assert.notNil(compose:status().quit, "the quit prompt reopens")
+  compose:updateFixed({ { type = "pointer_down", x = 192, y = 160 } })
+  Assert.notNil(compose:status().quit, "the write-screen Cancel mask stays inactive behind the modal")
+  Assert.equal(compose:status().phase, "quit", "a masked touch never exits the modal")
+  -- Tapping the visible YES label discards the draft with one result.
+  tap(compose, YES_CENTER)
+  local result = nil
+  for _ = 1, 20 do
+    compose:updateFixed({})
+    result = compose:takeResult()
+    if result ~= nil then
+      break
+    end
+  end
+  Assert.deepEqual(result, { kind = "cancelled", inputMode = "touch" }, "tapping YES quits with its one-shot result")
+  Assert.isNil(compose:takeResult(), "results drain exactly once")
+  compose:dispose()
+end
+
 function T.complete_letter_submits_once_after_its_exit_fade()
   local editor = fakeEditor({
     result = {
