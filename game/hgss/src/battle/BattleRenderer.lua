@@ -995,7 +995,11 @@ local function pictureToPrimitive(picture, ordinal)
     imageKind = picture.imageKind,
     paletteFade = picture.paletteFade,
     sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
-    alphaUsage = picture.kind == "shadow" and nil or { hasZero = true, hasOpaque = true },
+    -- Every staged picture texture carries transparent texels (portrait
+    -- corners, shadow ellipses, effect cutouts): alpha-zero texels must
+    -- discard in the cutout pass instead of writing depth on the
+    -- opaque path and occluding the pictures behind their corners.
+    alphaUsage = { hasZero = true, hasOpaque = true },
     submissionOrdinal = ordinal,
     flags = { cullMode = "none", fogEnabled = false, translucentDepthWrite = false, depthEqual = false },
     centerX = picture.centerX,
@@ -1027,6 +1031,10 @@ end
 -- Appends native particle polygons in source submission order: move
 -- systems, then encounter, then ball. The capture already ran at the
 -- native graphics phase; drawing never advances simulation or RNG.
+-- Compiled per-texture alpha usage rides each primitive into the shared
+-- Gx classification so transparent texels discard instead of writing
+-- depth on the opaque path; textures without compiled usage keep the
+-- picture blanket, which already discards alpha-zero corners.
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param out table<integer, table<string, unknown>> caller-owned ordered primitive array
 local function collectParticlePrimitives(view, out)
@@ -1037,6 +1045,16 @@ local function collectParticlePrimitives(view, out)
         local simulation = system.simulation --[[@as table<string, unknown>?]]
         local textures = system.textures --[[@as table<integer, table<string, unknown>>?]]
         if simulation ~= nil and textures ~= nil then
+          local usageByTexture = system.textureAlphaUsage --[[@as table<integer, table<string, unknown>>?]]
+          local usageByMaterial = {}
+          if type(usageByTexture) == "table" then
+            for texNo, usage in pairs(usageByTexture) do
+              local handle = textures[texNo]
+              if handle ~= nil then
+                usageByMaterial[handle] = usage
+              end
+            end
+          end
           ---@param runtime table<string, unknown>
           ---@param particle table<string, unknown>
           ---@param child table<string, unknown>?
@@ -1046,7 +1064,17 @@ local function collectParticlePrimitives(view, out)
             local texNo = child ~= nil and child.texNo or particle.texNo
             return assert(textures[texNo], "particle texture is staged")
           end
+          local first = #out + 1
           SplParticleDraw.appendPrimitives(simulation, nil, resolveTexture, out)
+          for index = first, #out do
+            local primitive = out[index]
+            local usage = usageByMaterial[primitive.material]
+            if type(usage) == "table" then
+              primitive.alphaUsage = usage
+            else
+              primitive.alphaUsage = { hasZero = true, hasOpaque = true }
+            end
+          end
         end
       end
     end
@@ -1076,10 +1104,14 @@ local function clampCoefficient(value)
 end
 
 -- Normalizes one engine compositor state behind the typed frame.
+-- priorityOverride carries the selected menu layout's compiled
+-- per-plane priorities keyed by sub-engine role; the ROM records own
+-- menu order, so a fixed sub-engine map is never equivalent.
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param engine string "main" or "sub" engine behind the frame
+---@param priorityOverride table<string, integer>? layout priorities by role behind the frame
 ---@return table<string, unknown> normalized compositor animation state
-local function compositionAnimation(view, engine)
+local function compositionAnimation(view, engine, priorityOverride)
   local worldRole = assert(ENGINE_WORLD_ROLE[engine], "composition engines are main or sub")
   local defaults = ENGINE_PRIORITY[engine]
   local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
@@ -1093,6 +1125,19 @@ local function compositionAnimation(view, engine)
     end
     return record
   end
+  -- Blend target masks arrive as absolute register state, so scripted
+  -- keys survive even when the fallback names no role.
+  local function targetMap(source)
+    local record = {}
+    if type(source) == "table" then
+      for role, value in pairs(source) do
+        if type(role) == "string" then
+          record[role] = value == true
+        end
+      end
+    end
+    return record
+  end
   local visible = roleMap(compositor.visible, {
     [worldRole] = true,
     window = true,
@@ -1101,8 +1146,16 @@ local function compositionAnimation(view, engine)
     objects = true,
   })
   local priority = roleMap(compositor.priority, defaults)
-  local firstTarget = roleMap(compositor.firstTarget, {})
-  local secondTarget = roleMap(compositor.secondTarget, {})
+  if type(priorityOverride) == "table" then
+    for role, value in pairs(priorityOverride) do
+      if priority[role] ~= nil and type(value) == "number" then
+        priority[role] = value
+      end
+    end
+  end
+  local firstTarget = targetMap(compositor.firstTarget)
+  local secondTarget = targetMap(compositor.secondTarget)
+  local scriptedTargets = next(firstTarget) ~= nil or next(secondTarget) ~= nil
   local blend = { mode = "none", eva = 0, evb = 0, evy = 0 }
   if engine == "main" then
     local spriteBlend = view.spriteBlend --[[@as table<string, unknown>?]]
@@ -1114,6 +1167,18 @@ local function compositionAnimation(view, engine)
         evy = 0,
       }
       firstTarget[worldRole] = true
+      secondTarget.battlefield = true
+    end
+  else
+    -- Ordinary sub-engine menus blend BG1 over the planes below it
+    -- with the source EVA/EVB pair; planes above the blend cover the
+    -- result like any opaque plane. A scripted sub-screen write names
+    -- its own absolute BG0/BG1 masks instead of this default.
+    if not scriptedTargets then
+      blend = { mode = "alpha", eva = 8, evb = 12, evy = 0 }
+      firstTarget.window = true
+      secondTarget.menu = true
+      secondTarget.transition = true
       secondTarget.battlefield = true
     end
   end
@@ -1138,6 +1203,10 @@ local function compositionAnimation(view, engine)
   if type(compositor.windows) == "table" then
     windows = compositor.windows
   end
+  -- Scripted MAIN_BG palette grayscale grays the battlefield plane
+  -- through the composite resolve; the fade-buffer copy needs no
+  -- stored content because every plane re-renders from source.
+  local grayscaleBattlefield = engine == "main" and compositor.paletteGrayscale == true
   return {
     visible = visible,
     priority = priority,
@@ -1147,6 +1216,7 @@ local function compositionAnimation(view, engine)
     windows = windows,
     blend = blend,
     brightness = brightness,
+    grayscaleBattlefield = grayscaleBattlefield,
     objTargets = compositor.objTargets or {},
   }
 end
@@ -1194,6 +1264,20 @@ local function frameScanlines(view)
   return nil
 end
 
+-- Reports whether the scripted ClearBattlerBg cleared the main-engine
+-- battler plane: the plane binding records the clear for the
+-- composition consumer in the same quantum the source program clears
+-- it, so the screen clears on its precise source tick.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@return boolean cleared true while the battler plane stays cleared
+local function mainBattlerPlaneCleared(view)
+  local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
+  local main = type(sceneAnimation) == "table" and sceneAnimation.main or nil
+  local planes = type(main) == "table" and main.planes or nil
+  local bg2 = type(planes) == "table" and planes.bg2 or nil
+  return type(bg2) == "table" and bg2.cleared == true
+end
+
 -- Presents one main-engine frame through the screen compositor.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
@@ -1213,12 +1297,21 @@ local function presentMainFrame(resources, view, layout, planes, objects)
       primitives[#primitives + 1] = primitive
     end
   end
+  local framePlanes = planes
+  if mainBattlerPlaneCleared(view) then
+    framePlanes = {}
+    for role, entry in pairs(planes) do
+      if role ~= "battlefield" then
+        framePlanes[role] = entry
+      end
+    end
+  end
   local frame = {
     sourceTick = type(view.requestId) == "number" and view.requestId or 0,
     engine = "main",
     animation = compositionAnimation(view, "main"),
     primitives = primitives,
-    planes = planes,
+    planes = framePlanes,
     objects = objects,
     layout = layout,
     scanlines = frameScanlines(view),
@@ -1233,6 +1326,9 @@ local function presentMainFrame(resources, view, layout, planes, objects)
 end
 
 -- Maps the native menu slide snapshot onto sub-engine window state.
+-- Only the sliding BG0/BG1 roles hide outside the two strips: the
+-- BG2 backdrop stays visible over the full pane like the source
+-- window composition, instead of flashing the black backdrop.
 ---@param menuWindows table<string, unknown> native slide regions and per-plane offsets
 ---@return table<string, unknown> sub-engine window records
 local function slideWindowState(menuWindows)
@@ -1241,7 +1337,7 @@ local function slideWindowState(menuWindows)
   return {
     win0 = { x = top.x, y = top.y, width = top.width, height = top.height },
     win1 = { x = bottom.x, y = bottom.y, width = bottom.width, height = bottom.height },
-    outside = { mask = { menu = false, window = false, transition = false, battlefield = false } },
+    outside = { mask = { menu = false, window = false } },
   }
 end
 
@@ -1282,7 +1378,7 @@ local function presentSubFrame(resources, view, planeDraws, opts)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   opts = opts or {}
-  local animation = compositionAnimation(view, "sub")
+  local animation = compositionAnimation(view, "sub", opts.priority --[[@as table<string, integer>?]])
   local slideWindows = opts.slideWindows --[[@as table<string, unknown>?]]
   if opts.bareRole ~= nil then
     local visible = {}
@@ -1840,10 +1936,21 @@ end
 ---@return number vertical background scroll in native pixels
 local function bgScrollOf(view)
   local scroll = view.bgScroll --[[@as table<string, unknown>?]]
-  if type(scroll) ~= "table" then
-    return 0, 0
+  local scrollX, scrollY = 0, 0
+  if type(scroll) == "table" then
+    scrollX, scrollY = numberOr(scroll.x, 0), numberOr(scroll.y, 0)
   end
-  return numberOr(scroll.x, 0), numberOr(scroll.y, 0)
+  -- Scripted SetBgScroll writes land on the main-engine compositor:
+  -- components 0/1 drive the delta registers, 2/3 the position
+  -- register, and the composition consumer adds them to the base.
+  local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
+  local main = type(sceneAnimation) == "table" and sceneAnimation.main or nil
+  local compositor = type(main) == "table" and main.compositor or nil
+  if type(compositor) == "table" then
+    scrollX = scrollX + numberOr(compositor.bgScrollDx, 0) + numberOr(compositor.bgScrollX, 0)
+    scrollY = scrollY + numberOr(compositor.bgScrollDy, 0)
+  end
+  return scrollX, scrollY
 end
 
 -- Resolves the battlefield scene layer: the snapshot's raster background
@@ -3346,6 +3453,22 @@ end
 -- Menu layer sections by drawable menu layout.
 local MENU_SECTIONS = { command = "command", moves = "moves", target = "target", ["two-option"] = "twoOption" }
 
+-- Derives the sub-engine priority map from the selected menu layout's
+-- compiled screen descriptors: lower numeric values win, exactly the
+-- ROM-published per-plane priorities. Roles with no staged plane keep
+-- the engine default so inactive planes never disturb selection.
+---@param layers table<integer, table<string, unknown>> compiled screen records carrying plane and priority
+---@return table<string, integer> priority by sub-engine role
+local function subPriorities(layers)
+  local overrides = {}
+  for _, layer in ipairs(layers) do
+    if type(layer) == "table" and type(layer.plane) == "number" and type(layer.priority) == "number" then
+      overrides[BattleMenuPresenter.roleForPlane(layer.plane)] = layer.priority
+    end
+  end
+  return overrides
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param content table<string, unknown> canonical plan content carrying the layout
@@ -3444,7 +3567,12 @@ local function drawInteraction(resources, view, content, placement)
     oamMode = "normal",
     draw = drawInteractionGauges,
   }
-  presentSubFrame(resources, view, planeDraws, { objects = objects, slideWindows = menuWindows })
+  presentSubFrame(
+    resources,
+    view,
+    planeDraws,
+    { objects = objects, slideWindows = menuWindows, priority = subPriorities(layers) }
+  )
 end
 
 -- Draws one compact scene through the same composition frame as detail:
@@ -3541,26 +3669,25 @@ function BattleRenderer.drawTwoOptionPane(resources, view, overlay)
   subView.selection = pressed
   subView.armed = pressed ~= nil and { scope = "two-option", id = pressed } or nil
   local planeDraws = {}
-  for _, layer in ipairs(layers) do
+  for index, layer in ipairs(layers) do
     local role = BattleMenuPresenter.roleForPlane(layer.plane)
     if planeDraws[role] == nil then
       planeDraws[role] = {}
     end
-    planeDraws[role][#planeDraws[role] + 1] = layer
+    -- Screen positions are the staged drawable identity, so the role
+    -- grouping keeps the original screen index instead of renumbering.
+    planeDraws[role][#planeDraws[role] + 1] = { index = index, layer = layer }
   end
   local draws = {}
   for role, roleLayers in pairs(planeDraws) do
     local function drawTwoOptionRole(graphics)
-      for index, layer in ipairs(roleLayers) do
+      for _, entry in ipairs(roleLayers) do
         BattleMenuPresenter.drawPlane(
           graphics,
           assert(resources.assets, "the battle render borrows its asset holder"),
           "two-option",
           subView,
-          {
-            index = index,
-            layer = layer,
-          }
+          entry
         )
       end
       if role == "menu" and overlay ~= nil then
@@ -3569,7 +3696,7 @@ function BattleRenderer.drawTwoOptionPane(resources, view, overlay)
     end
     draws[role] = drawTwoOptionRole
   end
-  presentSubFrame(resources, subView, draws, {})
+  presentSubFrame(resources, subView, draws, { priority = subPriorities(layers) })
   return pressed
 end
 

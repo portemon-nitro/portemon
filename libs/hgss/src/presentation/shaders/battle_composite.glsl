@@ -66,6 +66,7 @@ uniform vec4 u_winFx;
 uniform vec4 u_blendCoefficients;
 uniform vec4 u_blendMode;
 uniform vec2 u_brightness;
+uniform float u_grayscaleBattlefield;
 vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
 {
   vec2 uv = texture_coords;
@@ -74,6 +75,13 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
   vec4 window = Texel(u_planeWindow, uv);
   vec4 transition = Texel(u_planeTransition, uv);
   vec4 battlefield = Texel(u_planeBattlefield, uv);
+  // Native MAIN_BG fade-buffer grayscale (battle_anim_util.c
+  // PaletteToGrayscale): level = (b * 29 + r * 76 + g * 151) >> 8.
+  if (u_grayscaleBattlefield > 0.5) {
+    vec3 bg5 = floor(battlefield.rgb * 31.0 + 0.5);
+    float level = floor((bg5.b * 29.0 + bg5.r * 76.0 + bg5.g * 151.0) / 256.0);
+    battlefield.rgb = vec3(level / 31.0);
+  }
   vec4 obj = Texel(u_objColor, uv);
   vec4 meta = Texel(u_objMeta, uv);
   float objWindow = Texel(u_objWindowCoverage, uv).a;

@@ -741,6 +741,19 @@ function BattleAnimationPlayer:_exec(occurrence)
     end
     return total
   end
+  -- Lists every unretired owned task behind kind and group: waits
+  -- that key on a task family (background switch phases) classify by
+  -- kind instead of treating an aggregate group count as the source
+  -- condition, so unrelated work in the same group never interferes.
+  function exec.unretiredKinds()
+    local kinds = {}
+    for _, record in ipairs(occurrence.owned) do
+      if not record.retired then
+        kinds[#kinds + 1] = { kind = record.kind, group = record.group }
+      end
+    end
+    return kinds
+  end
   function exec.getParam(slot)
     return occurrence.scratch[slot + 1]
   end

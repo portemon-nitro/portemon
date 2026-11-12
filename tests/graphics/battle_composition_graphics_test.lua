@@ -368,6 +368,24 @@ function T.window_masks_and_row_state_reach_sampled_pixels(scope)
   end
 end
 
+-- RGBA sprite with a transparent border over an opaque center: the
+-- shared picture cutout for staged portrait, shadow, and effect art.
+local function borderedImage(graphics, scope, red, green, blue)
+  local data = love.image.newImageData(64, 64)
+  for y = 0, 63 do
+    for x = 0, 63 do
+      if x == 0 or y == 0 or x == 63 or y == 63 then
+        data:setPixel(x, y, 0, 0, 0, 0)
+      else
+        data:setPixel(x, y, red, green, blue, 1)
+      end
+    end
+  end
+  local image = scope:own(graphics.newImage(data))
+  image:setFilter("nearest", "nearest")
+  return image
+end
+
 function T.compact_view_keeps_source_geometry_under_one_transform(scope)
   local graphics = love.graphics
   local texture = solidImage(graphics, scope, 1, 0, 0)
@@ -451,6 +469,122 @@ function T.failed_frames_keep_the_last_good_canvas(scope)
   data2:release()
   pass:release()
   pass:release()
+end
+
+function T.transparent_plane_layers_composite_over_instead_of_erasing(scope)
+  -- One opaque background plus an RGBA sprite with a transparent
+  -- border: every border pixel must stay background-colored, never
+  -- backdrop-black. Under replace blending the sprite's alpha-zero
+  -- border punches a rectangular hole through the plane.
+  local graphics = love.graphics
+  local sprite = borderedImage(graphics, scope, 0, 0, 1)
+  local pass = scope:own(BattlePicturePass.new(graphics))
+  local frame = compositionFrame({ engine = "main" })
+  frame.planes = {
+    battlefield = {
+      draw = function(graphics)
+        graphics.setColor(1, 0, 0, 1)
+        graphics.rectangle("fill", 0, 0, WIDTH, HEIGHT)
+        graphics.setColor(1, 1, 1, 1)
+        graphics.draw(sprite, 96, 64)
+      end,
+    },
+  }
+  local canvas = pass:render(graphics, frame)
+  local data = snapshot(canvas)
+  checkPixel(data, 10, 10, 63, 0, 0, "the background stays opaque away from the sprite")
+  checkPixel(data, 96, 64, 63, 0, 0, "the sprite border preserves the background underneath")
+  checkPixel(data, 159, 127, 63, 0, 0, "the far sprite border preserves the background underneath")
+  checkPixel(data, 128, 96, 0, 0, 63, "the sprite center paints its own color")
+  data:release()
+end
+
+function T.transparent_corners_never_occlude_the_picture_behind(scope)
+  -- A nearer picture with transparent corners over an opaque picture:
+  -- alpha-zero corners must discard in the cutout pass instead of
+  -- writing depth on the opaque path and hiding the picture behind.
+  local graphics = love.graphics
+  local behind = solidImage(graphics, scope, 0, 1, 0)
+  local front = borderedImage(graphics, scope, 1, 0, 0)
+  local pass = scope:own(BattlePicturePass.new(graphics))
+  local function picture(image, clipZ)
+    local primitive = quad(image, { r = 31, g = 31, b = 31 }, 31, clipZ)
+    -- Production classification behind staged portrait, shadow, and
+    -- effect art: transparent texels discard, opaque texels keep depth.
+    primitive.alphaUsage = { hasZero = true, hasOpaque = true }
+    return primitive
+  end
+  local frame = compositionFrame()
+  frame.planes = {}
+  frame.primitives = { picture(behind, 0), picture(front, -512) }
+  local canvas = pass:render(graphics, frame)
+  local data = snapshot(canvas)
+  checkPixel(data, 2, 2, 0, 63, 0, "the transparent corner reveals the picture behind")
+  checkPixel(data, 253, 189, 0, 63, 0, "the far transparent corner reveals the picture behind")
+  checkPixel(data, 128, 96, 63, 0, 0, "the opaque center covers the picture behind")
+  data:release()
+end
+
+function T.picture_palette_pulses_apply_in_the_shared_target(scope)
+  -- The legacy picture fade blends each texel toward its RGB555 target
+  -- in exact 5-bit steps; the shared Gx target must paint the same
+  -- source colors instead of dropping the fade at the draw boundary.
+  local graphics = love.graphics
+  local texture = solidImage(graphics, scope, 1, 0, 0)
+  local pass = scope:own(BattlePicturePass.new(graphics))
+  local function fadedFrame(intensity)
+    local frame = compositionFrame()
+    frame.planes = {}
+    -- White vertex tint: the fade blends the red texel toward blue
+    -- before the combiner, so the tint must not prefilter the target.
+    local primitive = quad(texture, { r = 31, g = 31, b = 31 }, 31, 0)
+    primitive.paletteFade = {
+      applied = true,
+      targetColor = 0x7C00,
+      intensity = intensity,
+    }
+    frame.primitives = { primitive }
+    return frame
+  end
+  local full = snapshot(pass:render(graphics, fadedFrame(16)))
+  -- Full strength reaches the blue target exactly.
+  checkPixel(full, 128, 96, 0, 0, 63, "a finished pulse paints its target color")
+  full:release()
+  local halfData = snapshot(pass:render(graphics, fadedFrame(8)))
+  -- Source formula: red 31 + floor((0 - 31) * 8 / 16) = 15 and blue
+  -- 0 + 15 = 15, so both channels land strictly inside the endpoints
+  -- and stay symmetric through the shared 6-bit/staging resolve.
+  local hr, hg, hb = pixel6(halfData, 128, 96)
+  Assert.isTrue(hr > 0 and hr < 63, "a partial pulse dims red, got " .. hr)
+  Assert.isTrue(hb > 0 and hb < 63, "a partial pulse lifts blue, got " .. hb)
+  Assert.equal(hr, hb, "the partial pulse blends both channels symmetrically")
+  Assert.equal(hg, 0, "the partial pulse keeps green at zero")
+  halfData:release()
+  local none = snapshot(pass:render(graphics, fadedFrame(0)))
+  checkPixel(none, 128, 96, 63, 0, 0, "a zero pulse keeps the source color")
+  none:release()
+end
+
+function T.scripted_background_grayscale_grays_the_battlefield_plane(scope)
+  -- Native MAIN_BG fade-buffer grayscale
+  -- (battle_anim_util.c PaletteToGrayscale):
+  -- level = (b * 29 + r * 76 + g * 151) >> 8.
+  local graphics = love.graphics
+  local pass = scope:own(BattlePicturePass.new(graphics))
+  local function grayFrame(flag)
+    local frame = compositionFrame()
+    frame.animation.grayscaleBattlefield = flag
+    frame.primitives = {}
+    frame.planes = { battlefield = { color = { 1, 0, 0 } } }
+    return frame
+  end
+  local gray = snapshot(pass:render(graphics, grayFrame(true)))
+  -- Red level (0 * 29 + 31 * 76 + 0 * 151) >> 8 = 9, then 9 / 31 of 63.
+  checkPixel(gray, 128, 96, 18, 18, 18, "the grayscale flag grays the battlefield plane")
+  gray:release()
+  local plain = snapshot(pass:render(graphics, grayFrame(false)))
+  checkPixel(plain, 128, 96, 63, 0, 0, "the settled plane keeps its source color")
+  plain:release()
 end
 
 return GraphicsSmoke.suite(T)

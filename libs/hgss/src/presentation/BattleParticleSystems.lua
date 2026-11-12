@@ -230,10 +230,18 @@ function BattleParticleSystems.newSystemTask(args, context, services, lease)
   end
   local ok, built = pcall(function()
     local textures = {}
+    local textureAlphaUsage = {}
     for _, texture in ipairs(payload.textures) do
       lease.stage(kind, texture.image, services, staged)
       local textureLease = (staged[#staged] --[[@as table<string, unknown>]]).lease --[[@as table<string, unknown>]]
       textures[texture.id] = textureLease.handle
+      -- The staged image handle carries no alpha metadata, so the
+      -- compiled per-texture alpha usage rides alongside for the
+      -- shared Gx classification: transparent texels must discard
+      -- instead of writing depth on the opaque path.
+      if type(texture.alphaUsage) == "table" then
+        textureAlphaUsage[texture.id] = texture.alphaUsage
+      end
     end
     -- Every manager borrows the one boot stream the whole boot shares;
     -- the persisted payload carries no seed, so a missing record fails
@@ -246,7 +254,7 @@ function BattleParticleSystems.newSystemTask(args, context, services, lease)
       error(malformedMessage(kind, "borrows its boot stream record through services"), 0)
     end
     local simulation = SplParticleSimulation.new(randomState, 0, payload.emitters)
-    local view = { simulation = simulation, textures = textures }
+    local view = { simulation = simulation, textures = textures, textureAlphaUsage = textureAlphaUsage }
     return { simulation = simulation, sceneId = scene.allocParticleSystem(scene, view) }
   end)
   if not ok then

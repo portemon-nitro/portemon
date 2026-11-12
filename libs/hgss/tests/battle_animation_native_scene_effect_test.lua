@@ -171,8 +171,16 @@ function T.sub_screen_blends_land_on_the_sub_engine()
   Assert.equal(player:status(handle), "complete", "the blend program completes")
   local sub = compositorCalls(calls, "sub")
   Assert.equal(#sub, 1, "the blend writes the sub-engine compositor once")
-  Assert.equal(sub[1].patch.blendEva, 8, "the sub-engine records the first coefficient")
-  Assert.equal(sub[1].patch.blendEvb, 12, "the sub-engine records the second coefficient")
+  -- Native SetSubScreenBlend carries absolute plane masks (first BG0,
+  -- second BG1) through the same consumed blend contract the menu
+  -- defaults ride, never a side channel the renderer ignores.
+  Assert.deepEqual(
+    sub[1].patch.blend,
+    { mode = "alpha", eva = 8, evb = 12, evy = 0 },
+    "the sub-engine records the native blend coefficients"
+  )
+  Assert.deepEqual(sub[1].patch.firstTarget, { menu = true }, "the first target names BG0")
+  Assert.deepEqual(sub[1].patch.secondTarget, { window = true }, "the second target names BG1")
 end
 
 function T.background_scroll_components_select_their_register()
@@ -201,9 +209,11 @@ function T.palette_operations_land_on_the_main_engine()
   }, scene)
   Assert.equal(player:status(handle), "complete", "the palette program completes")
   local main = compositorCalls(calls, "main")
-  Assert.equal(#main, 2, "both palette operations write the main engine")
-  Assert.equal(main[1].patch.paletteFadeBuffer, "copied", "the copy snapshots the fade buffer")
-  Assert.isTrue(main[2].patch.paletteGrayscale == true, "the grayscale flags the fade buffer")
+  -- The fade-buffer copy journals without scene state (every plane
+  -- re-derives from source art); the grayscale apply is the
+  -- pixel-affecting half the compositor consumes.
+  Assert.equal(#main, 1, "only the grayscale apply writes the main engine")
+  Assert.isTrue(main[1].patch.paletteGrayscale == true, "the grayscale flags the fade buffer")
 end
 
 function T.presentation_layouts_write_and_restore_the_attacker_picture()

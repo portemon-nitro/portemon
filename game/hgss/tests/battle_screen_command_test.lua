@@ -2947,10 +2947,12 @@ function T.native_menu_draws_generated_layers_in_priority_order()
     "interaction",
     nativeView({
       menuLayers = {
+        -- Authentic ROM-published command descriptors (planes 0,1,2
+        -- with priorities 2,3,3): BG0 must sit above BG1.
         command = {
-          { image = "screen-1", plane = 0, priority = 3 },
-          { image = "screen-2", plane = 2, priority = 3 },
-          { image = "screen-3", plane = 1, priority = 2 },
+          { image = "screen-1", plane = 0, priority = 2 },
+          { image = "screen-2", plane = 1, priority = 3 },
+          { image = "screen-3", plane = 2, priority = 3 },
         },
       },
     }),
@@ -2969,10 +2971,25 @@ function T.native_menu_draws_generated_layers_in_priority_order()
   Assert.notNil(frame.planes.menu, "plane 0 feeds the menu role")
   Assert.notNil(frame.planes.window, "plane 1 feeds the window role")
   Assert.notNil(frame.planes.transition, "plane 2 feeds the transition role")
+  -- The sub-engine priority map derives from the layout's compiled
+  -- screen descriptors, never a fixed map: command BG0 (priority 2)
+  -- wins over BG1 (priority 3).
   Assert.deepEqual(
     frame.animation.priority,
-    { menu = 1, window = 0, transition = 2, battlefield = 3 },
+    { menu = 2, window = 3, transition = 3, battlefield = 3 },
     "the sub engine keeps its source plane priorities"
+  )
+  -- The ordinary command menu blends BG1 over the planes below it
+  -- with the source EVA/EVB pair.
+  Assert.deepEqual(
+    frame.animation.blend,
+    { mode = "alpha", eva = 8, evb = 12, evy = 0 },
+    "the settled menu blends BG1 over the backdrop"
+  )
+  Assert.deepEqual(
+    frame.animation.firstTarget,
+    { window = true },
+    "the menu blend targets BG1 first"
   )
   local menuOrder = {}
   for _, entry in ipairs(graphics.draws) do
@@ -2981,10 +2998,186 @@ function T.native_menu_draws_generated_layers_in_priority_order()
       menuOrder[#menuOrder + 1] = key
     end
   end
+  -- Role grouping owns painter order while the compositor owns
+  -- priority, so the presence of every layer is the contract here.
+  table.sort(menuOrder)
   Assert.deepEqual(
     menuOrder,
-    { "menu:command:screen:1", "menu:command:screen:3", "menu:command:screen:2" },
+    { "menu:command:screen:1", "menu:command:screen:2", "menu:command:screen:3" },
     "every generated layer still paints its tilemap"
+  )
+end
+
+function T.native_menu_priorities_follow_each_layouts_descriptors()
+  -- Every menu layout keeps its own ROM-published priorities: a fixed
+  -- sub-engine map cannot stand in for the source records. Lower
+  -- numeric values win, so target BG1 (priority 1) sits above BG0.
+  local cases = {
+    { layout = "moves", layers = {
+      { image = "screen-1", plane = 0, priority = 2 },
+      { image = "screen-2", plane = 2, priority = 3 },
+    }, expected = { menu = 2, window = 0, transition = 3, battlefield = 3 } },
+    { layout = "target", layers = {
+      { image = "screen-1", plane = 0, priority = 2 },
+      { image = "screen-2", plane = 1, priority = 1 },
+      { image = "screen-3", plane = 2, priority = 3 },
+    }, expected = { menu = 2, window = 1, transition = 3, battlefield = 3 } },
+  }
+  for _, case in ipairs(cases) do
+    local observer = {}
+    drawNativePane(
+      "interaction",
+      nativeView({ mode = case.layout, menuLayers = { [case.layout] = case.layers } }),
+      case.layout,
+      {},
+      nil,
+      nil,
+      observer
+    )
+    local frame = assert(observer.compositionFrame, case.layout .. " draws through one typed sub frame")
+    Assert.deepEqual(
+      frame.animation.priority,
+      case.expected,
+      case.layout .. " keeps its source plane priorities"
+    )
+  end
+end
+
+function T.main_battler_plane_clear_blanks_the_battlefield_plane()
+  -- Native ClearBattlerBg fills the main-engine battler plane: the
+  -- composition consumer drops the battlefield plane for the same
+  -- quantum while narration keeps its own plane.
+  local function detailFrame(sceneAnimation)
+    local observer = {}
+    drawNativePane("detail", nativeView({ sceneAnimation = sceneAnimation }), nil, {}, nil, nil, observer)
+    local frame = assert(observer.compositionFrame, "detail draws through one typed main frame")
+    Assert.equal(frame.engine, "main", "detail composes on the main engine")
+    return frame
+  end
+  local cleared = detailFrame({ main = { planes = { bg2 = { cleared = true } }, compositor = {} } })
+  Assert.isNil(cleared.planes.battlefield, "the cleared battler plane draws no battlefield content")
+  Assert.notNil(cleared.planes.window, "narration still rides its own plane past the clear")
+  local settled = detailFrame({ main = { planes = {}, compositor = {} } })
+  Assert.notNil(settled.planes.battlefield, "the settled scene keeps its battlefield plane")
+end
+
+function T.scripted_background_scroll_and_grayscale_reach_the_main_frame()
+  -- SetBgScroll components and the MAIN_BG fade-buffer grayscale land
+  -- on the main-engine compositor and reach the typed frame: the
+  -- scroll offsets the battlefield plane draw, the grayscale flag
+  -- rides the resolve.
+  local graphics = FakeGraphics.new({})
+  local observer = {}
+  drawNativePane(
+    "detail",
+    nativeView({
+      sceneAnimation = {
+        main = { planes = {}, compositor = { bgScrollDx = 5, bgScrollX = 3, paletteGrayscale = true } },
+      },
+    }),
+    nil,
+    {},
+    nil,
+    graphics,
+    observer
+  )
+  local frame = assert(observer.compositionFrame, "detail draws through one typed main frame")
+  Assert.isTrue(
+    frame.animation.grayscaleBattlefield == true,
+    "the scripted grayscale flags the battlefield plane"
+  )
+  local sceneDraws = {}
+  for _, entry in ipairs(graphics.draws) do
+    if type(entry.image) == "table" and entry.image.handle == "scene:test" then
+      sceneDraws[#sceneDraws + 1] = entry
+    end
+  end
+  Assert.isTrue(#sceneDraws >= 1, "the battlefield plane draws its scene layer")
+  for _, entry in ipairs(sceneDraws) do
+    Assert.equal(entry.x, -8, "delta and position scroll add onto the scene draw")
+    Assert.equal(entry.y, 0, "no vertical scroll stays at the origin")
+  end
+end
+
+function T.menu_slide_keeps_the_backdrop_visible_outside_the_strips()
+  -- Only the sliding BG0/BG1 roles hide outside the two strips: the
+  -- BG2 backdrop stays visible over the full pane instead of flashing
+  -- the compositor's black backdrop.
+  local observer = {}
+  drawNativePane(
+    "interaction",
+    nativeView({
+      menuWindows = {
+        outsideTop = { x = 0, y = 0, width = 256, height = 80 },
+        outsideBottom = { x = 0, y = 112, width = 256, height = 80 },
+        scroll = {
+          [0] = { x = 0, topY = 0, bottomY = 0 },
+          [1] = { x = 0, topY = 0, bottomY = 0 },
+        },
+      },
+    }),
+    "command",
+    {},
+    nil,
+    nil,
+    observer
+  )
+  local frame = assert(observer.compositionFrame, "the sliding menu draws through one typed sub frame")
+  Assert.deepEqual(
+    frame.animation.windows.outside,
+    { mask = { menu = false, window = false } },
+    "only the sliding roles hide outside the strips"
+  )
+end
+
+function T.two_option_pane_keeps_each_roles_source_screen_index()
+  -- Role grouping must not renumber the staged drawable identity:
+  -- the transition role draws the second screen, never the first
+  -- screen twice. Priorities derive from the same descriptors.
+  local BattleRenderer = require(RENDERER_MODULE)
+  local graphics = FakeGraphics.new({})
+  local observer = {}
+  local resources = {
+    graphics = graphics,
+    assets = {
+      drawable = function(_, key)
+        return fakeDrawable(key, 8, 8)
+      end,
+      renderPictures = function(_, _, frame)
+        observer.compositionFrame = frame
+        CompositionFrameDrain.drain(graphics, frame)
+        return { handle = "picture-pass" }
+      end,
+    },
+  }
+  local view = {
+    requestId = 3,
+    armed = nil,
+    menuLayers = {
+      twoOption = {
+        { plane = 0, priority = 2 },
+        { plane = 2, priority = 3 },
+      },
+    },
+  }
+  BattleRenderer.drawTwoOptionPane(resources, view, nil)
+  local seen = {}
+  for _, entry in ipairs(graphics.draws) do
+    local key = type(entry.image) == "table" and entry.image.handle or nil
+    if type(key) == "string" and key:match("^menu:two%-option:screen:") then
+      seen[key] = (seen[key] or 0) + 1
+    end
+  end
+  Assert.deepEqual(
+    seen,
+    { ["menu:two-option:screen:1"] = 1, ["menu:two-option:screen:2"] = 1 },
+    "each role paints its own source screen exactly once"
+  )
+  local frame = assert(observer.compositionFrame, "the two-option pane composes on the sub engine")
+  Assert.deepEqual(
+    frame.animation.priority,
+    { menu = 2, window = 0, transition = 3, battlefield = 3 },
+    "the two-option pane keeps its source plane priorities"
   )
 end
 

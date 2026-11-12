@@ -197,6 +197,40 @@ function T.system_loads_registers_with_the_scene_and_frees_exactly_once()
   Assert.isNil(ctx.particles.systems[0], "the system slot is free again")
 end
 
+function T.system_loads_publish_compiled_texture_alpha_usage_for_classification()
+  -- The compiled per-texture alpha usage rides the draw view beside
+  -- the staged handles: the shared Gx classification discards
+  -- transparent texels instead of writing depth on the opaque path,
+  -- while textures without compiled usage fall back to the picture
+  -- blanket in the renderer.
+  local scene = BattleScene.new()
+  local ctx = context()
+  local usage = { hasZero = true, hasPartial = true, hasOpaque = true }
+  local system, _ = loadSystem(scene, {
+    emitters = { emitterRecord({ persistent = true }) },
+    textures = {
+      { id = 0, width = 8, height = 8, image = "texture/0", alphaUsage = usage },
+      { id = 1, width = 8, height = 8, image = "texture/1" },
+    },
+    placements = placements(),
+    axisTables = axisTables(),
+    emitterTables = emitterTables(),
+  }, ctx)
+  local view = scene:particleSystems()[1]
+  Assert.notNil(view, "the loaded system is registered for drawing")
+  Assert.deepEqual(
+    view.textureAlphaUsage[0],
+    usage,
+    "compiled per-texture alpha usage rides the draw view"
+  )
+  Assert.isNil(
+    view.textureAlphaUsage[1],
+    "textures without compiled usage fall back to the picture blanket"
+  )
+  system:free()
+  system:dispose()
+end
+
 function T.loading_one_slot_twice_fails_without_leaking_leases()
   local scene = BattleScene.new()
   local ctx = context()

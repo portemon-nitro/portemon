@@ -302,6 +302,8 @@ uniform int u_fragmentPass;
 uniform float u_polygonAlpha;  // normalized 5-bit polygon alpha
 uniform int u_polygonMode;     // 0 modulation/toon, 1 decal
 uniform mat3 u_texMatrix;      // normalized-UV transform (NSBTA texture SRT)
+uniform vec3 u_paletteFadeColor; // normalized RGB555 fade target, black while no fade runs
+uniform float u_paletteFadeAmount; // 0..16 fade strength, 0 while no fade runs
 uniform sampler2D MainTex;
 /*__portemon_shared_image_sampling__*/
 #if defined(WORLD_MRT) || defined(EXACT_SOURCE)
@@ -464,6 +466,13 @@ void effect()
   // 6-bit domain (expand5to6); v_dsColor already arrived
   // 5-bit-quantized from the vertex stage (quantizeRgb5).
   vec3 texture5 = floor(base.rgb * 31.0 + 0.5);
+  // Picture-local RGB555 palette pulse: the battle Pokepic fade blends
+  // each texel toward its target in exact 5-bit steps before lighting,
+  // matching the legacy picture shader formula.
+  if (u_paletteFadeAmount > 0.5) {
+    vec3 target5 = floor(u_paletteFadeColor * 31.0 + 0.5);
+    texture5 = texture5 + floor((target5 - texture5) * u_paletteFadeAmount / 16.0);
+  }
   vec3 vertex5 = floor(v_dsColor * 31.0 + 0.5);
   vec3 texture6 = expand5to6v(texture5);
   vec3 vertex6 = expand5to6v(vertex5);

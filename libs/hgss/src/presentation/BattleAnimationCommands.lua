@@ -31,6 +31,7 @@
 ---@field unfinishedCry fun(): string? most recent unfinished owned cry voice, when present
 ---@field cryFinished fun(): boolean? true once owned cry voices need no further wait
 ---@field count fun(group: string): integer owned unretired tasks behind one native counter
+---@field unretiredKinds fun(): table<integer, { kind: unknown, group: string }> kinds and groups behind every unretired owned task
 ---@field getParam fun(slot: integer): integer read one scratch parameter
 ---@field setParam fun(slot: integer, value: integer) write one scratch parameter
 ---@field zeroParams fun() clear the ten-slot scratch context
@@ -358,19 +359,38 @@ local function executeSoundWait(exec, instruction, index)
     return "continue"
   end
   local wait = exec.wait()
-  if wait == nil or wait.kind ~= "voice" or wait.voice ~= voice then
-    local parked = { kind = "voice", index = index, voice = voice, parked = 0 }
-    exec.setWait(parked)
-    return exec.park(parked)
+  if wait == nil or wait.kind ~= "voice" or wait.voice ~= voice or wait.index ~= index then
+    -- A newly started voice joins the same wait without resetting the
+    -- native 90-tick escape budget behind the earlier voices.
+    local parked = 0
+    if wait ~= nil and wait.kind == "voice" and wait.index == index and type(wait.parked) == "number" then
+      parked = wait.parked
+    end
+    local fresh = { kind = "voice", index = index, voice = voice, parked = parked }
+    exec.setWait(fresh)
+    return exec.park(fresh)
   end
   local finished = exec.voiceFinished(voice)
   if finished == nil then
     return "done"
   end
   if finished then
-    exec.clearWait()
-    exec.advance()
-    return "continue"
+    -- One finished voice never releases the wait while an earlier
+    -- started SE still plays: native WaitForSoundTasks holds until the
+    -- global SE-playing condition clears, so the next unfinished voice
+    -- parks on the same wait instead of advancing the script.
+    local parked = wait.parked
+    if type(parked) ~= "number" then
+      parked = 0
+    end
+    local following = exec.unfinishedVoice()
+    if following == nil then
+      exec.clearWait()
+      exec.advance()
+      return "continue"
+    end
+    exec.setWait({ kind = "voice", index = index, voice = following, parked = parked })
+    return exec.park(exec.wait())
   end
   wait.parked = wait.parked + 1
   if wait.parked > escape then
@@ -412,10 +432,11 @@ local function handleWaitForSound(exec, instruction, index)
 end
 Handlers["wait-for-sound"] = handleWaitForSound
 
--- Stuck waits fail loudly instead of hanging the occurrence or releasing
--- it silently: a task that never completes is a bug, and the failure names
--- the wait so the stuck kind is debuggable.
-local EFFECTS_ESCAPE_TICKS = 16
+-- Native opcode 50 (WaitForParticles) polls the active SPL emitter
+-- count across particle systems: unrelated background and sprite work
+-- runs under its own ownership and never holds or releases this wait.
+-- The long watchdog only fails a genuinely stuck emitter instead of
+-- changing valid source timing.
 local PARTICLE_ESCAPE_TICKS = 900
 
 local function handleWaitForBattlerEffects(exec, instruction, index)
@@ -425,11 +446,11 @@ local function handleWaitForBattlerEffects(exec, instruction, index)
       exec.clearWait()
     end
   end
-  -- Native opcodes 5/26 drain particle work and every visual task the
-  -- stream owns: the wait releases only once both counters read empty.
-  -- A single completion never releases a wait that names still-running
-  -- work, so an early task cannot satisfy a later wait for a longer one.
-  if exec.count("particle") == 0 and exec.count("raw") == 0 then
+  -- Native opcode 50 releases once no particle task remains: the
+  -- emitter task retires exactly when its emitter drains, so the
+  -- unretired particle count is the active emitter count. Raw visual
+  -- tasks never join this condition.
+  if exec.count("particle") == 0 then
     released(exec.wait())
     exec.advance()
     return "continue"
@@ -441,8 +462,8 @@ local function handleWaitForBattlerEffects(exec, instruction, index)
     return exec.park(parked)
   end
   wait.parked = wait.parked + 1
-  if wait.parked > (exec.count("particle") > 0 and PARTICLE_ESCAPE_TICKS or EFFECTS_ESCAPE_TICKS) then
-    exec.fail("battler-effects wait never drained its tasks")
+  if wait.parked > PARTICLE_ESCAPE_TICKS then
+    exec.fail("battler-effects wait never drained its particle tasks")
     return "done"
   end
   return exec.park(wait)
@@ -475,34 +496,60 @@ local function handleWaitForConfirmInput(exec, instruction, index)
 end
 Handlers["wait-for-confirm-input"] = handleWaitForConfirmInput
 
+-- Background switch work behind the phase waits: the constructors the
+-- factory dispatches for background layers. The resource load settles
+-- the loaded phase; any owned background layer or cleanup task holds
+-- the complete phase. Kept beside the wait that classifies it because
+-- the player stays task-kind agnostic by design.
+local BACKGROUND_LOAD_KINDS = {
+  ["battle-background-resource-load"] = true,
+}
+
+---@param kind unknown task kind under classification
+---@return boolean switch true while the kind owns background switch work
+local function isBackgroundSwitchKind(kind)
+  if type(kind) ~= "string" then
+    return false
+  end
+  if kind:sub(1, 18) == "battle-background-" then
+    return true
+  end
+  return kind == "battle-presentation-resource-cleanup"
+end
+
 local function handleWaitForBattlePhase(exec, instruction, index)
-  local _ = instruction
+  local values = instruction.values --[[@as table<integer, integer>?]]
+  local requested = type(values) == "table" and values[1] or 0
   local function released(wait)
     if wait ~= nil and wait.kind == "background" and wait.index == index then
       exec.clearWait()
     end
   end
-  -- Native op19/20 poll the background-switch task state (bgSwitchState ==
-  -- 2 for loaded, == 0 for complete, battle_anim_system.c): the unretired
-  -- raw count is the owned switch work, so the wait releases only once no
-  -- raw task remains. A genuinely pending switch parks, then fails loudly
-  -- once the park outlives the source horizon instead of releasing the
-  -- wait silently.
-  if exec.count("raw") == 0 then
+  -- Native op19 polls bgSwitchState == 2 (loaded) while op20 polls == 0
+  -- (complete, battle_anim_system.c): the owned resource load settles
+  -- the loaded phase, any owned background switch task holds the
+  -- complete phase, and unrelated raw tasks never join either
+  -- condition. The source transition owns its own timing, so the wait
+  -- parks without a completion horizon instead of failing valid work.
+  local pending = false
+  for _, record in ipairs(exec.unretiredKinds()) do
+    if isBackgroundSwitchKind(record.kind) then
+      if requested ~= 2 or BACKGROUND_LOAD_KINDS[record.kind] == true then
+        pending = true
+        break
+      end
+    end
+  end
+  if not pending then
     released(exec.wait())
     exec.advance()
     return "continue"
   end
   local wait = exec.wait()
   if wait == nil or wait.kind ~= "background" or wait.index ~= index then
-    local parked = { kind = "background", index = index, parked = 0 }
+    local parked = { kind = "background", index = index }
     exec.setWait(parked)
     return exec.park(parked)
-  end
-  wait.parked = wait.parked + 1
-  if wait.parked > EFFECTS_ESCAPE_TICKS then
-    exec.fail("battle-phase wait never observed its switch phase")
-    return "done"
   end
   return exec.park(wait)
 end
@@ -1397,15 +1444,22 @@ end
 Handlers["set-pokemon-picture-vanished"] = handleSetPokemonPictureVanished
 
 local function handleSetBlendAlpha(exec, instruction, index)
-  -- Native SetSubScreenBlend drives the sub-screen blend registers: the
-  -- write lands on the sub-engine compositor, while the main-screen
-  -- sprite blend stays under the reset-blend-alpha overlay.
+  -- Native SetSubScreenBlend drives the sub-screen blend registers
+  -- with absolute plane masks: first target BG0, second target BG1
+  -- (battle_anim_system.c), written through the same consumed blend
+  -- contract the ordinary menu defaults ride, so the renderer needs
+  -- no side channel.
   local values = instruction.values --[[@as table<integer, integer>]]
   if type(values[1]) ~= "number" or type(values[2]) ~= "number" then
     exec.fail("sub-screen blends carry two blend coefficients")
     return "done"
   end
-  if not exec.writeCompositor("sub", { blendEva = values[1], blendEvb = values[2] }) then
+  local patch = {
+    blend = { mode = "alpha", eva = values[1], evb = values[2], evy = 0 },
+    firstTarget = { menu = true },
+    secondTarget = { window = true },
+  }
+  if not exec.writeCompositor("sub", patch) then
     return "done"
   end
   exec.note({ op = "set-blend-alpha", index = index })
@@ -1469,9 +1523,11 @@ end
 Handlers["clear-background-plane"] = handleClearBackgroundPlane
 
 local function handleCopyMainBackgroundPaletteToFadeBuffer(exec, _, index)
-  if not exec.writeCompositor("main", { paletteFadeBuffer = "copied" }) then
-    return "done"
-  end
+  -- Native palette-buffer copies snapshot the background palette for a
+  -- later grayscale apply; the production renderer re-derives every
+  -- plane from source art each frame, so the copy carries no stored
+  -- content and journals its intent without scene state. The grayscale
+  -- apply below is the pixel-affecting half of the pair.
   exec.note({ op = "copy-main-background-palette-to-fade-buffer", index = index })
   exec.advance()
   return "continue"

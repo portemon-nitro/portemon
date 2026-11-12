@@ -393,8 +393,12 @@ function T.battle_phase_waits_release_without_background_work()
   end
 end
 
-function T.stuck_effect_tasks_fail_loudly_instead_of_escaping()
-  local player, handle = startNew(programOf({
+function T.effects_waits_release_while_unrelated_raw_tasks_run()
+  -- Native opcode 50 (WaitForParticles) polls only the active SPL
+  -- emitter count: a stuck raw task never holds the wait, and the
+  -- stream end keeps that raw work under its own legitimate ownership
+  -- instead of abandoning it past the wait.
+  local player, handle, helpers = startNew(programOf({
     {
       op = "schedule-battle-task",
       taskKind = "battle-background-blend-transition",
@@ -402,9 +406,38 @@ function T.stuck_effect_tasks_fail_loudly_instead_of_escaping()
       values = { 1 },
     },
     { op = "wait-for-battler-effects" },
+    { op = "play-sound", sound = "downstream-cue" },
     { op = "reset-blend-alpha" },
   }))
-  for _ = 1, 100 do
+  for _ = 1, 30 do
+    player:stepSourceTick({ tick = 1 })
+  end
+  Assert.deepEqual(
+    helpers.log.played,
+    { "downstream-cue" },
+    "the effects wait releases with no particle work even while raw work runs"
+  )
+  Assert.equal(player:status(handle), "waiting", "the stuck raw task still holds the stream end")
+  Assert.isNil(player:failure(handle), "the released wait carries no failure")
+  Assert.equal(#helpers.log.disposed, 0, "the running raw task retires nothing")
+end
+
+function T.effects_waits_fail_stuck_particle_work_loudly()
+  -- A particle emitter that never drains holds its own wait past the
+  -- long watchdog instead of releasing the occurrence silently; raw
+  -- tasks never join this condition.
+  local player, handle = startNew(programOf({
+    {
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-default",
+      emitter = 0,
+      systemIndex = 0,
+    },
+    { op = "wait-for-battler-effects" },
+    { op = "reset-blend-alpha" },
+  }))
+  for _ = 1, 950 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "failed" then
       break
@@ -413,9 +446,64 @@ function T.stuck_effect_tasks_fail_loudly_instead_of_escaping()
   Assert.equal(
     player:status(handle),
     "failed",
-    "a battler-effects wait over stuck tasks fails instead of escaping silently"
+    "a battler-effects wait over stuck emitters fails instead of escaping silently"
   )
   Assert.notNil(player:failure(handle), "the stuck effects wait carries its failure detail")
+end
+
+function T.effects_waits_release_long_lived_particles_without_failing()
+  -- A real emitter living past the old short horizon still releases
+  -- its wait once it drains: the watchdog never changes valid source
+  -- timing.
+  local helpers = collaborators()
+  local ticks = 0
+  function helpers.tasks.create(kind, _args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      ticks = ticks + 1
+      if ticks >= 25 then
+        task._state = "complete"
+      end
+    end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+    end
+    function task.dispose() end
+    return task
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      {
+        op = "create-parameterized-battler-effect",
+        taskKind = "battler-effect-continuation",
+        actionProfile = "particle-emitter-default",
+        emitter = 0,
+        systemIndex = 0,
+      },
+      { op = "wait-for-battler-effects" },
+      { op = "reset-blend-alpha" },
+    })
+  ))
+  for _ = 1, 40 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the drained emitter releases its wait")
+  Assert.isNil(player:failure(handle), "the long-lived emitter carries no failure")
 end
 
 function T.stream_end_with_unfinished_voices_fails_loudly()
@@ -450,26 +538,89 @@ function T.stream_end_with_unfinished_voices_fails_loudly()
   Assert.notNil(player:failure(handle), "the parked stream end carries its failure detail")
 end
 
-function T.stuck_background_work_fails_loudly_instead_of_escaping()
-  local player, handle, helpers = startNew(programOf({
-    {
-      op = "schedule-battle-task",
-      taskKind = "battle-background-blend-transition",
-      taskInputRule = "raw-rule",
-      values = { 1 },
-    },
-    { op = "wait-for-battle-phase", values = { 0 } },
-    { op = "reset-blend-alpha" },
-  }))
-  for _ = 1, 1000 do
-    player:stepSourceTick({ tick = 1 })
-    if player:status(handle) == "failed" then
-      break
+function T.background_phase_waits_track_switch_state_not_raw_tasks()
+  -- Native op19/20 poll bgSwitchState (loaded == 2, complete == 0):
+  -- the owned resource load settles the loaded phase while any owned
+  -- background switch task holds the complete phase. An unrelated raw
+  -- task never joins either condition, and the source transition owns
+  -- its own timing with no completion horizon.
+  local helpers = collaborators()
+  local completeAfter = {
+    ["battle-background-resource-load"] = 3,
+    ["battle-background-alternating-scroll-transition"] = 8,
+  }
+  function helpers.tasks.create(kind, _args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      helpers.log.steps[#helpers.log.steps + 1] = kind
+      if completeAfter[kind] ~= nil and #helpers.log.steps >= completeAfter[kind] then
+        task._state = "complete"
+      end
     end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+    end
+    function task.dispose()
+      helpers.log.disposed[#helpers.log.disposed + 1] = kind
+    end
+    return task
   end
-  Assert.equal(player:status(handle), "failed", "a stuck background switch fails instead of escaping silently")
-  Assert.notNil(player:failure(handle), "the stuck wait carries its failure detail")
-  Assert.equal(#helpers.log.created, 1, "the stuck switch task still constructs once")
+  local function startPhase(values)
+    local player = assert(BattleAnimationPlayer.new({
+      scene = {},
+      audio = helpers.audio,
+      resources = helpers.resources,
+      tasks = helpers.tasks,
+      services = { onNativeFrame = function() end },
+    }))
+    return player, assert(player:start(
+      packet(),
+      programOf({
+        {
+          op = "schedule-battle-task",
+          taskKind = "battle-background-resource-load",
+          taskInputRule = "raw-rule",
+          values = { 1 },
+        },
+        {
+          op = "schedule-battle-task",
+          taskKind = "battle-background-alternating-scroll-transition",
+          taskInputRule = "raw-rule",
+          values = { 1 },
+        },
+        {
+          op = "schedule-battle-task",
+          taskKind = "battle-palette-fade",
+          taskInputRule = "raw-rule",
+          values = { 1 },
+        },
+        { op = "wait-for-battle-phase", values = values },
+        { op = "play-sound", sound = "downstream-cue" },
+        { op = "reset-blend-alpha" },
+      })
+    ))
+  end
+  local loadedPlayer, loadedHandle = startPhase({ 2 })
+  local completePlayer, completeHandle = startPhase({ 0 })
+  for _ = 1, 12 do
+    loadedPlayer:stepSourceTick({ tick = 1 })
+    completePlayer:stepSourceTick({ tick = 1 })
+  end
+  Assert.deepEqual(
+    helpers.log.played,
+    { "downstream-cue", "downstream-cue" },
+    "both phases release once their own switch work drains despite the stuck raw task"
+  )
+  Assert.equal(loadedPlayer:status(loadedHandle), "waiting", "the stuck raw task holds the loaded stream end")
+  Assert.equal(
+    completePlayer:status(completeHandle),
+    "waiting",
+    "the stuck raw task holds the complete stream end"
+  )
 end
 
 function T.non_background_visual_spawns_keep_their_existing_arguments()
@@ -1795,9 +1946,10 @@ function T.stream_end_holds_uncounted_tasks_then_retires_everything_once()
   Assert.isTrue(not player:retire(handle), "retirement never repeats")
 end
 
-function T.effects_waits_stay_parked_until_every_raw_task_drains()
-  -- Two overlapping raw tasks: the first completion must not release a
-  -- wait that still names running work.
+function T.effects_waits_stay_parked_until_every_particle_task_drains()
+  -- Two overlapping emitters: the first drain must not release a wait
+  -- that still names running particle work. Unrelated raw tasks never
+  -- join this condition (see the release-while-raw test above).
   local helpers = collaborators()
   local finishesAt = { 2, 5 }
   local ticks = 0
@@ -1831,16 +1983,18 @@ function T.effects_waits_stay_parked_until_every_raw_task_drains()
     packet(),
     programOf({
       {
-        op = "schedule-battle-task",
-        taskKind = "battle-background-blend-transition",
-        taskInputRule = "brief-rule",
-        values = { 1 },
+        op = "create-parameterized-battler-effect",
+        taskKind = "battler-effect-continuation",
+        actionProfile = "particle-emitter-default",
+        emitter = 0,
+        systemIndex = 0,
       },
       {
-        op = "schedule-battle-task",
-        taskKind = "battle-palette-fade",
-        taskInputRule = "long-rule",
-        values = { 1 },
+        op = "create-parameterized-battler-effect",
+        taskKind = "battler-effect-continuation",
+        actionProfile = "particle-emitter-default",
+        emitter = 1,
+        systemIndex = 0,
       },
       { op = "wait-for-battler-effects" },
       { op = "reset-blend-alpha" },
@@ -1848,7 +2002,7 @@ function T.effects_waits_stay_parked_until_every_raw_task_drains()
   ))
   for tick = 1, 4 do
     player:stepSourceTick({ tick = tick })
-    Assert.equal(player:status(handle), "waiting", "the long task holds the wait on tick " .. tick)
+    Assert.equal(player:status(handle), "waiting", "the long emitter holds the wait on tick " .. tick)
   end
   for _ = 1, 6 do
     player:stepSourceTick({ tick = 1 })
@@ -1910,6 +2064,62 @@ function T.sound_waits_create_no_sound_and_escape_stuck_voices()
   end
   Assert.equal(player:status(stuck), "failed", "the stuck stream end still fails loudly")
   Assert.notNil(player:failure(stuck), "the stuck stream end carries its failure detail")
+end
+
+function T.sound_waits_drain_every_unfinished_voice_before_releasing()
+  -- Native WaitForSoundTasks holds until the global SE-playing
+  -- condition clears: the newest voice finishing first must not
+  -- release the wait while an earlier started SE still plays.
+  local helpers = collaborators()
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      { op = "play-sound", sound = "long-cue" },
+      { op = "play-sound", sound = "short-cue" },
+      { op = "wait-for-sound", values = { 90 } },
+      { op = "play-sound", sound = "downstream-cue" },
+      { op = "reset-blend-alpha" },
+    })
+  ))
+  player:stepSourceTick({ tick = 1 })
+  Assert.deepEqual(
+    helpers.log.played,
+    { "long-cue", "short-cue" },
+    "both voices start before the wait"
+  )
+  -- The downstream cue finishes at once when played: only the two
+  -- awaited voices may hold the wait and the stream end.
+  helpers.audio.done["downstream-cue"] = true
+  helpers.audio.done["short-cue"] = true
+  for _ = 1, 5 do
+    player:stepSourceTick({ tick = 2 })
+  end
+  Assert.deepEqual(
+    helpers.log.played,
+    { "long-cue", "short-cue" },
+    "the finished newest voice never releases the wait past the still-playing first voice"
+  )
+  Assert.equal(player:status(handle), "waiting", "the first voice still holds the wait")
+  helpers.audio.done["long-cue"] = true
+  for _ = 1, 5 do
+    player:stepSourceTick({ tick = 3 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.deepEqual(
+    helpers.log.played,
+    { "long-cue", "short-cue", "downstream-cue" },
+    "the drained voices release the wait in source order"
+  )
+  Assert.equal(player:status(handle), "complete", "the drained voices complete the stream")
 end
 
 function T.overlapping_occurrences_retire_cancelled_work_without_touching_survivors()

@@ -534,6 +534,10 @@ local function compositionMaterial(primitive)
   if indexed then
     assert(palette ~= nil, "indexed composition polygon carries its palette")
   end
+  -- Picture-local RGB555 palette pulses ride the material into the
+  -- shared Gx target: the legacy picture shader applied the same
+  -- per-image fade strength and source timing before every draw.
+  local fadeColor, fadeAmount = paletteFade(primitive.paletteFade)
   return {
     image = image,
     palette = palette,
@@ -541,6 +545,8 @@ local function compositionMaterial(primitive)
     texMatrix = IDENTITY_TEXMATRIX,
     alphaUsage = primitive.alphaUsage,
     sampler = primitive.sampler,
+    paletteFadeColor = fadeColor,
+    paletteFadeAmount = fadeAmount,
   }
 end
 
@@ -613,7 +619,9 @@ end
 --   frame.animation: detached engine state with visible/priority/
 --     firstTarget/secondTarget per role, backdrop {r,g,b}, windows
 --     {win0,win1,objWindow,outside}, blend {mode,eva,evb,evy} and
---     brightness {mode,coefficient}. Roles are world3d (main) or menu
+--     brightness {mode,coefficient}. grayscaleBattlefield forces the
+--     native MAIN_BG fade-buffer grayscale on the battlefield plane.
+--     Roles are world3d (main) or menu
 --     (sub), window, transition, battlefield, objects.
 --   frame.primitives: ordered native polygon array for the shared 3D target.
 --   frame.planes: 2D content per role (window/transition/battlefield, plus
@@ -789,6 +797,11 @@ local function rasterizePlaneContent(graphics, target, entry)
   end
   assert(type(draw) == "function", "plane entries without color draw their content")
   graphics.setColor(1, 1, 1, 1)
+  -- One plane's layered artwork composites over itself exactly like
+  -- direct draws: later sprites and button patches blend over the
+  -- earlier background instead of letting a transparent overdraw
+  -- erase what is below (replace would punch rectangular holes).
+  graphics.setBlendMode("alpha", "alphamultiply")
   draw(graphics)
 end
 
@@ -1047,6 +1060,8 @@ local function driveComposite(graphics, self, frame, worldRole)
     blendMode == "darken" and 1 or 0,
     0,
   })
+  local grayscale = animation.grayscaleBattlefield == true and 1 or 0
+  shader:send("u_grayscaleBattlefield", grayscale)
   local direction = 0
   if brightnessMode == "up" then
     direction = 1

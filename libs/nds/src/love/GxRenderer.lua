@@ -1059,6 +1059,19 @@ function GxRenderer:_drawMesh(
   -- straight RGBA with no stale palette left behind.
   ImageSampling.sendMaterialSampling(shader, mat)
 
+  -- Picture-local RGB555 palette pulses ride every map variant: the
+  -- battle compositor forwards the per-polygon fade strength while
+  -- field geometry carries none, so the defaults keep it a no-op.
+  local fadeColor, fadeAmount = { 0, 0, 0 }, 0
+  if mat ~= nil and type(mat.paletteFadeAmount) == "number" and mat.paletteFadeAmount > 0 then
+    fadeAmount = mat.paletteFadeAmount
+    if type(mat.paletteFadeColor) == "table" then
+      fadeColor = mat.paletteFadeColor
+    end
+  end
+  shader:send("u_paletteFadeColor", fadeColor)
+  shader:send("u_paletteFadeAmount", fadeAmount)
+
   shader:send("u_fragmentPass", fragmentPass)
   shader:send("u_polygonAlpha", item.polygonAlpha)
   shader:send("u_polygonMode", item.polygonMode == "decal" and 1 or 0)
