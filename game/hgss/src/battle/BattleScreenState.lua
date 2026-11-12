@@ -2752,9 +2752,12 @@ function BattleScreenState:_snapshot(borrowStatic)
     bgScroll = self._scene:scroll(),
     backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
     effectInstances = self._scene:effectViews(),
-    moveParticleSystems = self._scene:particleSystems(),
-    encounterParticleSystems = self._encounterParticles:systems(),
-    ballParticleSystems = self._ballParticles:systems(),
+    -- The compositor paints the published pre-advance draw frames the
+    -- native draw phase captured, never the already-advanced live
+    -- simulation.
+    moveParticleSystems = self._scene:drawParticleSystems(),
+    encounterParticleSystems = self._encounterParticles:drawSystems(),
+    ballParticleSystems = self._ballParticles:drawSystems(),
     -- Detached compositor state behind the typed composition frame:
     -- engine planes, blend/window/brightness writes, mosaic and the
     -- source scanline buffer. Task-owned sprite blend weights ride
@@ -3147,9 +3150,9 @@ function BattleScreenState:view()
     openingPresentation = copyValue(snapshot.openingPresentation),
     introScene = snapshot.introScene,
     terrainSprites = snapshot.terrainSprites,
-    encounterParticleSystems = self._encounterParticles:systems(),
-    ballParticleSystems = self._ballParticles:systems(),
-    moveParticleSystems = self._scene:particleSystems(),
+    encounterParticleSystems = self._encounterParticles:drawSystems(),
+    ballParticleSystems = self._ballParticles:drawSystems(),
+    moveParticleSystems = self._scene:drawParticleSystems(),
     playerTrainer = copyValue((self._pendingFinal or self._latestView or {}).playerTrainer),
     foeTrainers = copyValue((self._pendingFinal or self._latestView or {}).foeTrainers),
     actor = copyValue(snapshot.actor),

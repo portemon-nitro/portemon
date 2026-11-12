@@ -2396,6 +2396,10 @@ function FieldBattlePresentation:_preparationServices()
               width = entry.texture.width,
               height = entry.texture.height,
               drawable = drawable,
+              -- The staged descriptor's exact coverage flags ride into
+              -- the scene layer: the particle owners preserve them for
+              -- the shared depth/blend classification.
+              alphaUsage = entry.texture.alphaUsage,
             }
           end
           stagedSceneKey = sceneKey

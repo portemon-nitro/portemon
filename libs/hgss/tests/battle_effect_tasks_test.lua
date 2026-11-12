@@ -1967,4 +1967,332 @@ function T.background_resource_failures_stay_closed()
   Assert.equal(#cancelJournal.released, #cancelJournal.acquired, "cancelled loads release every staged lease")
 end
 
+local function moveBattlerByArgs(offsetX, offsetY)
+  return {
+    callback = "pokemon-picture-offset-transition",
+    taskContext = "pokemon-picture",
+    parameters = {
+      pictureTarget = "active-battler",
+      durationTicks = 2,
+      offsetX = offsetX,
+      offsetY = offsetY,
+    },
+  }
+end
+
+local function enemyAttackerContext(seed)
+  local context = occurrenceContext(seed)
+  context.topology.attacker.sideType = 1
+  context.topology.attacker.slot = "solo-enemy"
+  return context
+end
+
+function T.move_battler_lunge_persists_chains_and_mirrors()
+  -- Tackle (MoveBattlerBy, selector 57) expresses its lunge as two
+  -- absolute repositionings: the out-leg endpoint persists through the
+  -- impact wait and the return leg starts from the displaced position
+  -- (battle_anim_funcs.c MoveBattlerBy leaves the absolute pic
+  -- position in place). Enemy-side lunges mirror both axes.
+  local scene = sceneWithPair()
+  local services, _ = journalServices(scene)
+  local activation = { combatant = 1, activation = 1 }
+  local outLeg = assert(
+    BattleEffectTasks.create(
+      "pokemon-picture-position-offset-transition",
+      moveBattlerByArgs(14, -8),
+      occurrenceContext(),
+      services
+    )
+  )
+  outLeg:stepSourceTick({ tick = 1 })
+  local mid = assert(scene:pictureState(activation), "the lunge owns its patch while running")
+  Assert.equal(mid.pictureXOffset, 7, "the out-leg interpolates from base on its first tick")
+  outLeg:stepSourceTick({ tick = 1 })
+  Assert.equal(outLeg:status(), "complete", "the out-leg completes on its compiled duration")
+  local held =
+    assert(scene:pictureState(activation), "the out-leg endpoint persists past completion for the impact wait")
+  Assert.equal(held.pictureXOffset, 14, "the persisted endpoint keeps the full lunge distance")
+  Assert.equal(held.pictureYOffset, -8, "the persisted endpoint keeps the full lunge rise")
+  outLeg:dispose()
+  local backLeg = assert(
+    BattleEffectTasks.create(
+      "pokemon-picture-position-offset-transition",
+      moveBattlerByArgs(-14, 8),
+      occurrenceContext(),
+      services
+    )
+  )
+  backLeg:stepSourceTick({ tick = 1 })
+  local chained = assert(scene:pictureState(activation), "the return leg owns its patch while running")
+  Assert.equal(chained.pictureXOffset, 7, "the return leg chains from the displaced position")
+  Assert.equal(chained.pictureYOffset, -4, "the return leg chains both axes from the displaced position")
+  backLeg:stepSourceTick({ tick = 1 })
+  Assert.equal(backLeg:status(), "complete", "the return leg completes on its compiled duration")
+  local home = assert(scene:pictureState(activation), "the return endpoint persists like the out-leg")
+  Assert.equal(home.pictureXOffset, 0, "the chained return lands back on base")
+  Assert.equal(home.pictureYOffset, 0, "the chained return lands back on base on both axes")
+  backLeg:dispose()
+  local cancelled = assert(
+    BattleEffectTasks.create(
+      "pokemon-picture-position-offset-transition",
+      moveBattlerByArgs(14, -8),
+      occurrenceContext(),
+      services
+    )
+  )
+  cancelled:stepSourceTick({ tick = 1 })
+  cancelled:cancel("superseded")
+  Assert.isNil(scene:pictureState(activation), "cancelling a lunge still drops its owned patch")
+  cancelled:dispose()
+  local foeScene = sceneWithPair()
+  local foeServices, _ = journalServices(foeScene)
+  local foeActivation = { combatant = 1, activation = 1 }
+  local foeLunge = assert(
+    BattleEffectTasks.create(
+      "pokemon-picture-position-offset-transition",
+      moveBattlerByArgs(14, -8),
+      enemyAttackerContext(),
+      foeServices
+    )
+  )
+  foeLunge:stepSourceTick({ tick = 1 })
+  foeLunge:stepSourceTick({ tick = 1 })
+  Assert.equal(foeLunge:status(), "complete", "the foe lunge completes on its compiled duration")
+  local mirrored = assert(foeScene:pictureState(foeActivation), "the foe lunge persists its endpoint")
+  Assert.equal(mirrored.pictureXOffset, -14, "the foe lunge mirrors X away from the player")
+  Assert.equal(mirrored.pictureYOffset, 8, "the foe lunge mirrors Y away from the player")
+  foeLunge:dispose()
+end
+
+local ZIGZAG_SLASH_KIND = "pokemon-picture-zigzag-slash"
+
+local function zigzagBank()
+  return {
+    ["zigzag/character"] = { key = "zigzag/character", kind = "texture", width = 128 },
+    ["zigzag/palette"] = { key = "zigzag/palette", kind = "palette", data = { colors = { 0, 1, 2 } } },
+    ["zigzag/cell"] = {
+      key = "zigzag/cell",
+      kind = "cells",
+      data = {
+        cells = {
+          {
+            objs = {
+              { x = -16, y = -16, tile = 0, width = 32, height = 32, priority = 1 },
+            },
+          },
+        },
+      },
+    },
+    ["zigzag/animation"] = {
+      key = "zigzag/animation",
+      kind = "animation",
+      data = { anims = { { frames = { { cell = 0, duration = 4 } } } } },
+    },
+  }
+end
+
+local function zigzagServices()
+  local scene = sceneWithPair()
+  local journal = { acquired = {}, released = {} }
+  local leases = zigzagBank()
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return assert(leases[key], "staged bank carries " .. tostring(key))
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  return { scene = scene, audio = {}, resources = resources }, journal
+end
+
+local function zigzagArgs()
+  return {
+    taskContext = "pokemon-picture",
+    parameters = {},
+    resourceKeys = {
+      character = "zigzag/character",
+      palette = "zigzag/palette",
+      cell = "zigzag/cell",
+      animation = "zigzag/animation",
+    },
+  }
+end
+
+local function zigzagCenter(services)
+  local views = services.scene:effectViews()
+  Assert.isTrue(#views >= 1, "the zigzag sprite stays published while it runs")
+  local first = assert(views[1].picture, "the zigzag sprite publishes staged picture state")
+  return first.centerX, first.centerY, first.alpha
+end
+
+function T.zigzag_slash_drives_the_native_six_leg_assault()
+  -- Foresight's magnifier is opcode-78 selector 8, the native
+  -- BattleAnimSpriteFunc_ZigzagSlash: six zigzag legs from the defender
+  -- anchor (battle_anim_effects.c), a 16-tick sprite fade, and a defender
+  -- white flash. The generic static cell walk retires after the 4-tick
+  -- authored frame with no motion; the dedicated body walks the pinned
+  -- leg table over its ~111-tick native lifetime instead.
+  Assert.isTrue(BattleEffectTasks.supportsKind(ZIGZAG_SLASH_KIND), "the zigzag assault is an admitted task kind")
+  local services, journal = zigzagServices()
+  local defender = { combatant = 3, activation = 3 }
+  local task = assert(BattleEffectTasks.create(ZIGZAG_SLASH_KIND, zigzagArgs(), occurrenceContext(), services))
+  Assert.equal(task:status(), "pending", "zigzag assaults open pending")
+  local waypoints = {
+    [4] = { 176, 64 },
+    [5] = { 176, 64 },
+    [13] = { 216, 104 },
+    [27] = { 216, 24 },
+    [41] = { 136, 104 },
+    [55] = { 136, 24 },
+    [69] = { 216, 104 },
+    [83] = { 176, 64 },
+    [84] = { 176, 64 },
+  }
+  for tick = 1, 84 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.isTrue(task:status() ~= "complete", "the assault outlives tick " .. tick)
+    if waypoints[tick] ~= nil then
+      local x, y = zigzagCenter(services)
+      Assert.equal(x, waypoints[tick][1], "leg waypoint X at tick " .. tick)
+      Assert.equal(y, waypoints[tick][2], "leg waypoint Y at tick " .. tick)
+    end
+  end
+  local flash = services.scene:pictureState(defender)
+  Assert.isTrue(flash ~= nil, "the fade stages a defender flash patch")
+  Assert.equal(flash.paletteFade.finish, 10, "the defender flashes toward full white")
+  Assert.equal(flash.paletteFade.targetColor, 32767, "the defender flash targets native white")
+  local _, _, openAlpha = zigzagCenter(services)
+  Assert.equal(openAlpha, 1, "the sprite stays opaque through the legs")
+  task:stepSourceTick({ tick = 1 })
+  local _, _, fadeAlpha = zigzagCenter(services)
+  Assert.equal(fadeAlpha, 15 / 16, "the sprite fades over the native 16 ticks")
+  for _ = 1, 15 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(#services.scene:effectViews(), 0, "the sprite hides once its fade completes")
+  for _ = 1, 10 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.isTrue(task:status() ~= "complete", "the restore flash holds completion")
+  end
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the assault completes after the restore flash")
+  Assert.equal(#services.scene:effectViews(), 0, "completion releases every transient record")
+  Assert.isNil(services.scene:pictureState(defender), "completion restores the defender picture")
+  Assert.equal(#journal.released, #journal.acquired, "completion releases every staged lease once")
+  task:dispose()
+end
+
+function T.zigzag_slash_cancels_without_stranding_state()
+  local services, journal = zigzagServices()
+  local defender = { combatant = 3, activation = 3 }
+  local task = assert(BattleEffectTasks.create(ZIGZAG_SLASH_KIND, zigzagArgs(), occurrenceContext(), services))
+  for _ = 1, 10 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  task:cancel("superseded")
+  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "cancelled", "cancelled assaults never resume")
+  Assert.equal(#services.scene:effectViews(), 0, "cancellation releases every transient record")
+  Assert.isNil(services.scene:pictureState(defender), "cancellation restores the defender picture")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "cancellation releases every holding once")
+end
+
+function T.zigzag_slash_without_sprite_roles_fails_closed()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local ok, failure = pcall(
+    BattleEffectTasks.create,
+    ZIGZAG_SLASH_KIND,
+    { taskContext = "pokemon-picture", parameters = {} },
+    occurrenceContext(),
+    services
+  )
+  Assert.isTrue(not ok, "a role-less zigzag spawn never constructs")
+  Assert.isTrue(string.find(tostring(failure), ZIGZAG_SLASH_KIND, 1, true) ~= nil, "the refusal names its kind")
+  Assert.equal(#scene:effectViews(), 0, "the refused construction publishes nothing")
+  Assert.equal(#journal.released, #journal.acquired, "the refused construction leaks no lease")
+end
+
+local SHAKE_TARGETS_KIND = BattleEffectTasks.BLEND_TRANSITION_KIND
+
+local function shakeTargetsArgs()
+  return {
+    callback = "battle-background-position-transition",
+    taskContext = "battle-display",
+    parameters = {
+      offsetX = 1,
+      offsetY = 0,
+      ticksPerStep = 1,
+      steps = 2,
+      pictureSets = { "opposing-battler" },
+      pictureAttributeOffset = true,
+      managedSpriteOffset = false,
+      backgroundPositionEnabled = false,
+    },
+  }
+end
+
+function T.shake_targets_shakes_the_named_pictures_around_their_base()
+  -- Selector 36 (ShakeTargets, the Growl/Tackle impact shake) oscillates
+  -- the named battler pictures ±amp around their construction-time
+  -- offset with the native interval/count phase machine
+  -- (battle_anim_funcs.c), restoring the base at completion instead of
+  -- stranding the endpoint.
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local defender = { combatant = 3, activation = 3 }
+  local task = assert(BattleEffectTasks.create(SHAKE_TARGETS_KIND, shakeTargetsArgs(), occurrenceContext(), services))
+  Assert.equal(task:status(), "pending", "shake targets open pending")
+  local expectedX = { 1, 0, -1, 0, 1, 0, -1 }
+  for tick = 1, 7 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.isTrue(task:status() ~= "complete", "the shake outlives tick " .. tick)
+    local shown = assert(scene:pictureState(defender), "the shake owns its patch on tick " .. tick)
+    Assert.equal(shown.pictureXOffset, expectedX[tick], "shake X alternates ±amp on tick " .. tick)
+    Assert.equal(shown.pictureYOffset, 0, "shake Y holds its zero amp on tick " .. tick)
+  end
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the shake completes after its count cycles")
+  Assert.isNil(scene:pictureState(defender), "completion restores the undisplaced base")
+  Assert.equal(#journal.released, #journal.acquired, "completion stages no leases")
+  task:dispose()
+end
+
+function T.shake_targets_cancel_restores_the_owned_base()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local defender = { combatant = 3, activation = 3 }
+  local task = assert(BattleEffectTasks.create(SHAKE_TARGETS_KIND, shakeTargetsArgs(), occurrenceContext(), services))
+  task:stepSourceTick({ tick = 1 })
+  task:stepSourceTick({ tick = 1 })
+  Assert.isTrue(scene:pictureState(defender) ~= nil, "the shake owns its patch while running")
+  task:cancel("superseded")
+  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
+  Assert.isNil(scene:pictureState(defender), "cancellation restores the undisplaced base")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "cancellation stages no leases")
+end
+
+function T.shake_targets_without_named_pictures_degrades_to_its_timing()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local defender = { combatant = 3, activation = 3 }
+  local args = shakeTargetsArgs()
+  args.parameters.pictureSets = {}
+  local task = assert(BattleEffectTasks.create(SHAKE_TARGETS_KIND, args, occurrenceContext(), services))
+  for _ = 1, 30 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.isNil(scene:pictureState(defender), "no named picture means no shake patch")
+    if task:status() == "complete" then
+      break
+    end
+  end
+  Assert.equal(task:status(), "complete", "the set-less shake still retires on its timing")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the degraded shake stages no leases")
+end
+
 return { tests = T }

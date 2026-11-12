@@ -1263,4 +1263,86 @@ function M.advance(sim, group)
   sim._calcCycle = 1 - sim._calcCycle
 end
 
+-- One detached pre-advance particle of a draw copy: every scalar the
+-- primitive producer reads, with the color triple detached so later
+-- simulation writes never alias the published frame.
+---@param particle table<string, unknown> live particle under capture
+---@return table<string, unknown> detached particle copy for drawing only
+local function copyDrawParticle(particle)
+  local color = particle.colorRgb --[[@as table<string, integer>?]]
+  return {
+    x = particle.x,
+    y = particle.y,
+    z = particle.z,
+    vx = particle.vx,
+    vy = particle.vy,
+    vz = particle.vz,
+    rtt = particle.rtt,
+    rttVel = particle.rttVel,
+    life = particle.life,
+    age = particle.age,
+    diffLoop = particle.diffLoop,
+    diffNoloop = particle.diffNoloop,
+    phase = particle.phase,
+    baseScale = particle.baseScale,
+    animScale = particle.animScale,
+    colorRgb = color ~= nil and { r = color.r, g = color.g, b = color.b } or { r = 31, g = 31, b = 31 },
+    baseAlpha = particle.baseAlpha,
+    animAlpha = particle.animAlpha,
+    texNo = particle.texNo,
+    pid = particle.pid,
+    ex = particle.ex,
+    ey = particle.ey,
+    ez = particle.ez,
+  }
+end
+
+-- Detached pre-advance draw copy of one manager: the emitter runtimes
+-- with copied particle lists and a copied camera, sharing only the
+-- immutable compiled records, resources, frames, and texture handles.
+-- The primitive producer reads exactly this shape, so the compositor can
+-- paint the published copy while the live simulation advances underneath.
+---@param sim SplParticleSimulation live simulation under capture
+---@return { emitters: table<string, unknown>[], camera: table<string, unknown> } detached draw copy
+function M.copyForDraw(sim)
+  assert(type(sim) == "table" and type(sim.emitters) == "table", "draw copies capture a live simulation")
+  local cameraCopy = {}
+  local camera = sim.camera
+  if type(camera) == "table" then
+    for key, value in pairs(camera) do
+      cameraCopy[key] = value
+    end
+  end
+  local emitters = {}
+  for _, runtime in ipairs(sim.emitters) do
+    local particles = {}
+    for _, particle in ipairs(runtime.particles) do
+      particles[#particles + 1] = copyDrawParticle(particle)
+    end
+    local children = {}
+    for _, child in ipairs(runtime.children) do
+      children[#children + 1] = copyDrawParticle(child)
+    end
+    emitters[#emitters + 1] = {
+      id = runtime.id,
+      ordinal = runtime.ordinal,
+      group = runtime.group,
+      record = runtime.record,
+      resource = runtime.resource,
+      axis = runtime.axis,
+      age = runtime.age,
+      started = runtime.started,
+      carry = runtime.carry,
+      x = runtime.x,
+      y = runtime.y,
+      z = runtime.z,
+      frame = runtime.frame,
+      particles = particles,
+      children = children,
+      quad = runtime.quad,
+    }
+  end
+  return { emitters = emitters, camera = cameraCopy }
+end
+
 return M

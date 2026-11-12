@@ -824,6 +824,28 @@ function BattleAnimationPlayer:_exec(occurrence)
   function exec.particles()
     return occurrence.particles
   end
+  -- Counts the live SPL emitters across the occurrence's particle
+  -- systems: the native WaitForParticles polls
+  -- ParticleSystem_GetActiveEmitterCount, which reports the active-list
+  -- length, including newborn emitters whose first particles have not
+  -- spawned yet. Task records never join this condition: a retired
+  -- bookkeeping task with a live emitter, or a lingering non-emitter
+  -- particle task past emitter drain, follows the emitter count, not
+  -- the task count.
+  function exec.activeParticleEmitters()
+    local registry = occurrence.particles
+    if type(registry) ~= "table" or type(registry.systems) ~= "table" then
+      return 0
+    end
+    local total = 0
+    for _, system in pairs(registry.systems) do
+      local simulation = type(system) == "table" and system.simulation or nil
+      if type(simulation) == "table" and type(simulation.emitters) == "table" then
+        total = total + #simulation.emitters
+      end
+    end
+    return total
+  end
   function exec.eventIdentity()
     local packet = occurrence.packet
     if type(packet) == "table" and type(packet.event) == "table" then

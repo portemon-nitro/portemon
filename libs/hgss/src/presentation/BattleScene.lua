@@ -104,6 +104,7 @@ function BattleScene.new()
     _animationSpriteManagers = {},
     _nextEffect = 1,
     _particleSystems = {},
+    _drawParticleSystems = nil,
     _nextParticleSystem = 1,
     _released = false,
   }, BattleScene)
@@ -2547,6 +2548,15 @@ function BattleScene:setBattlerSpriteSlot(ownerKey, spriteSlot, battlerActivatio
     record.picture.sourceChar = snapshot.charBuffer
     record.picture.sourcePalette = snapshot.basePaletteRgb555
   end
+  -- The frozen portrait selector behind the immutable copy: the renderer
+  -- resolves the creation-time selector's first frame instead of the
+  -- live battler texture, so later frame, palette, form, or visibility
+  -- mutations move only the source-defined follow transform, never the
+  -- copy's pixels. Absent while the activation carries no appearance.
+  local appearance = self:pictureState(battlerActivation)
+  if type(appearance) == "table" and type(appearance.portraitSelector) == "string" then
+    record.picture.frozenSelector = appearance.portraitSelector
+  end
   slots[spriteSlot] = record.id
 end
 
@@ -2705,6 +2715,29 @@ function BattleScene:allocParticleSystem(system)
   return id
 end
 
+-- Publishes one native draw-phase particle frame: the pre-advance draw
+-- copies the draw phase captured, in ascending physical slot order with
+-- their texture handles and alpha classifications. The next capture
+-- replaces the frame; drawing never advances simulation or RNG.
+---@param frame { simulation: table<string, unknown>, textures: table<integer, unknown>?, textureAlphaUsage: table<integer, table<string, unknown>>? }[] published pre-advance systems
+function BattleScene:publishParticleDrawFrame(frame)
+  assert(not self._released, "released scenes publish no particle frames")
+  assert(type(frame) == "table", "particle draw phases publish their captured frame")
+  self._drawParticleSystems = frame
+end
+
+-- The published pre-advance move particle systems for drawing: the exact
+-- geometry the native draw phase submitted, stable across repeated draws
+-- until the next capture. Absent before the first draw phase, when
+-- drawing falls back to the live systems.
+---@return table<integer, table<string, unknown>> published or live systems in ascending physical slot order
+function BattleScene:drawParticleSystems()
+  if self._drawParticleSystems ~= nil then
+    return self._drawParticleSystems
+  end
+  return self:particleSystems()
+end
+
 -- Drops one registered particle system; unknown or repeated identities stay silent.
 ---@param id integer registration identity under release
 function BattleScene:releaseParticleSystem(id)
@@ -2752,6 +2785,7 @@ function BattleScene:release()
   self._entries = {}
   self._effects = {}
   self._particleSystems = {}
+  self._drawParticleSystems = nil
   self._battlerSpriteSlots = {}
   self._background = nil
   self._backgroundRasterizer = nil

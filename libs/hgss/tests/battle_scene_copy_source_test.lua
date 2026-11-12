@@ -68,6 +68,45 @@ function T.bound_sources_snapshot_the_static_first_frame()
   Assert.equal(#snapshot.basePaletteRgb555, 16, "the snapshot carries a fresh base palette")
 end
 
+function T.copy_slots_snapshot_the_creation_time_portrait_selector()
+  -- The managed copy freezes the creation-time portrait selector for
+  -- the renderer: later live frame, palette, form, or visibility
+  -- mutations move only the source-defined follow transform, never the
+  -- copy's pixels.
+  local scene = sceneWithPair()
+  local activation = { combatant = 1, activation = 1 }
+  scene:setPictureSource(activation, sourceWith(flatPlane(2), flatPlane(0)))
+  scene:applyPictureState(activation, { portraitSelector = "LEAD/0/male/plain/back" })
+  scene:setBattlerSpriteSlot("probe:1", 0, activation, true)
+  local frozen = nil
+  for _, view in ipairs(scene:effectViews()) do
+    if type(view.picture) == "table" and view.picture.frozenSelector ~= nil then
+      frozen = view.picture
+    end
+  end
+  Assert.notNil(frozen, "the bound copy carries its frozen selector")
+  Assert.equal(
+    frozen.frozenSelector,
+    "LEAD/0/male/plain/back",
+    "the frozen selector is the creation-time portrait"
+  )
+  Assert.equal(frozen.follow, true, "the slot retains the source follow flag")
+  -- A later live mutation of the same activation never rewrites the
+  -- frozen copy.
+  scene:applyPictureState(activation, { portraitSelector = "LEAD/1/male/plain/back" })
+  local refrozen = nil
+  for _, view in ipairs(scene:effectViews()) do
+    if type(view.picture) == "table" and view.picture.frozenSelector ~= nil then
+      refrozen = view.picture
+    end
+  end
+  Assert.equal(
+    refrozen.frozenSelector,
+    "LEAD/0/male/plain/back",
+    "the frozen copy ignores later live portrait changes"
+  )
+end
+
 function T.copy_slots_snapshot_bound_sources_and_ignore_unbound_ones()
   local scene = sceneWithPair()
   local boundActivation = { combatant = 1, activation = 1 }

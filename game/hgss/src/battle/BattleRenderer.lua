@@ -828,6 +828,15 @@ local function battlerPicture(assets, battler, row)
   end
   local pictureVisible = battler.pictureVisible == true
   local tintR, tintG, tintB, tintA = tintOf(battler.pictureTint --[[@as table<string, number>?]])
+  -- Native ChangeBattlerPic selects the attacker picture variant:
+  -- mode 2 loads the substitute doll (owned by the substitute flag and
+  -- its doll effect), mode 3 loads the opposite-facing mon as a
+  -- horizontal mirror, and any other mode reloads the same-facing mon.
+  -- The restore opcode drops the selector back to the base picture.
+  local flipH = battler.flipH == true
+  if battler.layoutMode == 3 then
+    flipH = not flipH
+  end
   local settledX, settledY = settledPictureCenter(battler, row)
   local picture = {
     image = image.image,
@@ -852,6 +861,7 @@ local function battlerPicture(assets, battler, row)
     tintB = tintB,
     alpha = numberOr(battler.polygonAlpha, 31) / 31 * tintA,
     paletteFade = battler.motionBlend or battler.paletteFade,
+    flipH = flipH or nil,
   }
   for field, fact in pairs(PICTURE_OFFSETS) do
     picture[field] = numberOr(battler[fact], 0)
@@ -895,6 +905,55 @@ local function effectPicture(assets, picture)
   }
 end
 
+-- One managed battler-sprite copy: the scene-owned immutable snapshot
+-- when the slot carries one, the legacy live clone otherwise. A bound
+-- copy resolves the creation-time portrait selector's first frame with
+-- its base palette instead of the live battler texture, so later frame,
+-- palette, form, or visibility mutations move only the source-defined
+-- follow transform, never the copy's pixels. Only that transform stays
+-- live; size, orientation, tint, fade, and visibility freeze at creation.
+-- An unresolvable frozen portrait draws nothing, never a substitute.
+---@param assets table<string, unknown> injected asset holder
+---@param picture table<string, unknown> slot picture with its follow flag and frozen source
+---@param source { battler: table<string, unknown>, row: table<string, unknown>, picture: table<string, unknown> } live source picture behind the slot
+---@return table<string, unknown>? copy picture for the picture pass
+local function battlerCopyPicture(assets, picture, source)
+  local frozenSelector = picture.frozenSelector
+  if type(frozenSelector) ~= "string" or frozenSelector == "" then
+    local copy = {}
+    for field, value in pairs(source.picture) do
+      copy[field] = value
+    end
+    copy.centerY = copy.centerY - numberOr(source.battler.shadowHeight, 0)
+    if picture.follow ~= true then
+      local _, followSettledY = settledPictureCenter(source.battler, source.row)
+      copy.centerX = source.row.settledX
+      copy.centerY = followSettledY - numberOr(source.battler.shadowHeight, 0)
+    end
+    return copy
+  end
+  local frozen = battlerPicture(assets, {
+    portraitSelector = frozenSelector,
+    pictureFrame = 0,
+    position = source.battler.position,
+    side = source.battler.side,
+    sourceHeight = source.battler.sourceHeight,
+  }, source.row)
+  if frozen == nil then
+    return nil
+  end
+  frozen.centerY = frozen.centerY - numberOr(source.battler.shadowHeight, 0)
+  if picture.follow ~= true then
+    local _, followSettledY = settledPictureCenter(source.battler, source.row)
+    frozen.centerX = source.row.settledX
+    frozen.centerY = followSettledY - numberOr(source.battler.shadowHeight, 0)
+  else
+    frozen.centerX = source.picture.centerX
+    frozen.centerY = source.picture.centerY - numberOr(source.battler.shadowHeight, 0)
+  end
+  return frozen
+end
+
 -- Collects every depth-ordered battler shadow, picture and transient
 -- effect picture as native submissions for the shared 3D target.
 -- Vanished and undrawn battlers submit nothing.
@@ -915,7 +974,59 @@ local function collectPictureSubmissions(assets, view, players, enemies, singles
       pictures[#pictures + 1] = picture
     end
   end
-  for _, record in ipairs(pictureRecords(view, players, enemies, singles)) do
+  -- Managed copies outlive their source's live visibility: a withdrawn
+  -- or hidden battler still owns its slot row for copy resolution, so
+  -- hidden slot occupants referenced by copy slots join the source map.
+  -- Their own pictures stay suppressed by the visibility guard below;
+  -- only their copies submit. The layout decision already reached this
+  -- boundary on the live sides, so extending the lists changes no row.
+  local wanted = {}
+  for _, effect in ipairs(assert(view.effectInstances, "battle snapshots carry transient effect instances")) do
+    local slotPicture = type(effect.picture) == "table" and effect.picture or nil
+    local sourceActivation = type(slotPicture) == "table" and slotPicture.battlerActivation or nil
+    if type(sourceActivation) == "table" then
+      wanted[activationKey(sourceActivation)] = true
+    end
+  end
+  local liveKeys = {}
+  for _, battler in ipairs(players) do
+    liveKeys[activationKey(battler)] = true
+  end
+  for _, battler in ipairs(enemies) do
+    liveKeys[activationKey(battler)] = true
+  end
+  local hiddenPlayers, hiddenEnemies = {}, {}
+  if type(view.battlers) == "table" then
+    for _, battler in ipairs(view.battlers) do
+      if
+        type(battler) == "table"
+        and type(battler.combatant) == "number"
+        and type(battler.activation) == "number"
+        and wanted[activationKey(battler)] == true
+        and liveKeys[activationKey(battler)] ~= true
+      then
+        if battler.side == 1 then
+          hiddenPlayers[#hiddenPlayers + 1] = battler
+        else
+          hiddenEnemies[#hiddenEnemies + 1] = battler
+        end
+      end
+    end
+  end
+  local sourcePlayers, sourceEnemies = {}, {}
+  for _, battler in ipairs(players) do
+    sourcePlayers[#sourcePlayers + 1] = battler
+  end
+  for _, battler in ipairs(hiddenPlayers) do
+    sourcePlayers[#sourcePlayers + 1] = battler
+  end
+  for _, battler in ipairs(enemies) do
+    sourceEnemies[#sourceEnemies + 1] = battler
+  end
+  for _, battler in ipairs(hiddenEnemies) do
+    sourceEnemies[#sourceEnemies + 1] = battler
+  end
+  for _, record in ipairs(pictureRecords(view, sourcePlayers, sourceEnemies, singles)) do
     local battler = record.battler
     local picture = battlerPicture(assets, battler, record.row)
     if type(battler.combatant) == "number" and type(battler.activation) == "number" and picture ~= nil then
@@ -933,17 +1044,7 @@ local function collectPictureSubmissions(assets, view, players, enemies, singles
       if type(sourceActivation) == "table" then
         local source = battlerPictures[activationKey(sourceActivation)]
         if source ~= nil then
-          local copy = {}
-          for field, value in pairs(source.picture) do
-            copy[field] = value
-          end
-          copy.centerY = copy.centerY - numberOr(source.battler.shadowHeight, 0)
-          if picture.follow ~= true then
-            local _, followSettledY = settledPictureCenter(source.battler, source.row)
-            copy.centerX = source.row.settledX
-            copy.centerY = followSettledY - numberOr(source.battler.shadowHeight, 0)
-          end
-          submit(copy)
+          submit(battlerCopyPicture(assets, picture, source))
         end
       else
         submit(effectPicture(assets, picture))
@@ -1046,8 +1147,9 @@ local function collectParticlePrimitives(view, out)
         local textures = system.textures --[[@as table<integer, table<string, unknown>>?]]
         if simulation ~= nil and textures ~= nil then
           local usageByTexture = system.textureAlphaUsage --[[@as table<integer, table<string, unknown>>?]]
-          local usageByMaterial = {}
+          local usageByMaterial = nil
           if type(usageByTexture) == "table" then
+            usageByMaterial = {}
             for texNo, usage in pairs(usageByTexture) do
               local handle = textures[texNo]
               if handle ~= nil then
@@ -1068,11 +1170,18 @@ local function collectParticlePrimitives(view, out)
           SplParticleDraw.appendPrimitives(simulation, nil, resolveTexture, out)
           for index = first, #out do
             local primitive = out[index]
-            local usage = usageByMaterial[primitive.material]
-            if type(usage) == "table" then
-              primitive.alphaUsage = usage
-            else
+            if usageByMaterial == nil then
+              -- Systems without a compiled usage table (legacy synthetic
+              -- rigs) keep the picture blanket, which already discards
+              -- alpha-zero corners instead of writing depth on the
+              -- opaque path.
               primitive.alphaUsage = { hasZero = true, hasOpaque = true }
+            else
+              -- Staged textures carry their exact decoder coverage flags:
+              -- a missing entry fails loudly instead of hardening
+              -- translucent texels into the cutout/opaque classification.
+              primitive.alphaUsage =
+                assert(usageByMaterial[primitive.material], "particle texture is staged with its alpha usage")
             end
           end
         end

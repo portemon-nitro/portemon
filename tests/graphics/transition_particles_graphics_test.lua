@@ -12,8 +12,8 @@ local TransitionParticlesFixture = require("tests.support.TransitionParticlesFix
 local T = {}
 
 -- One white one-unit particle at the world origin, which the shared
--- producer maps to a ~111.6 pixel square at the screen center under the
--- battle camera (native x 72.2..183.8, y 40.2..151.8).
+-- producer maps to a ~48 pixel square at the screen center under the
+-- battle camera (native x 104..152, y 72..120).
 ---@return SplParticleSimulation
 local function originParticle()
   local record = TransitionParticlesFixture.set(1).emitters[1]
@@ -77,11 +77,11 @@ end
 
 function T.particle_layer_scales_with_the_viewport_and_priority_decides_sprite_cover(scope)
   local above = drawLayer(scope, true, { x = 0, y = 0, width = 512, height = 384 })
-  -- At double scale the ~111.6 pixel particle spans ~223 pixels around (256, 192).
-  local red, green = above:getPixel(256 + 100, 192)
+  -- At double scale the ~48 pixel particle spans ~96 pixels around (256, 192).
+  local red, green = above:getPixel(256 + 40, 192)
   Assert.near(red, 1, 0.02, "the layer covers pixels inside the scaled particle")
   Assert.near(green, 1, 0.02, "the particle keeps its white texture")
-  red, green = above:getPixel(256 + 120, 192)
+  red, green = above:getPixel(256 + 60, 192)
   Assert.near(red, 1, 0.02, "the field stays visible outside the particle")
   Assert.near(green, 0, 0.02, "the particle does not extend past its scaled extent")
   local _, coveredGreen = above:getPixel(256, 192)

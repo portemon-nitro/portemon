@@ -149,10 +149,10 @@ function T.billboard_projects_producer_clip_into_pane_pixels_with_color_and_alph
   SplParticleDraw.draw(graphics, sim, options(images))
   Assert.equal(#graphics.calls, 1, "one particle draws")
   local call = graphics.calls[1]
-  Assert.equal(call.x, 136, "the producer clip maps onto the pane")
-  Assert.equal(call.y, 80, "pane +y stays up through the host flip")
-  Assert.equal(call.sx, 14, "the recovered quad transform spans the projected corners")
-  Assert.equal(call.sy, 14, "the recovered quad transform spans the projected corners")
+  Assert.equal(call.x, 152, "the producer clip maps onto the pane")
+  Assert.equal(call.y, 48, "pane +y stays up through the host flip")
+  Assert.equal(call.sx, 6, "the recovered quad transform spans the projected corners")
+  Assert.equal(call.sy, 6, "the recovered quad transform spans the projected corners")
   Assert.deepEqual(call.color, { 1, 0, 15 / 31, 1 }, "color and alpha normalize from 5-bit channels")
   Assert.deepEqual(graphics.color, { 1, 1, 1, 1 }, "the draw color resets")
 end
@@ -193,8 +193,8 @@ function T.far_particles_draw_first_in_producer_depth_order()
   -- z=1 from far to near; the pane drains them in that order instead
   -- of re-sorting by world depth.
   Assert.deepEqual(names, { "d", "b", "a", "c" }, "the farthest primitive draws first")
-  Assert.near(graphics.calls[1].x, 155.4286, 1e-4, "the farthest primitive lands on its projected corner")
-  Assert.near(graphics.calls[4].x, 154.1818, 1e-4, "the nearest primitive lands on its projected corner")
+  Assert.near(graphics.calls[1].x, 192, 1e-4, "the farthest primitive lands on its projected corner")
+  Assert.near(graphics.calls[4].x, 224, 1e-4, "the nearest primitive lands on its projected corner")
 end
 
 function T.transparent_particles_draw_nothing()
@@ -222,8 +222,8 @@ function T.texture_offset_moves_the_quad_center_through_the_producer()
   SplParticleDraw.draw(graphics, sim, options({ [0] = image("a") }))
   -- The offset rides the producer's local corners, so the projected
   -- quad center shifts while the pivot stays the quad center.
-  Assert.equal(graphics.calls[1].x, 132, "a +x offset moves the quad center right")
-  Assert.equal(graphics.calls[1].y, 92, "a +y offset moves the quad center up")
+  Assert.equal(graphics.calls[1].x, 140, "a +x offset moves the quad center right")
+  Assert.equal(graphics.calls[1].y, 84, "a +y offset moves the quad center up")
   Assert.equal(graphics.calls[1].ox, 4, "the pivot stays the quad center")
   Assert.equal(graphics.calls[1].oy, 4, "the pivot stays the quad center")
 end
@@ -234,8 +234,8 @@ function T.directional_billboard_rotates_along_velocity()
     runtime(record({ drawType = 1, dbbScale = 4096 }), { particle({ vx = 0, vy = 1, vz = 0 }) }),
   })
   SplParticleDraw.draw(graphics, sim, options({ [0] = image("a") }))
-  Assert.near(graphics.calls[1].rotation, math.pi, 1e-6, "the recovered x-axis follows the projected quad")
-  Assert.equal(graphics.calls[1].sy, 28, "screen-parallel motion stretches the y extent through the producer")
+  Assert.near(graphics.calls[1].rotation, 0, 1e-6, "the recovered x-axis follows the projected quad")
+  Assert.equal(graphics.calls[1].sy, 12, "screen-parallel motion stretches the y extent through the producer")
 end
 
 function T.pooled_indexed_lease_draws_through_its_own_palette_sampler()
@@ -299,8 +299,8 @@ function T.raw_images_keep_directional_and_child_first_draws()
     "children draw before parents when the emitter asks for it"
   )
   for _, call in ipairs(graphics.calls) do
-    Assert.near(call.rotation, math.pi, 1e-6, "the recovered x-axis follows the projected quad")
-    Assert.equal(call.sy, 28, "screen-parallel motion stretches the y extent through the producer")
+    Assert.near(call.rotation, 0, 1e-6, "the recovered x-axis follows the projected quad")
+    Assert.equal(call.sy, 12, "screen-parallel motion stretches the y extent through the producer")
   end
 end
 
@@ -311,8 +311,8 @@ function T.directional_children_follow_their_velocity_with_the_emitter_stretch()
   local child = particle({ vx = 0, vy = 1, vz = 0, rtt = 16384 })
   local sim = simulate({ runtime(rec, {}, { child }) })
   SplParticleDraw.draw(graphics, sim, options({ child = image("c") }))
-  Assert.near(graphics.calls[1].rotation, math.pi, 1e-6, "a directional child follows velocity through the producer")
-  Assert.equal(graphics.calls[1].sy, 28, "screen-parallel motion stretches the child like its emitter")
+  Assert.near(graphics.calls[1].rotation, 0, 1e-6, "a directional child follows velocity through the producer")
+  Assert.equal(graphics.calls[1].sy, 12, "screen-parallel motion stretches the child like its emitter")
 end
 
 -- Battle composition consumes an ordered, pure homogeneous primitive array

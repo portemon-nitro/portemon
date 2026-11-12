@@ -1829,10 +1829,12 @@ function BattleParticleSystems.getEmitterHandle(owner, systemSlot, emitterSlot)
   return facade
 end
 
--- One source particle draw phase: capture every manager's geometry
--- first, then calculate all systems once in native physical slot
--- order. Later host rendering reuses that captured result; no
--- per-system task calculates twice.
+-- One source particle draw phase: capture every manager's renderable
+-- primitives first, publish the immutable frame, then calculate all
+-- systems once in native physical slot order. The battle compositor
+-- paints the published pre-advance frame, so the current tick shows its
+-- own geometry (including newborn and terminal polygons) instead of
+-- next-tick positions; no per-system task calculates twice.
 ---@param scene table<string, unknown> scene carrying the physical manager registry
 ---@param sourceTick table<string, unknown>? accepted source tick under advancement
 function BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
@@ -1845,27 +1847,24 @@ function BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
   if type(systems) ~= "table" then
     return
   end
-  local captured = {}
-  for slot, view in ipairs(systems) do
+  local frame = {}
+  for _, view in ipairs(systems) do
     local simulation = type(view) == "table" and view.simulation or nil
     if type(simulation) == "table" and type(simulation.emitters) == "table" then
-      local snapshot = {}
-      for _, runtime in ipairs(simulation.emitters) do
-        snapshot[#snapshot + 1] = {
-          runtime = runtime,
-          x = runtime.x,
-          y = runtime.y,
-          z = runtime.z,
-          particles = #runtime.particles,
-        }
-      end
-      captured[slot] = { simulation = simulation, snapshot = snapshot }
+      frame[#frame + 1] = {
+        simulation = SplParticleSimulation.copyForDraw(simulation),
+        textures = view.textures,
+        textureAlphaUsage = view.textureAlphaUsage,
+      }
     end
   end
-  for slot = 1, #systems do
-    local entry = captured[slot]
-    if entry ~= nil then
-      SplParticleSimulation.advance(entry.simulation)
+  if type(scene.publishParticleDrawFrame) == "function" then
+    scene:publishParticleDrawFrame(frame)
+  end
+  for _, view in ipairs(systems) do
+    local simulation = type(view) == "table" and view.simulation or nil
+    if type(simulation) == "table" and type(simulation.emitters) == "table" then
+      SplParticleSimulation.advance(simulation)
     end
   end
 end

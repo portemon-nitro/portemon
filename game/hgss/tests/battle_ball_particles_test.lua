@@ -99,6 +99,79 @@ function T.systems_retire_with_their_emitters_and_clear_drops_everything()
   Assert.isTrue(owner:isIdle(), "clearing drops live systems")
 end
 
+function T.started_systems_use_the_source_orthographic_camera()
+  -- The seal, burst, and click effects all select the orthographic
+  -- camera: particle size never depends on perspective depth on this
+  -- path.
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local res = resolver(stagedParticles(), { value = true })
+  owner:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, res)
+  Assert.equal(#owner:systems(), 1, "the seal system starts on its cue tick")
+  Assert.equal(
+    owner:systems()[1].simulation.camera.perspective,
+    1,
+    "the seal system selects the orthographic camera"
+  )
+end
+
+function T.started_systems_carry_the_compiled_alpha_usage()
+  -- The staged set's exact coverage flags ride the live system beside
+  -- the drawable handles for the shared depth/blend classification.
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local particles = stagedParticles()
+  local res = resolver(particles, { value = true })
+  owner:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, res)
+  local usage = owner:systems()[1].textureAlphaUsage
+  Assert.notNil(usage, "the started system carries the compiled usage table")
+  for _, texture in ipairs(particles.seal.textures) do
+    Assert.deepEqual(
+      usage[texture.id],
+      texture.alphaUsage,
+      "texture " .. tostring(texture.id) .. " keeps its exact coverage flags"
+    )
+  end
+end
+
+function T.sets_without_alpha_usage_fail_loudly()
+  -- A staged seal set without its texture coverage flags fails loudly
+  -- instead of hardening translucent texels into the cutout/opaque
+  -- classification.
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local particles = stagedParticles()
+  for _, texture in ipairs(particles.seal.textures) do
+    texture.alphaUsage = nil
+  end
+  local res = resolver(particles, { value = true })
+  local ok, err = pcall(function()
+    owner:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, res)
+  end)
+  Assert.isFalse(ok, "a seal without texture alpha usage never starts silently")
+  Assert.isTrue(type(err) == "string" and err ~= "", "the missing coverage flags name their contract")
+end
+
+function T.draw_systems_publish_the_pre_advance_frame()
+  -- The compositor paints the published pre-advance geometry while the
+  -- live systems advance underneath.
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local res = resolver(stagedParticles(), { value = true })
+  owner:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, res)
+  local live = owner:systems()[1].simulation
+  local published = owner:drawSystems()[1].simulation
+  Assert.equal(
+    #published.emitters,
+    #live.emitters,
+    "the first capture precedes the first simulation tick"
+  )
+  for index in ipairs(published.emitters) do
+    Assert.equal(
+      #published.emitters[index].particles,
+      0,
+      "newborn emitters carry no particles before their first tick"
+    )
+  end
+  Assert.isTrue(#live.emitters[1].particles > 0, "the live simulation advanced once underneath")
+end
+
 -- Every particle consumer borrows the one boot stream instead of reading a
 -- staged numeric seed: opening, encounter, ball, and move managers consume
 -- one continuous sequence until a new selected boot replaces the record.

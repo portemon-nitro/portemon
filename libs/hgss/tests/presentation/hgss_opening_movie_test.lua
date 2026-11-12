@@ -6080,23 +6080,22 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
   -- retired 24px/unit parallel mapping never ran here. Positions are
   -- exact and deterministic behind the fixed boot stream; the
   -- newest-first submission order draws the oldest child last every
-  -- frame, and the unity-scale frame quantizes to the neighboring
-  -- rounding variant.
+  -- frame, and the unity-scale frame lands exactly.
   local expectPositions = {
-    [0] = { x = 130.47196870925683, y = 99.148631029987 },
-    [1] = { x = 130.47327249022163, y = 99.148631029987 },
-    [2] = { x = 130.47327249022163, y = 99.148631029987 },
-    [3] = { x = 130.47327249022163, y = 99.148631029987 },
+    [0] = { x = 135.43529411764706, y = 105.47058823529412 },
+    [1] = { x = 135.43921568627451, y = 105.47058823529412 },
+    [2] = { x = 135.43921568627451, y = 105.47058823529412 },
+    [3] = { x = 135.43921568627451, y = 105.47058823529412 },
   }
   -- Painted widths behind the same projection: the raw scale rides
   -- the quantized corners, so widths pin exactly instead of holding
-  -- the retired exact float ratio (quantization moves it ~1.6e-5).
+  -- the retired exact float ratio (quantization moves it ~1.1e-4).
   -- sx[age] / sx[0] tracks scaleOracle(age) / 4096 to that bound.
   local expectWidths = {
-    [0] = 6.9817470664928276,
-    [1] = 7.2863428943937425,
-    [2] = 7.5995762711864412,
-    [3] = 7.9040091264667529,
+    [0] = 3,
+    [1] = 3.1308823529411773,
+    [2] = 3.2651960784313729,
+    [3] = 3.3965686274509812,
   }
   local drawnSx = {}
   for age = 0, 3 do
@@ -6203,7 +6202,7 @@ function T.starter_third_axis_survives_to_projection()
   -- Painted center behind the shared fixed-point producer: the
   -- retired 24px/unit parallel mapping never ran here. Exact and
   -- deterministic behind the fixed boot stream.
-  local px, py = 132.26738508166, 95.666610540495
+  local px, py = 141.75149213239283, 94.925664677156817
   local drawn = nil
   for _, entry in ipairs(graphics.draws) do
     if
@@ -6240,12 +6239,13 @@ function T.starter_directional_billboards_orient_along_velocity()
   local runtime = grassRuntime(movie)
   local placed = assert(runtime.particles[1], "the emitter spawns its particle")
   -- The recovered x-axis follows the projected quad corners through
-  -- the shared producer (a +y velocity recovers near pi under the
-  -- host flip), and the painted center is the quantized projection,
+  -- the shared producer (a +y velocity recovers near zero: the
+  -- mirror-corrected sampling turns the unmirrored near-pi angle by
+  -- half a turn), and the painted center is the quantized projection,
   -- not the retired 24px/unit parallel mapping. Exact and
   -- deterministic behind the fixed boot stream.
-  local expected = 3.0910711259341
-  local px, py = 126.98984618478, 76.057504775309
+  local expected = -0.050521527655658885
+  local px, py = 125.75997622055436, 51.777364940179837
   local drawn = nil
   for _, entry in ipairs(graphics.draws) do
     if
