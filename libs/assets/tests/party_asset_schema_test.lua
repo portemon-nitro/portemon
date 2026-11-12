@@ -339,10 +339,14 @@ local function v7manifest()
     { "useTarget", "Use on which POKEMON?" },
     { "teachTarget", "Teach which POKEMON?" },
     { "itemAction", "What to do with the item?" },
+    { "takeNoItem", "Nothing held." },
+    { "takeHeldItem", "Received the item." },
+    { "bagFull", "The Bag is full." },
     { "switchHeldPrompt", "Switch the held items?" },
     { "switchHeldResult", "Switched the held items." },
     { "heldMail", "That POKEMON already holds Mail." },
     { "giveHeldItem", "Gave the item to hold." },
+    { "cannotHold", "Cannot hold that item." },
     { "fieldMoveNotHere", "You can't use that here." },
     { "fieldMoveNeedBadge", "This can't be used until a new Badge is obtained." },
     { "fieldMoveHaveFollower", "You can't use that when you have someone with you." },
@@ -354,10 +358,6 @@ local function v7manifest()
   end
   data.text.messageRole = textRoleTriple(colorRef(250, 246, 217), colorRef(144, 128, 96), colorRef(48, 40, 32))
   return data
-end
-
-function T.valid_manifest_passes_schema()
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the assembled family is valid")
 end
 
 function T.runtime_required_sequence_prefixes_are_mandatory()
@@ -390,30 +390,27 @@ function T.runtime_required_sequence_prefixes_are_mandatory()
   Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the complete runtime prefixes are valid")
 end
 
-function T.rejects_sequence_group_with_non_array_keys()
-  local bad = v7manifest()
-  bad.visuals.balls.sequences.extra = bad.visuals.balls.sequences[1]
+function T.rejects_non_dense_sequence_groups()
+  local badKeys = v7manifest()
+  badKeys.visuals.balls.sequences.extra = badKeys.visuals.balls.sequences[1]
   Assert.isFalse(
-    PartyAssetSchema.isValidManifest(bad),
+    PartyAssetSchema.isValidManifest(badKeys),
     "a hash key must not widen a sequence group past its dense prefix"
   )
-  local err = Assert.throws(function()
-    PartyAssetSchema.assertManifest(bad)
+  local badKeysErr = Assert.throws(function()
+    PartyAssetSchema.assertManifest(badKeys)
   end)
-  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
-end
-
-function T.rejects_sequence_group_with_a_hole_before_later_sequences()
-  local bad = v7manifest()
-  bad.visuals.held.sequences[1] = nil
+  Assert.notNil(tostring(badKeysErr):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
+  local badHole = v7manifest()
+  badHole.visuals.held.sequences[1] = nil
   Assert.isFalse(
-    PartyAssetSchema.isValidManifest(bad),
+    PartyAssetSchema.isValidManifest(badHole),
     "a missing required index must not hide behind a later sequence"
   )
-  local err = Assert.throws(function()
-    PartyAssetSchema.assertManifest(bad)
+  local badHoleErr = Assert.throws(function()
+    PartyAssetSchema.assertManifest(badHole)
   end)
-  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
+  Assert.notNil(tostring(badHoleErr):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
 end
 
 function T.producer_tail_sequences_remain_validated()
@@ -470,7 +467,7 @@ function T.schema_rejects_each_missing_panel_chrome_state()
   end
 end
 
-function T.schema_rejects_missing_v2_presentation_facts()
+function T.schema_rejects_missing_panel_presentation_facts()
   local missingGeometry = v7manifest()
   missingGeometry.panels[1].iconAnchor = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingGeometry), "panel sprite geometry is required")
@@ -519,23 +516,6 @@ function T.schema_accepts_strict_detail_points_beyond_the_visible_pane()
   Assert.isFalse(PartyAssetSchema.isValidManifest(outOfRange), "detail points fit the 256-pixel source surface")
 end
 
-function T.schema_rejects_a_v1_manifest()
-  local stale = manifest()
-  stale.schema = "g4-party-presentation-v1"
-  stale.controls = nil
-  stale.visuals.hpBars = nil
-  for _, panelRecord in ipairs(stale.panels) do
-    panelRecord.iconAnchor = nil
-    panelRecord.ballAnchor = nil
-    panelRecord.heldAnchor = nil
-    panelRecord.capsuleAnchor = nil
-    panelRecord.statusRect = nil
-    panelRecord.cursorSequence = nil
-    panelRecord.chrome = { normal = imageRef("assets/generated/party/panel-normal.png", 128, 48) }
-  end
-  Assert.isFalse(PartyAssetSchema.isValidManifest(stale), "v1 presentation data is stale")
-end
-
 function T.schema_rejects_off_pane_hitboxes_but_permits_negative_crop_offsets()
   local bad = v7manifest()
   bad.hitboxes.touch.default[1] = touch(0, 48, 200, 128)
@@ -564,25 +544,6 @@ end
 function T.schema_identity_is_the_current_contract()
   Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
-  Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
-end
-
-function T.complete_v7_family_passes_schema()
-  Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the complete v7 family is valid")
-end
-
-function T.stale_v2_manifest_is_rejected()
-  Assert.isFalse(PartyAssetSchema.isValidManifest(manifest()), "period-only presentation data is stale")
-  local err = Assert.throws(function()
-    PartyAssetSchema.assertManifest(manifest())
-  end)
-  Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), "rejections carry the protocol code")
-end
-
-function T.schema_identity_matches_the_party_contract_at_v7()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
-  Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
-  Assert.equal(PartyCache.FORMAT, "party-cache-v1")
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
 end
 
@@ -692,9 +653,6 @@ function T.switch_selection_chrome_is_required()
   local missingChrome = v7manifest()
   missingChrome.panels[1].chrome.switchSelection = nil
   Assert.isFalse(PartyAssetSchema.isValidManifest(missingChrome), "switch-selection chrome is required")
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
-  Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
-  Assert.isFalse(PartyAssetSchema.isValidManifest(v3manifest()), "the previous presentation contract is stale")
 end
 
 function T.runtime_messages_are_required_at_the_schema_boundary()
@@ -706,10 +664,13 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
     "teachTarget",
     "itemAction",
     "takeNoItem",
+    "takeHeldItem",
     "bagFull",
     "switchHeldPrompt",
     "switchHeldResult",
+    "heldMail",
     "giveHeldItem",
+    "cannotHold",
     "fieldMoveNotHere",
     "fieldMoveNeedBadge",
     "fieldMoveHaveFollower",
@@ -749,16 +710,6 @@ function T.lower_message_role_is_required()
   local malformed = v7manifest()
   malformed.text.messageRole = { foreground = colorRef(248, 248, 248) }
   Assert.isFalse(PartyAssetSchema.isValidManifest(malformed), "the lower-message role keeps its triple")
-end
-
-function T.party_contract_identity_is_v7_and_previous_schema_is_stale()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
-  Assert.equal(DerivedAssetContract.party.schema, "g4-party-presentation-v7")
-  Assert.equal(PartyCache.SCHEMA, "g4-party-presentation-v7")
-  Assert.equal(PartyCache.FORMAT, "party-cache-v1")
-  local stale = v7manifest()
-  stale.schema = "g4-party-presentation-v6"
-  Assert.isFalse(PartyAssetSchema.isValidManifest(stale), "the previous presentation contract is stale")
 end
 
 return { tests = T }

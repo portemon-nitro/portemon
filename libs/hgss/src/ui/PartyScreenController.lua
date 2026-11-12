@@ -115,7 +115,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field promptShape table<string, unknown>?
 ---@field item { key: string, bagRevision: integer }?
 ---@field effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
----@field initialMessage { templateKey: "giveHeldItem", displayName: string, itemNames: string[] }? initial Party-owned held-item result
+---@field initialMessage { templateKey: "giveHeldItem"|"switchHeldResult", displayName: string, itemNames: string[] }? initial Party-owned held-item result
 
 -- The native switch task slides each travelling slot out from its own
 -- column and back: sixteen tile-steps to full exit, eight pixels per
@@ -254,12 +254,14 @@ function PartyScreenController.new(opts)
     local message = opts.initialMessage
     assert(opts.context == "browse", "initial result messages enter only the browse context")
     assert(
-      type(message) == "table" and message.templateKey == "giveHeldItem",
-      "initial result uses the Party held-item template"
+      type(message) == "table" and (message.templateKey == "giveHeldItem" or message.templateKey == "switchHeldResult"),
+      "initial result uses the Party held-item templates"
     )
+    assert(type(message.displayName) == "string", "held-item result names its mon")
+    assert(type(message.itemNames) == "table", "held-item result names its items")
     assert(
-      type(message.displayName) == "string" and type(message.itemNames) == "table" and #message.itemNames == 1,
-      "held-item result names its mon and item"
+      #message.itemNames == 1 or #message.itemNames == 2,
+      "held-item result names one item for gives and two for switches"
     )
   end
   local cancellable = opts.allowCancel

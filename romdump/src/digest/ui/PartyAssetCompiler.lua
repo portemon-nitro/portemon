@@ -968,7 +968,13 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
       flush()
       segments[#segments + 1] = { kind = "name" }
     elseif
-      (role == "template:giveHeldItem" or role == "template:switchHeldPrompt" or role == "template:switchHeldResult")
+      (
+        role == "template:giveHeldItem"
+        or role == "template:switchHeldPrompt"
+        or role == "template:switchHeldResult"
+        or role == "template:takeHeldItem"
+        or role == "template:cannotHold"
+      )
       and token.kind == "substitution"
       and token.control == ITEM_SUBSTITUTION
     then

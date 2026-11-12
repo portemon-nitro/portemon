@@ -253,11 +253,13 @@ local function manifest()
         teachTarget = { segments = { { kind = "text", value = "Teach which POKEMON?" } } },
         itemAction = { segments = { { kind = "text", value = "What to do with the item?" } } },
         takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+        takeHeldItem = { segments = { { kind = "text", value = "Received the item." } } },
         bagFull = { segments = { { kind = "text", value = "The Bag is full." } } },
         switchHeldPrompt = { segments = { { kind = "text", value = "Switch the held items?" } } },
         switchHeldResult = { segments = { { kind = "text", value = "Switched the held items." } } },
         heldMail = { segments = { { kind = "text", value = "That POKEMON already holds Mail." } } },
         giveHeldItem = { segments = { { kind = "text", value = "Gave the item to hold." } } },
+        cannotHold = { segments = { { kind = "text", value = "Cannot hold." } } },
         fieldMoveNotHere = { segments = { { kind = "text", value = "You cannot use that here." } } },
         fieldMoveNeedBadge = { segments = { { kind = "text", value = "Need a Badge." } } },
         fieldMoveHaveFollower = { segments = { { kind = "text", value = "Someone is with you." } } },
@@ -323,13 +325,17 @@ function T.writes_the_class_and_reports_ready()
   Assert.isTrue(PartyCache.isReady(cache, marker), "ready after write")
   local loaded = PartyCache.loadManifest(cache)
   Assert.equal(loaded.schema, "g4-party-presentation-v7", "the published manifest loads back")
+  Assert.notNil(loaded.text.templates.bagFull, "the published manifest carries the full-bag template")
+  Assert.notNil(loaded.text.templates.heldMail, "the published manifest carries the held-Mail template")
+  Assert.notNil(loaded.text.templates.takeHeldItem, "the published manifest carries the take-success template")
+  Assert.notNil(loaded.text.templates.cannotHold, "the published manifest carries the cannot-hold template")
 end
 
 function T.rejects_a_malformed_class_without_publishing()
   local PartyCache, PartyCacheWriter = contracts()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local bad = bundle(PartyCache.marker("abc", "dep"))
-  bad.manifest = { schema = "g4-party-presentation-v2" }
+  bad.manifest = { schema = PartyCache.SCHEMA, panels = {} }
   local err = Assert.throws(function()
     PartyCacheWriter.write(cache, bad)
   end)
@@ -355,17 +361,6 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   Assert.isTrue(PartyCache.isReady(cache, firstMarker), "the previous artifact remains ready")
   Assert.equal(cache:read(PartyCache.markerPath()), firstMarker, "the new marker never reached the live tree")
   Assert.isNil(backend:getInfo("staging/heartgold/party"), "the stage is cleaned on failure")
-end
-
-function T.published_party_manifest_carries_the_full_bag_schema()
-  local PartyCache, PartyCacheWriter = contracts()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = PartyCache.marker("abc", "dep")
-  Assert.isTrue(PartyCacheWriter.write(cache, bundle(marker)), "publication reports success")
-  local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v7", "the published manifest declares the full-bag schema")
-  Assert.notNil(loaded.text.templates.bagFull, "the published manifest carries the full-bag template")
-  Assert.notNil(loaded.text.templates.heldMail, "the published manifest carries the held-Mail template")
 end
 
 return { tests = T }

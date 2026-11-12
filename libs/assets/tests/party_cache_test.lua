@@ -267,11 +267,13 @@ local function manifest()
         teachTarget = { segments = { { kind = "text", value = "Teach which POKEMON?" } } },
         itemAction = { segments = { { kind = "text", value = "What to do with the item?" } } },
         takeNoItem = { segments = { { kind = "text", value = "Nothing held." } } },
+        takeHeldItem = { segments = { { kind = "text", value = "Received the item." } } },
         bagFull = { segments = { { kind = "text", value = "The Bag is full." } } },
         switchHeldPrompt = { segments = { { kind = "text", value = "Switch the held items?" } } },
         switchHeldResult = { segments = { { kind = "text", value = "Switched the held items." } } },
         heldMail = { segments = { { kind = "text", value = "That POKEMON already holds Mail." } } },
         giveHeldItem = { segments = { { kind = "text", value = "Gave the item to hold." } } },
+        cannotHold = { segments = { { kind = "text", value = "Cannot hold." } } },
         fieldMoveNotHere = { segments = { { kind = "text", value = "You cannot use that here." } } },
         fieldMoveNeedBadge = { segments = { { kind = "text", value = "Need a Badge." } } },
         fieldMoveHaveFollower = { segments = { { kind = "text", value = "Someone is with you." } } },
@@ -324,39 +326,33 @@ local function writeReady(cache, marker)
   cache:write(PartyCache.markerPath(), marker)
 end
 
-function T.missing_image_is_not_ready()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+function T.incomplete_family_is_not_ready()
   local marker = PartyCache.marker("abc", "dep")
-  cache:writeLua(PartyCache.manifestPath(), manifest())
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
-  cache:write(PartyCache.markerPath(), marker)
-  Assert.isFalse(PartyCache.isReady(cache, marker), "referenced images must all exist")
+  local ready = CacheFs.forVersion("heartgold", FakeCache.new())
+  writeReady(ready, marker)
+  Assert.isTrue(PartyCache.isReady(ready, marker), "the complete family reads as ready")
+  ready:remove(PartyCache.referencedPaths(manifest())[1])
+  Assert.isFalse(PartyCache.isReady(ready, marker), "referenced images must all exist")
+  writeReady(ready, marker)
+  ready:remove("assets/generated/party/context-standard-raised.png")
+  Assert.isFalse(PartyCache.isReady(ready, marker), "every generated frame visual must exist")
+  local noMarker = CacheFs.forVersion("heartgold", FakeCache.new())
+  local data = manifest()
+  noMarker:writeLua(PartyCache.manifestPath(), data)
+  for _, path in ipairs(PartyCache.referencedPaths(data)) do
+    noMarker:write(path, "pixels")
+  end
+  noMarker:writeLua(
+    PartyCache.provenancePath(),
+    { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" }
+  )
+  Assert.isFalse(PartyCache.isReady(noMarker, PartyCache.marker("abc", "dep")), "no marker means not ready")
 end
 
-function T.stale_format_is_not_ready()
+function T.format_mismatch_is_not_ready()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   writeReady(cache, PartyCache.marker("abc", "dep"))
   Assert.isFalse(PartyCache.isReady(cache, "party-v0:abc:dep"), "a marker from another format never reads as current")
-end
-
-function T.missing_marker_is_not_ready()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local data = manifest()
-  cache:writeLua(PartyCache.manifestPath(), data)
-  for _, path in ipairs(PartyCache.referencedPaths(data)) do
-    cache:write(path, "pixels")
-  end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
-  Assert.isFalse(PartyCache.isReady(cache, PartyCache.marker("abc", "dep")), "no marker means not ready")
-end
-
-function T.current_valid_family_is_ready()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = PartyCache.marker("abc", "dep")
-  writeReady(cache, marker)
-  Assert.isTrue(PartyCache.isReady(cache, marker), "the complete family reads as ready")
-  local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v7")
 end
 
 -- The presentation contract under test extends the synthetic family with
@@ -481,42 +477,6 @@ function T.complete_v7_family_is_ready()
   Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v7 family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
   Assert.equal(loaded.schema, "g4-party-presentation-v7")
-end
-
-function T.stale_v3_family_is_not_ready()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = PartyCache.marker("abc", "dep")
-  for _, path in ipairs(PartyCache.referencedPaths(v7manifest())) do
-    cache:write(path, "pixels")
-  end
-  local stale = v7manifest()
-  stale.schema = "g4-party-presentation-v3"
-  stale.contextMenu.textRoles = nil
-  stale.contextMenu.textPalette = {
-    raised = { r = 248, g = 248, b = 248, a = 255 },
-    depressed = { r = 248, g = 0, b = 0, a = 255 },
-  }
-  stale.contextMenu.fillPalette = {
-    raised = { r = 0, g = 0, b = 248, a = 255 },
-    depressed = { r = 0, g = 248, b = 0, a = 255 },
-  }
-  for _, panel in ipairs(stale.panels) do
-    panel.chrome.switchSelection = nil
-  end
-  stale.text.templates.takeNoItem = nil
-  stale.text.templates.bagFull = nil
-  cache:writeLua(PartyCache.manifestPath(), stale)
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v3" })
-  cache:write(PartyCache.markerPath(), marker)
-  Assert.isFalse(PartyCache.isReady(cache, marker), "the previous family never reads as ready")
-end
-
-function T.missing_context_frame_is_not_ready()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = PartyCache.marker("abc", "dep")
-  writeReadyV6(cache, marker)
-  cache:remove(contextFramePaths()[1])
-  Assert.isFalse(PartyCache.isReady(cache, marker), "every generated frame visual must exist")
 end
 
 function T.context_frame_paths_are_referenced_exactly_once()

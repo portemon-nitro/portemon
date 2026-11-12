@@ -123,11 +123,22 @@ function PartyActions:_resolve(request)
   if not self._bag:has(request.item, 1) then
     return { kind = "stale" }
   end
-  if mon.heldItem == request.item then
-    return { kind = "no_effect" }
-  end
+  -- Retail has no same-item guard (party_menu.c GiveItemToMon): an
+  -- occupied holder prompts even when the replacement matches the held
+  -- item, then exchanges with net-zero bag movement on Yes.
   if not definition.canHold then
     return { kind = "ineligible" }
+  end
+  -- Retail Griseous Orb custody (party_menu.c Subtask_GiveItemToMon):
+  -- only Giratina may hold the orb; any other species refuses with
+  -- msg 00189. The Union-Room map check (msg 00190) needs the field
+  -- map identity, which the action port does not carry, so it stays
+  -- with the flow presentation owner.
+  if definition.heldFormEffect == "griseous_orb" then
+    local monSpecies = mon.species
+    if monSpecies ~= "GIRATINA" then
+      return { kind = "cannot_hold" }
+    end
   end
   if mon.heldItem ~= "NONE" then
     if not request.confirmed then

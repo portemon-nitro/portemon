@@ -608,19 +608,36 @@ function PartyMenuFlow:_rewind(continuation)
   self:_replace(returnPage, nil)
 end
 
--- Maps the expected empty-take outcome onto the generated template
--- descriptor the party message state expands; every other outcome
--- completes as its own kind. The empty template names the acting mon,
--- so the descriptor carries the same nickname-or-species name the party
--- screen shows for that slot.
+-- Maps take outcomes onto the generated template descriptors the party
+-- message state expands: empty takes name the acting mon (00082),
+-- successful takes name the mon and the received item (00083), and a full
+-- bag names the bag-full template (00084). Every other outcome completes
+-- as its own kind. Retail shows all three messages over the party screen
+-- (party_menu_list_items.c Take); the prior silent take dropped the
+-- success and bag-full feedback.
 ---@param outcome table<string, unknown>
----@param displayName string
+---@param slot integer
 ---@return table<string, unknown>
-local function takeCompletion(outcome, displayName)
+function PartyMenuFlow:_takeCompletion(outcome, slot)
   assert(type(outcome) == "table", "take outcomes arrive as records")
+  local displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())
   if outcome.kind == "no_effect" then
-    assert(type(displayName) == "string", "empty takes name the acting mon")
     return { kind = outcome.kind, message = { templateKey = "takeNoItem", displayName = displayName } }
+  end
+  if outcome.kind == "bag_full" then
+    return { kind = outcome.kind, message = { templateKey = "bagFull" } }
+  end
+  if outcome.kind == "changed" then
+    local before = assert(outcome.before, "take success carries its before facts")
+    assert(type(before) == "table", "take success carries its before facts")
+    local heldKey = assert(before.heldItem, "take success names the taken item")
+    assert(type(heldKey) == "string", "take success names the taken item")
+    local heldItem = self._assets.itemCatalog:item(heldKey)
+    local heldName = assert(heldItem.name, "the item catalog publishes its display name")
+    return {
+      kind = outcome.kind,
+      message = { templateKey = "takeHeldItem", displayName = displayName, itemNames = { heldName } },
+    }
   end
   return { kind = outcome.kind }
 end
@@ -733,10 +750,10 @@ function PartyMenuFlow:_routePick(intent)
     item = assert(intent.item, "picks snapshot their item"),
   }
   -- Party-origin stationery joins the Mail boundary instead of the
-  -- ordinary held-item preview: only a ready or consent-pending
-  -- preflight stages the existing give_resume Party child, while the
-  -- held-item refusal and every other structured refusal hold the
-  -- picker open.
+  -- ordinary held-item preview: ready, consent-pending, and
+  -- held-Mail refusals stage the give_resume Party child so the error
+  -- surfaces over the party screen like retail (00078 stays in party);
+  -- every other structured refusal holds the picker open.
   if self:_isMailItem(request.item) then
     local mailDecision = self._mailActions:previewComposition({
       targetSlot = request.slot,
@@ -745,12 +762,21 @@ function PartyMenuFlow:_routePick(intent)
       bagRevision = request.bagRevision,
     })
     if mailDecision.kind ~= "ready" and mailDecision.kind ~= "needs_confirmation" then
-      return
+      local reason = mailDecision.reason
+      if mailDecision.kind ~= "refused" or reason ~= "recipient_holds_mail" then
+        return
+      end
     end
   else
     local ordinary = self._partyActions:preview(request)
     if ordinary.kind ~= "ready" and ordinary.kind ~= "needs_confirmation" then
-      return
+      -- Retail held-Mail (00078) and Griseous species (00189) errors
+      -- surface over the party screen, not the picker: stage so the
+      -- continuation reports them. Ineligible and stale picks stay
+      -- retryable in the picker.
+      if ordinary.kind ~= "feature_unavailable" and ordinary.kind ~= "cannot_hold" then
+        return
+      end
     end
   end
   local slot = assert(continuation.slot, "give operations capture their slot")
@@ -1077,7 +1103,7 @@ function PartyMenuFlow:_routeTargetIntent(intent)
       return
     end
     if decision.kind ~= "ready" then
-      self:_completeParty({ kind = decision.kind, disposition = "bag" })
+      self:_completeParty(self:_giveCompletion(decision, slot, itemKey, "bag"))
       return
     end
     local outcome = self._partyActions:commit(request)
@@ -1139,7 +1165,7 @@ function PartyMenuFlow:_routeGiveIntent(intent)
     return
   end
   if decision.kind ~= "ready" then
-    self:_completeParty({ kind = decision.kind, disposition = disposition })
+    self:_completeParty(self:_giveCompletion(decision, slot, request.item, disposition))
     return
   end
   local outcome = self._partyActions:commit(request)
@@ -1172,6 +1198,19 @@ function PartyMenuFlow:_giveCompletion(outcome, slot, itemKey, disposition)
     completion.message = message
   elseif outcome.kind == "bag_full" then
     completion.message = { templateKey = "bagFull" }
+  elseif outcome.kind == "cannot_hold" then
+    -- Retail Griseous Orb species refusal (00189): names the mon and the orb.
+    local item = self._assets.itemCatalog:item(itemKey)
+    local itemName = assert(item.name, "the item catalog publishes its display name")
+    completion.message = {
+      templateKey = "cannotHold",
+      displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
+      itemNames = { itemName },
+    }
+  elseif outcome.kind == "feature_unavailable" then
+    -- Retail held-Mail refusal for ordinary items (00078): the mon must
+    -- shed its Mail before it may hold anything else.
+    completion.message = { templateKey = "heldMail" }
   end
   return completion
 end
@@ -1337,7 +1376,7 @@ function PartyMenuFlow:_routeBrowseIntent(intent)
       partyRevision = assert(intent.partyRevision, "take intents carry the party revision"),
       bagRevision = self._bag:revision(),
     })
-    self:_completeParty(takeCompletion(outcome, Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())))
+    self:_completeParty(self:_takeCompletion(outcome, slot))
     return
   end
   if intent.kind == "transfer_hp" then

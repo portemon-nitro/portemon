@@ -450,6 +450,9 @@ PartySources.messages = {
     forgetMove = { bank = 300, index = 60 },
     noEffect = { bank = 300, index = 102 },
     takeNoItem = { bank = 300, index = 82 },
+    -- Retail take success (party_menu_list_items.c Take):
+    -- "Received the {item} from {mon}."
+    takeHeldItem = { bank = 300, index = 83 },
     bagFull = { bank = 300, index = 84 },
     -- The held-Mail refusal for a fresh letter addressed to a mon that
     -- already carries Mail (party_menu.c source held-Mail refusal).
@@ -457,6 +460,9 @@ PartySources.messages = {
     switchHeldPrompt = { bank = 300, index = 79 },
     switchHeldResult = { bank = 300, index = 85 },
     giveHeldItem = { bank = 300, index = 107 },
+    -- Retail Griseous Orb species refusal (party_menu.c GiveItemToMon):
+    -- "{mon} cannot hold {item}!"
+    cannotHold = { bank = 300, index = 189 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     fieldMoveNotHere = { bank = 300, index = 101 },
     fieldMoveNeedBadge = { bank = 300, index = 77 },
