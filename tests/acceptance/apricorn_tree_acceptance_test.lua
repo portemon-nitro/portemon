@@ -9,7 +9,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local LocalClock = require("game.src.LocalClock")
 
 local T = {
@@ -74,32 +74,12 @@ local function withGame(options, fn)
       if options.greenCount > 0 then
         mart.apricorns[GREEN_APRICORN] = options.greenCount
       end
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = "MAP_ROUTE_30", fieldX = 10, fieldZ = 10, facing = "south" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
         worldState = worldState,
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
         bag = bagFor(options.ownsBox),
         mart = mart,
-      }
+      })
     end,
   }):boot({
     versionId = AcceptanceHarness.defaultVersion(),

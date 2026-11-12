@@ -12,17 +12,15 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local CelebiTimeTravelRenderer = require("libs.hgss.src.presentation.CelebiTimeTravelRenderer")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MonCache = require("libs.assets.src.MonCache")
 local MonBucket = require("tests.support.MonBucket")
 local MonsSave = require("libs.mons.src.MonsSave")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local function readyVersions()
   local versions = {}
@@ -65,32 +63,7 @@ local function freshGame(versionId)
     service:giveMon({ species = "CYNDAQUIL", level = 5, location = 60 }),
     "the field starts with a production-created follower"
   )
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
-    location = { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "fastest", textFrame = 1 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = FashionCaseState.empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = service:capture(),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+  return FinalizedGameFixture.build(versionId, { mons = service:capture(), textFrame = 1 })
 end
 
 local function detachedStatus(source, modelVisible)

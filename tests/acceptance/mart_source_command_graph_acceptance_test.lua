@@ -4,11 +4,8 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local MartSave = require("libs.hgss.src.save.MartSave")
 
 local T = {
   metadata = {
@@ -47,32 +44,9 @@ return S.script({
 local function withGame(fn)
   local harness = AcceptanceHarness.new({
     gameFactory = function(versionId, map)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map, fieldX = 4, fieldZ = 10, facing = "south" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = BagSave.empty(),
-        mart = MartSave.empty(),
-      }
+      })
     end,
   })
   local game = harness:boot({

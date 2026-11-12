@@ -3,9 +3,8 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local MonBucket = require("tests.support.MonBucket")
 
 local T = {
   metadata = {
@@ -51,32 +50,12 @@ local function harness(spawnKey, map, textSpeed)
       if map == CENTER_MAP then
         worldState:setFlag(789)
       end
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map, fieldX = 4, fieldZ = 13, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = textSpeed or "fastest", textFrame = 0 },
-        },
         fieldTravel = { lastHealSpawn = spawnKey },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
         worldState = worldState,
-        mons = MonBucket.emptyForVersion(versionId),
-        bag = require("libs.hgss.src.save.BagSave").empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+        textSpeed = textSpeed,
+      })
     end,
   })
 end

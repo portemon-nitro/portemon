@@ -4,8 +4,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -112,12 +111,10 @@ end
 function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
   local FieldState = require("game.hgss.src.field.FieldState")
   local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
-  local FieldEventState = require("libs.hgss.src.field.FieldEventState")
   local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   local MonBucket = require("tests.support.MonBucket")
   local MonsSave = require("libs.mons.src.MonsSave")
-  local PlayTime = require("libs.hgss.src.save.PlayTime")
 
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
@@ -143,32 +140,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         service:giveMon({ species = "CHIKORITA", level = 5, location = 60 }),
         "the frame-cycle gift enters through the production service"
       )
-      local game = {
-        saveId = "save-00000001",
-        versionId = versionId,
-        location = { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = FashionCaseState.empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = service:capture(),
-        bag = BagSave.empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      local game = FinalizedGameFixture.build(versionId, { mons = service:capture() })
       -- Presented composition demands the semantic icon host: the
       -- warmed cache already carries the compiled pages, so readiness
       -- is immediate and the real queue decodes the real page bytes.

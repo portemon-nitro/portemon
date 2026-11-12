@@ -9,18 +9,12 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local App = require("app.src.App")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local LocalClock = require("game.src.LocalClock")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RecordingScriptHosts = require("tests.acceptance.support.RecordingScriptHosts")
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
 local RepoFs = require("libs.storage.src.RepoFs")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
-local MartSave = require("libs.hgss.src.save.MartSave")
-local Mailbox = require("libs.hgss.src.save.Mailbox")
-local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 
 ---@class AcceptanceHarness
@@ -1059,9 +1053,7 @@ function AcceptanceHarness.new(options)
       if monBucketOk then
         mons = monBucket
       end
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      local overrides = {
         location = {
           mapSymbol = map or "MAP_BURNED_TOWER_1F",
           -- The rebuilt New Bark collision makes the old town fixture (6,6)
@@ -1071,30 +1063,11 @@ function AcceptanceHarness.new(options)
           fieldZ = 10,
           facing = "south",
         },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = FashionCaseState.empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = mons,
-        bag = BagSave.empty(),
-        mart = MartSave.empty(),
-        mailbox = Mailbox.new():capture(),
-        photoAlbum = PhotoAlbum.new():capture(),
       }
+      if mons ~= nil then
+        overrides.mons = mons
+      end
+      return FinalizedGameFixture.build(versionId, overrides)
     end,
     saveNamespace = options.saveNamespace or defaultNamespace,
     removeSaveNamespace = options.removeSaveNamespace or removeNamespace,

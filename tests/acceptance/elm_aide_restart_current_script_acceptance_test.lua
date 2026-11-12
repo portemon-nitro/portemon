@@ -9,11 +9,10 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 
 local T = {
   metadata = {
@@ -37,34 +36,12 @@ local ITEM_FANFARE = "SEQ_ME_ITEM"
 local function harness()
   return AcceptanceHarness.new({
     gameFactory = function(versionId, map)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
-        -- Scene value 1 is the source precondition after the lab opening;
-        -- (4,12) starts one tile south of the scene-1 trigger at (4,11).
+      -- Scene value 1 is the source precondition after the lab opening;
+      -- (4,12) starts one tile south of the scene-1 trigger at (4,11).
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 12, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
         worldState = FieldEventState.new({ vars = { [VAR_SCENE_ELMS_LAB] = 1 } }),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = BagSave.empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      })
     end,
   })
 end

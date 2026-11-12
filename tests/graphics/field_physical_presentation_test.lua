@@ -3,12 +3,9 @@
 -- save backend; generated maps and presentation assets remain production data.
 
 local Assert = require("tests.support.Assert")
-local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
@@ -30,37 +27,7 @@ end
 -- finalizes: no saveStore is attached, so this boots without touching any
 -- storage backend and there is nothing to reset between runs.
 local function freshGame(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
-    location = {
-      mapSymbol = "MAP_NEW_BARK",
-      fieldX = 10,
-      fieldZ = 10,
-      facing = "south",
-    },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "fastest", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = FashionCaseState.empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-    bag = BagSave.empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+  return FinalizedGameFixture.build(versionId)
 end
 
 local function boot(versionId)

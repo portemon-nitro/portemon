@@ -3,9 +3,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -13,8 +11,6 @@ local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local MonBucket = require("tests.support.MonBucket")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
@@ -35,32 +31,9 @@ local function readyVersions()
 end
 
 local function newGame(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
+  return FinalizedGameFixture.build(versionId, {
     location = { mapSymbol = LAB, fieldX = 4, fieldZ = 13, facing = "north" },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "fastest", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = FashionCaseState.empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = MonBucket.emptyForVersion(versionId),
-    bag = BagSave.empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+  })
 end
 
 local function step(state)

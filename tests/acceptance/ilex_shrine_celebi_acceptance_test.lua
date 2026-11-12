@@ -19,12 +19,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local MartSave = require("libs.hgss.src.save.MartSave")
-local Mailbox = require("libs.hgss.src.save.Mailbox")
-local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local LocalClock = require("game.src.LocalClock")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MonCache = require("libs.assets.src.MonCache")
@@ -110,38 +105,15 @@ local function withShrineGame(fn, options)
       for _, flag in ipairs(options.flags or {}) do
         worldState:setFlag(flag)
       end
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
-        -- Harness spawns take map-local coordinates (pre origin-offset)
-        -- while SHRINE is global: Ilex Forest's origin is (0, 32), and the
-        -- shrine side is unreachable on foot from the southern spawn
-        -- (a Cut tree seals x=16, z=62), so start on the approach tile.
+      -- Harness spawns take map-local coordinates (pre origin-offset)
+      -- while SHRINE is global: Ilex Forest's origin is (0, 32), and the
+      -- shrine side is unreachable on foot from the southern spawn
+      -- (a Cut tree seals x=16, z=62), so start on the approach tile.
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map, fieldX = SHRINE.fieldX, fieldZ = SHRINE.fieldZ - 32, facing = SHRINE.facing },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = FashionCaseState.empty(),
-        playTime = PlayTime.new(),
         worldState = worldState,
         mons = leadBucket(versionId, options.leadSpecies or "CHIKORITA", options.fateful == true),
-        bag = BagSave.empty(),
-        mart = MartSave.empty(),
-        mailbox = Mailbox.new():capture(),
-        photoAlbum = PhotoAlbum.new():capture(),
-      }
+      })
     end,
   })
   local game = harness:boot({

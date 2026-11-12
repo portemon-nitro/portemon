@@ -2,17 +2,15 @@
 -- transition visible through multiple native source frames before battle reveal.
 
 local Assert = require("tests.support.Assert")
-local BagSave = require("libs.hgss.src.save.BagSave")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattleEncounterSelector = require("libs.hgss.src.transition.BattleEncounterSelector")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local LocalClock = require("game.src.LocalClock")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -21,7 +19,6 @@ local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
 local MonCache = require("libs.assets.src.MonCache")
 local MonsSave = require("libs.mons.src.MonsSave")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
@@ -54,32 +51,7 @@ local function freshGame(versionId, location)
     date = { year = 2000, month = 1, day = 1 },
   })
   Assert.isTrue(monService:giveMon({ species = "CHIKORITA", level = 5, location = 60 }))
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
-    location = location,
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "fastest", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = FashionCaseState.empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = monService:capture(),
-    bag = BagSave.empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+  return FinalizedGameFixture.build(versionId, { location = location, mons = monService:capture() })
 end
 
 local function render(scope, state)

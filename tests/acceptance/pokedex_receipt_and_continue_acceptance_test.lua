@@ -9,10 +9,9 @@
 -- No renderer is ever attached.
 
 local Assert = require("tests.support.Assert")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local GameVersion = require("romdump.src.source.GameVersion")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 local Runtime = require("libs.script.src.Runtime")
 local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
@@ -28,37 +27,16 @@ local function runtimeOptions()
 end
 
 local function validEntry(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
+  return FinalizedGameFixture.build(versionId, {
     location = {
       mapSymbol = MAP,
       fieldX = 6,
       fieldZ = 6,
       facing = "south",
     },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        rivalName = "Silver",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-      },
-      options = { textSpeed = "mid", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+    -- The receipt flow asserts mid-speed dialogue pacing.
+    textSpeed = "mid",
+  })
 end
 
 local function readyVersions()

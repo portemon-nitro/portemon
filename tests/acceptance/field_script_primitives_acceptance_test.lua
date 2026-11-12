@@ -5,9 +5,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local MonBucket = require("tests.support.MonBucket")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 
 local T = {
   metadata = {
@@ -43,32 +41,10 @@ local function harness()
     gameFactory = function(versionId, map)
       local worldState = FieldEventState.new()
       worldState:setFlag(FLAG_GOT_STARTER)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
         worldState = worldState,
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = require("libs.hgss.src.save.BagSave").empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      })
     end,
   })
 end
@@ -92,32 +68,12 @@ local function nurseJoyHarness()
       -- Map 69 has two source objects on the same tile. Retail flag 789
       -- removes the source event object that overlaps the Nurse Joy path.
       worldState:setFlag(CENTER_OVERLAP_REMOVAL_FLAG)
-      return {
+      return FinalizedGameFixture.build(versionId, {
         saveId = "save-00000002",
-        versionId = versionId,
         location = { mapSymbol = map or CENTER_MAP, fieldX = 8, fieldZ = 12, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
         fieldTravel = { lastHealSpawn = "SPAWN_CHERRYGROVE" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
         worldState = worldState,
-        mons = MonBucket.emptyForVersion(versionId),
-        bag = BagSave.empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      })
     end,
   })
 end

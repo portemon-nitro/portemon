@@ -26,7 +26,7 @@ local MainMenuState = require("app.src.mainmenu.MainMenuState")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local PixelScale = require("libs.ui.src.PixelScale")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local SaveFs = require("libs.storage.src.SaveFs")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
@@ -583,32 +583,9 @@ local LAB_TRIO = { CHIKORITA = true, CYNDAQUIL = true, TOTODILE = true }
 local function labHarness()
   return AcceptanceHarness.new({
     gameFactory = function(versionId, map)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map or LAB_MAP, fieldX = 4, fieldZ = 13, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = require("libs.hgss.src.save.BagSave").empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      })
     end,
   })
 end

@@ -9,12 +9,11 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local COMMITTER_MODULE = "libs.hgss.src.battle.HgssBattleCommitter"
 local BATTLE_RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
@@ -98,32 +97,10 @@ end
 local function harness()
   return AcceptanceHarness.new({
     gameFactory = function(versionId, map)
-      return {
+      return FinalizedGameFixture.build(versionId, {
         saveId = "save-00000201",
-        versionId = versionId,
         location = { mapSymbol = map or MAP, fieldX = 4, fieldZ = 13, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId, 7),
-        bag = require("libs.hgss.src.save.BagSave").empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      })
     end,
   })
 end

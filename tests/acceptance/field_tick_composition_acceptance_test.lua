@@ -3,10 +3,9 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local S = require("gen4.script")
 local Registry = require("libs.script.src.Registry")
 local Composition = require("libs.script.src.Composition")
@@ -35,32 +34,13 @@ local function labHarness()
       if monBucketOk then
         mons = monBucket
       end
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      local overrides = {
         location = { mapSymbol = map or LAB_1F, fieldX = 4, fieldZ = 13, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = mons,
-        bag = require("libs.hgss.src.save.BagSave").empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
       }
+      if mons ~= nil then
+        overrides.mons = mons
+      end
+      return FinalizedGameFixture.build(versionId, overrides)
     end,
   })
 end

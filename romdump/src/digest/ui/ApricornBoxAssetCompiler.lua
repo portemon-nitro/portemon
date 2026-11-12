@@ -72,7 +72,8 @@ local function paletteInk(palette, spec, role)
     if color == nil then
       sourceError("chrome ink references a missing palette entry", { role = role, index = index })
     end
-    return { r = assert(color.r), g = assert(color.g), b = assert(color.b) }
+    assert(color ~= nil, "missing palette entries fail above")
+    return { r = color.r, g = color.g, b = color.b }
   end
   return { foreground = entry(spec.foreground), shadow = entry(spec.shadow) }
 end
@@ -290,16 +291,16 @@ local function compileSelectionCursor(char, palette, cell, animation, assets, de
     end
     local frames = {}
     local totalTicks = 0
+    -- Close (0-2) and confirm-button (28-31) cells carry their own blue
+    -- NCLR slots (11 and 12); only the hand (3-5) and arrows (24-27)
+    -- live in the grayscale chrome slot zero, so only those pin it.
+    local paletteOverride = nil
+    if (sequenceId >= 3 and sequenceId <= 5) or (sequenceId >= 24 and sequenceId <= 27) then
+      paletteOverride = 0
+    end
     for frameIndex, sourceFrame in ipairs(sequence.frames) do
       if type(sourceFrame.duration) ~= "number" or sourceFrame.duration < 1 or sourceFrame.duration % 1 ~= 0 then
         sourceError("selection cursor frame duration is invalid", { animation = sequenceId, frame = frameIndex - 1 })
-      end
-      -- Close (0-2) and confirm-button (28-31) cells carry their own blue
-      -- NCLR slots (11 and 12); only the hand (3-5) and arrows (24-27)
-      -- live in the grayscale chrome slot zero, so only those pin it.
-      local paletteOverride = nil
-      if (sequenceId >= 3 and sequenceId <= 5) or (sequenceId >= 24 and sequenceId <= 27) then
-        paletteOverride = 0
       end
       local rendered = G2dRasterizer.renderAnimationFrame(char, palette, cell, sequence, frameIndex, {
         asset = "Apricorn Box",

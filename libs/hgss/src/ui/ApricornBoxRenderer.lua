@@ -91,6 +91,7 @@ end
 ---@param foregroundSlot integer
 ---@param shadowSlot integer
 ---@param fallback { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number } }
+---@return { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number }, background: { r: number, g: number, b: number, a: number } }
 function ApricornBoxRenderer:_fontInk(foregroundSlot, shadowSlot, fallback)
   return {
     foreground = self:_fontSlot(foregroundSlot) or fallback.foreground,

@@ -16,13 +16,11 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {
   metadata = {
@@ -56,36 +54,13 @@ local SECOND_REGISTER_KEY = "OLD_ROD"
 local function lakeHarness()
   return AcceptanceHarness.new({
     gameFactory = function(versionId)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
-        -- Factory coordinates are origin-relative: the Lake of Rage scene
-        -- origin sits 512,32 ahead of the generated event frame, so local
-        -- (30,15) places the player on the map-space tile (542,47),
-        -- directly east of the item ball at (541,47).
+      -- Factory coordinates are origin-relative: the Lake of Rage scene
+      -- origin sits 512,32 ahead of the generated event frame, so local
+      -- (30,15) places the player on the map-space tile (542,47),
+      -- directly east of the item ball at (541,47).
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = GRANT_MAP, fieldX = 30, fieldZ = 15, facing = "west" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = BagSave.empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-      }
+      })
     end,
   })
 end

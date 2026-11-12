@@ -4,44 +4,17 @@
 -- whose scripts declare nothing prepare nothing.
 
 local Assert = require("tests.support.Assert")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local VERSION = "heartgold"
 
 local function freshGame(location)
-  return {
-    saveId = "save-00000001",
-    versionId = VERSION,
-    location = location,
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "fastest", textFrame = 1 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = FashionCaseState.empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(VERSION),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+  return FinalizedGameFixture.build(VERSION, { location = location, textFrame = 1 })
 end
 
 -- Counts the Ho-Oh part loads the field performs; the wrappers are removed by

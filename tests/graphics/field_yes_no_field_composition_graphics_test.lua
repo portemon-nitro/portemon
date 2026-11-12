@@ -1,15 +1,13 @@
 -- Production FieldState composition for adapted field Yes/No presentation.
 
 local Assert = require("tests.support.Assert")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PixelScale = require("libs.ui.src.PixelScale")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
 local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
 local RepoFs = require("libs.storage.src.RepoFs")
@@ -21,32 +19,7 @@ local T = {}
 local MESSAGE_YES_NO_SCRIPT = "acceptance.field_yes_no_message"
 
 local function freshGame(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
-    location = { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "fastest", textFrame = 1 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = FashionCaseState.empty(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-  }
+  return FinalizedGameFixture.build(versionId, { textFrame = 1 })
 end
 
 local function readyVersion()
