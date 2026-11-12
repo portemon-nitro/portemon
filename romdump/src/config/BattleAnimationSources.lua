@@ -271,6 +271,10 @@ local PARTICLE_ACTION_PROFILES = {
 -- Callback table ov07_0223649C maps to the continuation routines below.
 -- Task names describe the continuation's observed sprite/picture effects;
 -- the native callback index and function addresses stay in this source catalog.
+-- Index 8 is the ZigzagSlash sprite func (BattleAnimSpriteFunc_ZigzagSlash
+-- in battle_anim_effects.c): a six-leg defender-anchored assault with its
+-- own fade and pokepic flash, not a palette fade, so it names its own
+-- task instead of sharing the picture-fade vocabulary.
 local CONFIGURED_SPRITE_TASKS = {
   { taskKind = "multi-sprite-position-tick", context = "sprite-system" },
   { taskKind = "sprite-affine-scale-draw-transition", context = "battle-sprite" },
@@ -280,7 +284,7 @@ local CONFIGURED_SPRITE_TASKS = {
   { taskKind = "pokemon-picture-sprite-position-transition", context = "pokemon-picture" },
   { taskKind = "pokemon-picture-affine-transition", context = "pokemon-picture" },
   { taskKind = "sprite-alpha-transition", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-palette-fade", context = "pokemon-picture" },
+  { taskKind = "pokemon-picture-zigzag-slash", context = "pokemon-picture" },
   { taskKind = "pokemon-picture-animation-palette-fade", context = "pokemon-picture" },
   { taskKind = "pokemon-picture-relative-sprite-path-transition", context = "pokemon-picture" },
   { taskKind = "sprite-brightness-transition", context = "battle-display" },

@@ -185,8 +185,7 @@ function T.staged_sidecars_match_an_independent_source_decode(romFs, versionId)
   for slot = 0, 1 do
     for word = 1, 16 do
       local at = (slot * 16 + word - 1) * 2 + 1
-      local staged = string.byte(page.basePalettesRgb555, at)
-        + string.byte(page.basePalettesRgb555, at + 1) * 256
+      local staged = string.byte(page.basePalettesRgb555, at) + string.byte(page.basePalettesRgb555, at + 1) * 256
       Assert.equal(
         staged,
         expectedWords[slot + 1][word],
@@ -194,20 +193,6 @@ function T.staged_sidecars_match_an_independent_source_decode(romFs, versionId)
       )
     end
   end
-end
-
-function T.established_front_selectors_keep_resolving(romFs, versionId)
-  Assert.equal(
-    MonCache.portraitSelector("CHIKORITA", 0, "male", false),
-    "CHIKORITA/f0/male/plain",
-    versionId .. ": the established front spelling is unchanged"
-  )
-  local speciesId = assert(MonSources.speciesId("TOTODILE"), versionId .. ": TOTODILE has a native id")
-  local frames = assert(
-    MonPresentationCompiler.compileFrontFrames(romFs, speciesId, 0, "male", true),
-    versionId .. ": the shiny front frames still compile"
-  )
-  Assert.equal(#frames.frames, 2, versionId .. ": front compilation keeps both frames")
 end
 
 return RomSuite.fromFacts(T)

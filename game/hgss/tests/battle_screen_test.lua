@@ -2430,9 +2430,9 @@ function T.baked_motion_deltas_shift_the_submitted_picture_center()
   function assets.drawable(_, key)
     return assets.images[key]
   end
-  function assets.renderPictures(_, _, pictures)
-    for _, picture in ipairs(pictures) do
-      submitted[#submitted + 1] = picture
+  function assets.renderPictures(_, _, frame)
+    for _, primitive in ipairs(frame.primitives) do
+      submitted[#submitted + 1] = primitive
     end
     return { drawn = "layer" }
   end
@@ -2479,7 +2479,7 @@ function T.baked_motion_deltas_shift_the_submitted_picture_center()
   }, view, "detail", {}, nil)
   local picture = nil
   for _, entry in ipairs(submitted) do
-    if entry.image ~= nil and entry.kind ~= "shadow" then
+    if entry.kind == "picture" then
       picture = entry
     end
   end

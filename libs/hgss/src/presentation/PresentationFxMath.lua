@@ -650,16 +650,19 @@ end
 -- Hardware quad packing: each local component narrows to s16, drops six
 -- fractional bits, wraps to signed 10 bits, and scales back. Small
 -- offsets quantize to 1/64 and large values wrap like the hardware.
+-- Packing keeps the low 10 bits of the shifted value ((x >> 6) & 0x3FF)
+-- and unpacking sign-extends them, so the wrap is a plain signed-10-bit
+-- reduction of the shifted value with no additional bias.
 ---@param value number raw local component
 ---@return integer quantized raw component
 function PresentationFxMath.vtx10Quantize(value)
   local narrowed = PresentationFxMath.s16(value)
   local dropped = PresentationFxMath.arithmeticShift(narrowed, 6)
-  local wrapped = ((dropped + 512) % 1024 + 1024) % 1024
-  if wrapped >= 512 then
-    wrapped = wrapped - 1024
+  local unsigned = ((dropped % 1024) + 1024) % 1024
+  if unsigned >= 512 then
+    unsigned = unsigned - 1024
   end
-  return PresentationFxMath.s32(wrapped * 64)
+  return PresentationFxMath.s32(unsigned * 64)
 end
 
 return PresentationFxMath

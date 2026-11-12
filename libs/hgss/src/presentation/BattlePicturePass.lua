@@ -181,6 +181,17 @@ local function vertices(item)
     u0, v0 = frameX / imageWidth, frameY / imageHeight
     u1, v1 = (frameX + frameW) / imageWidth, (frameY + frameH) / imageHeight
   end
+  -- Authored flips mirror the sampled texels while the rectangle keeps
+  -- its submitted geometry, exactly like the strip path above: the
+  -- effect strip branch already mirrored, and shadows never mirror.
+  if item.kind ~= "shadow" and item.kind ~= "effect" then
+    if item.flipH == true then
+      u0, u1 = u1, u0
+    end
+    if item.flipV == true then
+      v0, v1 = v1, v0
+    end
+  end
   local left, right = -width / 2, width / 2
   local top, bottom = -height / 2, height / 2
   if item.kind == "shadow" then

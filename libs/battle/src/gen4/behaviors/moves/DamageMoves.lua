@@ -4277,23 +4277,6 @@ local function stepFeint(ctx, frame)
   return runStriker(ctx, record, {})
 end
 
--- U-turn strikes through the shared striker before pivoting: the strike
--- keeps its damage, accuracy, and contact followups, and only a
--- connected hit publishes the existing departure intent for the
--- executor's alive/reserve/terminal gates. A missed, protected, or
--- immune strike never reaches the pivot. Source references:
--- battle_util.c:3589-3677 and subscript_0175_PivotMove.s.
-local function stepUTurn(ctx, frame)
-  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
-  local outcome = runStriker(ctx, record, {})
-  if outcome.result ~= "hit" then
-    return outcome
-  end
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  ctx:emit("switch-intent", causeFor(record), { target = defender, mode = "strike-and-leave" })
-  return outcome
-end
-
 -- Thunder and Blizzard share one weather-accuracy rule beside their own
 -- condition secondary: rain always lands thunder and hail always lands
 -- blizzard, while harsh sun halves thunder accuracy. Source references:
@@ -5473,7 +5456,6 @@ define("THIEF", stealBinding("steal"))
 define("BUG_BITE", stealBinding("eat"))
 define("FALSE_SWIPE", strikerBinding({ leaveOne = true }))
 define("FEINT", { step = stepFeint })
-define("U_TURN", { step = stepUTurn })
 define("THUNDER", weatherStrikeBinding({ secondaries = { { status = "paralysis" } } }, "raindance", "sunnyday"))
 define("BLIZZARD", weatherStrikeBinding({ secondaries = { { status = "freeze" } } }, "hail", nil))
 define("REVENGE", { step = stepRevenge })

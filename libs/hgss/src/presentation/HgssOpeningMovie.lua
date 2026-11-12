@@ -734,15 +734,25 @@ local function acquireSlot(self, manifest)
     -- Stage each compiled particle texture once per scene acquisition: the
     -- images join the slot graph, so they release with the scene and the
     -- current/next two-scene bound covers them with no extra accounting.
-    -- Texture repeats tile through the quad, so every particle texture
-    -- opts into repeat wrapping where the host supports it.
+    -- Texture repeats tile through the quad, so each particle texture
+    -- takes its compiled sampler wrap: mirrored-repeat quarter tiles must
+    -- mirror to reconstruct the full viewport, not repeat one quadrant.
     local particles = manifest.particles
     if type(particles) == "table" and type(particles.textures) == "table" then
       for _, texture in ipairs(particles.textures) do
         if slot.imageByPath[texture.image] == nil then
           local staged = acquireImage(slot, self, texture.image)
+          local sampler = texture.sampler --[[@as table<string, unknown>?]]
+          local wrapX, wrapY = "repeat", "repeat"
+          if
+            type(sampler) == "table"
+            and (sampler.wrapX == "clamp" or sampler.wrapX == "repeat" or sampler.wrapX == "mirroredrepeat")
+            and (sampler.wrapY == "clamp" or sampler.wrapY == "repeat" or sampler.wrapY == "mirroredrepeat")
+          then
+            wrapX, wrapY = sampler.wrapX, sampler.wrapY
+          end
           if staged.setWrap ~= nil then
-            staged:setWrap("repeat", "repeat")
+            staged:setWrap(wrapX, wrapY)
           end
         end
       end

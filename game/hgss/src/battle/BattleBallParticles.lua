@@ -10,6 +10,7 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 ---@class BattleBallParticleSystem
 ---@field simulation SplParticleSimulation live emitter and particle state
 ---@field textures table<integer, table<string, unknown>> drawable handles by source texture id
+---@field textureAlphaUsage table<integer, table<string, unknown>>? compiled transparency classification by source texture id
 ---@field sceneId unknown? scene manager slot identity, nil while unallocated
 
 ---@class BattleBallParticleResolver
@@ -19,6 +20,7 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 ---@class BattleBallParticles
 ---@field _pending { start: table<string, unknown>, age: integer, waited: integer }[] effects waiting for their start tick or textures
 ---@field _systems BattleBallParticleSystem[] live systems in start order
+---@field _drawSystems BattleBallParticleSystem[] last published pre-advance systems for drawing
 ---@field _splRandomState table<string, integer> borrowed boot stream record shared by one boot
 ---@field _scene table<string, unknown>? scene manager-slot owner for first-free physical allocation
 local BattleBallParticles = {}
@@ -54,7 +56,7 @@ function BattleBallParticles.new(opts)
   opts = opts or {}
   assert(type(opts.splRandomState) == "table", "ball particles borrow the boot stream record")
   return setmetatable(
-    { _pending = {}, _systems = {}, _splRandomState = opts.splRandomState, _scene = opts.scene },
+    { _pending = {}, _systems = {}, _drawSystems = {}, _splRandomState = opts.splRandomState, _scene = opts.scene },
     BattleBallParticles
   )
 end
@@ -128,8 +130,10 @@ end
 ---@param kind "seal"|"burst"
 ---@param set table<string, unknown> staged particle set
 ---@return table<integer, table<string, unknown>>|nil textures by id, nil while a texture is staging
+---@return table<integer, table<string, unknown>>? transparency classification by id
 local function resolveTextures(resolver, ballKey, kind, set)
   local textures = {}
+  local textureAlphaUsage = {}
   for _, texture in
     ipairs(set.textures --[[@as table<string, unknown>[] ]])
   do
@@ -139,20 +143,30 @@ local function resolveTextures(resolver, ballKey, kind, set)
       return nil
     end
     textures[id] = handle
+    -- The staged set carries the decoder's exact coverage flags:
+    -- translucent texels must not harden into the cutout/opaque
+    -- classification downstream. The manifest contract requires them on
+    -- every staged particle texture.
+    textureAlphaUsage[id] = assert(texture.alphaUsage, "ball particle textures stage their alpha usage")
   end
-  return textures
+  return textures, textureAlphaUsage
 end
 
 ---@param start table<string, unknown> timeline start
 ---@param set table<string, unknown> staged particle set
 ---@param included fun(emitterId: integer): boolean
 ---@param textures table<integer, table<string, unknown>>
+---@param textureAlphaUsage table<integer, table<string, unknown>>? transparency classification by id
 ---@param splRandomState table<string, integer> borrowed boot stream record shared by one boot
 ---@return BattleBallParticleSystem
-local function startSystem(start, set, included, textures, splRandomState)
+local function startSystem(start, set, included, textures, textureAlphaUsage, splRandomState)
   local x, y, z = origin(start)
   local randomState = assert(splRandomState, "ball particles borrow their boot stream record")
   local simulation = SplParticleSimulation.new(randomState, 0, set.emitters)
+  -- The seal, burst, and click effects all select the orthographic
+  -- camera (battle_anim_ball.c): particle size never depends on
+  -- perspective depth on this path.
+  simulation.camera.perspective = 1
   for ordinal, record in
     ipairs(set.emitters --[[@as table<string, unknown>[] ]])
   do
@@ -170,7 +184,7 @@ local function startSystem(start, set, included, textures, splRandomState)
       end
     end
   end
-  return { simulation = simulation, textures = textures }
+  return { simulation = simulation, textures = textures, textureAlphaUsage = textureAlphaUsage }
 end
 
 -- Advances one source tick: queued balls warm their textures, new starts
@@ -204,9 +218,9 @@ function BattleBallParticles:step(starts, queuedBalls, resolver)
       else
         local kind, included = plan(start, particles)
         local set = particles[kind] --[[@as table<string, unknown>]]
-        local textures = resolveTextures(resolver, ballKey, kind, set)
+        local textures, textureAlphaUsage = resolveTextures(resolver, ballKey, kind, set)
         if textures ~= nil then
-          local system = startSystem(start, set, included, textures, self._splRandomState)
+          local system = startSystem(start, set, included, textures, textureAlphaUsage, self._splRandomState)
           if self._scene ~= nil and type(self._scene.allocParticleSystem) == "function" then
             system.sceneId = self._scene:allocParticleSystem(system)
           end
@@ -222,6 +236,20 @@ function BattleBallParticles:step(starts, queuedBalls, resolver)
       table.remove(self._pending, index)
     end
   end
+  -- Publish the pre-advance frame for drawing before the simulation
+  -- tick: the compositor paints this immutable geometry while the live
+  -- systems advance underneath. Retired systems leave the live list but
+  -- stay visible through this frame.
+  local published = {}
+  for _, system in ipairs(self._systems) do
+    published[#published + 1] = {
+      simulation = SplParticleSimulation.copyForDraw(system.simulation),
+      textures = system.textures,
+      textureAlphaUsage = system.textureAlphaUsage,
+      sceneId = system.sceneId,
+    }
+  end
+  self._drawSystems = published
   for index = #self._systems, 1, -1 do
     local system = self._systems[index]
     SplParticleSimulation.advance(system.simulation)
@@ -236,8 +264,19 @@ function BattleBallParticles:isIdle()
   return #self._pending == 0 and #self._systems == 0
 end
 
----@return BattleBallParticleSystem[] live systems for drawing, in start order
+---@return BattleBallParticleSystem[] live systems in start order
 function BattleBallParticles:systems()
+  return self._systems
+end
+
+-- The published pre-advance systems for drawing, in start order: the exact
+-- geometry the last step captured. Absent before the first step, when
+-- drawing falls back to the live systems.
+---@return BattleBallParticleSystem[] published or live systems for drawing
+function BattleBallParticles:drawSystems()
+  if self._drawSystems ~= nil and #self._drawSystems > 0 then
+    return self._drawSystems
+  end
   return self._systems
 end
 
@@ -258,6 +297,7 @@ function BattleBallParticles:clear()
   end
   self._pending = {}
   self._systems = {}
+  self._drawSystems = {}
 end
 
 return BattleBallParticles

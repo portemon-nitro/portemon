@@ -165,7 +165,16 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
         drawable.width = texture.width
         drawable.height = texture.height
       end
-      textures[#textures + 1] = { id = texture.id, width = texture.width, height = texture.height, drawable = drawable }
+      -- The staged scene layer carries the descriptor's exact coverage
+      -- flags, as the production staging does: the encounter owner
+      -- preserves them for the shared depth/blend classification.
+      textures[#textures + 1] = {
+        id = texture.id,
+        width = texture.width,
+        height = texture.height,
+        drawable = drawable,
+        alphaUsage = texture.alphaUsage,
+      }
     end
     layer.encounterParticles[setIndex] =
       { startTick = set.startTick, emitters = set.emitters, textures = textures }
@@ -543,13 +552,25 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
     local ballTexture = StubLease.new("ball-live-particle")
     ballTexture.width = 8
     ballTexture.height = 8
+    -- The fake staged seal set carries the descriptor's exact coverage
+    -- flags, as production ball manifest entries do.
+    local ballTextures = {}
+    for _, texture in ipairs(ballParticles.textures) do
+      ballTextures[#ballTextures + 1] = {
+        id = texture.id,
+        width = texture.width,
+        height = texture.height,
+        image = texture.image,
+        alphaUsage = { hasZero = false, hasPartial = false, hasOpaque = true },
+      }
+    end
     rig.screen._ballParticles:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, {
       particles = function()
         return {
           seal = {
             seed = ballParticles.seed,
             emitters = ballParticles.emitters,
-            textures = ballParticles.textures,
+            textures = ballTextures,
           },
         }
       end,
@@ -558,13 +579,6 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
       end,
     })
 
-    -- The first encounter particle starts fully transparent; advance once
-    -- so the production draw boundary receives visible particles.
-    rig.pump(1)
-    local before = rig.screen:view()
-    Assert.equal(#before.encounterParticleSystems, 1, "the encounter owner has a live emitter")
-    Assert.equal(#before.moveParticleSystems, 1, "the scene owner has a live move emitter")
-    Assert.equal(#before.ballParticleSystems, 1, "the ball owner has a live seal emitter")
     -- Live particles reach the shared 3D target as native primitives in
     -- both layouts: the compositor owns depth against pictures, so no
     -- particle overlay paints past the UI.
@@ -591,16 +605,38 @@ function T.screen_draws_live_particle_owners_in_detail_and_compact_layouts()
       end
       return false
     end
-    local detail = FakeGraphics.new({})
-    local detailSeen = #rig.frames
-    rig.screen:draw({ graphics = detail })
+    -- The first encounter particle starts fully transparent, and the
+    -- published pre-advance frame shows the tick-start state: step until
+    -- the encounter particle leaves its fade-in and reaches the shared
+    -- target. The loop stays bounded so the short-lived live particles
+    -- cannot retire first.
+    local encounterHandle = "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0"
+    local before = nil
     local detailFrames = {}
-    for index = detailSeen + 1, #rig.frames do
-      detailFrames[#detailFrames + 1] = rig.frames[index]
+    local encounterVisible = false
+    for _ = 1, 4 do
+      rig.pump(1)
+      before = rig.screen:view()
+      local attempt = FakeGraphics.new({})
+      local seen = #rig.frames
+      rig.screen:draw({ graphics = attempt })
+      detailFrames = {}
+      for index = seen + 1, #rig.frames do
+        detailFrames[#detailFrames + 1] = rig.frames[index]
+      end
+      if handlesHave(primitiveHandles(detailFrames), encounterHandle) then
+        encounterVisible = true
+        break
+      end
     end
+    Assert.isTrue(encounterVisible, "detail submits the encounter particle once it leaves its fade-in")
+    Assert.isTrue(before ~= nil, "the visibility loop publishes at least one frame")
+    Assert.equal(#before.encounterParticleSystems, 1, "the encounter owner has a live emitter")
+    Assert.equal(#before.moveParticleSystems, 1, "the scene owner has a live move emitter")
+    Assert.equal(#before.ballParticleSystems, 1, "the ball owner has a live seal emitter")
     local detailHandles = primitiveHandles(detailFrames)
     for _, handle in ipairs({
-      "encounter-particle:" .. ENCOUNTER_SCENE_KEY .. ":1:0",
+      encounterHandle,
       "move-live-particle",
       "ball-live-particle",
     }) do
@@ -694,36 +730,49 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     Assert.equal(raster.pixels:byte(12), 0, "transparent source coverage stays transparent")
 
     local uploadCount = #rig.paletteRasters[image.handle]
+    -- The published pre-advance frame shows the tick-start state, so a
+    -- fade-in tick may legitimately submit no visible particle: step
+    -- until the encounter particle reaches the shared target, bounded
+    -- so the encounter task cannot retire first.
     local detail = FakeGraphics.new({})
-    local detailSeen = #rig.frames
-    rig.screen:draw({ graphics = detail })
+    local terrainDraw = nil
+    local particlePrimitive = nil
+    local detailFrame = nil
+    local publishedView = nil
+    for _ = 1, 6 do
+      local seen = #rig.frames
+      local attempt = FakeGraphics.new({})
+      rig.screen:draw({ graphics = attempt })
+      for index = seen + 1, #rig.frames do
+        local frame = rig.frames[index]
+        if frame.engine == "main" then
+          detailFrame = detailFrame or frame
+          for _, primitive in ipairs(frame.primitives or {}) do
+            local material = primitive.image or primitive.material
+            local staged = type(material) == "table" and (material.image or material) or material
+            if staged == sourceParticleImage then
+              particlePrimitive = particlePrimitive or primitive
+            end
+          end
+        end
+      end
+      if particlePrimitive ~= nil then
+        detail = attempt
+        publishedView = rig.screen:view()
+        break
+      end
+      rig.pump(1)
+    end
+    Assert.isTrue(particlePrimitive ~= nil, "the real detail screen submits the separate encounter particle")
+    Assert.isTrue(publishedView ~= nil, "the submitted particle rides a published frame")
     rig.screen:draw({ graphics = FakeGraphics.new({}) })
     Assert.equal(
       #rig.paletteRasters[image.handle],
       uploadCount,
       "repeated draws do not rematerialize an unchanged palette image"
     )
-    local terrainDraw = drawsOf(detail.draws, image.handle)[1]
+    terrainDraw = drawsOf(detail.draws, image.handle)[1]
     Assert.isTrue(terrainDraw ~= nil, "the real detail screen draws the sampled terrain image")
-    -- Particles reach the shared 3D target as native primitives while
-    -- terrain stays 2D content: the world plane keeps source priority
-    -- above the battlefield, so the particle stays above the terrain.
-    local particlePrimitive = nil
-    local detailFrame = nil
-    for index = detailSeen + 1, #rig.frames do
-      local frame = rig.frames[index]
-      if frame.engine == "main" then
-        detailFrame = detailFrame or frame
-        for _, primitive in ipairs(frame.primitives or {}) do
-          local material = primitive.image or primitive.material
-          local staged = type(material) == "table" and (material.image or material) or material
-          if staged == sourceParticleImage then
-            particlePrimitive = particlePrimitive or primitive
-          end
-        end
-      end
-    end
-    Assert.isTrue(particlePrimitive ~= nil, "the real detail screen submits the separate encounter particle")
     Assert.isTrue(
       detailFrame ~= nil
         and detailFrame.planes.battlefield ~= nil
@@ -732,7 +781,9 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     )
     local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
     local sourceParticle = nil
-    for _, system in ipairs(view.encounterParticleSystems) do
+    -- The overlay comparison reads the same published frame the draw
+    -- submitted: no step runs between the successful draw and this view.
+    for _, system in ipairs(assert(publishedView, "the submitted particle rides a published frame").encounterParticleSystems) do
       if system.textures[0] ~= nil and system.textures[0].image.handle == sourceParticleImage.handle then
         sourceParticle = system
         break
@@ -1018,7 +1069,14 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   rig.pump(1)
   local sixtyFirst = rig.screen:view()
   Assert.equal(sixtyFirst.openingPresentation.encounterFrame, 61, "the task runs on while the first system is gone")
-  Assert.equal(#sixtyFirst.encounterParticleSystems, 1, "the retired first system leaves the second running")
+  -- The published draw frame still carries the retired first system's
+  -- terminal geometry for this frame, so liveness probes read the live
+  -- owner while the snapshot feeds the compositor.
+  Assert.equal(
+    #rig.screen._encounterParticles:systems(),
+    1,
+    "the retired first system leaves the second running"
+  )
   rig.pump(1)
   local sixtySecond = rig.screen:view()
   Assert.equal(sixtySecond.openingPresentation.encounterFrame, 62, "the task reaches the second retirement tick")

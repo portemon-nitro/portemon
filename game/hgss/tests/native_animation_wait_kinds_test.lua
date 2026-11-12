@@ -162,11 +162,26 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
     return { key = key, lease = key }
   end
   function resources.release(_lease) end
+  -- The effects wait polls live SPL emitters, not task records: plant one
+  -- live emitter through the fake factory so the wait genuinely holds,
+  -- then drain it once the scheduled tasks retire.
+  local factory = taskFactory(log)
+  local planted = {}
+  local baseCreate = factory.create
+  function factory.create(kind, args, context, services)
+    local task = baseCreate(kind, args, context, services)
+    if planted.simulation == nil and type(context) == "table" and type(context.particles) == "table" then
+      planted.runtime = { particles = { { age = 0, life = 100 } } }
+      planted.simulation = { emitters = { planted.runtime } }
+      context.particles.systems[0] = { simulation = planted.simulation }
+    end
+    return task
+  end
   local player = assert(Player.new({
     scene = scene,
     audio = audio,
     resources = resources,
-    tasks = taskFactory(log),
+    tasks = factory,
     services = { onNativeFrame = function() end },
   }))
   local handle = assert(player:start(playbackPacket(), program))
@@ -174,13 +189,27 @@ function T.each_wait_form_lowers_to_its_own_operation_and_resumes_on_its_own_con
   Assert.equal(player:status(handle), "waiting", "the voice wait holds while its voice is unfinished")
   audio.finish(audio.played[1])
   player:stepSourceTick({ tick = 2 })
-  Assert.equal(player:status(handle), "waiting", "the effect wait holds while its tasks run")
+  Assert.equal(player:status(handle), "waiting", "the effect wait holds while its emitter stays live")
   -- Both schedules lower to one task kind, so the completion threshold
   -- refreshes every tick: each pass retires exactly the next task to
-  -- step until the shared kind drains.
+  -- step until the shared kind drains, and the planted emitter drains
+  -- with the last of them.
   for _ = 1, 10 do
     for _, kind in ipairs(log.created) do
       log.completeAfter[kind] = #log.steps + 1
+    end
+    -- The native wait polls the active-list length: draining the emitter
+    -- removes its runtime from the simulation, exactly like emitter
+    -- retirement does.
+    if #log.disposed == #log.created and #log.created > 0 and planted.simulation ~= nil then
+      local emitters = planted.simulation.emitters
+      for index, live in ipairs(emitters) do
+        if live == planted.runtime then
+          table.remove(emitters, index)
+          planted.runtime = nil
+          break
+        end
+      end
     end
     player:stepSourceTick({ tick = 3 })
     if player:status(handle) == "complete" then

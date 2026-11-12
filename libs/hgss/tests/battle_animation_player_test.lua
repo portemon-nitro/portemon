@@ -422,10 +422,53 @@ function T.effects_waits_release_while_unrelated_raw_tasks_run()
   Assert.equal(#helpers.log.disposed, 0, "the running raw task retires nothing")
 end
 
+-- Plants one live emitter in the occurrence particle registry through the
+-- fake task factory: the native wait polls the active-list length, so the
+-- emitter holds the wait from creation until it leaves the list.
+-- Returns a holder the test drives to drain the emitter.
+---@param helpers table collaborator bundle behind the player
+---@return { simulation: table<string, unknown>?, runtime: table<string, unknown>? } holder carrying the planted emitter
+local function plantEmitter(helpers)
+  local holder = {}
+  local factory = helpers.tasks.create
+  function helpers.tasks.create(kind, args, context, services)
+    local task = factory(kind, args, context, services)
+    if kind == "battler-effect-continuation" and holder.runtime == nil and type(context) == "table" then
+      local registry = context.particles
+      if type(registry) == "table" and type(registry.systems) == "table" then
+        holder.runtime = { particles = { { age = 0, life = 100 } } }
+        holder.simulation = { emitters = { holder.runtime } }
+        registry.systems[0] = { simulation = holder.simulation }
+      end
+    end
+    return task
+  end
+  return holder
+end
+
+-- Drains the holder's planted emitter the way emitter retirement does:
+-- the runtime leaves the simulation's active list.
+---@param holder { simulation: table<string, unknown>?, runtime: table<string, unknown>? } planted emitter holder
+local function drainEmitter(holder)
+  local simulation = holder.simulation
+  local runtime = holder.runtime
+  assert(type(simulation) == "table", "the emitter plants before the wait polls")
+  for index, live in ipairs(simulation.emitters --[[@as table<string, unknown>[] ]]) do
+    if live == runtime then
+      table.remove(simulation.emitters, index)
+      holder.runtime = nil
+      return
+    end
+  end
+  error("the planted emitter leaves its simulation exactly once")
+end
+
 function T.effects_waits_fail_stuck_particle_work_loudly()
   -- A particle emitter that never drains holds its own wait past the
   -- long watchdog instead of releasing the occurrence silently; raw
   -- tasks never join this condition.
+  local helpers = collaborators()
+  plantEmitter(helpers)
   local player, handle = startNew(programOf({
     {
       op = "create-parameterized-battler-effect",
@@ -436,7 +479,7 @@ function T.effects_waits_fail_stuck_particle_work_loudly()
     },
     { op = "wait-for-battler-effects" },
     { op = "reset-blend-alpha" },
-  }))
+  }), helpers)
   for _ = 1, 950 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "failed" then
@@ -456,23 +499,26 @@ function T.effects_waits_release_long_lived_particles_without_failing()
   -- its wait once it drains: the watchdog never changes valid source
   -- timing.
   local helpers = collaborators()
+  local holder = plantEmitter(helpers)
   local ticks = 0
-  function helpers.tasks.create(kind, _args, _context, _services)
-    helpers.log.created[#helpers.log.created + 1] = kind
-    local task = { _state = "running" }
-    function task.stepSourceTick(_tick)
+  local factory = helpers.tasks.create
+  function helpers.tasks.create(kind, args, context, services)
+    local task = factory(kind, args, context, services)
+    local stepped = task.stepSourceTick
+    function task.stepSourceTick(tick)
+      stepped(tick)
+      -- The fake task body retires the planted emitter the way emitter
+      -- retirement does: the runtime leaves the active list at tick 25,
+      -- and the bookkeeping task retires just after, as a drained
+      -- emitter task does.
       ticks = ticks + 1
-      if ticks >= 25 then
+      if ticks == 25 then
+        drainEmitter(holder)
+      end
+      if ticks >= 27 then
         task._state = "complete"
       end
     end
-    function task.status()
-      return task._state
-    end
-    function task.cancel(_reason)
-      task._state = "cancelled"
-    end
-    function task.dispose() end
     return task
   end
   local player = assert(BattleAnimationPlayer.new({
@@ -504,6 +550,82 @@ function T.effects_waits_release_long_lived_particles_without_failing()
   end
   Assert.equal(player:status(handle), "complete", "the drained emitter releases its wait")
   Assert.isNil(player:failure(handle), "the long-lived emitter carries no failure")
+end
+
+function T.effects_waits_follow_emitter_counts_not_task_records()
+  -- Native opcode 50 polls ParticleSystem_GetActiveEmitterCount: a
+  -- retired bookkeeping task with a live emitter still holds the wait,
+  -- while a lingering non-emitter particle task past emitter drain does
+  -- not.
+  local helpers = collaborators()
+  local holder = plantEmitter(helpers)
+  local factory = helpers.tasks.create
+  function helpers.tasks.create(kind, args, context, services)
+    local task = factory(kind, args, context, services)
+    function task.stepSourceTick(_tick)
+    end
+    function task.status()
+      -- The bookkeeping task retires immediately while its emitter
+      -- stays live.
+      return "complete"
+    end
+    return task
+  end
+  local player, handle = startNew(programOf({
+    {
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-default",
+      emitter = 0,
+      systemIndex = 0,
+    },
+    { op = "wait-for-battler-effects" },
+    { op = "reset-blend-alpha" },
+  }), helpers)
+  for _ = 1, 10 do
+    player:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(player:status(handle), "waiting", "a live emitter holds the wait past its retired task")
+  drainEmitter(holder)
+  for _ = 1, 5 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the drained emitter releases the wait")
+end
+
+function T.effects_waits_release_while_particle_group_tasks_linger()
+  -- A still-running particle-group task with no live emitter never
+  -- holds the wait: the condition follows the emitter count, not the
+  -- task count. The default fake tasks plant no emitters, so the wait
+  -- releases while the task still holds the stream end.
+  local player, handle, helpers = startNew(programOf({
+    {
+      op = "create-parameterized-battler-effect",
+      taskKind = "battler-effect-continuation",
+      actionProfile = "particle-emitter-default",
+      emitter = 0,
+      systemIndex = 0,
+    },
+    { op = "wait-for-battler-effects" },
+    { op = "play-sound", sound = "downstream-cue" },
+    { op = "reset-blend-alpha" },
+  }))
+  for _ = 1, 10 do
+    player:stepSourceTick({ tick = 1 })
+  end
+  Assert.deepEqual(
+    helpers.log.played,
+    { "downstream-cue" },
+    "the wait releases with no live emitter even while its task runs"
+  )
+  Assert.equal(
+    player:status(handle),
+    "waiting",
+    "the lingering particle task still holds the stream end"
+  )
 end
 
 function T.stream_end_with_unfinished_voices_fails_loudly()

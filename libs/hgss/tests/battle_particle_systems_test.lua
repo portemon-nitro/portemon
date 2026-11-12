@@ -137,14 +137,21 @@ end
 -- Services whose leases mirror the production holder: particle systems come
 -- back as decoded records and textures with an image handle.
 local function services(scene, systemPayload)
-  local journal = { acquired = {}, released = {} }
+  local journal = { acquired = {}, released = {}, wraps = {} }
   local resources = {}
   function resources.resolve(key)
     journal.acquired[#journal.acquired + 1] = key
     if key == "system" then
       return { key = key, kind = "particle", data = systemPayload }
     end
-    return { key = key, kind = "texture", handle = { image = key } }
+    -- Handles record their wrap so wrap assertions ride the shared
+    -- leases: payloads without a compiled sampler never call it, which
+    -- is exactly the older-cache fallback the production guard keeps.
+    local handle = { image = key }
+    function handle.setWrap(_, wrapX, wrapY)
+      journal.wraps[key] = { wrapX, wrapY }
+    end
+    return { key = key, kind = "texture", handle = handle }
   end
   function resources.release(lease)
     journal.released[#journal.released + 1] = lease
@@ -197,20 +204,39 @@ function T.system_loads_registers_with_the_scene_and_frees_exactly_once()
   Assert.isNil(ctx.particles.systems[0], "the system slot is free again")
 end
 
-function T.system_loads_publish_compiled_texture_alpha_usage_for_classification()
-  -- The compiled per-texture alpha usage rides the draw view beside
-  -- the staged handles: the shared Gx classification discards
-  -- transparent texels instead of writing depth on the opaque path,
-  -- while textures without compiled usage fall back to the picture
-  -- blanket in the renderer.
+function T.system_loads_publishes_compiled_texture_metadata_for_classification_and_wrap()
+  -- The compiled per-texture metadata rides the load beside the staged
+  -- handles: alpha usage joins the draw view so the shared Gx
+  -- classification discards transparent texels instead of writing depth
+  -- on the opaque path, and the header wrap reaches each image handle so
+  -- a mirrored-repeat quarter tile mirrors instead of repeating one
+  -- quadrant. Systems with no usage table keep the picture blanket in
+  -- the renderer; a system that stages a table but drops an entry fails
+  -- loudly at render instead of hardening translucent texels. Textures
+  -- without a compiled sampler (older caches) keep the upload borrow:
+  -- the system corrects only staged wraps.
   local scene = BattleScene.new()
   local ctx = context()
   local usage = { hasZero = true, hasPartial = true, hasOpaque = true }
-  local system, _ = loadSystem(scene, {
+  local system, journal = loadSystem(scene, {
     emitters = { emitterRecord({ persistent = true }) },
     textures = {
-      { id = 0, width = 8, height = 8, image = "texture/0", alphaUsage = usage },
-      { id = 1, width = 8, height = 8, image = "texture/1" },
+      {
+        id = 0,
+        width = 8,
+        height = 8,
+        image = "texture/0",
+        alphaUsage = usage,
+        sampler = { wrapX = "mirroredrepeat", wrapY = "mirroredrepeat", minFilter = "nearest", magFilter = "nearest" },
+      },
+      {
+        id = 1,
+        width = 8,
+        height = 8,
+        image = "texture/1",
+        sampler = { wrapX = "repeat", wrapY = "repeat", minFilter = "nearest", magFilter = "nearest" },
+      },
+      { id = 2, width = 8, height = 8, image = "texture/2" },
     },
     placements = placements(),
     axisTables = axisTables(),
@@ -226,6 +252,16 @@ function T.system_loads_publish_compiled_texture_alpha_usage_for_classification(
   Assert.isNil(
     view.textureAlphaUsage[1],
     "textures without compiled usage fall back to the picture blanket"
+  )
+  Assert.deepEqual(
+    journal.wraps["texture/0"],
+    { "mirroredrepeat", "mirroredrepeat" },
+    "mirrored-repeat textures mirror their tiled viewport"
+  )
+  Assert.deepEqual(journal.wraps["texture/1"], { "repeat", "repeat" }, "repeat textures keep their sampler")
+  Assert.isNil(
+    journal.wraps["texture/2"],
+    "textures without a compiled sampler keep the upload borrow"
   )
   system:free()
   system:dispose()
@@ -1388,6 +1424,95 @@ function T.pair_transform_callbacks_share_the_script_transform()
     "the from-script convergence target scales xyz by the side sign before the origin subtraction"
   )
   Assert.deepEqual(scriptedTarget, { x = 1, y = 0, z = 0 }, "the script-target carrier still places its position")
+  system:dispose()
+end
+
+function T.draw_phase_captures_pre_advance_geometry_and_advances_exactly_once()
+  -- The native draw phase submits the particle geometry before the
+  -- simulation tick: the compositor paints the published pre-advance
+  -- frame (including newborn and terminal polygons) while every manager
+  -- advances exactly once underneath. Repeated draws of the published
+  -- frame stay stable.
+  local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
+  local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSimulation")
+  local scene = BattleScene.new()
+  local ctx = context()
+  local system, _ = loadSystem(scene, {
+    emitters = {
+      emitterRecord({ emitterLife = 2, particleLife = 1, velocityFx = { pos = 4096, axis = 0 } }),
+    },
+    textures = { { id = 0, width = 8, height = 8, image = "texture/0" } },
+    placements = placements(),
+    axisTables = axisTables(),
+    emitterTables = emitterTables(),
+  }, ctx)
+  local view = scene:particleSystems()[1]
+  local sim = view.simulation
+  Assert.notNil(
+    SplParticleSimulation.addEmitter(sim, 0, nil),
+    "the draw phase captures a live emitter"
+  )
+  -- Before the first draw phase the compositor falls back to the live systems.
+  Assert.equal(#scene:drawParticleSystems(), 1, "drawing falls back to the live systems before capture")
+  BattleParticleSystems.stepSourceDrawPhase(scene)
+  local published = scene:drawParticleSystems()
+  Assert.equal(
+    #published[1].simulation.emitters[1].particles,
+    0,
+    "the first capture precedes the first simulation tick"
+  )
+  Assert.equal(#sim.emitters[1].particles, 1, "the draw phase advances the live simulation once")
+  Assert.equal(sim.emitters[1].age, 1, "one draw phase advances the emitter by exactly one tick")
+  -- The second capture shows the previous live state while the live
+  -- simulation advances underneath it.
+  local x1 = sim.emitters[1].particles[1].x
+  BattleParticleSystems.stepSourceDrawPhase(scene)
+  published = scene:drawParticleSystems()
+  Assert.equal(#published[1].simulation.emitters[1].particles, 1, "the terminal polygon stays visible")
+  Assert.equal(
+    published[1].simulation.emitters[1].particles[1].x,
+    x1,
+    "the published frame shows the exact pre-update positions"
+  )
+  Assert.isTrue(
+    sim.emitters[1].particles[1].x ~= x1,
+    "the live simulation advanced underneath the published frame"
+  )
+  Assert.equal(sim.emitters[1].age, 2, "the second draw phase advances exactly once more")
+  -- Repeated draws of one published frame stay stable without
+  -- advancing the simulation or its random stream.
+  local function primitivesOf(frame)
+    local out = {}
+    for _, entry in ipairs(frame) do
+      SplParticleDraw.appendPrimitives(entry.simulation, nil, function(_, particle, child)
+        local texNo = child ~= nil and child.texNo or particle.texNo
+        return entry.textures[texNo]
+      end, out)
+    end
+    return out
+  end
+  local first = primitivesOf(scene:drawParticleSystems())
+  local second = primitivesOf(scene:drawParticleSystems())
+  Assert.isTrue(#first > 0, "the terminal polygon reaches the compositor")
+  Assert.deepEqual(first, second, "repeated draws of the published frame are stable")
+  -- Generation stops once the emitter passes its lifespan; the last
+  -- particle retires on the following tick and the published frame
+  -- after that clears.
+  BattleParticleSystems.stepSourceDrawPhase(scene)
+  published = scene:drawParticleSystems()
+  Assert.equal(
+    #published[1].simulation.emitters[1].particles,
+    1,
+    "the final particle stays visible through its last frame"
+  )
+  BattleParticleSystems.stepSourceDrawPhase(scene)
+  published = scene:drawParticleSystems()
+  Assert.equal(
+    #published[1].simulation.emitters,
+    0,
+    "the retired emitter clears on the following frame"
+  )
+  system:free()
   system:dispose()
 end
 

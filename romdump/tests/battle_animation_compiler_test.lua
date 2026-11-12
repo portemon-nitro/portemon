@@ -1411,8 +1411,7 @@ function T.sprite_palette_blend_callback_maps_blend_operands()
   local invalid, reason = Sources.resolveSourceSelection("battle-animation-callback", { 63, 6, 0, 0, 1, 14, 14, 6342 })
   Assert.isNil(invalid, "a flag word selecting no sprite is rejected")
   Assert.isTrue(reason:find("assertion", 1, true) ~= nil, "invalid sprite selection keeps the source reason")
-  local badCount, countReason =
-    Sources.resolveSourceSelection("battle-animation-callback", { 63, 5, 2, 0, 1, 14, 14 })
+  local badCount, countReason = Sources.resolveSourceSelection("battle-animation-callback", { 63, 5, 2, 0, 1, 14, 14 })
   Assert.isNil(badCount, "a short blend frame is rejected")
   Assert.isTrue(countReason:find("six source operands", 1, true) ~= nil, "short frames name their shape")
 end
@@ -1940,11 +1939,7 @@ function T.particle_initializer_table_resolves_all_profiles_without_native_selec
     Assert.isNil(plan.selector, "source callback selector stays out of the action plan")
   end
   local destination = assert(Sources.resolveBattlerParticleAction(47, { 2, 5, 0x66, 4 }))
-  Assert.equal(
-    destination.sourceEmitterSelections.emitter,
-    0x66,
-    "opcode47 selects its APS ordinal from operand three"
-  )
+  Assert.equal(destination.sourceEmitterSelections.emitter, 0x66, "opcode47 selects its APS ordinal from operand three")
   Assert.equal(
     profileBySelector[0],
     "particle-emitter-default",
@@ -2228,7 +2223,7 @@ function T.configured_sprite_callbacks_resolve_to_closed_semantic_tasks()
     Assert.equal(decoded.instructions[2].op, "noop", "all source frames land on the following instruction")
   end
   Assert.isTrue(taskKinds["sprite-animation-lifecycle"], "animation lifecycle has a named task")
-  Assert.isTrue(taskKinds["pokemon-picture-palette-fade"], "picture palette fades have a named task")
+  Assert.isTrue(taskKinds["pokemon-picture-zigzag-slash"], "the ZigzagSlash sprite func has a named task")
   local plan, reason = Sources.resolveConfiguredSpriteAction(callbackCount)
   Assert.isNil(plan, "selector beyond the pinned callback table is rejected")
   Assert.isTrue(reason:find("outside", 1, true) ~= nil, "invalid callback selector has a precise reason")
@@ -2274,7 +2269,11 @@ function T.configured_sprite_dispatch_lowers_resources_task_context_and_script_p
   }))
   local instruction = program.instructions[1]
   Assert.equal(instruction.op, "create-configured-sprite", "callback creates and configures its sprite")
-  Assert.equal(instruction.taskKind, "pokemon-picture-palette-fade", "callback resolves to a semantic task")
+  Assert.equal(
+    instruction.taskKind,
+    "pokemon-picture-zigzag-slash",
+    "opcode-78 selector 8 is the native ZigzagSlash sprite func, not a palette fade"
+  )
   Assert.equal(instruction.taskContext, "pokemon-picture", "callback declares its typed task context")
   Assert.deepEqual(instruction.parameters, {}, "unused source parameters are cursor-validated but not published")
   Assert.equal(instruction.resourceKeys.character, "battle/sprite/character", "character resource is semantic")

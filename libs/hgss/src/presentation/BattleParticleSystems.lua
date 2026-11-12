@@ -234,7 +234,24 @@ function BattleParticleSystems.newSystemTask(args, context, services, lease)
     for _, texture in ipairs(payload.textures) do
       lease.stage(kind, texture.image, services, staged)
       local textureLease = (staged[#staged] --[[@as table<string, unknown>]]).lease --[[@as table<string, unknown>]]
-      textures[texture.id] = textureLease.handle
+      local handle = textureLease.handle
+      textures[texture.id] = handle
+      -- Retail texture headers name the sampler wrap per axis: a tiled
+      -- viewport must mirror when the header says mirroredrepeat, or a
+      -- quarter-wave tile repeats instead of reconstructing the full wave.
+      -- The upload borrow defaults to repeat for tiling; the system
+      -- corrects it from the compiled sampler so existing caches without
+      -- per-image sampler still draw mirrored tiling.
+      local sampler = texture.sampler --[[@as table<string, unknown>?]]
+      if
+        type(handle) == "table"
+        and type(handle.setWrap) == "function"
+        and type(sampler) == "table"
+        and (sampler.wrapX == "clamp" or sampler.wrapX == "repeat" or sampler.wrapX == "mirroredrepeat")
+        and (sampler.wrapY == "clamp" or sampler.wrapY == "repeat" or sampler.wrapY == "mirroredrepeat")
+      then
+        handle:setWrap(sampler.wrapX, sampler.wrapY)
+      end
       -- The staged image handle carries no alpha metadata, so the
       -- compiled per-texture alpha usage rides alongside for the
       -- shared Gx classification: transparent texels must discard
@@ -1829,10 +1846,12 @@ function BattleParticleSystems.getEmitterHandle(owner, systemSlot, emitterSlot)
   return facade
 end
 
--- One source particle draw phase: capture every manager's geometry
--- first, then calculate all systems once in native physical slot
--- order. Later host rendering reuses that captured result; no
--- per-system task calculates twice.
+-- One source particle draw phase: capture every manager's renderable
+-- primitives first, publish the immutable frame, then calculate all
+-- systems once in native physical slot order. The battle compositor
+-- paints the published pre-advance frame, so the current tick shows its
+-- own geometry (including newborn and terminal polygons) instead of
+-- next-tick positions; no per-system task calculates twice.
 ---@param scene table<string, unknown> scene carrying the physical manager registry
 ---@param sourceTick table<string, unknown>? accepted source tick under advancement
 function BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
@@ -1845,27 +1864,24 @@ function BattleParticleSystems.stepSourceDrawPhase(scene, sourceTick)
   if type(systems) ~= "table" then
     return
   end
-  local captured = {}
-  for slot, view in ipairs(systems) do
+  local frame = {}
+  for _, view in ipairs(systems) do
     local simulation = type(view) == "table" and view.simulation or nil
     if type(simulation) == "table" and type(simulation.emitters) == "table" then
-      local snapshot = {}
-      for _, runtime in ipairs(simulation.emitters) do
-        snapshot[#snapshot + 1] = {
-          runtime = runtime,
-          x = runtime.x,
-          y = runtime.y,
-          z = runtime.z,
-          particles = #runtime.particles,
-        }
-      end
-      captured[slot] = { simulation = simulation, snapshot = snapshot }
+      frame[#frame + 1] = {
+        simulation = SplParticleSimulation.copyForDraw(simulation),
+        textures = view.textures,
+        textureAlphaUsage = view.textureAlphaUsage,
+      }
     end
   end
-  for slot = 1, #systems do
-    local entry = captured[slot]
-    if entry ~= nil then
-      SplParticleSimulation.advance(entry.simulation)
+  if type(scene.publishParticleDrawFrame) == "function" then
+    scene:publishParticleDrawFrame(frame)
+  end
+  for _, view in ipairs(systems) do
+    local simulation = type(view) == "table" and view.simulation or nil
+    if type(simulation) == "table" and type(simulation.emitters) == "table" then
+      SplParticleSimulation.advance(simulation)
     end
   end
 end

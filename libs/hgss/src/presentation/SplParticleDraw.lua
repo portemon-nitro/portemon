@@ -592,6 +592,11 @@ function M.draw(graphics, simulation, options)
     }
     local color = primitive.color5
     graphics.setColor(color.r / 31, color.g / 31, color.b / 31, primitive.alpha5 / 31)
+    -- The signed UV spans mirror sampling on their axis (the retail
+    -- negative tex_s/tex_t): a negative span flips the sampled image
+    -- along that quad axis while the viewport keeps its positive size.
+    local mirrorS = (primitive.vertices[2].u or 1) < 0 and -1 or 1
+    local mirrorT = (primitive.vertices[3].v or 1) < 0 and -1 or 1
     drawTextureQuad(
       graphics,
       image,
@@ -599,8 +604,8 @@ function M.draw(graphics, simulation, options)
       (corners[1].x + corners[2].x + corners[3].x + corners[4].x) / 4,
       (corners[1].y + corners[2].y + corners[3].y + corners[4].y) / 4,
       math.atan2(axisX.y, axisX.x),
-      math.sqrt(axisX.x * axisX.x + axisX.y * axisX.y) / quadWidth,
-      math.sqrt(axisY.x * axisY.x + axisY.y * axisY.y) / quadHeight,
+      mirrorS * math.sqrt(axisX.x * axisX.x + axisX.y * axisX.y) / quadWidth,
+      mirrorT * math.sqrt(axisY.x * axisY.x + axisY.y * axisY.y) / quadHeight,
       quadWidth / 2,
       quadHeight / 2
     )

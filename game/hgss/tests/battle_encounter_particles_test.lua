@@ -101,6 +101,95 @@ function T.a_retired_first_system_leaves_the_second_running()
   Assert.equal(#owner:systems(), 0, "a finished set never restarts")
 end
 
+function T.started_systems_use_the_source_orthographic_camera()
+  -- Native Task_PlayEncounterAnimation selects the orthographic camera
+  -- for both encounter emitter sets: particle size never depends on
+  -- perspective depth on this path.
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
+  local sets = stagedSets()
+  owner:step(1, sets)
+  Assert.equal(
+    owner:systems()[1].simulation.camera.perspective,
+    1,
+    "the first encounter system selects the orthographic camera"
+  )
+  for frame = 2, 20 do
+    owner:step(frame, sets)
+  end
+  Assert.equal(
+    owner:systems()[2].simulation.camera.perspective,
+    1,
+    "the second encounter system selects the orthographic camera"
+  )
+end
+
+function T.started_systems_carry_the_compiled_alpha_usage()
+  -- The generated descriptor's exact coverage flags ride the live
+  -- system beside the drawable handles for the shared depth/blend
+  -- classification: translucent texels must not harden into the
+  -- cutout/opaque classification.
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
+  local sets = stagedSets()
+  owner:step(1, sets)
+  local usage = owner:systems()[1].textureAlphaUsage
+  Assert.notNil(usage, "the started system carries the compiled usage table")
+  for _, texture in ipairs(sets[1].textures) do
+    Assert.deepEqual(
+      usage[texture.id],
+      texture.alphaUsage,
+      "texture " .. tostring(texture.id) .. " keeps its exact coverage flags"
+    )
+  end
+end
+
+function T.sets_without_alpha_usage_fail_loudly()
+  -- A staged set without its texture coverage flags fails the launch
+  -- instead of hardening translucent texels into the cutout/opaque
+  -- classification.
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
+  local sets = stagedSets()
+  for _, texture in ipairs(sets[1].textures) do
+    texture.alphaUsage = nil
+  end
+  local ok, err = pcall(function()
+    owner:step(1, sets)
+  end)
+  Assert.isFalse(ok, "a set without texture alpha usage never starts silently")
+  Assert.isTrue(type(err) == "string" and err ~= "", "the missing coverage flags name their set")
+end
+
+function T.draw_systems_publish_the_pre_advance_frame()
+  -- The compositor paints the published pre-advance geometry while the
+  -- live systems advance underneath: the first capture precedes the
+  -- first simulation tick, and later captures show the previous live
+  -- state.
+  local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
+  local sets = stagedSets()
+  owner:step(1, sets)
+  local live = owner:systems()[1].simulation
+  local published = owner:drawSystems()[1].simulation
+  Assert.equal(#published.emitters[1].particles, 0, "the first capture precedes the first simulation tick")
+  Assert.isTrue(#live.emitters[1].particles > 0, "the live simulation advanced once underneath")
+  local before = {}
+  for _, particle in ipairs(live.emitters[1].particles) do
+    before[#before + 1] = particle.x
+  end
+  owner:step(2, sets)
+  published = owner:drawSystems()[1].simulation
+  Assert.equal(
+    #published.emitters[1].particles,
+    #before,
+    "the second capture shows the previous live state"
+  )
+  for index, particle in ipairs(published.emitters[1].particles) do
+    Assert.equal(particle.x, before[index], "published particles hold pre-update positions")
+  end
+  Assert.isTrue(
+    live.emitters[1].particles[1].x ~= before[1] or #live.emitters[1].particles ~= #before,
+    "the live simulation advanced underneath the published frame"
+  )
+end
+
 function T.clear_drops_every_system_and_allows_a_fresh_run()
   local owner = BattleEncounterParticles.new({ splRandomState = { state = 0 } })
   local sets = stagedSets()

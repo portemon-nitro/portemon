@@ -446,11 +446,12 @@ local function handleWaitForBattlerEffects(exec, instruction, index)
       exec.clearWait()
     end
   end
-  -- Native opcode 50 releases once no particle task remains: the
-  -- emitter task retires exactly when its emitter drains, so the
-  -- unretired particle count is the active emitter count. Raw visual
-  -- tasks never join this condition.
-  if exec.count("particle") == 0 then
+  -- Native opcode 50 releases once no SPL emitter stays active across
+  -- the occurrence's particle systems: task records never join this
+  -- condition, so a retired bookkeeping task with a live emitter still
+  -- holds the wait while a lingering non-emitter particle task past
+  -- emitter drain does not. Raw visual tasks never join this condition.
+  if exec.activeParticleEmitters() == 0 then
     released(exec.wait())
     exec.advance()
     return "continue"
