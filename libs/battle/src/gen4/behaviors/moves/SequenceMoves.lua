@@ -572,6 +572,28 @@ local function makeChargeStrike()
     local record = frame --[[@as table<string, unknown>]]
     local user = userOf(record)
     local move = record.executingMove --[[@as string]]
+    -- Power Herb skips the setup turn and spends itself: the holder
+    -- strikes immediately (battle_controller_player.c charge-turn gate
+    -- checks HOLD_EFFECT_CHARGE_SKIP). Klutz and Embargo suppress the
+    -- holding, matching GetBattlerHeldItemEffect.
+    do
+      local held = ctx:heldItemOf(user)
+      if held == "POWER_HERB" and not ctx:hasBattleEffect(user, "embargo") then
+        local locals = record.locals --[[@as table<string, unknown>]]
+        local abilities = locals.abilities
+        local userAbility = nil
+        if type(abilities) == "table" then
+          userAbility = (abilities --[[@as table<string, unknown>]]).user
+        end
+        if userAbility ~= "KLUTZ" then
+          ctx:consumeHeldItem(user)
+          ctx:emit("item", causeFor(record), { target = user, item = "POWER_HERB" })
+          local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+          strikeTarget(ctx, record, defender)
+          return { kind = "complete", result = "hit" }
+        end
+      end
+    end
     local state = SequenceMoveState.read(ctx, user)
     if state == nil or state.chargeMove ~= move then
       local function beginCharge(current)

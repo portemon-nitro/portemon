@@ -1147,4 +1147,36 @@ function T.single_use_survivors_spend_themselves()
   Assert.isTrue(power[1].consumed, "power herb spends itself")
 end
 
+-- Black Sludge heals poison types and harms others: the gradual phase
+-- restores a sixteenth for poison holders and deals an eighth otherwise.
+function T.black_sludge_heals_poison_and_harms_others()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+
+  local function fired(isPoisonType)
+    local bag = bagWith("BLACK_SLUDGE", "residual", EffectFixture.activeScope(1, 1))
+    local outcome = runPassive(
+      bag,
+      handlers,
+      "residual",
+      passiveContext({
+        health = { [1] = 50, [2] = 30, [3] = 30 },
+        maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+        isPoisonType = isPoisonType,
+      })
+    )
+    Assert.isTrue(outcome.done, "the item pass runs to completion")
+    return outcome.events
+  end
+
+  local healed = fired(true)
+  Assert.equal(#healed, 1, "sludge answers a hurt poison holder")
+  Assert.isTrue(healed[1].recovered, "sludge heals poison holders")
+  Assert.equal(healed[1].restored, 6, "sludge restores a sixteenth")
+  Assert.isNil(healed[1].consumed, "sludge persists")
+
+  local harmed = fired(false)
+  Assert.equal(#harmed, 1, "sludge answers a non-poison holder")
+  Assert.isTrue(harmed[1].harmed, "sludge harms non-poison holders")
+end
+
 return { tests = T }

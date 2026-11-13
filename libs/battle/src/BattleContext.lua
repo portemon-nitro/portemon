@@ -709,6 +709,33 @@ function BattleContext:priorityItemActivatedThisTurn(combatantId)
   return (self._state.turnItemActivations --[[@as table<integer, string>]])[combatantId] ~= nil
 end
 
+--- Arms the Micle Berry accuracy flag for the holder's next accuracy check.
+---@param combatantId integer combatant arming the deferred accuracy boost
+function BattleContext:armMicle(combatantId)
+  assert(type(combatantId) == "number", "micle arming names its combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  if type(combatant.active) == "table" then
+    (combatant.active --[[@as table<string, unknown>]]).micleArmed = true
+  end
+end
+
+--- Consumes the armed Micle flag, if any, for the holder's accuracy check.
+---@param combatantId integer combatant consuming the deferred accuracy boost
+---@return boolean true when the flag was armed
+function BattleContext:takeMicle(combatantId)
+  assert(type(combatantId) == "number", "micle reads name their combatant")
+  local combatant = BattleState.combatant(self._state, combatantId)
+  if type(combatant.active) ~= "table" then
+    return false
+  end
+  local active = combatant.active --[[@as table<string, unknown>]]
+  if active.micleArmed ~= true then
+    return false
+  end
+  active.micleArmed = nil
+  return true
+end
+
 ---@param combatantId integer roster member losing its item to Knock Off
 ---@return string? item key removed, nil when no item was held
 function BattleContext:knockOffHeldItem(combatantId)

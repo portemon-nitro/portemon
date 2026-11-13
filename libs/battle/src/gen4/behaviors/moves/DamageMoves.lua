@@ -2184,6 +2184,15 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
       local contact = move.contact == true and record.executingMove ~= "U_TURN"
       local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
       contact = contact or (flags ~= nil and flags.contact == true and record.executingMove ~= "U_TURN")
+      if not contact then
+        local battle = (move --[[@as table<string, unknown>]]).battle
+        if type(battle) == "table" then
+          local battleFlags = (battle --[[@as table<string, unknown>]]).flags
+          if type(battleFlags) == "table" and battleFlags.contact == true and record.executingMove ~= "U_TURN" then
+            contact = true
+          end
+        end
+      end
       local targetAlive = ctx:damage(defender, 0, causeFor(frame)).after > 0
       if contact and targetAlive then
         local stream = frame.stream
@@ -2222,6 +2231,38 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
             end
             ctx:damage(user, recoil, causeFor(frame))
           end
+        end
+      end
+    end
+  end
+  -- Sticky Barb transfer on contact: attacker empty-handed takes the barb.
+  do
+    local held = defenderEffectiveItem(ctx, frame, defender)
+    if
+      held == "STICKY_BARB"
+      and dealt > 0
+      and record.executingMove ~= "U_TURN"
+      and record.executingMove ~= "KNOCK_OFF"
+    then
+      local locals = record.locals --[[@as table<string, unknown>]]
+      local move = locals.move --[[@as table<string, unknown>]]
+      local contact = move.contact == true
+      local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
+      contact = contact or (flags ~= nil and flags.contact == true)
+      if not contact then
+        local battle = (move --[[@as table<string, unknown>]]).battle
+        if type(battle) == "table" then
+          local battleFlags = (battle --[[@as table<string, unknown>]]).flags
+          if type(battleFlags) == "table" and battleFlags.contact == true then
+            contact = true
+          end
+        end
+      end
+      if contact and ctx:damage(user, 0, causeFor(frame)).before > 0 and ctx:heldItemOf(user) == nil then
+        if not ctx:heldItemWasKnockedOff(user) then
+          ctx:setHeldItem(user, "STICKY_BARB")
+          ctx:setHeldItem(defender, nil)
+          ctx:emit("item", causeFor(frame), { target = user, item = "STICKY_BARB" })
         end
       end
     end
@@ -2556,6 +2597,92 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     return 0, false
   end
   power = abilityPower(ctx, frame, defender, power, moveType)
+  do
+    -- Attacker held-item power/stat scaling behind the effective holding.
+    -- Multipliers mirror item_data.csv params and battle_util.c CalcDamage:
+    -- type/plates/orbs/incenses x120/100, Muscle/Wise x110/100 by split,
+    -- Expert Belt x120/100 when super-effective, Light Ball x2 power for
+    -- Pikachu, Choice/Soul Dew x150/100 stats, Thick Club/DeepSeaTooth x2.
+    -- Species locks reuse the passive handlers (userSpeciesOf); Griseous
+    -- transform and Soul Dew frontier edges are documented divergences.
+    -- Defender-side stat boosts need defender species facts not present in
+    -- strike frames, so they stay unscaled (documented gap).
+    local held = effectiveItemOf(ctx, frame, userOf(frame))
+    if held ~= nil then
+      local userSpeciesOk, userSpecies = pcall(userSpeciesOf, frame)
+      local species = userSpeciesOk and userSpecies or nil
+      local split = category == "physical" and "physical" or (category == "special" and "special" or nil)
+      local effectivenessNumerator = effectiveness.numerator
+      local effectivenessDenominator = effectiveness.denominator
+      local superEffective = type(effectivenessNumerator) == "number"
+        and type(effectivenessDenominator) == "number"
+        and effectivenessNumerator > effectivenessDenominator
+      local activationOk, activation = pcall(activationOf, ctx, userOf(frame))
+      local holder = {
+        combatant = userOf(frame),
+        activation = activationOk and activation or nil,
+        ability = liveAbility(abilitiesOf(frame, defender).user),
+        heldItem = held,
+        species = species,
+      }
+      local function boosted(query, kind)
+        local ok, outcome = pcall(NativePassiveBridge.invokeFacts, holder, "beforeHit", query)
+        if not ok or type(outcome) ~= "table" or type(outcome.events) ~= "table" then
+          return false
+        end
+        for _, event in
+          ipairs(outcome.events --[[@as table<integer, table<string, unknown>>]])
+        do
+          local answer = event --[[@as table<string, unknown>]]
+          if answer.combatant == holder.combatant and answer.key == held then
+            if kind == "power" and answer.power == "boosted" then
+              return true
+            end
+            if kind == "stat" and type(answer.stat) == "string" and answer.stages == "boosted" then
+              return true
+            end
+          end
+        end
+        return false
+      end
+      -- Power multipliers.
+      if
+        boosted({ moveType = moveType, split = split, superEffective = superEffective, criticalCheck = false }, "power")
+      then
+        if held == "LIGHT_BALL" then
+          power = power * 2
+        elseif held == "MUSCLE_BAND" or held == "WISE_GLASSES" then
+          power = math.floor(power * 110 / 100)
+        elseif held == "EXPERT_BELT" then
+          power = math.floor(power * 120 / 100)
+        else
+          power = math.floor(power * 120 / 100)
+        end
+      end
+      -- Attack stat multipliers for the striking split.
+      if category == "physical" then
+        if boosted({ stat = "attack", split = split }, "stat") then
+          if held == "THICK_CLUB" then
+            attack = attack * 2
+            rawAttack = rawAttack * 2
+          else
+            attack = math.floor(attack * 150 / 100)
+            rawAttack = math.floor(rawAttack * 150 / 100)
+          end
+        end
+      elseif category == "special" then
+        if boosted({ stat = "specialAttack", split = split }, "stat") then
+          if held == "DEEPSEATOOTH" then
+            attack = attack * 2
+            rawAttack = rawAttack * 2
+          else
+            attack = math.floor(attack * 150 / 100)
+            rawAttack = math.floor(rawAttack * 150 / 100)
+          end
+        end
+      end
+    end
+  end
   local effectivenessModifier = { numerator = 1, denominator = 1 }
   local numerator = effectiveness.numerator
   local denominator = effectiveness.denominator
@@ -2650,6 +2777,18 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
           amount = 1
         end
         ctx:consumeHeldItem(defender)
+      end
+    end
+  end
+  -- Life Orb boosts final damage by 30% on damaging non-status hits
+  -- (battle_command.c:762: damage * (100+mod)/100, mod 30). Recoil is
+  -- handled on-hit below; the boost applies here before substitute.
+  do
+    local held = effectiveItemOf(ctx, frame, userOf(frame))
+    if held == "LIFE_ORB" and amount > 0 and (category == "physical" or category == "special") then
+      amount = math.floor(amount * 130 / 100)
+      if amount < 1 then
+        amount = 1
       end
     end
   end
@@ -2801,6 +2940,30 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       and ctx:hasBattleEffect(defender, "confusion")
     then
       accuracy = math.floor(accuracy / 2)
+    end
+    do
+      local defenderHeld = ctx:heldItemOf(defender)
+      if defenderHeld == "BRIGHTPOWDER" or defenderHeld == "LAX_INCENSE" then
+        local pair = abilitiesOf(frame, defender)
+        local foeAbilityForEvasion = liveAbility(pair.foe)
+        if foeAbilityForEvasion ~= "KLUTZ" and not ctx:hasBattleEffect(defender, "embargo") then
+          accuracy = math.floor(accuracy * 90 / 100)
+        end
+      end
+    end
+    do
+      local user = userOf(frame)
+      local held = ctx:heldItemOf(user)
+      if held == "WIDE_LENS" then
+        local pair = abilitiesOf(frame, defender)
+        local userAbilityForLens = liveAbility(pair.user)
+        if userAbilityForLens ~= "KLUTZ" and not ctx:hasBattleEffect(user, "embargo") then
+          accuracy = math.floor(accuracy * 110 / 100)
+        end
+      end
+    end
+    if ctx:takeMicle(userOf(frame)) then
+      accuracy = math.floor(accuracy * 120 / 100)
     end
   end
   local skipCheck = accuracy == nil or accuracy == 0

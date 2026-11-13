@@ -527,7 +527,17 @@ local function blackSludge(instance, context)
     then
       return nil
     end
-    return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recovered = true }
+    local restored = math.floor(maxHp --[[@as integer]] / 16)
+    if restored < 1 then
+      restored = 1
+    end
+    return {
+      kind = "trigger",
+      key = instance.key,
+      combatant = holderOf(instance),
+      recovered = true,
+      restored = restored,
+    }
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), harmed = true }
 end

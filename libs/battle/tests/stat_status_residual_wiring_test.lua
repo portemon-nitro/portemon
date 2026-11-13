@@ -3280,4 +3280,135 @@ function T.status_berry_cures_at_the_consumable_phase()
   session:dispose()
 end
 
+-- Orbs inflict their status end-of-turn and persist: a healthy Toxic Orb
+-- holder becomes badly poisoned with the orb still held.
+function T.orbs_inflict_their_status_and_persist()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "TOXIC_ORB"
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.heldItem = "FLAME_ORB"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local frame, _ = playTurn(session, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the orb pass")
+  local snapshot = session:capture()
+  Assert.equal((conditionOf(snapshot, 1).effects[1] or {}).key, "toxic", "toxic orb badly poisons")
+  Assert.equal((conditionOf(snapshot, 2).effects[1] or {}).key, "burn", "flame orb burns")
+  Assert.equal(
+    (combatantOf(snapshot, 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "TOXIC_ORB",
+    "the orb persists"
+  )
+  Assert.equal(
+    (combatantOf(snapshot, 2).mon --[[@as table<string, unknown>]]).heldItem,
+    "FLAME_ORB",
+    "the orb persists"
+  )
+  session:dispose()
+end
+
+-- Black Sludge harms non-poison holders for an eighth end-of-turn.
+function T.black_sludge_harms_non_poison_holders()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, {})
+  end
+  local ceilings = ceilingsOf(makeScenario)
+  local expected = math.floor(ceilings[1] / 8)
+  if expected < 1 then
+    expected = 1
+  end
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "BLACK_SLUDGE"
+  local beforeHp = ceilings[1] - expected - 5
+  if beforeHp < 2 then
+    beforeHp = ceilings[1] - 1
+  end
+  alpha.mon.condition.currentHp = beforeHp
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local frame, _ = playTurn(session, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the sludge tick")
+  local snapshot = session:capture()
+  Assert.equal(combatantOf(snapshot, 1).hp, beforeHp - expected, "sludge deals an eighth")
+  Assert.equal(
+    (combatantOf(snapshot, 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "BLACK_SLUDGE",
+    "sludge persists"
+  )
+  session:dispose()
+end
+
+-- Micle arms its one-shot flag at the pinch gate and spends the berry.
+function T.micle_arms_its_flag_and_spends()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local function makeScenario()
+    local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+    local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+    return duelScenario({ alpha, beta }, {}, {})
+  end
+  local ceilings = ceilingsOf(makeScenario)
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "MICLE_BERRY"
+  alpha.mon.condition.currentHp = math.floor(ceilings[1] / 4)
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local frame, _ = playTurn(session, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the micle pass")
+  local snapshot = session:capture()
+  Assert.equal(
+    (combatantOf(snapshot, 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "NONE",
+    "micle spends the berry"
+  )
+  local active = combatantOf(snapshot, 1).active
+  Assert.isTrue(type(active) == "table" and active.micleArmed == true, "micle arms its one-shot flag")
+  session:dispose()
+end
+
+-- Sticky Barb passes on contact: an empty-handed TACKLE holder takes the
+-- defender's barb.
+function T.sticky_barb_passes_on_contact()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("QUICK_ATTACK", 30) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "NONE"
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.heldItem = "STICKY_BARB"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local frame, _ = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(frame.status, "waiting", "the battle continues past the contact pass")
+  local snapshot = session:capture()
+  Assert.equal(
+    (combatantOf(snapshot, 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "STICKY_BARB",
+    "the attacker takes the barb"
+  )
+  Assert.equal(
+    (combatantOf(snapshot, 2).mon --[[@as table<string, unknown>]]).heldItem,
+    "NONE",
+    "the defender loses the barb"
+  )
+  session:dispose()
+end
+
 return { tests = T }

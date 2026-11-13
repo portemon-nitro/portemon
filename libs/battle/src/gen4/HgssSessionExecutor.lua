@@ -52,6 +52,7 @@ local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.Nat
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 local NativeSequenceAction = require("libs.battle.src.gen4.NativeSequenceAction")
+local Moves = require("libs.mons.src.gen4.Moves")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Progression = require("libs.battle.src.gen4.Progression")
@@ -114,7 +115,7 @@ local BERRY_FLAVORS = {
 ---@field private _content table<string, unknown>?
 ---@field private _admitted string[]
 ---@field private _battleKind string
----@field private _moveFacts table<string, table<string, unknown>>
+---@field _moveFacts table<string, table<string, unknown>>
 ---@field private _speciesFacts table<string, SpeciesFormFacts>
 ---@field private _itemFacts table<string, table<string, unknown>>
 ---@field private _chart table<string, unknown>
@@ -2710,8 +2711,9 @@ end
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
 ---@param combatantId integer holder combatant under the checkpoint
+---@param typeMap table<integer, string[]>? semantic types per active combatant for poison checks
 ---@return table<string, unknown> holder facts with the handler checkpoint
-local function innateFactsFor(state, context, health, ceilings, combatantId)
+local function innateFactsFor(state, context, health, ceilings, combatantId, typeMap)
   local combatant = BattleState.combatant(state, combatantId)
   local active = combatant.active
   if type(active) ~= "table" or type(combatant.mon) ~= "table" then
@@ -2779,6 +2781,21 @@ local function innateFactsFor(state, context, health, ceilings, combatantId)
       focused = typed:hasBattleEffect(combatantId, "focusenergy"),
       infatuated = typed:hasBattleEffect(combatantId, "infatuation"),
       ppZero = ppZero,
+      isPoisonType = (function()
+        if type(typeMap) ~= "table" then
+          return false
+        end
+        local types = (typeMap --[[@as table<integer, string[]>]])[combatantId]
+        if type(types) ~= "table" then
+          return false
+        end
+        for _, typeEntry in ipairs(types) do
+          if type(typeEntry) == "string" and typeEntry:lower() == "poison" then
+            return true
+          end
+        end
+        return false
+      end)(),
       weather = weatherSuppressed(state) and "none" or activeWeather(state),
       residual = true,
       stream = state.rng,
@@ -2907,8 +2924,10 @@ end
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
 ---@param combatantId integer holder combatant under the checkpoint
+---@param typeMap table<integer, string[]>? semantic types per active combatant for poison checks
+---@param moveFacts table<string, table<string, unknown>>? move facts for true PP maxima
 ---@return table<string, unknown>? work record with the phase events, nil when no effective holding answers
-local function answerConsumablePhase(state, context, health, ceilings, combatantId)
+local function answerConsumablePhase(state, context, health, ceilings, combatantId, typeMap, moveFacts)
   local combatant = BattleState.combatant(state, combatantId)
   if combatant.active == nil then
     return nil
@@ -2917,7 +2936,7 @@ local function answerConsumablePhase(state, context, health, ceilings, combatant
   if effective == nil then
     return nil
   end
-  local facts = innateFactsFor(state, context, health, ceilings, combatantId)
+  local facts = innateFactsFor(state, context, health, ceilings, combatantId, typeMap)
   do
     local flavorIndex = BERRY_FLAVORS[effective]
     if flavorIndex ~= nil then
@@ -3056,6 +3075,7 @@ local function answerConsumablePhase(state, context, health, ceilings, combatant
       }
     elseif answer.consumed == true and answer.accuracyNext == true then
       typed:consumeHeldItem(combatantId)
+      typed:armMicle(combatantId)
       events[#events + 1] = {
         origin = "innate",
         kind = "accuracy",
@@ -3102,7 +3122,24 @@ local function answerConsumablePhase(state, context, health, ceilings, combatant
         for _, slot in ipairs(ordered) do
           local record = (slots --[[@as table<integer, table<string, unknown>>]])[slot]
           if type(record) == "table" and record.pp == 0 then
-            local applied = typed:restorePp(combatantId, slot - 1, restoredAmount, restoredAmount)
+            local maximum = restoredAmount
+            if type(moveFacts) == "table" then
+              local moveKey = record.move
+              if type(moveKey) == "string" then
+                local moveEntry = (moveFacts --[[@as table<string, table<string, unknown>>]])[moveKey]
+                if type(moveEntry) == "table" and type(moveEntry.basePp) == "number" then
+                  local ups = record.ppUps
+                  if type(ups) ~= "number" then
+                    ups = 0
+                  end
+                  local okMax, capped = pcall(Moves.maxPp, moveEntry.basePp --[[@as integer]], ups --[[@as integer]])
+                  if okMax and type(capped) == "number" then
+                    maximum = capped --[[@as integer]]
+                  end
+                end
+              end
+            end
+            local applied = typed:restorePp(combatantId, slot - 1, restoredAmount, maximum)
             events[#events + 1] = {
               origin = "innate",
               kind = "pp",
@@ -3127,8 +3164,9 @@ end
 ---@param health table<integer, integer> battle-local health under the pass
 ---@param ceilings table<integer, integer> battle maximum health per combatant
 ---@param combatantId integer holder combatant under the checkpoint
+---@param typeMap table<integer, string[]>? semantic types per active combatant for poison checks
 ---@return table<string, unknown>? work record with the phase events, nil when no effective holding answers
-local function answerGradualPhase(state, context, health, ceilings, combatantId)
+local function answerGradualPhase(state, context, health, ceilings, combatantId, typeMap)
   local combatant = BattleState.combatant(state, combatantId)
   if combatant.active == nil then
     return nil
@@ -3137,7 +3175,7 @@ local function answerGradualPhase(state, context, health, ceilings, combatantId)
   if effective == nil then
     return nil
   end
-  local facts = innateFactsFor(state, context, health, ceilings, combatantId)
+  local facts = innateFactsFor(state, context, health, ceilings, combatantId, typeMap)
   local outcome = NativePassiveBridge.invokeFacts({
     combatant = combatantId,
     activation = facts.activation,
@@ -3156,6 +3194,54 @@ local function answerGradualPhase(state, context, health, ceilings, combatantId)
         target = combatantId,
         restored = applied,
       }
+    elseif answer.consumed ~= true and answer.harmed == true then
+      -- Black Sludge (non-poison) and Sticky Barb residual drain an eighth,
+      -- blocked by Magic Guard (CheckItemGradualHPRestore/TryHeldItemNegativeEffect).
+      local ability = NativePassiveBridge.wrap(state):abilityOf(combatantId)
+      if ability ~= "MAGIC_GUARD" then
+        local ceiling = ceilings[combatantId] --[[@as integer]]
+        local before = health[combatantId] --[[@as integer]]
+        if before > 0 then
+          local damage = math.floor(ceiling / 8)
+          if damage < 1 then
+            damage = 1
+          end
+          if damage > before then
+            damage = before
+          end
+          health[combatantId] = before - damage
+          events[#events + 1] = {
+            origin = "innate",
+            kind = "tick",
+            key = answer.key,
+            target = combatantId,
+            amount = damage,
+          }
+        end
+      end
+    elseif answer.consumed ~= true and type(answer.inflicted) == "string" then
+      -- Toxic/Flame Orb inflict their status end-of-turn and persist.
+      local inflicted = answer.inflicted --[[@as string]]
+      local typed = context --[[@as BattleContext]]
+      if typed:statusOf(combatantId) == nil then
+        if inflicted == "toxic" then
+          typed:applyStatus(
+            combatantId,
+            "toxic",
+            { counter = 0 },
+            { kind = "item", key = answer.key, combatant = combatantId }
+          )
+        else
+          typed:applyStatus(combatantId, inflicted, {}, { kind = "item", key = answer.key, combatant = combatantId })
+        end
+        events[#events + 1] = {
+          origin = "innate",
+          kind = "inflicted",
+          key = answer.key,
+          target = combatantId,
+          status = inflicted,
+        }
+      end
     end
   end
   return { events = events }
@@ -5725,10 +5811,18 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       return ResidualAnswers.ability(state, context, health, ceilings, answeredPoison, badDreamsApplied, combatantId)
     end
     local function liveHeldItem(combatantId)
-      return ResidualAnswers.consumable(state, context, health, ceilings, combatantId)
+      return ResidualAnswers.consumable(
+        state,
+        context,
+        health,
+        ceilings,
+        combatantId,
+        sample.typeMap,
+        executor._moveFacts
+      )
     end
     local function liveLeftovers(combatantId)
-      return ResidualAnswers.gradual(state, context, health, ceilings, combatantId)
+      return ResidualAnswers.gradual(state, context, health, ceilings, combatantId, sample.typeMap)
     end
     local function liveCondition(combatantId, key)
       return ResidualAnswers.condition(state, health, ceilings, answeredPoison, combatantId, key)
