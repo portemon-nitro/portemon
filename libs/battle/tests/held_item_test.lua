@@ -727,6 +727,36 @@ function T.starf_names_a_concrete_sharply_raised_stat()
   Assert.equal(outcome.events[1].stages, "sharply-boosted", "starf raises by two stages")
 end
 
+-- Starf draws like the native rejection loop: it resamples until it lands
+-- on a stat still below the cap, consuming one draw per sample.
+function T.starf_resamples_until_it_lands_on_an_eligible_stat()
+  local handlers = nativeHandlers("native passive registration owns the item binding set")
+  local draws = 0
+  local scripted = { 0, 1, 2, 3, 4 }
+  local stream = {
+    nextU16 = function(_, _, _)
+      draws = draws + 1
+      return scripted[draws] or 4
+    end,
+  }
+  local bag = bagWith("STARF_BERRY", "residual", EffectFixture.activeScope(1, 1))
+  local outcome = runPassive(
+    bag,
+    handlers,
+    "residual",
+    passiveContext({
+      health = { [1] = 25, [2] = 30, [3] = 30 },
+      maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
+      stream = stream,
+      statStages = { attack = 6, defense = 6, speed = 6, specialAttack = 6, specialDefense = 0 },
+    })
+  )
+  Assert.isTrue(outcome.done, "the berry pass runs to completion")
+  Assert.equal(#outcome.events, 1, "starf answers with one eligible stat")
+  Assert.equal(outcome.events[1].stat, "specialDefense", "starf lands on the eligible stat")
+  Assert.isTrue(draws > 1, "starf resamples past maxed stats")
+end
+
 -- Micle marks deferred accuracy for the next move: the native flag
 -- multiplies the following accuracy check instead of boosting
 -- immediately, so the announcement defers rather than applies.
@@ -1052,9 +1082,11 @@ function T.consumable_berries_mark_their_spend()
 
   local leppa = fired("LEPPA_BERRY", "residual", { ppZero = true })
   Assert.isTrue(leppa[1].consumed, "leppa spends the berry")
+  Assert.equal(leppa[1].restored, 10, "leppa restores 10 PP")
 
   local enigma = fired("ENIGMA_BERRY", "residual", { moveType = "fire", superEffective = true })
   Assert.isTrue(enigma[1].consumed, "enigma spends the berry")
+  Assert.equal(enigma[1].restored, 25, "enigma restores a quarter of maximum health")
 
   local micle = fired("MICLE_BERRY", "residual", {})
   Assert.isTrue(micle[1].consumed, "micle spends the berry")

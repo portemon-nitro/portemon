@@ -3256,4 +3256,28 @@ function T.restored_sessions_replay_committed_turns_exactly_once()
   revived:dispose()
 end
 
+-- Status berries cure at the consumable phase: a paralyzed holder with
+-- Cheri Berry wakes cured with an empty holding after one quiet turn.
+function T.status_berry_cures_at_the_consumable_phase()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "CHERI_BERRY"
+  alpha.mon.condition.effects = { { key = "paralysis", version = 1, state = {} } }
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local frame, _ = playTurn(session, splashOnly())
+  Assert.equal(frame.status, "waiting", "the battle continues past the curing pass")
+  local snapshot = session:capture()
+  Assert.isNil(conditionOf(snapshot, 1).effects[1], "cheri cures the paralysis")
+  Assert.equal(
+    (combatantOf(snapshot, 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "NONE",
+    "the spent berry is visible to later phases"
+  )
+  session:dispose()
+end
+
 return { tests = T }

@@ -915,6 +915,55 @@ function T.headbutt_draws_its_slot_and_level_from_the_supplied_slots()
   end, "ENCOUNTER_MISSING_TABLE")
 end
 
+-- Headbutt shares the regular identity trio: a synchronizing lead stages
+-- its check draw and forces the lead nature, matching the land path.
+function T.headbutt_stages_synchronize_like_the_table_path()
+  local slots = {}
+  for index, weight in ipairs({ 50, 15, 15, 10, 5, 5 }) do
+    slots[index] = { species = "EEVEE", minLevel = 5, maxLevel = 7, weight = weight }
+  end
+  local lead = Fixture.mon("EEVEE", 12, 21)
+  local leadNature = Personality.nature(lead.personality)
+  local forcedSeed = nil
+  for seed = 0, 50 do
+    local probeHost = service()
+    local probeContext = Fixture.context({ method = "headbutt", movement = "field_move", lead = lead })
+    probeContext.modifiers = Fixture.modifiers({
+      headbutt = { slots = slots },
+      leadAbility = "synchronize",
+      leadNature = leadNature,
+    })
+    local probeStream = Fixture.spyStream(seed)
+    local probe = attemptResult(probeHost, probeContext, probeStream)
+    local probeMon = assert(probe.encounter.mons[1].mon)
+    if Personality.nature(probeMon.personality) == leadNature then
+      forcedSeed = seed
+      break
+    end
+  end
+  Assert.isTrue(forcedSeed ~= nil, "some seed passes the headbutt synchronize check")
+  local host = service()
+  local context = Fixture.context({ method = "headbutt", movement = "field_move", lead = lead })
+  context.modifiers = Fixture.modifiers({
+    headbutt = { slots = slots },
+    leadAbility = "synchronize",
+    leadNature = leadNature,
+  })
+  local stream = Fixture.spyStream(forcedSeed)
+  local result = attemptResult(host, context, stream)
+  Assert.equal(result.kind, "prepared")
+  local mon = assert(result.encounter.mons[1].mon)
+  Assert.equal(Personality.nature(mon.personality), leadNature, "a passed headbutt check forces the lead nature")
+  local labels = stream:labels()
+  local sawSync = false
+  for _, label in ipairs(labels) do
+    if label == "synchronize" then
+      sawSync = true
+    end
+  end
+  Assert.isTrue(sawSync, "headbutt consumes the synchronize check draw")
+end
+
 function T.static_attempts_generate_without_a_table_check()
   local host = service()
   local context = Fixture.context({ method = "static", movement = "still" })

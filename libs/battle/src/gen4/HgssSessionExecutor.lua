@@ -67,6 +67,45 @@ local Targeting = require("libs.battle.src.gen4.Targeting")
 local TrainerAi = require("libs.battle.src.gen4.TrainerAi")
 local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
 
+-- Flavor preference matrix from pokemon.c sFlavorPreferencesByNature:
+-- rows are natures 0..24, columns SPICY/DRY/SWEET/BITTER/SOUR, -1 dislikes.
+local FLAVOR_PREFS = {
+  { 0, 0, 0, 0, 0 },
+  { 1, 0, 0, 0, -1 },
+  { 1, 0, -1, 0, 0 },
+  { 1, -1, 0, 0, 0 },
+  { 1, 0, 0, -1, 0 },
+  { -1, 0, 0, 0, 1 },
+  { 0, 0, 0, 0, 0 },
+  { 0, 0, -1, 0, 1 },
+  { 0, -1, 0, 0, 1 },
+  { 0, 0, 0, -1, 1 },
+  { -1, 0, 1, 0, 0 },
+  { 0, 0, 1, 0, -1 },
+  { 0, 0, 0, 0, 0 },
+  { 0, -1, 1, 0, 0 },
+  { 0, 0, 1, -1, 0 },
+  { -1, 1, 0, 0, 0 },
+  { 0, 1, 0, 0, -1 },
+  { 0, 1, -1, 0, 0 },
+  { 0, 0, 0, 0, 0 },
+  { 0, 1, 0, -1, 0 },
+  { -1, 0, 0, 1, 0 },
+  { 0, 0, 0, 1, -1 },
+  { 0, 0, -1, 1, 0 },
+  { 0, -1, 0, 1, 0 },
+  { 0, 0, 0, 0, 0 },
+}
+
+-- Berry to flavor index: FIGY SPICY, WIKI DRY, MAGO SWEET, AGUAV BITTER, IAPAPA SOUR.
+local BERRY_FLAVORS = {
+  FIGY_BERRY = 1,
+  WIKI_BERRY = 2,
+  MAGO_BERRY = 3,
+  AGUAV_BERRY = 4,
+  IAPAPA_BERRY = 5,
+}
+
 ---@alias SpeciesFormFacts table<integer, table<string, unknown>>
 ---@alias ShiftOffer table<string, unknown>
 
@@ -2685,6 +2724,31 @@ local function innateFactsFor(state, context, health, ceilings, combatantId)
     species = nil
   end
   local typed = context --[[@as BattleContext]]
+  local entryView = typed:entryOf(combatantId)
+  local stagesCopy = {}
+  local lowered = false
+  for _, key in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
+    local value = (entryView.stages --[[@as table<string, integer>]])[key]
+    if type(value) ~= "number" then
+      value = 0
+    end
+    stagesCopy[key] = value
+    if value < 0 then
+      lowered = true
+    end
+  end
+  local ppZero = false
+  local movesOk, moves = pcall(typed.movesOf, typed, combatantId)
+  if movesOk and type(moves) == "table" then
+    for _, slot in
+      pairs(moves --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(slot) == "table" and slot.pp == 0 then
+        ppZero = true
+        break
+      end
+    end
+  end
   local sleepingFoes = {} ---@type integer[]
   local holderSide = BattleState.participant(state, combatant.participant --[[@as integer]]).side
   for _, foeId in
@@ -2709,6 +2773,12 @@ local function innateFactsFor(state, context, health, ceilings, combatantId)
       health = { [combatantId] = health[combatantId] },
       maxHealth = { [combatantId] = ceilings[combatantId] },
       status = typed:statusOf(combatantId),
+      confusion = typed:hasBattleEffect(combatantId, "confusion"),
+      statStages = stagesCopy,
+      statsLowered = lowered,
+      focused = typed:hasBattleEffect(combatantId, "focusenergy"),
+      infatuated = typed:hasBattleEffect(combatantId, "infatuation"),
+      ppZero = ppZero,
       weather = weatherSuppressed(state) and "none" or activeWeather(state),
       residual = true,
       stream = state.rng,
@@ -2848,6 +2918,22 @@ local function answerConsumablePhase(state, context, health, ceilings, combatant
     return nil
   end
   local facts = innateFactsFor(state, context, health, ceilings, combatantId)
+  do
+    local flavorIndex = BERRY_FLAVORS[effective]
+    if flavorIndex ~= nil then
+      local typedForFlavor = context --[[@as BattleContext]]
+      local flavorOk, personality = pcall(typedForFlavor.personalityOf, typedForFlavor, combatantId)
+      if flavorOk and type(personality) == "number" then
+        local nature = Personality.nature(personality --[[@as integer]])
+        local row = FLAVOR_PREFS[nature + 1]
+        if type(row) == "table" and row[flavorIndex] == -1 then
+          facts.checkpoint.dislikedFlavor = true
+        else
+          facts.checkpoint.dislikedFlavor = false
+        end
+      end
+    end
+  end
   local outcome = NativePassiveBridge.invokeFacts({
     combatant = combatantId,
     activation = facts.activation,
@@ -2868,6 +2954,167 @@ local function answerConsumablePhase(state, context, health, ceilings, combatant
         target = combatantId,
         restored = applied,
       }
+      if answer.confused == true then
+        local entry = typed:entryOf(combatantId)
+        if entry.activation ~= nil then
+          local stream = state.rng --[[@as table<string, unknown>]]
+          local draw = (stream --[[@as table<string, unknown>]]).nextU16
+          local turns = 2
+          if type(draw) == "function" then
+            local ok, value = pcall(draw, stream, "confusion_turns", { kind = "item", key = answer.key })
+            if ok and type(value) == "number" then
+              turns = 2 + (value % 4)
+            end
+          end
+          typed:addBattleEffect(
+            NativeEffectHandlers.definitionFor("confusion"),
+            { kind = "active", combatant = combatantId, activation = entry.activation },
+            { kind = "item", key = answer.key, combatant = combatantId },
+            { version = 1, turns = turns }
+          )
+          events[#events + 1] = {
+            origin = "innate",
+            kind = "confusion",
+            key = answer.key,
+            target = combatantId,
+          }
+        end
+      end
+    elseif answer.consumed == true and type(answer.cured) == "string" then
+      local cured = answer.cured --[[@as string]]
+      if cured == "confusion" then
+        typed:removeBattleEffect(combatantId, "confusion")
+      elseif cured == "infatuation" then
+        typed:removeBattleEffect(combatantId, "infatuation")
+      else
+        typed:cureStatus(combatantId, cured, { kind = "item", key = answer.key, combatant = combatantId })
+      end
+      typed:consumeHeldItem(combatantId)
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "cured",
+        key = answer.key,
+        target = combatantId,
+        cured = cured,
+      }
+    elseif answer.consumed == true and type(answer.stat) == "string" and answer.stages == "boosted" then
+      local stat = answer.stat --[[@as string]]
+      if stat == "critical" then
+        local entry = typed:entryOf(combatantId)
+        if entry.activation ~= nil and not typed:hasBattleEffect(combatantId, "focusenergy") then
+          typed:addBattleEffect(
+            NativeEffectHandlers.definitionFor("focusenergy"),
+            { kind = "active", combatant = combatantId, activation = entry.activation },
+            { kind = "item", key = answer.key, combatant = combatantId },
+            { version = 1 }
+          )
+        end
+        typed:consumeHeldItem(combatantId)
+        events[#events + 1] = {
+          origin = "innate",
+          kind = "critical",
+          key = answer.key,
+          target = combatantId,
+        }
+      else
+        local entry = typed:entryOf(combatantId)
+        local stages = entry.stages --[[@as table<string, integer>]]
+        local current = stages[stat] or 0
+        if current < StatStages.MAX then
+          typed:changeStage(
+            combatantId,
+            stat,
+            current + 1,
+            { kind = "item", key = answer.key, combatant = combatantId }
+          )
+        end
+        typed:consumeHeldItem(combatantId)
+        events[#events + 1] = {
+          origin = "innate",
+          kind = "stage",
+          key = answer.key,
+          target = combatantId,
+          stat = stat,
+        }
+      end
+    elseif answer.consumed == true and type(answer.stat) == "string" and answer.stages == "sharply-boosted" then
+      local stat = answer.stat --[[@as string]]
+      local entry = typed:entryOf(combatantId)
+      local stages = entry.stages --[[@as table<string, integer>]]
+      local current = stages[stat] or 0
+      local next = math.min(StatStages.MAX, current + 2)
+      if next ~= current then
+        typed:changeStage(combatantId, stat, next, { kind = "item", key = answer.key, combatant = combatantId })
+      end
+      typed:consumeHeldItem(combatantId)
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "stage",
+        key = answer.key,
+        target = combatantId,
+        stat = stat,
+      }
+    elseif answer.consumed == true and answer.accuracyNext == true then
+      typed:consumeHeldItem(combatantId)
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "accuracy",
+        key = answer.key,
+        target = combatantId,
+        accuracyNext = true,
+      }
+    elseif answer.consumed == true and answer.restored == true then
+      local entry = typed:entryOf(combatantId)
+      local stages = entry.stages --[[@as table<string, integer>]]
+      for _, key in ipairs({ "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }) do
+        if (stages[key] or 0) < 0 then
+          typed:changeStage(combatantId, key, 0, { kind = "item", key = answer.key, combatant = combatantId })
+        end
+      end
+      typed:consumeHeldItem(combatantId)
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "restored",
+        key = answer.key,
+        target = combatantId,
+      }
+    elseif answer.consumed == true and type(answer.restored) == "number" and answer.charged ~= nil then
+      typed:consumeHeldItem(combatantId)
+      events[#events + 1] = {
+        origin = "innate",
+        kind = "charged",
+        key = answer.key,
+        target = combatantId,
+      }
+    elseif answer.consumed == true and type(answer.restored) == "number" and answer.pp ~= nil then
+      local restoredAmount = answer.restored --[[@as integer]]
+      local ppOk, slots = pcall(typed.movesOf, typed, combatantId)
+      if ppOk and type(slots) == "table" then
+        local ordered = {}
+        for slot, record in
+          pairs(slots --[[@as table<integer, table<string, unknown>>]])
+        do
+          if type(record) == "table" then
+            ordered[#ordered + 1] = slot
+          end
+        end
+        table.sort(ordered)
+        for _, slot in ipairs(ordered) do
+          local record = (slots --[[@as table<integer, table<string, unknown>>]])[slot]
+          if type(record) == "table" and record.pp == 0 then
+            local applied = typed:restorePp(combatantId, slot - 1, restoredAmount, restoredAmount)
+            events[#events + 1] = {
+              origin = "innate",
+              kind = "pp",
+              key = answer.key,
+              target = combatantId,
+              restored = applied,
+            }
+            break
+          end
+        end
+      end
+      typed:consumeHeldItem(combatantId)
     end
   end
   return { events = events }

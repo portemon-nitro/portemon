@@ -881,7 +881,17 @@ function HgssEncounterService:_attemptHeadbutt(context, stream, attemptId)
       end
     end
   end
-  local mon = self._factory:create(slot.species, level, stream, self:_wildOptions(context, attemptId))
+  local options = self:_wildOptions(context, attemptId)
+  if leadAbility == "synchronize" then
+    options.leadAbility = "synchronize"
+    options.leadNature = modifiers.leadNature
+  elseif leadAbility == "compoundeyes" then
+    options.leadAbility = "compoundeyes"
+  elseif leadAbility == "cute_charm" then
+    options.leadAbility = "cute_charm"
+    options.leadGender = modifiers.leadGender
+  end
+  local mon = self._factory:create(slot.species, level, stream, options)
   return self:_prepare(mon, context, attemptId, "triggered")
 end
 

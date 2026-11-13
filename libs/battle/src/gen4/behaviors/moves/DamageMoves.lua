@@ -840,6 +840,66 @@ local function targetOf(entry)
   return record.combatant --[[@as integer]]
 end
 
+-- Defender effective holding for damage-path items: raw possession unless
+-- the defender's own Klutz or an active Embargo suppresses it. Self-
+-- contained (no later locals) so applyHit below can use it directly.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the read
+---@return string? effective held-item key answering the strike
+local function defenderEffectiveItem(ctx, frame, defender)
+  local held = ctx:heldItemOf(defender)
+  if held == nil then
+    return nil
+  end
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local abilities = locals.abilities
+  if type(abilities) ~= "table" then
+    return held
+  end
+  local foeAbility = (abilities --[[@as table<string, unknown>]]).foe
+  if type(foeAbility) ~= "string" or foeAbility == "" or foeAbility == "NONE" then
+    local perTarget = locals.targetFacts
+    if type(perTarget) == "table" then
+      local entry = (perTarget --[[@as table<integer, unknown>]])[defender]
+      if type(entry) == "table" then
+        local targetAbilities = (entry --[[@as table<string, unknown>]]).abilities
+        if type(targetAbilities) == "table" then
+          foeAbility = (targetAbilities --[[@as table<string, unknown>]]).foe
+        end
+      end
+    end
+  end
+  if foeAbility == "KLUTZ" or ctx:hasBattleEffect(defender, "embargo") then
+    return nil
+  end
+  return held
+end
+
+-- Resist berry map for the damage-reduction path: Chilan answers plain
+-- normal with no effectiveness gate, every other entry requires a
+-- super-effective hit of its warded type (subscript_0264).
+local RESIST_WARDS = {
+  OCCA_BERRY = "fire",
+  PASSHO_BERRY = "water",
+  WACAN_BERRY = "electric",
+  RINDO_BERRY = "grass",
+  YACHE_BERRY = "ice",
+  CHOPLE_BERRY = "fighting",
+  KEBIA_BERRY = "poison",
+  SHUCA_BERRY = "ground",
+  COBA_BERRY = "flying",
+  PAYAPA_BERRY = "psychic",
+  TANGA_BERRY = "bug",
+  CHARTI_BERRY = "rock",
+  KASIB_BERRY = "ghost",
+  HABAN_BERRY = "dragon",
+  COLBUR_BERRY = "dark",
+  BABIRI_BERRY = "steel",
+  CHILAN_BERRY = "normal",
+}
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the hit
@@ -849,6 +909,30 @@ local function applyHit(ctx, frame, defender, amount)
   local health = ctx:damage(defender, 0, causeFor(frame))
   if ctx:hasBattleEffect(defender, "endure") and health.before > 0 and amount >= health.before then
     amount = math.max(0, health.before - 1)
+  end
+  -- Focus Sash/Band endure behind the effective defender holding:
+  -- Sash clamps lethal damage at full HP and spends itself, Band rolls
+  -- 10% to clamp and persists (battle_controller_player.c:2847-2862).
+  if health.before > 0 and amount >= health.before then
+    local endured = defenderEffectiveItem(ctx, frame, defender)
+    if endured == "FOCUS_SASH" then
+      local maximum = ctx:entryOf(defender).maxHp
+      if type(maximum) == "number" and health.before >= maximum then
+        amount = math.max(0, health.before - 1)
+        ctx:consumeHeldItem(defender)
+      end
+    elseif endured == "FOCUS_BAND" then
+      local stream = frame.stream
+      if
+        type(stream) == "table" and type((stream --[[@as table<string, unknown>]]).nextU16) == "function"
+      then
+        local draw = (stream --[[@as table<string, unknown>]]).nextU16
+        local ok, value = pcall(draw, stream, "focus_band", { kind = "held_item", key = "FOCUS_BAND" })
+        if ok and type(value) == "number" and value < 6554 then
+          amount = math.max(0, health.before - 1)
+        end
+      end
+    end
   end
   local outcome = ctx:damage(defender, amount, causeFor(frame))
   return outcome.before - outcome.after
@@ -2026,6 +2110,124 @@ local function applyShellBell(ctx, frame, user, dealt)
   end
 end
 
+-- On-hit held items behind the defender and attacker holdings:
+-- Enigma heals a quarter when super-effective, Jaboca/Rowap recoil an
+-- eighth of the attacker maximum on matching split damage, King's Rock
+-- rolls 10% to flinch, and Life Orb recoils a tenth of the attacker
+-- maximum on non-status hits. All spend their berry except King's Rock
+-- and Life Orb/Shell Bell persistences are handled by their own owners.
+-- Gates mirror CheckItemEffectOnHit/TryItemFlinch/TryAfterMoveItems:
+-- substitute absorbs (caller returns early), targets alive, Magic Guard
+-- blocks recoil, Jaboca skips U-turn, King's Rock needs contact.
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer defender combatant under the hit
+---@param dealt integer bodily damage inflicted by the hit
+---@param superEffective boolean true when the chart product is super-effective
+---@param category string physical/special/status strike category
+local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, category)
+  local record = frame --[[@as table<string, unknown>]]
+  local user = userOf(frame)
+  local split = category == "physical" and "physical" or (category == "special" and "special" or nil)
+  -- Enigma: defender alive, super-effective, heals a quarter of defender max.
+  do
+    local held = defenderEffectiveItem(ctx, frame, defender)
+    if held == "ENIGMA_BERRY" and dealt > 0 and superEffective then
+      local after = ctx:damage(defender, 0, causeFor(frame)).after
+      if after > 0 then
+        local maximum = ctx:entryOf(defender).maxHp
+        if type(maximum) == "number" then
+          local restored = math.floor(maximum / 4)
+          if restored < 1 then
+            restored = 1
+          end
+          local healed = ctx:heal(defender, restored, causeFor(frame))
+          ctx:consumeHeldItem(defender)
+          ctx:emit(
+            "healed",
+            causeFor(frame),
+            { target = defender, restored = healed.after - healed.before, noBlink = true }
+          )
+        end
+      end
+    end
+  end
+  -- Jaboca/Rowap: attacker alive, no Magic Guard, not U-turn, matching split.
+  do
+    local held = defenderEffectiveItem(ctx, frame, defender)
+    local jaboca = held == "JABOCA_BERRY" and split == "physical"
+    local rowap = held == "ROWAP_BERRY" and split == "special"
+    if (jaboca or rowap) and dealt > 0 and record.executingMove ~= "U_TURN" then
+      local attackerAlive = ctx:damage(user, 0, causeFor(frame)).before > 0
+      local pair = abilitiesOf(frame, defender)
+      local userAbility = liveAbility(pair.user)
+      if attackerAlive and userAbility ~= "MAGIC_GUARD" then
+        local maximum = ctx:entryOf(user).maxHp
+        if type(maximum) == "number" then
+          local recoil = math.floor(maximum / 8)
+          if recoil < 1 then
+            recoil = 1
+          end
+          ctx:damage(user, recoil, causeFor(frame))
+          ctx:consumeHeldItem(defender)
+          ctx:emit("damaged", causeFor(frame), { target = user, amount = recoil })
+        end
+      end
+    end
+  end
+  -- King's Rock/Razor Fang: 10% flinch on contact hits with damage, target alive.
+  do
+    local held = effectiveItemOf(ctx, frame, user)
+    if (held == "KINGS_ROCK" or held == "RAZOR_FANG") and dealt > 0 then
+      local locals = record.locals --[[@as table<string, unknown>]]
+      local move = locals.move --[[@as table<string, unknown>]]
+      local contact = move.contact == true and record.executingMove ~= "U_TURN"
+      local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
+      contact = contact or (flags ~= nil and flags.contact == true and record.executingMove ~= "U_TURN")
+      local targetAlive = ctx:damage(defender, 0, causeFor(frame)).after > 0
+      if contact and targetAlive then
+        local stream = frame.stream
+        if
+          type(stream) == "table" and type((stream --[[@as table<string, unknown>]]).nextU16) == "function"
+        then
+          local draw = (stream --[[@as table<string, unknown>]]).nextU16
+          local label = held == "RAZOR_FANG" and "razor_fang" or "kings_rock"
+          local ok, value = pcall(draw, stream, label, { kind = "held_item", key = held })
+          if ok and type(value) == "number" and value < 6554 then
+            ctx:addBattleEffect(
+              NativeEffectHandlers.definitionFor("flinch"),
+              { kind = "active", combatant = defender, activation = activationOf(ctx, defender) },
+              { kind = "move", combatant = user },
+              { version = 1, turns = 1 }
+            )
+            ctx:emit("flinch", causeFor(frame), { target = defender })
+          end
+        end
+      end
+    end
+  end
+  -- Life Orb recoil: a tenth of attacker max on damaging non-status hits.
+  do
+    local held = effectiveItemOf(ctx, frame, user)
+    if held == "LIFE_ORB" and dealt > 0 and (category == "physical" or category == "special") then
+      if record.executingMove ~= "U_TURN" then
+        local pair = abilitiesOf(frame, defender)
+        local userAbility = liveAbility(pair.user)
+        if userAbility ~= "MAGIC_GUARD" and ctx:damage(user, 0, causeFor(frame)).before > 0 then
+          local maximum = ctx:entryOf(user).maxHp
+          if type(maximum) == "number" then
+            local recoil = math.floor(maximum / 10)
+            if recoil < 1 then
+              recoil = 1
+            end
+            ctx:damage(user, recoil, causeFor(frame))
+          end
+        end
+      end
+    end
+  end
+end
+
 ---@param ctx BattleContext battle context after the resolved hit
 ---@param frame table<string, unknown> strike frame carrying move and ability facts
 ---@param defender integer defender owning the post-hit ability
@@ -2426,6 +2628,31 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
       end
     end
   end
+  -- Resist berries halve the staged damage and spend themselves:
+  -- Chilan answers plain normal with no gate, every other entry needs a
+  -- super-effective hit of its warded type (subscript_0264: DivideVar /2).
+  do
+    local warded = defenderEffectiveItem(ctx, frame, defender)
+    local wardType = warded ~= nil and RESIST_WARDS[warded] or nil
+    if type(wardType) == "string" then
+      local gated = false
+      if warded == "CHILAN_BERRY" then
+        gated = moveType == "normal"
+      else
+        gated = moveType == wardType
+          and type(numerator) == "number"
+          and type(denominator) == "number"
+          and numerator > denominator
+      end
+      if gated and amount > 0 then
+        amount = math.floor(amount / 2)
+        if amount < 1 then
+          amount = 1
+        end
+        ctx:consumeHeldItem(defender)
+      end
+    end
+  end
   -- Doll damage still counts as dealt for the strike follow-ups: drain
   -- and recoil answer the inflicted amount, while only bodily harm arms
   -- the revenge ledger.
@@ -2459,6 +2686,10 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
   -- Strike recovery answers the inflicted amount behind the effective
   -- holding once the hit lands.
   applyShellBell(ctx, frame, userOf(frame), dealt)
+  do
+    local superEffective = type(numerator) == "number" and type(denominator) == "number" and numerator > denominator
+    applyAfterHitItems(ctx, frame, defender, dealt, superEffective, category)
+  end
   return dealt, true
 end
 
@@ -4083,12 +4314,10 @@ local function applyFlingEffectImpl(ctx, frame, target, effect, effectId, item)
     local dislikes = FLING_FLAVOR_DISLIKES[effectId]
     local dislikedFlavor = dislikes ~= nil and dislikes[Personality.nature(ctx:personalityOf(target))] == true
     if effectId >= 11 and effectId <= 15 then
-      -- TryFling routes the five flavor berries through the 1/8-HP
-      -- script only when the target likes that flavor; otherwise it uses
-      -- the dislike script, which confuses without restoring HP.
-      if not dislikedFlavor then
-        amount = math.floor(ctx:entryOf(target).maxHp --[[@as integer]] / 8)
-      end
+      -- Flavor berries heal an eighth through the dislike script as well:
+      -- subscript_0220 sets HP_CALC then calls 0207, which restores HP
+      -- before confusing, so disliked holders gain health beside confusion.
+      amount = math.floor(ctx:entryOf(target).maxHp --[[@as integer]] / 8)
     elseif kind == "quarter" then
       amount = math.floor(ctx:entryOf(target).maxHp --[[@as integer]] / 4)
     elseif kind == "fixed" then

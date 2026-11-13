@@ -4,7 +4,9 @@
 -- original held key. Items with no battle hold effect -- field medicine,
 -- battle-use goods, evolution goods, machines, key items, and unused
 -- identities -- stay explicitly bound and silent, so their genuine
--- absence of effect never looks like an unimplemented binding.
+-- absence of effect never looks like an unimplemented binding. Magic Room
+-- is intentionally absent: it is a Generation V field effect with no HGSS
+-- battle script, so Embargo plus Klutz are the only suppression gates.
 
 local PassiveItems = {}
 

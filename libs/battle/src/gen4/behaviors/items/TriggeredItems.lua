@@ -254,8 +254,8 @@ local PINCH_ORDER = { "attack", "defense", "speed", "specialAttack", "specialDef
 ---@param holder integer holder combatant under handling
 ---@return table<string, unknown>? pinch announcement, or nil when inapplicable
 local function starfBerry(instance, context, holder)
-  -- Starf refuses a fully maxed holder, then draws its sharply raised
-  -- stat across the stats still below the cap.
+  -- Starf refuses a fully maxed holder, then resamples like the native
+  -- rejection loop until it lands on a stat still below the cap.
   local raised = {} ---@type string[]
   for _, stat in ipairs(PINCH_ORDER) do
     if not stageMaxed(context, stat) then
@@ -270,12 +270,18 @@ local function starfBerry(instance, context, holder)
     return nil
   end
   local draw = (stream --[[@as table<string, unknown>]]).nextU16
-  local value = (draw --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]])(
-    stream,
-    "starf_stat",
-    { kind = "held_item", key = instance.key }
-  )
-  local picked = raised[(value % #raised) + 1]
+  local picked = nil
+  while picked == nil do
+    local value = (draw --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]])(
+      stream,
+      "starf_stat",
+      { kind = "held_item", key = instance.key }
+    )
+    local candidate = PINCH_ORDER[(value % #PINCH_ORDER) + 1]
+    if not stageMaxed(context, candidate) then
+      picked = candidate
+    end
+  end
   return { kind = "trigger", key = instance.key, combatant = holder, stat = picked, stages = "sharply-boosted" }
 end
 
@@ -379,7 +385,14 @@ local function leppaBerry(instance, context)
   if context.ppZero ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), restored = true, consumed = true }
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holderOf(instance),
+    restored = 10,
+    pp = true,
+    consumed = true,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -389,7 +402,23 @@ local function enigmaBerry(instance, context)
   if context.superEffective ~= true then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), recovered = true, consumed = true }
+  local holder = holderOf(instance)
+  local _, maxHp = holderHealth(context, holder)
+  if maxHp == nil then
+    return { kind = "trigger", key = instance.key, combatant = holder, recovered = true, consumed = true }
+  end
+  local restored = math.floor(maxHp --[[@as integer]] / 4)
+  if restored < 1 then
+    restored = 1
+  end
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holder,
+    recovered = true,
+    restored = restored,
+    consumed = true,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling

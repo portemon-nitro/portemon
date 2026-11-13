@@ -26,6 +26,16 @@
 -- species entries agree, else nothing below the lower window. Unknown
 -- species, out-of-range levels, and unknown or mismatched lead abilities
 -- fail before any draw is consumed. Pure domain module: no love dependency.
+--
+-- Structural conventions, verified against the decomp: the TRAINER and
+-- FRONTIER battle-type gate in WildMonSetRandomHeldItem (pokemon.c:3748)
+-- is structural, not a parameter — trainer mons never pass through this
+-- owner (HgssTrainerFactory uses explicit held items) and scenario
+-- factories pass through existing records without re-rolling. Egg leads
+-- arrive with no lead ability, so the native !isEgg gate is satisfied
+-- structurally. Form-specific BASE_ITEM_1/2 resolves at form 0: no wild
+-- HGSS alt-form varies its held entries (Unown assigns its form after the
+-- held roll natively, encounter_check.c:1352-1356, and holds nothing).
 
 local Errors = require("libs.errors.src.Errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
