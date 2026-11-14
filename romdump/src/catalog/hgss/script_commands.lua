@@ -3754,6 +3754,8 @@ return {
     },
     [495] = {
       name = "ScrCmd_GetGameVersion",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -4330,7 +4332,9 @@ return {
       },
     },
     [573] = {
-      name = "ScrCmd_573",
+      name = "ScrCmd_SetMysteryGiftActive",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [574] = {
@@ -4461,17 +4465,16 @@ return {
       widths = {},
     },
     [595] = {
-      name = "ScrCmd_595",
-      feature = "following_mon",
+      name = "ScrCmd_SetWarpResetSuppressed",
       disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "opcode 595 is unreached in the pinned corpus; it stays deferred pending a source trace",
+      deferredReason = "field_transition",
+      deferredNote = "warp-reset suppression is unowned; opcode 595 stays deferred pending a source trace",
       widths = {
         [1] = 1,
       },
     },
     [596] = {
-      name = "ScrCmd_596",
+      name = "ScrCmd_FollowMonIsLarge",
       feature = "following_mon",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -4498,14 +4501,14 @@ return {
       },
     },
     [599] = {
-      classification = "native_wait",
-      name = "ScrCmd_599",
+      classification = "yield_next_tick",
+      name = "ScrCmd_FollowMonHopIntoBall",
       feature = "following_mon",
       disposition = "supported",
       widths = {},
     },
     [600] = {
-      classification = "continue_same_tick",
+      classification = "native_wait",
       name = "ScrCmd_FollowMonRecall",
       feature = "following_mon",
       disposition = "supported",
@@ -4561,11 +4564,10 @@ return {
       widths = {},
     },
     [607] = {
-      name = "ScrCmd_607",
+      name = "ScrCmd_FollowMonMoveToPlayer",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "opcode 607 is an opaque follower neighbour off the default trail; it stays deferred pending a source trace",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [608] = {
@@ -4576,7 +4578,7 @@ return {
       widths = {},
     },
     [609] = {
-      name = "ScrCmd_609",
+      name = "ScrCmd_FollowMonResetMovement",
       feature = "following_mon",
       disposition = "supported",
       classification = "yield_next_tick",
@@ -6043,7 +6045,8 @@ return {
     },
     [805] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_FollowMonResetMovement",
+      disposition = "supported",
+      name = "ScrCmd_LoadEventSoundEffects",
       widths = {},
     },
     [806] = {

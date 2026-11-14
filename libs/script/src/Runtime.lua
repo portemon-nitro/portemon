@@ -1423,6 +1423,7 @@ end
 ---@field setMovementType fun(self: RuntimeFollowingMon, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: RuntimeFollowingMon, offsetSelector: integer, directionRaw: integer)
 ---@field releaseNextToPlayer fun(self: RuntimeFollowingMon): boolean
+---@field moveToPlayer (fun(self: RuntimeFollowingMon): boolean)|nil
 ---@field swapPositionsWithPlayer fun(self: RuntimeFollowingMon)
 ---@field recallToPlayer fun(self: RuntimeFollowingMon): boolean
 ---@field isNextToPlayer fun(self: RuntimeFollowingMon): boolean
@@ -1506,6 +1507,41 @@ do
 
   local function handleFollowerReleaseNextToPlayer(_, run)
     followingMonFor(run):releaseNextToPlayer()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerMoveToPlayer(_, run)
+    -- Retail ScrCmd_FollowMonMoveToPlayer (607): with an active permitted
+    -- follower, place it on the player tile in the same tick. No
+    -- release-ball pending flag and no hide-until-step bit ride along.
+    followingMonFor(run):moveToPlayer()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleGameVersion(node, run)
+    -- Retail ScrCmd_GetGameVersion (495): HeartGold 7, SoulSilver 8.
+    -- The composition wires the same version identity under both keys;
+    -- either one answers. A missing or unknown identity is a
+    -- programming invariant, never a silent default.
+    local versionId = run.services.gameVersion
+    if versionId == nil then
+      versionId = run.services.versionId
+    end
+    local number = versionId == "heartgold" and 7 or versionId == "soulsilver" and 8 or nil
+    assert(number == 7 or number == 8, "game version requires a known version identity")
+    semanticsFor(run).writeRef(node.result, number, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleSetMysteryGiftActive(_, run)
+    -- Retail ScrCmd_SetMysteryGiftActive (573) latches the durable SysInfo
+    -- flag and continues in the same tick (the source FALSE return).
+    -- There is no clear counterpart: the flag only ever turns on.
+    requireService(run, "sysInfo"):setMysteryGiftActive()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleLoadEventSoundEffects(_, _)
     return Runtime.OUTCOME_CONTINUE
   end
 
@@ -1636,6 +1672,10 @@ do
   HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
   HANDLERS.follower_transition = handleFollowerTransition
   HANDLERS.follower_recall = handleFollowerRecall
+  HANDLERS.follower_move_to_player = handleFollowerMoveToPlayer
+  HANDLERS.game_version = handleGameVersion
+  HANDLERS.set_mystery_gift_active = handleSetMysteryGiftActive
+  HANDLERS.load_event_sound_effects = handleLoadEventSoundEffects
   local function handleFollowerRecallToPlayer(_, run)
     followingMonFor(run):recallToPlayer()
     return Runtime.OUTCOME_CONTINUE
@@ -3073,7 +3113,7 @@ HANDLERS.legend_cutscene_lugia_arrives_camera_pan = handleLegendCutscene
 HANDLERS.legend_cinematic = handleLegendCutscene
 function HANDLERS.follower_reset_movement(_, run)
   requireService(run, "followingMon"):resetMovement()
-  return Runtime.OUTCOME_CONTINUE
+  return Runtime.OUTCOME_YIELD_TICK
 end
 function HANDLERS.give_spiky_ear_pichu(_, run)
   requireService(run, "specialMonGifts"):giveSpikyEarPichu()

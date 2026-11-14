@@ -120,6 +120,10 @@ function ApricornTreePresentation:spawnFruit(actorId, apricornKey)
     z = assert(position.z),
     facing = facing,
     jumpFrame = nil,
+    -- The source creates its jumping Apricorn with MAPOBJECTFLAG_INVISIBLE,
+    -- holds it hidden through the expel interval, and reveals it when the
+    -- jump starts; the first advanceFruit call below performs that reveal.
+    visible = false,
   }
   self:invalidateAssets()
 end
@@ -129,6 +133,7 @@ function ApricornTreePresentation:advanceFruit(frame)
   assert(self.fruit ~= nil, "Apricorn fruit has not been spawned")
   assert(frame >= 0 and frame < #JUMP_DY, "Apricorn jump frame is out of range")
   self.fruit.jumpFrame = frame
+  self.fruit.visible = true
 end
 
 function ApricornTreePresentation:clearFruit()
@@ -141,7 +146,7 @@ end
 ---@return table<string, unknown>?
 function ApricornTreePresentation:drawRecord()
   local fruit = self.fruit
-  if fruit == nil then
+  if fruit == nil or fruit.visible ~= true then
     return nil
   end
   local x, y, z = fruit.x, fruit.y, fruit.z

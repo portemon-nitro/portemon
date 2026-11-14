@@ -112,7 +112,7 @@ T["opcode 609 lowers to the follower gate"] = function()
     },
   })
   local _, steps, report = translate(bytes, 845, 0)
-  Assert.equal(steps[1].op, "yield_tick")
+  Assert.equal(steps[1].op, "follower_reset_movement")
   Assert.isTrue(report.complete)
 end
 
@@ -1243,7 +1243,7 @@ T["opcode 596 reads live partner state and 600 recalls the follower"] = function
     },
   })
   Assert.equal(CommandCatalog.classification(596), CommandCatalog.CONTINUE)
-  Assert.equal(CommandCatalog.classification(600), CommandCatalog.CONTINUE)
+  Assert.equal(CommandCatalog.classification(600), CommandCatalog.NATIVE_WAIT)
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.deepEqual(lowered.items[1], {
@@ -1252,7 +1252,7 @@ T["opcode 596 reads live partner state and 600 recalls the follower"] = function
     provenance = { offsets = { 32 }, opcodes = { 596 } },
   })
   Assert.equal(#lowered.unsupported, 0)
-  Assert.equal(lowered.items[2].op, "follower_recall_to_player")
+  Assert.equal(lowered.items[2].op, "follower_recall")
 end
 
 -- Opcode 582 (the source special-spawn setter) must lower to a named

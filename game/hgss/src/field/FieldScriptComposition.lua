@@ -422,14 +422,20 @@ local function apricornService(runtime)
     avatar:queueTransition("apricorn_shake")
     runtime:applyAvatarTransitions()
   end
+  -- The source player-shake child runs concurrently with the tree wiggle and
+  -- ends when its timer exceeds 24 ticks, while the wiggle it runs alongside
+  -- lasts 32; the avatar therefore shakes for the first 25 wiggle frames and
+  -- is restored mid-wiggle rather than before the tree starts.
+  local PLAYER_SHAKE_FRAMES = 25
   local function advanceTreeAnimation(_, actorId, phase, frame)
-    if phase == "wiggle" and frame == 0 then
-      local avatar = assert(runtime.playerAvatar, "field runtime has no player avatar owner")
-      avatar:queueTransition(avatar:durableState())
-      runtime:applyAvatarTransitions()
-      assert(runtime.audio, "field audio is unavailable"):play("SEQ_SE_GS_KI_YURERU")
-      runtime.actors:setGesturePresentation(actorId, "apricorn_tree_wiggle", frame)
-    elseif phase == "wiggle" then
+    if phase == "wiggle" then
+      if frame == 0 then
+        assert(runtime.audio, "field audio is unavailable"):play("SEQ_SE_GS_KI_YURERU")
+      elseif frame == PLAYER_SHAKE_FRAMES then
+        local avatar = assert(runtime.playerAvatar, "field runtime has no player avatar owner")
+        avatar:queueTransition(avatar:durableState())
+        runtime:applyAvatarTransitions()
+      end
       runtime.actors:setGesturePresentation(actorId, "apricorn_tree_wiggle", frame)
     elseif phase == "expel" then
       runtime.actors:setGesturePresentation(actorId, "apricorn_tree_expel", frame)
@@ -440,8 +446,9 @@ local function apricornService(runtime)
       treePresentation:advanceFruit(frame)
       if frame == 0 then
         assert(runtime.audio, "field audio is unavailable"):play("SEQ_SE_GS_FW255E")
-        runtime.actors:clearGesturePresentation(actorId)
       end
+      -- The source holds the tree's expel animation through the jump and only
+      -- resets it once the fruit lands, so the gesture stays until finish.
     end
   end
   local function finishTreeAnimation(_, actorId)
@@ -696,6 +703,8 @@ function FieldScriptComposition.compose(runtime, options)
     menu = runtime.menuHost,
     yesNoHost = runtime.yesNoHost,
     startMenuReopen = { request = requestStartMenuReopen },
+    versionId = runtime.versionId,
+    sysInfo = runtime.sysInfo,
     mons = options.mons,
     pokedex = pokedex,
     specialMonGifts = specialMonGifts,

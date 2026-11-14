@@ -117,8 +117,10 @@ end
 -- so it passes through untouched for its owner to validate on use.
 function T.routing_identity_stays_strict_while_domain_state_passes_through()
   Assert.notNil(GameSave.normalize(record()))
+  -- The future schema derives from the current one so the rejection pin
+  -- survives normal version bumps.
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.normalize(record({ schema = "g4-game-save-v12" }))
+    return GameSave.normalize(record({ schema = GameSave.SCHEMA .. "-future" }))
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.normalize(record({ schema = "g4-field-save-v3" }))

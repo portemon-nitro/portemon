@@ -107,14 +107,13 @@ function T.draws_the_color_fruit_along_the_source_jump_curve()
     player = { facing = "north" },
   })
   presentation:spawnFruit("map:34:object:2", "GRN_APRICORN")
-  local fruit = assert(presentation:drawRecord())
-  Assert.equal(fruit.spriteId, 914)
-  Assert.equal(fruit.world.x, 2)
-  Assert.equal(fruit.world.y, 1.75)
-  Assert.equal(fruit.world.z, 3)
+  -- The source creates its fruit invisible and reveals it only when the jump
+  -- starts, so the expel interval draws no fruit at the tree.
+  Assert.isNil(presentation:drawRecord(), "the expelled fruit stays hidden until its jump starts")
 
   presentation:advanceFruit(0)
-  fruit = assert(presentation:drawRecord())
+  local fruit = assert(presentation:drawRecord())
+  Assert.equal(fruit.spriteId, 914)
   Assert.equal(fruit.world.x, 2)
   Assert.equal(fruit.world.y, 2)
   Assert.equal(fruit.world.z, 3 + 1 / 16)

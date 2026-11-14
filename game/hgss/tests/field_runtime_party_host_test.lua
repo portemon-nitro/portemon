@@ -66,6 +66,7 @@ local function validEntry(versionId, withBuckets)
     entry.mons = require("tests.support.MonBucket").emptyForVersion(versionId)
     entry.bag = require("libs.hgss.src.save.BagSave").empty()
     entry.fashionCase = require("libs.hgss.src.save.FashionCaseState").empty()
+    entry.sysInfo = require("libs.hgss.src.save.SysInfoState").empty()
     entry.mart = require("libs.hgss.src.save.MartSave").empty()
   end
   return entry

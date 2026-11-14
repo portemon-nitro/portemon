@@ -313,10 +313,11 @@ local function genderedMessage(ins)
 end
 
 local function yieldFollowerCheck()
-  -- ScrCmd_609 settles/updates the active follower and yields one scheduler
-  -- tick; the controller settles through the normal fixed-tick update during
-  -- the yield, with or without an installed partner.
-  return { op = "yield_tick" }
+  -- ScrCmd_609 (FollowMonResetMovement) resets the follower trail state
+  -- and yields one scheduler tick (the source TRUE return). The runtime
+  -- owns both the reset and the yield so the verifier sees one
+  -- yield-boundary node for the yield-classified instruction.
+  return { op = "follower_reset_movement" }
 end
 
 -- ScrCmd_SetAvatarBits (188): fully supported masks queue one semantic
@@ -446,7 +447,10 @@ local function followerTransition()
 end
 
 local function followerRecall()
-  -- Retail opcode 599 starts a TaskManager child and blocks until it settles.
+  -- ScrCmd_600 (FollowMonRecall) starts the recall task and blocks until
+  -- it settles (the source TRUE return yields while the TaskManager child
+  -- runs; FALSE continues when there is nothing to do). The blocking
+  -- task owns the visible-follower choreography.
   return { op = "follower_recall" }
 end
 
@@ -1885,13 +1889,17 @@ local FieldHandlers = {
   [581] = lockLastTalkedActor,
   [582] = setSpecialSpawn,
   [596] = followerPartnerState,
-  [599] = followerRecall,
+  [599] = FieldServiceHandlers.followerHopIntoBall,
+  [600] = followerRecall,
+  [495] = FieldServiceHandlers.gameVersion,
+  [573] = FieldServiceHandlers.setMysteryGiftActive,
   [601] = followerFacePlayer,
   [602] = followerSetPaused,
   [603] = followerWait,
   [604] = followerSetMovementType,
   [605] = followerReposition,
   [606] = FieldServiceHandlers.followerReleaseNextToPlayer,
+  [607] = FieldServiceHandlers.followerMoveToPlayer,
   [755] = FieldServiceHandlers.legendCutsceneBellBegin,
   [756] = FieldServiceHandlers.legendCutsceneBellEnd,
   [757] = FieldServiceHandlers.legendCutsceneBellRise,
@@ -1907,7 +1915,7 @@ local FieldHandlers = {
   [768] = FieldServiceHandlers.legendCutsceneLugiaArrivesEnd,
   [769] = FieldServiceHandlers.legendCutsceneLugiaArrivesCameraPan,
   [773] = FieldServiceHandlers.legendCinematic,
-  [805] = FieldServiceHandlers.followMonResetMovement,
+  [805] = FieldServiceHandlers.loadEventSoundEffects,
   [608] = followerTransition,
   [621] = placeStarterBalls,
   [609] = yieldFollowerCheck,
@@ -1947,7 +1955,6 @@ local FieldHandlers = {
   [733] = FieldServiceHandlers.partyLeadHasType,
   [734] = FieldServiceHandlers.followerJumpOnSpot,
   [851] = FieldServiceHandlers.bufferCapitalize,
-  [600] = FieldServiceHandlers.followerRecallToPlayer,
   [829] = FieldServiceHandlers.followerIsNextToPlayer,
   [753] = FieldServiceHandlers.rockSmashItemCheck,
   [754] = FieldServiceHandlers.tryHeadbuttEncounter,

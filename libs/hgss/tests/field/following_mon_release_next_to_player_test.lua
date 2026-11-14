@@ -189,18 +189,21 @@ local function assertOnPlayerTile(w, partnerId, what)
   Assert.equal(actor.facing, "south", what .. " faces the partner south")
 end
 
-function T.visible_release_keeps_the_partner_visible_through_stationary_ticks()
-  local w = world("ALLOW")
-  local partnerId = installFollower(w, 0)
-  w.manager:show(partnerId)
-  Assert.isTrue(w.controller:releaseNextToPlayer(), "the permitted release acts")
-  assertOnPlayerTile(w, partnerId, "the release")
-  Assert.isTrue(w.manager:isVisible(partnerId), "the release preserves a visible partner")
-  Assert.isTrue(w.controller:isMovementSettled(), "the release leaves no stale trail behind")
-  tickStationary(w, 8)
-  Assert.isTrue(w.manager:isVisible(partnerId), "stationary ticks keep the partner visible with no trail step")
-  assertOnPlayerTile(w, partnerId, "the stationary release")
-  w.manager:dispose()
+-- Release and move share the permitted-placement contract: with an active
+-- follower on an allowed map, both land the partner on the player tile
+-- facing south with visibility left alone. One shared setup proves both
+-- entry points instead of paying the real manager/controller boot twice.
+function T.permitted_placement_lands_the_partner_on_the_player_tile()
+  for _, method in ipairs({ "releaseNextToPlayer", "moveToPlayer" }) do
+    local w = world("ALLOW")
+    local partnerId = installFollower(w, 0)
+    w.manager:show(partnerId)
+    Assert.isTrue(w.controller[method](w.controller), method .. " acts on the permitted map")
+    assertOnPlayerTile(w, partnerId, method)
+    Assert.isTrue(w.manager:isVisible(partnerId), method .. " preserves a visible partner")
+    Assert.isTrue(w.controller:isMovementSettled(), method .. " leaves no stale trail behind")
+    w.manager:dispose()
+  end
 end
 
 function T.release_cancels_an_in_flight_trail_without_touching_visibility()

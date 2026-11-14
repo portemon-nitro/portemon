@@ -174,6 +174,7 @@ local function captureRuntime(overrides)
     fashionCase = require("libs.hgss.src.save.FashionCaseState").new(
       require("libs.hgss.src.save.FashionCaseState").empty()
     ),
+    sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
     session = {
       tick = 42,
       player = {
@@ -222,6 +223,9 @@ local function captureRuntime(overrides)
     },
     mailbox = require("libs.hgss.src.save.Mailbox").new(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new(),
+    sysInfo = require("libs.hgss.src.save.SysInfoState").new(
+      require("libs.hgss.src.save.SysInfoState").empty()
+    ),
     bagService = {
       capture = function()
         return require("libs.hgss.src.save.BagSave").empty()

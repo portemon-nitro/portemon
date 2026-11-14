@@ -34,7 +34,9 @@ function T.harvest_checks_daily_state_then_animates_and_depletes_before_success(
   }
 
   local state = ApricornTreeTask.create({ actorId = "map:34:object:2" }, ctx)
-  for _ = 1, 81 do
+  -- The source runs its player-shake child concurrently with the tree action,
+  -- so the blocking task spans wiggle + expel + jump with no idle prefix.
+  for _ = 1, 56 do
     local result = ApricornTreeTask.poll(state, ctx)
     state = result.state
     if result.complete then
@@ -45,6 +47,9 @@ function T.harvest_checks_daily_state_then_animates_and_depletes_before_success(
 
   Assert.equal(calls[1][1], "tree")
   Assert.equal(calls[2][1], "begin")
+  Assert.equal(calls[3][1], "frame", "the tree wiggle starts on the first tick alongside the player shake")
+  Assert.equal(calls[3][3], "wiggle")
+  Assert.equal(calls[3][4], 0)
   local depleteIndex
   local wiggleFrames = 0
   local expelFrames = 0

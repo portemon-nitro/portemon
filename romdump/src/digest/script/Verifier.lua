@@ -88,6 +88,7 @@ local YIELD_OPS = {
   yield_tick = true,
   lock_all = true,
   release_all = true,
+  follower_reset_movement = true,
   menu_begin = true,
   signpost_direction = true,
   signpost_set = true,

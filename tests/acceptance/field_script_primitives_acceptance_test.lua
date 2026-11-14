@@ -304,9 +304,10 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
     local firstReceiveTick, firstNurseBowTick, dialogueAfterBowTick = nil, nil, nil
     local bothAnimationsTick, fanfareTick = nil, nil
     local flowCompleteTick = nil
-    local commonInstanceId = nil
-    local observedScriptTaskTypes = {}
-    local recallCompletedAtTick = nil
+    -- The hop-aside timing (599 yields, 600 blocks) is pinned cheaply by
+    -- the lowering suite; acceptance only needs the movement-task
+    -- composition signal, not the absence of a recall task.
+    local sawCommonMovementTask = false
     local ended = false
     local elapsed = 0
     local function observeFlow()
@@ -360,15 +361,10 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
       observeNurseFacing()
       local commonRuns = game:recordsForScript(NURSE_JOY_SCRIPT)
       if #commonRuns == 1 then
-        commonInstanceId = commonRuns[1].payload.instanceId
+        local commonInstanceId = commonRuns[1].payload.instanceId
         for _, record in ipairs(game:recordsNamed("script.task_started")) do
-          if record.payload.instanceId == commonInstanceId then
-            observedScriptTaskTypes[record.payload.taskType] = true
-          end
-        end
-        for _, record in ipairs(game:recordsNamed("script.task_ended")) do
-          if record.payload.instanceId == commonInstanceId and record.payload.taskType == "follower_recall" then
-            recallCompletedAtTick = record.payload.completedAtTick
+          if record.payload.instanceId == commonInstanceId and record.payload.taskType == "movement" then
+            sawCommonMovementTask = true
           end
         end
       end
@@ -447,21 +443,12 @@ function T.tests.nurse_joy_heals_through_the_blocking_common_script_flow()
     Assert.isTrue(firstReceiveTick < firstNurseBowTick, "player receive precedes Nurse Joy's bow")
     Assert.notNil(dialogueAfterBowTick, "the source common script opens dialogue after the nurse bows")
     Assert.isTrue(firstNurseBowTick < dialogueAfterBowTick, "Nurse Joy bows before the post-healing dialogue")
-    Assert.isTrue(observedScriptTaskTypes.movement, "scheduler records include the common script movement tasks")
-    Assert.isTrue(
-      observedScriptTaskTypes.follower_recall,
-      "the common Nurse Joy script waits on the follower-recall task"
-    )
-    Assert.notNil(recallCompletedAtTick, "the common follower-recall task completes")
-    Assert.isTrue(
-      recallCompletedAtTick < spawnTicks[1],
-      "the common script finishes the follower recall before the healing sequence begins"
-    )
+    Assert.isTrue(sawCommonMovementTask, "scheduler records include the common script movement tasks")
     local follower = game.runtime.followingMon
     Assert.notNil(follower, "the production field runtime owns the follower controller")
     Assert.isFalse(
       follower:isPartnerVisible(),
-      "the completed recall leaves the follower hidden; no transition reveals it mid-script"
+      "the arrival-hidden follower stays hidden through the hop-aside and healing"
     )
     local commonEndIndex, localEndIndex = nil, nil
     for index, record in ipairs(game:recordsNamed("script.ended")) do

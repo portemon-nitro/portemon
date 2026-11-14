@@ -48,6 +48,13 @@ local function follower(overrides)
     facePlayer = function()
       calls[#calls + 1] = "facePlayer"
     end,
+    moveToPlayer = function()
+      calls[#calls + 1] = "moveToPlayer"
+      return true
+    end,
+    resetMovement = function()
+      calls[#calls + 1] = "resetMovement"
+    end,
     releaseNextToPlayer = function()
       calls[#calls + 1] = "releaseNextToPlayer"
     end,
@@ -132,6 +139,78 @@ function T.release_next_to_player_delegates_to_the_controller()
   local run = runWith(followingMon)
   Assert.equal(Runtime.executeNode({ op = "follower_release_next_to_player" }, run), Runtime.OUTCOME_CONTINUE)
   Assert.equal(followingMon._calls[1], "releaseNextToPlayer", "the release runs through the one owner")
+end
+
+function T.move_to_player_delegates_to_the_controller()
+  local followingMon = follower()
+  local run = runWith(followingMon)
+  Assert.equal(Runtime.executeNode({ op = "follower_move_to_player" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(followingMon._calls[1], "moveToPlayer", "the move runs through the one owner")
+end
+
+function T.reset_movement_resets_and_yields_one_tick()
+  local followingMon = follower()
+  local run = runWith(followingMon)
+  Assert.equal(Runtime.executeNode({ op = "follower_reset_movement" }, run), Runtime.OUTCOME_YIELD_TICK)
+  Assert.equal(followingMon._calls[1], "resetMovement", "the reset runs through the one owner")
+end
+
+function T.game_version_writes_the_retail_identity()
+  local function runFor(versionId)
+    local stored = {}
+    local world = {
+      getVar = function(_, id)
+        return stored[id]
+      end,
+      setVar = function(_, id, value)
+        stored[id] = value
+      end,
+    }
+    local run = {
+      instance = { scriptId = "test.version", locals = {}, textArgs = {} },
+      services = { world = world, gameVersion = versionId },
+      semantics = RuntimeValues,
+      scheduler = {},
+      tick = 1,
+      input = {},
+    }
+    return run, stored
+  end
+  local hg, hgStored = runFor("heartgold")
+  Assert.equal(Runtime.executeNode({ op = "game_version", result = var(0x800C) }, hg), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(hgStored[0x800C], 7, "HeartGold reads 7")
+  local ss, ssStored = runFor("soulsilver")
+  Assert.equal(Runtime.executeNode({ op = "game_version", result = var(0x800C) }, ss), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(ssStored[0x800C], 8, "SoulSilver reads 8")
+  -- The scene-SFX preload beside it is a same-tick no-op: it must exist
+  -- and continue rather than fault on an unknown op.
+  local preload = runWith(follower())
+  Assert.equal(
+    Runtime.executeNode({ op = "load_event_sound_effects" }, preload),
+    Runtime.OUTCOME_CONTINUE,
+    "the event-SFX preload continues in the same tick"
+  )
+end
+
+-- The mystery-gift flag latches durably and requires its owner: the
+-- script latches the live SysInfo state the same tick, and an unwired
+-- flag is an attributed fault, never a silent success.
+function T.mystery_gift_latches_the_durable_flag_and_requires_its_service()
+  local SysInfoState = require("libs.hgss.src.save.SysInfoState")
+  local sysInfo = SysInfoState.new(SysInfoState.empty())
+  local run = runWith(follower())
+  run.services.sysInfo = sysInfo
+  Assert.isFalse(sysInfo:isMysteryGiftActive(), "the flag starts inactive")
+  Assert.equal(Runtime.executeNode({ op = "set_mystery_gift_active" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.isTrue(sysInfo:isMysteryGiftActive(), "the script latches the durable flag")
+  Assert.deepEqual(sysInfo:capture().mysteryGiftActive, true, "the capture persists the latch for save")
+
+  local missing = runWith(follower())
+  local err = Assert.throws(function()
+    Runtime.executeNode({ op = "set_mystery_gift_active" }, missing)
+  end)
+  Assert.isTrue(Errors.is(err), "an unwired flag is an attributed script error")
+  Assert.equal(err.code, "SCRIPT_SERVICE_MISSING", "an unwired flag must not silently succeed")
 end
 
 function T.face_player_delegates_to_the_controller()

@@ -7,11 +7,17 @@ local ApricornTreeTask = {}
 ApricornTreeTask.type = "apricorn_tree"
 ApricornTreeTask.version = 1
 
-local PLAYER_WAIT_FRAMES = 25
+-- The source runs its player-shake child concurrently with the tree action
+-- (Task_AnimApricornTree spawns Task_AnimPlayerShakeTree, then starts the
+-- tree wiggle on its next frame without waiting), so the blocking task spans
+-- the tree intervals back to back: 2 x 16-frame wiggles, the 8-frame expel,
+-- and the 16-frame jump. The player shake lasts ~25 frames (its child ends
+-- when its timer exceeds 24) and is restored mid-wiggle by the animation
+-- host, not by an idle prefix here.
 local TREE_WIGGLE_FRAMES = 16 * 2
 local TREE_EXPEL_FRAMES = 8
 local APRICORN_JUMP_FRAMES = 16
-local TOTAL_FRAMES = PLAYER_WAIT_FRAMES + TREE_WIGGLE_FRAMES + TREE_EXPEL_FRAMES + APRICORN_JUMP_FRAMES
+local TOTAL_FRAMES = TREE_WIGGLE_FRAMES + TREE_EXPEL_FRAMES + APRICORN_JUMP_FRAMES
 
 local function invalidState(state)
   local context = { state = state }
@@ -60,27 +66,19 @@ function ApricornTreeTask.poll(state, ctx)
   end
 
   local tick = state.tick
-  if tick < PLAYER_WAIT_FRAMES then
-    -- The player-only child animation completes before the tree action starts.
-  elseif tick < PLAYER_WAIT_FRAMES + TREE_WIGGLE_FRAMES then
-    local frame = tick - PLAYER_WAIT_FRAMES
-    apricorn:advanceTreeAnimation(actorId, "wiggle", frame, state.apricornKey)
-    if frame == TREE_WIGGLE_FRAMES - 1 then
+  if tick < TREE_WIGGLE_FRAMES then
+    apricorn:advanceTreeAnimation(actorId, "wiggle", tick, state.apricornKey)
+    if tick == TREE_WIGGLE_FRAMES - 1 then
       state.harvested = apricorn:depleteTree(state.treeIndex)
       if not state.harvested then
         apricorn:finishTreeAnimation(actorId)
         return { complete = true, state = state, result = 0 }
       end
     end
-  elseif tick < PLAYER_WAIT_FRAMES + TREE_WIGGLE_FRAMES + TREE_EXPEL_FRAMES then
-    apricorn:advanceTreeAnimation(actorId, "expel", tick - PLAYER_WAIT_FRAMES - TREE_WIGGLE_FRAMES, state.apricornKey)
+  elseif tick < TREE_WIGGLE_FRAMES + TREE_EXPEL_FRAMES then
+    apricorn:advanceTreeAnimation(actorId, "expel", tick - TREE_WIGGLE_FRAMES, state.apricornKey)
   elseif tick < TOTAL_FRAMES then
-    apricorn:advanceTreeAnimation(
-      actorId,
-      "jump",
-      tick - PLAYER_WAIT_FRAMES - TREE_WIGGLE_FRAMES - TREE_EXPEL_FRAMES,
-      state.apricornKey
-    )
+    apricorn:advanceTreeAnimation(actorId, "jump", tick - TREE_WIGGLE_FRAMES - TREE_EXPEL_FRAMES, state.apricornKey)
   end
 
   state.tick = tick + 1

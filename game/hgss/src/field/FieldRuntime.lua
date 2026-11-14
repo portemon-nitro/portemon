@@ -31,6 +31,7 @@ local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -576,6 +577,7 @@ end
 ---@field _partyPrefetchRevision integer? last warmed party revision, nil before the first warmup
 ---@field _partyPrefetchCooldown number? seconds until a deferred party warmup retries, failing closed at zero
 ---@field fashionCase FashionCaseState live accessory inventory restored from the save
+---@field sysInfo SysInfoState live system-info state (mystery-gift flag) restored from the save
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
@@ -1490,6 +1492,10 @@ function FieldRuntime:_composeFieldServices(boot)
     dex = assert(self.dexKnowledge, "field runtime composes dex knowledge before the mon service"),
     stats = assert(self.gameStats, "field runtime composes game stats before the mon service"),
   })
+  self.sysInfo = SysInfoState.new(
+    boot.loadedGame and boot.loadedGame.sysInfo
+      or assert(boot.activeGame.sysInfo, "finalized game sysInfo bucket is required")
+  )
   self.mailbox = Mailbox.new(
     boot.loadedGame and boot.loadedGame.mailbox
       or assert(boot.activeGame.mailbox, "finalized game mailbox bucket is required"),
@@ -4818,7 +4824,7 @@ function FieldRuntime:_releaseAll()
   self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
-  self.mailbox, self.photoAlbum = nil, nil
+  self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()
   end

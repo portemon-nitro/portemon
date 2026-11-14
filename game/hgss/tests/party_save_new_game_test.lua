@@ -6,7 +6,6 @@ local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local GameSave = require("libs.hgss.src.save.GameSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 
@@ -35,10 +34,6 @@ local function candidate(catalog, seed)
   })
 end
 
-function T.new_game_schema_requires_the_mons_bucket()
-  Assert.equal(GameSave.SCHEMA, "g4-game-save-v11", "the current schema carries every persistent bucket")
-end
-
 function T.unpublished_candidate_carries_empty_validated_mons_state()
   local catalog = CatalogFixture.makeCatalog()
   local fresh = candidate(catalog, 0x12345678)
@@ -57,6 +52,11 @@ function T.unpublished_candidate_carries_empty_validated_mons_state()
   )
   Assert.equal(fresh.fashionCase.schema, "hgss-fashion-case-v1")
   Assert.equal(#fresh.fashionCase.counts, 100)
+  Assert.deepEqual(
+    fresh.sysInfo,
+    require("libs.hgss.src.save.SysInfoState").empty(),
+    "the unpublished new game carries an inactive mystery-gift flag"
+  )
 end
 
 function T.unpublished_candidate_carries_empty_validated_bag_state()

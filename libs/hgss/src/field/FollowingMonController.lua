@@ -1606,6 +1606,23 @@ function FollowingMonController:releaseNextToPlayer()
   return true
 end
 
+-- Retail ScrCmd_FollowMonMoveToPlayer (607): with an active permitted
+-- follower, place it on the player tile in the same tick. Unlike opcode
+-- 606 it carries no release-ball pending flag and no hide-until-step bit.
+---@param self FollowingMonController
+---@return boolean acted
+function FollowingMonController:moveToPlayer()
+  if not self:isActive() then
+    return false
+  end
+  local mapId = self._actors.currentMapId
+  if mapId == nil or not self:_permitted(mapId) then
+    return false
+  end
+  self:repositionRelativeToPlayer(9, 1)
+  return true
+end
+
 -- Retail ScrCmd_FollowMonIsNextToPlayer: a visible follower on a cardinally
 -- adjacent tile of the player's committed anchor.
 ---@return boolean

@@ -95,13 +95,22 @@ function T.opcode_606_releases_next_to_the_player_in_the_same_tick()
 end
 
 function T.opcode_599_is_a_blocking_recall_distinct_from_opcode_608()
+  -- Retail 599 is FollowMonHopIntoBall (yield one tick, background task)
+  -- and 600 is FollowMonRecall (blocking until settled); 608 is the
+  -- same-tick ball-release transition visual.
   Assert.equal(CommandCatalog.disposition(599), "supported")
-  Assert.equal(CommandCatalog.classification(599), CommandCatalog.NATIVE_WAIT)
+  Assert.equal(CommandCatalog.classification(599), CommandCatalog.YIELD)
   Assert.deepEqual(CommandCatalog.widths(599), {})
-  Assert.equal(lowerSingle(599, {}).op, "follower_recall")
+  Assert.equal(lowerSingle(599, {}).op, "yield_tick")
+  Assert.equal(CommandCatalog.disposition(600), "supported")
+  Assert.equal(CommandCatalog.classification(600), CommandCatalog.NATIVE_WAIT)
+  Assert.deepEqual(CommandCatalog.widths(600), {})
+  Assert.equal(lowerSingle(600, {}).op, "follower_recall")
   Assert.equal(CommandCatalog.classification(608), CommandCatalog.CONTINUE)
   Assert.equal(lowerSingle(608, {}).op, "follower_transition")
-  local recallVerified, recallProblem = verifiesFollowerCommand(599)
+  local hopVerified, hopProblem = verifiesFollowerCommand(599)
+  Assert.isTrue(hopVerified, hopProblem or "hop yield must verify")
+  local recallVerified, recallProblem = verifiesFollowerCommand(600)
   Assert.isTrue(recallVerified, recallProblem or "blocking recall must verify")
   local transitionVerified, transitionProblem = verifiesFollowerCommand(608)
   Assert.isTrue(transitionVerified, transitionProblem or "same-tick transition must verify")
@@ -159,6 +168,52 @@ function T.follower_movement_mode_command_stays_supported_same_tick()
     "the movement-mode command must continue in the same tick"
   )
   Assert.deepEqual(CommandCatalog.widths(604), { [1] = 2 }, "the movement-mode command carries one halfword")
+end
+
+-- Opcode 609 resets the follower trail and yields one tick (the source
+-- TRUE return): the reset runs first so stale trail state never executes
+-- under the next movement mode.
+function T.opcode_609_resets_the_trail_and_yields()
+  Assert.equal(CommandCatalog.disposition(609), "supported")
+  Assert.equal(CommandCatalog.classification(609), CommandCatalog.YIELD)
+  local node = lowerSingle(609, {})
+  Assert.equal(node.op, "follower_reset_movement")
+  local verified, problem = verifiesFollowerCommand(609)
+  Assert.isTrue(verified, problem or "reset yield must verify")
+end
+
+-- Opcode 607 moves the permitted follower onto the player tile same-tick.
+function T.opcode_607_moves_the_follower_to_the_player()
+  Assert.equal(CommandCatalog.disposition(607), "supported")
+  Assert.equal(CommandCatalog.classification(607), CommandCatalog.CONTINUE)
+  Assert.equal(lowerSingle(607, {}).op, "follower_move_to_player")
+end
+
+-- Trivial same-tick queries beside the follower family lower to real
+-- semantics instead of explicit unsupported fallbacks: 495 writes the
+-- retail game identity (7/8) into its result var, 573 latches the durable
+-- SysInfo mystery-gift flag, and 805 preloads scene SFX. One test owns
+-- all three one-line mappings so the family keeps a single pin.
+function T.stateless_same_tick_queries_lower_to_real_semantics()
+  local cases = {
+    [495] = { op = "game_version", hasResult = true },
+    [573] = { op = "set_mystery_gift_active", hasResult = false },
+    [805] = { op = "load_event_sound_effects", hasResult = false },
+  }
+  for opcode, expected in pairs(cases) do
+    Assert.equal(CommandCatalog.disposition(opcode), "supported", "opcode " .. opcode .. " must be supported")
+    Assert.equal(
+      CommandCatalog.classification(opcode),
+      CommandCatalog.CONTINUE,
+      "opcode " .. opcode .. " must continue in the same tick"
+    )
+    local operands = opcode == 495 and { 0x800C } or {}
+    local node = lowerSingle(opcode, operands)
+    Assert.equal(node.op, expected.op, "opcode " .. opcode .. " must lower to " .. expected.op)
+    if expected.hasResult then
+      Assert.deepEqual(node.result, { value = "var", id = 0x800C }, "opcode 495 keeps its result var")
+    end
+  end
 end
 
 return { tests = T }

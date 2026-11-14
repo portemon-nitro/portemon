@@ -210,6 +210,7 @@ local function validEntry(versionId)
     },
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
+    sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),

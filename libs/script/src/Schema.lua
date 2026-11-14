@@ -1682,6 +1682,14 @@ Schema.OPERATIONS = {
   },
   follower_transition = { fields = {} },
   follower_recall = { fields = {} },
+  follower_move_to_player = { fields = {} },
+  game_version = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  set_mystery_gift_active = { fields = {} },
+  load_event_sound_effects = { fields = {} },
   -- Field-move cue operations. The cut-in blocks until the cue service
   -- reports its blocking cue finished; the effect cue clears the done
   -- variable and the service completes it, the script only polls it.

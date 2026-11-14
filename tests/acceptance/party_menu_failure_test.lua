@@ -474,6 +474,7 @@ local function validRecord(saveId)
     playerData = validPlayerData(),
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     fashionCase = FashionCaseState.empty(),
+    sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {
       schema = "g4-script-save-v2",

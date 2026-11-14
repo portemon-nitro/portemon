@@ -13,6 +13,7 @@ local MartSave = require("libs.hgss.src.save.MartSave")
 local MonBucket = require("tests.support.MonBucket")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 
 local FinalizedGameFixture = {}
 
@@ -66,6 +67,7 @@ function FinalizedGameFixture.build(versionId, options)
     mart = options.mart or MartSave.empty(),
     mailbox = Mailbox.new():capture(),
     photoAlbum = PhotoAlbum.new():capture(),
+    sysInfo = SysInfoState.empty(),
   }
 end
 

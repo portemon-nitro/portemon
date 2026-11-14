@@ -320,6 +320,26 @@ function FieldServiceHandlers.followMonResetMovement(_)
   return { op = "follower_reset_movement" }
 end
 
+function FieldServiceHandlers.followerHopIntoBall(_)
+  return { op = "yield_tick" }
+end
+
+function FieldServiceHandlers.followerMoveToPlayer(_)
+  return { op = "follower_move_to_player" }
+end
+
+function FieldServiceHandlers.gameVersion(ins)
+  return { op = "game_version", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.setMysteryGiftActive(_)
+  return { op = "set_mystery_gift_active" }
+end
+
+function FieldServiceHandlers.loadEventSoundEffects(_)
+  return { op = "load_event_sound_effects" }
+end
+
 function FieldServiceHandlers.processSoundplate()
   return { op = "process_soundplate" }
 end

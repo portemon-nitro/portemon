@@ -167,6 +167,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     mons = runtime.monService:capture(),
     bag = runtime.bagService:capture(),
     mart = assert(runtime.martService, "field runtime has no mart service"):capture(),
+    sysInfo = assert(runtime.sysInfo, "field runtime has no sysInfo state"):capture(),
     mailbox = assert(runtime.mailbox, "field runtime has no mailbox"):capture(),
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),

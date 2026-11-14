@@ -122,7 +122,7 @@ function T.follower_recall_and_adjacency_query_lower_for_the_headbutt_scripts()
     instruction(829, 0x20, { raw(0x800C) }),
   })
   Assert.equal(#lowered.unsupported, 0)
-  Assert.equal(lowered.items[1].op, "follower_recall_to_player")
+  Assert.equal(lowered.items[1].op, "follower_recall")
   Assert.equal(lowered.items[2].op, "follower_is_next_to_player")
   Assert.deepEqual(lowered.items[2].result, { value = "var", id = 0x800C })
 end

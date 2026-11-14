@@ -12,10 +12,12 @@ local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v11"
+GameSave.SCHEMA = "g4-game-save-v12"
+GameSave.LEGACY_V11_SCHEMA = "g4-game-save-v11"
 GameSave.LEGACY_V10_SCHEMA = "g4-game-save-v10"
 GameSave.LEGACY_V9_SCHEMA = "g4-game-save-v9"
 GameSave.LEGACY_V8_SCHEMA = "g4-game-save-v8"
@@ -50,6 +52,7 @@ local TOP_LEVEL_FIELDS = {
   schema = true,
   scripts = true,
   surfaceId = true,
+  sysInfo = true,
   suppression = true,
   terrainDependencyHash = true,
   versionId = true,
@@ -95,7 +98,7 @@ local function validateLegacyShape(record, schema)
   assert(type(record) == "table" and record.schema == schema, "legacy migration requires its declared schema")
   local allowed = {}
   for key, value in pairs(TOP_LEVEL_FIELDS) do
-    if key ~= "fashionCase" and key ~= "mart" and key ~= "mailbox" and key ~= "photoAlbum" then
+    if key ~= "fashionCase" and key ~= "mart" and key ~= "mailbox" and key ~= "photoAlbum" and key ~= "sysInfo" then
       allowed[key] = value
     end
   end
@@ -436,8 +439,22 @@ function GameSave.migrateV10(record)
       badges[key] = true
     end
   end
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V11_SCHEMA
   migrated.playerData.profile.badges = badges
+  return migrated
+end
+
+-- Pure v11 -> v12 conversion. Only the SysInfo mystery-gift delta is
+-- applied: v11 records predate the durable flag, so they initialize it
+-- inactive. Every other top-level field and nested bucket passes through
+-- copied; malformed predecessors are reported, never repaired.
+---@param record table<string, unknown> a v11 save record
+---@return table<string, unknown> the migrated v12 record
+function GameSave.migrateV11(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V11_SCHEMA, "GameSave.migrateV11 requires v11")
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.sysInfo = SysInfoState.empty()
   return migrated
 end
 
@@ -471,6 +488,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V11_SCHEMA
       and record.schema ~= GameSave.LEGACY_V10_SCHEMA
       and record.schema ~= GameSave.LEGACY_V9_SCHEMA
       and record.schema ~= GameSave.LEGACY_V8_SCHEMA
@@ -556,6 +574,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V11_SCHEMA
       and schema ~= GameSave.LEGACY_V10_SCHEMA
       and schema ~= GameSave.LEGACY_V9_SCHEMA
       and schema ~= GameSave.LEGACY_V8_SCHEMA
@@ -591,6 +610,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V10_SCHEMA then
       current = GameSave.migrateV10(current)
+    end
+    if current.schema == GameSave.LEGACY_V11_SCHEMA then
+      current = GameSave.migrateV11(current)
     end
     return canonicalizeCurrent(current)
   end)
