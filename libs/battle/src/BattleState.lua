@@ -27,7 +27,7 @@ local BattleState = {}
 -- replacement lifecycle, the session-owned action ledger (escape
 -- attempts, capture identities, capture records, and item consumption),
 -- and the live battle-local effect records owned by the effect bag.
-BattleState.VERSION = 12
+BattleState.VERSION = 13
 
 ---@param value unknown
 ---@return unknown
@@ -111,6 +111,7 @@ function BattleState.create(validated)
     recycleItems = {},
     knockedOffItems = {},
     turnItemActivations = {},
+    metronome = {},
     environment = copyValue(validated.environment),
     formatState = copyValue(validated.formatState),
     frames = {},
@@ -811,6 +812,7 @@ function BattleState.validateSnapshot(snapshot)
     "recycleItems",
     "knockedOffItems",
     "turnItemActivations",
+    "metronome",
   }) do
     if type(snapshot[field]) ~= "table" then
       error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their turn ledgers", { field = field }))
@@ -904,6 +906,30 @@ function BattleState.validateSnapshot(snapshot)
       or (item ~= "QUICK_CLAW" and item ~= "CUSTAP_BERRY")
     then
       error(BattleErrors.incompatibleSnapshot("snapshot turn item activations name priority items and combatants", {}))
+    end
+  end
+  if type(snapshot.metronome) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their metronome streaks", {}))
+  end
+  for combatantId, streak in
+    pairs(snapshot.metronome --[[@as table<unknown, unknown>]])
+  do
+    local record = streak --[[@as table<string, unknown>]]
+    if
+      type(combatantId) ~= "number"
+      or combatantId % 1 ~= 0
+      or combatants[combatantId] == nil
+      or type(record) ~= "table"
+      or type(record.move) ~= "string"
+      or record.move == ""
+      or type(record.turns) ~= "number"
+      or record.turns % 1 ~= 0
+      or record.turns < 0
+      or record.turns > 10
+    then
+      error(
+        BattleErrors.incompatibleSnapshot("snapshot metronome streaks name combatants, moves, and capped turns", {})
+      )
     end
   end
   if type(snapshot.effects) ~= "table" then

@@ -133,6 +133,7 @@ function BattleSnapshot.capture(state, extensions)
     recycleItems = copyPlain(state.recycleItems or {}, active),
     knockedOffItems = copyPlain(state.knockedOffItems or {}, active),
     turnItemActivations = copyPlain(state.turnItemActivations or {}, active),
+    metronome = copyPlain(state.metronome or {}, active),
     status = state.status,
     outcome = copyPlain(state.outcome, active),
   }

@@ -494,6 +494,8 @@ end
 ---@field magicGuard table<integer, boolean>? active Magic Guard holders
 ---@field abilities table<integer, string>? active effective abilities
 ---@field weatherSuppressed boolean? true when Cloud Nine or Air Lock suppresses weather
+---@field bigRoot table<integer, boolean>? active Big Root holders lifting drain and recovery
+---@field healBlocked table<integer, boolean>? active Heal Block holders refusing recovery
 
 ---@type table<string, table<string, unknown>>? native definitions by key, captured once
 local cachedDefinitions = nil
@@ -610,28 +612,6 @@ local function dealFraction(facts, health, combatant, divisor)
   end
   health[combatant] = healthOf(health, combatant) - damage
   return damage
-end
-
----@param facts NativeTimingFacts per-pass battle facts under the handlers
----@param health table<integer, integer> battle-local health under the pass
----@param combatant integer combatant identity receiving recovery
----@param divisor integer maximum-health divisor for the recovery
----@return integer recovery applied after application
-local function healFraction(facts, health, combatant, divisor)
-  local ceiling = maxHpOf(facts, combatant)
-  local missing = ceiling - healthOf(health, combatant)
-  if missing < 1 then
-    return 0
-  end
-  local restored = math.floor(ceiling / divisor)
-  if restored < 1 then
-    restored = 1
-  end
-  if restored > missing then
-    restored = missing
-  end
-  health[combatant] = healthOf(health, combatant) + restored
-  return restored
 end
 
 ---@param types string[] semantic types under inspection
@@ -824,11 +804,24 @@ local function buildResidualHandlers(facts)
           }
         end
       else
-        local ceiling = maxHpOf(facts, source)
-        local missing = ceiling - healthOf(health, source)
-        if missing > 0 then
-          local restored = math.min(damage, missing)
-          health[source] = healthOf(health, source) + restored
+        -- Big Root lifts the sapped recovery thirty percent while Heal
+        -- Block refuses it; the victim still pays (retail LeechSeed
+        -- LEECH_BOOST and heal-block gates).
+        local healBlocked = facts.healBlocked
+        if type(healBlocked) ~= "table" or healBlocked[source] ~= true then
+          local ceiling = maxHpOf(facts, source)
+          local missing = ceiling - healthOf(health, source)
+          if missing > 0 then
+            local bigRoot = facts.bigRoot
+            local restored = damage
+            if type(bigRoot) == "table" and bigRoot[source] == true then
+              restored = math.floor(damage * 130 / 100)
+            end
+            if restored > missing then
+              restored = missing
+            end
+            health[source] = healthOf(health, source) + restored
+          end
         end
       end
     end
@@ -869,10 +862,25 @@ local function buildResidualHandlers(facts)
     if not anchored(health, combatant) then
       return nil
     end
-    local restored = healFraction(facts, health, combatant, 16)
+    -- Big Root lifts the ring recovery thirty percent (retail
+    -- AquaRingHeal LEECH_BOOST gate).
+    local ceiling = maxHpOf(facts, combatant)
+    local missing = ceiling - healthOf(health, combatant)
+    if missing <= 0 then
+      return nil
+    end
+    local restored = math.floor(ceiling / 16)
+    local bigRoot = facts.bigRoot
+    if type(bigRoot) == "table" and bigRoot[combatant] == true then
+      restored = math.floor(restored * 130 / 100)
+    end
     if restored < 1 then
       return nil
     end
+    if restored > missing then
+      restored = missing
+    end
+    health[combatant] = healthOf(health, combatant) + restored
     return { kind = "healed", key = "aquaring", combatant = combatant, restored = restored }
   end
   handlers.aquaring = aquaring
@@ -911,6 +919,11 @@ local function buildResidualHandlers(facts)
         .position --[[@as integer]]
     ]
     if type(occupant) == "number" and type(health[occupant]) == "number" and health[occupant] > 0 then
+      -- Heal Block refuses the incoming wish (retail WishHeal gate).
+      local healBlocked = facts.healBlocked
+      if type(healBlocked) == "table" and healBlocked[occupant] == true then
+        return events
+      end
       local ceiling = maxHpOf(facts, occupant --[[@as integer]])
       local missing = ceiling - health[occupant]
       if missing > 0 then
@@ -944,10 +957,25 @@ local function buildResidualHandlers(facts)
     if not anchored(health, combatant) then
       return nil
     end
-    local restored = healFraction(facts, health, combatant, 16)
+    -- Big Root lifts the root recovery thirty percent (retail
+    -- IngrainHeal LEECH_BOOST gate).
+    local ceiling = maxHpOf(facts, combatant)
+    local missing = ceiling - healthOf(health, combatant)
+    if missing <= 0 then
+      return nil
+    end
+    local restored = math.floor(ceiling / 16)
+    local bigRoot = facts.bigRoot
+    if type(bigRoot) == "table" and bigRoot[combatant] == true then
+      restored = math.floor(restored * 130 / 100)
+    end
     if restored < 1 then
       return nil
     end
+    if restored > missing then
+      restored = missing
+    end
+    health[combatant] = healthOf(health, combatant) + restored
     return { kind = "healed", key = "ingrain", combatant = combatant, restored = restored }
   end
   handlers.ingrain = ingrain

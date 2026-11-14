@@ -282,7 +282,14 @@ local function starfBerry(instance, context, holder)
       picked = candidate
     end
   end
-  return { kind = "trigger", key = instance.key, combatant = holder, stat = picked, stages = "sharply-boosted" }
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holder,
+    stat = picked,
+    stages = "sharply-boosted",
+    consumed = true,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -344,7 +351,14 @@ local function pinchBerry(instance, context)
     if context.focused == true then
       return nil
     end
-    return { kind = "trigger", key = instance.key, combatant = holder, stat = stat, stages = "boosted" }
+    return {
+      kind = "trigger",
+      key = instance.key,
+      combatant = holder,
+      stat = stat,
+      stages = "boosted",
+      consumed = true,
+    }
   end
   if instance.key == "STARF_BERRY" then
     return starfBerry(instance, context, holder)
@@ -352,7 +366,14 @@ local function pinchBerry(instance, context)
   if stageMaxed(context, stat) then
     return nil
   end
-  return { kind = "trigger", key = instance.key, combatant = holder, stat = stat, stages = "boosted" }
+  return {
+    kind = "trigger",
+    key = instance.key,
+    combatant = holder,
+    stat = stat,
+    stages = "boosted",
+    consumed = true,
+  }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
@@ -626,7 +647,8 @@ local function focusBand(instance, context)
     "focus_band",
     { kind = "held_item", key = instance.key }
   )
-  if value >= 6554 then
+  -- Retail percent roll (Random % 100) < 10 behind HOLD_EFFECT_MAYBE_ENDURE.
+  if (value % 100) >= 10 then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), endured = true }
@@ -698,9 +720,17 @@ end
 ---@param context table<string, unknown> damage context under handling
 ---@return table<string, unknown>? flinch announcement, or nil when inapplicable
 local function flinchChance(instance, context)
-  -- The flinch chance draws ten percent per damaging hit: a low roll
-  -- announces while a high roll -- or no stream at all -- stays silent.
+  -- The flinch chance draws ten percent per damaging contact hit: a
+  -- percent roll below ten announces while a high roll, a missing
+  -- contact flag, or no stream at all stays silent (retail
+  -- battle_controller_player.c TryItemFlinch: move flags bit 5 with
+  -- (BattleSystem_Random % 100) < 10, target alive). The live on-hit
+  -- application lives in DamageMoves.applyAfterHitItems; this binding
+  -- answers only contact-bearing afterHit checkpoints.
   if context.dealtDamage ~= true then
+    return nil
+  end
+  if context.contact ~= true then
     return nil
   end
   local stream = context.stream
@@ -717,7 +747,7 @@ local function flinchChance(instance, context)
     label,
     { kind = "held_item", key = instance.key }
   )
-  if value >= 6554 then
+  if (value % 100) >= 10 then
     return nil
   end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), flinchChance = true }

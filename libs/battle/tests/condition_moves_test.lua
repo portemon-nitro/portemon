@@ -93,14 +93,18 @@ end
 ---@param facts table<string, table<string, unknown>> compiled-shaped move facts
 ---@param seed integer fixed seed for the probe stream
 ---@param extra table<string, unknown>|nil extra frame inputs for the probe
+---@param setup fun(state: table, ctx: table)|nil live preparation before the probe starts
 ---@return table terminal execution step plus context and state
-local function runCondition(moveKey, facts, seed, extra)
+local function runCondition(moveKey, facts, seed, extra, setup)
   local Execution = SessionFixture.requirePresent(
     "libs.battle.src.gen4.MoveExecution",
     "the shared move continuation owns native hit progression"
   )
   local state = liveState()
   local ctx = liveContext(state)
+  if setup ~= nil then
+    setup(state, ctx)
+  end
   local inputs = {
     actionId = 1001,
     actor = { combatant = 1 },
@@ -1092,6 +1096,30 @@ function T.minimize_marks_its_entry_beside_evasion()
   Assert.equal(outcome.result, "hit", "minimize connects")
   Assert.equal(probe.ctx:entryOf(1).stages.evasion, 1, "minimize raises evasion")
   Assert.isTrue(probe.ctx:hasBattleEffect(1, "minimize"), "minimize marks its entry")
+end
+
+-- Destiny Knot reciprocates infatuation: inflicting a knot holder
+-- infatuates the original user too (retail BattleContext_TryInfatuate
+-- RECIPROCATE_INFAT branch).
+function T.destiny_knot_reciprocates_infatuation()
+  conditionOwner("destiny knot owns its reciprocation")
+  local genders = { [1] = "male", [2] = "female" }
+  local probe = runCondition(
+    "ATTRACT",
+    moveFacts("ATTRACT", { accuracy = 100, moveType = "normal" }),
+    FIXED_SEED,
+    { genders = genders },
+    function(_, ctx)
+      ctx:setHeldItem(2, "DESTINY_KNOT")
+    end
+  )
+  local outcome = probe.outcome --[[@as table<string, unknown>]]
+  Assert.equal(outcome.result, "hit", "attract connects across genders")
+  Assert.isTrue(probe.ctx:hasBattleEffect(2, "infatuation"), "attract infatuates the defender")
+  Assert.isTrue(
+    probe.ctx:hasBattleEffect(1, "infatuation"),
+    "the knot infatuates the user back"
+  )
 end
 
 return { tests = T }

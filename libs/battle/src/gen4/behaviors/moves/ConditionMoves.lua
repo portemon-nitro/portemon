@@ -1278,6 +1278,25 @@ local function stepAttract(ctx, frame)
     moveSource(userOf(record)),
     { version = 1 }
   )
+  -- Destiny Knot reciprocates the fresh infatuation onto the user:
+  -- the knot holder's item answers the infliction, while Oblivious
+  -- and an already-infatuated user still refuse (retail
+  -- BattleContext_TryInfatuate RECIPROCATE_INFAT branch).
+  if
+    ctx:heldItemOf(defender) == "DESTINY_KNOT"
+    and abilityOf(frame, "foe") ~= "KLUTZ"
+    and not ctx:hasBattleEffect(defender, "embargo")
+    and not ctx:hasBattleEffect(userOf(record), "infatuation")
+    and not statusAbilityImmune(record, userOf(record), "infatuation")
+  then
+    ctx:addBattleEffect(
+      NativeEffectHandlers.definitionFor("infatuation"),
+      activeScope(ctx, userOf(record)),
+      { kind = "item", key = "DESTINY_KNOT", combatant = defender },
+      { version = 1 }
+    )
+    ctx:emit("item", causeFor(record), { target = userOf(record), item = "DESTINY_KNOT" })
+  end
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }
 end

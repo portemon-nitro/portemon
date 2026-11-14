@@ -605,6 +605,7 @@ DamageMoves.MEMBERS = {
   "TRUMP_CARD",
   "TWINEEDLE",
   "TWISTER",
+  "U_TURN",
   "VACUUM_WAVE",
   "VICE_GRIP",
   "VINE_WHIP",
@@ -912,7 +913,8 @@ local function applyHit(ctx, frame, defender, amount)
   end
   -- Focus Sash/Band endure behind the effective defender holding:
   -- Sash clamps lethal damage at full HP and spends itself, Band rolls
-  -- 10% to clamp and persists (battle_controller_player.c:2847-2862).
+  -- 10% to clamp and persists (retail BtlCmd_CheckHoldOnWith1HP in
+  -- battle_command.c).
   if health.before > 0 and amount >= health.before then
     local endured = defenderEffectiveItem(ctx, frame, defender)
     if endured == "FOCUS_SASH" then
@@ -928,7 +930,8 @@ local function applyHit(ctx, frame, defender, amount)
       then
         local draw = (stream --[[@as table<string, unknown>]]).nextU16
         local ok, value = pcall(draw, stream, "focus_band", { kind = "held_item", key = "FOCUS_BAND" })
-        if ok and type(value) == "number" and value < 6554 then
+        -- Retail percent roll (Random % 100) < 10 behind HOLD_EFFECT_MAYBE_ENDURE.
+        if ok and type(value) == "number" and (value % 100) < 10 then
           amount = math.max(0, health.before - 1)
         end
       end
@@ -1286,6 +1289,120 @@ local function userSpeciesOf(frame)
     }))
   end
   return species --[[@as string]]
+end
+
+-- Defender species behind the defender-side item gates: the
+-- per-target strike facts carry it beside the staged pair, while
+-- older single-target frames still read the top-level fact. Absent
+-- facts stay absent for holders without a listed species instead of
+-- defaulting.
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
+---@return string? defender species carried by the strike facts, absent for older frames
+local function foeSpeciesOf(frame, defender)
+  local record = frame --[[@as table<string, unknown>]]
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and perTarget.foeSpecies ~= nil then
+      local species = (perTarget --[[@as table<string, unknown>]]).foeSpecies
+      if type(species) ~= "string" or species == "" then
+        error(BattleErrors.missingBehavior("strikes read their defender species", {
+          key = record.executingMove --[[@as string]],
+        }))
+      end
+      return species --[[@as string]]
+    end
+  end
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local species = locals.foeSpecies
+  if species == nil then
+    return nil
+  end
+  if type(species) ~= "string" or species == "" then
+    error(BattleErrors.missingBehavior("strikes read their defender species", {
+      key = record.executingMove --[[@as string]],
+    }))
+  end
+  return species --[[@as string]]
+end
+
+-- Per-target turn-interaction facts behind the moved-last gates: the
+-- per-target duel carries the foe-acted flag, while older
+-- single-target frames still read the top-level fact.
+---@param frame table<string, unknown> move frame under execution
+---@param defender integer? defender combatant selecting per-target facts
+---@return table<string, unknown>? turn-interaction facts for the strike, absent for older frames
+local function foeDuelOf(frame, defender)
+  if defender ~= nil then
+    local perTarget = targetFactsFor(frame, defender)
+    if perTarget ~= nil and type(perTarget.duel) == "table" then
+      return perTarget.duel --[[@as table<string, unknown>]]
+    end
+  end
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  if type(locals.duel) == "table" then
+    return locals.duel --[[@as table<string, unknown>]]
+  end
+  return nil
+end
+
+-- Frontier formats suppress Soul Dew behind the battle-type gate:
+-- the session threads the facility format beside the strike facts
+-- (retail CalcMoveDamage BATTLE_TYPE_FRONTIER gate).
+---@param frame table<string, unknown> move frame under execution
+---@return boolean true while the strike runs under frontier rules
+local function frontierOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  return locals.frontier == true
+end
+
+-- Transform state behind the origin-orb gate: the session threads the
+-- live marker beside the strike facts, while older frames still read
+-- the live volatile directly (retail CalcMoveDamage STATUS2_TRANSFORM
+-- gate).
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@param combatant integer holder combatant under the read
+---@return boolean true while the holder is transformed
+local function transformedOf(ctx, frame, combatant)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  if combatant == userOf(frame) then
+    if locals.userTransformed == true then
+      return true
+    end
+  else
+    local perTarget = targetFactsFor(frame, combatant)
+    if perTarget ~= nil and perTarget.foeTransformed == true then
+      return true
+    end
+    if locals.foeTransformed == true then
+      return true
+    end
+  end
+  local ok, marked = pcall(ctx.hasBattleEffect, ctx, combatant, "TRANSFORM")
+  return ok and marked == true
+end
+
+-- Consecutive-use turns behind the metronome multiplier: the session
+-- updates the streak before the strike runs, capped at ten, so the
+-- first repetition multiplies eleven over ten (retail DamageCalcDefault
+-- BOOST_REPEATED gate).
+---@param frame table<string, unknown> move frame under execution
+---@return integer consecutive-use turns answering the strike
+local function metronomeTurnsOf(frame)
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local turns = locals.metronomeTurns
+  if type(turns) ~= "number" or turns % 1 ~= 0 or turns < 0 then
+    return 0
+  end
+  if turns > 10 then
+    return 10
+  end
+  return turns --[[@as integer]]
 end
 
 ---@param ctx BattleContext mechanics context under execution
@@ -2084,9 +2201,22 @@ end
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param user integer user combatant owning the strike
+---@param defender integer defender combatant receiving the strike
 ---@param dealt integer damage actually dealt by the hit
-local function applyShellBell(ctx, frame, user, dealt)
+local function applyShellBell(ctx, frame, user, defender, dealt)
   if dealt < 1 then
+    return
+  end
+  -- Shell Bell answers a hurt attacker striking another battler: a
+  -- full-health holder rings nothing and self-strikes pay nothing
+  -- (retail CheckItemEffectOnUTurn HP_RESTORE_ON_DMG gates, which the
+  -- pivot subscript prices pre-switch).
+  if user == defender then
+    return
+  end
+  local health = ctx:damage(user, 0, causeFor(frame))
+  local ceiling = ctx:entryOf(user).maxHp
+  if type(ceiling) ~= "number" or health.before >= ceiling then
     return
   end
   local abilities = abilitiesOf(frame)
@@ -2118,7 +2248,10 @@ end
 -- and Life Orb/Shell Bell persistences are handled by their own owners.
 -- Gates mirror CheckItemEffectOnHit/TryItemFlinch/TryAfterMoveItems:
 -- substitute absorbs (caller returns early), targets alive, Magic Guard
--- blocks recoil, Jaboca skips U-turn, King's Rock needs contact.
+-- blocks recoil, King's Rock needs contact. This single inline pass is
+-- the retail pre-switch pivot window for U-turn (subscript_0175
+-- TriggerHeldItemOnPivotMove runs before the U-turn flag is set), so
+-- no U-turn gate applies to any branch here.
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the hit
@@ -2130,6 +2263,9 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
   local user = userOf(frame)
   local split = category == "physical" and "physical" or (category == "special" and "special" or nil)
   -- Enigma: defender alive, super-effective, heals a quarter of defender max.
+  -- On pivot turns the native check waits for the post-switch pass;
+  -- answering pre-switch keeps the effect identical with only the
+  -- announcement order ahead of the departure.
   do
     local held = defenderEffectiveItem(ctx, frame, defender)
     if held == "ENIGMA_BERRY" and dealt > 0 and superEffective then
@@ -2152,12 +2288,16 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
       end
     end
   end
-  -- Jaboca/Rowap: attacker alive, no Magic Guard, not U-turn, matching split.
+  -- Jaboca/Rowap: attacker alive, no Magic Guard, matching split.
+  -- The pivot subscript prices these pre-switch, so no U-turn gate
+  -- applies here; the post-switch on-hit check excludes Jaboca
+  -- while Rowap answers special damage (retail CheckItemEffectOnHit
+  -- RECOIL branches, moot for the physical U-turn).
   do
     local held = defenderEffectiveItem(ctx, frame, defender)
     local jaboca = held == "JABOCA_BERRY" and split == "physical"
     local rowap = held == "ROWAP_BERRY" and split == "special"
-    if (jaboca or rowap) and dealt > 0 and record.executingMove ~= "U_TURN" then
+    if (jaboca or rowap) and dealt > 0 then
       local attackerAlive = ctx:damage(user, 0, causeFor(frame)).before > 0
       local pair = abilitiesOf(frame, defender)
       local userAbility = liveAbility(pair.user)
@@ -2175,20 +2315,26 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
       end
     end
   end
-  -- King's Rock/Razor Fang: 10% flinch on contact hits with damage, target alive.
+  -- King's Rock/Razor Fang: 10% flinch on contact hits with damage,
+  -- target alive (retail battle_controller_player.c TryItemFlinch:
+  -- move flags bit 5 with (BattleSystem_Random % 100) < 10; U-turn
+  -- carries the flinch flag (0x33) and TryItemFlinch has no U-turn
+  -- gate, so pivots flinch too. This inline pass runs pre-switch,
+  -- matching the retail post-switch outcome with only the pivot
+  -- departure ordering ahead of the mark.
   do
     local held = effectiveItemOf(ctx, frame, user)
     if (held == "KINGS_ROCK" or held == "RAZOR_FANG") and dealt > 0 then
       local locals = record.locals --[[@as table<string, unknown>]]
       local move = locals.move --[[@as table<string, unknown>]]
-      local contact = move.contact == true and record.executingMove ~= "U_TURN"
+      local contact = move.contact == true
       local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
-      contact = contact or (flags ~= nil and flags.contact == true and record.executingMove ~= "U_TURN")
+      contact = contact or (flags ~= nil and flags.contact == true)
       if not contact then
         local battle = (move --[[@as table<string, unknown>]]).battle
         if type(battle) == "table" then
           local battleFlags = (battle --[[@as table<string, unknown>]]).flags
-          if type(battleFlags) == "table" and battleFlags.contact == true and record.executingMove ~= "U_TURN" then
+          if type(battleFlags) == "table" and battleFlags.contact == true then
             contact = true
           end
         end
@@ -2202,7 +2348,7 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
           local draw = (stream --[[@as table<string, unknown>]]).nextU16
           local label = held == "RAZOR_FANG" and "razor_fang" or "kings_rock"
           local ok, value = pcall(draw, stream, label, { kind = "held_item", key = held })
-          if ok and type(value) == "number" and value < 6554 then
+          if ok and type(value) == "number" and (value % 100) < 10 then
             ctx:addBattleEffect(
               NativeEffectHandlers.definitionFor("flinch"),
               { kind = "active", combatant = defender, activation = activationOf(ctx, defender) },
@@ -2215,35 +2361,34 @@ local function applyAfterHitItems(ctx, frame, defender, dealt, superEffective, c
       end
     end
   end
-  -- Life Orb recoil: a tenth of attacker max on damaging non-status hits.
+  -- Life Orb recoil: a tenth of attacker max on damaging non-status
+  -- hits. The pivot subscript prices the recoil pre-switch, so no
+  -- U-turn gate applies here (retail CheckItemEffectOnUTurn
+  -- HP_DRAIN_ON_ATK branch).
   do
     local held = effectiveItemOf(ctx, frame, user)
     if held == "LIFE_ORB" and dealt > 0 and (category == "physical" or category == "special") then
-      if record.executingMove ~= "U_TURN" then
-        local pair = abilitiesOf(frame, defender)
-        local userAbility = liveAbility(pair.user)
-        if userAbility ~= "MAGIC_GUARD" and ctx:damage(user, 0, causeFor(frame)).before > 0 then
-          local maximum = ctx:entryOf(user).maxHp
-          if type(maximum) == "number" then
-            local recoil = math.floor(maximum / 10)
-            if recoil < 1 then
-              recoil = 1
-            end
-            ctx:damage(user, recoil, causeFor(frame))
+      local pair = abilitiesOf(frame, defender)
+      local userAbility = liveAbility(pair.user)
+      if userAbility ~= "MAGIC_GUARD" and ctx:damage(user, 0, causeFor(frame)).before > 0 then
+        local maximum = ctx:entryOf(user).maxHp
+        if type(maximum) == "number" then
+          local recoil = math.floor(maximum / 10)
+          if recoil < 1 then
+            recoil = 1
           end
+          ctx:damage(user, recoil, causeFor(frame))
         end
       end
     end
   end
-  -- Sticky Barb transfer on contact: attacker empty-handed takes the barb.
+  -- Sticky Barb transfer on contact: attacker empty-handed takes the
+  -- barb. The pivot subscript transfers pre-switch, so no U-turn gate
+  -- applies here (retail CheckItemEffectOnUTurn DMG_USER_CONTACT_XFR
+  -- branch).
   do
     local held = defenderEffectiveItem(ctx, frame, defender)
-    if
-      held == "STICKY_BARB"
-      and dealt > 0
-      and record.executingMove ~= "U_TURN"
-      and record.executingMove ~= "KNOCK_OFF"
-    then
+    if held == "STICKY_BARB" and dealt > 0 and record.executingMove ~= "KNOCK_OFF" then
       local locals = record.locals --[[@as table<string, unknown>]]
       local move = locals.move --[[@as table<string, unknown>]]
       local contact = move.contact == true
@@ -2281,9 +2426,14 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
   local record = frame --[[@as table<string, unknown>]]
   local locals = record.locals --[[@as table<string, unknown>]]
   local move = locals.move --[[@as table<string, unknown>]]
-  local contact = move.contact == true and record.executingMove ~= "U_TURN"
+  -- This inline pass is the retail pre-switch pivot window: the pivot
+  -- subscript re-triggers the on-hit ability check before the U-turn
+  -- flag is set (subscript_0175 TriggerAbilityOnHit), so contact
+  -- abilities answer pivots here while the post-switch generic pass
+  -- (gated on BATTLE_STATUS2_UTURN) never re-fires them.
+  local contact = move.contact == true
   local flags = type(move.flags) == "table" and move.flags or nil --[[@as table<string, unknown>?]]
-  contact = contact or (flags ~= nil and flags.contact == true and record.executingMove ~= "U_TURN")
+  contact = contact or (flags ~= nil and flags.contact == true)
   local abilities = abilitiesOf(frame, defender)
   local outcome = NativePassiveBridge.invokeFacts(
     {
@@ -2357,7 +2507,6 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
       type(answer.becomeType) == "string"
       and power > 0
       and record.executingMove ~= "STRUGGLE"
-      and record.executingMove ~= "U_TURN"
       and ctx:damage(defender, 0, causeFor(frame)).after > 0
     then
       local defenders = locals.defenderTypes --[[@as table<integer, unknown>]]
@@ -2401,6 +2550,24 @@ local function applyAfterHitAbilities(ctx, frame, defender, dealt, critical, pow
           { version = 1 }
         )
         announceAbility(answer.key)
+        -- Destiny Knot on the newly infatuated user reciprocates onto
+        -- the defender behind the user's effective holding; Oblivious
+        -- and an already-infatuated defender still refuse (retail
+        -- BattleContext_TryInfatuate second RECIPROCATE_INFAT branch).
+        if
+          effectiveItemOf(ctx, frame, user) == "DESTINY_KNOT"
+          and ctx:damage(defender, 0, causeFor(frame)).after > 0
+          and not ctx:hasBattleEffect(defender, "infatuation")
+          and liveAbility(abilities.foe) ~= "OBLIVIOUS"
+        then
+          ctx:addBattleEffect(
+            NativeEffectHandlers.definitionFor("infatuation"),
+            { kind = "active", combatant = defender, activation = activationOf(ctx, defender) },
+            { kind = "item", key = "DESTINY_KNOT", combatant = user },
+            { version = 1 }
+          )
+          ctx:emit("item", causeFor(frame), { target = defender, item = "DESTINY_KNOT" })
+        end
       end
     else
       local statuses = { STATIC = "paralysis", POISON_POINT = "poison", FLAME_BODY = "burn" }
@@ -2602,11 +2769,10 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     -- Multipliers mirror item_data.csv params and battle_util.c CalcDamage:
     -- type/plates/orbs/incenses x120/100, Muscle/Wise x110/100 by split,
     -- Expert Belt x120/100 when super-effective, Light Ball x2 power for
-    -- Pikachu, Choice/Soul Dew x150/100 stats, Thick Club/DeepSeaTooth x2.
-    -- Species locks reuse the passive handlers (userSpeciesOf); Griseous
-    -- transform and Soul Dew frontier edges are documented divergences.
-    -- Defender-side stat boosts need defender species facts not present in
-    -- strike frames, so they stay unscaled (documented gap).
+    -- Pikachu, Choice/Soul Dew x150/100 stats, Thick Club/DeepSeaTooth x2,
+    -- Metronome x(10+turns)/10 through the native ten-turn cap. Species
+    -- locks reuse the passive handlers over the threaded user species,
+    -- frontier, and transform facts.
     local held = effectiveItemOf(ctx, frame, userOf(frame))
     if held ~= nil then
       local userSpeciesOk, userSpecies = pcall(userSpeciesOf, frame)
@@ -2624,6 +2790,8 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
         ability = liveAbility(abilitiesOf(frame, defender).user),
         heldItem = held,
         species = species,
+        frontier = frontierOf(frame),
+        transformed = transformedOf(ctx, frame, userOf(frame)),
       }
       local function boosted(query, kind)
         local ok, outcome = pcall(NativePassiveBridge.invokeFacts, holder, "beforeHit", query)
@@ -2645,8 +2813,16 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
         end
         return false
       end
-      -- Power multipliers.
-      if
+      -- Power multipliers. The metronome item scales by consecutive
+      -- turns rather than the flat type-booster ratio: the session
+      -- streak counts the uses behind the strike, so the first
+      -- repetition multiplies eleven over ten through the native cap.
+      if held == "METRONOME" then
+        local turns = metronomeTurnsOf(frame)
+        if turns >= 1 then
+          power = math.floor(power * (10 + turns) / 10)
+        end
+      elseif
         boosted({ moveType = moveType, split = split, superEffective = superEffective, criticalCheck = false }, "power")
       then
         if held == "LIGHT_BALL" then
@@ -2678,6 +2854,65 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
           else
             attack = math.floor(attack * 150 / 100)
             rawAttack = math.floor(rawAttack * 150 / 100)
+          end
+        end
+      end
+    end
+  end
+  do
+    -- Defender-side stat boosts behind the defender holding: Metal
+    -- Powder doubles Ditto's defense, DeepSeaScale doubles Clamperl's
+    -- special defense, and Soul Dew lifts Lat@s special defense
+    -- outside the frontier. Species locks reuse the passive handlers
+    -- over the threaded defender species, frontier, and transform
+    -- facts, mirroring the attacker seam above.
+    local foeHeld = defenderEffectiveItem(ctx, frame, defender)
+    if foeHeld ~= nil and (category == "physical" or category == "special") then
+      local foeSpeciesOk, foeSpecies = pcall(foeSpeciesOf, frame, defender)
+      local foeSpeciesValue = foeSpeciesOk and foeSpecies or nil
+      local foeActivationOk, foeActivation = pcall(activationOf, ctx, defender)
+      local foeHolder = {
+        combatant = defender,
+        activation = foeActivationOk and foeActivation or nil,
+        ability = liveAbility(abilitiesOf(frame, defender).foe),
+        heldItem = foeHeld,
+        species = foeSpeciesValue,
+        frontier = frontierOf(frame),
+        transformed = transformedOf(ctx, frame, defender),
+      }
+      local function foeBoosted(stat)
+        local ok, outcome = pcall(NativePassiveBridge.invokeFacts, foeHolder, "beforeHit", { stat = stat })
+        if not ok or type(outcome) ~= "table" or type(outcome.events) ~= "table" then
+          return false
+        end
+        for _, event in
+          ipairs(outcome.events --[[@as table<integer, table<string, unknown>>]])
+        do
+          local answer = event --[[@as table<string, unknown>]]
+          if
+            answer.combatant == foeHolder.combatant
+            and answer.key == foeHeld
+            and answer.stat == stat
+            and answer.stages == "boosted"
+          then
+            return true
+          end
+        end
+        return false
+      end
+      if category == "physical" then
+        if foeBoosted("defense") then
+          defense = defense * 2
+          rawDefense = rawDefense * 2
+        end
+      elseif category == "special" then
+        if foeBoosted("specialDefense") then
+          if foeHeld == "SOUL_DEW" then
+            defense = math.floor(defense * 150 / 100)
+            rawDefense = math.floor(rawDefense * 150 / 100)
+          else
+            defense = defense * 2
+            rawDefense = rawDefense * 2
           end
         end
       end
@@ -2820,11 +3055,11 @@ local function stagedHit(ctx, frame, defender, power, hitIndex, targetCount, par
     critical.multiplier > 1,
     power,
     moveType,
-    contact and record.executingMove ~= "U_TURN" and dealt > 0 and ctx:damage(defender, 0, causeFor(frame)).after == 0
+    contact and dealt > 0 and ctx:damage(defender, 0, causeFor(frame)).after == 0
   )
   -- Strike recovery answers the inflicted amount behind the effective
   -- holding once the hit lands.
-  applyShellBell(ctx, frame, userOf(frame), dealt)
+  applyShellBell(ctx, frame, userOf(frame), defender, dealt)
   do
     local superEffective = type(numerator) == "number" and type(denominator) == "number" and numerator > denominator
     applyAfterHitItems(ctx, frame, defender, dealt, superEffective, category)
@@ -2960,6 +3195,19 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
         if userAbilityForLens ~= "KLUTZ" and not ctx:hasBattleEffect(user, "embargo") then
           accuracy = math.floor(accuracy * 110 / 100)
         end
+      elseif held == "ZOOM_LENS" then
+        -- Zoom Lens answers only when the target already acted this
+        -- turn, through the per-target action-done fact (retail
+        -- CheckMoveHit HOLD_EFFECT_CRITRATE_UP_SLOWER gate, modifier 20
+        -- from item_data.csv).
+        local duel = foeDuelOf(frame, defender)
+        if duel ~= nil and duel.foeActed == true then
+          local pair = abilitiesOf(frame, defender)
+          local userAbilityForLens = liveAbility(pair.user)
+          if userAbilityForLens ~= "KLUTZ" and not ctx:hasBattleEffect(user, "embargo") then
+            accuracy = math.floor(accuracy * 120 / 100)
+          end
+        end
       end
     end
     if ctx:takeMicle(userOf(frame)) then
@@ -3030,18 +3278,33 @@ end
 ---@param defender integer defender combatant checked for Liquid Ooze
 ---@param dealt integer total damage dealt by the strike
 local function applyDrain(ctx, frame, defender, dealt)
+  -- Draining recovery halves the inflicted total, then Big Root lifts
+  -- it thirty percent behind the effective holding; Liquid Ooze still
+  -- wounds the user through Heal Block, which otherwise refuses the
+  -- recovery (retail DrainHalfDamageDealt LEECH_BOOST and heal-block
+  -- gates in source order).
   local restored = math.floor(dealt / 2)
   if restored < 1 then
     return
   end
+  local user = userOf(frame)
   if abilitiesOf(frame, defender).foe == "LIQUID_OOZE" then
     if abilitiesOf(frame).user ~= "MAGIC_GUARD" then
-      ctx:damage(userOf(frame), restored, causeFor(frame))
+      ctx:damage(user, restored, causeFor(frame))
     end
     return
   end
-  ctx:heal(userOf(frame), restored, causeFor(frame))
-  ctx:emit("drained", causeFor(frame), { target = userOf(frame), restored = restored, noBlink = true })
+  if ctx:hasBattleEffect(user, "healblock") then
+    return
+  end
+  if effectiveItemOf(ctx, frame, user) == "BIG_ROOT" then
+    restored = math.floor(restored * 130 / 100)
+    if restored < 1 then
+      restored = 1
+    end
+  end
+  ctx:heal(user, restored, causeFor(frame))
+  ctx:emit("drained", causeFor(frame), { target = user, restored = restored, noBlink = true })
 end
 
 -- Sport-weakened power follows the native damage calculation: halved
@@ -4714,6 +4977,30 @@ local function stealBinding(mode)
   return { build = buildSteal }
 end
 
+-- Pivoting strikes deal their damage first and leave on a landed hit
+-- with both battlers standing: misses, failures, and any knockout
+-- keep the user in place (retail pivot subscript blackout and
+-- attacker-alive gates).
+---@param ctx BattleContext mechanics context under execution
+---@param frame table<string, unknown> move frame under execution
+---@return table<string, unknown> terminal execution step for the pivot strike
+local function stepPivot(ctx, frame)
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
+  local outcome = runStriker(ctx, record, {})
+  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  if
+    outcome.result == "hit"
+    and ctx:damage(userOf(record), 0, causeFor(record)).before > 0
+    and ctx:damage(defender, 0, causeFor(record)).after > 0
+  then
+    ctx:emit("switch-intent", causeFor(record), {
+      target = defender,
+      mode = "strike-and-leave",
+    })
+  end
+  return outcome
+end
+
 ---@param params table<string, unknown> curated strike parameters owning the hit
 ---@return DamageBinding binding definition producing a fresh strike handler per move
 local function strikerBinding(params)
@@ -4751,6 +5038,7 @@ local function sampledBinding()
   return { build = buildSampled }
 end
 
+define("U_TURN", { step = stepPivot })
 define("BEAT_UP", { step = stepBeatUp })
 define("DREAM_EATER", { step = stepDreamEater })
 define("STRUGGLE", { step = stepStruggle })

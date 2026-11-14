@@ -256,6 +256,8 @@ end
 ---@field ability string? battle ability key answering the checkpoint
 ---@field heldItem string? effective held-item key answering the checkpoint
 ---@field species string? holder species gating species-locked answers
+---@field frontier boolean? true while the strike runs under frontier rules, gating Soul Dew
+---@field transformed boolean? true while the holder is transformed, gating the origin orb
 ---@param holder PassiveHolderFacts holder facts answering the checkpoint
 ---@param timing string finite timing binding the ephemeral instances
 ---@param context table<string, unknown> checkpoint facts for the handlers
@@ -270,6 +272,12 @@ function NativePassiveBridge.invokeFacts(holder, timing, context)
   end
   if merged.species == nil and holder.species ~= nil then
     merged.species = holder.species
+  end
+  if merged.frontier == nil and holder.frontier ~= nil then
+    merged.frontier = holder.frontier
+  end
+  if merged.transformed == nil and holder.transformed ~= nil then
+    merged.transformed = holder.transformed
   end
   local owned = handlers()
   local bag = EffectBag.new()
@@ -290,7 +298,10 @@ function NativePassiveBridge.invokeFacts(holder, timing, context)
     end
     bag:add(definitionFor(holder.ability --[[@as string]], timing), scope, source, { version = 1 })
   end
-  if type(holder.heldItem) == "string" and holder.heldItem ~= "" then
+  -- No held item answers on entry: the native switch-in checks
+  -- abilities only (TryAbilityOnEntry), so entry checkpoints would
+  -- otherwise billboard pinch and status holdings that never apply.
+  if timing ~= "entry" and type(holder.heldItem) == "string" and holder.heldItem ~= "" then
     if type(owned[holder.heldItem]) ~= "function" then
       error(BattleErrors.missingBehavior("no native passive handler is bound for the held item", {
         key = holder.heldItem,

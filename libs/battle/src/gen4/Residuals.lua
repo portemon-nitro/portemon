@@ -76,7 +76,10 @@ local MON_STATE_ORDER = {
 -- holding, and gradual holding phases have no finite key: the session
 -- answers them through its live hooks, while absent hooks leave those
 -- phases silent. Poison, bad poison, and burn phases share their slot
--- with the canonical condition tick for the same key.
+-- with the canonical condition tick for the same key. The late holding
+-- phases trail the mon pass behind every condition tick: the berry
+-- sweep answers again and the orbs plus Sticky Barb drain last,
+-- mirroring UMC_STATE_HELD_ITEM_STATUS and UMC_STATE_HELD_ITEM_DAMAGE.
 local MON_PHASES = {
   "ingrain",
   "aquaring",
@@ -94,6 +97,8 @@ local MON_PHASES = {
   "magnetrise",
   "healblock",
   "embargo",
+  "held_item_late",
+  "leftovers_late",
 }
 
 -- Finite keys answering inside a battler phase. Keys without a slot here
@@ -143,6 +148,8 @@ local EXTRA_STATE_ORDER = {
 ---@field ability fun(combatant: integer): table<string, unknown>? live ability answer, nil when the holder carries none
 ---@field heldItem fun(combatant: integer): table<string, unknown>? live consumable holding answer, nil when nothing answers
 ---@field leftovers fun(combatant: integer): table<string, unknown>? live gradual holding answer, nil when nothing answers
+---@field heldItemLate (fun(combatant: integer): table<string, unknown>?)? late consumable holding answer behind the condition ticks
+---@field leftoversLate (fun(combatant: integer): table<string, unknown>?)? late gradual holding answer behind the condition ticks
 ---@field condition fun(combatant: integer, key: string): table<string, unknown>? canonical affliction tick, nil when the holder carries another key
 
 ---@class ResidualOutcome
@@ -711,6 +718,14 @@ local function stepGroup(pass, dispatch, context, group)
       answer = live.heldItem(holder)
     elseif group.phase == "leftovers" then
       answer = live.leftovers(holder)
+    elseif group.phase == "held_item_late" then
+      if live.heldItemLate ~= nil then
+        answer = live.heldItemLate(holder)
+      end
+    elseif group.phase == "leftovers_late" then
+      if live.leftoversLate ~= nil then
+        answer = live.leftoversLate(holder)
+      end
     elseif STATUS_PHASE_KEY[group.phase] ~= nil then
       answer = live.condition(holder, STATUS_PHASE_KEY[group.phase] --[[@as string]])
     end

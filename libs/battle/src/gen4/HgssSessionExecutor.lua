@@ -2524,6 +2524,16 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
     if foeGender ~= nil then
       genders[defenderId] = foeGender
     end
+    -- Defender identity behind the defender-side item gates: the
+    -- species stays absent for holders without one, while the
+    -- transform marker mirrors the live volatile entry.
+    local foeSpecies = nil
+    if type(foeMon) == "table" then
+      local species = (foeMon --[[@as table<string, unknown>]]).species
+      if type(species) == "string" and species ~= "" then
+        foeSpecies = species --[[@as string]]
+      end
+    end
     targetFacts[defenderId] = {
       combat = combatFacts,
       combatByCategory = strike.factsByCategory,
@@ -2539,6 +2549,8 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
       semiInvulnerable = semiInvulnerable,
       userGender = userGender,
       foeGender = foeGender,
+      foeSpecies = foeSpecies,
+      foeTransformed = NativePassiveBridge.wrap(state):hasVolatile(defenderId, "TRANSFORM"),
     }
     defenderTypes[defenderId] = combatantTypes(defender, speciesFacts, state)
     targets[#targets + 1] = { combatant = defenderId }
@@ -2560,6 +2572,9 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
     duel = first.duel,
     foeLevel = first.foeLevel,
     abilities = first.abilities,
+    foeSpecies = (first --[[@as table<string, unknown>]]).foeSpecies,
+    foeTransformed = (first --[[@as table<string, unknown>]]).foeTransformed == true,
+    userTransformed = NativePassiveBridge.wrap(state):hasVolatile(combatant.id --[[@as integer]], "TRANSFORM"),
     foeWeightHg = first.foeWeightHg,
     beatup = first.beatup,
     copiedMove = (recentMoves --[[@as table<integer, string>]])[
@@ -3194,9 +3209,68 @@ local function answerGradualPhase(state, context, health, ceilings, combatantId,
         target = combatantId,
         restored = applied,
       }
-    elseif answer.consumed ~= true and answer.harmed == true then
-      -- Black Sludge (non-poison) and Sticky Barb residual drain an eighth,
-      -- blocked by Magic Guard (CheckItemGradualHPRestore/TryHeldItemNegativeEffect).
+    elseif answer.key == "BLACK_SLUDGE" and answer.consumed ~= true and answer.harmed == true then
+      -- Black Sludge harms non-poison holders for an eighth, blocked by
+      -- Magic Guard (retail CheckItemGradualHPRestore beside Leftovers).
+      -- Sticky Barb harm and the orbs answer in the late phase instead.
+      local ability = NativePassiveBridge.wrap(state):abilityOf(combatantId)
+      if ability ~= "MAGIC_GUARD" then
+        local ceiling = ceilings[combatantId] --[[@as integer]]
+        local before = health[combatantId] --[[@as integer]]
+        if before > 0 then
+          local damage = math.floor(ceiling / 8)
+          if damage < 1 then
+            damage = 1
+          end
+          if damage > before then
+            damage = before
+          end
+          health[combatantId] = before - damage
+          events[#events + 1] = {
+            origin = "innate",
+            kind = "tick",
+            key = answer.key,
+            target = combatantId,
+            amount = damage,
+          }
+        end
+      end
+    end
+  end
+  return { events = events }
+end
+
+-- Answers one holder's late holding phase behind the condition ticks:
+-- Sticky Barb drains an eighth unless Magic Guard answers, while the
+-- Toxic and Flame Orbs inflict their status and persist (retail
+-- UMC_STATE_HELD_ITEM_DAMAGE through TryHeldItemNegativeEffect).
+---@param state table<string, unknown> live battle state under the pass
+---@param context table<string, unknown> session context owning the residual writes
+---@param health table<integer, integer> battle-local health under the pass
+---@param ceilings table<integer, integer> battle maximum health per combatant
+---@param combatantId integer holder combatant under the checkpoint
+---@param typeMap table<integer, string[]>? semantic types per active combatant for poison checks
+---@return table<string, unknown>? work record with the phase events, nil when no effective holding answers
+local function answerGradualLatePhase(state, context, health, ceilings, combatantId, typeMap)
+  local combatant = BattleState.combatant(state, combatantId)
+  if combatant.active == nil then
+    return nil
+  end
+  local effective = NativePassiveBridge.wrap(state):effectiveHeldItem(combatantId)
+  if effective == nil then
+    return nil
+  end
+  local facts = innateFactsFor(state, context, health, ceilings, combatantId, typeMap)
+  local outcome = NativePassiveBridge.invokeFacts({
+    combatant = combatantId,
+    activation = facts.activation,
+    heldItem = effective,
+    species = facts.species,
+  }, "residual", facts.checkpoint)
+  local events = {}
+  for _, event in ipairs(outcome.events) do
+    local answer = event --[[@as table<string, unknown>]]
+    if answer.key == "STICKY_BARB" and answer.consumed ~= true and answer.harmed == true then
       local ability = NativePassiveBridge.wrap(state):abilityOf(combatantId)
       if ability ~= "MAGIC_GUARD" then
         local ceiling = ceilings[combatantId] --[[@as integer]]
@@ -3220,7 +3294,6 @@ local function answerGradualPhase(state, context, health, ceilings, combatantId,
         end
       end
     elseif answer.consumed ~= true and type(answer.inflicted) == "string" then
-      -- Toxic/Flame Orb inflict their status end-of-turn and persist.
       local inflicted = answer.inflicted --[[@as string]]
       local typed = context --[[@as BattleContext]]
       if typed:statusOf(combatantId) == nil then
@@ -3338,7 +3411,113 @@ local ResidualAnswers = {}
 ResidualAnswers.ability = answerAbilityPhase
 ResidualAnswers.consumable = answerConsumablePhase
 ResidualAnswers.gradual = answerGradualPhase
+ResidualAnswers.gradualLate = answerGradualLatePhase
 ResidualAnswers.condition = answerConditionPhase
+
+-- Emits one residual innate event through the session context: faint
+-- markers stay internal for the faint owner, heals announce without
+-- blinking, and every other innate answer travels as its own kind.
+-- Returns true when the event was an innate answer under this owner.
+---@param context table<string, unknown> session context owning the residual writes
+---@param record table<string, unknown> residual event record under emission
+---@param noBlink table<string, boolean> tick keys that never blink the battle message
+---@return boolean true when the record answered innately
+local function emitInnateEvent(context, record, noBlink)
+  local typed = context --[[@as BattleContext]]
+  if record.kind == "faint" then
+    return true
+  end
+  if record.origin ~= "innate" then
+    return false
+  end
+  if record.kind == "healed" then
+    typed:emit("healed", { kind = "residual", key = record.key }, {
+      target = record.target,
+      restored = record.restored,
+      noBlink = true,
+    })
+  else
+    local payload = copyValue(record) --[[@as table<string, unknown>]]
+    payload.origin = nil
+    local key = record.key
+    if
+      (record.kind == "tick" and type(key) == "string" and noBlink[key] == true)
+      or (record.kind == "hazard" and record.key == "spikes")
+    then
+      payload.noBlink = true
+    end
+    typed:emit(record.kind --[[@as string]], { kind = "residual", key = record.key }, payload)
+  end
+  return true
+end
+
+-- Runs the mid-turn held-item sweep after one move resolves: the attacker
+-- answers first, then the primary target, then every remaining active
+-- holder in queue order (retail battle_controller_player.c
+-- afterMoveEffectState TryUseHeldItem attacker/target plus the
+-- turn-order CheckUseHeldItem sweep). A departing pivot user never
+-- answers: the post-switch pass covers the newcomer instead, mirroring
+-- the post-switch after-move machine. Only spent berry answers heal
+-- here, so persistent holdings never heal twice; the healed totals
+-- commit to live health before the sweep returns.
+---@param state table<string, unknown> live battle state under the sweep
+---@param context table<string, unknown> session context owning the residual writes
+---@param speciesFacts table<string, unknown> static species facts carried by the session
+---@param moveFacts table<string, table<string, unknown>>? move facts for true PP maxima
+---@param attackerId integer? striking combatant opening the sweep, absent on pivot turns
+---@param targetIds integer[] ordered recipient combatants under the move
+---@param excludeId integer? combatant leaving the field, never swept
+local function answerMidTurnSweep(state, context, speciesFacts, moveFacts, attackerId, targetIds, excludeId)
+  local sample = sampleTimingState(state, speciesFacts)
+  local health = sample.health
+  local ceilings = sample.ceilings
+  local order = {} ---@type integer[]
+  local seen = {} ---@type table<integer, boolean>
+  local function consider(combatantId)
+    if type(combatantId) ~= "number" or seen[combatantId] == true or combatantId == excludeId then
+      return
+    end
+    local combatant = BattleState.combatant(state, combatantId)
+    if combatant.active == nil or combatant.hp <= 0 then
+      return
+    end
+    seen[combatantId] = true
+    order[#order + 1] = combatantId
+  end
+  consider(attackerId)
+  for _, targetId in ipairs(targetIds or {}) do
+    consider(targetId)
+  end
+  local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
+  if type(queue) == "table" then
+    for _, action in ipairs(queue) do
+      if type(action) == "table" then
+        local actor = (action --[[@as table<string, unknown>]]).actor
+        if type(actor) == "table" then
+          consider((actor --[[@as table<string, unknown>]]).combatant)
+        end
+      end
+    end
+  end
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    consider(combatantId)
+  end
+  -- The consumable sweep never emits affliction ticks, so its blink set
+  -- stays empty beside the shared emitter.
+  local noBlink = {} ---@type table<string, boolean>
+  for _, combatantId in ipairs(order) do
+    local work = ResidualAnswers.consumable(state, context, health, ceilings, combatantId, sample.typeMap, moveFacts)
+    if work ~= nil then
+      for _, event in ipairs(work.events) do
+        emitInnateEvent(context, event --[[@as table<string, unknown>]], noBlink)
+      end
+    end
+  end
+  commitTimingHealth(state, health, ceilings)
+end
+ResidualAnswers.midTurn = answerMidTurnSweep
 
 ---@param state table<string, unknown> live battle state under reserve inspection
 ---@return table<integer, integer> living benched roster members pooled across participants
@@ -4214,6 +4393,9 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
       ] = move
     end
   end
+  -- The streak counts every execution ahead of the distinct-move
+  -- ledger below, whose early return must never skip it.
+  StrikeFacts.updateMetronome(state, actor, node)
   if type(state.usedMoves) ~= "table" then
     state.usedMoves = {}
   end
@@ -4233,6 +4415,96 @@ function StrikeFacts.recordHistory(state, actor, node, settledTargets)
     end
   end
   entry[#entry + 1] = requestedMove
+end
+
+-- Sequences that lock the user into a repeated move freeze the
+-- metronome streak instead of counting it: rampage, uproar, the
+-- thrash-family locks, and the hitting turn of a charge move never
+-- advance the count (retail BattleContext_UpdateMetronomeItem gates).
+local METRONOME_FROZEN_MARKERS = { "THRASH", "OUTRAGE", "PETAL_DANCE", "UPROAR" }
+
+-- Counts one metronome streak step at selection time: a holder without
+-- the item resets, a repeated move increments through the native
+-- ten-turn cap, and any other move restarts the streak (retail
+-- BattleContext_UpdateMetronomeItem).
+---@param state table<string, unknown> live battle state under the streak update
+---@param actor table<string, unknown> executing actor owning the streak
+---@param node table<string, unknown> started move frame carrying the executed move
+function StrikeFacts.updateMetronome(state, actor, node)
+  local combatantId = actor.combatant --[[@as integer]]
+  local move = node.executingMove --[[@as string]]
+  if type(state.metronome) ~= "table" then
+    state.metronome = {}
+  end
+  local ledger = state.metronome --[[@as table<integer, table<string, unknown>>]]
+  local turns = 0
+  if NativePassiveBridge.wrap(state):effectiveHeldItem(combatantId) == "METRONOME" then
+    local bridge = NativePassiveBridge.wrap(state)
+    local frozen = false
+    for _, marker in ipairs(METRONOME_FROZEN_MARKERS) do
+      if bridge:hasVolatile(combatantId, marker) then
+        frozen = true
+        break
+      end
+    end
+    if not frozen then
+      local sequence = SequenceMoveState.readLive(state, combatantId)
+      if type(sequence) == "table" and sequence.chargeMove == move then
+        frozen = true
+      end
+    end
+    if not frozen then
+      local entry = ledger[combatantId]
+      if type(entry) == "table" and entry.move == move then
+        turns = entry.turns --[[@as integer]]
+        if turns < 10 then
+          turns = turns + 1
+          entry.turns = turns
+        end
+      else
+        ledger[combatantId] = { move = move, turns = 0 }
+      end
+    else
+      local entry = ledger[combatantId]
+      if type(entry) == "table" then
+        turns = entry.turns --[[@as integer]]
+      end
+    end
+  else
+    ledger[combatantId] = nil
+  end
+  (node.locals --[[@as table<string, unknown>]]).metronomeTurns = turns
+end
+
+-- Refunds one metronome streak step after a failed strike: the count
+-- applies at selection time, so only failures roll back while misses
+-- keep their count (retail BattleContext_UndoMetronomeItemOnFail).
+---@param state table<string, unknown> live battle state under the streak refund
+---@param actor table<string, unknown> executing actor owning the streak
+---@param move string? executed move identity owning the streak step
+---@param failed boolean true when the settled strike failed
+function StrikeFacts.undoMetronomeOnFail(state, actor, move, failed)
+  if failed ~= true then
+    return
+  end
+  if type(move) ~= "string" or move == "" then
+    return
+  end
+  local ledger = state.metronome
+  if type(ledger) ~= "table" then
+    return
+  end
+  local entry = (ledger --[[@as table<integer, unknown>]])[
+    actor.combatant --[[@as integer]]
+  ]
+  if
+    type(entry) == "table" and (entry --[[@as table<string, unknown>]]).move == move
+  then
+    local turns = (entry --[[@as table<string, unknown>]]).turns
+    if type(turns) == "number" and turns > 0 then
+      (entry --[[@as table<string, unknown>]]).turns = turns - 1
+    end
+  end
 end
 
 -- Reactive execution helpers share one dependency at the large turn
@@ -5068,6 +5340,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       foeLevel = strike.foeLevel,
       abilities = strike.abilities,
       heldItem = user.heldItem,
+      foeSpecies = strike.foeSpecies,
+      foeTransformed = strike.foeTransformed == true,
+      userTransformed = strike.userTransformed == true,
+      frontier = state.format == "facility",
       -- HGSS rejects field-side Thief/Trick outside link/frontier. The
       -- player's side leads non-link session side order; link and
       -- facility formats carry the source battle-type exceptions.
@@ -5142,6 +5418,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       }) or settledTargets
     end
     StrikeFacts.recordHistory(state, executionActor, node, settledTargets)
+    -- The terminal step drops the executed identity, so the streak
+    -- refund reads it ahead of the continuation.
+    local executedMove = node.executingMove --[[@as string?]]
     local emittedThrough = #state.outbox --[[@as table<integer, table<string, unknown>>]]
     while true do
       node = MoveExecution.step(context, node)
@@ -5164,14 +5443,55 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         or 0
       ) + node.payday --[[@as integer]]
     end
+    -- A failed strike refunds its metronome increment: the streak
+    -- counts at selection time, so only failures roll back while
+    -- misses keep their count (retail
+    -- BattleContext_UndoMetronomeItemOnFail).
+    StrikeFacts.undoMetronomeOnFail(
+      state,
+      executionActor,
+      executedMove,
+      type(node) == "table" and node.result == "failed"
+    )
     -- Tag this action's move events with its commit ordinal so shared
-    -- presentation keeps one stable per-action order.
+    -- presentation keeps one stable per-action order, and notice
+    -- whether the move suspends for a pivot replacement.
+    local pivoted = false
     local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
     for index = emittedThrough + 1, #outbox do
       local event = outbox[index]
       if event.actionId == nil then
         event.actionId = ordinal
       end
+      if event.kind == "switch-intent" then
+        local intentPayload = event.payload --[[@as table<string, unknown>?]]
+        if type(intentPayload) == "table" then
+          local mode = (intentPayload --[[@as table<string, unknown>]]).mode
+          if mode == "strike-and-leave" or mode == "pass-markers" then
+            pivoted = true
+          end
+        end
+      end
+    end
+    -- A pivot with no living reserve never leaves: the leaver stays
+    -- and answers normally, mirroring the reseated machine running
+    -- with the attacker still on the field.
+    local claimed = {}
+    local departs = false
+    if pivoted then
+      local leaver = BattleState.combatant(state, executionActorId)
+      departs = #eligibleReserves(state, leaver.participant --[[@as integer]], claimed) > 0
+    end
+    -- Berries and pinch holdings answer mid-turn once the move
+    -- resolves: the attacker first, then the primary target, then the
+    -- turn-order sweep, so a pinch opened by this move already boosts
+    -- the same turn instead of waiting for the end-of-turn pass. A
+    -- departing pivot never answers here; the post-switch pass covers
+    -- the newcomer instead.
+    if pivoted and departs then
+      ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, nil, targetIds, executionActorId)
+    else
+      ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, executionActorId, targetIds, nil)
     end
     sweepFaints(state)
   end
@@ -5772,6 +6092,32 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       turnOrder[#turnOrder + 1] = entry.id
     end
     local context = BattleContext.wrap(state)
+    -- Drain and recovery boosts read the live holdings beside the
+    -- sampled facts: Big Root holders and Heal Blocked holders travel
+    -- as per-pass maps because the residual handlers own no session
+    -- read of their own. Only names already in scope feed the maps so
+    -- the turn seam stays within its closure budget.
+    local bigRoot = {} ---@type table<integer, boolean>
+    local healBlocked = {} ---@type table<integer, boolean>
+    for _, combatantId in
+      ipairs(state.combatantOrder --[[@as integer[] ]])
+    do
+      local combatant = BattleState.combatant(state, combatantId)
+      if combatant.active ~= nil and combatant.hp > 0 then
+        local mon = combatant.mon
+        local rawItem = type(mon) == "table" and (mon --[[@as table<string, unknown>]]).heldItem or nil
+        if
+          rawItem == "BIG_ROOT"
+          and sample.abilities[combatantId] ~= "KLUTZ"
+          and not context:hasBattleEffect(combatantId, "embargo")
+        then
+          bigRoot[combatantId] = true
+        end
+        if context:hasBattleEffect(combatantId, "healblock") then
+          healBlocked[combatantId] = true
+        end
+      end
+    end
     -- The dispatch owner serves the residual view through named
     -- collection and invocation: the view contract is duck-typed, so
     -- the session adapts method calls to plain view functions.
@@ -5789,6 +6135,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         weatherSuppressed = sample.weatherSuppressed,
         entryTurns = sample.entryTurns,
         nativeTurn = BattleState.nativeTurn(state),
+        bigRoot = bigRoot,
+        healBlocked = healBlocked,
       }, "residual")
     )
     local function collectResiduals(_, timing, passContext)
@@ -5824,6 +6172,23 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local function liveLeftovers(combatantId)
       return ResidualAnswers.gradual(state, context, health, ceilings, combatantId, sample.typeMap)
     end
+    -- The late holding phases trail the condition ticks: the berry
+    -- sweep answers a second time while the orbs and Sticky Barb
+    -- drain in their own slot.
+    local function liveHeldItemLate(combatantId)
+      return ResidualAnswers.consumable(
+        state,
+        context,
+        health,
+        ceilings,
+        combatantId,
+        sample.typeMap,
+        executor._moveFacts
+      )
+    end
+    local function liveLeftoversLate(combatantId)
+      return ResidualAnswers.gradualLate(state, context, health, ceilings, combatantId, sample.typeMap)
+    end
     local function liveCondition(combatantId, key)
       return ResidualAnswers.condition(state, health, ceilings, answeredPoison, combatantId, key)
     end
@@ -5831,6 +6196,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       ability = liveAbility,
       heldItem = liveHeldItem,
       leftovers = liveLeftovers,
+      heldItemLate = liveHeldItemLate,
+      leftoversLate = liveLeftoversLate,
       condition = liveCondition,
     }
     local function wake(combatantId, source)
@@ -6568,7 +6935,20 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local reason = cause.key == "BATON_PASS" and "baton_pass" or "u_turn"
     state.pending = nil
     state.status = "running"
-    executeSwitch(state, BattleContext.wrap(state), action, ordinal, cause, reason)
+    local context = BattleContext.wrap(state)
+    executeSwitch(state, context, action, ordinal, cause, reason)
+    -- The post-switch after-move machine answers the newcomer first:
+    -- a damaged reserve arriving with a pinch or status berry spends
+    -- it before the turn resumes, mirroring the post-switch
+    -- TryUseHeldItem sweep behind the pivot (retail UMC_STATE_HELD_ITEM
+    -- with the battlerIdAttacker slot reseated).
+    if intent.mode == "strike-and-leave" or intent.mode == "pass-markers" then
+      local positionId = intent.position --[[@as integer]]
+      local occupant = BattleState.position(state, positionId).occupant
+      if type(occupant) == "number" then
+        ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, occupant, {}, nil)
+      end
+    end
     resumeTurn(state, 1024)
   end
 

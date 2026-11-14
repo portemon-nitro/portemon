@@ -55,7 +55,6 @@ SequenceMoves.MEMBERS = {
   "SUCKER_PUNCH",
   "FAKE_OUT",
   "PURSUIT",
-  "U_TURN",
   "BATON_PASS",
   "WHIRLWIND",
   "ROAR",
@@ -232,7 +231,6 @@ local RECHARGE = {
 
 -- Switch modes emit move intents; the native session owns departure and arrival settlement.
 local SWITCH_MODES = {
-  U_TURN = "strike-and-leave",
   BATON_PASS = "pass-markers",
   WHIRLWIND = "force-foe-out",
   ROAR = "force-foe-out",

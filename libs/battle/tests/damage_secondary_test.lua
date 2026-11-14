@@ -1786,4 +1786,582 @@ function T.suppressed_skies_spare_the_live_charging_grass_strike()
   Assert.equal(beamDealt("none", false), 12, "the charging grass strike holds under clear skies")
 end
 
+-- Defender-side held items scale the incoming strike behind the
+-- defender species facts: DeepSeaScale doubles Clamperl's special
+-- defense, Soul Dew lifts Latias and Latios special defense outside
+-- the frontier, and Metal Powder doubles Ditto's defense (retail
+-- CalcMoveDamage defender gates in battle_util.c).
+function T.defender_held_items_scale_the_incoming_strike()
+  damageOwner("defender holdings own their incoming strike scaling")
+  local specialFacts = function()
+    return moveFacts("THUNDERBOLT", { power = 30, accuracy = 100, category = "special", moveType = "electric" })
+  end
+  -- The grass defender resists: dealt totals stay under the fixture
+  -- defender health so the scaling answers instead of the faint cap.
+  local resistedSpecial = { foeSpecies = "CLAMPERL", defenderTypes = { [2] = { "grass" } } }
+  local plainSpecial = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, resistedSpecial)
+  Assert.equal(plainSpecial.outcome.result, "hit", "the special probe connects")
+  local scaledFacts = { foeSpecies = "CLAMPERL", defenderTypes = { [2] = { "grass" } } }
+  local scaled = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, scaledFacts, function(
+    _,
+    ctx
+  )
+    ctx:setHeldItem(2, "DEEPSEASCALE")
+  end)
+  Assert.equal(scaled.outcome.result, "hit", "the scaled special probe connects")
+  Assert.isTrue(
+    scaled.dealt --[[@as integer]] < plainSpecial.dealt --[[@as integer]],
+    "deepseascale halves the incoming special strike (plain "
+      .. tostring(plainSpecial.dealt)
+      .. ", scaled "
+      .. tostring(scaled.dealt)
+      .. ")"
+  )
+  local physicalFacts = function()
+    return moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  end
+  local resistedPhysical = { foeSpecies = "DITTO", defenderTypes = { [2] = { "rock" } } }
+  local plainPhysical = runPreparedStrike("TACKLE", physicalFacts(), FIXED_SEED, resistedPhysical)
+  Assert.equal(plainPhysical.outcome.result, "hit", "the physical probe connects")
+  local powderedFacts = { foeSpecies = "DITTO", defenderTypes = { [2] = { "rock" } } }
+  local powdered = runPreparedStrike("TACKLE", physicalFacts(), FIXED_SEED, powderedFacts, function(
+    _,
+    ctx
+  )
+    ctx:setHeldItem(2, "METAL_POWDER")
+  end)
+  Assert.equal(powdered.outcome.result, "hit", "the powdered physical probe connects")
+  Assert.isTrue(
+    powdered.dealt --[[@as integer]] < plainPhysical.dealt --[[@as integer]],
+    "metal powder halves the incoming physical strike (plain "
+      .. tostring(plainPhysical.dealt)
+      .. ", powdered "
+      .. tostring(powdered.dealt)
+      .. ")"
+  )
+  local dewedFacts = { foeSpecies = "LATIAS", defenderTypes = { [2] = { "grass" } } }
+  local dewed = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, dewedFacts, function(
+    _,
+    ctx
+  )
+    ctx:setHeldItem(2, "SOUL_DEW")
+  end)
+  Assert.equal(dewed.outcome.result, "hit", "the dewed special probe connects")
+  Assert.isTrue(
+    dewed.dealt --[[@as integer]] < plainSpecial.dealt --[[@as integer]],
+    "soul dew lifts the defender special defense (plain "
+      .. tostring(plainSpecial.dealt)
+      .. ", dewed "
+      .. tostring(dewed.dealt)
+      .. ")"
+  )
+end
+
+-- Soul Dew stays silent inside the frontier and the origin orb stays
+-- silent for a transformed holder: the defender scaling threads the
+-- frontier and transform facts beside the species (retail
+-- CalcMoveDamage BATTLE_TYPE_FRONTIER and STATUS2_TRANSFORM gates).
+function T.defender_scaling_honors_frontier_and_transform()
+  damageOwner("defender scaling owns its frontier and transform gates")
+  local specialFacts = function()
+    return moveFacts("THUNDERBOLT", { power = 30, accuracy = 100, category = "special", moveType = "electric" })
+  end
+  local plainFacts = { foeSpecies = "LATIAS", defenderTypes = { [2] = { "grass" } } }
+  local plain = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, plainFacts)
+  local frontierFacts = { foeSpecies = "LATIAS", frontier = true, defenderTypes = { [2] = { "grass" } } }
+  local frontierDewed =
+    runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, frontierFacts, function(
+      _,
+      ctx
+    )
+      ctx:setHeldItem(2, "SOUL_DEW")
+    end)
+  Assert.equal(frontierDewed.outcome.result, "hit", "the frontier probe connects")
+  Assert.equal(
+    frontierDewed.dealt,
+    plain.dealt,
+    "soul dew stays silent inside the frontier (plain "
+      .. tostring(plain.dealt)
+      .. ", frontier "
+      .. tostring(frontierDewed.dealt)
+      .. ")"
+  )
+  local ghostFacts = function()
+    return moveFacts(
+      "SHADOW_BALL",
+      { power = 20, accuracy = 100, category = "special", moveType = "ghost" }
+    )
+  end
+  local giratinaPlain = runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
+    userSpecies = "GIRATINA",
+    defenderTypes = { [2] = { "fighting" } },
+  })
+  Assert.equal(giratinaPlain.outcome.result, "hit", "the origin probe connects")
+  local transformed =
+    runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
+      heldItem = "GRISEOUS_ORB",
+      userSpecies = "GIRATINA",
+      userTransformed = true,
+      defenderTypes = { [2] = { "fighting" } },
+    })
+  Assert.equal(transformed.outcome.result, "hit", "the transformed probe connects")
+  Assert.equal(
+    transformed.dealt,
+    giratinaPlain.dealt,
+    "the origin orb stays silent for a transformed holder (plain "
+      .. tostring(giratinaPlain.dealt)
+      .. ", transformed "
+      .. tostring(transformed.dealt)
+      .. ")"
+  )
+  local origin =
+    runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
+      heldItem = "GRISEOUS_ORB",
+      userSpecies = "GIRATINA",
+      defenderTypes = { [2] = { "fighting" } },
+    })
+  Assert.equal(origin.outcome.result, "hit", "the untransformed origin probe connects")
+  Assert.isTrue(
+    origin.dealt --[[@as integer]] > giratinaPlain.dealt --[[@as integer]],
+    "the origin orb boosts an untransformed holder (plain "
+      .. tostring(giratinaPlain.dealt)
+      .. ", boosted "
+      .. tostring(origin.dealt)
+      .. ")"
+  )
+end
+
+-- The metronome item multiplies power by ten plus consecutive turns
+-- over ten: the second consecutive use strikes at one hundred ten
+-- percent (retail DamageCalcDefault BOOST_REPEATED gate).
+function T.metronome_item_scales_with_consecutive_use()
+  damageOwner("the metronome item owns its streak multiplier")
+  local facts = function()
+    return moveFacts("TACKLE", { power = 20, accuracy = 100, category = "physical", moveType = "normal" })
+  end
+  local first =
+    runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "METRONOME", metronomeTurns = 0 })
+  Assert.equal(first.outcome.result, "hit", "the opening metronome strike connects")
+  local second =
+    runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "METRONOME", metronomeTurns = 1 })
+  Assert.equal(second.outcome.result, "hit", "the repeated metronome strike connects")
+  Assert.isTrue(
+    second.dealt --[[@as integer]] > first.dealt --[[@as integer]],
+    "the streak boosts the repeated strike (first "
+      .. tostring(first.dealt)
+      .. ", second "
+      .. tostring(second.dealt)
+      .. ")"
+  )
+end
+
+-- Zoom Lens boosts accuracy only when moving after the target: the
+-- strike reads the per-target action-done fact behind the boost
+-- (retail CheckMoveHit HOLD_EFFECT_CRITRATE_UP_SLOWER gate).
+function T.zoom_lens_boosts_accuracy_only_when_moving_last()
+  damageOwner("zoom lens owns its moved-last gate")
+  local accuracy = 50
+  local seed = nil
+  for candidate = 1, 5000 do
+    local probe = BattleRng.new(candidate)
+    local roll = probe:nextU16("accuracy_check", { kind = "probe" }) % 100 + 1
+    if roll > accuracy and roll <= math.floor(accuracy * 120 / 100) then
+      seed = candidate
+      break
+    end
+  end
+  Assert.notNil(seed, "a zoom-window accuracy draw exists")
+  local facts = function()
+    return moveFacts("TACKLE", { power = 40, accuracy = accuracy, category = "physical", moveType = "normal" })
+  end
+  local function duelFor(movedLast)
+    return { foeActed = movedLast, foeHurt = false, userHurt = false }
+  end
+  local first = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(false) }, function(
+    _,
+    ctx
+  )
+    ctx:setHeldItem(1, "ZOOM_LENS")
+  end)
+  Assert.equal(first.outcome.result, "missed", "zoom lens misses moving first")
+  local last = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(true) }, function(
+    _,
+    ctx
+  )
+    ctx:setHeldItem(1, "ZOOM_LENS")
+  end)
+  Assert.equal(last.outcome.result, "hit", "zoom lens connects moving last")
+end
+
+-- Big Root lifts draining recovery by thirty percent: the holder
+-- recovers thirteen eighths equivalent behind the boost (retail
+-- DrainHalfDamageDealt LEECH_BOOST script).
+function T.big_root_lifts_draining_recovery()
+  damageOwner("big root owns its drain multiplier")
+  local facts = function()
+    return moveFacts("GIGA_DRAIN", { power = 60, accuracy = 100, category = "special", moveType = "grass" })
+  end
+  -- The shared probe snapshots health before its setup hook, so these
+  -- probes wound the user in setup and compare absolute health after
+  -- the strike instead of the snapshot-relative restoration.
+  local function wound(ctx)
+    ctx:damage(1, 20, { kind = "probe" })
+  end
+  ---@param probe table finished probe under inspection
+  ---@return integer user health after the strike
+  local function userHp(probe)
+    return probe.ctx:damage(1, 0, { kind = "probe" }).before --[[@as integer]]
+  end
+  local plain = runStrike("GIGA_DRAIN", facts(), FIXED_SEED, {
+    setup = wound,
+  })
+  Assert.equal(plain.outcome.result, "hit", "the plain drain connects")
+  Assert.isTrue(plain.dealt --[[@as integer]] > 0, "the plain drain deals")
+  local rooted = runStrike("GIGA_DRAIN", facts(), FIXED_SEED, {
+    heldItem = "BIG_ROOT",
+    setup = wound,
+  })
+  Assert.equal(rooted.outcome.result, "hit", "the rooted drain connects")
+  Assert.equal(rooted.dealt, plain.dealt, "the root leaves damage alone")
+  Assert.isTrue(
+    userHp(rooted) > userHp(plain),
+    "big root lifts the drain (plain user hp "
+      .. tostring(userHp(plain))
+      .. ", rooted user hp "
+      .. tostring(userHp(rooted))
+      .. ")"
+  )
+end
+
+-- Draining a heal-blocked holder restores nothing: the native drain
+-- script refuses recovery under Heal Block before paying out (retail
+-- DrainHalfDamageDealt heal-block gate).
+function T.draining_a_heal_blocked_holder_restores_nothing()
+  damageOwner("drain owns its heal-block gate")
+  local NativeEffects = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "native definitions resolve for the heal-block probe"
+  )
+  local facts = function()
+    return moveFacts("GIGA_DRAIN", { power = 60, accuracy = 100, category = "special", moveType = "grass" })
+  end
+  local blocked = runStrike("GIGA_DRAIN", facts(), FIXED_SEED, {
+    setup = function(ctx)
+      ctx:damage(1, 20, { kind = "probe" })
+      local entry = ctx:entryOf(1)
+      ctx:addBattleEffect(
+        NativeEffects.definitionFor("healblock"),
+        { kind = "active", combatant = 1, activation = entry.activation },
+        { kind = "move", key = "HEAL_BLOCK", combatant = 2 },
+        { version = 1, turns = 5 }
+      )
+    end,
+  })
+  Assert.equal(blocked.outcome.result, "hit", "the blocked drain connects")
+  Assert.isTrue(blocked.dealt --[[@as integer]] > 0, "the blocked drain still deals damage")
+  local ceiling = blocked.ctx:entryOf(1).maxHp --[[@as integer]]
+  Assert.equal(
+    blocked.ctx:damage(1, 0, { kind = "probe" }).before,
+    ceiling - 20,
+    "the blocked drain restores nothing"
+  )
+end
+
+-- Shell Bell stays silent on a full-health holder: the native
+-- shell-bell script only answers a hurt attacker (retail
+-- CheckItemEffectOnUTurn HP_RESTORE_ON_DMG hurt gate).
+function T.shell_bell_stays_silent_on_a_full_health_holder()
+  damageOwner("shell bell owns its hurt gate")
+  local facts = function()
+    return moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  end
+  local probe = runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "SHELL_BELL" })
+  Assert.equal(probe.outcome.result, "hit", "the ringing strike connects")
+  local announced = false
+  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.kind == "healed" then
+      announced = true
+    end
+  end
+  Assert.isFalse(announced, "a full-health holder rings nothing")
+end
+
+-- Jaboca and Rowap answer their matching splits: the physical berry
+-- recoils physical hits and the special berry recoils special hits,
+-- each spending itself for an eighth of attacker maximum (retail
+-- CheckItemEffectOnHit RECOIL branches; the special branch carries no
+-- U-turn exclusion, unlike the physical one).
+function T.rowap_and_jaboca_answer_their_matching_splits()
+  damageOwner("recoil berries own their split gates")
+  ---@param probe table finished probe under inspection
+  ---@return integer eighth-of-maximum recoil the probe attacker owes
+  local function expectedRecoil(probe)
+    local ceiling = probe.ctx:entryOf(1).maxHp --[[@as integer]]
+    local recoil = math.floor(ceiling / 8)
+    if recoil < 1 then
+      recoil = 1
+    end
+    return recoil
+  end
+  local specialFacts = moveFacts("THUNDERBOLT", { power = 30, accuracy = 100, category = "special", moveType = "electric" })
+  local rowap = runPreparedStrike("THUNDERBOLT", specialFacts, FIXED_SEED, nil, function(_, ctx)
+    ctx:setHeldItem(2, "ROWAP_BERRY")
+  end)
+  Assert.equal(rowap.outcome.result, "hit", "the special strike connects")
+  local plainSpecial = runPreparedStrike("THUNDERBOLT", specialFacts, FIXED_SEED)
+  Assert.equal(
+    plainSpecial.ctx:damage(1, 0, { kind = "probe" }).before - rowap.ctx:damage(1, 0, { kind = "probe" }).before,
+    expectedRecoil(rowap),
+    "rowap recoils an eighth"
+  )
+  Assert.isNil(rowap.ctx:heldItemOf(2), "rowap spends the berry")
+  local physicalFacts = moveFacts("TACKLE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" })
+  local jaboca = runPreparedStrike("TACKLE", physicalFacts, FIXED_SEED, nil, function(_, ctx)
+    ctx:setHeldItem(2, "JABOCA_BERRY")
+  end)
+  Assert.equal(jaboca.outcome.result, "hit", "the physical strike connects")
+  local plainPhysical = runPreparedStrike("TACKLE", physicalFacts, FIXED_SEED)
+  Assert.equal(
+    plainPhysical.ctx:damage(1, 0, { kind = "probe" }).before - jaboca.ctx:damage(1, 0, { kind = "probe" }).before,
+    expectedRecoil(jaboca),
+    "jaboca recoils an eighth"
+  )
+  Assert.isNil(jaboca.ctx:heldItemOf(2), "jaboca spends the berry")
+  local crossed = runPreparedStrike("THUNDERBOLT", specialFacts, FIXED_SEED, nil, function(_, ctx)
+    ctx:setHeldItem(2, "JABOCA_BERRY")
+  end)
+  Assert.equal(crossed.outcome.result, "hit", "the crossed strike connects")
+  Assert.equal(
+    plainSpecial.ctx:damage(1, 0, { kind = "probe" }).before - crossed.ctx:damage(1, 0, { kind = "probe" }).before,
+    0,
+    "jaboca refuses special hits"
+  )
+  Assert.equal(crossed.ctx:heldItemOf(2), "JABOCA_BERRY", "the refused berry persists")
+end
+
+-- Pivot contact items price pre-switch: Jaboca recoils the U-turn
+-- user, Sticky Barb passes to an empty-handed U-turn user, and Life
+-- Orb recoils the U-turn user (retail pivot subscript
+-- CheckItemEffectOnUTurn branches).
+function T.pivot_contact_items_price_before_the_switch()
+  damageOwner("pivot strikes own their pre-switch items")
+  local facts = function()
+    return moveFacts("U_TURN", {
+      power = 40,
+      accuracy = 100,
+      category = "physical",
+      moveType = "bug",
+      contact = true,
+    })
+  end
+  ---@param probe table finished probe under inspection
+  ---@return integer eighth-of-maximum recoil the probe attacker owes
+  local function expectedEighth(probe)
+    local ceiling = probe.ctx:entryOf(1).maxHp --[[@as integer]]
+    local recoil = math.floor(ceiling / 8)
+    if recoil < 1 then
+      recoil = 1
+    end
+    return recoil
+  end
+  local jaboca = runPreparedStrike("U_TURN", facts(), FIXED_SEED, nil, function(_, ctx)
+    ctx:setHeldItem(2, "JABOCA_BERRY")
+  end)
+  Assert.equal(jaboca.outcome.result, "hit", "the pivot strike connects")
+  local plain = runPreparedStrike("U_TURN", facts(), FIXED_SEED)
+  Assert.equal(
+    plain.ctx:damage(1, 0, { kind = "probe" }).before - jaboca.ctx:damage(1, 0, { kind = "probe" }).before,
+    expectedEighth(jaboca),
+    "jaboca recoils the pivot user"
+  )
+  Assert.isNil(jaboca.ctx:heldItemOf(2), "jaboca spends itself on the pivot")
+  local sticky = runPreparedStrike("U_TURN", facts(), FIXED_SEED, nil, function(_, ctx)
+    ctx:setHeldItem(2, "STICKY_BARB")
+  end)
+  Assert.equal(sticky.outcome.result, "hit", "the barbed pivot connects")
+  Assert.equal(sticky.ctx:heldItemOf(1), "STICKY_BARB", "the pivot user takes the barb")
+  Assert.isNil(sticky.ctx:heldItemOf(2), "the defender loses the barb")
+  local orb = runPreparedStrike("U_TURN", facts(), FIXED_SEED, { heldItem = "LIFE_ORB" })
+  Assert.equal(orb.outcome.result, "hit", "the boosted pivot connects")
+  local ceiling = orb.ctx:entryOf(1).maxHp --[[@as integer]]
+  local expected = math.floor(ceiling / 10)
+  if expected < 1 then
+    expected = 1
+  end
+  Assert.equal(
+    plain.ctx:damage(1, 0, { kind = "probe" }).before - orb.ctx:damage(1, 0, { kind = "probe" }).before,
+    expected,
+    "life orb recoils the pivot user"
+  )
+end
+
+-- King's Rock flinches through the U-turn pivot: the native flinch
+-- check (TryItemFlinch) carries no U-turn gate and U-turn sets the
+-- flinch move flag, so a low percent roll on the contact pivot still
+-- marks the defender (retail battle_controller_player.c:3825).
+function T.kings_rock_flinches_through_the_u_turn_pivot()
+  damageOwner("u-turn owns its pre-switch flinch roll")
+  local facts = moveFacts("U_TURN", {
+    power = 10,
+    accuracy = 100,
+    category = "physical",
+    moveType = "bug",
+    contact = true,
+  })
+  local stream = {
+    nextU16 = function(_, label, _)
+      if label == "kings_rock" then
+        return 5
+      end
+      return 1
+    end,
+  }
+  local probe = runPreparedStrike("U_TURN", facts, FIXED_SEED, { heldItem = "KINGS_ROCK", stream = stream })
+  Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
+  local flinched = false
+  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.kind == "flinch" then
+      local payload = record.payload --[[@as table<string, unknown>]]
+      if payload.target == 2 then
+        flinched = true
+      end
+    end
+  end
+  Assert.isTrue(flinched, "the low roll marks the defender through the pivot")
+end
+
+-- Contact abilities answer the U-turn pivot pre-switch: the pivot
+-- subscript re-triggers the on-hit ability check before the U-turn
+-- flag is set (subscript_0175 TriggerAbilityOnHit), so Static still
+-- paralyzes the departing user on a contact pivot.
+function T.contact_abilities_answer_the_u_turn_pivot()
+  damageOwner("u-turn owns its pre-switch ability check")
+  local facts = moveFacts("U_TURN", {
+    power = 10,
+    accuracy = 100,
+    category = "physical",
+    moveType = "bug",
+    contact = true,
+  })
+  local stream = {
+    nextU16 = function(_, label, _)
+      if label == "contact_chance" then
+        return 0
+      end
+      return 1
+    end,
+  }
+  local probe = runPreparedStrike(
+    "U_TURN",
+    facts,
+    FIXED_SEED,
+    { abilities = { user = "NONE", foe = "STATIC" }, stream = stream }
+  )
+  Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
+  local sparked = false
+  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.kind == "ability" then
+      local payload = record.payload --[[@as table<string, unknown>]]
+      if payload.key == "STATIC" then
+        sparked = true
+      end
+    end
+  end
+  Assert.isTrue(sparked, "static answers the contact pivot pre-switch")
+end
+
+-- U-turn strikes for damage before pivoting: the pivot step runs the
+-- ordinary striker, then announces the strike-and-leave intent on a
+-- landed hit with a standing user (retail pivot subscript).
+function T.u_turn_strikes_for_damage_before_pivoting()
+  damageOwner("u-turn owns its pivot strike")
+  -- Power stays low enough that the fixture defender survives: the
+  -- knockout legs below prove a felling pivot announces no intent.
+  local facts = moveFacts("U_TURN", {
+    power = 10,
+    accuracy = 100,
+    category = "physical",
+    moveType = "bug",
+    contact = true,
+  })
+  local probe = runPreparedStrike("U_TURN", facts, FIXED_SEED)
+  Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
+  Assert.isTrue(probe.dealt --[[@as integer]] > 0, "u-turn deals striker damage")
+  local pivoted = false
+  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.kind == "switch-intent" then
+      pivoted = true
+      Assert.equal(
+        (record.payload --[[@as table<string, unknown>]]).mode,
+        "strike-and-leave",
+        "the pivot announces its mode"
+      )
+    end
+  end
+  Assert.isTrue(pivoted, "the landed pivot announces its switch")
+end
+
+-- Knockout pivots keep the user in place: felling the defender
+-- with the strike, or falling to the Life Orb backlash on the same
+-- strike, announces no switch intent (retail pivot subscript blackout
+-- and attacker-alive gates). Both gates live in the pivot step beside
+-- the ordinary striker, so pre-wounded probes cover them without a
+-- session journey.
+function T.knockout_pivot_strikes_keep_the_user_in_place()
+  damageOwner("u-turn owns its knockout gates")
+  local facts = function()
+    return moveFacts("U_TURN", {
+      power = 10,
+      accuracy = 100,
+      category = "physical",
+      moveType = "bug",
+      contact = true,
+    })
+  end
+  ---@param probe table finished probe under inspection
+  ---@return boolean true when the probe announced a strike-and-leave intent
+  local function pivoted(probe)
+    for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+      local record = event --[[@as table<string, unknown>]]
+      if record.kind == "switch-intent" then
+        return true
+      end
+    end
+    return false
+  end
+  local felled = runPreparedStrike("U_TURN", facts(), FIXED_SEED, nil, function(_, ctx)
+    local ceiling = ctx:entryOf(2).maxHp --[[@as integer]]
+    ctx:damage(2, ceiling - 1, { kind = "probe" })
+  end)
+  Assert.equal(felled.outcome.result, "hit", "the felling pivot connects")
+  Assert.equal(felled.dealt, 1, "the felling strike deals the last point")
+  Assert.isFalse(pivoted(felled), "the knockout announces no pivot")
+  local ceiling = felled.ctx:entryOf(1).maxHp --[[@as integer]]
+  local recoil = math.floor(ceiling / 10)
+  if recoil < 1 then
+    recoil = 1
+  end
+  local backlash = runPreparedStrike("U_TURN", facts(), FIXED_SEED, { heldItem = "LIFE_ORB" }, function(
+    _,
+    ctx
+  )
+    ctx:damage(1, ceiling - recoil, { kind = "probe" })
+  end)
+  Assert.equal(backlash.outcome.result, "hit", "the recoiling pivot connects")
+  Assert.equal(
+    backlash.ctx:damage(1, 0, { kind = "probe" }).after,
+    0,
+    "the backlash fells its user"
+  )
+  Assert.isTrue(
+    backlash.ctx:damage(2, 0, { kind = "probe" }).after > 0,
+    "the defender survives the recoil leg"
+  )
+  Assert.isFalse(pivoted(backlash), "the recoil knockout announces no pivot")
+end
+
 return { tests = T }

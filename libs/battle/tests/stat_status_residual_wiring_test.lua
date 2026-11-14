@@ -23,7 +23,12 @@ local function executorOwner()
 end
 
 ---@return table frozen battle content carrying the native ruleset binding
+local contentCache = nil
+---@return table shared frozen battle content for every wiring session
 local function nativeContent()
+  if contentCache ~= nil then
+    return contentCache
+  end
   local ContentBuilder = require("libs.content.src.ContentBuilder")
   local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
   local BattleContent = require("libs.battle.src.BattleContent")
@@ -38,7 +43,8 @@ local function nativeContent()
     "stat-status-residual-tests"
   )
   behaviors:registerFormat(NATIVE_FORMAT, { key = NATIVE_FORMAT }, "stat-status-residual-tests")
-  return BattleContent.new(builder:freeze(), behaviors:freeze())
+  contentCache = BattleContent.new(builder:freeze(), behaviors:freeze())
+  return contentCache
 end
 
 ---@param seeds table<integer, table<string, unknown>>? combatant seeds whose strikes and learnsets resolve
@@ -55,7 +61,9 @@ local function scenarioMoveFacts(seeds)
     FAKE_OUT = { power = 40, accuracy = 100, category = "physical", moveType = "normal", priority = 1 },
     SUCKER_PUNCH = { power = 70, accuracy = 100, category = "physical", moveType = "dark", priority = 1 },
     PURSUIT = { power = 40, accuracy = 100, effectChance = 0, category = "physical", moveType = "dark", priority = 0 },
-    U_TURN = { power = 70, accuracy = 100, category = "physical", moveType = "bug", priority = 0 },
+    -- Fixture U-turn runs below its retail 70 power so pivot
+    -- choreography cannot one-shot its 29-health target.
+    U_TURN = { power = 40, accuracy = 100, category = "physical", moveType = "bug", priority = 0, contact = true },
     BATON_PASS = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
     ROAR = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = -6 },
     WHIRLWIND = { power = 0, accuracy = 100, category = "other", moveType = "normal", priority = -6 },
@@ -72,6 +80,9 @@ local function scenarioMoveFacts(seeds)
     SHADOW_FORCE = { power = 120, accuracy = 100, category = "physical", moveType = "ghost", priority = 0 },
     SKY_UPPERCUT = { power = 85, accuracy = 90, category = "physical", moveType = "fighting", priority = 0 },
     SOLAR_BEAM = { power = 120, accuracy = 100, category = "special", moveType = "grass", priority = 0 },
+    AQUA_RING = { power = 0, accuracy = 0, category = "other", moveType = "water", priority = 0 },
+    SUPER_FANG = { power = 1, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
+    WILL_O_WISP = { power = 0, accuracy = 100, category = "other", moveType = "fire", priority = 0 },
     CHARGE = { power = 0, accuracy = 0, category = "other", moveType = "electric", priority = 0 },
     THUNDERBOLT = {
       power = 30,
@@ -332,6 +343,26 @@ local function strikeAnswer(plans)
   end
 end
 
+---@param session table live headless session after its replies were accepted
+---@return table waiting or ended frame after the turn settles
+---@return table[] events emitted while the turn settled, in sequence order
+local function collectTurn(session)
+  local events = {}
+  for _ = 1, 64 do
+    local frame = session:advance()
+    Assert.notNil(frame, "advance returns a battle frame")
+    if frame.events ~= nil then
+      for _, event in ipairs(frame.events) do
+        events[#events + 1] = event
+      end
+    end
+    if frame.status ~= "running" then
+      return frame, events
+    end
+  end
+  error("the scripted turn did not settle within its operation bound")
+end
+
 ---@param session table live headless session waiting for decisions
 ---@param answer fun(request: table): table[] choices per pending request
 ---@return table waiting or ended frame after the turn settles
@@ -344,20 +375,7 @@ local function playTurn(session, answer)
     Assert.isTrue(ok, "scripted turn replies are accepted")
     Assert.isNil(err, "accepted turn replies carry no input error")
   end
-  local events = {}
-  for _ = 1, 64 do
-    frame = session:advance()
-    Assert.notNil(frame, "advance returns a battle frame")
-    if frame.events ~= nil then
-      for _, event in ipairs(frame.events) do
-        events[#events + 1] = event
-      end
-    end
-    if frame.status ~= "running" then
-      return frame, events
-    end
-  end
-  error("the scripted turn did not settle within its operation bound")
+  return collectTurn(session)
 end
 
 ---@param events table[] emitted events under inspection
@@ -3407,6 +3425,365 @@ function T.sticky_barb_passes_on_contact()
     (combatantOf(snapshot, 2).mon --[[@as table<string, unknown>]]).heldItem,
     "NONE",
     "the defender loses the barb"
+  )
+  session:dispose()
+end
+
+---@param events table[] turn events in emission order
+---@param kind string event kind under lookup
+---@param predicate fun(event: table<string, unknown>): boolean additional match on the event
+---@return integer? one-based index of the first matching event
+local function eventIndex(events, kind, predicate)
+  for index, event in ipairs(events) do
+    local record = event --[[@as table<string, unknown>]]
+    if record.kind == kind and predicate(record) then
+      return index
+    end
+  end
+  return nil
+end
+
+-- Pinch berries fire mid-turn after the hit that opens the pinch:
+-- the faster foe's Super Fang drops the slower Salac holder into
+-- range, so the holder's same-turn strike already carries the Salac
+-- stage instead of waiting for the end-of-turn pass (retail
+-- battle_controller_player.c after-move TryUseHeldItem sweep).
+function T.pinch_berries_fire_mid_turn_after_the_opening_hit()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("TACKLE", 30) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "SALAC_BERRY"
+  -- The holder enters one fang above the pinch (15 to 8 to 4), so a
+  -- single soften turn guards the closed gate before the pinch turn.
+  alpha.mon.condition.currentHp = 15
+  local beta = movesetCombatant(2, 31, { moveSlot("SUPER_FANG", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local answer = strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+  local settledFrame, settledEvents = playTurn(session, answer)
+  Assert.equal(settledFrame.status, "waiting", "the soften fang turn settles")
+  Assert.isNil(
+    eventIndex(settledEvents, "stage", function(event)
+      return event.cause.key == "SALAC_BERRY"
+    end),
+    "above-pinch health triggers no pinch berry"
+  )
+  local _, events = playTurn(session, answer)
+  local salacAt = eventIndex(events, "stage", function(event)
+    return event.cause.key == "SALAC_BERRY"
+  end)
+  Assert.notNil(salacAt, "the second fang opens the pinch mid-turn")
+  local struckAt = eventIndex(events, "struck", function(event)
+    return event.cause.key == "TACKLE"
+  end)
+  Assert.notNil(struckAt, "the holder still strikes after the pinch")
+  Assert.isTrue(
+    salacAt --[[@as integer]] < struckAt --[[@as integer]],
+    "the berry stage lands before the holder strike (stage at "
+      .. tostring(salacAt)
+      .. ", struck at "
+      .. tostring(struckAt)
+      .. ")"
+  )
+  local snapshot = session:capture()
+  Assert.equal(
+    (combatantOf(snapshot, 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "NONE",
+    "the pinch berry spends itself mid-turn"
+  )
+  session:dispose()
+end
+
+-- A residual tick that opens the pinch fires the berry the same turn:
+-- burn damage drops the Salac holder into range after the early
+-- consumable pass, so the late sweep answers before the turn closes
+-- (retail UMC_STATE_HELD_ITEM_STATUS sweep after Yawn).
+function T.residual_ticks_into_pinch_fire_the_berry_the_same_turn()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "SALAC_BERRY"
+  -- The holder enters two burn ticks above the pinch, so the wisp
+  -- turn merely wounds while the following splash turn crosses.
+  alpha.mon.condition.currentHp = 11
+  local beta = movesetCombatant(2, 31, { moveSlot("WILL_O_WISP", 40), moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local splash = strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+  })
+  local wisp = strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+  local frame, _ = playTurn(session, wisp)
+  Assert.equal(frame.status, "waiting", "the burn lands")
+  local crossedAt = nil
+  for _ = 1, 4 do
+    local turnFrame, events = playTurn(session, splash)
+    Assert.equal(turnFrame.status, "waiting", "the burn-down continues")
+    local snapshot = session:capture()
+    local holder = combatantOf(snapshot, 1)
+    if holder.hp * 4 <= holder.maxHp then
+      crossedAt = eventIndex(events, "stage", function(event)
+        return event.cause.key == "SALAC_BERRY"
+      end)
+      break
+    end
+    Assert.isNil(
+      eventIndex(events, "stage", function(event)
+        return event.cause.key == "SALAC_BERRY"
+      end),
+      "no pinch berry fires above pinch range"
+    )
+  end
+  Assert.notNil(crossedAt, "burn damage opens the pinch and the late sweep answers")
+  session:dispose()
+end
+
+-- Sticky Barb and orbs tick late: the barb drains after the burn tick
+-- instead of ahead of it (retail UMC_STATE_HELD_ITEM_DAMAGE behind
+-- the condition ticks; orbs ride the same late phase).
+function T.sticky_barb_drains_after_the_condition_tick()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "STICKY_BARB"
+  local beta = movesetCombatant(2, 31, { moveSlot("WILL_O_WISP", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local frame, events = playTurn(session, strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(frame.status, "waiting", "the burn-and-barb turn settles")
+  local burnAt = eventIndex(events, "tick", function(event)
+    local payload = event.payload --[[@as table<string, unknown>]]
+    return payload.key == "burn"
+  end)
+  local barbAt = eventIndex(events, "tick", function(event)
+    local payload = event.payload --[[@as table<string, unknown>]]
+    return payload.key == "STICKY_BARB"
+  end)
+  Assert.notNil(burnAt, "the burn tick fires")
+  Assert.notNil(barbAt, "the barb drains")
+  Assert.isTrue(
+    barbAt --[[@as integer]] > burnAt --[[@as integer]],
+    "the barb drains behind the burn tick (burn at "
+      .. tostring(burnAt)
+      .. ", barb at "
+      .. tostring(barbAt)
+      .. ")"
+  )
+  session:dispose()
+end
+
+---@param snapshot table<string, unknown> interruption capture under inspection
+---@param combatant integer streak owner under inspection
+---@return table<string, unknown>? live metronome streak for the combatant
+local function metronomeOf(snapshot, combatant)
+  local ledger = snapshot.metronome --[[@as table<integer, table<string, unknown>>?]]
+  Assert.notNil(ledger, "captures carry the metronome ledger")
+  local entry = ledger[combatant]
+  if entry == nil then
+    return nil
+  end
+  return entry --[[@as table<string, unknown>]]
+end
+
+-- The metronome streak counts consecutive uses through the snapshot
+-- and freezes on a charge hit: repeats increment through the native
+-- ten-turn cap, a new move restarts it, a failed repeat refunds its
+-- step, and a charge move holds at zero turns through its landing hit
+-- instead of advancing (retail UpdateMetronomeItem,
+-- UndoMetronomeItemOnFail, and the BattleContext_UpdateMetronomeItem
+-- charge gate).
+function T.metronome_streak_counts_consecutive_uses_through_the_snapshot()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, {
+    moveSlot("TACKLE", 30),
+    moveSlot("AQUA_RING", 10),
+    moveSlot("FLY", 10),
+  })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "METRONOME"
+  local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
+  local foeTarget = SessionFixture.positionTarget(2)
+  local tackle = strikeAnswer({
+    alpha = { slot = 0, target = foeTarget },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+  local ring = strikeAnswer({
+    alpha = { slot = 1, target = foeTarget },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the streak opens")
+  local first = metronomeOf(session:capture(), 1)
+  Assert.isNil(first, "no streak precedes the first selection")
+  local turnFrame, _ = playTurn(session, tackle)
+  Assert.equal(turnFrame.status, "waiting", "the opening tackle settles")
+  local opening = metronomeOf(session:capture(), 1)
+  Assert.notNil(opening, "the opening move starts the streak")
+  Assert.equal(opening.move, "TACKLE", "the streak names the opening move")
+  Assert.equal(opening.turns, 0, "the opening use counts zero turns")
+  local repeatFrame, _ = playTurn(session, tackle)
+  Assert.equal(repeatFrame.status, "waiting", "the repeated tackle settles")
+  local repeated = metronomeOf(session:capture(), 1)
+  Assert.notNil(repeated, "the streak survives the repeat")
+  Assert.equal(repeated.turns, 1, "the repeat counts one turn")
+  -- A second Aqua Ring fails against the live ring: the selection-time
+  -- step refunds, so the failed repeat leaves zero turns behind.
+  local ringFrame, _ = playTurn(session, ring)
+  Assert.equal(ringFrame.status, "waiting", "the ring roots")
+  local raised = metronomeOf(session:capture(), 1)
+  Assert.notNil(raised, "the ring restarts the streak")
+  Assert.equal(raised.move, "AQUA_RING", "the streak names the ring move")
+  Assert.equal(raised.turns, 0, "the new move counts zero turns")
+  local failedFrame, _ = playTurn(session, ring)
+  Assert.equal(failedFrame.status, "waiting", "the duplicate ring settles")
+  local refunded = metronomeOf(session:capture(), 1)
+  Assert.notNil(refunded, "the failed move keeps its streak entry")
+  Assert.equal(refunded.move, "AQUA_RING", "the streak still names the failed move")
+  Assert.equal(refunded.turns, 0, "the failure refunds its step")
+  -- Fly counts its charge turn normally, then holds at zero turns
+  -- through the landing hit instead of advancing.
+  local flap = strikeAnswer({
+    alpha = { slot = 2, target = foeTarget },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+  local chargeFrame, _ = playTurn(session, flap)
+  Assert.equal(chargeFrame.status, "waiting", "the charge turn settles")
+  local charging = metronomeOf(session:capture(), 1)
+  Assert.notNil(charging, "the charge turn restarts the streak")
+  Assert.equal(charging.move, "FLY", "the streak names the charge move")
+  Assert.equal(charging.turns, 0, "the charge turn counts zero turns")
+  local hitFrame, hitEvents = playTurn(session, flap)
+  Assert.equal(hitFrame.status, "waiting", "the landing turn settles")
+  Assert.notNil(strikeDamage(hitEvents, "FLY"), "the charged Fly lands")
+  local landing = metronomeOf(session:capture(), 1)
+  Assert.notNil(landing, "the streak survives the landing")
+  Assert.equal(landing.turns, 0, "the charge hit freezes the streak")
+  session:dispose()
+end
+
+-- A pivoting pinch holder rides the bench intact, then spends its
+-- berry when the return pivot brings it back: the leaver never answers
+-- the mid-turn sweep when its own pivot recoil opens the pinch, so the
+-- berry reaches the bench unconsumed, and the post-switch sweep spends
+-- it on arrival ahead of the remaining moves (retail post-switch
+-- after-move machine with the battlerIdAttacker slot reseated). The
+-- defender's Jaboca prices the opening recoil pre-switch.
+function T.pivot_pinch_berry_rides_the_bench_then_spends_on_arrival()
+  local contracts = SessionFixture.sessionContracts()
+  local content = nativeContent()
+  local alpha = movesetCombatant(1, 11, { moveSlot("SPLASH", 40), moveSlot("U_TURN", 20) })
+  alpha.mon.ability = "NONE"
+  alpha.mon.heldItem = "SALAC_BERRY"
+  local reserve = movesetCombatant(3, 41, { moveSlot("SPLASH", 40), moveSlot("U_TURN", 20) })
+  reserve.mon.ability = "NONE"
+  local beta = movesetCombatant(2, 31, { moveSlot("SUPER_FANG", 40), moveSlot("TACKLE", 35), moveSlot("SPLASH", 40) })
+  beta.mon.ability = "NONE"
+  beta.mon.heldItem = "JABOCA_BERRY"
+  local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, { reserve }, {}), content)
+  -- A fang plus two tackles park the holder just above pinch range;
+  -- the pivot recoil opens it.
+  local soften = strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+  })
+  local firstFrame, _ = playTurn(session, soften)
+  Assert.equal(firstFrame.status, "waiting", "the opening fang turn settles")
+  local poke = strikeAnswer({
+    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+  })
+  local secondFrame, _ = playTurn(session, poke)
+  Assert.equal(secondFrame.status, "waiting", "the poke turn settles")
+  local thirdFrame, _ = playTurn(session, poke)
+  Assert.equal(thirdFrame.status, "waiting", "the second poke turn settles")
+  local parked = combatantOf(session:capture(), 1)
+  Assert.isTrue(parked.hp * 4 > parked.maxHp, "the holder stays above pinch range")
+  -- The holder pivots into Jaboca: the recoil opens the pinch, but
+  -- the leaver never answers the mid-turn sweep.
+  local pivotFrame, pivotEvents = playTurn(session, strikeAnswer({
+    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 2, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(pivotFrame.status, "waiting", "the pivot pauses for its replacement")
+  Assert.isNil(
+    eventIndex(pivotEvents, "stage", function(event)
+      return event.cause.key == "SALAC_BERRY"
+    end),
+    "the leaver never answers the mid-turn sweep"
+  )
+  Assert.equal(
+    (combatantOf(session:capture(), 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "SALAC_BERRY",
+    "the leaver keeps its berry"
+  )
+  for _, request in ipairs(pivotFrame.request.requests) do
+    local ok, err = session:submit(
+      SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 3) })
+    )
+    Assert.isTrue(ok, "the pivot replacement is accepted")
+    Assert.isNil(err, "the accepted pivot has no input error")
+  end
+  local settled = SessionFixture.driveUntilSettled(session)
+  Assert.equal(settled.status, "waiting", "the pivot turn settles")
+  local benched = combatantOf(session:capture(), 1)
+  Assert.isTrue(benched.hp * 4 <= benched.maxHp, "the recoil opens the pinch")
+  Assert.equal(
+    (benched.mon --[[@as table<string, unknown>]]).heldItem,
+    "SALAC_BERRY",
+    "the benched berry stays intact"
+  )
+  -- The reserve pivots the holder back in; the post-switch sweep
+  -- spends the berry on arrival, ahead of the foe's move.
+  local backFrame, _ = playTurn(session, strikeAnswer({
+    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+    beta = { slot = 2, target = SessionFixture.positionTarget(1) },
+  }))
+  Assert.equal(backFrame.status, "waiting", "the return pivot pauses for its replacement")
+  for _, request in ipairs(backFrame.request.requests) do
+    local ok, err = session:submit(
+      SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 1) })
+    )
+    Assert.isTrue(ok, "the return replacement is accepted")
+    Assert.isNil(err, "the accepted return carries no input error")
+  end
+  local closed, arrivalEvents = collectTurn(session)
+  Assert.equal(closed.status, "waiting", "the return pivot turn settles")
+  local salacAt = eventIndex(arrivalEvents, "stage", function(event)
+    return event.cause.key == "SALAC_BERRY"
+  end)
+  Assert.notNil(salacAt, "the newcomer spends its berry on arrival")
+  local splashAt = eventIndex(arrivalEvents, "move-used", function(event)
+    return event.cause.key == "SPLASH"
+  end)
+  Assert.notNil(splashAt, "the foe still moves after the arrival")
+  Assert.isTrue(
+    salacAt --[[@as integer]] < splashAt --[[@as integer]],
+    "the arrival sweep precedes the remaining move (stage at "
+      .. tostring(salacAt)
+      .. ", foe move at "
+      .. tostring(splashAt)
+      .. ")"
+  )
+  Assert.equal(
+    (combatantOf(session:capture(), 1).mon --[[@as table<string, unknown>]]).heldItem,
+    "NONE",
+    "the arrival spends the berry"
   )
   session:dispose()
 end

@@ -778,18 +778,21 @@ function T.micle_marks_deferred_accuracy_for_the_next_move()
   Assert.isNil(outcome.events[1].accuracy, "micle applies no immediate boost")
 end
 
--- King's Rock and Razor Fang roll ten percent: the native flinch
--- chance draws per damaging hit, so a low roll announces and a high
--- roll -- or no stream at all -- stays silent.
+-- King's Rock and Razor Fang roll ten percent on contact hits: the
+-- native flinch chance draws per damaging hit behind the move contact
+-- flag (battle_controller_player.c TryItemFlinch: flags bit 5), so a
+-- low percent roll on contact announces while a high roll, a missing
+-- contact flag, or no stream at all stays silent.
 function T.kings_rock_rolls_ten_percent()
   local handlers = nativeHandlers("native passive registration owns the item binding set")
 
   ---@param key string flinch item identity under test
   ---@param stream table<string, unknown>? fixed battle stream under test
+  ---@param contact boolean? contact flag carried by the checkpoint
   ---@return table[] emitted flinch events for the pass
-  local function flinched(key, stream)
+  local function flinched(key, stream, contact)
     local bag = bagWith(key, "residual", EffectFixture.activeScope(1, 1))
-    local extra = { dealtDamage = true }
+    local extra = { dealtDamage = true, contact = contact }
     if stream ~= nil then
       extra.stream = stream
     else
@@ -813,9 +816,24 @@ function T.kings_rock_rolls_ten_percent()
   end
 
   for _, key in ipairs({ "KINGS_ROCK", "RAZOR_FANG" }) do
-    Assert.equal(#flinched(key, fixedStream(0)), 1, key .. " announces on a low roll")
-    Assert.deepEqual(flinched(key, fixedStream(65535)), {}, key .. " stays silent on a high roll")
-    Assert.deepEqual(flinched(key, nil), {}, key .. " stays silent without a stream")
+    Assert.equal(#flinched(key, fixedStream(0), true), 1, key .. " announces on a low roll with contact")
+    Assert.deepEqual(
+      flinched(key, fixedStream(0), false),
+      {},
+      key .. " stays silent without contact even on a low roll"
+    )
+    Assert.deepEqual(
+      flinched(key, fixedStream(0), nil),
+      {},
+      key .. " stays silent without a contact flag even on a low roll"
+    )
+    Assert.deepEqual(
+      flinched(key, fixedStream(6550), true),
+      {},
+      key .. " rolls percent: 6550 % 100 stays silent"
+    )
+    Assert.deepEqual(flinched(key, fixedStream(65535), true), {}, key .. " stays silent on a high roll")
+    Assert.deepEqual(flinched(key, nil, true), {}, key .. " stays silent without a stream")
   end
 end
 
@@ -1136,6 +1154,15 @@ function T.single_use_survivors_spend_themselves()
   local band = fired("FOCUS_BAND", {})
   Assert.equal(#band, 1, "band answers the low roll")
   Assert.isNil(band[1].consumed, "band persists")
+
+  local bandHigh = fired("FOCUS_BAND", {
+    stream = {
+      nextU16 = function(_, _, _)
+        return 6550
+      end,
+    },
+  })
+  Assert.deepEqual(bandHigh, {}, "band rolls percent: 6550 % 100 stays silent")
 
   local white = fired("WHITE_HERB", { statsLowered = true })
   Assert.isTrue(white[1].consumed, "white herb spends itself")

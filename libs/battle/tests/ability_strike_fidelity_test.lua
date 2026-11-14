@@ -94,6 +94,7 @@ local function strike(live, move, moveType, category, options)
     weather = opts.weather or "none",
     weatherSuppressed = false,
     abilities = { user = opts.userAbility or "NONE", foe = opts.foeAbility or "NONE" },
+    heldItem = opts.heldItem,
     attackerTypes = opts.attackerTypes or { "normal" },
     defenderTypes = { [2] = opts.defenderTypes or { "normal" } },
     typeChart = chart(),
@@ -216,6 +217,22 @@ function T.tests.cute_charm_cannot_infatuate_after_its_holder_faints()
   })
   Assert.equal(ctx:damage(2, 0, { kind = "probe" }).after, 0, "the contact hit faints the Cute Charm holder")
   Assert.isFalse(ctx:hasBattleEffect(1, "infatuation"), "a fainted Cute Charm holder cannot infatuate the attacker")
+end
+
+function T.tests.destiny_knot_reciprocates_cute_charm_infatuation()
+  local live = state()
+  local resultCtx, result = strike(live, "TACKLE", "normal", "physical", {
+    foeAbility = "CUTE_CHARM",
+    moveContact = true,
+    forcedRoll = 0,
+    heldItem = "DESTINY_KNOT",
+  })
+  Assert.equal(result.result, "hit", "the contact hit connects")
+  Assert.isTrue(resultCtx:hasBattleEffect(1, "infatuation"), "Cute Charm infatuates the attacker")
+  Assert.isTrue(
+    resultCtx:hasBattleEffect(2, "infatuation"),
+    "the newly infatuated knot holder reciprocates onto the defender"
+  )
 end
 
 return T
