@@ -331,9 +331,19 @@ function Overlay115Effect:prepareGraphics(graphics)
         for _, texture in ipairs(loaded(key, self.resources).textures) do
           local imageData = love.image.newImageData(texture.width, texture.height, "rgba8", texture.pixels)
           local image = assert(graphics.newImage(imageData), "graphics driver uploads an overlay 115 particle texture")
-          -- The retail 3D engine samples nearest and repeats emitter textures.
+          -- The retail 3D engine samples nearest with the header wrap per
+          -- axis: mirrored-repeat quarter tiles mirror to the full viewport.
           image:setFilter("nearest", "nearest")
-          image:setWrap("repeat", "repeat")
+          local sampler = texture.sampler --[[@as table<string, unknown>?]]
+          local wrapX, wrapY = "repeat", "repeat"
+          if
+            type(sampler) == "table"
+            and (sampler.wrapX == "clamp" or sampler.wrapX == "repeat" or sampler.wrapX == "mirroredrepeat")
+            and (sampler.wrapY == "clamp" or sampler.wrapY == "repeat" or sampler.wrapY == "mirroredrepeat")
+          then
+            wrapX, wrapY = sampler.wrapX, sampler.wrapY
+          end
+          image:setWrap(wrapX, wrapY)
           images[texture.id] = image
           handles[#handles + 1] = image
         end

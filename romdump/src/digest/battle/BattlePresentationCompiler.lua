@@ -7353,6 +7353,7 @@ local function stageClosureParticle(state, resourceKey, particle)
       width = texture.width,
       height = texture.height,
       rgba8888 = texture.pixels,
+      sampler = texture.sampler,
     })
     textures[#textures + 1] = {
       id = texture.id,

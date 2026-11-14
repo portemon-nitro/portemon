@@ -58,16 +58,18 @@ local VALID_TASK_STATES = {
 -- the occurrence past the native sound-wait horizon.
 local SOUND_ESCAPE_TICKS = 90
 
--- Particle emitter centers in explicit scene coordinates, one per native
--- effect slot. Ally emissions stage over the player side and enemy
--- emissions over the foe side instead of collapsing into one rectangle.
+-- Battler picture centers in explicit scene coordinates, one per native
+-- effect slot. They match the settled battlefield slot geometry the
+-- renderer draws mons through (not the 3D emitter volumes): 2D sprite
+-- anchors, dashes, and magnifier legs all ride the mon's picture center
+-- so effects stay centered on the displayed battler.
 local EMITTER_CENTERS = {
-  ["solo-player"] = { x = 64, y = 80 },
-  ["solo-enemy"] = { x = 192, y = 80 },
-  ["player-side-slot-1"] = { x = 48, y = 96 },
-  ["enemy-side-slot-1"] = { x = 208, y = 96 },
-  ["player-side-slot-2"] = { x = 80, y = 64 },
-  ["enemy-side-slot-2"] = { x = 176, y = 64 },
+  ["solo-player"] = { x = 64, y = 112 },
+  ["solo-enemy"] = { x = 192, y = 50 },
+  ["player-side-slot-1"] = { x = 40, y = 112 },
+  ["enemy-side-slot-1"] = { x = 216, y = 50 },
+  ["player-side-slot-2"] = { x = 80, y = 120 },
+  ["enemy-side-slot-2"] = { x = 176, y = 42 },
 }
 
 ---@class BattleVoiceMonitor
@@ -3868,8 +3870,8 @@ local function publishConfiguredCellBands(scene, kind, bank, cellIndex, dx, dy, 
         scene.setEffectPicture(scene, id, {
           assetKey = bank.characterKey,
           selector = kind .. "/cell-" .. cellIndex .. "/band-" .. band,
-          centerX = anchor.x + obj.x + dx,
-          centerY = anchor.y + obj.y + band * 8 + dy,
+          centerX = anchor.x + obj.x + math.floor(width / 2) + dx,
+          centerY = anchor.y + obj.y + band * 8 + 4 + dy,
           zCenter = -obj.priority,
           width = width,
           height = 8,

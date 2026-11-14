@@ -234,7 +234,24 @@ function BattleParticleSystems.newSystemTask(args, context, services, lease)
     for _, texture in ipairs(payload.textures) do
       lease.stage(kind, texture.image, services, staged)
       local textureLease = (staged[#staged] --[[@as table<string, unknown>]]).lease --[[@as table<string, unknown>]]
-      textures[texture.id] = textureLease.handle
+      local handle = textureLease.handle
+      textures[texture.id] = handle
+      -- Retail texture headers name the sampler wrap per axis: a tiled
+      -- viewport must mirror when the header says mirroredrepeat, or a
+      -- quarter-wave tile repeats instead of reconstructing the full wave.
+      -- The upload borrow defaults to repeat for tiling; the system
+      -- corrects it from the compiled sampler so existing caches without
+      -- per-image sampler still draw mirrored tiling.
+      local sampler = texture.sampler --[[@as table<string, unknown>?]]
+      if
+        type(handle) == "table"
+        and type(handle.setWrap) == "function"
+        and type(sampler) == "table"
+        and (sampler.wrapX == "clamp" or sampler.wrapX == "repeat" or sampler.wrapX == "mirroredrepeat")
+        and (sampler.wrapY == "clamp" or sampler.wrapY == "repeat" or sampler.wrapY == "mirroredrepeat")
+      then
+        handle:setWrap(sampler.wrapX, sampler.wrapY)
+      end
       -- The staged image handle carries no alpha metadata, so the
       -- compiled per-texture alpha usage rides alongside for the
       -- shared Gx classification: transparent texels must discard

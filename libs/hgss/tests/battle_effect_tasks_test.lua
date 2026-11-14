@@ -2138,24 +2138,28 @@ function T.zigzag_slash_drives_the_native_six_leg_assault()
   local defender = { combatant = 3, activation = 3 }
   local task = assert(BattleEffectTasks.create(ZIGZAG_SLASH_KIND, zigzagArgs(), occurrenceContext(), services))
   Assert.equal(task:status(), "pending", "zigzag assaults open pending")
-  local waypoints = {
-    [4] = { 176, 64 },
-    [5] = { 176, 64 },
-    [13] = { 216, 104 },
-    [27] = { 216, 24 },
-    [41] = { 136, 104 },
-    [55] = { 136, 24 },
-    [69] = { 216, 104 },
-    [83] = { 176, 64 },
-    [84] = { 176, 64 },
+  -- The solo-enemy battler picture center the legs depart from (mirrors
+  -- the defender slot in BattleEffectTasks). The native leg table below
+  -- rides it as offsets, so a settled-geometry move touches one line.
+  local anchor = { x = 192, y = 50 }
+  local legs = {
+    [4] = { 0, -12 },
+    [5] = { 0, -12 },
+    [13] = { 40, 28 },
+    [27] = { 40, -52 },
+    [41] = { -40, 28 },
+    [55] = { -40, -52 },
+    [69] = { 40, 28 },
+    [83] = { 0, -12 },
+    [84] = { 0, -12 },
   }
   for tick = 1, 84 do
     task:stepSourceTick({ tick = 1 })
     Assert.isTrue(task:status() ~= "complete", "the assault outlives tick " .. tick)
-    if waypoints[tick] ~= nil then
+    if legs[tick] ~= nil then
       local x, y = zigzagCenter(services)
-      Assert.equal(x, waypoints[tick][1], "leg waypoint X at tick " .. tick)
-      Assert.equal(y, waypoints[tick][2], "leg waypoint Y at tick " .. tick)
+      Assert.equal(x, anchor.x + legs[tick][1], "leg waypoint X at tick " .. tick)
+      Assert.equal(y, anchor.y + legs[tick][2], "leg waypoint Y at tick " .. tick)
     end
   end
   local flash = services.scene:pictureState(defender)

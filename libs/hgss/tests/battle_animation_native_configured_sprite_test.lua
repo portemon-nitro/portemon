@@ -9,7 +9,11 @@ local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 
 local T = {}
 
-local DEFENDER_CENTER = { x = 192, y = 80 }
+-- The solo-enemy battler picture center the native slots stage through.
+-- It mirrors EMITTER_CENTERS["solo-enemy"] in BattleEffectTasks and is
+-- asserted once below; every other expectation rides authored deltas so a
+-- settled-geometry move touches one line.
+local DEFENDER_CENTER = { x = 192, y = 50 }
 
 local function occurrenceContext()
   return {
@@ -69,23 +73,11 @@ local function spawnArgs()
   }
 end
 
-function T.configured_sprites_initialize_at_the_defender_position()
-  local services, _, leases = stagedServices()
-  bankWith(
-    { { objs = { { x = 0, y = 0, tile = 0, width = 8, height = 8, priority = 0 } } } },
-    { { frames = { { cell = 0, duration = 4 } } } },
-    leases
-  )
-  local task = assert(BattleEffectTasks.create(spawnKind(), spawnArgs(), occurrenceContext(), services))
-  task:stepSourceTick({ tick = 1 })
-  local views = services.scene:effectViews()
-  Assert.isTrue(#views >= 1, "the sprite publishes its first cell")
-  local first = assert(views[1].picture, "the sprite publishes staged picture state")
-  Assert.equal(first.centerX, DEFENDER_CENTER.x, "sprites initialize at the defender horizontal position")
-  Assert.equal(first.centerY, DEFENDER_CENTER.y, "sprites initialize at the defender vertical position")
-end
-
-function T.configured_sprites_retain_every_authored_cell_part()
+function T.configured_sprites_center_every_authored_cell_part_on_the_defender()
+  -- One spawn proves both halves of the placement contract: parts
+  -- initialize on the defender position with their selected bindings, and
+  -- every authored cell part reaches the scene with its distinct offset
+  -- instead of collapsing onto one rectangle.
   local services, _, leases = stagedServices()
   bankWith(
     {
@@ -103,10 +95,13 @@ function T.configured_sprites_retain_every_authored_cell_part()
   task:stepSourceTick({ tick = 1 })
   local views = services.scene:effectViews()
   Assert.equal(#views, 2, "both authored parts of one cell reach the scene")
-  local firstPart = assert(views[1].picture, "the first part publishes staged picture state")
-  local secondPart = assert(views[2].picture, "the second part publishes staged picture state")
-  Assert.isTrue(
-    firstPart.centerX ~= secondPart.centerX,
+  local first = assert(views[1].picture, "the first part publishes staged picture state")
+  local second = assert(views[2].picture, "the second part publishes staged picture state")
+  Assert.equal(first.centerX, DEFENDER_CENTER.x + 4, "8-pixel parts center on the defender horizontal position")
+  Assert.equal(first.centerY, DEFENDER_CENTER.y + 4, "8-pixel parts center on the defender vertical position")
+  Assert.equal(
+    second.centerX - first.centerX,
+    8,
     "retained parts keep their distinct authored offsets"
   )
 end

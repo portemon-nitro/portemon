@@ -351,12 +351,29 @@ local function particleEntries(sceneKey, record)
       local slot = (repeats[setIndex] or {})[
         texture.id --[[@as integer]]
       ]
+      -- Tiled viewports take their compiled header wrap per axis:
+      -- mirrored-repeat quarter tiles mirror to the full viewport, while
+      -- untiled textures keep the shared clamped sampler.
+      local sampler = POOLED_SAMPLER
+      if slot ~= nil and (slot.s or slot.t) then
+        local staged = texture.sampler --[[@as table<string, unknown>?]]
+        local function validWrap(value)
+          return value == "clamp" or value == "repeat" or value == "mirroredrepeat"
+        end
+        if type(staged) == "table" and validWrap(staged.wrapX) and validWrap(staged.wrapY) then
+          local wrapX = slot.s and staged.wrapX or "clamp"
+          local wrapY = slot.t and staged.wrapY or "clamp"
+          sampler = { wrapX = wrapX, wrapY = wrapY, minFilter = "nearest", magFilter = "nearest" }
+        else
+          sampler = REPEAT_SAMPLER
+        end
+      end
       entries[#entries + 1] = {
         key = "scene-particle:" .. sceneKey .. ":" .. setIndex .. ":" .. texture.id,
         path = texture.image,
         set = setIndex,
         texture = texture,
-        sampler = (slot ~= nil and (slot.s or slot.t)) and REPEAT_SAMPLER or POOLED_SAMPLER,
+        sampler = sampler,
       }
     end
   end
@@ -1208,11 +1225,11 @@ end
 -- Resolves one catalog-selected image, tolerating legitimate waits.
 -- Missing reads and pending pool borrows answer nil with no latched
 -- failure; only a reported failure latches. Answers the image on success.
-local function resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
+local function resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path, sampler)
   local image = nil
   local failure = nil
   if envelope._pool ~= nil then
-    image, failure = acquirePooled(envelope, key, path)
+    image, failure = acquirePooled(envelope, key, path, nil, sampler)
   else
     local bytes = cacheFs:read(path)
     if type(bytes) == "string" then
@@ -1276,6 +1293,23 @@ local function uploadEffectTexture(graphics, effectKey, resourceKey, path, paylo
   local textureWidth = width --[[@as integer]]
   local textureHeight = height --[[@as integer]]
   local textureBytes = rgba --[[@as string]]
+  -- Particle quads tile their texture by repeat powers (texRepeat), so the
+  -- handle must wrap instead of clamping: with clamp sampling a 2x2 repeat
+  -- shows only its top-left tile while the remaining viewport clamps to the
+  -- transparent edge. The staged sampler names the hardware wrap per axis:
+  -- a mirrored-repeat quarter-wave must mirror to reconstruct the full wave,
+  -- not repeat its top-left quadrant four times. Payloads without a sampler
+  -- (older caches) keep the repeat borrow; the particle system corrects
+  -- handles from its compiled sampler afterwards.
+  local sampler = type(payload) == "table" and payload.sampler or nil
+  local wrapX, wrapY = "repeat", "repeat"
+  if
+    type(sampler) == "table"
+    and (sampler.wrapX == "clamp" or sampler.wrapX == "repeat" or sampler.wrapX == "mirroredrepeat")
+    and (sampler.wrapY == "clamp" or sampler.wrapY == "repeat" or sampler.wrapY == "mirroredrepeat")
+  then
+    wrapX, wrapY = sampler.wrapX, sampler.wrapY
+  end
   local ok, imageOrErr = pcall(function()
     local pixels = love.image.newImageData(textureWidth, textureHeight)
     local at = 1
@@ -1293,6 +1327,9 @@ local function uploadEffectTexture(graphics, effectKey, resourceKey, path, paylo
     local uploaded = graphics.newImage(pixels)
     assert(uploaded ~= nil, "the graphics driver handed out no image")
     uploaded:setFilter("nearest", "nearest")
+    if type(uploaded.setWrap) == "function" then
+      uploaded:setWrap(wrapX, wrapY)
+    end
     return uploaded
   end)
   if ok and imageOrErr ~= nil then
@@ -2982,15 +3019,17 @@ function FieldBattlePresentation:_preparationServices()
       local set = type(particles) == "table" and particles[particleKind] or nil
       local textureId = assert(tonumber(particleTexture), "ball particle drawable names a numeric texture")
       local path = nil
+      local sampler = nil
       for _, texture in ipairs(type(set) == "table" and set.textures or {}) do
         if texture.id == textureId then
           path = texture.image
+          sampler = texture.sampler
         end
       end
       if path == nil then
         return nil
       end
-      return resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
+      return resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path, sampler)
     end
     return nil
   end

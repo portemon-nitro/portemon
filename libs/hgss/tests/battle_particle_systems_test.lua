@@ -137,14 +137,21 @@ end
 -- Services whose leases mirror the production holder: particle systems come
 -- back as decoded records and textures with an image handle.
 local function services(scene, systemPayload)
-  local journal = { acquired = {}, released = {} }
+  local journal = { acquired = {}, released = {}, wraps = {} }
   local resources = {}
   function resources.resolve(key)
     journal.acquired[#journal.acquired + 1] = key
     if key == "system" then
       return { key = key, kind = "particle", data = systemPayload }
     end
-    return { key = key, kind = "texture", handle = { image = key } }
+    -- Handles record their wrap so wrap assertions ride the shared
+    -- leases: payloads without a compiled sampler never call it, which
+    -- is exactly the older-cache fallback the production guard keeps.
+    local handle = { image = key }
+    function handle.setWrap(_, wrapX, wrapY)
+      journal.wraps[key] = { wrapX, wrapY }
+    end
+    return { key = key, kind = "texture", handle = handle }
   end
   function resources.release(lease)
     journal.released[#journal.released + 1] = lease
@@ -197,21 +204,39 @@ function T.system_loads_registers_with_the_scene_and_frees_exactly_once()
   Assert.isNil(ctx.particles.systems[0], "the system slot is free again")
 end
 
-function T.system_loads_publish_compiled_texture_alpha_usage_for_classification()
-  -- The compiled per-texture alpha usage rides the draw view beside
-  -- the staged handles: the shared Gx classification discards
-  -- transparent texels instead of writing depth on the opaque path.
-  -- Systems with no usage table keep the picture blanket in the
-  -- renderer; a system that stages a table but drops an entry fails
-  -- loudly at render instead of hardening translucent texels.
+function T.system_loads_publishes_compiled_texture_metadata_for_classification_and_wrap()
+  -- The compiled per-texture metadata rides the load beside the staged
+  -- handles: alpha usage joins the draw view so the shared Gx
+  -- classification discards transparent texels instead of writing depth
+  -- on the opaque path, and the header wrap reaches each image handle so
+  -- a mirrored-repeat quarter tile mirrors instead of repeating one
+  -- quadrant. Systems with no usage table keep the picture blanket in
+  -- the renderer; a system that stages a table but drops an entry fails
+  -- loudly at render instead of hardening translucent texels. Textures
+  -- without a compiled sampler (older caches) keep the upload borrow:
+  -- the system corrects only staged wraps.
   local scene = BattleScene.new()
   local ctx = context()
   local usage = { hasZero = true, hasPartial = true, hasOpaque = true }
-  local system, _ = loadSystem(scene, {
+  local system, journal = loadSystem(scene, {
     emitters = { emitterRecord({ persistent = true }) },
     textures = {
-      { id = 0, width = 8, height = 8, image = "texture/0", alphaUsage = usage },
-      { id = 1, width = 8, height = 8, image = "texture/1" },
+      {
+        id = 0,
+        width = 8,
+        height = 8,
+        image = "texture/0",
+        alphaUsage = usage,
+        sampler = { wrapX = "mirroredrepeat", wrapY = "mirroredrepeat", minFilter = "nearest", magFilter = "nearest" },
+      },
+      {
+        id = 1,
+        width = 8,
+        height = 8,
+        image = "texture/1",
+        sampler = { wrapX = "repeat", wrapY = "repeat", minFilter = "nearest", magFilter = "nearest" },
+      },
+      { id = 2, width = 8, height = 8, image = "texture/2" },
     },
     placements = placements(),
     axisTables = axisTables(),
@@ -227,6 +252,16 @@ function T.system_loads_publish_compiled_texture_alpha_usage_for_classification(
   Assert.isNil(
     view.textureAlphaUsage[1],
     "textures without compiled usage fall back to the picture blanket"
+  )
+  Assert.deepEqual(
+    journal.wraps["texture/0"],
+    { "mirroredrepeat", "mirroredrepeat" },
+    "mirrored-repeat textures mirror their tiled viewport"
+  )
+  Assert.deepEqual(journal.wraps["texture/1"], { "repeat", "repeat" }, "repeat textures keep their sampler")
+  Assert.isNil(
+    journal.wraps["texture/2"],
+    "textures without a compiled sampler keep the upload borrow"
   )
   system:free()
   system:dispose()

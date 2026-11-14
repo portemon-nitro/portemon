@@ -893,6 +893,16 @@ local function assertExactDrawable(bundle, resourceKey, what)
     texture.width * texture.height * 4,
     what .. " carries exactly one RGBA quadruple per pixel"
   )
+  -- Particle tiles sample through their header wrap (mirrored-repeat
+  -- quarter-waves mirror to the full viewport); other effect viewports
+  -- sample clamped without a staged sampler.
+  if resourceKey:find("particle/texture/", 1, true) ~= nil then
+    Assert.deepEqual(
+      texture.sampler,
+      { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" },
+      what .. " stages the hardware sampler wrap for tiled viewports"
+    )
+  end
   return texture
 end
 

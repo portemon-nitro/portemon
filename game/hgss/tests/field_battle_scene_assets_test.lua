@@ -2618,6 +2618,9 @@ function T.repeating_particle_textures_keep_repeat_samplers_from_warmup_to_draw(
   local record = sceneRecord(SCENE_KEY)
   local repeated = record.encounterParticles[1]
   repeated.emitters[1].texRepeat = { s = 1, t = 0 }
+  -- The staged header names the hardware wrap: a repeating tile must
+  -- repeat (or mirror), never clamp to its top-left quadrant.
+  repeated.textures[1].sampler = { wrapX = "repeat", wrapY = "repeat", minFilter = "nearest", magFilter = "nearest" }
   -- A schema-valid child generation referencing the same texture file:
   -- the parent repeats x2 while the child repeats x4 on the other axis.
   local template = record.encounterParticles[2].emitters[1].child
