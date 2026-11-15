@@ -12,11 +12,13 @@ local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
+local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
 local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v12"
+GameSave.SCHEMA = "g4-game-save-v13"
+GameSave.LEGACY_V12_SCHEMA = "g4-game-save-v12"
 GameSave.LEGACY_V11_SCHEMA = "g4-game-save-v11"
 GameSave.LEGACY_V10_SCHEMA = "g4-game-save-v10"
 GameSave.LEGACY_V9_SCHEMA = "g4-game-save-v9"
@@ -35,6 +37,7 @@ local TOP_LEVEL_FIELDS = {
   encounters = true,
   facing = true,
   fashionCase = true,
+  fieldPoison = true,
   fieldTravel = true,
   pokegear = true,
   fieldX = true,
@@ -98,7 +101,14 @@ local function validateLegacyShape(record, schema)
   assert(type(record) == "table" and record.schema == schema, "legacy migration requires its declared schema")
   local allowed = {}
   for key, value in pairs(TOP_LEVEL_FIELDS) do
-    if key ~= "fashionCase" and key ~= "mart" and key ~= "mailbox" and key ~= "photoAlbum" and key ~= "sysInfo" then
+    if
+      key ~= "fashionCase"
+      and key ~= "mart"
+      and key ~= "mailbox"
+      and key ~= "photoAlbum"
+      and key ~= "sysInfo"
+      and key ~= "fieldPoison"
+    then
       allowed[key] = value
     end
   end
@@ -453,8 +463,23 @@ end
 function GameSave.migrateV11(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V11_SCHEMA, "GameSave.migrateV11 requires v11")
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V12_SCHEMA
   migrated.sysInfo = SysInfoState.empty()
+  return migrated
+end
+
+-- Pure v12 -> v13 conversion. Only the field-poison step-counter delta is
+-- applied: v12 records predate the overworld poison cadence, so they
+-- initialize it on phase zero. Every other top-level field and nested
+-- bucket passes through copied; malformed predecessors are reported,
+-- never repaired.
+---@param record table<string, unknown> a v12 save record
+---@return table<string, unknown> the migrated v13 record
+function GameSave.migrateV12(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V12_SCHEMA, "GameSave.migrateV12 requires v12")
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.fieldPoison = FieldPoisonSave.initial()
   return migrated
 end
 
@@ -488,6 +513,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V12_SCHEMA
       and record.schema ~= GameSave.LEGACY_V11_SCHEMA
       and record.schema ~= GameSave.LEGACY_V10_SCHEMA
       and record.schema ~= GameSave.LEGACY_V9_SCHEMA
@@ -574,6 +600,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V12_SCHEMA
       and schema ~= GameSave.LEGACY_V11_SCHEMA
       and schema ~= GameSave.LEGACY_V10_SCHEMA
       and schema ~= GameSave.LEGACY_V9_SCHEMA
@@ -613,6 +640,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V11_SCHEMA then
       current = GameSave.migrateV11(current)
+    end
+    if current.schema == GameSave.LEGACY_V12_SCHEMA then
+      current = GameSave.migrateV12(current)
     end
     return canonicalizeCurrent(current)
   end)

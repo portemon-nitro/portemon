@@ -30,6 +30,9 @@ local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local FieldPoison = require("libs.hgss.src.field.FieldPoison")
+local FieldPoisonEffect = require("libs.hgss.src.field.FieldPoisonEffect")
+local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
@@ -664,6 +667,9 @@ end
 ---@field fieldEffectAssets table<string, unknown>
 ---@field pokemonCenterHeal PokemonCenterHealFlow? source-owned Pokémon Center choreography
 ---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
+---@field fieldPoison FieldPoison? the overworld poison step counter behind field damage ticks
+---@field poisonEffect FieldPoisonEffect? the retail HBlank wobble behind damage ticks; always composed, advanced once per source frame
+---@field poisonCure { slots: integer[], index: integer }? pending cure-message chain behind a survive tick
 ---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
@@ -1356,6 +1362,10 @@ function FieldRuntime:_composeTransitions(boot)
   -- only reads its status().
   self.screenFade = FieldScriptScreenFade.new()
   self.scentTint = require("libs.hgss.src.transition.FieldScentTint").new()
+  -- The poison wobble composes unconditionally beside the other
+  -- presentation-only source-frame effects; ticks start it, the
+  -- source-frame pump advances it, and the field draw consumes it.
+  self.poisonEffect = FieldPoisonEffect.new()
 
   -- Modal dialogue is pure and fixed-tick. Runtime layout needs only the
   -- compiled font definition; presentation later owns the atlas and drawing.
@@ -1504,6 +1514,15 @@ function FieldRuntime:_composeFieldServices(boot)
   self.photoAlbum = PhotoAlbum.new(
     boot.loadedGame and boot.loadedGame.photoAlbum
       or assert(boot.activeGame.photoAlbum, "finalized game photo album bucket is required")
+  )
+  -- The overworld poison step phase restores from the loaded bucket and
+  -- falls back to the finalized game (pre-poison saves resume on phase
+  -- zero through the same default the finalized record carries).
+  self.fieldPoison = FieldPoison.restore(
+    FieldPoisonSave.restore(
+      boot.loadedGame and boot.loadedGame.fieldPoison
+        or assert(boot.activeGame.fieldPoison, "finalized game field poison bucket is required")
+    )
   )
   self:_composePokegear(boot.loadedGame, boot.cacheFs)
   self:_composePokegearFeature(boot)
@@ -2199,6 +2218,9 @@ function FieldRuntime:update(dt)
     end
     self.screenFade:updateSourceFrame()
     self.scentTint:updateSourceFrame()
+    if self.poisonEffect ~= nil then
+      self.poisonEffect:updateSourceFrame()
+    end
     if self.blackoutFlow then
       self.blackoutFlow:updateSourceFrame()
     end
@@ -3872,6 +3894,148 @@ function FieldRuntime:_stepSwarmActive()
   return RadioWorldContext.swarmInfoFromSeed(identity.outbreakSeed) ~= nil
 end
 
+-- The retail field-poison cue message behind one cured mon, resolved
+-- through the live message pipeline (never copied text): the nickname
+-- rides buffer slot 0 exactly like the BufferPartyMonNick binding the
+-- native script leaves behind (STRVAR_1 names the first string buffer).
+local POISON_CURE_MESSAGE = "msg.hgss.0040.00053"
+
+local function copyPoisonRecord(record)
+  if type(record) ~= "table" then
+    return record
+  end
+  local out = {}
+  for key, value in pairs(record) do
+    out[key] = copyPoisonRecord(value)
+  end
+  return out
+end
+
+-- Notes one processed committed step on the poison counter and runs the
+-- damage tick every fourth step: HP drains through the staged mon
+-- service, the poison jingle and HBlank wobble fire, and a cure outcome
+-- opens its nickname message chain. Returns the tick outcome ("survive"
+-- claims the step), or nil when no tick ran. Inert without a poison
+-- counter or a mon service; the headless seams that omit either keep
+-- their old boundary.
+---@return string? the tick outcome kind, nil without a tick
+function FieldRuntime:_tickFieldPoison()
+  local poison = self.fieldPoison
+  local mons = self.monService
+  if poison == nil or mons == nil then
+    return nil
+  end
+  if not poison:noteStep() then
+    return nil
+  end
+  local count = mons:partyCount()
+  if type(count) ~= "number" or count < 1 then
+    return nil
+  end
+  local records = {}
+  for slot = 0, count - 1 do
+    records[#records + 1] = mons:partyMon(slot)
+  end
+  local outcome = FieldPoison.tickParty(records)
+  if outcome.kind == "none" then
+    return nil
+  end
+  local updates = {}
+  for slot, update in pairs(outcome.updates) do
+    local staged = copyPoisonRecord(records[slot + 1])
+    assert(type(staged) == "table", "poison staging requires the live mon record")
+    local condition = assert(staged.condition, "poison staging requires the live condition")
+    condition.currentHp = update.currentHp
+    if update.cured then
+      condition.effects = update.effects
+      staged.friendship = update.friendship
+      staged.mood = update.mood
+    end
+    updates[#updates + 1] = { slot = slot, mon = staged }
+  end
+  local preparation, reason = mons:preparePartyChanges(mons:partyRevision(), updates)
+  if preparation == nil then
+    error("field poison party staging went stale: " .. tostring(reason), 0)
+  end
+  preparation.publish()
+  if self.audio ~= nil then
+    self.audio:play("SEQ_SE_DP_DOKU2")
+  end
+  -- The HBlank wobble fires for both damage and survive ticks, matching
+  -- the native DoPoisonEffect call on either ApplyPoisonStep outcome. The
+  -- effect owner is optional in headless seams that never composed it.
+  local effect = self.poisonEffect
+  if effect ~= nil then
+    effect:start()
+  end
+  if outcome.kind == "survive" then
+    self:_beginPoisonCureMessages(outcome)
+  end
+  return outcome.kind
+end
+
+-- Opens the cure message chain behind a survive tick: one nickname
+-- message per cured mon, in slot order, through the session dialogue.
+-- The modal gate pauses steps and encounters until every message
+-- dismisses, matching the native script claim on the step.
+---@param outcome { kind: string, updates: table<integer, table<string, unknown>> }
+function FieldRuntime:_beginPoisonCureMessages(outcome)
+  local slots = {}
+  for slot, update in pairs(outcome.updates) do
+    if update.cured then
+      slots[#slots + 1] = slot
+    end
+  end
+  table.sort(slots)
+  if #slots == 0 then
+    return
+  end
+  self.poisonCure = { slots = slots, index = 1 }
+  self:_openPoisonCureMessage()
+end
+
+-- Opens the pending cure message at the chain head. The completion
+-- callback advances the chain, so sequential cures never overlap.
+function FieldRuntime:_openPoisonCureMessage()
+  local pending = assert(self.poisonCure, "poison cure chain requires its pending slots")
+  local slot = assert(pending.slots[pending.index], "poison cure chain requires its head slot")
+  local host = assert(self.scripts and self.scripts.dialogueHost, "poison cure messages require the dialogue host")
+  local message = host:resolveMessage(POISON_CURE_MESSAGE, {}, { [0] = { text = "party_nickname", position = slot } })
+  local dialogue = assert(self.session and self.session.dialogue, "poison cure messages require the field dialogue")
+  -- The cure box is the ordinary NPCMsg field box: it carries the
+  -- player-selected window frame like every script-owned message. Without
+  -- it the renderer draws only the content-background fill with no frame
+  -- tiles (the unstyled box). The host mirrors the same live option, but
+  -- the runtime-owned chain reads the authoritative player options.
+  local frameIndex = self.playerData and self.playerData.options and self.playerData.options.textFrame or nil
+  local handle = dialogue:open({
+    id = "field-poison-cure",
+    message = message,
+    allowCancel = false,
+    frameIndex = frameIndex,
+  })
+  handle:onComplete(function()
+    self:_advancePoisonCureMessages()
+  end)
+end
+
+-- Advances the cure chain past one dismissed message: the next cured mon
+-- announces itself, and after the last one the chain clears. A wipe needs
+-- no recovery here on top of the cure: damage floors every drained mon at
+-- 1 HP, so a survive tick always leaves the party conscious.
+function FieldRuntime:_advancePoisonCureMessages()
+  local pending = self.poisonCure
+  if pending == nil then
+    return
+  end
+  pending.index = pending.index + 1
+  if pending.index <= #pending.slots then
+    self:_openPoisonCureMessage()
+    return
+  end
+  self.poisonCure = nil
+end
+
 -- The committed-step encounter boundary, once per fixed tick: at most one
 -- fresh unclaimed completed step is considered, after that step's warp,
 -- coordinate-script, and map-boundary arbitration already ran inside the
@@ -3903,6 +4067,13 @@ function FieldRuntime:_consumeCommittedStep()
     if presentPhase ~= "present" then
       return
     end
+  end
+  -- Field poison ticks on every processed committed step before the
+  -- encounter boundary, matching the native per-step update order. A cure
+  -- flow claims the step: like a claimed warp or script, it never becomes
+  -- a delayed encounter.
+  if self:_tickFieldPoison() == "survive" then
+    return
   end
   local map = session.currentMap --[[@as table<string, unknown>]]
   local method = self:_stepEncounterMethod(map, self.player)
@@ -4825,6 +4996,7 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
+  self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()
   end

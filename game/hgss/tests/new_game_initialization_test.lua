@@ -287,6 +287,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
     sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
+    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
     world = captured,
     scripts = { tasks = {} },
     auxiliaryUi = {},

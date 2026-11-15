@@ -1500,15 +1500,40 @@ function FieldState:draw()
     -- Rendering consumes the active logical map's render environment
     -- independently from geometry: physical coverage owns outdoor world
     -- parts while the environment carries lighting, edge, and fog state.
-    resources.renderer:draw(
-      self.runtime.runtimeMap.renderEnvironment,
-      self.runtime.camera,
-      self:_worldParts(alpha),
-      self.spriteItems,
-      self.runtime.viewport,
-      alpha,
-      self.runtime.fieldPixelScale:resolvedScale()
-    )
+    -- The poison wobble shifts only the world planes through the shared
+    -- HBlank scanline path (objects stay fixed, like the native 3D-layer
+    -- shift): while active the world renders to launch-owned planes and
+    -- draws back shifted, exactly like a transition frame.
+    local poison = self.runtime.poisonEffect
+    local poisonFrame = poison ~= nil and poison:frame() or nil
+    if poisonFrame ~= nil then
+      local capture = resources.renderer:captureTransitionLayers(
+        self.runtime.runtimeMap.renderEnvironment,
+        self.runtime.camera,
+        self:_worldParts(alpha),
+        self.spriteItems,
+        self.runtime.viewport,
+        alpha,
+        self.runtime.fieldPixelScale:resolvedScale()
+      ) --[[@as FieldRenderer.Capture]]
+      local ok, err = pcall(function()
+        resources.renderer:drawTransition(capture, poisonFrame, self.runtime.viewport.worldViewport)
+      end)
+      capture:dispose()
+      if not ok then
+        error(err, 0)
+      end
+    else
+      resources.renderer:draw(
+        self.runtime.runtimeMap.renderEnvironment,
+        self.runtime.camera,
+        self:_worldParts(alpha),
+        self.spriteItems,
+        self.runtime.viewport,
+        alpha,
+        self.runtime.fieldPixelScale:resolvedScale()
+      )
+    end
     local hoOhStatus = hoOhScene and hoOhScene:status() or nil
     if hoOhStatus and hoOhStatus["leavesActive"] == true then
       local renderer = assert(self._hoOhAppearanceRenderer, "Ho-Oh scene renderer is ready before drawing its layers")

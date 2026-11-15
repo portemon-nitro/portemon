@@ -85,6 +85,7 @@ local function stubRuntime()
     kurtBoxHost = {},
     fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
     sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
+    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
     easyChatCatalog = {},
     easyChatState = {},
     pokegearRandom = {},

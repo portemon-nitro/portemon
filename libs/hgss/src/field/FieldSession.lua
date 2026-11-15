@@ -503,6 +503,11 @@ function FieldSession.new(options)
       autoAcknowledgePresentation = options.autoAcknowledgePresentation == true,
     }),
     childResumePending = false,
+    -- A map entry that lands the player on a terrain tile (tall grass)
+    -- owes the standing tile's overlay: committed steps emit it, but the
+    -- entry itself completes without one. The flag arms on every entry
+    -- begin and clears on the first emission after the entry settles.
+    _entryTerrainPending = false,
     battleActive = false,
     foregroundHold = false,
     _committedStepSerial = 0,
@@ -536,6 +541,7 @@ function FieldSession:beginMapEntry()
   end
   self:validateSurfSpawn()
   self.mapEntryController:begin("full")
+  self._entryTerrainPending = true
 end
 
 -- Cancels only the incoming-call handle admitted by this session. Scripted
@@ -957,6 +963,17 @@ local function finishTick(self)
   return TICK_CONSUMED
 end
 
+-- Emits the standing tile's terrain overlay once the pending map entry
+-- settles: a completed entry never steps, so without this the player
+-- loads standing on tall grass instead of in it. Still-active entries
+-- (blocked advances) and already-served entries are no-ops.
+local function refreshEntryTerrain(self)
+  if self._entryTerrainPending and not self.mapEntryController:isActive() then
+    self._entryTerrainPending = false
+    self:_emitTerrainResponse()
+  end
+end
+
 ---@param self FieldSession
 ---@return FieldTickOutcome
 local function advancePreSchedulerBoundary(self)
@@ -964,6 +981,7 @@ local function advancePreSchedulerBoundary(self)
     if self.mapEntryController:advance(self.tick + 1) then
       return finishTick(self)
     end
+    refreshEntryTerrain(self)
   elseif self.childResumePending and foregroundEnvironmentId(self.scriptScheduler) == nil then
     self.childResumePending = false
     -- The resume tick is consumed only when a map on_resume lifecycle
@@ -991,6 +1009,7 @@ local function advancePostSchedulerBoundary(self)
     if self.mapEntryController:advance(self.tick + 1) or self.mapEntryController:isActive() then
       return finishTick(self)
     end
+    refreshEntryTerrain(self)
   end
   if self.mapEntryController:takeConnectionArrival() then
     local arrivalIntent = resolveCoordinate(self)

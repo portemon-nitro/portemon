@@ -475,6 +475,7 @@ local function validRecord(saveId)
     fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
     fashionCase = FashionCaseState.empty(),
     sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
+    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {
       schema = "g4-script-save-v2",
@@ -525,6 +526,8 @@ local function v3record(saveId)
   value.mart = nil
   value.mailbox = nil
   value.photoAlbum = nil
+  value.sysInfo = nil
+  value.fieldPoison = nil
 
   value.playerData = {
     profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
@@ -560,7 +563,7 @@ function T.tests.missing_travel_saves_while_broken_envelopes_reject_with_file_pr
   Assert.isTrue(store:save(withoutTravel), "a record without travel facts still saves; field restore owns that state")
   local before = snapshotBytes(backend, saveId)
   local envelopeBroken = validRecord(saveId)
-  envelopeBroken.schema = "g4-game-save-v12"
+  envelopeBroken.schema = GameSave.SCHEMA .. "-future"
   local ok, failure = pcall(function()
     return store:save(envelopeBroken)
   end)

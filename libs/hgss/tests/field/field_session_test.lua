@@ -6002,4 +6002,63 @@ function T.half_fractional_pair_is_rejected_not_projected()
   end
 end
 
+-- A save that loads standing on tall grass must look like standing in it:
+-- completing map entry emits the standing tile's terrain response once,
+-- so the grass overlay covers the player exactly as a walked-in step
+-- would. Idle ticks afterwards never re-emit.
+function T.standing_grass_emits_its_overlay_once_map_entry_completes()
+  local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
+  local emitted = {}
+  local standX, standZ = 4, 13
+  local player = defaultPlayer()
+  player.fieldX, player.fieldZ = standX, standZ
+  local session = FieldSession.new(baseOptions({
+    player = player,
+    currentMap = {
+      mapId = 61,
+      coordinateOrigin = { x = 0, z = 0 },
+      collision = {
+        containsLocal = function()
+          return true
+        end,
+        getLocal = function()
+          return { behavior = MetatileBehavior.BEHAVIOR.TALL_GRASS }
+        end,
+      },
+      fieldData = { events = { warps = {} } },
+      updateAnimated = function() end,
+    },
+    terrainEffects = {
+      updateFixed = function() end,
+      emitAll = function(_, responses)
+        emitted[#emitted + 1] = responses
+      end,
+    },
+    initController = {
+      hasLifecycle = function()
+        return false
+      end,
+      startLifecycle = function()
+        return false
+      end,
+    },
+    autoAcknowledgePresentation = true,
+  }))
+  session:beginMapEntry()
+  local guard = 0
+  while session.mapEntryController:isActive() and guard < 20 do
+    session:updateFixed({})
+    guard = guard + 1
+  end
+  Assert.isFalse(session.mapEntryController:isActive(), "map entry completes")
+  Assert.equal(#emitted, 1, "the standing tile emits its grass response exactly once")
+  Assert.equal(#emitted[1], 1, "the standing tile resolves to one grass response")
+  Assert.equal(emitted[1][1].kind, "tall_grass", "the standing tile response names its grass")
+  Assert.equal(emitted[1][1].fieldX, standX, "the standing response anchors the player tile")
+  Assert.equal(emitted[1][1].fieldZ, standZ, "the standing response anchors the player tile")
+  session:updateFixed({})
+  session:updateFixed({})
+  Assert.equal(#emitted, 1, "idle ticks never re-emit the standing overlay")
+end
+
 return { tests = T }

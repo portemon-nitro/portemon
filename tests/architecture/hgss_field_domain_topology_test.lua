@@ -108,6 +108,8 @@ local FIELD_COORDINATION = {
   "FieldMovePolicy",
   "FieldMoveRuntime",
   "FieldOverworldLifecycle",
+  "FieldPoison",
+  "FieldPoisonEffect",
   "FieldScriptPropAnimations",
   "FieldSession",
   "FieldTravelState",

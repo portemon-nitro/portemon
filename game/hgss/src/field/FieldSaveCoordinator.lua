@@ -4,6 +4,7 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldAudioSave = require("libs.hgss.src.audio.FieldAudioSave")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local ScriptSave = require("libs.script.src.ScriptSave")
 
@@ -170,6 +171,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     sysInfo = assert(runtime.sysInfo, "field runtime has no sysInfo state"):capture(),
     mailbox = assert(runtime.mailbox, "field runtime has no mailbox"):capture(),
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
+    fieldPoison = FieldPoisonSave.capture(assert(runtime.fieldPoison, "field runtime has no poison counter")),
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
     gameStats = assert(runtime.gameStats, "field runtime has no game stats"):bucket(),

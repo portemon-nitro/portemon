@@ -107,6 +107,7 @@ local function harness(options)
         fieldTravel = { lastHealSpawn = "SPAWN_VIOLET" },
         fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
         sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
+        fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
         playTime = PlayTime.new(),
         worldState = worldState,
         mons = MonBucket.emptyForVersion(versionId),

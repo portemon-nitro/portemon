@@ -374,5 +374,19 @@ function T.leading_glyph_local_ink_matches_between_raw_decode_and_the_generated_
   )
 end
 
+function T.poison_cure_bank_is_selected_for_the_derived_cache(_)
+  -- The overworld poison cure resolves msg.hgss.0040.00053 through the
+  -- live message pipeline, so the derived cache must select bank 40 like
+  -- any other runtime-read bank. The slot-0 nickname binding behind the
+  -- cure is pinned cheaply by the field-poison steps suite, which resolves
+  -- the same message id through the dialogue host; decoding the retail
+  -- bank here would only re-prove fixed ROM data at ROM-suite cost.
+  local selected = {}
+  for _, bankId in ipairs(FieldMessageCompiler.requiredBankIds()) do
+    selected[bankId] = true
+  end
+  Assert.isTrue(selected[40] == true, "the derived message cache must select bank 40")
+end
+
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 return suite

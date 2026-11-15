@@ -9,6 +9,7 @@ local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
+local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
 local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
@@ -175,6 +176,7 @@ local function captureRuntime(overrides)
       require("libs.hgss.src.save.FashionCaseState").empty()
     ),
     sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
+    fieldPoison = require("libs.hgss.src.field.FieldPoison").new(),
     session = {
       tick = 42,
       player = {
@@ -311,6 +313,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.bag.schema, "hgss-bag-v1", "every save captures the bag bucket")
   Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
   Assert.equal(valid.encounters.schema, "hgss-encounter-v1", "every save captures the encounter bucket")
+  Assert.deepEqual(valid.fieldPoison, FieldPoisonSave.initial(), "every save captures the poison counter")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
   Assert.equal(valid.gameStats.schema, "hgss-stats-v2", "every save captures the stats bucket")
   Assert.equal(valid.pokegear.schema, "hgss-pokegear-v1", "every save captures the companion bucket")

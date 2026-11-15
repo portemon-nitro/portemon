@@ -738,6 +738,7 @@ function T.tests.save_capture_is_denied_while_a_field_operation_is_pending()
       require("libs.hgss.src.save.FashionCaseState").empty()
     ),
     sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
+    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
     session = {
       tick = 42,
       player = { motion = "idle", fieldX = 1, fieldZ = 2, worldY = 0, surfaceId = 1, facing = "south" },

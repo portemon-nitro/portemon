@@ -47,6 +47,9 @@ local ALLOWED_DEFERRALS = {
   party_special_application = true,
   contest_ribbon_application = true,
   special_follower_event = true,
+  -- ScrCmd_SetWarpResetSuppressed owns warp-reset suppression, which
+  -- belongs to the field-transition domain pending a source trace.
+  field_transition = true,
 }
 
 -- Elm lab script sequence members: the Elm dispatcher, the lab entry
