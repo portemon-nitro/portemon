@@ -774,7 +774,10 @@ function T.voluntary_switch_and_forced_replacement_keep_field_order()
     local forcedSecond = forced.party:partyMon(1)
     waitForBattleDecision(forced, "replacement")
     local replacementRequest = waitForScreenDecision(forced, "replacement")
-    Assert.equal(forced.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
+    Assert.equal(forced.screen:status().mode, "use-next", "the wild faint offers its next mon" .. tag)
+    press(forced, { type = "confirm" })
+    forced.pump(1)
+    Assert.equal(forced.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
     requireChildOwner("forced party replacement")
     press(forced, { type = "cancel" })
@@ -1609,7 +1612,10 @@ function T.voluntary_party_child_lists_focused_roster_and_pointer_seals_reserve(
     local forcedCommandInk = renderedContents(forced)
     waitForBattleDecision(forced, "replacement")
     local replacementRequest = waitForScreenDecision(forced, "replacement")
-    Assert.equal(forced.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
+    Assert.equal(forced.screen:status().mode, "use-next", "the wild faint offers its next mon" .. tag)
+    press(forced, { type = "confirm" })
+    forced.pump(1)
+    Assert.equal(forced.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
     assertPaintsOwnRows(forcedCommandInk, renderedContents(forced), "5", "forced replacement roster" .. tag)
     chooseReserveThroughChild(forced)
@@ -1743,11 +1749,7 @@ function T.bag_rows_print_their_retail_fonts_and_window_colors()
   -- paints whole, centered in its window. The rig measures eight
   -- pixels per glyph; production measures through its staged font.
   Assert.equal(tostring(name.content):upper(), "POTION", "names paint whole in their 112px window" .. tag)
-  Assert.equal(
-    name.x,
-    0 + 64 - math.floor((#name.content * 8) / 2),
-    "names center on their template" .. tag
-  )
+  Assert.equal(name.x, 0 + 64 - math.floor((#name.content * 8) / 2), "names center on their template" .. tag)
   Assert.equal(name.y, 8 + 7, "names ride their template row" .. tag)
   local quantity = findDraw(function(drawn)
     return drawn.role == "hud" and drawn.content == "x5"
@@ -1811,11 +1813,7 @@ local function openReserveSummary(rig)
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "confirm" })
   rig.pump(8)
-  Assert.equal(
-    rig.screen:status().mode,
-    "child",
-    "SUMMARY keeps the party child (" .. rig.layout .. ")"
-  )
+  Assert.equal(rig.screen:status().mode, "child", "SUMMARY keeps the party child (" .. rig.layout .. ")")
 end
 
 -- The summary page shows its staged words and live facts on the paired
@@ -1936,11 +1934,7 @@ function T.bag_pocket_menu_and_use_rows_center_in_their_regions()
   -- y=7 over window 0 at (16,32) 96 wide): HP/PP titles ride y=39.
   -- No text marker frames the focus: the staged cursor corners do.
   Assert.equal(pocket.y, 32 + 7, "pocket names ride their window row" .. tag)
-  Assert.equal(
-    pocket.x,
-    16 + math.floor((96 - #pocket.content * 8) / 2),
-    "pocket names center in their window" .. tag
-  )
+  Assert.equal(pocket.x, 16 + math.floor((96 - #pocket.content * 8) / 2), "pocket names center in their window" .. tag)
   Assert.isTrue(tostring(pocket.content):sub(1, 1) ~= ">", "pocket names paint no marker" .. tag)
   local function bankSlot(bank, slot)
     local index = bank * 16 + slot + 1
@@ -1950,11 +1944,7 @@ function T.bag_pocket_menu_and_use_rows_center_in_their_regions()
   walkToMedicineFirstCell(rig)
   press(rig, { type = "confirm" })
   rig.pump(8)
-  Assert.equal(
-    drawnBagBackdrop(rig),
-    "bag:screen:3",
-    "the use-item page composites its staged slice" .. tag
-  )
+  Assert.equal(drawnBagBackdrop(rig), "bag:screen:3", "the use-item page composites its staged slice" .. tag)
   renderedContents(rig)
   local use = findDraw(function(drawn)
     return drawn.role == "menu" and drawn.y == 160 + 5
@@ -1962,7 +1952,13 @@ function T.bag_pocket_menu_and_use_rows_center_in_their_regions()
   if use == nil then
     local dump = {}
     for _, drawn in ipairs(rig.text.draws) do
-      dump[#dump + 1] = tostring(drawn.role) .. "@" .. tostring(drawn.x) .. "," .. tostring(drawn.y) .. ":" .. tostring(drawn.content)
+      dump[#dump + 1] = tostring(drawn.role)
+        .. "@"
+        .. tostring(drawn.x)
+        .. ","
+        .. tostring(drawn.y)
+        .. ":"
+        .. tostring(drawn.content)
     end
     Assert.notNil(use, "the USE row prints (draws: " .. table.concat(dump, " | ") .. ")" .. tag)
   end
@@ -1970,11 +1966,7 @@ function T.bag_pocket_menu_and_use_rows_center_in_their_regions()
   -- Retail centers USE in window 3 (PrintCenteredText y=5 over
   -- window 3 at (64,160) 80 wide): y=165.
   Assert.equal(use.y, 160 + 5, "the USE row rides its window row" .. tag)
-  Assert.equal(
-    use.x,
-    64 + math.floor((80 - #use.content * 8) / 2),
-    "the USE row centers in its window" .. tag
-  )
+  Assert.equal(use.x, 64 + math.floor((80 - #use.content * 8) / 2), "the USE row centers in its window" .. tag)
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -2084,7 +2076,11 @@ function T.bag_cursor_corners_frame_the_focused_box()
     local found = {}
     for _, drawn in ipairs(graphics.draws) do
       local image = drawn.image
-      if type(image) == "table" and type(image.handle) == "string" and image.handle:match("^battle:cursor%-") ~= nil then
+      if
+        type(image) == "table"
+        and type(image.handle) == "string"
+        and image.handle:match("^battle:cursor%-") ~= nil
+      then
         found[#found + 1] = { handle = image.handle, x = drawn.x, y = drawn.y }
       end
     end
@@ -2152,22 +2148,10 @@ function T.bag_disabled_faces_repaint_empty_controls()
   )
   walkToMedicineFirstCell(rig)
   local listFaces = faceDraws()
-  Assert.isTrue(
-    hasFace(listFaces, "bag:button:7:3:5", 128, 8),
-    "empty cells repaint through the disabled bank" .. tag
-  )
-  Assert.isTrue(
-    hasFace(listFaces, "bag:button:12:3:5", 0, 152),
-    "single-page steppers repaint disabled" .. tag
-  )
-  Assert.isTrue(
-    hasFace(listFaces, "bag:button:13:3:5", 40, 152),
-    "both steppers repaint disabled" .. tag
-  )
-  Assert.isFalse(
-    hasFace(listFaces, "bag:button:6:3:8", 0, 8),
-    "the stocked cell keeps its enabled face" .. tag
-  )
+  Assert.isTrue(hasFace(listFaces, "bag:button:7:3:5", 128, 8), "empty cells repaint through the disabled bank" .. tag)
+  Assert.isTrue(hasFace(listFaces, "bag:button:12:3:5", 0, 152), "single-page steppers repaint disabled" .. tag)
+  Assert.isTrue(hasFace(listFaces, "bag:button:13:3:5", 40, 152), "both steppers repaint disabled" .. tag)
+  Assert.isFalse(hasFace(listFaces, "bag:button:6:3:8", 0, 8), "the stocked cell keeps its enabled face" .. tag)
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -2215,7 +2199,11 @@ function T.bag_empty_pocket_renders_its_list_page()
   local disabled = 0
   for _, drawn in ipairs(graphics.draws) do
     local image = drawn.image
-    if type(image) == "table" and type(image.handle) == "string" and image.handle:match("^bag:button:%d+:3:5$") ~= nil then
+    if
+      type(image) == "table"
+      and type(image.handle) == "string"
+      and image.handle:match("^bag:button:%d+:3:5$") ~= nil
+    then
       disabled = disabled + 1
     end
   end
@@ -2259,11 +2247,7 @@ function T.battle_last_used_shortcut_reopens_the_consumed_item()
   Assert.equal(#rig.submits, 1, "accepting the serving seals exactly one reply" .. tag)
   driveToMode(rig, "command")
   openBagFromCommand(rig)
-  Assert.deepEqual(
-    drawnBagIcons(rig),
-    { "POTION" },
-    "the reopened bag shortcuts the consumed item" .. tag
-  )
+  Assert.deepEqual(drawnBagIcons(rig), { "POTION" }, "the reopened bag shortcuts the consumed item" .. tag)
   renderedContents(rig)
   local shortcut = nil
   for _, drawn in ipairs(rig.text.draws) do
@@ -2389,40 +2373,20 @@ function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
         "the bag names its pocket and page" .. tag
       )
     end
-    Assert.equal(
-      drawnBagBackdrop(bagged),
-      "bag:screen:1",
-      "the open pocket menu composites its staged page" .. tag
-    )
+    Assert.equal(drawnBagBackdrop(bagged), "bag:screen:1", "the open pocket menu composites its staged page" .. tag)
     walkToMedicineFirstCell(bagged)
     if layout == "paired" then
       Assert.isNil(drawnBagHeader(bagged), "the paired list paints no modal title" .. tag)
     else
       Assert.equal(drawnBagHeader(bagged), "BAG: hp_pp 1/1", "keys reach the serving pocket" .. tag)
     end
-    Assert.equal(
-      drawnBagBackdrop(bagged),
-      "bag:screen:2",
-      "the open item list composites its staged page" .. tag
-    )
-    Assert.deepEqual(
-      drawnBagIcons(bagged),
-      { "POTION" },
-      "stocked list cells draw their shared atlas icons" .. tag
-    )
+    Assert.equal(drawnBagBackdrop(bagged), "bag:screen:2", "the open item list composites its staged page" .. tag)
+    Assert.deepEqual(drawnBagIcons(bagged), { "POTION" }, "stocked list cells draw their shared atlas icons" .. tag)
     press(bagged, { type = "confirm" })
     settlePress(bagged)
     bagged.pump(1)
-    Assert.equal(
-      drawnBagBackdrop(bagged),
-      "bag:screen:3",
-      "the use-item page composites its staged page" .. tag
-    )
-    Assert.deepEqual(
-      drawnBagIcons(bagged),
-      { "POTION" },
-      "the use-item page keeps the chosen icon" .. tag
-    )
+    Assert.equal(drawnBagBackdrop(bagged), "bag:screen:3", "the use-item page composites its staged page" .. tag)
+    Assert.deepEqual(drawnBagIcons(bagged), { "POTION" }, "the use-item page keeps the chosen icon" .. tag)
     press(bagged, { type = "confirm" })
     bagged.pump(8)
     Assert.equal(#bagged.submits, 0, "staging seals no reply" .. tag)
@@ -2635,7 +2599,10 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     driveToMode(rig, "command")
     waitForBattleDecision(rig, "replacement")
     local replacementRequest = waitForScreenDecision(rig, "replacement")
-    Assert.equal(rig.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
+    Assert.equal(rig.screen:status().mode, "use-next", "the wild faint offers its next mon" .. tag)
+    press(rig, { type = "confirm" })
+    rig.pump(1)
+    Assert.equal(rig.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(rig, replacementRequest)
     local replacementInk = renderedContents(rig)
     Assert.isTrue(replacementInk["Choose a Pokémon."] ~= nil, "replacement titles its modal" .. tag)
@@ -2827,6 +2794,10 @@ function T.native_party_focus_and_fragment_authority()
     driveToMode(forced, "command")
     waitForBattleDecision(forced, "replacement")
     local replacementRequest = waitForScreenDecision(forced, "replacement")
+    Assert.equal(forced.screen:status().mode, "use-next", "the wild faint offers its next mon" .. tag)
+    press(forced, { type = "confirm" })
+    forced.pump(1)
+    Assert.equal(forced.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
     requireChildOwner("native forced replacement authority")
     Assert.equal(focusedChildRow(drawnInk(forced)), 2, "the forced child focuses its eligible reserve" .. tag)
@@ -2839,6 +2810,39 @@ function T.native_party_focus_and_fragment_authority()
     forced.screen:dispose()
     forced.battle:dispose()
   end
+end
+
+-- Answering No to the wild replacement offer seals flight: the screen
+-- leaves the prompt without opening party and the reply carries one run
+-- fragment per addressed entry (retail falls through TryEscape before
+-- ShowParty). A single-layout smoke suffices: the Yes branches above prove
+-- both displays open the party child, and the session suite owns the
+-- flight semantics.
+function T.wild_replacement_no_answers_flight_without_party()
+  local rig = openRig({
+    layout = "paired",
+    launchId = "launch-use-next-no-paired",
+    party = {
+      { species = "EEVEE", level = 5, seed = 0x55555555 },
+      { species = "EEVEE", level = 5, seed = 0x66666666 },
+    },
+    bag = {},
+    foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
+  })
+  driveToMode(rig, "command")
+  waitForBattleDecision(rig, "replacement")
+  waitForScreenDecision(rig, "replacement")
+  Assert.equal(rig.screen:status().mode, "use-next", "the wild faint offers its next mon")
+  press(rig, { type = "navigate", direction = "down" })
+  rig.pump(1)
+  press(rig, { type = "confirm" })
+  rig.pump(5)
+  Assert.equal(#rig.submits, 1, "answering No seals exactly one reply")
+  for _, choice in ipairs(rig.submits[1].choices) do
+    Assert.equal(choice.kind, "run", "the No answer names flight, never a reserve")
+  end
+  rig.screen:dispose()
+  rig.battle:dispose()
 end
 
 -- The trainer doll refusal reaches its staged message page through the
@@ -2876,10 +2880,7 @@ function T.trainer_doll_refusal_shows_its_staged_message_page()
   Assert.notNil(childView, "the refusal keeps the child" .. tag)
   assert(childView ~= nil, "the refusal keeps its child view")
   Assert.equal(childView.bagPage, "message", "the refused doll opens the message page" .. tag)
-  Assert.isTrue(
-    tostring(childView.notice):find("MINT", 1, true) ~= nil,
-    "the rebuke names the player" .. tag
-  )
+  Assert.isTrue(tostring(childView.notice):find("MINT", 1, true) ~= nil, "the rebuke names the player" .. tag)
   renderedContents(rig)
   local inked = nil
   for _, drawn in ipairs(rig.text.draws) do

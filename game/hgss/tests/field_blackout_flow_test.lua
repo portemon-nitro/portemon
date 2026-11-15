@@ -82,6 +82,10 @@ local function harness(initialPhase, indexOverride)
               direction = "south",
             },
           },
+          deathWarpByMap = {
+            MAP_NEW_BARK_PLAYER_HOUSE_1F = "SPAWN_NEW_BARK",
+            MAP_CHERRYGROVE_POKECENTER_1F = "SPAWN_CHERRYGROVE",
+          },
         }
       end,
     },
@@ -304,6 +308,7 @@ T["missing special destination refuses before any recovery mutation"] = function
       SPAWN_NEW_BARK = { map = "MAP_NEW_BARK_PLAYER_HOUSE_1F", fieldX = 6, fieldZ = 8, facing = "north" },
     },
     specialSpawns = {},
+    deathWarpByMap = { MAP_NEW_BARK_PLAYER_HOUSE_1F = "SPAWN_NEW_BARK" },
   }
   local h = harness("present", index)
   local ok = pcall(h.flow.start, h.flow, "SPAWN_NEW_BARK")
@@ -323,6 +328,7 @@ T["malformed special destination refuses before any recovery mutation"] = functi
     specialSpawns = {
       SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397, warpId = -1, direction = "up" },
     },
+    deathWarpByMap = { MAP_NEW_BARK_PLAYER_HOUSE_1F = "SPAWN_NEW_BARK" },
   }
   local h = harness("present", index)
   local ok = pcall(h.flow.start, h.flow, "SPAWN_NEW_BARK")

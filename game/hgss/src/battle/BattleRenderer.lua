@@ -1582,10 +1582,11 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
   if view.cursorVisible ~= true or type(view.selection) ~= "string" then
     return
   end
-  -- The Shift prompt tracks Yes/No while the source two-option planes
-  -- name their confirm/back cells: resolve the answer onto its cell.
+  -- The Shift and use-next prompts track Yes/No while the source
+  -- two-option planes name their confirm/back cells: resolve the answer
+  -- onto its cell.
   local wanted = view.selection
-  if view.mode == "shift" and type(wanted) == "string" then
+  if (view.mode == "shift" or view.mode == "use-next") and type(wanted) == "string" then
     wanted = wanted == "yes" and "confirm" or wanted == "no" and "back" or wanted
   end
   local selected = nil
@@ -2639,12 +2640,13 @@ local function drawControls(resources, view, layout, regions)
         label("menu", menuText.cancel, CANCEL_ANCHOR, true, offsetY, sourcePalette(view, "menu", 2, 10, 11, 12))
       elseif
         layout == "two-option"
-        and view.mode == "shift"
+        and (view.mode == "shift" or view.mode == "use-next")
         and (id == "confirm" or id == "back")
         and type(view.twoOption) == "table"
       then
-        -- The held Shift offer names its Yes/No answers through the
-        -- source two-option planes: confirm takes Yes, back takes No.
+        -- The held Shift and use-next offers name their Yes/No answers
+        -- through the source two-option planes: confirm takes Yes, back
+        -- takes No.
         local options = view.twoOption --[[@as table<string, unknown>]]
         local content = id == "confirm" and options.top or options.bottom
         if type(content) == "string" then

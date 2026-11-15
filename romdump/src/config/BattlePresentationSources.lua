@@ -1041,7 +1041,15 @@ BattlePresentationSources.BAG_BUTTON_FACES = {
   atlasScreen = 1,
   palette = 3,
   families = {
-    pocket = { buttons = { 0, 1, 2, 3 }, source = { x = 0, y = 0 }, w = 16, h = 9, frames = 3, strideY = 9, icons = true },
+    pocket = {
+      buttons = { 0, 1, 2, 3 },
+      source = { x = 0, y = 0 },
+      w = 16,
+      h = 9,
+      frames = 3,
+      strideY = 9,
+      icons = true,
+    },
     lastUsed = { buttons = { 4, 15 }, source = { x = 0, y = 27 }, w = 26, h = 5, frames = 4, strideY = 5 },
     cancel = { buttons = { 5, 14, 16 }, source = { x = 0, y = 57 }, w = 5, h = 5, frames = 3, strideX = 5 },
     item = { buttons = { 6, 7, 8, 9, 10, 11 }, source = { x = 16, y = 0 }, w = 16, h = 6, frames = 4, strideY = 6 },
@@ -1779,6 +1787,11 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   -- trainer's incoming mon is named before the Yes/No offer. Runtime
   -- reaches it only through the semantic shiftPrompt route.
   ["battle/prompt/shift-offer"] = { bank = "scriptController", messageId = 835 },
+  -- Source ReplaceFainted prompt behind the wild faint offer (same
+  -- subscript_0231, bank 197 message 11): "Use next Pokemon?" with No
+  -- attempting escape before any reserve enters. Runtime reaches it only
+  -- through the semantic useNextPrompt route on wild replacements.
+  ["battle/prompt/use-next"] = { bank = "scriptController", messageId = 11 },
   ["battle/narration/trainer-victory"] = { bank = "scriptController", messageId = 839 },
   ["battle/narration/won-money"] = { bank = "scriptController", messageId = 33 },
   ["battle/narration/defeated-last-mon"] = { bank = "scriptController", messageId = 36 },

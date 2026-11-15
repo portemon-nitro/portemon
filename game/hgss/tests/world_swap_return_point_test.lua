@@ -101,4 +101,107 @@ function T.aborted_swaps_leave_travel_untouched()
   Assert.isNil(travel:capture().specialSpawn, "an aborted entry must not record")
 end
 
+local function cacheFsWithDeathMaps(deathEntries, eligibleEntries)
+  local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+  local blackoutSpawns = {}
+  for spawnKey, map in pairs(deathEntries) do
+    blackoutSpawns[spawnKey] = { map = map, fieldX = 8, fieldZ = 13, facing = "north" }
+  end
+  local deathWarpByMap = {}
+  for spawnKey, map in pairs(eligibleEntries or deathEntries) do
+    deathWarpByMap[map] = spawnKey
+  end
+  return {
+    loadLua = function(_, path)
+      assert(path == FieldMapDataCache.spawnIndexPath(), "blackout publication reads the spawn index")
+      return {
+        schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA,
+        spawns = { SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 } },
+        blackoutSpawns = blackoutSpawns,
+        specialSpawns = {
+          SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397, warpId = -1, direction = "south" },
+        },
+        deathWarpByMap = deathWarpByMap,
+      }
+    end,
+  }
+end
+
+-- Blackout publication refreshes the heal spawn only on eligible death
+-- interiors: a center entry records, routes and ineligible death maps
+-- keep the recorded spawn, and the scripted Route 30 Cherrygrove spawn
+-- survives outdoor travel until a center overwrites it.
+function T.blackout_publication_refreshes_only_on_eligible_death_interiors()
+  local eligible = {
+    SPAWN_NEW_BARK = "MAP_NEW_BARK_PLAYER_HOUSE_1F",
+    SPAWN_CHERRYGROVE = "MAP_CHERRYGROVE_POKECENTER_1F",
+  }
+  local function coordinatorWith(travel, sourceMap)
+    local coordinator = setmetatable({}, FieldWorldSwapCoordinator)
+    local runtime = runtimeDouble(sourceMap, travel)
+    runtime.cacheFs = cacheFsWithDeathMaps(eligible)
+    return coordinator, runtime
+  end
+
+  do
+    local travel = travelWith(nil)
+    local coordinator, runtime = coordinatorWith(travel, mapDouble("MAP_ROUTE_29", "outdoors"))
+    coordinator:publishBlackoutSpawn(
+      runtime,
+      { destinationMap = mapDouble("MAP_CHERRYGROVE_POKECENTER_1F", "building") }
+    )
+    Assert.equal(travel:capture().lastHealSpawn, "SPAWN_CHERRYGROVE", "the center entry names its heal spawn")
+  end
+
+  do
+    local travel = travelWith(nil)
+    local coordinator, runtime = coordinatorWith(travel, mapDouble("MAP_CHERRYGROVE_POKECENTER_1F", "building"))
+    coordinator:publishBlackoutSpawn(runtime, { destinationMap = mapDouble("MAP_ROUTE_29", "outdoors") })
+    Assert.equal(
+      travel:capture().lastHealSpawn,
+      FieldTravelState.DEFAULT_LAST_HEAL_SPAWN,
+      "a route entry keeps the recorded spawn"
+    )
+  end
+
+  do
+    -- The Route 30 Oak exception: ScrCmd_SetSpawn writes SPAWN_CHERRYGROVE
+    -- while the player stands outdoors, so walking Routes 29-31 afterwards
+    -- must keep it until a center entry overwrites it.
+    local travel = travelWith(nil)
+    travel:setLastHealSpawn("SPAWN_CHERRYGROVE")
+    local coordinator, runtime = coordinatorWith(travel, mapDouble("MAP_ROUTE_30", "outdoors"))
+    coordinator:publishBlackoutSpawn(runtime, { destinationMap = mapDouble("MAP_ROUTE_31", "outdoors") })
+    Assert.equal(
+      travel:capture().lastHealSpawn,
+      "SPAWN_CHERRYGROVE",
+      "outdoor travel after the scripted spawn keeps Cherrygrove"
+    )
+  end
+
+  do
+    -- Retail sSpawnMaps clears isBlackoutSpawn for the Cinnabar interior:
+    -- whiteout still relocates there, but entry never refreshes the spawn.
+    local travel = travelWith(nil)
+    travel:setLastHealSpawn("SPAWN_CHERRYGROVE")
+    local coordinator = setmetatable({}, FieldWorldSwapCoordinator)
+    local runtime = runtimeDouble(mapDouble("MAP_CHERRYGROVE_POKECENTER_1F", "building"), travel)
+    runtime.cacheFs = cacheFsWithDeathMaps({
+      SPAWN_CHERRYGROVE = "MAP_CHERRYGROVE_POKECENTER_1F",
+      SPAWN_CINNABAR = "MAP_CINNABAR_ISLAND_POKECENTER_1F",
+    }, {
+      SPAWN_CHERRYGROVE = "MAP_CHERRYGROVE_POKECENTER_1F",
+    })
+    coordinator:publishBlackoutSpawn(
+      runtime,
+      { destinationMap = mapDouble("MAP_CINNABAR_ISLAND_POKECENTER_1F", "building") }
+    )
+    Assert.equal(
+      travel:capture().lastHealSpawn,
+      "SPAWN_CHERRYGROVE",
+      "an ineligible death entry keeps the recorded spawn"
+    )
+  end
+end
+
 return { tests = T }

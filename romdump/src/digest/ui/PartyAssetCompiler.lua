@@ -986,6 +986,11 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
     elseif token.kind == "substitution" and token.control == QUANTITY_SUBSTITUTION then
       flush()
       segments[#segments + 1] = { kind = "quantity" }
+    elseif token.kind == "pause" or token.kind == "printer_callback" then
+      -- Retail item-use copies carry timed waits the Party controller owns
+      -- through its message acknowledgement: drop them from the lowered
+      -- segments instead of failing the open.
+      flush()
     else
       sourceError("party text carries an unsupported token " .. tostring(token.kind), {
         role = role,

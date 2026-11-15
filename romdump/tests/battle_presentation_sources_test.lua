@@ -47,6 +47,7 @@ function T.battle_narration_records_keep_semantic_keys_and_source_bank_ids()
     ["battle/child/learn-prompt"] = 1183,
     ["battle/child/command-prompt"] = 921,
     ["battle/prompt/shift-offer"] = 835,
+    ["battle/prompt/use-next"] = 11,
     ["battle/narration/trainer-victory"] = 839,
     ["battle/narration/defeated-last-mon"] = 36,
     ["battle/narration/wild-lost-money"] = 34,

@@ -310,10 +310,11 @@ function T.opening_decisions_project_pure_selectable_options()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local foe = foeRecord("EEVEE", 20, 0x5EED0002)
   local launch = wildLaunch("launch-presentation-options")
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
 
@@ -394,10 +395,11 @@ function T.opening_decisions_project_pure_selectable_options()
   local twinBag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local twin = startBattle(
     wildLaunch("launch-presentation-twin"),
-    ScenarioFactory.fromEncounter(
-      { attemptId = "twin-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) },
-      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-    ),
+    ScenarioFactory.fromEncounter({ attemptId = "twin-attempt", mon = foeRecord("EEVEE", 20, 0x5EED0002) }, {
+      party = twinParty,
+      bag = twinBag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }),
     twinParty,
     twinBag,
     headlessPort(twinPort),
@@ -457,10 +459,11 @@ function T.rejected_replies_keep_the_open_request()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local foe = foeRecord("EEVEE", 20, 0x5EED0002)
   local launch = wildLaunch("launch-presentation-latch")
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
 
@@ -516,10 +519,11 @@ function T.forced_replacement_options_cover_only_eligible_reserves()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local foe = foeWithMoves("EEVEE", 30, 0x5EED0002, { { move = "TACKLE", pp = 35, ppUps = 0 } })
   local launch = wildLaunch("launch-presentation-replacement")
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
 
@@ -530,8 +534,18 @@ function T.forced_replacement_options_cover_only_eligible_reserves()
     Assert.isTrue(current.phase ~= "failed", "the knockout battle never fails")
     if current.phase == "running" and current.request ~= nil then
       local kinds = assert(current.request.legalChoices, "every decision carries its admitted vocabulary").kinds
-      local onlySwitch = #kinds == 1 and kinds[1] == "switch"
-      if onlySwitch then
+      -- Replacement batches offer switches (plus flight in wild battles)
+      -- but never strikes; ordinary turns always admit an attack.
+      local hasSwitch, hasAttack = false, false
+      for _, kind in ipairs(kinds) do
+        if kind == "switch" then
+          hasSwitch = true
+        end
+        if kind == "attack" then
+          hasAttack = true
+        end
+      end
+      if hasSwitch and not hasAttack then
         replacement = current.request
         break
       end
@@ -623,10 +637,11 @@ function T.learning_options_address_the_held_recipient()
   local foe = foeWithMoves("EEVEE", 30, 0x5EED0002, { { move = "GROWL", pp = 40, ppUps = 0 } })
   foe.condition.currentHp = 1
   local launch = wildLaunch("launch-presentation-learning")
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
 
@@ -721,10 +736,11 @@ function T.packets_deliver_once_in_order_with_back_pressure()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local foe = foeRecord("EEVEE", 20, 0x5EED0002)
   local launch = wildLaunch("launch-presentation-packets")
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local held = {
     ready = false,
     enters = 0,
@@ -831,8 +847,16 @@ function T.packets_deliver_once_in_order_with_back_pressure()
   local function answerRequest(targetBattle, pending, targetScenario)
     local actor = assert(pending.actors[1], "every later decision addresses its combatant")
     local kinds = assert(pending.legalChoices, "every decision carries its admitted vocabulary").kinds
-    local switchOnly = #kinds == 1 and kinds[1] == "switch"
-    if switchOnly then
+    local hasSwitch, hasAttack = false, false
+    for _, kind in ipairs(kinds) do
+      if kind == "switch" then
+        hasSwitch = true
+      end
+      if kind == "attack" then
+        hasAttack = true
+      end
+    end
+    if hasSwitch and not hasAttack then
       for _, seed in ipairs(targetScenario.participants[1].roster) do
         local candidate = (seed --[[@as table<string, unknown>]]).id --[[@as integer]]
         if candidate ~= actor.combatant and claimed[candidate] ~= true then
@@ -889,10 +913,11 @@ function T.packets_deliver_once_in_order_with_back_pressure()
     local twinBag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
     local twinFoe = foeRecord("EEVEE", 20, 0x5EED0002)
     local twinLaunch = wildLaunch(useHold and "launch-twin-held" or "launch-twin-direct")
-    local twinScenario = ScenarioFactory.fromEncounter(
-      { attemptId = twinLaunch.id .. "-attempt", mon = twinFoe },
-      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-    )
+    local twinScenario = ScenarioFactory.fromEncounter({ attemptId = twinLaunch.id .. "-attempt", mon = twinFoe }, {
+      party = twinParty,
+      bag = twinBag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    })
     local record = {
       ready = not useHold,
       enters = 0,
@@ -926,8 +951,16 @@ function T.packets_deliver_once_in_order_with_back_pressure()
         answered = current.request.requestId
         local addressed = assert(current.request.actors[1], "every twin decision addresses its combatant")
         local kinds = assert(current.request.legalChoices, "every twin decision carries its admitted vocabulary").kinds
-        local switchOnly = #kinds == 1 and kinds[1] == "switch"
-        if switchOnly then
+        local hasSwitch, hasAttack = false, false
+        for _, kind in ipairs(kinds) do
+          if kind == "switch" then
+            hasSwitch = true
+          end
+          if kind == "attack" then
+            hasAttack = true
+          end
+        end
+        if hasSwitch and not hasAttack then
           local switched = false
           for _, seed in ipairs(twinScenario.participants[1].roster) do
             local candidate = (seed --[[@as table<string, unknown>]]).id --[[@as integer]]
@@ -977,10 +1010,11 @@ function T.capture_and_escape_settle_as_continuing_outcomes()
     local bag = masterBallBag()
     local foe = foeRecord("TOTODILE", 4, 0x5EED0002)
     local launch = wildLaunch("launch-presentation-capture")
-    local scenario = ScenarioFactory.fromEncounter(
-      { attemptId = launch.id .. "-attempt", mon = foe },
-      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-    )
+    local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    })
     local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
     local opening = driveToDecision(battle, 400)
@@ -1027,10 +1061,11 @@ function T.capture_and_escape_settle_as_continuing_outcomes()
     local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
     local foe = foeRecord("TOTODILE", 4, 0x5EED0007)
     local launch = wildLaunch("launch-presentation-escape")
-    local scenario = ScenarioFactory.fromEncounter(
-      { attemptId = launch.id .. "-attempt", mon = foe },
-      { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
-    )
+    local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    })
     local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local battle = startBattle(launch, scenario, party, bag, headlessPort(portRecord), 0x12345678)
     local opening = driveToDecision(battle, 400)

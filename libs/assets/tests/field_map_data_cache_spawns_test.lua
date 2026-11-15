@@ -67,6 +67,36 @@ function T.unknown_spawn_keys_resolve_to_nil()
   )
 end
 
+function T.death_refresh_reverse_map_resolves_only_eligible_entries()
+  local cache = publishedCache()
+  Assert.equal(
+    FieldMapDataCache.spawnKeyForDeathMap(cache, "MAP_CHERRYGROVE_POKECENTER_1F"),
+    "SPAWN_CHERRYGROVE",
+    "entering the Cherrygrove center names its heal spawn"
+  )
+  Assert.equal(
+    FieldMapDataCache.spawnKeyForDeathMap(cache, "MAP_NEW_BARK_PLAYER_HOUSE_1F"),
+    "SPAWN_NEW_BARK",
+    "entering the mother house names the home spawn"
+  )
+  Assert.isNil(
+    FieldMapDataCache.spawnKeyForDeathMap(cache, "MAP_ROUTE_29"),
+    "a route with no death destination names no spawn"
+  )
+  -- Retail sSpawnMaps clears isBlackoutSpawn on five death maps
+  -- (MapHeader_GetSpawnIdForDeathWarp skips them): entering them never
+  -- refreshes the heal spawn even though whiteout still relocates there.
+  for _, map in ipairs({
+    "MAP_CINNABAR_ISLAND_POKECENTER_1F",
+    "MAP_LAKE_OF_RAGE",
+    "MAP_PALLET",
+    "MAP_POKEATHLON_DOME",
+    "MAP_ROUTE_22_POKEMON_LEAGUE_RECEPTION_GATE",
+  }) do
+    Assert.isNil(FieldMapDataCache.spawnKeyForDeathMap(cache, map), "entering " .. map .. " keeps the recorded spawn")
+  end
+end
+
 function T.special_destinations_resolve_to_fresh_records()
   Assert.isTrue(
     type(FieldMapDataCache.specialSpawnDestination) == "function",
@@ -166,54 +196,49 @@ function T.malformed_index_raises_for_rebuild()
   Assert.isTrue(Errors.is(err))
 end
 
-function T.old_outdoor_only_spawn_index_is_not_ready_or_readable()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+function T.current_index_requires_all_four_well_formed_namespaces()
+  local cache, bundle = publishedCache()
+  local index = bundle.index
+
+  local function assertIndexNotReady(label)
+    Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), label .. " is required")
+    assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
+    assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
+    assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
+    assertInvalidDestination(cache, FieldMapDataCache.spawnKeyForDeathMap, "MAP_CHERRYGROVE_POKECENTER_1F")
+  end
+
   writeIndex(cache, {
-    schema = "g4-field-spawn-index-v1",
-    spawns = { SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 } },
+    schema = index.schema,
+    spawns = index.spawns,
+    specialSpawns = index.specialSpawns,
+    deathWarpByMap = index.deathWarpByMap,
   })
+  assertIndexNotReady("blackout namespace")
 
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "v1 lacks blackout records")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
-end
+  writeIndex(cache, {
+    schema = index.schema,
+    blackoutSpawns = index.blackoutSpawns,
+    specialSpawns = index.specialSpawns,
+    deathWarpByMap = index.deathWarpByMap,
+  })
+  assertIndexNotReady("outdoor namespace")
 
-function T.old_two_namespace_spawn_index_is_not_ready_or_readable()
-  local cache, bundle = publishedCache()
-  local index = bundle.index
-  writeIndex(cache, { schema = index.schema, spawns = index.spawns, blackoutSpawns = index.blackoutSpawns })
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "a two-namespace index is stale")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
-end
+  writeIndex(cache, {
+    schema = index.schema,
+    spawns = index.spawns,
+    blackoutSpawns = index.blackoutSpawns,
+    deathWarpByMap = index.deathWarpByMap,
+  })
+  assertIndexNotReady("special namespace")
 
-function T.current_index_requires_all_three_well_formed_namespaces()
-  local cache, bundle = publishedCache()
-  local index = bundle.index
-
-  local missingBlackout = { schema = index.schema, spawns = index.spawns, specialSpawns = index.specialSpawns }
-  writeIndex(cache, missingBlackout)
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "blackout namespace is required")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
-
-  writeIndex(
-    cache,
-    { schema = index.schema, blackoutSpawns = index.blackoutSpawns, specialSpawns = index.specialSpawns }
-  )
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "outdoor namespace is required")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
-
-  writeIndex(cache, { schema = index.schema, spawns = index.spawns, blackoutSpawns = index.blackoutSpawns })
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "special namespace is required")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
+  writeIndex(cache, {
+    schema = index.schema,
+    spawns = index.spawns,
+    blackoutSpawns = index.blackoutSpawns,
+    specialSpawns = index.specialSpawns,
+  })
+  assertIndexNotReady("death-refresh namespace")
 
   local malformedBlackout = {}
   for spawnKey, destination in pairs(index.blackoutSpawns) do
@@ -229,11 +254,9 @@ function T.current_index_requires_all_three_well_formed_namespaces()
     spawns = index.spawns,
     blackoutSpawns = malformedBlackout,
     specialSpawns = index.specialSpawns,
+    deathWarpByMap = index.deathWarpByMap,
   })
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "malformed facing is rejected")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
+  assertIndexNotReady("well-formed blackout records")
 
   local malformedSpecial = {}
   for spawnKey, destination in pairs(index.specialSpawns) do
@@ -246,11 +269,34 @@ function T.current_index_requires_all_three_well_formed_namespaces()
     spawns = index.spawns,
     blackoutSpawns = index.blackoutSpawns,
     specialSpawns = malformedSpecial,
+    deathWarpByMap = index.deathWarpByMap,
   })
-  Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "a set warp id is rejected")
-  assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
-  assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
+  assertIndexNotReady("well-formed special records")
+
+  writeIndex(cache, {
+    schema = index.schema,
+    spawns = index.spawns,
+    blackoutSpawns = index.blackoutSpawns,
+    specialSpawns = index.specialSpawns,
+    deathWarpByMap = { MAP_CHERRYGROVE_POKECENTER_1F = "" },
+  })
+  assertIndexNotReady("well-formed death-refresh records")
+end
+
+function T.death_refresh_validator_rejects_malformed_records()
+  Assert.isTrue(
+    type(FieldMapDataCache.hasDeathWarpByMap) == "function",
+    "the cache exposes a death-refresh namespace validator"
+  )
+  Assert.isFalse(FieldMapDataCache.hasDeathWarpByMap(nil), "no table is no namespace")
+  Assert.isFalse(FieldMapDataCache.hasDeathWarpByMap({}), "an empty table is no namespace")
+  Assert.isTrue(FieldMapDataCache.hasDeathWarpByMap({ MAP_NEW_BARK_PLAYER_HOUSE_1F = "SPAWN_NEW_BARK" }))
+  Assert.isFalse(FieldMapDataCache.hasDeathWarpByMap({ [""] = "SPAWN_NEW_BARK" }), "an empty map is rejected")
+  Assert.isFalse(
+    FieldMapDataCache.hasDeathWarpByMap({ MAP_NEW_BARK_PLAYER_HOUSE_1F = "" }),
+    "an empty spawn key is rejected"
+  )
+  Assert.isFalse(FieldMapDataCache.hasDeathWarpByMap({ MAP_NEW_BARK_PLAYER_HOUSE_1F = 7 }), "keys stay strings")
 end
 
 function T.spawn_index_writer_refuses_a_partial_namespace_bundle()

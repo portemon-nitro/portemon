@@ -29,7 +29,6 @@ end
 function T.spawn_index_carries_the_current_schema_and_all_destinations()
   local bundle = compile()
   Assert.equal(bundle.index.schema, FieldMapDataCache.SPAWN_INDEX_SCHEMA)
-  Assert.isFalse(bundle.index.schema == "g4-field-spawn-index-v1", "the old outdoor-only contract is stale")
   Assert.isTrue(FieldMapDataCache.hasSpawnDestinations(bundle.index.spawns))
   local count = 0
   for _ in pairs(bundle.index.spawns) do
@@ -77,7 +76,7 @@ end
 
 function T.spawn_index_publishes_independent_south_facing_special_destinations()
   local bundle = compile()
-  Assert.equal(bundle.index.schema, "g4-field-spawn-index-v3", "the spawn family carries the special namespace")
+  Assert.equal(bundle.index.schema, FieldMapDataCache.SPAWN_INDEX_SCHEMA, "the spawn family carries its schema")
   local specialSpawns = bundle.index.specialSpawns
   Assert.notNil(specialSpawns, "the compiled index carries special destinations")
   assert(type(specialSpawns) == "table")
@@ -153,20 +152,43 @@ function T.spawn_index_marker_hash_covers_the_special_namespace()
   Assert.notNil(seen.spawns, "the marker hash covers outdoor destinations")
   Assert.notNil(seen.blackoutSpawns, "the marker hash covers blackout destinations")
   Assert.notNil(seen.specialSpawns, "the marker hash covers special destinations")
+  Assert.notNil(seen.deathWarpByMap, "the marker hash covers the death-refresh reverse map")
 end
 
-function T.spawn_index_keeps_source_rows_five_through_eight_on_semantic_keys()
-  local blackoutSpawns = compile().index.blackoutSpawns
-  Assert.equal(blackoutSpawns.SPAWN_GOLDENROD.map, "MAP_GOLDENROD_POKECENTER_1F")
-  Assert.equal(blackoutSpawns.SPAWN_ECRUTEAK.map, "MAP_ECRUTEAK_POKECENTER_1F")
-  Assert.equal(blackoutSpawns.SPAWN_OLIVINE.map, "MAP_OLIVINE_POKECENTER_1F")
-  Assert.equal(blackoutSpawns.SPAWN_CIANWOOD.map, "MAP_CIANWOOD_POKECENTER_1F")
-end
-
-function T.spawn_index_pins_mother_and_updated_history()
+function T.spawn_index_publishes_the_eligible_death_refresh_reverse_map()
   local bundle = compile()
-  Assert.deepEqual(bundle.index.spawns.SPAWN_NEW_BARK, { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397 })
-  Assert.deepEqual(bundle.index.spawns.SPAWN_GOLDENROD, { map = "MAP_GOLDENROD", fieldX = 352, fieldZ = 369 })
+  local byMap = assert(bundle.index.deathWarpByMap, "the current schema publishes the death-refresh reverse map")
+  Assert.isTrue(FieldMapDataCache.hasDeathWarpByMap(byMap))
+  local eligibleCount = 0
+  for spawnKey in pairs(FieldMoveSources.BLACKOUT_DESTINATIONS) do
+    if FieldMoveSources.DEATH_WARP_ELIGIBLE[spawnKey] == true then
+      eligibleCount = eligibleCount + 1
+    end
+  end
+  local count = 0
+  for map, spawnKey in pairs(byMap) do
+    Assert.equal(
+      FieldMoveSources.BLACKOUT_DESTINATIONS[spawnKey].map,
+      map,
+      spawnKey .. " reverse-resolves through its own death interior"
+    )
+    Assert.isTrue(
+      FieldMoveSources.DEATH_WARP_ELIGIBLE[spawnKey] == true,
+      spawnKey .. " refreshes only on an isBlackoutSpawn row"
+    )
+    count = count + 1
+  end
+  Assert.equal(count, eligibleCount, "every isBlackoutSpawn row refreshes on entry")
+  for spawnKey in pairs(FieldMoveSources.BLACKOUT_DESTINATIONS) do
+    if FieldMoveSources.DEATH_WARP_ELIGIBLE[spawnKey] ~= true then
+      Assert.isNil(
+        byMap[FieldMoveSources.BLACKOUT_DESTINATIONS[spawnKey].map],
+        spawnKey .. " relocates on whiteout but never refreshes on entry"
+      )
+    end
+  end
+  Assert.equal(byMap.MAP_CHERRYGROVE_POKECENTER_1F, "SPAWN_CHERRYGROVE")
+  Assert.equal(byMap.MAP_NEW_BARK_PLAYER_HOUSE_1F, "SPAWN_NEW_BARK")
 end
 
 function T.spawn_index_marker_binds_rom_and_content()

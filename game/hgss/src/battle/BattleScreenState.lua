@@ -2391,7 +2391,8 @@ local function snapshotMessage(self, names)
       message = timelineMessage
     else
       local shiftPrompt = self:_shiftPrompt()
-      message = shiftPrompt or commandPrompt or timelineMessage
+      local useNextPrompt = self:_useNextPrompt()
+      message = shiftPrompt or useNextPrompt or commandPrompt or timelineMessage
     end
   end
   return message, levelUpStats
@@ -2792,7 +2793,7 @@ function BattleScreenState:_snapshot(borrowStatic)
       target = self._manifest.menus.target.screens,
       twoOption = self._manifest.menus.twoOption.screens,
     },
-    twoOption = copyValue(self:_shiftTwoOption()),
+    twoOption = copyValue(self:_shiftTwoOption() or self:_useNextTwoOption()),
     hudPatchSpans = self._manifest.hud.patchSpans,
     cursor = self._manifest.hud.cursor,
     menuText = self:_menuText(),
@@ -3172,6 +3173,13 @@ function BattleScreenState:_ready()
     return false
   end
   if self._child ~= nil then
+    return false
+  end
+  -- An open Yes/No prompt holds the ready barrier like an open child:
+  -- the wild replacement offer waits for its answer with no child yet
+  -- (Yes opens party, No seals flight), so a settled timeline alone
+  -- must not report ready.
+  if self._mode == "use-next" then
     return false
   end
   -- A retained terminal registration holds the ready barrier from packet
@@ -5434,28 +5442,7 @@ function BattleScreenState:_shiftTwoOption()
   if self._mode ~= "shift" or self:_shiftActor() == nil then
     return nil
   end
-  local menus = assert(self._manifest.menus, "shift prompts require the staged menu catalog") --[[@as table<string, unknown>]]
-  local routes = assert(menus.routes, "shift prompts require staged source routes") --[[@as table<string, unknown>]]
-  local route = assert(routes["menu/yes-no"], "shift prompts select the source yes-no route") --[[@as table<string, unknown>]]
-  local selected = {}
-  for _, key in
-    ipairs(route.messageEntries --[[@as table<integer, string>]])
-  do
-    selected[key] = true
-  end
-  assert(
-    selected["label/yes"] == true and selected["label/no"] == true,
-    "the selected text set stages both source labels"
-  )
-  local messages = assert(self._manifest.messages, "shift prompts require staged message entries") --[[@as table<string, unknown>]]
-  local entries = assert(messages.entries, "shift prompts require semantic message entries") --[[@as table<string, table<string, unknown>>]]
-  local topRecord = assert(entries["label/yes"], "the top source option has a staged label")
-  local bottomRecord = assert(entries["label/no"], "the bottom source option has a staged label")
-  return {
-    route = "menu/yes-no",
-    top = menuLabelText(topRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
-    bottom = menuLabelText(bottomRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
-  }
+  return self:_stagedYesNo("shift prompts require")
 end
 
 -- Seals the provided empty stay fragment for the held offer: prompt
@@ -5501,6 +5488,222 @@ function BattleScreenState:_activateShift(choice)
   self:_sealShiftStay()
 end
 
+-- Opens the wild replacement offer over the first fainted entry: the
+-- staged question asks whether to send the next mon while Yes opens the
+-- party picker and No attempts escape. The kernel keeps owning the
+-- decision; this mode only routes one epoch-bound reply per offer.
+function BattleScreenState:_enterUseNextPrompt()
+  self._targetCandidates = nil
+  self._targetRangeKey = nil
+  self._pendingMoveId = nil
+  self:cancelPointerCapture()
+  self._notice = nil
+  self._subflows:closeChild()
+  self._child = nil
+  self._selection = "yes"
+  self._mode = "use-next"
+end
+
+---@return table<string, unknown>? replacement actor behind the held wild offer, nil without one
+function BattleScreenState:_useNextActor()
+  if self._mode ~= "use-next" then
+    local offered = self:_useNextOffered()
+    if offered == nil then
+      return nil
+    end
+    return offered.actor
+  end
+  local options = self._options
+  if type(options) ~= "table" or type(options.actors) ~= "table" then
+    return nil
+  end
+  for _, actor in ipairs(options.actors) do
+    if
+      type(actor) == "table" and (actor --[[@as table<string, unknown>]]).kind == "replacement"
+    then
+      return actor --[[@as table<string, unknown>]]
+    end
+  end
+  return nil
+end
+
+-- The wild replacement offer is available only on the first acting entry
+-- of a wild launch whose projected replacement carries an enabled flight
+-- fragment (retail subscript_0231 asks once before any reserve enters;
+-- the failed-escape retry carries no flight and goes straight to party).
+-- Stepping back from a later entry keeps its staged switch without a
+-- second ask.
+---@return table<string, unknown>? run fragment behind the offer with its actor, nil when unavailable
+function BattleScreenState:_useNextOffered()
+  if self._kind ~= "wild" then
+    return nil
+  end
+  if self._actorIndex ~= 1 then
+    return nil
+  end
+  if type(self._staged) == "table" and next(self._staged) ~= nil then
+    return nil
+  end
+  local entry = self:_actorOptions()
+  if type(entry) ~= "table" or entry.kind ~= "replacement" then
+    return nil
+  end
+  if type(entry.choices) ~= "table" then
+    return nil
+  end
+  for _, choice in ipairs(entry.choices) do
+    if
+      type(choice) == "table"
+      and (choice --[[@as table<string, unknown>]]).role == "run"
+      and (choice --[[@as table<string, unknown>]]).enabled == true
+    then
+      return {
+        actor = entry,
+        choice = (choice --[[@as table<string, unknown>]]).choice,
+      }
+    end
+  end
+  return nil
+end
+
+---@return string? staged wild replacement question, nil outside the offer
+function BattleScreenState:_useNextPrompt()
+  if self._mode ~= "use-next" then
+    return nil
+  end
+  if self:_useNextActor() == nil then
+    return nil
+  end
+  return stagedBattleText(self._manifest, "battle/prompt/use-next", {})
+end
+
+---@return table<string, unknown>? staged Yes/No labels behind the wild offer, nil outside the offer
+function BattleScreenState:_useNextTwoOption()
+  if self._mode ~= "use-next" or self:_useNextActor() == nil then
+    return nil
+  end
+  return self:_stagedYesNo("use-next prompts require")
+end
+
+-- Stages the source Yes/No labels shared by the Shift and use-next
+-- offers through the staged menu catalog.
+---@param context string owner prefix for assertion messages
+---@return table<string, unknown> Yes/No two-option view
+function BattleScreenState:_stagedYesNo(context)
+  local menus = assert(self._manifest.menus, context .. " the staged menu catalog") --[[@as table<string, unknown>]]
+  local routes = assert(menus.routes, context .. " staged source routes") --[[@as table<string, unknown>]]
+  local route = assert(routes["menu/yes-no"], context .. " the source yes-no route") --[[@as table<string, unknown>]]
+  local selected = {}
+  for _, key in
+    ipairs(route.messageEntries --[[@as table<integer, string>]])
+  do
+    selected[key] = true
+  end
+  assert(
+    selected["label/yes"] == true and selected["label/no"] == true,
+    "the selected text set stages both source labels"
+  )
+  local messages = assert(self._manifest.messages, context .. " staged message entries") --[[@as table<string, unknown>]]
+  local entries = assert(messages.entries, context .. " semantic message entries") --[[@as table<string, table<string, unknown>>]]
+  local topRecord = assert(entries["label/yes"], "the top source option has a staged label")
+  local bottomRecord = assert(entries["label/no"], "the bottom source option has a staged label")
+  return {
+    route = "menu/yes-no",
+    top = menuLabelText(topRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
+    bottom = menuLabelText(bottomRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
+  }
+end
+
+-- Answers the wild replacement offer from one semantic edge: Yes opens
+-- the party picker for the fainted entry while No seals flight for every
+-- addressed replacement entry at once (one escape attempt settles the
+-- batch; a failure re-opens switch-only without a second ask).
+---@param choice string yes-or-no answer behind the wild offer
+function BattleScreenState:_activateUseNext(choice)
+  if choice == "yes" then
+    self:_openUseNextParty()
+    return
+  end
+  self:_sealUseNextNo()
+end
+
+-- Opens the party picker for the fainted entry behind a Yes answer,
+-- mirroring the forced replacement child without cancellation on the
+-- first entry.
+function BattleScreenState:_openUseNextParty()
+  local intent = self:_childIntent("party", "replacement", false)
+  if intent == nil then
+    self._mode = "failed"
+    self._error = "the battle screen mirrors its request"
+    self._child = nil
+    return
+  end
+  intent.cancellable = self._actorIndex > 1
+  local ok, failure = self._subflows:open(intent)
+  if not ok then
+    self._mode = "failed"
+    self._error = type(failure) == "string" and failure
+      or "the requested child failed to open for launch " .. self._launchId
+    self._child = nil
+    return
+  end
+  local request = assert(self._request, "forced children answer the open request")
+  self._child = {
+    kind = "party",
+    cancellable = intent.cancellable == true,
+    purpose = "replacement",
+    requestId = request.requestId,
+  }
+  self._selection = nil
+  self._mode = "child"
+end
+
+-- Seals flight for every addressed replacement entry behind a No answer:
+-- each entry answers with its own projected run fragment so one reply
+-- carries the single escape attempt. A missing run fragment fails the
+-- screen instead of inventing a reply.
+function BattleScreenState:_sealUseNextNo()
+  local request = assert(self._request, "wild offers answer the open request")
+  local actors = assert(request.actors, "the open request addresses its actors")
+  local options = assert(self._options, "wild offers mirror the open request")
+  local optionActors = assert(options.actors, "the open options address their actors")
+  if self._child ~= nil then
+    self._subflows:closeChild()
+    self._child = nil
+  end
+  for index, addressed in ipairs(actors) do
+    local entry = optionActors[index]
+    local run = nil
+    if type(entry) == "table" and type(entry.choices) == "table" then
+      for _, choice in ipairs(entry.choices) do
+        if
+          type(choice) == "table"
+          and (choice --[[@as table<string, unknown>]]).role == "run"
+          and (choice --[[@as table<string, unknown>]]).enabled == true
+        then
+          run = (choice --[[@as table<string, unknown>]]).choice
+          break
+        end
+      end
+    end
+    if type(run) ~= "table" then
+      self._mode = "failed"
+      self._error = "the wild offer carries its run fragment for launch " .. self._launchId
+      return
+    end
+    local fragment = copyValue(run --[[@as table<string, unknown>]])
+    local actor = assert(fragment.actor, "staged fragments address their entry")
+    assert(
+      actor.combatant == addressed.combatant and actor.activation == addressed.activation,
+      "staged fragments answer the acting entry"
+    )
+    self._staged[index] = fragment
+  end
+  self._lastStaged = #actors
+  self._notice = nil
+  self:_submitStaged()
+end
+
 -- Moves the prompt to the acting entry: command selection for ordinary
 -- turns, the Shift question for held foe arrivals, or the forced child
 -- for replacement and learning decisions.
@@ -5533,6 +5736,10 @@ function BattleScreenState:_enterActorPrompt()
         purpose = "replacement"
       end
     end
+  end
+  if purpose == "replacement" and self:_useNextOffered() ~= nil then
+    self:_enterUseNextPrompt()
+    return
   end
   local intent = self:_childIntent(kind, purpose, false)
   if intent == nil then
@@ -6367,13 +6574,13 @@ function BattleScreenState:_consume(event)
       -- identical fragment as keyboard confirm on every layout.
       -- Keyboard focus still moves through navigate; command and move
       -- presses keep their focus bookkeeping above.
-    elseif self._mode == "shift" then
+    elseif self._mode == "shift" or self._mode == "use-next" then
       -- A prompt tap arms its Yes/No cell and moves the selection so the
       -- matched release settles the identical fragment as keyboard input.
       local control = event.control --[[@as table<string, unknown>?]]
       if
         type(control) == "table"
-        and control.scope == "shift"
+        and control.scope == self._mode
         and (control.id == "confirm" or control.id == "back")
       then
         self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
@@ -6417,6 +6624,15 @@ function BattleScreenState:_consume(event)
           and (control.id == "confirm" or control.id == "back")
         then
           self:_activateShift(control.id == "confirm" and "yes" or "no")
+        end
+      elseif self._mode == "use-next" then
+        local control = event.control --[[@as table<string, unknown>?]]
+        if
+          type(control) == "table"
+          and control.scope == "use-next"
+          and (control.id == "confirm" or control.id == "back")
+        then
+          self:_activateUseNext(control.id == "confirm" and "yes" or "no")
         end
       else
         self:_startButtonFeedback(self._mode, event.control.id --[[@as string]], armed)
@@ -6465,6 +6681,8 @@ function BattleScreenState:_confirm()
     end
   elseif self._mode == "shift" and type(self._selection) == "string" then
     self:_activateShift(self._selection --[[@as string]])
+  elseif self._mode == "use-next" and type(self._selection) == "string" then
+    self:_activateUseNext(self._selection --[[@as string]])
   elseif self._mode == "narration" or self._mode == "intro" then
     self._timeline:ack()
   elseif self._mode == "outcome" then
@@ -6625,6 +6843,11 @@ function BattleScreenState:_cancel()
     -- offer, matching the source replacement subscript.
     self:_playCancelFeedback()
     self:_sealShiftStay()
+  elseif self._mode == "use-next" then
+    -- Cancelling the wild offer answers No (attempt escape), matching
+    -- the retail Yes/No edge where backing out declines the reserve.
+    self:_playCancelFeedback()
+    self:_activateUseNext("no")
   elseif self._mode == "target" then
     self:_activateTarget("cancel")
   elseif self._mode == "moves" then
@@ -6684,7 +6907,7 @@ end
 
 ---@param direction string? navigation direction under selection
 function BattleScreenState:_navigate(direction)
-  if self._mode == "shift" then
+  if self._mode == "shift" or self._mode == "use-next" then
     if
       type(direction) == "string"
       and (direction == "up" or direction == "down" or direction == "left" or direction == "right")

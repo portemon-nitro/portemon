@@ -463,6 +463,21 @@ PartySources.messages = {
     -- Retail Griseous Orb species refusal (party_menu.c GiveItemToMon):
     -- "{mon} cannot hold {item}!"
     cannotHold = { bank = 300, index = 189 },
+    -- Retail item-use results (party_menu_items.c GetItemUseMessage and
+    -- HPRestore/SacredAsh/Softboiled steps): HP restoration names the mon
+    -- and recovered amount, revives name the mon, generic cures name the
+    -- mon, PP paths name the move or nothing, learning names mon and move,
+    -- level gain names mon and level. Sacred Ash reuses the revive copy
+    -- per mon; Softboiled transfer reuses the HP-restoration copy.
+    hpRestored = { bank = 300, index = 65 },
+    revived = { bank = 300, index = 71 },
+    statusCured = { bank = 300, index = 72 },
+    ppRestored = { bank = 300, index = 70 },
+    ppBoosted = { bank = 300, index = 73 },
+    learned = { bank = 300, index = 62 },
+    teachKnown = { bank = 300, index = 64 },
+    teachIncompatible = { bank = 300, index = 63 },
+    levelUp = { bank = 300, index = 177 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     fieldMoveNotHere = { bank = 300, index = 101 },
     fieldMoveNeedBadge = { bank = 300, index = 77 },

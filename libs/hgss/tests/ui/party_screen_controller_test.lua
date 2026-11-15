@@ -2805,4 +2805,51 @@ function T.fixed_tick_preserves_source_order_across_revision_press_and_prompt()
   Assert.isNil(confirming:takeResult(), "prompt cancellation completes nothing")
 end
 
+-- Retail item-use effects (party_menu_items.c HPRestore): the recovery
+-- sound plays once at completion start, the bar climbs 1 HP per tick,
+-- then the restoration copy shows over the preserved target pick.
+function T.item_use_animates_the_bar_with_sound_before_its_message()
+  local sounds = {}
+  local controller, _, control = nativeController({
+    context = "item_target",
+    item = { key = "POTION", bagRevision = 7 },
+    specs = { [1] = { currentHp = 10, maxHp = 20 } },
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "waiting_action")
+  local intent = assert(controller:takeIntent(), "the target selection emits its use")
+  Assert.equal(intent.slot, 0)
+  drainSounds(sounds)
+  -- Advance the model like a committed publication would: the live view
+  -- already carries the final total while the animating copy climbs from
+  -- its entry HP.
+  control.setSpecs({ [1] = { currentHp = 20, maxHp = 20 } })
+  controller:completeAction({
+    kind = "changed",
+    sound = "SEQ_SE_DP_KAIFUKU",
+    feedback = { slots = { { slot = 0, hpBefore = 10, hpAfter = 20 } }, textKey = "hp_restored", bindings = { amount = 10 } },
+    message = { templateKey = "hpRestored", displayName = "MON0", quantities = { 10 } },
+  })
+  Assert.equal(nativeStatus(controller).state, "item_use_anim", "the HP delta arms the bar animation")
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_KAIFUKU" }, "the completion sounds once at its start")
+  Assert.equal(nativeStatus(controller).view.slots[1].currentHp, 10, "the bar starts from its entry HP")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+    Assert.equal(nativeStatus(controller).state, "item_use_anim", "the bar still climbs")
+  end
+  Assert.equal(nativeStatus(controller).view.slots[1].currentHp, 15, "the bar climbs 1 HP per tick")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(nativeStatus(controller).state, "message", "the reached target shows its copy")
+  Assert.equal(nativeStatus(controller).view.slots[1].currentHp, 20, "the bar rests at its committed total")
+  Assert.equal(nativeStatus(controller).message.templateKey, "hpRestored")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "browse", "acknowledgement restores past the retired revision")
+  Assert.deepEqual(sounds, { "SEQ_SE_DP_KAIFUKU" }, "the animation sounds exactly once")
+end
+
 return { tests = T }

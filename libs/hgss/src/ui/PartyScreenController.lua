@@ -47,7 +47,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _swapOp { source: integer, destination: integer, revision: integer, phase: string, xOffset: integer, exchanged: boolean }?
 ---@field _intent table<string, unknown>?
 ---@field _origin PartyScreenController.Origin?
----@field _message string|{ templateKey: string, displayName: string?, itemNames: string[]? }?
+---@field _message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }?
 ---@field _messageReturn string
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
@@ -65,6 +65,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _panelSlide integer
 ---@field _targetOrigin "menu"|"context"?
 ---@field _giveDisposition "party"|"bag"?
+---@field _itemUseAnim { slots: table<integer, { slot: integer, from: integer, to: integer, current: integer }>, index: integer, message: string|table<string, unknown>|nil, origin: PartyScreenController.Origin }? the retail item-use HP animation: sequential 1-HP-per-tick slots with sound, then message
 local PartyScreenController = {}
 PartyScreenController.__index = PartyScreenController
 
@@ -322,6 +323,7 @@ function PartyScreenController.new(opts)
     _panelSlide = 0,
     _targetOrigin = nil,
     _giveDisposition = opts.context == "give_resume" and "party" or (opts.context == "give_target" and "bag" or nil),
+    _itemUseAnim = nil,
   }, PartyScreenController)
   if opts.context == "item_target" or opts.context == "give_target" then
     assert(opts.item ~= nil, "target contexts require the pending item identity")
@@ -733,7 +735,7 @@ end
 -- Shows a message over the originating flow state; acknowledgement
 -- returns there without replaying anything. Either existing literal text
 -- or a generated-template descriptor the renderer expands.
----@param text string|{ templateKey: string, displayName: string?, itemNames: string[]? }
+---@param text string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
 ---@param returnState string
 function PartyScreenController:_showMessage(text, returnState)
   if type(text) == "table" then
@@ -743,6 +745,18 @@ function PartyScreenController:_showMessage(text, returnState)
       assert(type(text.itemNames) == "table", "descriptors carry ordered item names")
       for _, itemName in ipairs(text.itemNames) do
         assert(type(itemName) == "string", "descriptors carry ordered item names")
+      end
+    end
+    if text.quantities ~= nil then
+      assert(type(text.quantities) == "table", "descriptors carry ordered quantities")
+      for _, amount in ipairs(text.quantities) do
+        assert(type(amount) == "number", "descriptors carry ordered quantities")
+      end
+    end
+    if text.moveNames ~= nil then
+      assert(type(text.moveNames) == "table", "descriptors carry ordered move names")
+      for _, moveName in ipairs(text.moveNames) do
+        assert(type(moveName) == "string", "descriptors carry ordered move names")
       end
     end
   else
@@ -923,6 +937,41 @@ function PartyScreenController:_advanceSwap()
   self._menuSlot = nil
   self._originSlot = nil
   self:_transition("browse")
+end
+
+-- Advances one retail HP-restoration step: the current slot moves 1 HP
+-- toward its committed total per tick (party_menu_items.c HPRestore
+-- anim loop and party_menu.c Softboiled transfer steps), then the next
+-- slot arms with the recovery sound. When every slot reaches its target
+-- the stored message shows over the preserved origin, or the origin
+-- restores silently when no message rides the outcome.
+function PartyScreenController:_advanceItemUseAnim()
+  local anim = assert(self._itemUseAnim, "item-use ticks require an armed animation")
+  local current = assert(anim.slots[anim.index], "the animation tracks its current slot")
+  if current.current < current.to then
+    current.current = current.current + 1
+  elseif current.current > current.to then
+    current.current = current.current - 1
+  end
+  if current.current ~= current.to then
+    return
+  end
+  anim.index = anim.index + 1
+  local nxt = anim.slots[anim.index]
+  if nxt ~= nil then
+    self:_requestRecoverySound()
+    return
+  end
+  local message = anim.message
+  local origin = anim.origin
+  self._itemUseAnim = nil
+  if type(message) == "table" or (type(message) == "string" and message ~= "") then
+    self._origin = origin
+    self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
+    self:_showMessage(message, origin.state)
+    return
+  end
+  self:_restoreOrigin(origin)
 end
 
 -- Advances the top-panel slide one step toward its state's target.
@@ -1768,6 +1817,10 @@ function PartyScreenController:updateFixed(uiInput)
     self:_advanceSwap()
     return
   end
+  if self._state == "item_use_anim" then
+    self:_advanceItemUseAnim()
+    return
+  end
   if self._state == "confirm" then
     self:_stepPrompt(uiInput)
     return
@@ -1858,6 +1911,7 @@ function PartyScreenController:_dismiss()
   if self._context == "pick" or self._context == "battle_pick" then
     error("party dismiss is a browse-flow edge; pick context never emits it", 2)
   end
+  self._itemUseAnim = nil
   self._result = { kind = "closed" }
   self:_transition("closing")
 end
@@ -1879,7 +1933,7 @@ end
 ---@field menuSlot integer?
 ---@field menuPress { index: integer, phase: "armed"|"pressed"|"selected" }? the armed press gate presentation
 ---@field cancelPress { phase: "armed"|"pressed"|"selected" }? the armed root footer press presentation
----@field message string|{ templateKey: string, displayName: string? }?
+---@field message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }?
 ---@field switchSelect { source: integer, candidate: integer|"cancel" }? the locked switch source and current candidate
 ---@field prompt table<string, unknown>?
 ---@field swap table<string, unknown>?
@@ -1963,6 +2017,35 @@ function PartyScreenController:status()
   if self._state == "choose_swap" and self._swapSource ~= nil then
     switchSelect = { source = self._swapSource, candidate = self._cursorNode }
   end
+  local view = self._view
+  local anim = self._itemUseAnim
+  if anim ~= nil then
+    -- Retail HP restoration draws the in-flight bar from the animating
+    -- copy: completed slots show their target, the active slot shows its
+    -- current step, and later slots still show their entry HP.
+    local overridden = { revision = view.revision, slots = {} }
+    for index, record in ipairs(view.slots) do
+      overridden.slots[index] = record
+    end
+    for position, step in ipairs(anim.slots) do
+      local record = view.slots[step.slot + 1]
+      if type(record) == "table" then
+        local shown = step.from
+        if position < anim.index then
+          shown = step.to
+        elseif position == anim.index then
+          shown = step.current
+        end
+        local copy = {}
+        for key, value in pairs(record) do
+          copy[key] = value
+        end
+        copy.currentHp = shown
+        overridden.slots[step.slot + 1] = copy
+      end
+    end
+    view = overridden
+  end
   return {
     open = true,
     context = self._context,
@@ -1985,7 +2068,7 @@ function PartyScreenController:status()
       sequenceTicks = sequenceTicks,
       panelSlide = self._panelSlide,
     },
-    view = self._view,
+    view = view,
     cancellable = self._cancellable,
   }
 end
@@ -2001,10 +2084,15 @@ end
 
 -- Resolves the pending intent from the flow. The presentation-only no-op
 -- returns to the originating state with no message, mutation, or new
--- intent; a text outcome shows its text over the originating state, a
+-- intent; a feedback outcome with HP deltas animates the health bar 1 HP
+-- per tick with the recovery sound (retail party_menu_items.c HPRestore
+-- and Softboiled HP-transfer steps) before showing its message; a
+-- sounded outcome without HP motion plays the recovery effect before its
+-- message; a text outcome shows its text over the originating state, a
 -- template-descriptor outcome shows the generated template over browse
--- refocused on the acting slot, and any other outcome returns silently.
--- Outcomes for another state are a programming error.
+-- for menu actions and over the preserved target pick for bag item_use,
+-- and any other outcome returns silently. Outcomes for another state are
+-- a programming error.
 ---@param outcome table<string, unknown>
 function PartyScreenController:completeAction(outcome)
   assert(type(outcome) == "table", "action completion carries an outcome")
@@ -2035,7 +2123,69 @@ function PartyScreenController:completeAction(outcome)
     self:_restoreOrigin(origin)
     return
   end
+  -- Retail item-use effects (party_menu_items.c StatusHealEtc, HPRestore,
+  -- SacredAsh, SelectMove success, and party_menu.c Softboiled transfer):
+  -- HP deltas animate 1 HP per frame with the recovery sound, other
+  -- sounded uses play the effect before their message, silent uses show
+  -- their message directly. The flow owns the retail sound policy via
+  -- outcome.sound; the controller owns playback and bar motion.
+  local feedback = outcome.feedback
+  if type(feedback) == "table" then
+    local slots = feedback.slots
+    if type(slots) == "table" then
+      local animSlots = {}
+      for _, entry in ipairs(slots) do
+        if type(entry) == "table" then
+          local hpBefore = entry.hpBefore
+          local hpAfter = entry.hpAfter
+          local slot = entry.slot
+          if type(hpBefore) == "number" and type(hpAfter) == "number" and hpBefore ~= hpAfter then
+            local target = slot
+            if target == nil then
+              target = origin.cursorNode
+            end
+            if type(target) == "number" then
+              animSlots[#animSlots + 1] = { slot = target, from = hpBefore, to = hpAfter, current = hpBefore }
+            end
+          end
+        end
+      end
+      if #animSlots > 0 then
+        self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
+        if type(outcome.sound) == "string" and outcome.sound ~= "" then
+          -- The transfer donor was already sounded at target selection
+          -- (choose_hp_target plays RECOVERY_SOUND); its completion anim
+          -- starts silent and sounds before the recipient leg. Every other
+          -- HP anim sounds at its start like retail HPRestore/SacredAsh.
+          local silentStart = #animSlots == 2 and animSlots[1].from > animSlots[1].to
+          if not silentStart then
+            self:_requestRecoverySound()
+          end
+        end
+        local message = outcome.message
+        if message == nil then
+          message = outcome.text
+        end
+        self._itemUseAnim = { slots = animSlots, index = 1, message = message, origin = origin }
+        self:_transition("item_use_anim")
+        return
+      end
+    end
+  end
+  if type(outcome.sound) == "string" and outcome.sound ~= "" then
+    self:_requestRecoverySound()
+  end
   if type(outcome.message) == "table" then
+    -- Menu actions (take/give confirmations from context submenus) show
+    -- their result over browse like retail Take (list_items.c returns to
+    -- state 1); target selections (bag item_use from choosing_item_target)
+    -- preserve the pick so another mon can follow without re-entering.
+    if origin.state == "choosing_item_target" then
+      self._origin = origin
+      self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
+      self:_showMessage(outcome.message, origin.state)
+      return
+    end
     self._cursorNode = origin.cursorNode
     self:_showMessage(outcome.message, "browse")
     return

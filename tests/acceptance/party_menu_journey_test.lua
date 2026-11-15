@@ -423,6 +423,17 @@ function T.tests.production_medicine_give_take_round_trip(context)
       "confirming the injured lead must restore it through one publication"
     )
     Assert.equal(bag:quantity("POTION"), 2, "exactly one potion is consumed")
+    -- The restoration copy and its acknowledgement are owned by the
+    -- cheaper controller/component suites: this journey only settles the
+    -- message, acknowledges back to browse, and proves the round trip
+    -- returns to the originating bag.
+    driveUntil(flow, "the restoration message", 30, function(current)
+      return current.page == "party_item_target" and current.child ~= nil and current.child.state == "message"
+    end)
+    status = drive(flow, { { type = "confirm" } })
+    driveUntil(flow, "the acknowledged restoration", 30, function(current)
+      return current.page == "party_item_target" and current.child ~= nil and current.child.state == "browse"
+    end)
     status = drive(flow, { { type = "cancel" } })
     driveUntil(flow, "the originating bag page", 30, function(current)
       return current.page == "bag_browse"

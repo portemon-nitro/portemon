@@ -744,6 +744,22 @@ function T.tests.bag_use_heals_once_and_returns_to_bag(context)
     Assert.equal(rig.mons:partyMon(0).condition.currentHp, maxHp, "confirming the lead heals it once")
     Assert.equal(rig.bag:quantity("POTION"), 2, "exactly one potion is consumed")
     Assert.isTrue(rig.mons:partyRevision() == partyRevision + 1, "one revision publishes the healing")
+    -- Retail item use animates the bar 1 HP per tick with the recovery
+    -- sound before its message (party_menu_items.c HPRestore): settle the
+    -- anim, acknowledge the restoration copy, then return to the bag.
+    status = driveUntil(rig, "the restoration message", 30, function(current)
+      return current.page == "party_item_target" and partyChild(current).state == "message"
+    end)
+    local healedMessage = partyChild(status).message
+    Assert.equal(type(healedMessage), "table", "the heal shows its generated message")
+    Assert.equal(healedMessage.templateKey, "hpRestored", "the heal names its restoration copy")
+    status = drive(rig, { { type = "confirm" } })
+    -- The committed revision moves the origin, so acknowledgement restores
+    -- to browse (not the retired target pick); cancelling then returns to
+    -- the originating bag like retail's post-message exit.
+    status = driveUntil(rig, "the acknowledged restoration", 30, function(current)
+      return current.page == "party_item_target" and partyChild(current).state == "browse"
+    end)
     status = drive(rig, { { type = "cancel" } })
     status = driveUntil(rig, "the originating bag", 30, function(current)
       return current.page == "bag_browse"

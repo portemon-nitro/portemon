@@ -1215,6 +1215,219 @@ function PartyMenuFlow:_giveCompletion(outcome, slot, itemKey, disposition)
   return completion
 end
 
+-- Builds the Party completion for one committed medicine/effect use.
+-- Retail sound/visual policy (party_menu_items.c): HP restoration,
+-- revives, status cures, PP restoration, and transfers play SEQ_SE_DP_
+-- KAIFUKU with 1-HP-per-tick bar motion; vitamins play it without bar
+-- motion; reduction berries, TM/HM teaching, and level gains stay silent.
+-- Messages reuse the retail party templates (msg_0300) except effort
+-- changes, whose stat-specific copies need a stat placeholder the party
+-- text pipeline does not lower yet; those ride literal English text.
+---@param outcome table<string, unknown> the committed PartyActions outcome with feedback
+---@param slot integer the acted party slot
+---@param itemKey string the used item behind the committed outcome
+---@return table<string, unknown> the controller completion with feedback, sound, and message
+function PartyMenuFlow:_useCompletion(outcome, slot, itemKey)
+  local completion = { kind = outcome.kind, feedback = outcome.feedback }
+  if outcome.kind ~= "changed" then
+    if outcome.kind == "no_effect" then
+      completion.message = { templateKey = "noEffect" }
+    end
+    return completion
+  end
+  local feedback = assert(outcome.feedback, "committed uses carry feedback")
+  assert(type(feedback) == "table", "committed uses carry feedback")
+  local textKey = assert(feedback.textKey, "use feedback names its result")
+  assert(type(textKey) == "string", "use feedback names its result")
+  local bindings = feedback.bindings
+  assert(type(bindings) == "table", "use feedback carries bindings")
+  local displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog())
+  if textKey == "hp_restored" then
+    completion.sound = "SEQ_SE_DP_KAIFUKU"
+    local amount = bindings.amount
+    if type(amount) ~= "number" then
+      error("use feedback amount is not a number: " .. type(amount) .. " " .. tostring(amount), 2)
+    end
+    completion.message = {
+      templateKey = "hpRestored",
+      displayName = displayName,
+      quantities = { amount },
+    }
+  elseif textKey == "revived" or textKey == "sacred_ash" then
+    completion.sound = "SEQ_SE_DP_KAIFUKU"
+    completion.message = { templateKey = "revived", displayName = displayName }
+  elseif textKey == "status_cured" then
+    completion.sound = "SEQ_SE_DP_KAIFUKU"
+    completion.message = { templateKey = "statusCured", displayName = displayName }
+  elseif textKey == "pp_restored" then
+    completion.sound = "SEQ_SE_DP_KAIFUKU"
+    completion.message = { templateKey = "ppRestored", displayName = displayName }
+  elseif textKey == "pp_boosted" then
+    completion.sound = "SEQ_SE_DP_KAIFUKU"
+    local moveKey = assert(bindings.move, "PP boosts name their move")
+    assert(type(moveKey) == "string", "PP boosts name their move")
+    local moveName = assert(self._assets.monCatalog:move(moveKey).name, "the mon catalog names its moves")
+    completion.message = { templateKey = "ppBoosted", displayName = displayName, moveNames = { moveName } }
+  elseif textKey == "level_up" then
+    completion.message = {
+      templateKey = "levelUp",
+      displayName = displayName,
+      quantities = { assert(bindings.level, "level gains name their level") },
+    }
+  elseif textKey == "ev_changed" or textKey == "friendship_changed" then
+    -- Retail vitamins (positive effort deltas) play the recovery sound
+    -- via StatusHealEtc; reduction berries ride the silent EVDown path.
+    if textKey == "ev_changed" and self:_useIsVitamin(itemKey) then
+      completion.sound = "SEQ_SE_DP_KAIFUKU"
+    end
+    local statKey = self:_useStatKey(itemKey)
+    local statName = statKey ~= nil and self:_statDisplayName(statKey) or nil
+    if statName ~= nil then
+      completion.text = displayName .. "'s " .. statName .. " changed!"
+    else
+      completion.text = displayName .. " changed!"
+    end
+  else
+    completion.message = { templateKey = "noEffect" }
+  end
+  return completion
+end
+
+-- Reads the effort stat behind one use for the literal English effort
+-- message: the first declared change wins, matching the single-stat
+-- retail vitamin/berry copies (party_menu_items.c GetItemUseMessage
+-- buffers the item's stat, not the planner's staged delta).
+---@param itemKey string the used item behind the committed outcome
+---@return string? the effort stat key or nil without a declared change
+function PartyMenuFlow:_useStatKey(itemKey)
+  local definition = self._assets.itemCatalog:item(itemKey)
+  local partyUse = definition.partyUse
+  if type(partyUse) ~= "table" then
+    return nil
+  end
+  local changes = (partyUse --[[@as table<string, unknown>]]).changes
+  if type(changes) ~= "table" then
+    return nil
+  end
+  local first = (changes --[[@as table<integer, table<string, unknown>>]])[1]
+  if type(first) ~= "table" then
+    return nil
+  end
+  local stat = first.stat
+  if type(stat) ~= "string" then
+    return nil
+  end
+  return stat
+end
+
+-- Answers whether one effort item is a vitamin (positive first delta) or
+-- a reduction berry: only vitamins play the recovery sound.
+---@param itemKey string
+---@return boolean
+function PartyMenuFlow:_useIsVitamin(itemKey)
+  local definition = self._assets.itemCatalog:item(itemKey)
+  local partyUse = definition.partyUse
+  if type(partyUse) ~= "table" then
+    return false
+  end
+  local changes = (partyUse --[[@as table<string, unknown>]]).changes
+  if type(changes) ~= "table" then
+    return false
+  end
+  local first = (changes --[[@as table<integer, table<string, unknown>>]])[1]
+  if type(first) ~= "table" then
+    return false
+  end
+  local delta = first.delta
+  return type(delta) == "number" and delta > 0
+end
+
+-- Displays one effort stat key in the literal English effort message.
+---@param statKey string
+---@return string
+function PartyMenuFlow:_statDisplayName(statKey)
+  local names = {
+    hp = "HP",
+    attack = "Attack",
+    defense = "Defense",
+    speed = "Speed",
+    specialAttack = "Sp. Atk",
+    specialDefense = "Sp. Def",
+  }
+  local name = names[statKey]
+  assert(type(name) == "string", "effort changes name a known stat")
+  return name
+end
+
+-- Builds the Party completion for one committed machine teaching: the
+-- retail TM/HM path (party_menu_items.c HandleUseTMHMonMon) shows its
+-- learned copy with no sound and no bar motion.
+---@param outcome table<string, unknown> the committed PartyActions outcome with feedback
+---@param slot integer the acted party slot
+---@param itemKey string the machine behind the teaching
+---@return table<string, unknown> the controller completion with feedback and message
+function PartyMenuFlow:_teachCompletion(outcome, slot, itemKey)
+  local completion = { kind = outcome.kind, feedback = outcome.feedback }
+  if outcome.kind ~= "changed" then
+    if outcome.kind == "no_effect" then
+      completion.message = { templateKey = "noEffect" }
+    elseif outcome.kind == "known" or outcome.kind == "incompatible" then
+      local templateKey = outcome.kind == "known" and "teachKnown" or "teachIncompatible"
+      local moveKey = self:_teachingMove(itemKey)
+      local moveName = assert(self._assets.monCatalog:move(moveKey).name, "the mon catalog names its moves")
+      completion.message = {
+        templateKey = templateKey,
+        displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
+        moveNames = { moveName },
+      }
+    end
+    return completion
+  end
+  local feedback = assert(outcome.feedback, "committed teachings carry feedback")
+  assert(type(feedback) == "table", "committed teachings carry feedback")
+  local bindings = assert(feedback.bindings, "teach feedback carries bindings")
+  assert(type(bindings) == "table", "teach feedback carries bindings")
+  local moveKey = assert(bindings.move, "teach feedback names its move")
+  assert(type(moveKey) == "string", "teach feedback names its move")
+  local moveName = assert(self._assets.monCatalog:move(moveKey).name, "the mon catalog names its moves")
+  completion.message = {
+    templateKey = "learned",
+    displayName = Mon.displayName(self._mons:partyMon(slot), self._mons:catalog()),
+    moveNames = { moveName },
+  }
+  return completion
+end
+
+-- Builds the Party completion for one committed HP transfer: the donor
+-- and recipient legs animate sequentially with the second recovery sound
+-- before the recipient leg (party_menu.c Softboiled subtask), then the
+-- restoration copy names the recipient and received amount.
+---@param outcome table<string, unknown> the committed PartyActions outcome with feedback
+---@return table<string, unknown> the controller completion with feedback and message
+function PartyMenuFlow:_transferCompletion(outcome)
+  local completion = { kind = outcome.kind, feedback = outcome.feedback }
+  if outcome.kind ~= "changed" then
+    if outcome.kind == "no_effect" or outcome.kind == "ineligible" then
+      completion.message = { templateKey = "noEffect" }
+    end
+    return completion
+  end
+  local feedback = assert(outcome.feedback, "committed transfers carry feedback")
+  assert(type(feedback) == "table", "committed transfers carry feedback")
+  local bindings = assert(feedback.bindings, "transfer feedback carries bindings")
+  assert(type(bindings) == "table", "transfer feedback carries bindings")
+  local slots = assert(feedback.slots, "transfer feedback carries both legs")
+  assert(type(slots) == "table" and slots[2] ~= nil, "transfer feedback carries both legs")
+  local recipient = assert(slots[2].slot, "transfer feedback names its recipient")
+  assert(type(recipient) == "number", "transfer feedback names its recipient")
+  completion.message = {
+    templateKey = "hpRestored",
+    displayName = Mon.displayName(self._mons:partyMon(recipient), self._mons:catalog()),
+    quantities = { assert(bindings.amount, "transfers name their received amount") },
+  }
+  return completion
+end
+
 -- Routes a medicine/effect use: preview first, commit ready outcomes with
 -- a visible completion, detour power-point choices through the picker,
 -- and report refusals without publishing or consuming.
@@ -1250,11 +1463,11 @@ function PartyMenuFlow:_routeUse(intent, continuation, itemKey)
     return
   end
   if decision.kind ~= "ready" then
-    self:_completeParty({ kind = decision.kind })
+    self:_completeParty(self:_useCompletion({ kind = decision.kind }, slot, itemKey))
     return
   end
   local outcome = self._partyActions:commit(request)
-  self:_completeParty({ kind = outcome.kind })
+  self:_completeParty(self:_useCompletion(outcome, slot, itemKey))
 end
 
 -- Resolves the move the selected machine would teach: the item record
@@ -1301,11 +1514,11 @@ function PartyMenuFlow:_routeTeach(intent, continuation, itemKey)
     return
   end
   if decision.kind ~= "ready" then
-    self:_completeParty({ kind = decision.kind })
+    self:_completeParty(self:_teachCompletion({ kind = decision.kind }, slot, itemKey))
     return
   end
   local outcome = self._partyActions:commit(request)
-  self:_completeParty({ kind = outcome.kind })
+  self:_completeParty(self:_teachCompletion(outcome, slot, itemKey))
 end
 
 -- Resolves a move-picker selection for a pending power-point or teaching
@@ -1333,6 +1546,24 @@ function PartyMenuFlow:_resolveMovePick(result)
   if outcome.kind ~= "changed" then
     self:_rewind(continuation)
     return
+  end
+  -- The move picker consumed its separate Summary child, so the committed
+  -- PP/teach effects cannot complete on the retired Party target: play the
+  -- retail recovery sound for PP restores here (party_menu_items.c
+  -- SelectMove success and StatusHealEtc), then home. Teachings stay
+  -- silent like retail HandleUseTMHMonMon. Messages for these picker paths
+  -- need a party target to show over; they return silently for now.
+  if operation == "use_move" then
+    local definition =
+      self._assets.itemCatalog:item(assert(continuation.itemKey, "pending operations capture their item"))
+    local partyUse = definition.partyUse
+    if
+      type(partyUse) == "table" and (partyUse --[[@as table<string, unknown>]]).kind == "pp"
+    then
+      if self._effect ~= nil then
+        self._effect("SEQ_SE_DP_KAIFUKU")
+      end
+    end
   end
   self:_replace(assert(continuation.returnPage, "continuations name their return page"), nil)
 end
@@ -1388,7 +1619,7 @@ function PartyMenuFlow:_routeBrowseIntent(intent)
       partyRevision = assert(intent.partyRevision, "transfer intents carry the party revision"),
       bagRevision = self._bag:revision(),
     })
-    self:_completeParty({ kind = outcome.kind })
+    self:_completeParty(self:_transferCompletion(outcome))
     return
   end
   if intent.kind == "field_move" then

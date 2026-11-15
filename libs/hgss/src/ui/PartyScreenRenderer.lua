@@ -893,17 +893,23 @@ end
 
 -- Expands one generated message template into window-local text
 -- placements through the ordinary role. Line breaks stack at the source
--- line height; name segments expand the supplied display name. Later
--- segments on one line keep their measured horizontal advance.
+-- line height; name segments expand the supplied display name, quantity
+-- segments expand ordered recovery/level amounts, move segments expand
+-- ordered taught/boosted move names. Later segments on one line keep
+-- their measured horizontal advance.
 ---@param segments table[]
 ---@param displayName string?
 ---@param itemNames string[]?
+---@param quantities integer[]?
+---@param moveNames string[]?
 ---@return { value: string, x: number, y: number }[]
-function PartyScreenRenderer:_templateOps(segments, displayName, itemNames)
+function PartyScreenRenderer:_templateOps(segments, displayName, itemNames, quantities, moveNames)
   local text = self._text
   local ops = {}
   local cursorX, cursorY = 0, 0
   local itemIndex = 0
+  local quantityIndex = 0
+  local moveIndex = 0
   for _, segment in ipairs(assert(segments, "templates carry segments")) do
     assert(type(segment) == "table" and type(segment.kind) == "string", "template segments carry a kind")
     if segment.kind == "text" then
@@ -923,11 +929,26 @@ function PartyScreenRenderer:_templateOps(segments, displayName, itemNames)
       assert(type(item) == "string", "each item segment has a matching item name")
       ops[#ops + 1] = { value = item, x = cursorX, y = cursorY }
       cursorX = cursorX + text:textWidth(item)
+    elseif segment.kind == "quantity" then
+      quantityIndex = quantityIndex + 1
+      local amount = assert(quantities, "quantity templates receive ordered amounts")[quantityIndex]
+      assert(type(amount) == "number", "each quantity segment has a matching amount")
+      local value = tostring(amount)
+      ops[#ops + 1] = { value = value, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(value)
+    elseif segment.kind == "move" then
+      moveIndex = moveIndex + 1
+      local move = assert(moveNames, "move templates receive ordered move names")[moveIndex]
+      assert(type(move) == "string", "each move segment has a matching move name")
+      ops[#ops + 1] = { value = move, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(move)
     else
-      error("party message templates render text, line breaks, names, and the held-item result", 0)
+      error("party message templates render text, line breaks, names, items, quantities, and moves", 0)
     end
   end
   assert(itemNames == nil or itemIndex == #itemNames, "message item names match the template segments")
+  assert(quantities == nil or quantityIndex == #quantities, "message quantities match the template segments")
+  assert(moveNames == nil or moveIndex == #moveNames, "message move names match the template segments")
   return ops
 end
 
@@ -1009,8 +1030,8 @@ end
 
 -- Resolves a transient action message to window-local text placements:
 -- either existing literal text or a generated-template descriptor
--- expanded with its display name.
----@param message string|{ templateKey: string, displayName: string?, itemNames: string[]? }
+-- expanded with its display name, ordered item, quantity, and move names.
+---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
 ---@return { value: string, x: number, y: number }[]
 function PartyScreenRenderer:_actionOps(message)
   if type(message) == "string" then
@@ -1024,12 +1045,14 @@ function PartyScreenRenderer:_actionOps(message)
   return self:_templateOps(
     assert(template.segments, key .. " carries segments"),
     message.displayName,
-    message.itemNames
+    message.itemNames,
+    message.quantities,
+    message.moveNames
   )
 end
 
 -- Draws a transient action message through the generated action window.
----@param message string|{ templateKey: string, displayName: string?, itemNames: string[]? }
+---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
 function PartyScreenRenderer:_drawActionMessage(message)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")

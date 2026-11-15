@@ -664,13 +664,14 @@ local function fullManifest()
     local function addFrameSourceIndices(frame)
       local image = assert(old.images[frame.image], "trainer frame images are inventoried")
       local variants = {}
-      local slots = selector:match("^front:")
-        and { 96, 112, 128, 144, 160, 176 }
-        or { 48, 64, 80, 96, 112 }
+      local slots = selector:match("^front:") and { 96, 112, 128, 144, 160, 176 } or { 48, 64, 80, 96, 112 }
       for _, firstSlot in ipairs(slots) do
         local slotKey = "slot:" .. tostring(firstSlot)
         variants[slotKey] = {
-          path = frame.image:gsub("%.png$", "-" .. selector:gsub("[^%w]+", "-") .. "-" .. slotKey:gsub(":", "-") .. ".rgba8"),
+          path = frame.image:gsub(
+            "%.png$",
+            "-" .. selector:gsub("[^%w]+", "-") .. "-" .. slotKey:gsub(":", "-") .. ".rgba8"
+          ),
           firstSlot = firstSlot,
         }
       end
@@ -1208,8 +1209,7 @@ local function fullManifest()
         itemList = (function()
           local windows = {}
           for _ = 1, 26 do
-            windows[#windows + 1] =
-              { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 }
+            windows[#windows + 1] = { bgId = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 }
           end
           return windows
         end)(),
@@ -1406,8 +1406,7 @@ local function fullManifest()
       templateExpansion = { input = "tagSelectedBuffers" },
       entries = {
         ["battle/narration/wild-appeared"] = messageRecord({ "A wild ", false, " appeared!" }),
-        ["battle/narration/wild-appeared-doubles"] =
-          messageRecord({ "A wild ", false, " and\n", false, " appeared!" }),
+        ["battle/narration/wild-appeared-doubles"] = messageRecord({ "A wild ", false, " and\n", false, " appeared!" }),
         ["battle/narration/trainer-challenged"] = messageRecord({ false, " ", false, " wants to battle!" }),
         ["battle/narration/trainer-victory"] = messageRecord({ "Player defeated ", false, " ", false, "!" }),
         ["battle/narration/won-money"] = messageRecord({ false, " got $", false, " for winning!" }),
@@ -1416,9 +1415,16 @@ local function fullManifest()
           "Trainer reacts to defeat.",
         }),
         ["battle/narration/trainer-sent-out"] = messageRecord({ false, " ", false, " sent out ", false, "!" }),
-        ["battle/narration/trainer-sent-out-doubles"] = messageRecord(
-          { false, " ", false, " sent\nout ", false, " and ", false, "!" }
-        ),
+        ["battle/narration/trainer-sent-out-doubles"] = messageRecord({
+          false,
+          " ",
+          false,
+          " sent\nout ",
+          false,
+          " and ",
+          false,
+          "!",
+        }),
         ["battle/narration/trainer-used-item"] = messageRecord({ false, " ", false, " used one ", false, "!" }),
         ["battle/narration/player-sent-out"] = messageRecord({ "Go! ", false, "!" }),
         ["battle/narration/player-sent-out-doubles"] = messageRecord({ "Go! ", false, " and\n", false, "!" }),
@@ -1482,6 +1488,7 @@ local function fullManifest()
           false,
           ". Will you switch your Pokémon?",
         }),
+        ["battle/prompt/use-next"] = messageRecord({ "Use next Pokémon?" }),
         ["battle/narration/experience"] = messageRecord({ false, " gained ", false, " Exp. Points!" }),
         ["battle/narration/experience/boosted"] = messageRecord({ false, " gained a boosted ", false, " Exp. Points!" }),
         ["battle/narration/level-up"] = messageRecord({ false, " grew to Lv. ", false, "!" }),
@@ -1529,7 +1536,12 @@ local function fullManifest()
           "It’s no good! It’s impossible to aim\nwhen there are two Pokémon!",
         }),
         ["battle/bag/message/no-room"] = messageRecord({ "There is no room left in the PC!" }),
-        ["battle/bag/message/embargo"] = messageRecord({ false, "’s effect prevents\nthe item’s use on ", false, "!" }),
+        ["battle/bag/message/embargo"] = messageRecord({
+          false,
+          "’s effect prevents\nthe item’s use on ",
+          false,
+          "!",
+        }),
         ["battle/bag/message/no-aim-hidden"] = messageRecord({
           "It’s no good! It’s impossible to aim\nat a Pokémon that’s not in sight!",
         }),
@@ -1561,7 +1573,12 @@ local function fullManifest()
         }),
         ["battle/party/message/no-effect"] = messageRecord({ "It won’t have any effect." }),
         ["battle/party/message/already-selected"] = messageRecord({ false, " has already been\nselected." }),
-        ["battle/party/message/embargo"] = messageRecord({ false, "’s effect prevents\nthe item’s use on ", false, "!" }),
+        ["battle/party/message/embargo"] = messageRecord({
+          false,
+          "’s effect prevents\nthe item’s use on ",
+          false,
+          "!",
+        }),
         -- Retail party summary/move words painted on the wrapper rows.
         ["battle/party/stat/hp"] = messageRecord({ "HP" }),
         ["battle/party/stat/hp-current"] = messageRecord({ false }),

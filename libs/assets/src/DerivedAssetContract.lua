@@ -287,8 +287,11 @@ DerivedAssetContract.fieldMapData = {
   -- The death namespace carries the interior relocation destinations, and
   -- the special namespace carries the setter-written relocation records
   -- (unset warp id, standard arrival facing); the three namespaces stay
-  -- independent even where values coincide.
-  spawnIndexSchema = "g4-field-spawn-index-v3",
+  -- independent even where values coincide. v4 adds the eligible
+  -- death-refresh reverse map (death map symbol to owning spawn key for
+  -- the isBlackoutSpawn rows only); entering an ineligible death map
+  -- never refreshes the heal spawn.
+  spawnIndexSchema = "g4-field-spawn-index-v4",
 }
 
 DerivedAssetContract.messages = {

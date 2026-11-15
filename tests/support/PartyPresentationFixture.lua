@@ -353,6 +353,71 @@ function PartyPresentationFixture.manifest()
             { kind = "text", value = "?" },
           },
         },
+        hpRestored = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " recovered " },
+            { kind = "quantity" },
+            { kind = "text", value = " HP!" },
+          },
+        },
+        revived = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " was revived!" },
+          },
+        },
+        statusCured = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " was cured!" },
+          },
+        },
+        ppRestored = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " PP restored!" },
+          },
+        },
+        ppBoosted = {
+          segments = {
+            { kind = "move" },
+            { kind = "text", value = " PP increased!" },
+          },
+        },
+        learned = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " learned " },
+            { kind = "move" },
+            { kind = "text", value = "!" },
+          },
+        },
+        teachKnown = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " already knows " },
+            { kind = "move" },
+            { kind = "text", value = "!" },
+          },
+        },
+        teachIncompatible = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " cannot learn " },
+            { kind = "move" },
+            { kind = "text", value = "!" },
+          },
+        },
+        levelUp = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " grew to LV " },
+            { kind = "quantity" },
+            { kind = "text", value = "!" },
+          },
+        },
+        noEffect = { segments = { { kind = "text", value = "It won't have any effect." } } },
       },
       roles = {
         ordinary = textRole(250, 250, 250, 120, 120, 128, 40, 40, 48),

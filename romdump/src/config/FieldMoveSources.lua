@@ -181,6 +181,41 @@ FieldMoveSources.SPAWN_DESTINATIONS = {
   SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10", fieldX = 1426, fieldZ = 164 },
 }
 
+-- Retail sSpawnMaps death-refresh eligibility, transcribed from the
+-- isBlackoutSpawn column (MapHeader_GetSpawnIdForDeathWarp only refreshes
+-- the heal spawn when the entered map's death row carries the flag).
+-- Twenty-five spawns refresh on entry; five never do: the lake, Pallet,
+-- Cinnabar, the Pokeathlon dome, and the Victory Road gate keep the
+-- recorded spawn even though whiteout still relocates through their death
+-- destinations. Location identity governs, matching the death table below.
+FieldMoveSources.DEATH_WARP_ELIGIBLE = {
+  SPAWN_NEW_BARK = true,
+  SPAWN_CHERRYGROVE = true,
+  SPAWN_VIOLET = true,
+  SPAWN_AZALEA = true,
+  SPAWN_CIANWOOD = true,
+  SPAWN_GOLDENROD = true,
+  SPAWN_OLIVINE = true,
+  SPAWN_ECRUTEAK = true,
+  SPAWN_MAHOGANY = true,
+  SPAWN_BLACKTHORN = true,
+  SPAWN_MT_SILVER = true,
+  SPAWN_VIRIDIAN = true,
+  SPAWN_PEWTER = true,
+  SPAWN_CERULEAN = true,
+  SPAWN_LAVENDER = true,
+  SPAWN_VERMILION = true,
+  SPAWN_CELADON = true,
+  SPAWN_FUCHSIA = true,
+  SPAWN_INDIGO = true,
+  SPAWN_SAFFRON = true,
+  SPAWN_SAFARI = true,
+  SPAWN_FRONTIER = true,
+  SPAWN_UNION_CAVE = true,
+  SPAWN_MT_MOON = true,
+  SPAWN_ROCK_TUNNEL = true,
+}
+
 -- Retail sSpawnMaps death destinations, keyed by the same semantic spawn
 -- identity as the outdoor table. Coordinates are local to the death map.
 FieldMoveSources.BLACKOUT_DESTINATIONS = {

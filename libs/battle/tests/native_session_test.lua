@@ -3643,6 +3643,131 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
   smoked:dispose()
 end
 
+-- Shared knockout choreography for the replacement tests: a 1-HP lead with a
+-- living reserve against a level-40 foe. Both sides strike, the lead falls,
+-- and the replaceable faint waits for its relief decision.
+local function driveToReplacement(formatKey, ability)
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local lead = leveledCombatant(1, 11, "CHIKORITA", 5)
+  if ability ~= nil then
+    lead.mon.ability = ability
+  end
+  lead.mon.condition.currentHp = 1
+  local reserve = leveledCombatant(3, 31, "CHIKORITA", 5)
+  local foe = leveledCombatant(2, 23, "EEVEE", 40)
+  local session = contracts.Battle.newSession(actionScenario(formatKey, { lead, reserve }, { foe }, nil), content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
+  local alpha = requestFor(opening, "alpha")
+  local beta = requestFor(opening, "beta")
+  local striker = assert(alpha.actors[1], "the request addresses its lead")
+  local hunter = assert(beta.actors[1], "the opposing request addresses its lead")
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(alpha, { SessionFixture.attackChoice(striker, 0, SessionFixture.positionTarget(2)) })
+    ),
+    "the doomed strike is accepted"
+  )
+  Assert.isTrue(
+    session:submit(
+      SessionFixture.replyFor(beta, { SessionFixture.attackChoice(hunter, 0, SessionFixture.positionTarget(1)) })
+    ),
+    "the knockout reply is accepted"
+  )
+  session:advance(64)
+  local waiting = SessionFixture.driveUntilSettled(session)
+  Assert.equal(waiting.status, "waiting", "the replaceable faint waits instead of ending")
+  return session, waiting
+end
+
+local function replacementActorOptions(session, relief)
+  local options = session:decisionOptions(relief.requestId)
+  Assert.notNil(options, "the replacement projects its options")
+  return assert(options.actors[1], "the options address the fainted lead")
+end
+
+-- Replacement offers flight only in the wild: the same knockout projects
+-- an enabled run fragment beside the reserve in a wild battle (retail
+-- subscript_0231 asks "Use next Pokemon?" with No attempting escape),
+-- while a trainer faint stays switch-only (ReplaceFainted goes straight
+-- to the party).
+function T.replacement_offers_flight_only_in_wild_battles()
+  local wildSession, wildWaiting = driveToReplacement(WILD_FORMAT, nil)
+  local wildRelief = requestFor(wildWaiting, "alpha")
+  local wildActor = replacementActorOptions(wildSession, wildRelief)
+  Assert.equal(wildActor.kind, "replacement", "the wild prompt stays a replacement")
+  local seenRun, seenSwitch = false, false
+  for _, option in ipairs(wildActor.choices) do
+    if option.role == "run" and option.enabled == true then
+      seenRun = true
+    end
+    if option.role == "switch" and option.enabled == true then
+      seenSwitch = true
+    end
+  end
+  Assert.isTrue(seenSwitch, "the wild replacement still offers its reserve")
+  Assert.isTrue(seenRun, "the wild replacement offers flight beside its reserve")
+  wildSession:dispose()
+
+  local trainerSession, trainerWaiting = driveToReplacement(TRAINER_FORMAT, nil)
+  local trainerRelief = requestFor(trainerWaiting, "alpha")
+  local trainerActor = replacementActorOptions(trainerSession, trainerRelief)
+  for _, option in ipairs(trainerActor.choices) do
+    Assert.isTrue(option.role ~= "run", "trainer replacements offer no flight")
+  end
+  trainerSession:dispose()
+end
+
+-- Wild replacement runs resolve flight before falling back: a guaranteed
+-- Run Away flight ends the battle with the flee result, while a failed
+-- attempt records one escape, holds, and re-opens switch-only (retail
+-- falls through to ShowParty after ESCAPE_FAILED).
+function T.wild_replacement_runs_resolve_flight_then_retry_switch_only()
+  local fledSession, fledWaiting = driveToReplacement(WILD_FORMAT, "RUN_AWAY")
+  local fledRelief = requestFor(fledWaiting, "alpha")
+  local fledRunner = assert(fledRelief.actors[1], "the replacement addresses its fainted lead")
+  Assert.isTrue(
+    fledSession:submit(SessionFixture.replyFor(fledRelief, { { actor = fledRunner, kind = "run", payload = {} } })),
+    "the wild replacement run is accepted"
+  )
+  local flight = SessionFixture.driveUntilSettled(fledSession)
+  Assert.equal(flight.status, "ended", "the guaranteed wild replacement flight ends the battle")
+  Assert.notNil(flight.outcome, "the escape names its terminal result")
+  Assert.equal(flight.outcome.kind, "escaped", "the replacement flight records its escape")
+  fledSession:dispose()
+
+  local heldSession, heldWaiting = driveToReplacement(WILD_FORMAT, nil)
+  local heldRelief = requestFor(heldWaiting, "alpha")
+  local heldRunner = assert(heldRelief.actors[1], "the replacement addresses its fainted lead")
+  local attemptsBefore = heldSession:capture().escapeAttempts
+  Assert.isTrue(
+    heldSession:submit(SessionFixture.replyFor(heldRelief, { { actor = heldRunner, kind = "run", payload = {} } })),
+    "the wild replacement run is accepted"
+  )
+  local after = SessionFixture.driveUntilSettled(heldSession)
+  Assert.equal(after.status, "waiting", "the slow lead fails its opening escape odds and re-opens")
+  local retry = requestFor(after, "alpha")
+  local retryActor = replacementActorOptions(heldSession, retry)
+  local seenRun, seenSwitch = false, false
+  for _, option in ipairs(retryActor.choices) do
+    if option.role == "run" then
+      seenRun = true
+    end
+    if option.role == "switch" and option.enabled == true then
+      seenSwitch = true
+    end
+  end
+  Assert.isTrue(seenSwitch, "the retry still offers its reserve")
+  Assert.isFalse(seenRun, "the retry offers no second flight")
+  Assert.equal(
+    heldSession:capture().escapeAttempts,
+    attemptsBefore + 1,
+    "the failed escape records exactly one attempt"
+  )
+  heldSession:dispose()
+end
+
 -- Servings the shared stack never carried are refused before anything
 -- moves: the reply is rejected as invalid input, the declared stock
 -- stays untouched, the holder keeps its health, and the stream spends

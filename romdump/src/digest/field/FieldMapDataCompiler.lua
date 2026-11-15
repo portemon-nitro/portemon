@@ -758,11 +758,24 @@ function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
       direction = entry.direction,
     }
   end
+  -- Eligible death-refresh reverse map: death map symbol to owning spawn
+  -- key, for the isBlackoutSpawn rows only (MapHeader_GetSpawnIdForDeathWarp).
+  -- Ineligible death maps still relocate on whiteout through blackoutSpawns
+  -- above, but entering them never refreshes the heal spawn.
+  local deathWarpByMap = {}
+  for key, entry in pairs(FieldMoveSources.BLACKOUT_DESTINATIONS) do
+    if FieldMoveSources.DEATH_WARP_ELIGIBLE[key] == true then
+      assert(type(entry.map) == "string" and entry.map ~= "", "eligible death destinations name a map")
+      assert(deathWarpByMap[entry.map] == nil, "death maps name one owning spawn: " .. entry.map)
+      deathWarpByMap[entry.map] = key
+    end
+  end
   local index = {
     schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA,
     spawns = spawns,
     blackoutSpawns = blackoutSpawns,
     specialSpawns = specialSpawns,
+    deathWarpByMap = deathWarpByMap,
   }
   assert(FieldMapDataCache.hasSpawnDestinations(index.spawns), "compiled spawn destinations satisfy the family record")
   assert(
@@ -773,11 +786,20 @@ function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
     FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns),
     "compiled special destinations satisfy the family record"
   )
+  assert(
+    FieldMapDataCache.hasDeathWarpByMap(index.deathWarpByMap),
+    "compiled death-refresh reverse map satisfies the family record"
+  )
   local metadata = romFs:metadata()
   assert(type(metadata) == "table" and type(metadata.sha1) == "string", "spawn marker needs the ROM sha")
   local marker = FieldMapDataCache.spawnIndexMarker(
     metadata.sha1,
-    hashLua({ spawns = spawns, blackoutSpawns = blackoutSpawns, specialSpawns = specialSpawns })
+    hashLua({
+      spawns = spawns,
+      blackoutSpawns = blackoutSpawns,
+      specialSpawns = specialSpawns,
+      deathWarpByMap = deathWarpByMap,
+    })
   )
   return { index = index, marker = marker }
 end

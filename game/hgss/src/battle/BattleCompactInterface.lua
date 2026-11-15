@@ -177,9 +177,10 @@ local function scopeFor(mode, view)
     if child.kind == "learn" and type(child.confirmation) == "table" then
       return "two-option"
     end
-  elseif mode == "shift" then
-    -- The held Shift offer answers through the source Yes/No planes
-    -- behind the staged question instead of the command menu.
+  elseif mode == "shift" or mode == "use-next" then
+    -- The held Shift offer and the wild replacement offer answer through
+    -- the source Yes/No planes behind their staged questions instead of
+    -- the command menu.
     return "two-option"
   end
   return "command"
@@ -765,7 +766,7 @@ local function regionsFor(content, mode)
   if mode == "narration" or mode == "outcome" then
     return { { id = "dialogue", x = 0, y = 0, width = 256, height = 192, scope = mode } }
   end
-  if mode == "shift" then
+  if mode == "shift" or mode == "use-next" then
     -- Pointer taps arm the Yes/No cells directly: confirm answers Yes
     -- and back answers No through the same semantic edges as keypad.
     local regions = {}

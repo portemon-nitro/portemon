@@ -126,6 +126,7 @@ local BERRY_FLAVORS = {
 ---@field private _shiftOfferHandler (fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>): ShiftOffer?)?
 ---@field private _resumeTurnHandler fun(state: table<string, unknown>, budget: integer)
 ---@field private _commitSwitchIntentHandler fun(state: table<string, unknown>)
+---@field private _buildReplacementBatch (fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>, allowRunOverride: boolean?))?
 ---@field private _decisionLease boolean?
 ---@field private _trainerProvisional table<integer, table<string, integer>>
 ---@field private _finalized boolean
@@ -4234,6 +4235,7 @@ end
 ---@field bindRuleset fun(ruleset: HgssRuleset)
 ---@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer)
 ---@field settlePostReplacement fun(state: table<string, unknown>, held: table<integer, table<string, unknown>>?)
+---@field buildReplacementBatch fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>, allowRunOverride: boolean?)
 
 ---@param state table<string, unknown>
 ---@param actor table<string, unknown>
@@ -6660,7 +6662,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
 
   ---@param state table<string, unknown> live battle state under replacement work
   ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations
-  local function buildReplacementBatch(state, obligations)
+  ---@param allowRunOverride boolean? false forces switch-only after a failed wild escape; nil derives from the encounter
+  local function buildReplacementBatch(state, obligations, allowRunOverride)
     local context = BattleContext.wrap(state)
     local counter = state.batchCounter --[[@as integer]] + 1
     state.batchCounter = counter
@@ -6676,11 +6679,18 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         internal = obligation.internal,
       }
     end
+    -- Retail ReplaceFainted offers flight beside replacement in wild
+    -- battles only (subscript_0231): trainer faints stay switch-only,
+    -- and a failed wild escape retries switch-only without a second ask.
+    local allowRun = allowRunOverride
+    if allowRun == nil then
+      allowRun = battleKind == "wild"
+    end
     state.pending = {
       batch = { id = counter, epoch = counter, requests = {} },
       submitted = {},
       reserved = { replacements = {}, items = {} },
-      replacement = { obligations = stored },
+      replacement = { obligations = stored, allowRun = allowRun },
     }
     context:pushFrame({
       kind = "round",
@@ -6706,11 +6716,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       end
     end
     for _, controller in ipairs(controllerOrder) do
+      local kinds = { "switch" }
+      if allowRun == true then
+        kinds[#kinds + 1] = "run"
+      end
       context:requestDecision({
         controller = controller,
         kind = HgssSessionExecutor.DECISION_KIND,
         actors = byController[controller],
-        legalChoices = { kinds = { "switch" } },
+        legalChoices = { kinds = kinds },
       })
     end
     state.status = "waiting"
@@ -7426,6 +7440,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     settleEntryTiming = settleEntryTiming,
     settlePostReplacement = settlePostReplacement,
     shiftOfferFor = shiftOfferFor,
+    buildReplacementBatch = buildReplacementBatch,
   }
 end
 
@@ -7935,6 +7950,9 @@ function HgssSessionExecutor:_bindLifecycle()
   -- seam for commit-time replacement work outside the turn handlers.
   self._settleEntryTiming = turnHandlers.settleEntryTiming
   self._settlePostReplacement = turnHandlers.settlePostReplacement
+  -- Failed wild escapes retry switch-only through the same batch builder
+  -- the turn seam owns, preserving the encounter flight law there.
+  self._buildReplacementBatch = turnHandlers.buildReplacementBatch
   self._ruleset = ruleset
   ruleset:initialize(self)
 end
@@ -8019,8 +8037,10 @@ function HgssSessionExecutor:_commitReplacement(state)
   local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
   -- Index externally chosen arrivals by fainted combatant. Replies were
   -- validated on submit and suspension stages no intervening mechanics,
-  -- so every open obligation answers exactly once here.
+  -- so every open obligation answers exactly once here. Wild runners
+  -- divert to the escape attempt below instead of naming a reserve.
   local picks = {} ---@type table<integer, integer>
+  local runners = {} ---@type table<integer, table<string, unknown>>
   for _, request in ipairs(DecisionBatch.requests(state)) do
     local reply = submitted[
       request.requestId --[[@as integer]]
@@ -8034,11 +8054,23 @@ function HgssSessionExecutor:_commitReplacement(state)
       local payload = entry.payload --[[@as table<string, unknown>]]
       assert(picks[
         actor.combatant --[[@as integer]]
-      ] == nil, "replacements answer once per fainted entry")
-      picks[
+      ] == nil and runners[
         actor.combatant --[[@as integer]]
-      ] = payload.replacement --[[@as integer]]
+      ] == nil, "replacements answer once per fainted entry")
+      if entry.kind == "run" then
+        runners[
+          actor.combatant --[[@as integer]]
+        ] = actor
+      else
+        picks[
+          actor.combatant --[[@as integer]]
+        ] = payload.replacement --[[@as integer]]
+      end
     end
+  end
+  if next(runners) ~= nil then
+    self:_commitReplacementEscape(state, obligations, runners)
+    return
   end
   local claimed = {} ---@type table<integer, boolean>
   -- A batch that already carries a compulsory player entry settles
@@ -8118,12 +8150,108 @@ function HgssSessionExecutor:_commitReplacement(state)
   settleReplacements(state)
 end
 
+--- Commits a wild replacement batch where at least one fainted entry
+--- chose flight: one escape attempt settles the batch, matching retail
+--- ReplaceFainted (answering No to "Use next Pokemon?" tries escape
+--- before any reserve enters). Success emits the flight fact and ends
+--- the battle; failure records the attempt, emits the hold fact, and
+--- re-opens the same obligations switch-only without a second ask.
+---@param state table<string, unknown> live battle state under replacement commit
+---@param obligations table<integer, table<string, unknown>> ordered replacement obligations under commit
+---@param runners table<integer, table<string, unknown>> fainted actors that chose flight by combatant
+function HgssSessionExecutor:_commitReplacementEscape(state, obligations, runners)
+  local runnerId = nil
+  for _, obligation in ipairs(obligations) do
+    if
+      runners[
+        obligation.combatant --[[@as integer]]
+      ] ~= nil
+    then
+      runnerId = obligation.combatant --[[@as integer]]
+      break
+    end
+  end
+  assert(runnerId ~= nil, "wild escapes name their fainted runner")
+  local runner = BattleState.combatant(state, runnerId --[[@as integer]])
+  local player, enemy = stagedEscapeSpeeds(state, runner, self._speciesFacts)
+  -- Assured flight reads the fainted entry through the effective-ability
+  -- and effective-item readers, matching retail BattleTryRun
+  -- (GetBattlerAbility/GetBattlerHeldItemEffect on the fainted battler):
+  -- Run Away or a Smoke Ball leaves outright without a roll, while
+  -- Gastro Acid suppression, Klutz, and Embargo suppress the guarantee
+  -- exactly like the turn escape law. Trapping died with the faint, so
+  -- BattleTryRun applies without a trap check.
+  local assured = false
+  local runAwaySource = nil
+  local itemSource = nil
+  local Bridge = require("libs.battle.src.gen4.NativePassiveBridge")
+  local bridge = Bridge.wrap(state)
+  if
+    bridge:abilityOf(runnerId --[[@as integer]]) == "RUN_AWAY"
+  then
+    assured = true
+    runAwaySource = { kind = "ability", key = "RUN_AWAY" }
+  elseif
+    bridge:effectiveHeldItem(runnerId --[[@as integer]]) == "SMOKE_BALL"
+  then
+    assured = true
+    itemSource = { kind = "item", key = "SMOKE_BALL" }
+  end
+  local result = Escape.attempt({
+    battleKind = self._battleKind,
+    trapped = nil,
+    guaranteed = assured,
+    speeds = { player = player, enemy = enemy },
+    attempts = state.escapeAttempts,
+    stream = state.rng,
+  })
+  local context = BattleContext.wrap(state)
+  local runnerActor = runners[runnerId] --[[@as table<string, unknown>]]
+  if result.escaped == true then
+    local payload = {
+      combatant = runnerId,
+      activation = runnerActor.activation,
+      escaped = true,
+      reason = result.reason,
+      attempts = result.attempts,
+    } --[[@as table<string, unknown>]]
+    payload.escapeSource = itemSource or runAwaySource
+    context:emit("flee", { kind = "run", combatant = runnerId }, payload)
+    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+    local roundFrame = frames[#frames]
+    assert(roundFrame ~= nil and roundFrame.kind == "round", "replacement escape closes its round frame")
+    frames[#frames] = nil
+    state.pending = nil
+    state.queue = {}
+    endBattleEarly(state, { kind = "escaped", rounds = state.round })
+    return
+  end
+  state.escapeAttempts = result.attempts
+  context:emit("flee", { kind = "run", combatant = runnerId }, {
+    combatant = runnerId,
+    activation = runnerActor.activation,
+    escaped = false,
+    reason = result.reason,
+    attempts = result.attempts,
+  })
+  local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+  local roundFrame = frames[#frames]
+  assert(roundFrame ~= nil and roundFrame.kind == "round", "a failed escape closes its round frame")
+  frames[#frames] = nil
+  state.pending = nil
+  state.queue = {}
+  local rebuild = self._buildReplacementBatch
+  assert(type(rebuild) == "function", "failed escapes retry through the replacement batch builder")
+  rebuild(state, obligations, false)
+end
+
 ---@param state table<string, unknown>
 ---@param replacement table<string, unknown> open replacement continuation
 ---@param choice table<string, unknown>
 ---@param staged table<string, unknown> reservation maps staged for the reply under admission
 ---@return table<string, unknown>? input error, or nil when the replacement binds
-local function checkReplacementBinding(state, replacement, choice, staged)
+---@param battleKind string wild-or-trainer encounter policy selecting flight law for replacement escapes
+local function checkReplacementBinding(state, replacement, choice, staged, battleKind)
   local actor = choice.actor --[[@as table<string, unknown>]]
   local payload = choice.payload --[[@as table<string, unknown>]]
   local obligations = replacement.obligations --[[@as table<integer, table<string, unknown>>]]
@@ -8139,6 +8267,20 @@ local function checkReplacementBinding(state, replacement, choice, staged)
   end
   if wanted == nil then
     return BattleErrors.input("replies must address exactly the requested entries", {})
+  end
+  if choice.kind == "run" then
+    -- Retail ReplaceFainted offers flight beside replacement in wild
+    -- battles (subscript_0231 asks "Use next Pokemon?" with No
+    -- attempting escape): the fainted entry may flee outright, ending
+    -- the battle, while trainer faints stay switch-only. Trapping died
+    -- with the faint, so BattleTryRun applies without a trap check.
+    if battleKind ~= "wild" then
+      return BattleErrors.input("flight refuses trainer battles", {})
+    end
+    if replacement.allowRun ~= true then
+      return BattleErrors.input("replacements answer with switches", {})
+    end
+    return nil
   end
   if choice.kind ~= "switch" then
     return BattleErrors.input("replacements answer with switches", {})
@@ -8341,7 +8483,13 @@ local function checkChoiceBinding(state, choice, admitted, battleKind, staged, m
     -- Replacement batches address fainted entries: the live-entry binding
     -- below cannot hold, so obligations bind instead. Stale pre-faint
     -- actions still fail here when they name no open obligation.
-    return checkReplacementBinding(state, openBatch.replacement --[[@as table<string, unknown>]], choice, staged)
+    return checkReplacementBinding(
+      state,
+      openBatch.replacement --[[@as table<string, unknown>]],
+      choice,
+      staged,
+      battleKind
+    )
   end
   if openBatch ~= nil and openBatch.shift ~= nil then
     -- Shift batches address the standing player entry for one optional
@@ -9228,6 +9376,18 @@ local function replacementActorOptions(state, actor, admitted, battleKind)
       nil,
       nil
     )
+  end
+  -- Retail ReplaceFainted offers flight beside the reserve picker in
+  -- wild battles (answering No to "Use next Pokemon?" attempts escape):
+  -- the run fragment rides the same replacement request so one reply
+  -- either replaces or flees. Trainer replacements stay switch-only.
+  if battleKind == "wild" and type(replacement) == "table" and replacement.allowRun == true then
+    local runChoice = {
+      actor = fragmentActor(actor),
+      kind = "run",
+      payload = {},
+    } --[[@as table<string, unknown>]]
+    choices[#choices + 1] = probedOption(state, runChoice, "run", "run", {}, admitted, battleKind, nil, nil)
   end
   return entry
 end

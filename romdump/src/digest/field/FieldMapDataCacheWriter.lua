@@ -89,6 +89,7 @@ local function persistSpawnIndex(tx, bundle)
     or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
     or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
     or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
+    or not FieldMapDataCache.hasDeathWarpByMap(index.deathWarpByMap)
   then
     Errors.raise("FIELD_MAP_DATA_CACHE_STALE", "spawn index readback has the wrong identity", {})
   end

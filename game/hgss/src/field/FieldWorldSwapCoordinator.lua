@@ -180,6 +180,36 @@ function FieldWorldSwapCoordinator:publishSpecialSpawn(runtime, resolution)
   })
 end
 
+-- Blackout-spawn publication owns the durable heal point the source
+-- field control refreshes on every non-connection map entry
+-- (FieldSystem_InitMapOnEnter via MapHeader_GetSpawnIdForDeathWarp):
+-- entering a compiled death destination (a Pokemon Center interior, the
+-- mother house, and the other listed death maps) records its spawn key
+-- on the travel owner. Any other destination leaves the record
+-- untouched, and a missing cache or travel owner never fails the swap.
+---@param self FieldWorldSwapCoordinator
+---@param runtime table<string, unknown> the live runtime surface (travel, cacheFs)
+---@param resolution table<string, unknown>
+function FieldWorldSwapCoordinator:publishBlackoutSpawn(runtime, resolution)
+  local travel = runtime.fieldTravel
+  if travel == nil or type(travel.setLastHealSpawn) ~= "function" then
+    return
+  end
+  local destinationMap = resolution.destinationMap
+  if type(destinationMap) ~= "table" or type(destinationMap.mapSymbol) ~= "string" then
+    return
+  end
+  local cacheFs = runtime.cacheFs
+  if cacheFs == nil or type(cacheFs.loadLua) ~= "function" then
+    return
+  end
+  local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+  local spawnKey = FieldMapDataCache.spawnKeyForDeathMap(cacheFs, destinationMap.mapSymbol)
+  if spawnKey ~= nil then
+    travel:setLastHealSpawn(spawnKey)
+  end
+end
+
 ---@param self FieldWorldSwapCoordinator
 ---@param resolution table<string, unknown>
 ---@param _ FieldDirection
@@ -188,6 +218,7 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   local runtime = self.runtime
   local sourceMap, sourcePlayer = runtime.runtimeMap, runtime.player
   self:publishSpecialSpawn(runtime, resolution)
+  self:publishBlackoutSpawn(runtime, resolution)
   local runtimeMap = resolution.destinationMap
   local physical = (prepared and prepared.physical) or resolution.physical
   local residency = assert(prepared and prepared.residency, "prepared residency transaction required")

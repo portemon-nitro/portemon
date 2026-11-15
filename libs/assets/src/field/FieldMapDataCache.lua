@@ -512,6 +512,33 @@ function FieldMapDataCache.hasSpecialSpawnDestinations(spawns)
   return count > 0
 end
 
+-- Eligible death-refresh reverse map: death map symbol to owning spawn
+-- key for the isBlackoutSpawn rows only. Ineligible death maps relocate
+-- on whiteout but never refresh the heal spawn on entry.
+---@param byMap unknown
+---@return boolean
+function FieldMapDataCache.hasDeathWarpByMap(byMap)
+  if type(byMap) ~= "table" then
+    return false
+  end
+  local count = 0
+  local seenMaps = {} ---@type table<string, boolean>
+  for map, spawnKey in pairs(byMap) do
+    if type(map) ~= "string" or map == "" then
+      return false
+    end
+    if type(spawnKey) ~= "string" or spawnKey == "" then
+      return false
+    end
+    if seenMaps[map] == true then
+      return false
+    end
+    seenMaps[map] = true
+    count = count + 1
+  end
+  return count > 0
+end
+
 -- True only if the marker is exact and the index loads with the current
 -- schema and a valid destination table.
 function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
@@ -526,6 +553,7 @@ function FieldMapDataCache.isSpawnIndexReady(cacheFs, expectedMarker)
     and FieldMapDataCache.hasSpawnDestinations(index.spawns)
     and FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
     and FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
+    and FieldMapDataCache.hasDeathWarpByMap(index.deathWarpByMap)
 end
 
 -- Resolve one setter-written special relocation record: a fresh copy on
@@ -542,6 +570,7 @@ function FieldMapDataCache.specialSpawnDestination(cacheFs, spawnKey)
   if
     type(index) ~= "table"
     or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasDeathWarpByMap(index.deathWarpByMap)
     or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
     or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
     or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
@@ -571,6 +600,7 @@ function FieldMapDataCache.blackoutDestination(cacheFs, spawnKey)
   if
     type(index) ~= "table"
     or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasDeathWarpByMap(index.deathWarpByMap)
     or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
     or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
     or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
@@ -593,6 +623,39 @@ function FieldMapDataCache.blackoutDestination(cacheFs, spawnKey)
   }
 end
 
+-- Reverse-resolve the heal spawn owning one death destination map through
+-- the eligible reverse index: the spawn key for an isBlackoutSpawn death
+-- map, nil for any other map (including ineligible death maps, which
+-- relocate on whiteout but never refresh the heal spawn on entry).
+-- Mirrors retail MapHeader_GetSpawnIdForDeathWarp; a missing or malformed
+-- index is corrupt generated data and raises.
+---@param cacheFs CacheFs
+---@param mapSymbol string destination-global map identity under lookup
+---@return string? owning spawn key, nil when the map sets no respawn
+function FieldMapDataCache.spawnKeyForDeathMap(cacheFs, mapSymbol)
+  assert(type(mapSymbol) == "string" and mapSymbol ~= "", "death-map resolution needs a map symbol")
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if
+    type(index) ~= "table"
+    or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasDeathWarpByMap(index.deathWarpByMap)
+    or not FieldMapDataCache.hasBlackoutDestinations(index.blackoutSpawns)
+    or not FieldMapDataCache.hasSpawnDestinations(index.spawns)
+    or not FieldMapDataCache.hasSpecialSpawnDestinations(index.specialSpawns)
+  then
+    Errors.raise(SPAWN_INDEX_INVALID, "death-map index is missing or malformed; rebuild the derived cache", {
+      map = mapSymbol,
+    })
+  end
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local byMap = spawnIndex.deathWarpByMap --[[@as table<string, string>]]
+  local spawnKey = byMap[mapSymbol]
+  if type(spawnKey) == "string" and spawnKey ~= "" then
+    return spawnKey
+  end
+  return nil
+end
+
 -- Resolve one cited landing destination: a fresh record on success, nil
 -- for an unknown spawn key (the caller refuses loudly, never a guess).
 -- A missing or malformed index is corrupt generated data and raises.
@@ -613,6 +676,7 @@ function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
   local destinations = spawnIndex.spawns --[[@as table<string, table<string, unknown>>]]
   if
     not FieldMapDataCache.hasSpawnDestinations(destinations)
+    or not FieldMapDataCache.hasDeathWarpByMap(spawnIndex.deathWarpByMap)
     or not FieldMapDataCache.hasBlackoutDestinations(spawnIndex.blackoutSpawns)
     or not FieldMapDataCache.hasSpecialSpawnDestinations(spawnIndex.specialSpawns)
   then
