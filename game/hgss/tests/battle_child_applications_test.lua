@@ -8,10 +8,24 @@
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
 
 local T = {}
+
+-- Native party menus behind composed children: production always lends
+-- the staged party manifest, so composition resolves through the same
+-- generated geometry instead of an invented fallback.
+local function nativePartyServices(extra)
+  local services = { battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } } }
+  if type(extra) == "table" then
+    for key, value in pairs(extra) do
+      services[key] = value
+    end
+  end
+  return services
+end
 
 ---@return table<integer, table<string, unknown>> detached own-party snapshot
 local function twoEeveeRoster()
@@ -457,12 +471,12 @@ function T.party_child_translates_native_selections_into_kernel_fragments()
     inventory = {},
   }
   local rosterCopy = copyRoster(twoEeveeRoster())
-  local child, openErr = BattleChildApplications.open(intent, {})
+  local child, openErr = BattleChildApplications.open(intent, nativePartyServices({}))
   Assert.notNil(child, "the voluntary party composes: " .. tostring(openErr))
   assert(child ~= nil, "the party child composes")
   Assert.equal(child:application(), "party", "the party child carries its native receipt")
   Assert.isNil(child:takeResult(), "opening consumes the initiating edge: nothing is staged")
-  child:input({ { type = "navigate", direction = "down" } })
+  child:input({ { type = "navigate", direction = "right" } })
   child:input({ { type = "confirm" } })
   Assert.equal(child:draw().state, "context", "the selected mon opens the native party action menu")
   child:input({ { type = "confirm" } })
@@ -497,7 +511,7 @@ function T.party_child_refuses_stale_slots_without_inventing_replies()
     party = twoEeveeRoster(),
     inventory = {},
   }
-  local child, openErr = BattleChildApplications.open(intent, {})
+  local child, openErr = BattleChildApplications.open(intent, nativePartyServices({}))
   Assert.notNil(child, "the voluntary party composes: " .. tostring(openErr))
   assert(child ~= nil, "the party child composes")
   Assert.isNil(child:translateSelection(5), "an empty slot translates to nothing")
@@ -617,7 +631,11 @@ function T.native_bag_focus_and_target_continuation()
       },
     }
   end
-  local flows = BattleSubflows.new({ launchId = "launch-native-bag", itemCatalog = catalog })
+  local flows = BattleSubflows.new({
+    launchId = "launch-native-bag",
+    itemCatalog = catalog,
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+  })
   Assert.isTrue(flows:open(healingIntent({ POTION = 5 }, healingActors())), "the stocked bag opens")
   local function step(events)
     flows:update(events)
@@ -936,7 +954,7 @@ function T.battle_bag_lists_in_carried_slot_order()
 end
 function T.target_picker_disposes_alone_behind_the_retained_browser()
   local catalog = ItemFixture.makeCatalog()
-  local child, openErr = BattleChildApplications.open(bagIntent({ POTION = 5 }), { itemCatalog = catalog })
+  local child, openErr = BattleChildApplications.open(bagIntent({ POTION = 5 }), nativePartyServices({ itemCatalog = catalog }))
   Assert.notNil(child, "the stocked bag composes: " .. tostring(openErr))
   assert(child ~= nil, "the bag child composes")
   child:openTarget("POTION")

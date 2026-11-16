@@ -340,7 +340,7 @@ local function fullManifest()
     evolutionEmitters[#evolutionEmitters + 1] = emitter
   end
   local old = {
-    schema = "g4-battle-presentation-v14",
+    schema = "g4-battle-presentation-v17",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -411,7 +411,7 @@ local function fullManifest()
       hud = { font = "data/generated/field/font/font-0.lua", palette = printerPalette(1) },
       menu = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(7) },
       bag = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(12) },
-      party = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(1) },
+      party = { font = "data/generated/field/font/font-4.lua", palette = printerPalette(16) },
       bugContest = { font = "data/generated/field/font/font-0.lua" },
       recorderFeedback = { font = "data/generated/field/font/font-0.lua" },
     },
@@ -613,6 +613,24 @@ local function fullManifest()
   old.images["assets/generated/battle/bag-page-1.png"] = { width = 256, height = 192 }
   old.images["assets/generated/battle/bag-page-2.png"] = { width = 256, height = 192 }
   old.images["assets/generated/battle/bag-page-3.png"] = { width = 256, height = 192 }
+  for _, slug in ipairs({
+    "party-list",
+    "mon-menu",
+    "summary",
+    "check-moves",
+    "move-detail",
+    "restore-pp",
+    "learn-move",
+    "forget-move",
+    "learn-move-contest",
+    "forget-move-contest",
+  }) do
+    old.images["assets/generated/battle/party-page-" .. slug .. "-1.png"] = { width = 256, height = 192 }
+    old.images["assets/generated/battle/party-page-" .. slug .. "-2.png"] = { width = 256, height = 192 }
+  end
+  for level = 0, 8 do
+    old.images["assets/generated/battle/party-exp-" .. tostring(level) .. ".png"] = { width = 8, height = 8 }
+  end
   old.images["assets/generated/battle/battle-finger.png"] = { width = 16, height = 16 }
   for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
     old.images["assets/generated/battle/battle-cursor-" .. corner .. ".png"] = { width = 16, height = 16 }
@@ -1305,6 +1323,156 @@ local function fullManifest()
       },
       buttons = {},
     },
+    party = (function()
+      local pages = {}
+      for _, slug in ipairs({
+        "party-list",
+        "mon-menu",
+        "summary",
+        "check-moves",
+        "move-detail",
+        "restore-pp",
+        "learn-move",
+        "forget-move",
+        "learn-move-contest",
+        "forget-move-contest",
+      }) do
+        pages[#pages + 1] = {
+          key = "party:page/" .. slug,
+          layers = {
+            {
+              image = "assets/generated/battle/party-page-" .. slug .. "-1.png",
+              x = 0,
+              y = 0,
+              width = 256,
+              height = 192,
+            },
+            {
+              image = "assets/generated/battle/party-page-" .. slug .. "-2.png",
+              x = 0,
+              y = 0,
+              width = 256,
+              height = 192,
+            },
+          },
+        }
+      end
+      local function windows(count)
+        local rows = {}
+        for _ = 1, count do
+          rows[#rows + 1] = { bg = 0, left = 0, top = 0, width = 1, height = 1, palette = 0, baseTile = 0 }
+        end
+        return rows
+      end
+      local function boxes(count)
+        local rows = {}
+        for _ = 1, count do
+          rows[#rows + 1] = {
+            top = 0,
+            bottom = 1,
+            left = 0,
+            right = 1,
+          }
+        end
+        return rows
+      end
+      local function cursors(count)
+        local rows = {}
+        for _ = 1, count do
+          rows[#rows + 1] = {
+            left = 0,
+            top = 0,
+            right = 1,
+            bottom = 1,
+            up = 0,
+            down = 0,
+            leftNeighbor = 0,
+            rightNeighbor = 0,
+          }
+        end
+        return rows
+      end
+      local function spots(count)
+        local rows = {}
+        for _ = 1, count do
+          rows[#rows + 1] = { x = 0, y = 0 }
+        end
+        return rows
+      end
+      local rects = {}
+      for _ = 1, 34 do
+        rects[#rects + 1] = { x = 0, y = 0, w = 1, h = 1 }
+      end
+      local expTiles = {}
+      for level = 0, 8 do
+        expTiles[#expTiles + 1] = {
+          level = level,
+          image = "assets/generated/battle/party-exp-" .. tostring(level) .. ".png",
+        }
+      end
+      return {
+        pages = pages,
+        windows = {
+          base = windows(2),
+          partyList = windows(6),
+          monMenu = windows(4),
+          summary = windows(35),
+          checkMoves = windows(11),
+          moveDetail = windows(17),
+          restorePP = windows(5),
+          learnMove = windows(6),
+          forgetMove = windows(12),
+          contestForgetMove = windows(7),
+        },
+        hitboxes = {
+          partyList = boxes(6),
+          monMenu = boxes(3),
+          summary = boxes(3),
+          checkMoves = boxes(7),
+          moveDetail = boxes(4),
+          restorePP = boxes(4),
+          learnMove = boxes(6),
+          forgetMove = boxes(2),
+        },
+        buttonRects = rects,
+        cursorBoxes = {
+          partyList = cursors(7),
+          monMenu = cursors(4),
+          summary = cursors(4),
+          checkMoves = cursors(8),
+          moveDetail = cursors(5),
+          restorePP = cursors(5),
+          learnMove = cursors(7),
+          forgetMove = cursors(3),
+          learnMoveContest = cursors(7),
+          forgetMoveContest = cursors(3),
+        },
+        spritePositions = {
+          listIcons = spots(6),
+          listStatusIcons = spots(6),
+          summaryTypes = spots(2),
+          checkMovesTypes = spots(2),
+          checkMovesMoves = spots(4),
+          moveDetailTypes = spots(2),
+          learnMoveTypes = spots(2),
+          learnMoveMoves = spots(5),
+          forgetMoveTypes = spots(2),
+          fixed = {
+            monIcon = { x = 0, y = 0 },
+            statusIcon = { x = 0, y = 0 },
+            monMenuIcon = { x = 0, y = 0 },
+            summaryHeldItem = { x = 0, y = 0 },
+            moveDetailMoveIcon = { x = 0, y = 0 },
+            contestMoveIcon = { x = 0, y = 0 },
+            categoryIcon = { x = 0, y = 0 },
+            heldItemDelta = { x = 0, y = 0 },
+            capsuleDelta = { x = 0, y = 0 },
+          },
+        },
+        buttons = {},
+        expTiles = expTiles,
+      }
+    end)(),
     messages = {
       roles = old.textRoles,
       banks = {

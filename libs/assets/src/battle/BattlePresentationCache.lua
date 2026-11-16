@@ -233,6 +233,36 @@ function BattlePresentationCache.globalSourceIndexPath(name)
   return ASSET_DIR .. "/" .. name .. ".source-index.rgba8"
 end
 
+---@param slug string party page slug after "party:page/", e.g. "summary"
+---@param layer integer 1 or 2 LoadPageTilemaps tilemap layer
+---@return string cache-relative staged party page layer image path
+function BattlePresentationCache.partyPageImagePath(slug, layer)
+  assert(
+    type(slug) == "string" and slug:match("^[a-z][a-z%-]*$") ~= nil,
+    "party page slugs are path-safe: " .. tostring(slug)
+  )
+  assert(layer == 1 or layer == 2, "party pages stage their two tilemap layers")
+  return BattlePresentationCache.globalImagePath("party-page-" .. slug .. "-" .. layer)
+end
+
+---@param button integer BattlePartyButton order 0-33
+---@param frame integer zero-based staged face frame
+---@param variant string "self" or "partner" mon button variant
+---@return string cache-relative staged party button face image path
+function BattlePresentationCache.partyButtonImagePath(button, frame, variant)
+  assert(
+    type(button) == "number" and button % 1 == 0 and button >= 0 and button <= 33,
+    "party button faces name their button"
+  )
+  assert(
+    type(frame) == "number" and frame % 1 == 0 and frame >= 0 and frame <= 3,
+    "party button faces name their frame"
+  )
+  assert(variant == "self" or variant == "partner", "party button faces name their variant")
+  local suffix = variant == "partner" and "p" or ""
+  return BattlePresentationCache.globalImagePath(("party-button-%d-%d%s"):format(button, frame, suffix))
+end
+
 ---@param resourceKey string semantic resource key
 ---@return string cache-relative staged decoded resource path
 function BattlePresentationCache.globalResourcePath(resourceKey)

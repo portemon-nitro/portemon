@@ -60,8 +60,17 @@ local function childRegions(child)
     return nil
   end
   local native = child.native --[[@as table<string, unknown>?]]
+  -- The native roster resolves through the full-surface native tap:
+  -- wrapper pages own their transcribed hitbox regions instead, since
+  -- the child answers wrapper taps by stable identity, not coordinates.
+  local wrapperPage = type(child.partyPage) == "string" and child.partyPage or nil
+  local isWrapper = wrapperPage == "mon_menu"
+    or wrapperPage == "summary"
+    or wrapperPage == "moves"
+    or wrapperPage == "move_detail"
   if
-    (child.kind == "bag" or child.kind == "party" or child.kind == "target")
+    not isWrapper
+    and (child.kind == "bag" or child.kind == "party" or child.kind == "target")
     and type(native) == "table"
     and type(native.layout) == "table"
   then
@@ -72,6 +81,22 @@ local function childRegions(child)
   end
   if child.kind == "bag" and child.empty ~= true then
     return retailBagHitRegions(child)
+  end
+  -- Wrapper pages resolve through their transcribed hitbox regions
+  -- with the shared cancel rect; without resolved regions taps name
+  -- nothing instead of inventing modal rows.
+  if isWrapper then
+    local regions = child.pageRegions --[[@as table<integer, table<string, unknown>>?]]
+    if type(regions) ~= "table" then
+      return nil
+    end
+    return regions
+  end
+  -- The native renderer paints the roster through the staged layout,
+  -- so list taps ride the native hit path alone: without it taps name
+  -- nothing instead of inventing modal rows.
+  if child.kind == "party" or child.kind == "target" then
+    return nil
   end
   local regions = {}
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]

@@ -2564,6 +2564,30 @@ function FieldBattlePresentation:_preparationServices()
           enrollUpload(envelope, path)
         end
       end
+      -- Party wrapper backgrounds decode alongside fixed art so opening
+      -- Summary/Check Moves never serializes behind its first drawable:
+      -- each demanded party:page key enrolls both staged layers.
+      local partySection = type(staged.party) == "table" and staged.party or nil
+      local partyPages = type(partySection) == "table" and partySection.pages or nil
+      if type(partyPages) == "table" then
+        local wantedPages = type(demand.partyPages) == "table" and demand.partyPages or {}
+        for _, wantedKey in ipairs(wantedPages) do
+          for _, page in ipairs(partyPages) do
+            if type(page) == "table" and page.key == wantedKey then
+              local layers = page.layers
+              if type(layers) == "table" then
+                for _, layer in ipairs(layers) do
+                  local imagePath = type(layer) == "table" and layer.image or nil
+                  if type(imagePath) == "string" then
+                    enrollUpload(envelope, imagePath)
+                  end
+                end
+              end
+              break
+            end
+          end
+        end
+      end
       -- Cry and music banks stage through the same provisioner seam so
       -- the launch never voices a bank whose file is not yet generated:
       -- an unstaged bank waits under cover while its fixed art already
@@ -2786,6 +2810,47 @@ function FieldBattlePresentation:_preparationServices()
       end
       return drawable
     end
+    -- Battle-party button faces (battle_party_menu.c GetButtonTilemap
+    -- through BuildButtonTilemap): the staged press, selected, and
+    -- disabled patches repaint over the rest page raster. Missing
+    -- staged art keeps the page under the existing pending path.
+    local faceButton, faceFrame = tostring(key):match("^party:button:(%d+):(%d+)$")
+    if faceButton ~= nil then
+      local staged = stagedManifest(envelope._manifest)
+      local party = type(staged) == "table" and staged.party or nil
+      local buttons = type(party) == "table" and party.buttons or nil
+      if type(buttons) == "table" then
+        local button = tonumber(faceButton)
+        local frame = tonumber(faceFrame)
+        for _, entry in ipairs(buttons) do
+          if type(entry) == "table" and entry.button == button and entry.frame == frame and entry.variant == "self" then
+            if type(entry.image) == "string" then
+              return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, entry.image)
+            end
+            return nil
+          end
+        end
+      end
+      return nil
+    end
+    -- Retail summary experience-bar tiles (battle_party_menu.c
+    -- DrawExpBar): the staged per-level tile repaints its track cell.
+    -- Missing staged art keeps the empty track the page raster carries.
+    local expLevel = tostring(key):match("^party:exp:(%d+)$")
+    if expLevel ~= nil then
+      local staged = stagedManifest(envelope._manifest)
+      local party = type(staged) == "table" and staged.party or nil
+      local tiles = type(party) == "table" and party.expTiles or nil
+      if type(tiles) == "table" then
+        local level = tonumber(expLevel)
+        for _, entry in ipairs(tiles) do
+          if type(entry) == "table" and entry.level == level and type(entry.image) == "string" then
+            return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, entry.image)
+          end
+        end
+      end
+      return nil
+    end
     -- Catching-tutorial finger art (battle_bag_menu.c
     -- BattleFinger_LoadResources from NARC_a_1_6_4): the staged idle
     -- frame centers on its per-page spot while the tutorial auto-plays.
@@ -2839,6 +2904,103 @@ function FieldBattlePresentation:_preparationServices()
       end
       return nil
     end
+    -- Retail battle-party page backgrounds (battle_party_menu.c
+    -- LoadPageTilemaps): each staged page pairs two SUB_BG layers that
+    -- composite back-to-front at the pane origin. LoadPageTilemaps loads
+    -- files[0] to the front layer (GF_BG_LYR_SUB_2, priority 2) and
+    -- files[1] to the back layer (GF_BG_LYR_SUB_3, priority 3), so the
+    -- second staged layer (cream background, header bars) paints first
+    -- and the first staged layer (button faces, move panels) paints over
+    -- it. The renderer draws one drawable per wrapper page, so the
+    -- envelope composites both staged layers behind the single
+    -- party:page key in that order. Missing staged art keeps
+    -- the page under the existing pending path. Legacy wrapper ids
+    -- (moves/move_detail) resolve to their dash slugs.
+    local partySlug = tostring(key):match("^party:page/(.+)$")
+    if partySlug ~= nil then
+      if partySlug == "moves" then
+        partySlug = "check-moves"
+      elseif partySlug == "move_detail" then
+        partySlug = "move-detail"
+      end
+      local partyKey = "party:page/" .. partySlug
+      local stagedParty = stagedManifest(envelope._manifest)
+      local partySection = type(stagedParty) == "table" and stagedParty.party or nil
+      local partyPages = type(partySection) == "table" and partySection.pages or nil
+      local pageEntry = nil
+      if type(partyPages) == "table" then
+        for _, page in ipairs(partyPages) do
+          if type(page) == "table" and page.key == partyKey then
+            pageEntry = page
+            break
+          end
+        end
+      end
+      if pageEntry == nil then
+        return nil
+      end
+      local layers = pageEntry.layers
+      if type(layers) ~= "table" or #layers ~= 2 then
+        return nil
+      end
+      local firstImage = type(layers[1]) == "table" and layers[1].image or nil
+      local secondImage = type(layers[2]) == "table" and layers[2].image or nil
+      if type(firstImage) ~= "string" or type(secondImage) ~= "string" then
+        return nil
+      end
+      local firstHandle, firstFailure =
+        resolveStagedImage(envelope, graphics, images, failures, cacheFs, key .. "#layer1", firstImage)
+      if firstHandle == nil then
+        if firstFailure ~= nil then
+          failures[key] = firstFailure
+          return nil, firstFailure
+        end
+        return nil
+      end
+      local secondHandle, secondFailure =
+        resolveStagedImage(envelope, graphics, images, failures, cacheFs, key .. "#layer2", secondImage)
+      if secondHandle == nil then
+        if secondFailure ~= nil then
+          failures[key] = secondFailure
+          return nil, secondFailure
+        end
+        return nil
+      end
+      local composite = { width = 256, height = 192, layers = { firstHandle, secondHandle } }
+      function composite:getDimensions()
+        return 256, 192
+      end
+      local function drawLayer(handle, drawGraphics, x, y, quad)
+        if type(handle) == "table" and type(handle.drawQuad) == "function" then
+          if quad ~= nil then
+            return handle:drawQuad(drawGraphics, quad, x, y)
+          end
+          return handle:draw(drawGraphics, x, y)
+        end
+        local inner = type(handle) == "table" and handle.lease or nil
+        if type(inner) == "table" and type(inner.drawQuad) == "function" then
+          if quad ~= nil then
+            return inner:drawQuad(drawGraphics, quad, x, y)
+          end
+          return inner:draw(drawGraphics, x, y)
+        end
+        local pixels = type(handle) == "table" and (handle.image or inner) or handle
+        if quad ~= nil then
+          return drawGraphics.draw(pixels, quad, x, y)
+        end
+        return drawGraphics.draw(pixels, x, y)
+      end
+      function composite:draw(drawGraphics, x, y, ...)
+        drawLayer(self.layers[2], drawGraphics, x, y, nil)
+        drawLayer(self.layers[1], drawGraphics, x, y, nil)
+      end
+      function composite:drawQuad(drawGraphics, quad, x, y, ...)
+        drawLayer(self.layers[2], drawGraphics, x, y, quad)
+        drawLayer(self.layers[1], drawGraphics, x, y, quad)
+      end
+      images[key] = composite
+      return composite
+    end
     -- Production drawables are real owned handles, legitimate waits, or
     -- terminal failures: staged bytes that fail decoding or GPU upload
     -- latch one keyed error instead of answering an unusable nil that
@@ -2865,6 +3027,95 @@ function FieldBattlePresentation:_preparationServices()
         stagedToken = staged.token
       end
       return resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, path, stagedToken)
+    end
+    local categoryKey = key:match("^battle:move%-category%-icon:([a-z%-]+)$")
+    if categoryKey ~= nil then
+      if moveIconManifest == nil then
+        moveIconManifest = MoveIconCache.loadManifest(cacheFs)
+      end
+      local categories = moveIconManifest.categories --[[@as table<string, table<string, unknown>>]]
+      local categoryVisual = type(categories) == "table" and categories[categoryKey] or nil
+      if type(categoryVisual) ~= "table" then
+        return nil
+      end
+      local categoryArtPath = assert(categoryVisual.image, "the generated move category icon names its staged image") --[[@as string]]
+      local categoryHandle, categoryFailure =
+        resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, categoryArtPath)
+      if categoryHandle == nil then
+        return nil, categoryFailure
+      end
+      local categoryDrawable = {
+        lease = categoryHandle,
+        width = assert(categoryVisual.width, "generated move category icon carries its width"),
+        height = assert(categoryVisual.height, "generated move category icon carries its height"),
+        offset = categoryVisual.offset,
+      }
+      function categoryDrawable:getDimensions()
+        return self.width, self.height
+      end
+      function categoryDrawable:draw(drawGraphics, x, y, ...)
+        if type(self.lease.draw) == "function" then
+          return self.lease:draw(drawGraphics, x, y, ...)
+        end
+        return drawGraphics.draw(self.lease, x, y, ...)
+      end
+      function categoryDrawable:drawQuad(drawGraphics, quad, x, y, ...)
+        if type(self.lease.drawQuad) == "function" then
+          return self.lease:drawQuad(drawGraphics, quad, x, y, ...)
+        end
+        return drawGraphics.draw(self.lease, quad, x, y, ...)
+      end
+      if envelope._pool ~= nil then
+        leases[key].handle = categoryDrawable
+      else
+        images[key] = categoryDrawable
+      end
+      return categoryDrawable
+    end
+    local statusKey = key:match("^battle:status%-icon:([a-z%-]+)$")
+    if statusKey ~= nil then
+      local battleMenus = envelope._battleMenus --[[@as table<string, unknown>?]]
+      local party = type(battleMenus) == "table" and battleMenus.party or nil
+      local partyManifest = type(party) == "table" and party.manifest or nil
+      local visuals = type(partyManifest) == "table" and partyManifest.visuals or nil
+      local statusVisuals = type(visuals) == "table" and visuals.status or nil
+      local statusVisual = type(statusVisuals) == "table" and statusVisuals[statusKey] or nil
+      if type(statusVisual) ~= "table" then
+        return nil
+      end
+      local statusArtPath = assert(statusVisual.image, "the staged party status icon names its image") --[[@as string]]
+      local statusHandle, statusFailure =
+        resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, statusArtPath)
+      if statusHandle == nil then
+        return nil, statusFailure
+      end
+      local statusDrawable = {
+        lease = statusHandle,
+        width = assert(statusVisual.width, "staged party status icon carries its width"),
+        height = assert(statusVisual.height, "staged party status icon carries its height"),
+        offset = statusVisual.offset,
+      }
+      function statusDrawable:getDimensions()
+        return self.width, self.height
+      end
+      function statusDrawable:draw(drawGraphics, x, y, ...)
+        if type(self.lease.draw) == "function" then
+          return self.lease:draw(drawGraphics, x, y, ...)
+        end
+        return drawGraphics.draw(self.lease, x, y, ...)
+      end
+      function statusDrawable:drawQuad(drawGraphics, quad, x, y, ...)
+        if type(self.lease.drawQuad) == "function" then
+          return self.lease:drawQuad(drawGraphics, quad, x, y, ...)
+        end
+        return drawGraphics.draw(self.lease, quad, x, y, ...)
+      end
+      if envelope._pool ~= nil then
+        leases[key].handle = statusDrawable
+      else
+        images[key] = statusDrawable
+      end
+      return statusDrawable
     end
     local typeKey = key:match("^battle:move%-type%-icon:([a-z%-]+)$")
     if typeKey ~= nil then
@@ -3034,6 +3285,25 @@ function FieldBattlePresentation:_preparationServices()
     return nil
   end
   function services.release(key)
+    -- Party page composites own two staged layer borrows behind
+    -- suffixed sub-keys: releasing the page releases its layers so a
+    -- later resolution borrows them again instead of leaking.
+    if tostring(key):match("^party:page/") ~= nil then
+      for _, suffix in ipairs({ "#layer1", "#layer2" }) do
+        local subKey = tostring(key) .. suffix
+        local subLeases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
+        local subPooled = subLeases[subKey]
+        if subPooled ~= nil then
+          subLeases[subKey] = nil
+          if envelope._warmPinned[subKey] == nil and envelope._pool ~= nil then
+            envelope._pool:release(subPooled.lease)
+          end
+        end
+        images[subKey] = nil
+        envelope._imageFailures[subKey] = nil
+      end
+      envelope._imageFailures[key] = nil
+    end
     -- Returned borrows rest resident under the shared owner until its own
     -- eviction: releasing forgets the borrow here so a later resolution
     -- borrows it again instead of drawing through a returned lease.

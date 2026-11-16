@@ -23,6 +23,7 @@ local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local T = {}
 local TICK = 1 / 60
@@ -643,7 +644,6 @@ local function interfaceDualMeasurement()
   }
 end
 
-
 -- Headless composition runs without GPU targets: the seeded pass drains
 -- plane and OBJ content through the recording boundary and records each
 -- typed frame, so content assertions observe the same draws production
@@ -1156,6 +1156,10 @@ local function openChildRig(opts)
         renderer = battleBagRenderer,
         icons = {},
       },
+      -- Production always lends the staged party manifest beside the
+      -- bag: target and party pickers compose through the same native
+      -- geometry instead of an invented fallback.
+      party = { manifest = PartyPresentationFixture.manifest() },
     },
   })
   rig.screen = screen
@@ -1563,6 +1567,44 @@ function T.native_battle_party_waits_for_its_icon_pages()
     Assert.isTrue(BattleRenderer.drawNativeChild(resources, child, placement), "the ready " .. kind .. " is rendered")
     Assert.equal(draws, 1, "the " .. kind .. " picker draws once its icon pages are prepared")
     draws = 0
+  end
+end
+
+function T.native_battle_party_yields_while_its_summary_wrapper_owns_the_modal()
+  local draws = 0
+  local partyRenderer = {
+    draw = function()
+      draws = draws + 1
+    end,
+  }
+  local resources = {
+    assets = {
+      state = function()
+        return "ready"
+      end,
+    },
+    battleMenus = { party = { renderer = partyRenderer, icons = {} } },
+  }
+  local placement = {
+    frame = { x = 0, y = 192, width = 256, height = 192 },
+    origin = { x = 0, y = 192 },
+    scale = 1,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = { x = 0, y = 192, width = 256, height = 192 },
+  }
+  for _, page in ipairs({ "summary", "moves", "move_detail" }) do
+    draws = 0
+    local child = {
+      kind = "party",
+      partyPage = page,
+      native = { open = true, layout = {}, page = page },
+    }
+    Assert.isFalse(
+      BattleRenderer.drawNativeChild(resources, child, placement),
+      "the " .. page .. " wrapper paints instead of the native roster"
+    )
+    Assert.equal(draws, 0, "the " .. page .. " wrapper draws no native roster underneath")
   end
 end
 

@@ -1031,11 +1031,27 @@ end
 -- Resolves a transient action message to window-local text placements:
 -- either existing literal text or a generated-template descriptor
 -- expanded with its display name, ordered item, quantity, and move names.
+-- Literal line breaks stack at the source line height like template line
+-- breaks, so staged battle text never reaches the font as a raw newline glyph.
 ---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
 ---@return { value: string, x: number, y: number }[]
 function PartyScreenRenderer:_actionOps(message)
   if type(message) == "string" then
-    return { { value = message, x = 0, y = 0 } }
+    local lines = {}
+    for line in (message .. "\n"):gmatch("([^\n]*)\n") do
+      lines[#lines + 1] = line
+    end
+    if #lines > 1 and lines[#lines] == "" then
+      lines[#lines] = nil
+    end
+    local ops = {}
+    for index, line in ipairs(lines) do
+      ops[#ops + 1] = { value = line, x = 0, y = (index - 1) * 16 }
+    end
+    if #ops == 0 then
+      return { { value = message, x = 0, y = 0 } }
+    end
+    return ops
   end
   assert(type(message) == "table", "messages carry display text")
   local key = assert(message.templateKey, "action descriptors name their template")

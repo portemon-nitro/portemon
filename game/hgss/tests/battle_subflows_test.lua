@@ -7,10 +7,18 @@
 
 local Assert = require("tests.support.Assert")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local T = {}
 
 local BattleSubflows = nil
+
+-- Native party menus behind every coordinator: production always lends
+-- the staged party manifest, so unit children compose through the same
+-- generated geometry instead of an invented fallback.
+local function nativePartyMenus()
+  return { party = { manifest = PartyPresentationFixture.manifest() } }
+end
 
 ---@return table<string, unknown> the child coordinator under test preparation
 local function coordinator(catalog, opts)
@@ -22,6 +30,9 @@ local function coordinator(catalog, opts)
     for key, value in pairs(opts) do
       args[key] = value
     end
+  end
+  if args.battleMenus == nil then
+    args.battleMenus = nativePartyMenus()
   end
   return BattleSubflows.new(args)
 end
@@ -93,6 +104,16 @@ end
 local function drive(flows, event)
   flows:update({ event })
   flows:tick()
+end
+
+-- Settles one gated wrapper press (PRESS, HOLD, RELEASE, then the
+-- deferred transition): the accepting edge already ran its tick, so
+-- three more ticks release the gate like WaitButtonAnim.
+---@param flows table<string, unknown> coordinator under test driving
+local function settleWrapperPress(flows)
+  for _ = 1, 3 do
+    flows:tick()
+  end
 end
 
 -- Settles one gated button press (WaitButtonAnim): frame 1 rebounds
@@ -185,6 +206,7 @@ function T.forced_replacement_blocks_every_cancel_path()
   drive(flows, { type = "cancel" })
   Assert.isNil(flows:takeResult(), "keyboard cancel seals nothing")
   Assert.isTrue(flows:status().active, "keyboard cancel keeps the child")
+  Assert.isNil(flows:status().notice, "retail holds silently with no cancel notice")
   -- The non-cancellable screen holds silently at its input boundary:
   -- blocking cancel is the screen's own permission, not a battle notice.
   -- Outside and menu edges never reach the selection lane.
@@ -198,7 +220,11 @@ function T.forced_replacement_blocks_every_cancel_path()
 end
 
 function T.ineligible_party_slots_stay_unfocusable()
-  local flows = coordinator()
+  local flows = coordinator(nil, {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
   local options = switchOptions(2)
   Assert.isTrue(flows:open(partyIntent({ options = options })), "the voluntary party child opens")
   drive(flows, { type = "confirm" })
@@ -207,15 +233,13 @@ function T.ineligible_party_slots_stay_unfocusable()
     flows:tick()
   end
   Assert.isNil(flows:takeResult(), "the active lead is refused by the native Switch action")
-  drive(flows, { type = "confirm" })
-  drive(flows, { type = "cancel" })
-  for _ = 1, 12 do
-    flows:tick()
-  end
-  switchPartyMon(flows, 1)
-  local result = flows:takeResult()
-  Assert.notNil(result, "Switch on the eligible reserve stages its fragment")
-  Assert.deepEqual(result.reply.choices[1], options.actors[1].choices[1].choice, "the reply names the reserve")
+  -- Retail shows its CanSwitch message over the mon menu and stays
+  -- there instead of dropping to the list (battle_party_menu.c
+  -- SHOW_PENDING_MESSAGE then CLOSE_MESSAGE back to MON_MENU).
+  Assert.equal(flows:status().childView.partyPage, "mon_menu", "refused SHIFT stays in the mon menu")
+  local native = flows._composed._controller:status()
+  Assert.equal(native.state, "message", "refused SHIFT shows its retail message")
+  Assert.equal(native.message, "MARKER:battle/party/message/already-in-battle#1", "active names its target")
   flows:dispose()
 end
 
@@ -433,9 +457,9 @@ function T.bag_pp_serving_selects_its_move_before_sealing()
   local view = flows:status().childView --[[@as table<string, unknown>]]
   Assert.equal(view.kind, "move", "the holder opens its move picker")
   Assert.deepEqual(
-    { view.rows[1].label, view.rows[2].label, #view.rows },
-    { "Tackle", "Growl", 2 },
-    "the picker lists the holder's moves"
+    { view.rows[1].label, view.rows[2].label, view.rows[3].id, #view.rows },
+    { "Tackle", "Growl", "back", 3 },
+    "the picker lists the holder's moves with a retail cancel"
   )
   Assert.equal(view.rows[1].sub, "PP 5/35", "move rows show their current PP")
   Assert.equal(view.focusId, "move:0", "the picker opens on the first move")
@@ -764,6 +788,29 @@ local function learnIntent(recipient)
   }
 end
 
+function T.learning_hm_slots_refuse_with_their_retail_message()
+  local flows = coordinator()
+  local request = learnRequest(1)
+  request.currentMoves = {
+    { move = "CUT", pp = 30, ppUps = 0 },
+    { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
+    { move = "GROWL", pp = 40, ppUps = 0 },
+    { move = "LEER", pp = 30, ppUps = 0 },
+  }
+  local intent = learnIntent(1)
+  intent.request = request
+  -- Keep the kernel fragments aligned with the staged prompt: the HM
+  -- slot stays replaceable by the kernel, the UI alone refuses it like
+  -- retail IsSelectedMonEgg/HM guards.
+  intent.options.actors[1].currentMoves = request.currentMoves
+  Assert.isTrue(flows:open(intent), "learning opens with an HM held")
+  drive(flows, { type = "confirm" })
+  Assert.isNil(flows:takeResult(), "selecting an HM seals no reply")
+  Assert.isNil(flows:status().confirmation, "selecting an HM stages no confirmation")
+  Assert.isTrue(flows:status().active, "selecting an HM keeps the list")
+  flows:dispose()
+end
+
 function T.learning_replace_confirms_its_roster_bound_fragment()
   local flows = coordinator()
   Assert.isTrue(flows:open(learnIntent(1)), "learning opens for the held recipient")
@@ -972,23 +1019,25 @@ local function rowLabels(view)
   return labels
 end
 
-function T.party_child_lists_six_stable_rows_with_no_hidden_screens()
+function T.party_list_opens_and_seals_the_projected_reserve()
   local flows = coordinator()
   local options = twoReserveOptions()
   Assert.isTrue(flows:open(partyIntent({ party = sixSlotRoster(), options = options })), "the six-slot child opens")
-  -- No update or tick ran yet: the rows are already answerable.
+  -- No update or tick ran yet: the roster answers with no waiting.
   local view = flows:status().childView --[[@as table<string, unknown>]]
   Assert.isTrue(view.interactive == true, "the roster answers with no waiting")
-  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
-  Assert.equal(#rows, 6, "all six slots list")
-  for slot = 0, 5 do
-    Assert.equal(rows[slot + 1].id, "party:" .. tostring(slot), "slot keeps its stable row")
-  end
+  Assert.equal(view.partyPage, "list", "the native list names its page")
   Assert.isTrue(type(view.focusId) == "string", "focus already rests somewhere meaningful")
-  -- Edges wait for the accepted source tick. The first confirm opens the
-  -- native action menu; Switch on the selected reserve seals the fragment.
-  flows:update({ { type = "navigate", direction = "down" } })
-  flows:tick()
+  -- Edges wait for the accepted source tick. Walk the native cursor to
+  -- the first reserve, open its menu, and seal its Switch fragment.
+  for _ = 1, 8 do
+    if flows:status().childView.focusId == "party:1" then
+      break
+    end
+    flows:update({ { type = "navigate", direction = "down" } })
+    flows:tick()
+  end
+  Assert.equal(flows:status().childView.focusId, "party:1", "keys reach the first reserve")
   flows:update({ { type = "confirm" } })
   Assert.isNil(flows:takeResult(), "the buffered edge seals nothing before its tick")
   flows:tick()
@@ -1297,9 +1346,21 @@ function T.resolve_message_replaces_hardcoded_refusals_with_markers()
   }
   local options = switchOptions(2)
   Assert.isTrue(flows:open(partyIntent({ party = fainted, options = options })), "the fainted roster opens")
-  local view = flows:status().childView --[[@as table<string, unknown>]]
-  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
-  Assert.equal(rows[1].reason, "MARKER:battle/party/message/no-energy", "fainted rows resolve their retail message")
+  -- The fainted lead still opens its mon menu; SHIFT refuses over it
+  -- with the staged no-energy message instead of sealing.
+  Assert.isTrue(flows:activateControl("party:0"), "the fainted lead takes its tap")
+  flows:tick()
+  Assert.equal(flows:status().childView.partyPage, "mon_menu", "the fainted lead opens its menu")
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  Assert.isNil(flows:takeResult(), "SHIFT on the fainted lead seals nothing")
+  Assert.equal(
+    flows:status().childView.native.message,
+    "MARKER:battle/party/message/no-energy",
+    "the fainted lead resolves its retail message"
+  )
   flows:dispose()
   local refused = coordinator(catalog, { resolveMessage = resolveMessage })
   local noEffectOptions = itemOptions({
@@ -1354,6 +1415,8 @@ local function summaryRoster()
       combatant = 1,
       slot = 0,
       name = "LEAD",
+      species = "EEVEE",
+      form = 0,
       level = 20,
       hp = 30,
       maxHp = 30,
@@ -1367,7 +1430,7 @@ local function summaryRoster()
       specialDefense = 10,
       nextExp = 37,
       moves = {
-        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical" },
+        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", type = "NORMAL", description = "A test tackle." },
       },
     },
     { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
@@ -1405,15 +1468,36 @@ local function rowsById(view)
   return byId
 end
 
+---@param view table<string, unknown> projected child view under inspection
+---@return table<string, table<string, unknown>> projected windows by retail print role
+local function windowsByRole(view)
+  local windows = view.pageWindows --[[@as table<integer, table<string, unknown>>?]]
+  local byRole = {} ---@type table<string, table<string, unknown>>
+  for _, window in ipairs(windows or {}) do
+    byRole[tostring(window.role)] = window
+  end
+  return byRole
+end
+
+---@param view table<string, unknown> projected child view under inspection
+---@param kind string sprite kind under lookup
+---@return table<integer, table<string, unknown>> matching sprite placements
+local function spritesOfKind(view, kind)
+  local found = {}
+  local sprites = view.pageSprites --[[@as table<integer, table<string, unknown>>?]]
+  for _, sprite in ipairs(sprites or {}) do
+    if type(sprite) == "table" and sprite.kind == kind then
+      found[#found + 1] = sprite
+    end
+  end
+  return found
+end
+
 -- The summary page shows its staged stat block: mon name and gender,
 -- level, remaining experience, HP, the five battle stats, ability, and
--- held item resolve through their msg 0006 keys in retail order ahead of
--- the existing navigation rows.
--- The summary page shows its staged stat block: mon name and gender,
--- level, remaining experience, HP, the five battle stats, ability, and
--- held item resolve through their msg 0006 keys in retail order ahead of
--- the existing navigation rows. The counting resolver pins the exact
--- substitution count behind every template key.
+-- held item resolve through their msg 0006 window roles in retail print
+-- order. The counting resolver pins the exact substitution count
+-- behind every template key.
 function T.party_summary_shows_its_staged_stat_block()
   local catalog = ItemFixture.makeCatalog()
   local flows = coordinator(catalog, {
@@ -1422,119 +1506,141 @@ function T.party_summary_shows_its_staged_stat_block()
     end,
   })
   local view = openLeadSummary(flows)
-  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
-  local ids = {}
-  for _, row in ipairs(rows) do
-    ids[#ids + 1] = row.id
-  end
-  Assert.deepEqual(ids, {
-    "summary:mon",
-    "summary:level",
-    "summary:exp",
-    "summary:hp",
-    "summary:attack",
-    "summary:defense",
-    "summary:speed",
-    "summary:sp-attack",
-    "summary:sp-defense",
-    "summary:ability",
-    "summary:item",
-    "summary:prev",
-    "summary:next",
-    "summary:moves",
-    "back",
-  }, "the summary page carries its stat block in retail order")
-  local byId = rowsById(view)
+  local byRole = windowsByRole(view)
   Assert.equal(
-    byId["summary:mon"].label,
+    byRole["mon-name"].text,
     "MARKER:battle/party/mon-name/0#1",
-    "the mon row resolves its staged name template with its nickname"
+    "the mon name resolves its staged template with its nickname"
   )
   Assert.equal(
-    byId["summary:mon"].sub,
+    byRole["mon-gender"].text,
     "MARKER:battle/party/gender/male#0",
-    "the mon row resolves its staged gender symbol"
+    "the gender symbol resolves its staged key"
   )
+  Assert.equal(byRole["level-label"].text, "MARKER:battle/party/stat/level#0", "level resolves its label")
   Assert.equal(
-    byId["summary:level"].label,
-    "MARKER:battle/party/stat/level#0",
-    "level resolves its label"
-  )
-  Assert.equal(
-    byId["summary:level"].detail,
+    byRole["level-value"].text,
     "MARKER:battle/party/stat/level-value#1",
     "level resolves its value with its count"
   )
   Assert.equal(
-    byId["summary:exp"].label,
+    byRole["exp-label"].text,
     "MARKER:battle/party/stat/exp#0",
     "remaining experience resolves its label"
   )
   Assert.equal(
-    byId["summary:exp"].detail,
+    byRole["exp-value"].text,
     "MARKER:battle/party/stat/exp-value#1",
     "remaining experience resolves its value with its count"
   )
+  Assert.equal(byRole["hp-label"].text, "MARKER:battle/party/stat/hp#0", "HP resolves its label")
   Assert.equal(
-    byId["summary:hp"].label,
-    "MARKER:battle/party/stat/hp#0",
-    "HP resolves its label"
+    byRole["hp-value"].current,
+    "MARKER:battle/party/stat/hp-current#1",
+    "HP resolves its staged current part"
   )
+  Assert.equal(byRole["hp-value"].slash, "MARKER:battle/party/stat/hp-slash#0", "HP resolves its staged slash")
   Assert.equal(
-    byId["summary:hp"].detail,
-    "MARKER:battle/party/stat/hp-current#1MARKER:battle/party/stat/hp-slash#0MARKER:battle/party/stat/hp-max#1",
-    "HP resolves its current, slash, and maximum parts"
+    byRole["hp-value"].max,
+    "MARKER:battle/party/stat/hp-max#1",
+    "HP resolves its staged maximum part"
   )
+  Assert.equal(byRole["hp-bar"].current, 30, "the HP bar carries live current hit points")
+  Assert.equal(byRole["hp-bar"].max, 30, "the HP bar carries live maximum hit points")
   Assert.equal(
-    byId["summary:attack"].label,
+    byRole["attack-label"].text,
     "MARKER:battle/party/stat/attack#0",
     "attack resolves its staged label"
   )
   Assert.equal(
-    byId["summary:attack"].detail,
+    byRole["attack-value"].text,
     "MARKER:battle/party/stat/attack-value#1",
     "attack resolves its staged value with its stat"
   )
   Assert.equal(
-    byId["summary:speed"].detail,
+    byRole["defense-label"].text,
+    "MARKER:battle/party/stat/defense#0",
+    "defense resolves its staged label"
+  )
+  Assert.equal(
+    byRole["defense-value"].text,
+    "MARKER:battle/party/stat/defense-value#1",
+    "defense resolves its staged value with its stat"
+  )
+  Assert.equal(
+    byRole["speed-label"].text,
+    "MARKER:battle/party/stat/speed#0",
+    "speed resolves its staged label"
+  )
+  Assert.equal(
+    byRole["speed-value"].text,
     "MARKER:battle/party/stat/speed-value#1",
     "speed resolves its staged value with its stat"
   )
   Assert.equal(
-    byId["summary:ability"].label,
+    byRole["sp-attack-label"].text,
+    "MARKER:battle/party/stat/sp-attack#0",
+    "special attack resolves its staged label"
+  )
+  Assert.equal(
+    byRole["sp-attack-value"].text,
+    "MARKER:battle/party/stat/sp-attack-value#1",
+    "special attack resolves its staged value with its stat"
+  )
+  Assert.equal(
+    byRole["sp-defense-label"].text,
+    "MARKER:battle/party/stat/sp-defense#0",
+    "special defense resolves its staged label"
+  )
+  Assert.equal(
+    byRole["sp-defense-value"].text,
+    "MARKER:battle/party/stat/sp-defense-value#1",
+    "special defense resolves its staged value with its stat"
+  )
+  Assert.equal(
+    byRole["ability-name"].text,
     "MARKER:battle/party/ability/name#1",
     "ability resolves its staged template with its name"
   )
   Assert.equal(
-    byId["summary:item"].label,
+    byRole["held-item"].text,
     "MARKER:battle/party/item/name#1",
     "the held item resolves its staged template with its name"
   )
+  Assert.equal(
+    byRole["button"].text,
+    "MARKER:battle/party/button/check-moves#0",
+    "summary links onward to check-moves"
+  )
+  Assert.equal(byRole["ability-desc"].text, "", "no catalog description leaves the ability window empty")
   flows:dispose()
 end
 
--- Without a borrowed message resolver the summary rows keep their
+-- Without a borrowed message resolver the summary windows keep their
 -- English fallbacks: names and numbers stay readable while the suite
--- proves the row structure.
+-- proves the page structure.
 function T.party_summary_falls_back_without_a_resolver()
   local flows = coordinator(ItemFixture.makeCatalog())
   local view = openLeadSummary(flows)
-  local byId = rowsById(view)
-  Assert.equal(byId["summary:mon"].label, "LEAD", "the mon row falls back to its name")
-  Assert.equal(byId["summary:mon"].sub, "♂", "the mon row falls back to its gender symbol")
-  Assert.equal(byId["summary:level"].label, "Lv.", "level falls back to its retail label")
-  Assert.equal(byId["summary:level"].detail, "20", "level falls back to its number")
-  Assert.equal(byId["summary:exp"].label, "NEXT LV", "remaining experience falls back to its label")
-  Assert.equal(byId["summary:exp"].detail, "37", "remaining experience falls back to its count")
-  Assert.equal(byId["summary:hp"].detail, "30/30", "HP falls back to its counts")
-  Assert.equal(byId["summary:attack"].label, "ATTACK", "attack falls back to its label")
-  Assert.equal(byId["summary:attack"].detail, "12", "attack falls back to its number")
-  Assert.equal(byId["summary:sp-defense"].detail, "10", "special defense falls back to its number")
-  Assert.equal(byId["summary:ability"].label, "RUN_AWAY", "ability falls back to its key")
+  local byRole = windowsByRole(view)
+  Assert.equal(byRole["mon-name"].text, "LEAD", "the mon name falls back to its name")
+  Assert.equal(byRole["mon-gender"].text, "♂", "the gender symbol falls back to its mark")
+  Assert.equal(byRole["level-label"].text, "Lv.", "level falls back to its retail label")
+  Assert.equal(byRole["level-value"].text, "20", "level falls back to its number")
+  Assert.equal(byRole["exp-label"].text, "NEXT LV", "remaining experience falls back to its label")
+  Assert.equal(byRole["exp-value"].text, "37", "remaining experience falls back to its count")
+  Assert.equal(byRole["hp-value"].current, "30", "HP keeps its staged current part")
+  Assert.equal(byRole["hp-value"].slash, "/", "HP keeps its staged slash part")
+  Assert.equal(byRole["hp-value"].max, "30", "HP keeps its staged maximum part")
+  Assert.equal(byRole["attack-label"].text, "ATTACK", "attack falls back to its label")
+  Assert.equal(byRole["attack-value"].text, "12", "attack falls back to its number")
+  Assert.equal(byRole["sp-defense-value"].text, "10", "special defense falls back to its number")
+  Assert.equal(byRole["ability-name"].text, "RUN_AWAY", "ability falls back to its key")
+  Assert.equal(byRole["ability-desc"].text, "", "no catalog description leaves the ability window empty")
   -- The unit coordinator borrows the item catalog but no mon catalog:
   -- the held item resolves through the catalog while the ability keeps
   -- its key.
-  Assert.equal(byId["summary:item"].label, "Potion", "the held item resolves through the item catalog")
+  Assert.equal(byRole["held-item"].text, "Potion", "the held item resolves through the item catalog")
   flows:dispose()
 end
 
@@ -1550,19 +1656,33 @@ function T.party_move_list_labels_resolve_their_staged_names()
   local view = openLeadSummary(flows)
   Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
   flows:tick()
+  settleWrapperPress(flows)
   local moves = flows:status().childView --[[@as table<string, unknown>]]
   Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
-  local byId = rowsById(moves)
+  local byRole = windowsByRole(moves)
   Assert.equal(
-    byId["move:0"].label,
+    byRole["move-name:0"].text,
     "MARKER:battle/party/move-name/0#1",
     "the move resolves its staged per-slot template with its name"
   )
   Assert.equal(
-    byId["move:0"].sub,
-    "MARKER:battle/party/move/pp#0 35/35",
-    "the move keeps its staged PP facts"
+    byRole["move-pp:0"].label,
+    "MARKER:battle/party/move/pp#0",
+    "the move keeps its staged PP label"
   )
+  Assert.equal(
+    byRole["move-pp:0"].current,
+    "MARKER:battle/party/move/pp-current#1",
+    "the move keeps its staged current part"
+  )
+  Assert.equal(byRole["move-pp:0"].slash, "MARKER:battle/party/move/pp-slash#0", "the move keeps its slash")
+  Assert.equal(
+    byRole["move-pp:0"].max,
+    "MARKER:battle/party/move/pp-max#1",
+    "the move keeps its staged maximum part"
+  )
+  Assert.equal(byRole["move-pp:0"].currentCount, 35, "the PP window carries current PP")
+  Assert.equal(byRole["move-pp:0"].maxCount, 35, "the PP window carries maximum PP")
   flows:dispose()
 end
 
@@ -1579,50 +1699,48 @@ function T.party_move_detail_shows_its_staged_words()
   local view = openLeadSummary(flows)
   Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
   flows:tick()
+  settleWrapperPress(flows)
   Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
   flows:tick()
+  settleWrapperPress(flows)
   local detail = flows:status().childView --[[@as table<string, unknown>]]
   Assert.equal(detail.partyPage, "move_detail", "a move opens its detail")
-  local byId = rowsById(detail)
+  local byRole = windowsByRole(detail)
   Assert.equal(
-    byId["move_detail:mon"].label,
+    byRole["mon-name"].text,
     "MARKER:battle/party/mon-name/0#1",
     "the detail resolves its staged mon-name template"
   )
   Assert.equal(
-    byId["move_detail:move"].label,
+    byRole["move-name"].text,
     "MARKER:battle/party/move-name/0#1",
     "the detail resolves its staged move-name template with its name"
   )
   Assert.equal(
-    byId["move_detail:power"].label,
-    "MARKER:battle/party/move/power#0",
-    "power resolves its staged label"
-  )
-  Assert.equal(
-    byId["move_detail:power"].detail,
+    byRole["power-value"].text,
     "MARKER:battle/party/move/power-value#1",
     "power resolves its staged value with its count"
   )
   Assert.equal(
-    byId["move_detail:accuracy"].detail,
+    byRole["accuracy-value"].text,
     "MARKER:battle/party/move/accuracy-value#1",
     "accuracy resolves its staged value with its count"
   )
   Assert.equal(
-    byId["move_detail:category"].detail,
+    byRole["category-value"].text,
     "MARKER:battle/party/move/category-physical#0",
     "the category resolves its staged physical word"
   )
   Assert.equal(
-    byId["move_detail:pp"].label,
-    "MARKER:battle/party/move/pp-label#0",
-    "the detail PP resolves its staged header"
+    byRole["pp-value"].current,
+    "MARKER:battle/party/move/pp-current#1",
+    "the detail PP resolves its current part"
   )
+  Assert.equal(byRole["pp-value"].slash, "MARKER:battle/party/move/pp-slash#0", "the detail PP resolves its slash")
   Assert.equal(
-    byId["move_detail:pp"].detail,
-    "MARKER:battle/party/move/pp-current#1MARKER:battle/party/move/pp-slash#0MARKER:battle/party/move/pp-max#1",
-    "the detail PP resolves its current, slash, and maximum parts"
+    byRole["pp-value"].max,
+    "MARKER:battle/party/move/pp-max#1",
+    "the detail PP resolves its maximum part"
   )
   flows:dispose()
 end
@@ -1685,32 +1803,155 @@ function T.party_summary_and_check_moves_navigate_without_sealing()
   Assert.isNil(flows:takeResult(), "SUMMARY seals no reply")
   Assert.equal(flows:status().childView.partyPage, "summary", "SUMMARY opens the summary page")
   Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "opening summary voices decide")
+  -- Summary opens on the prev-mon box with the cursor down: the first
+  -- key press only activates it (TryActivate), the second pages.
+  Assert.equal(flows:status().childView.focusId, "summary:prev", "summary opens on the prev-mon box")
+  drive(flows, { type = "confirm" })
+  Assert.isNil(flows:takeResult(), "activation seals no reply")
+  Assert.equal(flows:status().childView.pageSlot, 1, "activation pages nothing")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_SELECT", "activation voices select")
   -- Prev/next mon steps across occupied slots without sealing.
-  drive(flows, { type = "navigate", direction = "left" })
+  drive(flows, { type = "confirm" })
+  settleWrapperPress(flows)
   Assert.isNil(flows:takeResult(), "summary paging seals no reply")
-  Assert.equal(flows:status().childView.pageSlot, 0, "left steps to the lead mon")
+  Assert.equal(flows:status().childView.pageSlot, 0, "confirm pages to the lead mon")
   Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "summary paging voices decide")
   drive(flows, { type = "navigate", direction = "right" })
-  Assert.equal(flows:status().childView.pageSlot, 1, "right steps back to the reserve")
-  -- CHECK MOVES from the summary page opens the move list.
+  drive(flows, { type = "confirm" })
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.pageSlot, 1, "right then confirm pages back to the reserve")
+  -- CHECK MOVES from the summary page opens the move list behind the
+  -- gated press.
   Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
   flows:tick()
+  settleWrapperPress(flows)
   Assert.isNil(flows:takeResult(), "CHECK MOVES seals no reply")
   Assert.equal(flows:status().childView.partyPage, "moves", "moves opens the move list")
-  -- Move detail opens from the move list without sealing.
+  -- Move detail opens from the move list behind the gated press
+  -- without sealing.
   Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
   flows:tick()
+  settleWrapperPress(flows)
   Assert.isNil(flows:takeResult(), "move detail seals no reply")
   Assert.equal(flows:status().childView.partyPage, "move_detail", "a move opens its detail")
+  Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "move detail voices decide")
+  -- Touch deactivates the cursor, so backing out takes two B presses:
+  -- the first reactivates, the second answers cancel.
   drive(flows, { type = "cancel" })
+  Assert.equal(flows:status().childView.partyPage, "move_detail", "the first back only reactivates")
+  drive(flows, { type = "cancel" })
+  settleWrapperPress(flows)
   Assert.equal(flows:status().childView.partyPage, "moves", "detail back returns to the move list")
   Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "detail back voices decide")
   Assert.isTrue(flows:activateControl("moves:summary"), "the moves summary button takes its tap")
   flows:tick()
+  settleWrapperPress(flows)
   Assert.equal(flows:status().childView.partyPage, "summary", "moves summary returns to summary")
   drive(flows, { type = "cancel" })
+  drive(flows, { type = "cancel" })
+  settleWrapperPress(flows)
   Assert.equal(flows:status().childView.partyPage, "mon_menu", "summary back returns to the mon menu")
   Assert.equal(plays[#plays], "SEQ_SE_DP_DECIDE", "summary back voices decide")
+  flows:dispose()
+end
+
+-- Retail CHECK MOVES dpad follows the transcribed cursor boxes: moves
+-- in a 2x2 grid, prev/next/summary/cancel along the bottom, with the
+-- return link behind move slots 2 and 3, so keyboard alone walks every
+-- control (battle_party_menu.c GetCheckMovesInput with
+-- BattleDpadCursor_HandleInput).
+function T.party_moves_keyboard_reaches_summary_and_back()
+  local flows = coordinator()
+  Assert.isTrue(flows:open(partyIntent({ party = moveRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:1"), "the reserve takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  Assert.equal(flows:status().childView.partyPage, "summary", "SUMMARY opens the summary page")
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.partyPage, "moves", "moves opens the move list")
+  -- The move list opens on the selected move with the cursor down:
+  -- the first key press only activates it.
+  Assert.equal(flows:status().childView.focusId, "move:0", "moves opens on the selected move")
+  drive(flows, { type = "navigate", direction = "down" })
+  Assert.equal(flows:status().childView.focusId, "move:0", "activation moves nothing")
+  -- Down walks the 2x2 move grid, then the return link drops to prev.
+  drive(flows, { type = "navigate", direction = "down" })
+  Assert.equal(flows:status().childView.focusId, "move:2", "down reaches the third move")
+  drive(flows, { type = "navigate", direction = "down" })
+  Assert.equal(flows:status().childView.focusId, "moves:prev", "down follows the return link to prev")
+  -- Right walks prev, next, summary.
+  drive(flows, { type = "navigate", direction = "right" })
+  drive(flows, { type = "navigate", direction = "right" })
+  Assert.equal(flows:status().childView.focusId, "moves:summary", "keyboard reaches the moves summary control")
+  drive(flows, { type = "confirm" })
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.partyPage, "summary", "keyboard confirm returns to summary")
+  flows:dispose()
+end
+
+function T.party_summary_paging_skips_eggs_like_find_next_mon()
+  local flows = coordinator()
+  local roster = {
+    { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+    { combatant = 2, slot = 1, name = "EGG", level = 5, hp = 10, maxHp = 18, isEgg = true },
+    { combatant = 3, slot = 2, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+  local options = {
+    requestId = 7,
+    epoch = 3,
+    controller = "player",
+    kind = "action",
+    actors = {
+      {
+        combatant = 1,
+        activation = 5,
+        kind = "action",
+        choices = {
+          {
+            id = "switch:3",
+            role = "switch",
+            enabled = true,
+            display = { combatant = 3 },
+            choice = {
+              actor = { combatant = 1, activation = 5 },
+              kind = "switch",
+              payload = { replacement = 3 },
+            },
+          },
+        },
+      },
+    },
+  }
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = options })), "the egg roster opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  Assert.equal(flows:status().childView.partyPage, "mon_menu", "selecting a mon opens its menu")
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  Assert.equal(flows:status().childView.partyPage, "summary", "SUMMARY opens the summary page")
+  Assert.equal(flows:status().childView.pageSlot, 0, "summary opens on the lead")
+  -- Retail FindNextMon skips eggs and empty slots when paging: the
+  -- prev/next boxes page on confirm behind the gated press.
+  drive(flows, { type = "confirm" })
+  Assert.equal(flows:status().childView.pageSlot, 0, "activation pages nothing")
+  drive(flows, { type = "navigate", direction = "right" })
+  drive(flows, { type = "confirm" })
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.pageSlot, 2, "retail FindNextMon skips eggs when paging")
+  drive(flows, { type = "navigate", direction = "left" })
+  Assert.equal(flows:status().childView.focusId, "summary:prev", "left reaches the prev-mon box")
+  drive(flows, { type = "confirm" })
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.pageSlot, 0, "paging back wraps past the egg to the lead")
   flows:dispose()
 end
 
@@ -1725,11 +1966,14 @@ function T.party_eggs_offer_only_shift_and_back()
   flows:tick()
   local menu = flows:status().childView
   Assert.equal(menu.partyPage, "mon_menu", "selecting the egg opens its menu")
-  local labels = {}
-  for _, row in ipairs(menu.rows) do
-    labels[#labels + 1] = row.id
+  -- The native mon menu hides summary and check-moves for eggs
+  -- (IsSelectedMonEgg guards): only SHIFT and cancel remain.
+  local native = menu.native --[[@as table<string, unknown>]]
+  local kinds = {}
+  for _, entry in ipairs(native.menu --[[@as table<integer, table<string, unknown>>]]) do
+    kinds[#kinds + 1] = entry.kind
   end
-  Assert.deepEqual(labels, { "switch", "back" }, "eggs hide summary and check-moves")
+  Assert.deepEqual(kinds, { "switch", "quit" }, "eggs hide summary and check-moves")
   flows:dispose()
 end
 
@@ -1781,6 +2025,843 @@ function T.item_target_embargo_refuses_its_slot_while_healthy_seals()
   Assert.notNil(result, "the healthy slot seals its reply")
   Assert.equal(result.kind, "choice", "the healthy slot stages a choice")
   Assert.equal(result.reply.choices[1].payload.target.combatant, 2, "the healthy fragment names its holder")
+  flows:dispose()
+end
+
+-- Retail disabled shifts (battle_party_menu.c CanSwitch msgs 76-79, 93):
+-- SHIFT on a mon whose kernel choice is disabled refuses with the
+-- matching retail message over the mon menu and stays there instead of
+-- sealing or dropping to the list. Each refusal reason names its target
+-- through the staged message marker.
+function T.party_disabled_shifts_refuse_with_their_retail_messages()
+  local cases = {
+    {
+      name = "trapped",
+      slot = "party:1",
+      party = {
+        { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30, active = true },
+        { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+      },
+      reason = "trapped",
+      want = "MARKER:battle/party/message/cant-switch-out#1",
+    },
+    {
+      name = "fainted",
+      slot = "party:1",
+      party = {
+        { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+        { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 0, maxHp = 18 },
+      },
+      reason = nil,
+      want = "MARKER:battle/party/message/no-energy#1",
+    },
+    {
+      name = "egg",
+      slot = "party:1",
+      reserve = 1,
+      party = {
+        { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+        { combatant = 2, slot = 1, name = "EGG", level = 5, hp = 10, maxHp = 18, isEgg = true },
+      },
+      reason = nil,
+      want = "MARKER:battle/party/message/egg#0",
+    },
+    {
+      name = "reserved",
+      slot = "party:1",
+      party = {
+        { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+        { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+      },
+      reason = "reserved",
+      want = "MARKER:battle/party/message/already-selected#1",
+    },
+    {
+      name = "active",
+      slot = "party:0",
+      party = {
+        { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30, active = true },
+        { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+      },
+      reason = nil,
+      want = "MARKER:battle/party/message/already-in-battle#1",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local tag = " (" .. case.name .. ")"
+    local options = switchOptions(case.reserve or 2)
+    if case.reason ~= nil then
+      options.actors[1].choices[1].enabled = false
+      options.actors[1].choices[1].reason = case.reason
+      if case.name == "trapped" or case.name == "reserved" then
+        options.actors[1].choices[1].display = { combatant = 2 }
+      end
+    end
+    -- Fainted, egg, and active refusals resolve against the live roster
+    -- facts; trapped and reserved refusals resolve against the disabled
+    -- kernel choice. The trapped case keeps the party viewable with no
+    -- enabled reserve, like retail.
+    local flows = coordinator(nil, {
+      resolveMessage = function(key, subs)
+        return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+      end,
+    })
+    Assert.isTrue(
+      flows:open(partyIntent({ party = case.party, options = options })),
+      "the " .. case.name .. " party opens" .. tag
+    )
+    Assert.isTrue(flows:activateControl(case.slot), "the " .. case.name .. " mon takes its tap" .. tag)
+    flows:tick()
+    Assert.equal(flows:status().childView.partyPage, "mon_menu", "selecting a mon opens its menu" .. tag)
+    drive(flows, { type = "confirm" })
+    for _ = 1, 8 do
+      flows:tick()
+    end
+    Assert.isNil(flows:takeResult(), case.name .. " SHIFT seals nothing" .. tag)
+    Assert.equal(
+      flows:status().childView.partyPage,
+      "mon_menu",
+      case.name .. " SHIFT stays in the mon menu" .. tag
+    )
+    local native = flows._composed._controller:status()
+    Assert.equal(native.state, "message", case.name .. " SHIFT shows its retail message" .. tag)
+    Assert.equal(native.message, case.want, case.name .. " names its target" .. tag)
+    flows:dispose()
+  end
+end
+
+-- Retail battle summary prints the catalog ability description under
+-- the ability name (PrintAbilityDescription, msg 0722). Catalog text
+-- rides its own window; rosters without a catalog keep their shape.
+function T.party_summary_shows_ability_description_with_catalog()
+  local catalog = {
+    ability = function(_, key)
+      assert(key == "RUN_AWAY", "ability lookup names its key")
+      return { name = "Run Away", description = "Enables a sure getaway." }
+    end,
+  }
+  local flows = coordinator(nil, {
+    monCatalog = catalog,
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  Assert.isTrue(flows:open(partyIntent({ party = summaryRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(view.partyPage, "summary", "SUMMARY opens the summary page")
+  local byRole = windowsByRole(view)
+  Assert.notNil(byRole["ability-desc"], "the ability description rides its own window")
+  Assert.equal(byRole["ability-desc"].text, "Enables a sure getaway.", "the description uses catalog text")
+  flows:dispose()
+end
+
+-- Retail move detail prints the catalog move description
+-- (PrintMoveDescription, msg 0749) between category and PP.
+function T.party_move_detail_shows_move_description_with_catalog()
+  local catalog = {
+    move = function(_, key)
+      return { name = key, description = "A test move description.", basePp = 35 }
+    end,
+  }
+  local flows = coordinator(nil, { monCatalog = catalog })
+  local roster = {
+    {
+      combatant = 1,
+      slot = 0,
+      name = "LEAD",
+      level = 20,
+      hp = 30,
+      maxHp = 30,
+      ability = "RUN_AWAY",
+      moves = {
+        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", description = "A test move description." },
+      },
+    },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  Assert.equal(flows:status().childView.partyPage, "moves", "CHECK MOVES opens the move list")
+  Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(view.partyPage, "move_detail", "a move opens its detail")
+  local byRole = windowsByRole(view)
+  Assert.notNil(byRole["move-desc"], "the move description rides its own window")
+  Assert.equal(byRole["move-desc"].text, "A test move description.", "the description uses roster text")
+  flows:dispose()
+end
+
+-- Retail battle summary projection: the wrapper page replaces the
+-- invented text-modal rows with the retail page model (page enum, slot,
+-- window text roles in Print* order, sprite placements), resolving the
+-- same staged msg 0006 keys through the borrowed resolver.
+---@return table<string, unknown> mon catalog stub answering EEVEE species types
+local function eeveeTypeCatalog()
+  return {
+    species = function(_, key)
+      assert(key == "EEVEE", "species lookup names its key")
+      return { types = { "NORMAL" } }
+    end,
+  }
+end
+
+function T.party_summary_projects_the_retail_page_model()
+  local flows = coordinator(ItemFixture.makeCatalog(), {
+    monCatalog = eeveeTypeCatalog(),
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local view = openLeadSummary(flows)
+  local ordered = {}
+  for _, window in ipairs(view.pageWindows) do
+    ordered[#ordered + 1] = window.role
+  end
+  Assert.deepEqual(ordered, {
+    "mon-name",
+    "mon-gender",
+    "level-label",
+    "level-value",
+    "exp-label",
+    "exp-value",
+    "exp-bar",
+    "hp-label",
+    "hp-value",
+    "hp-bar",
+    "attack-label",
+    "attack-value",
+    "defense-label",
+    "defense-value",
+    "speed-label",
+    "speed-value",
+    "sp-attack-label",
+    "sp-attack-value",
+    "sp-defense-label",
+    "sp-defense-value",
+    "ability-name",
+    "ability-desc",
+    "held-item",
+    "button",
+  }, "summary windows follow the retail Print* order")
+  local byRole = windowsByRole(view)
+  Assert.equal(
+    byRole["mon-name"].text,
+    "MARKER:battle/party/mon-name/0#1",
+    "the mon name resolves its staged per-slot template"
+  )
+  Assert.equal(
+    byRole["mon-gender"].text,
+    "MARKER:battle/party/gender/male#0",
+    "the gender symbol resolves its staged key"
+  )
+  Assert.equal(byRole["level-value"].text, "MARKER:battle/party/stat/level-value#1", "level value stages its count")
+  Assert.equal(
+    byRole["hp-value"].current,
+    "MARKER:battle/party/stat/hp-current#1",
+    "HP stages its staged current part"
+  )
+  Assert.equal(byRole["hp-value"].slash, "MARKER:battle/party/stat/hp-slash#0", "HP stages its staged slash")
+  Assert.equal(
+    byRole["hp-value"].max,
+    "MARKER:battle/party/stat/hp-max#1",
+    "HP stages its staged maximum part"
+  )
+  local bar = byRole["hp-bar"]
+  Assert.equal(bar.current, 30, "the HP bar carries live current hit points")
+  Assert.equal(bar.max, 30, "the HP bar carries live maximum hit points")
+  Assert.equal(
+    byRole["attack-value"].text,
+    "MARKER:battle/party/stat/attack-value#1",
+    "attack stages its value with its stat"
+  )
+  Assert.equal(
+    byRole["ability-name"].text,
+    "MARKER:battle/party/ability/name#1",
+    "ability stages its template with its name"
+  )
+  Assert.equal(byRole["held-item"].text, "MARKER:battle/party/item/name#1", "held item stages its template")
+  Assert.equal(byRole["button"].text, "MARKER:battle/party/button/check-moves#0", "summary links to check-moves")
+  local icons = spritesOfKind(view, "icon")
+  Assert.equal(#icons, 1, "summary places exactly one mon icon")
+  Assert.deepEqual({ icons[1].x, icons[1].y }, { 24, 12 }, "the mon icon rides its retail anchor")
+  local monTypes = spritesOfKind(view, "mon-type")
+  Assert.isTrue(#monTypes >= 1, "summary places the mon type icons")
+  Assert.deepEqual({ monTypes[1].x, monTypes[1].y }, { 130, 16 }, "the first type icon rides its retail anchor")
+  flows:dispose()
+end
+
+function T.party_check_moves_projects_move_windows_and_type_icons()
+  local flows = coordinator(ItemFixture.makeCatalog(), {
+    monCatalog = eeveeTypeCatalog(),
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  openLeadSummary(flows)
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  local byRole = windowsByRole(moves)
+  Assert.equal(
+    byRole["move-name:0"].text,
+    "MARKER:battle/party/move-name/0#1",
+    "the first move resolves its staged per-slot template"
+  )
+  local pp = byRole["move-pp:0"]
+  Assert.notNil(pp, "the first move stages its PP window")
+  Assert.equal(pp.currentCount, 35, "the PP window carries current PP")
+  Assert.equal(pp.maxCount, 35, "the PP window carries maximum PP")
+  Assert.equal(byRole["button"].text, "MARKER:battle/party/button/summary#0", "check-moves links to summary")
+  local moveTypes = spritesOfKind(moves, "move-type")
+  Assert.equal(#moveTypes, 1, "check-moves places one type icon per known move")
+  Assert.deepEqual({ moveTypes[1].x, moveTypes[1].y }, { 24, 80 }, "the first move icon rides its retail anchor")
+  flows:dispose()
+end
+
+function T.party_move_detail_projects_detail_windows_and_category_icon()
+  local flows = coordinator(ItemFixture.makeCatalog(), {
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  openLeadSummary(flows)
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local detail = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(detail.partyPage, "move_detail", "a move opens its detail")
+  Assert.equal(detail.pageMove, 0, "detail names its selected move")
+  local byRole = windowsByRole(detail)
+  for _, role in ipairs({ "power-value", "accuracy-value", "category-value", "pp-value", "move-desc", "move-name" }) do
+    Assert.notNil(byRole[role], "move detail stages " .. role)
+  end
+  Assert.equal(
+    byRole["power-value"].text,
+    "MARKER:battle/party/move/power-value#1",
+    "power stages its value with its count"
+  )
+  Assert.equal(
+    byRole["category-value"].text,
+    "MARKER:battle/party/move/category-physical#0",
+    "the category stages its physical word"
+  )
+  local categories = spritesOfKind(detail, "category")
+  Assert.equal(#categories, 1, "move detail places the category icon")
+  Assert.deepEqual({ categories[1].x, categories[1].y }, { 24, 88 }, "the category icon rides its retail anchor")
+  flows:dispose()
+end
+
+-- Wrapper taps validate against the decomp input order without rows:
+-- known page buttons arm behind the gated press, foreign identities
+-- refuse, and taps on empty move slots arm but stay on the list like
+-- retail MOVE_NONE breaks.
+function T.party_wrapper_taps_validate_against_retail_controls()
+  local flows = coordinator()
+  Assert.isTrue(flows:open(partyIntent({ party = moveRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:1"), "the reserve takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  Assert.equal(flows:status().childView.partyPage, "summary", "SUMMARY opens the summary page")
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button arms")
+  Assert.isTrue(flows:activateControl("summary:prev"), "the summary prev button arms")
+  Assert.isFalse(flows:activateControl("summary:bogus"), "foreign wrapper identities refuse")
+  flows:tick()
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.partyPage, "moves", "moves opens the move list")
+  Assert.isTrue(flows:activateControl("moves:summary"), "the moves summary button arms")
+  Assert.isTrue(flows:activateControl("moves:prev"), "the moves prev button arms")
+  flows:tick()
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.partyPage, "summary", "the moves summary button returns to summary")
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button re-arms")
+  flows:tick()
+  settleWrapperPress(flows)
+  Assert.equal(flows:status().childView.partyPage, "moves", "CHECK MOVES reopens the move list")
+  Assert.isTrue(flows:activateControl("move:3"), "an empty move slot still arms its tap")
+  flows:tick()
+  Assert.equal(flows:status().childView.partyPage, "moves", "taps on empty slots stay on the list")
+  Assert.isFalse(flows:activateControl("move:9"), "out-of-range move slots refuse")
+  flows:dispose()
+end
+
+-- Retail learn rows print PP like the move list (PrintMoveListPP).
+function T.learning_rows_show_pp_like_retail()
+  local flows = coordinator()
+  Assert.isTrue(flows:open(learnIntent(1)), "learning opens")
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  local rows = view.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(rows[1].sub, "PP 35/35", "held rows show their PP")
+  flows:dispose()
+end
+
+-- Staged page sprite anchors under test: every coordinate differs from
+-- the hardcoded retail fallback so the manifest path proves itself.
+local STAGED_SPRITE_SECTION = {
+  spritePositions = {
+    summaryTypes = { { x = 1, y = 2 }, { x = 3, y = 4 } },
+    checkMovesTypes = { { x = 5, y = 6 }, { x = 7, y = 8 } },
+    checkMovesMoves = { { x = 11, y = 12 }, { x = 13, y = 14 }, { x = 15, y = 16 }, { x = 17, y = 18 } },
+    moveDetailTypes = { { x = 21, y = 22 }, { x = 23, y = 24 } },
+    fixed = {
+      monIcon = { x = 31, y = 32 },
+      statusIcon = { x = 33, y = 34 },
+      monMenuIcon = { x = 29, y = 30 },
+      summaryHeldItem = { x = 35, y = 36 },
+      heldItemDelta = { x = 9, y = 7 },
+      capsuleDelta = { x = 11, y = 5 },
+      moveDetailMoveIcon = { x = 37, y = 38 },
+      categoryIcon = { x = 39, y = 40 },
+    },
+  },
+}
+
+---@return table<integer, table<string, unknown>> roster with status, held item, types, and four typed moves
+local function spriteRoster()
+  return {
+    {
+      combatant = 1,
+      slot = 0,
+      name = "LEAD",
+      species = "EEVEE",
+      form = 0,
+      level = 20,
+      hp = 30,
+      maxHp = 30,
+      condition = "poison",
+      heldItem = "POTION",
+      moves = {
+        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", type = "NORMAL", description = "A test tackle." },
+        { move = "GROWL", name = "Growl", pp = 40, maxPp = 40, power = 0, accuracy = 100, category = "status", type = "NORMAL", description = "A test growl." },
+        { move = "SWIFT", name = "Swift", pp = 20, maxPp = 20, power = 60, accuracy = 0, category = "special", type = "NORMAL", description = "A test swift." },
+        { move = "REST", name = "Rest", pp = 10, maxPp = 10, power = 0, accuracy = 0, category = "status", type = "PSYCHIC", description = "A test rest." },
+      },
+    },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+end
+
+---@return table<string, unknown> mon catalog fake staging two mon types
+local function twoTypeCatalog()
+  return {
+    species = function(_, _)
+      return { types = { "NORMAL", "FLYING" } }
+    end,
+  }
+end
+
+---@param flows table<string, unknown> coordinator under test driving
+---@param roster table<integer, table<string, unknown>> detached own-party snapshot under test
+---@return table<string, unknown> open summary page view
+local function openSpriteSummary(flows, roster)
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  Assert.equal(flows:status().childView.partyPage, "mon_menu", "selecting the lead opens its menu")
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local view = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(view.partyPage, "summary", "SUMMARY opens the summary page")
+  return view
+end
+
+-- Page sprite anchors resolve from the staged battle manifest party
+-- section: the summary, check-moves, and move-detail pages stage the
+-- manifest mon icon, status, mon-type, held-item, move-type, and
+-- category anchors instead of the hardcoded retail ones.
+function T.party_pages_read_sprite_anchors_from_the_staged_party_section()
+  local MonCache = require("libs.assets.src.MonCache")
+  local flows = coordinator(ItemFixture.makeCatalog(), {
+    monCatalog = twoTypeCatalog(),
+    partySection = STAGED_SPRITE_SECTION,
+  })
+  local summary = openSpriteSummary(flows, spriteRoster())
+  local iconKey = MonCache.iconSelector("EEVEE", 0, false)
+  Assert.deepEqual(summary.pageSprites, {
+    { kind = "icon", key = iconKey, x = 31, y = 32 },
+    { kind = "status", key = "poison", x = 33, y = 34 },
+    { kind = "mon-type", key = "NORMAL", x = 1, y = 2 },
+    { kind = "mon-type", key = "FLYING", x = 3, y = 4 },
+    { kind = "held-item", key = "POTION", x = 40, y = 39 },
+    { kind = "held-item", key = "POTION", x = 35, y = 36 },
+  }, "the summary page stages its manifest sprite anchors")
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  Assert.deepEqual(moves.pageSprites, {
+    { kind = "icon", key = iconKey, x = 31, y = 32 },
+    { kind = "status", key = "poison", x = 33, y = 34 },
+    { kind = "mon-type", key = "NORMAL", x = 5, y = 6 },
+    { kind = "mon-type", key = "FLYING", x = 7, y = 8 },
+    { kind = "held-item", key = "POTION", x = 40, y = 39 },
+    { kind = "move-type", key = "NORMAL", x = 11, y = 12 },
+    { kind = "move-type", key = "NORMAL", x = 13, y = 14 },
+    { kind = "move-type", key = "NORMAL", x = 15, y = 16 },
+    { kind = "move-type", key = "PSYCHIC", x = 17, y = 18 },
+  }, "the move list stages its manifest sprite anchors")
+  Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local detail = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(detail.partyPage, "move_detail", "a move opens its detail")
+  Assert.deepEqual(detail.pageSprites, {
+    { kind = "icon", key = iconKey, x = 31, y = 32 },
+    { kind = "status", key = "poison", x = 33, y = 34 },
+    { kind = "mon-type", key = "NORMAL", x = 21, y = 22 },
+    { kind = "mon-type", key = "FLYING", x = 23, y = 24 },
+    { kind = "held-item", key = "POTION", x = 40, y = 39 },
+    { kind = "move-type", key = "NORMAL", x = 37, y = 38 },
+    { kind = "category", key = "physical", x = 39, y = 40 },
+  }, "the move detail stages its manifest sprite anchors")
+  flows:dispose()
+end
+
+-- The pinned fallback anchors equal the transcribed retail values
+-- (battle_party_menu.c ShowSummarySprites/ShowCheckMovesSprites/
+-- ShowMoveDetailSprites and gBattlePartyCheckMovesMoveIconPos): without
+-- a staged section the pages keep projecting the decomp-verified
+-- geometry.
+function T.party_pages_pin_their_retail_sprite_anchors_without_a_staged_section()
+  local MonCache = require("libs.assets.src.MonCache")
+  local flows = coordinator(ItemFixture.makeCatalog(), { monCatalog = twoTypeCatalog() })
+  local summary = openSpriteSummary(flows, spriteRoster())
+  local iconKey = MonCache.iconSelector("EEVEE", 0, false)
+  Assert.deepEqual(summary.pageSprites, {
+    { kind = "icon", key = iconKey, x = 24, y = 12 },
+    { kind = "status", key = "poison", x = 198, y = 20 },
+    { kind = "mon-type", key = "NORMAL", x = 130, y = 16 },
+    { kind = "mon-type", key = "FLYING", x = 164, y = 16 },
+    { kind = "held-item", key = "POTION", x = 32, y = 20 },
+    { kind = "held-item", key = "POTION", x = 20, y = 132 },
+  }, "the summary page pins its retail sprite anchors")
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  Assert.deepEqual(moves.pageSprites, {
+    { kind = "icon", key = iconKey, x = 24, y = 12 },
+    { kind = "status", key = "poison", x = 198, y = 20 },
+    { kind = "mon-type", key = "NORMAL", x = 130, y = 16 },
+    { kind = "mon-type", key = "FLYING", x = 164, y = 16 },
+    { kind = "held-item", key = "POTION", x = 32, y = 20 },
+    { kind = "move-type", key = "NORMAL", x = 24, y = 80 },
+    { kind = "move-type", key = "NORMAL", x = 152, y = 80 },
+    { kind = "move-type", key = "NORMAL", x = 24, y = 128 },
+    { kind = "move-type", key = "PSYCHIC", x = 152, y = 128 },
+  }, "the move list pins its retail sprite anchors")
+  Assert.isTrue(flows:activateControl("move:0"), "the first move takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local detail = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(detail.partyPage, "move_detail", "a move opens its detail")
+  Assert.deepEqual(detail.pageSprites, {
+    { kind = "icon", key = iconKey, x = 24, y = 12 },
+    { kind = "status", key = "poison", x = 198, y = 20 },
+    { kind = "mon-type", key = "NORMAL", x = 130, y = 16 },
+    { kind = "mon-type", key = "FLYING", x = 164, y = 16 },
+    { kind = "held-item", key = "POTION", x = 32, y = 20 },
+    { kind = "move-type", key = "NORMAL", x = 136, y = 48 },
+    { kind = "category", key = "physical", x = 24, y = 88 },
+  }, "the move detail pins its retail sprite anchors")
+  flows:dispose()
+end
+
+-- Retail mon-menu projection: selecting a mon paints the full-screen
+-- page (battle_party_menu.c PrintMonMenuPage) instead of the invented
+-- dropdown: the centered name with its gender symbol, the three
+-- button labels, the mon icon with its held item, and the decomp
+-- hitbox/cursor geometry. Focus follows the native menu index.
+function T.party_mon_menu_projects_the_retail_full_screen_page()
+  local MonCache = require("libs.assets.src.MonCache")
+  local monMenuWindows = {}
+  for _ = 1, 4 do
+    monMenuWindows[#monMenuWindows + 1] = { left = 0, top = 0, width = 1, height = 1, palette = 9 }
+  end
+  local buttonRects = {}
+  for _ = 1, 34 do
+    buttonRects[#buttonRects + 1] = { x = 0, y = 0, w = 1, h = 1 }
+  end
+  local flows = coordinator(ItemFixture.makeCatalog(), {
+    monCatalog = twoTypeCatalog(),
+    partySection = { windows = { monMenu = monMenuWindows }, buttonRects = buttonRects },
+  })
+  Assert.isTrue(flows:open(partyIntent({ party = spriteRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  local menu = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(menu.partyPage, "mon_menu", "selecting a mon opens the mon menu")
+  Assert.equal(menu.focusId, "switch", "the menu opens on SHIFT")
+  Assert.equal(menu.pageCursor, 0, "the cursor opens on the upper box")
+  Assert.isTrue(menu.cursorActive, "the retained focus stays visible")
+  Assert.equal(menu.pageSlot, 0, "the menu names its mon")
+  Assert.isTrue(menu.pageIsEgg ~= true, "the lead is no egg")
+  local byRole = windowsByRole(menu)
+  Assert.equal(
+    byRole["mon-name"].text,
+    "LEAD",
+    "the mon name resolves through its staged template"
+  )
+  Assert.equal(byRole["shift-button"].text, "SHIFT", "SHIFT resolves its button label")
+  Assert.equal(byRole["summary-button"].text, "SUMMARY", "SUMMARY resolves its button label")
+  Assert.equal(byRole["moves-button"].text, "CHECK MOVES", "CHECK MOVES resolves its button label")
+  local iconKey = MonCache.iconSelector("EEVEE", 0, false)
+  Assert.deepEqual(menu.pageSprites, {
+    { kind = "icon", key = iconKey, x = 128, y = 72 },
+    { kind = "held-item", key = "POTION", x = 136, y = 80 },
+  }, "the mon menu stages its retail sprite anchors without status or type icons")
+  local regionIds = {}
+  for _, region in ipairs(menu.pageRegions --[[@as table<integer, table<string, unknown>>]]) do
+    regionIds[#regionIds + 1] = region.id
+  end
+  Assert.deepEqual(regionIds, { "switch", "summary", "moves", "back" }, "hit regions follow the decomp order")
+  Assert.equal(#menu.windowBoxes, 4, "the mon menu stages its four windows")
+  for _, box in
+    ipairs(menu.windowBoxes --[[@as table<integer, table<string, unknown>>]])
+  do
+    Assert.equal(box.palette, 9, "mon-menu window boxes keep their palette-9 bank")
+  end
+  local faceButtons = {}
+  for button in pairs(menu.pageButtonRects --[[@as table<integer, table<string, unknown>>]]) do
+    faceButtons[#faceButtons + 1] = button
+  end
+  table.sort(faceButtons)
+  Assert.deepEqual(faceButtons, { 6, 7, 8, 10 }, "faces ride SHIFT/SUMMARY/CHECK MOVES/cancel")
+  Assert.equal(#menu.pageCursorBoxes, 4, "the cursor walks the four page boxes")
+  flows:dispose()
+end
+
+-- Retail mon-menu focus follows the native menu index: stepping down
+-- from SHIFT focuses SUMMARY with its cursor box.
+function T.party_mon_menu_focus_follows_the_native_menu_index()
+  local flows = coordinator(ItemFixture.makeCatalog(), { monCatalog = twoTypeCatalog() })
+  Assert.isTrue(flows:open(partyIntent({ party = spriteRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  local menu = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(menu.partyPage, "mon_menu", "dpad stays in the mon menu")
+  Assert.equal(menu.focusId, "summary", "down from SHIFT focuses SUMMARY")
+  Assert.equal(menu.pageCursor, 1, "the cursor follows the SUMMARY box")
+  flows:dispose()
+end
+
+-- Retail mon-menu eggs blank the SUMMARY/CHECK MOVES windows
+-- (PrintMonMenuPage) and disable their faces.
+function T.party_mon_menu_blanks_buttons_for_eggs()
+  local flows = coordinator()
+  local roster = {
+    { combatant = 1, slot = 0, name = "LEAD", level = 20, hp = 30, maxHp = 30 },
+    { combatant = 2, slot = 1, name = "EGG", level = 5, hp = 10, maxHp = 18, isEgg = true },
+  }
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = switchOptions(2) })), "the egg roster opens")
+  Assert.isTrue(flows:activateControl("party:1"), "the egg takes its tap")
+  flows:tick()
+  local menu = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(menu.partyPage, "mon_menu", "selecting the egg opens its menu")
+  Assert.isTrue(menu.pageIsEgg == true, "the menu marks its egg")
+  local byRole = windowsByRole(menu)
+  Assert.equal(byRole["summary-button"].text, "", "eggs blank SUMMARY")
+  Assert.equal(byRole["moves-button"].text, "", "eggs blank CHECK MOVES")
+  Assert.equal(byRole["shift-button"].text, "SHIFT", "eggs keep SHIFT")
+  flows:dispose()
+end
+
+-- Retail CHECK MOVES prints the mon name with its gender symbol
+-- (PrintCheckMovesPage through PrintMonName).
+function T.party_check_moves_shows_the_mon_name()
+  local flows = coordinator(ItemFixture.makeCatalog(), { monCatalog = twoTypeCatalog() })
+  local menu = nil
+  Assert.isTrue(flows:open(partyIntent({ party = spriteRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  menu = flows:status().childView
+  Assert.equal(menu.partyPage, "mon_menu", "selecting a mon opens its menu")
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  local byRole = windowsByRole(moves)
+  Assert.equal(byRole["mon-name"].text, "LEAD", "the move list prints the mon name")
+  Assert.isTrue(type(byRole["mon-gender"]) == "table", "the move list prints the gender symbol")
+  flows:dispose()
+end
+
+-- Retail move detail prints the PP, accuracy, power, and category
+-- captions (PrintPPLabel/PrintAccuracyLabel/PrintPowerLabel/
+-- PrintCategoryLabel), the gender symbol, and keeps showing the
+-- selected move while the cursor hovers cancel.
+function T.party_move_detail_shows_labels_and_keeps_its_move_on_cancel_hover()
+  local flows = coordinator(ItemFixture.makeCatalog(), { monCatalog = twoTypeCatalog() })
+  Assert.isTrue(flows:open(partyIntent({ party = moveRoster(), options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:1"), "the reserve takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  Assert.isTrue(flows:activateControl("move:1"), "the second move takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local detail = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(detail.partyPage, "move_detail", "a move opens its detail")
+  Assert.equal(detail.pageMove, 1, "the detail names its selected move")
+  local byRole = windowsByRole(detail)
+  Assert.isTrue(byRole["pp-label"].text ~= "", "the PP caption prints")
+  Assert.isTrue(byRole["accuracy-label"].text ~= "", "the accuracy caption prints")
+  Assert.isTrue(byRole["power-label"].text ~= "", "the power caption prints")
+  Assert.isTrue(byRole["category-label"].text ~= "", "the category caption prints")
+  Assert.isTrue(type(byRole["mon-gender"]) == "table", "the detail prints the gender symbol")
+  -- Hovering cancel keeps the selected move: the first key press
+  -- only reactivates the cursor, the next ones walk to cancel.
+  drive(flows, { type = "navigate", direction = "right" })
+  drive(flows, { type = "navigate", direction = "right" })
+  drive(flows, { type = "navigate", direction = "right" })
+  local hovered = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(hovered.focusId, "back", "right walks to cancel")
+  Assert.equal(hovered.pageMove, 1, "hovering cancel keeps the selected move")
+  flows:dispose()
+end
+
+-- The gender symbol carries its retail ink explicitly: females resolve
+-- true behind the (3,4,0) ink, males false behind (7,8,0).
+function T.party_wrapper_pages_mark_the_gender_ink()
+  local flows = coordinator(ItemFixture.makeCatalog(), { monCatalog = twoTypeCatalog() })
+  local roster = {
+    {
+      combatant = 1,
+      slot = 0,
+      name = "LEAD",
+      species = "EEVEE",
+      form = 0,
+      level = 20,
+      hp = 30,
+      maxHp = 30,
+      gender = "female",
+    },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  local menu = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(menu.partyPage, "mon_menu", "selecting a mon opens its menu")
+  local menuRoles = windowsByRole(menu)
+  Assert.isTrue(menuRoles["mon-gender"].female == true, "the female symbol marks its ink")
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local summary = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(summary.partyPage, "summary", "SUMMARY opens the summary page")
+  local byRole = windowsByRole(summary)
+  Assert.isTrue(byRole["mon-gender"].female == true, "the summary marks the female ink")
+  flows:dispose()
+end
+
+-- The experience bar projects the earned experience behind DrawExpBar:
+-- the experience past the level base over the growth span, empty at
+-- the cap or without answerable growth facts.
+function T.party_summary_projects_the_experience_bar()
+  local curve = { [20] = 1000, [21] = 1100 }
+  local flows = coordinator(ItemFixture.makeCatalog(), {
+    monCatalog = {
+      species = function(_, _)
+        return { types = { "NORMAL" }, growthCurve = "MEDIUM_FAST" }
+      end,
+      growthCurve = function(_, _)
+        return curve
+      end,
+    },
+    resolveMessage = function(key, subs)
+      return "MARKER:" .. tostring(key) .. "#" .. tostring(subs ~= nil and #subs or 0)
+    end,
+  })
+  local roster = {
+    {
+      combatant = 1,
+      slot = 0,
+      name = "LEAD",
+      species = "EEVEE",
+      form = 0,
+      level = 20,
+      hp = 30,
+      maxHp = 30,
+      experience = 1005,
+      nextExp = 95,
+    },
+    { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
+  }
+  Assert.isTrue(flows:open(partyIntent({ party = roster, options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
+  flows:tick()
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "confirm" })
+  for _ = 1, 8 do
+    flows:tick()
+  end
+  local summary = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(summary.partyPage, "summary", "SUMMARY opens the summary page")
+  local byRole = windowsByRole(summary)
+  Assert.equal(byRole["exp-bar"].current, 5, "the bar carries the earned experience")
+  Assert.equal(byRole["exp-bar"].max, 100, "the bar carries the growth span")
+  flows:dispose()
+end
+
+-- Touch input hides the wrapper cursor like retail DeactivateCursor: after
+-- the dpad activates the summary cursor, tapping CHECK MOVES opens the
+-- move list with no focus frame.
+function T.party_touch_hides_the_active_wrapper_cursor()
+  local flows = coordinator(ItemFixture.makeCatalog())
+  openLeadSummary(flows)
+  drive(flows, { type = "confirm" })
+  local summary = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(summary.partyPage, "summary", "the summary stays open")
+  Assert.isTrue(summary.cursorActive == true, "the first key activates the cursor")
+  Assert.isTrue(flows:activateControl("summary:moves"), "the summary moves button takes its tap")
+  flows:tick()
+  settleWrapperPress(flows)
+  local moves = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(moves.partyPage, "moves", "CHECK MOVES opens the move list")
+  Assert.isTrue(moves.cursorActive ~= true, "the touch selection hides the cursor")
   flows:dispose()
 end
 

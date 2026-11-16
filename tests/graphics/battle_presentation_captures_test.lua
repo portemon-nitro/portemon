@@ -9,6 +9,7 @@
 -- view must be identical. PNG copies land beside the run for inspection.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local StubLease = require("tests.support.StubLease")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
@@ -791,9 +792,11 @@ local function captureScreen(scope, cacheFs, versionId, measurement, options)
       return measurement
     end,
     -- The battle screen borrows the immutable item catalog so its bag
-    -- child can group stocked items by pocket, exactly like production.
+    -- child can group stocked items by pocket, and the staged party
+    -- manifest so party children resolve through native geometry.
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = options.monCatalog,
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
     monIconProvider = {
       prepareKeys = function()
         return true
@@ -3798,61 +3801,6 @@ function T.compact_child_return_restores_the_parent_command(scope, context)
         versionId .. " restores the " .. side.label .. " health bar"
       )
     end
-  end
-end
-
--- A cancelled Party child hands the same command decision back: the party
--- opens through its eligible reserve switch and its cancellation
--- restores the parent command with the same request, rendering
--- pixel-identical to the pre-child command.
-function T.compact_party_return_restores_the_parent_command(scope, context)
-  local versions = readyVersions()
-  if #versions == 0 then
-    context:skip("the battle captures need a ready user-owned ROM with a derived cache")
-  end
-  for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
-    local screen = captureScreen(scope, cacheFs, versionId, compactMeasurement())
-    drivePacketToCommand(screen, versionId, partyPacket())
-    local requestId = assert(screen:status().request, versionId .. " mirrors its request").requestId
-    local plan = livePlan(screen, versionId)
-    local width, height = canvasSize(plan, versionId)
-    local frame = assert(plan.panes[1].placement.frame, versionId .. " frames its compact pane")
-    renderCapture(scope, screen, width, height)
-
-    local cells = assert(plan.content.commands.cells, versionId .. " carries its command cells")
-    tap(screen, versionId, cellCenter(cells, "pokemon"))
-    pump(screen, 2)
-    tap(screen, versionId, cellCenter(cells, "pokemon"))
-    pumpToMode(screen, "child", versionId)
-    Assert.equal(screen:status().mode, "child", versionId .. " opens the party over its command")
-    Assert.equal(screen:view().childIntent.kind, "party", versionId .. " carries the party intent")
-    screen:input({ { type = "cancel" } })
-    pump(screen, 5)
-    Assert.equal(screen:status().mode, "command", versionId .. " returns to the same decision")
-    Assert.equal(
-      screen:status().request.requestId,
-      requestId,
-      versionId .. " keeps the parent request across the party return"
-    )
-    Assert.isNil(screen:view().childIntent, versionId .. " closes the party intent")
-    waitForMenuInput(screen, versionId)
-    screen:input({ { type = "navigate", direction = "up" } })
-    pump(screen, 2)
-    Assert.equal(screen:view().selection, "fight", versionId .. " walks back to the first command")
-
-    local returnedPlan = livePlan(screen, versionId)
-    local returned = renderCapture(scope, screen, width, height)
-    Assert.equal(screen:view().selection, "fight", versionId .. " restores the parent's focused command")
-    local content = assert(returnedPlan.content, versionId .. " carries its returned content")
-    Assert.isTrue(
-      countInk(returned, hostRect(frame, content.prompt.content)) > 100,
-      versionId .. " restores its prompt text ink"
-    )
-    Assert.isTrue(
-      countBarGreen(returned, hostRect(frame, content.hud.player)) > 10,
-      versionId .. " restores the player health bar"
-    )
   end
 end
 

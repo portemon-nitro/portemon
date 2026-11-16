@@ -127,6 +127,8 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _cursorSelection string? selection owning the current corner animation
 ---@field _bagCursorTick integer battle-bag corner shimmer clock in presentation ticks
 ---@field _bagCursorIdentity string? focused bag page and control owning the current shimmer
+---@field _wrapperCursorTick integer battle-party wrapper corner shimmer clock in presentation ticks
+---@field _wrapperCursorIdentity string? focused wrapper page and control owning the current shimmer
 ---@field _activeEffectTick integer active player bob clock in presentation ticks
 ---@field _activeEffectRunning boolean whether the player selection bob is active
 ---@field _sourceAccum number accepted seconds banked toward the next source tick
@@ -1289,6 +1291,7 @@ function BattleScreenState.new(opts)
       itemCatalog = opts.itemCatalog,
       monCatalog = opts.monCatalog,
       battleMenus = opts.battleMenus,
+      partySection = type(manifest.party) == "table" and manifest.party or nil,
     }),
     _partySnapshot = nil,
     _inventorySnapshot = nil,
@@ -1347,6 +1350,8 @@ function BattleScreenState.new(opts)
     _cursorSelection = nil,
     _bagCursorTick = 0,
     _bagCursorIdentity = nil,
+    _wrapperCursorTick = 0,
+    _wrapperCursorIdentity = nil,
     _activeEffectTick = 0,
     _activeEffectRunning = false,
     _sourceAccum = 0,
@@ -1584,6 +1589,7 @@ function BattleScreenState.new(opts)
     itemCatalog = opts.itemCatalog,
     monCatalog = opts.monCatalog,
     battleMenus = opts.battleMenus,
+    partySection = type(self._manifest.party) == "table" and self._manifest.party or nil,
     audioEffect = subflowAudioEffect,
     resolveMessage = subflowResolveMessage,
   })
@@ -2742,6 +2748,8 @@ function BattleScreenState:_snapshot(borrowStatic)
     cursorTick = self._cursorTick,
     bagCursorTick = self._bagCursorTick,
     bagCursorFrames = self:_bagCursorFrames(),
+    wrapperCursorTick = self._wrapperCursorTick,
+    wrapperCursorFrames = self:_bagCursorFrames(),
     armed = armed ~= nil and { scope = armed.scope, id = armed.id } or nil,
     buttonFeedback = buttonFeedback,
     touchFeedback = self._armed ~= nil and self._armed.id == "dialogue" and self._armed.pointerId ~= nil or false,
@@ -8496,6 +8504,22 @@ function BattleScreenState:updateFixed(dt)
     self._bagCursorTick = self._bagCursorTick + sourceTicks
   end
   self._bagCursorIdentity = bagIdentity
+  -- The battle-party wrapper d-pad cursor shimmers while active and
+  -- restarts on every focus move or page turn, like the bag cursor
+  -- (BattleDpadCursor_SetRect reseats the corner animation through
+  -- BattleCursor_SetCorners).
+  local wrapperIdentity = nil
+  if type(bagChild) == "table" and (bagChild.kind == "party" or bagChild.kind == "target") then
+    if bagChild.cursorActive == true and type(bagChild.partyPage) == "string" then
+      wrapperIdentity = tostring(bagChild.partyPage) .. "|" .. tostring(bagChild.focusId)
+    end
+  end
+  if wrapperIdentity == nil or wrapperIdentity ~= self._wrapperCursorIdentity then
+    self._wrapperCursorTick = 0
+  else
+    self._wrapperCursorTick = self._wrapperCursorTick + sourceTicks
+  end
+  self._wrapperCursorIdentity = wrapperIdentity
   self._cursorWasVisible = cursorVisible
   self._cursorSelection = cursorVisible and self._selection or nil
   -- Palette-dependent images materialize once after the fixed tick has

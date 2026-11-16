@@ -843,6 +843,22 @@ function T.message_draws_its_window_text()
   Assert.isTrue(hasString(texts, "NO ENTRY"), "messages print through the generated font")
 end
 
+function T.multiline_message_splits_at_line_breaks_without_newline_glyphs()
+  local graphics = fakeGraphics()
+  local texts = {}
+  local renderer = newRenderer(graphics, stubText(texts))
+  local status = presentation({ state = "message", message = "ALREADY\nin battle!" })
+  status.view.slots[1] = occupiedSlot(0)
+  renderer:draw(status, layout(), icons())
+  Assert.isTrue(hasString(texts, "ALREADY"), "the first line prints without its break")
+  Assert.isTrue(hasString(texts, "in battle!"), "the second line prints without its break")
+  for _, call in ipairs(texts) do
+    if type(call.value) == "string" then
+      Assert.isNil(call.value:find("\n", 1, true), "no drawn line carries a raw newline glyph")
+    end
+  end
+end
+
 -- Production resolves detail panes to LayoutGeometry placements (frame,
 -- origin, scale, logical dimensions), never bare rects: the pane draws
 -- inside its LogicalSurface scope, so the background and the upper-screen

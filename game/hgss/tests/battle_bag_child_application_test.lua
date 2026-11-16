@@ -12,6 +12,7 @@
 
 local Assert = require("tests.support.Assert")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 
@@ -22,7 +23,11 @@ local T = {}
 ---@param catalog table<string, unknown>? borrowed immutable item catalog
 ---@return table<string, unknown> battle child coordinator under test driving
 local function coordinator(catalog)
-  return BattleSubflows.new({ launchId = "launch-bag-child", itemCatalog = catalog })
+  return BattleSubflows.new({
+    launchId = "launch-bag-child",
+    itemCatalog = catalog,
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+  })
 end
 
 ---@return table<integer, table<string, unknown>> detached own-party snapshot
@@ -187,7 +192,11 @@ function T.versioned_item_catalogs_replay_the_stocked_bag_flow(context)
       return items:item("POTION")
     end)
     Assert.isTrue(stocked, "the owned " .. versionId .. " catalog stocks POTION: " .. tostring(stockErr))
-    local flows = BattleSubflows.new({ launchId = "launch-bag-child", itemCatalog = items })
+    local flows = BattleSubflows.new({
+      launchId = "launch-bag-child",
+      itemCatalog = items,
+      battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+    })
     local inventory = { POTION = 5 }
     Assert.isTrue(flows:open(bagIntent(inventory)), "the stocked bag opens on " .. versionId)
     walkToMedicine(flows)

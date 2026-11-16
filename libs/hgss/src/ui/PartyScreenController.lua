@@ -1146,6 +1146,18 @@ function PartyScreenController:_confirmMenuEntry()
     if self._context == "battle_pick" then
       local record = assert(self._view.slots[slot + 1], "battle Switch reads its selected slot")
       if record.eligible ~= true then
+        -- Retail CanSwitchToSelectedMon shows its msg 0006 reason over
+        -- the mon menu and stays there (SHOW_PENDING_MESSAGE then
+        -- CLOSE_MESSAGE back to MON_MENU), never dropping to the list.
+        local policy = type(self._policy) == "table" and self._policy or nil
+        local lookup = type(policy) == "table" and policy.switchRefusalText or nil
+        if type(lookup) == "function" then
+          local ok, text = pcall(lookup, slot)
+          if ok and type(text) == "string" and text ~= "" then
+            self:_showMessage(text, "context")
+            return
+          end
+        end
         self:_requestInvalidSound()
         self:_dismissMenu()
         return

@@ -928,23 +928,25 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
     {
       name = "target",
       child = { kind = "target", stagedItem = "POTION", focusId = "slot:1", rows = footerRosterRows(3, 2) },
-      caption = "Select the target.",
-      occupancy = "2/3",
-      title = "Use POTION on whom?",
+      -- Target children paint through the native renderer alone: no
+      -- invented title, guidance, or occupancy rides either modal.
+      caption = nil,
+      occupancy = nil,
+      title = nil,
     },
     {
       name = "forced-party",
       child = { kind = "party", focusId = "slot:1", rows = footerRosterRows(3, 2) },
-      caption = "Select its replacement.",
-      occupancy = "2/3",
-      title = "Choose a replacement!",
+      caption = nil,
+      occupancy = nil,
+      title = nil,
     },
     {
       name = "voluntary-party",
       child = { kind = "party", cancellable = true, focusId = "slot:1", rows = footerRosterRows(3, 2) },
-      caption = "Select a reserve.",
-      occupancy = "2/3",
-      title = "Choose a Pokemon!",
+      caption = nil,
+      occupancy = nil,
+      title = nil,
     },
     {
       name = "learn",
@@ -982,18 +984,15 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
     {
       name = "missing-rows-party",
       child = { kind = "party" },
-      caption = "Select its replacement.",
+      caption = nil,
       occupancy = nil,
-      title = "Choose a replacement!",
+      title = nil,
     },
   }
   local captions = {
-    "Select the target.",
     "Select an item.",
     "Select a move to forget.",
     "Restore which move?",
-    "Select a reserve.",
-    "Select its replacement.",
   }
   for _, case in ipairs(cases) do
     local tag = " (" .. case.name .. ")"

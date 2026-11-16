@@ -9,6 +9,7 @@
 -- initiating-input consumption behind the missing child composer.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 
@@ -18,7 +19,10 @@ local T = {}
 
 ---@return table<string, unknown> battle child coordinator under test driving
 local function coordinator()
-  return BattleSubflows.new({ launchId = "launch-continuity-child" })
+  return BattleSubflows.new({
+    launchId = "launch-continuity-child",
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+  })
 end
 
 ---@param opts table<string, unknown> intent overrides under test preparation
@@ -170,7 +174,10 @@ function T.native_learning_seals_once_through_confirmation()
     }
   end
   local function openLearned(launchId, requestId)
-    local flows = BattleSubflows.new({ launchId = launchId })
+    local flows = BattleSubflows.new({
+      launchId = launchId,
+      battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+    })
     Assert.isTrue(flows:open(learnIntent(launchId, requestId)), "the learning prompt opens")
     return flows
   end

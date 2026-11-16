@@ -14,6 +14,7 @@
 local Assert = require("tests.support.Assert")
 local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -455,9 +456,12 @@ local function openRig(modules, opts)
       return rig.measurement
     end,
     -- The battle screen borrows the immutable item catalog so its bag
-    -- child can group stocked items by pocket, exactly like production.
+    -- child can group stocked items by pocket, and the staged party
+    -- manifest so party children resolve through the same native
+    -- geometry as production instead of an invented fallback.
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,

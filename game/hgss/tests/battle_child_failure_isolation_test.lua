@@ -9,6 +9,7 @@
 -- resource discipline lands with the missing child composer.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 
@@ -16,7 +17,10 @@ local T = {}
 
 ---@return table<string, unknown> battle child coordinator under test driving
 local function coordinator()
-  return BattleSubflows.new({ launchId = "launch-failure-child" })
+  return BattleSubflows.new({
+    launchId = "launch-failure-child",
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+  })
 end
 
 ---@return table<integer, table<string, unknown>> detached own-party snapshot
@@ -91,7 +95,8 @@ end
 function T.staged_results_report_once_and_stale_requests_never_seal()
   local flows = coordinator()
   Assert.isTrue(flows:open(partyIntent({})), "the party child opens")
-  drive(flows, { type = "navigate", direction = "down" })
+  -- The fixture roster walks slot 0 right to the reserve slot 1.
+  drive(flows, { type = "navigate", direction = "right" })
   drive(flows, { type = "confirm" })
   drive(flows, { type = "confirm" })
   for _ = 1, 12 do
@@ -158,7 +163,7 @@ function T.versioned_rosters_replay_the_frozen_failure_isolation_flow(context)
     }
     local flows = coordinator()
     Assert.isTrue(flows:open(partyIntent({ party = roster })), "the party child opens on " .. versionId)
-    drive(flows, { type = "navigate", direction = "down" })
+    drive(flows, { type = "navigate", direction = "right" })
     drive(flows, { type = "confirm" })
     drive(flows, { type = "confirm" })
     for _ = 1, 12 do

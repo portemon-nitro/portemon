@@ -2494,4 +2494,35 @@ function T.broken_portrait_sidecars_fail_with_their_path()
   envelope:dispose()
 end
 
+-- The retail summary/check-moves/move-detail pages demand their ROM
+-- backgrounds through the launch demand: the page keys ride every
+-- preparation so the staged pages resolve without substitutes. Page
+-- readiness still gates on each drawable resolving; a missing page
+-- draws nothing (see the renderer gate), so the demand names keys
+-- without stalling launches whose pages never open.
+function T.party_page_demand_names_the_retail_backgrounds()
+  local observed = nil
+  local assets = stubAssets({})
+  function assets.prepare(demand)
+    observed = demand
+    return true
+  end
+  local battle = holder(nil, assets)
+  battle:update()
+  local pages = assert(
+    observed ~= nil and observed.partyPages,
+    "the launch demand stages party page backgrounds"
+  )
+  for _, key in ipairs({ "party:page/summary", "party:page/check-moves", "party:page/move-detail" }) do
+    local found = false
+    for _, staged in ipairs(pages) do
+      if staged == key then
+        found = true
+      end
+    end
+    Assert.isTrue(found, "the launch demand stages " .. key)
+  end
+  battle:dispose()
+end
+
 return { tests = T }

@@ -14,6 +14,8 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -248,6 +250,17 @@ local function openRig(opts)
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
+  function rig.assets.state()
+    return rig.assetsReady and "ready" or "pending"
+  end
+  -- The native party renderer behind battle children: production lends
+  -- the field renderer with its icons, so the composition suite proves
+  -- native delegation through a recording double instead of invented
+  -- modal rows.
+  rig.partyRenderer = { draws = {} }
+  function rig.partyRenderer:draw(native, layout, icons)
+    self.draws[#self.draws + 1] = { native = native, layout = layout, icons = icons }
+  end
   local party = makePartyOwner(opts.party)
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   for _, stocked in ipairs(opts.bag or {}) do
@@ -328,9 +341,19 @@ local function openRig(opts)
       return rig.measurement
     end,
     -- The battle screen borrows the immutable
-    -- item catalog so its bag child can group stocked items by pocket.
+    -- item catalog so its bag child can group stocked items by pocket,
+    -- and the staged party manifest with a recording native renderer so
+    -- party children resolve through the same native geometry as
+    -- production instead of an invented fallback.
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    battleMenus = {
+      party = {
+        manifest = PartyPresentationFixture.manifest(),
+        renderer = rig.partyRenderer,
+        icons = {},
+      },
+    },
     bagCursor = opts.bagCursor,
     assets = rig.assets,
     text = rig.text,
@@ -651,22 +674,23 @@ end
 -- fragment. At most one reply seals.
 ---@param rig table live screen rig under test driving, resting on the open party child
 local function chooseReserveThroughChild(rig)
+  -- Walk the native roster to the first reserve slot, open its menu,
+  -- and seal Switch: the fixture topology links slot 0 right to slot
+  -- 1, and forced replacement already focuses its eligible reserve.
+  for _ = 1, 8 do
+    if rig.screen:status().mode ~= "child" then
+      return
+    end
+    local view = rig.screen:view().childView
+    local focus = type(view) == "table" and view.focusId or nil
+    if focus == "party:1" or (type(focus) == "string" and not focus:match("^party:")) then
+      break
+    end
+    press(rig, { type = "navigate", direction = "right" })
+  end
   press(rig, { type = "confirm" })
-  if #rig.submits == 0 and rig.screen:status().mode == "child" then
-    press(rig, { type = "confirm" })
-    rig.pump(5)
-  end
-  if #rig.submits == 0 and rig.screen:status().mode == "child" then
-    press(rig, { type = "navigate", direction = "down" })
-    press(rig, { type = "confirm" })
-    press(rig, { type = "confirm" })
-    rig.pump(5)
-  end
-  if #rig.submits == 0 and rig.screen:status().mode ~= "child" then
-    openPartyFromCommand(rig)
-    press(rig, { type = "navigate", direction = "down" })
-    press(rig, { type = "confirm" })
-  end
+  press(rig, { type = "confirm" })
+  rig.pump(5)
 end
 
 ---@param submitted table sealed choice fragment under comparison
@@ -1455,8 +1479,10 @@ function T.child_party_tap_requires_the_matching_pointer()
     driveToMode(rig, "command")
     openPartyFromCommand(rig)
 
-    local x = 100
-    local y = layout == "paired" and 244 or 52
+    -- The fixture slot-1 panel centers on (192,32) with the pane
+    -- offset; a mismatched pointer pair cannot arm the press.
+    local x = 192
+    local y = layout == "paired" and 224 or 32
     rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = x, y = y } })
     rig.screen:input({ { type = "pointer_up", pointerId = "touch:B", x = x, y = y } })
     rig.pump(1)
@@ -1506,37 +1532,38 @@ local function censusSize(census)
   return total
 end
 
--- The open child paints its own rows instead of the command fallback:
--- strictly more text appears and at least one entry carries the given
--- marker that the command view never prints.
----@param before table<string, integer> command text census under comparison
----@param after table<string, integer> child text census under comparison
----@param marker string required new visible marker under comparison
+-- The open roster paints through the native party renderer alone:
+-- the recording double proves delegation with the open native view
+-- instead of the command fallback, and reopening paints again.
+---@param rig table live screen rig under test driving
 ---@param what string child description under comparison
-local function assertPaintsOwnRows(before, after, marker, what)
-  -- The compact composition truncates shared wordings to fit ("What
-  -- will", "EEVEE do?"), so distinct contingent strings can collide
-  -- there; three net-new distinct contents still prove the child paints
-  -- its own rows instead of the command fallback.
-  Assert.isTrue(
-    censusSize(after) >= censusSize(before) + 3,
-    "the open " .. what .. " paints its own rows instead of the command fallback"
-  )
-  local seen = false
-  for content, _ in pairs(after) do
-    if before[content] == nil and tostring(content):find(marker, 1, true) ~= nil then
-      seen = true
+local function assertNativePartyPaint(rig, what)
+  -- Opening the picker grows the battle icon demand by its roster;
+  -- the picker stays blank until those pages are adopted, so pump
+  -- until the holder is ready before proving native delegation.
+  for _ = 1, 30 do
+    if rig.screen:status().mode ~= "child" then
+      break
     end
+    rig.screen:draw({ graphics = FakeGraphics.new({}) })
+    if #rig.partyRenderer.draws >= 1 then
+      break
+    end
+    rig.pump(1)
   end
-  Assert.isTrue(seen, "the open " .. what .. " labels its entries (" .. marker .. ")")
+  local draws = rig.partyRenderer.draws
+  Assert.isTrue(#draws >= 1, "the open " .. what .. " paints through the native renderer")
+  local last = draws[#draws]
+  Assert.isTrue(type(last.native) == "table" and last.native.open ~= false, "the native roster stays open")
+  Assert.notNil(last.layout, "the native roster paints through its generated layout")
 end
 
--- Taps each native party row, then confirms Switch through its action
+-- Taps the native reserve slot, then confirms Switch through its action
 -- menu. Ineligible rows refuse and return to the roster before the next
 -- candidate is tapped.
 ---@param rig table live screen rig under test driving
----@param yLo integer first host row under probing
----@param yHi integer last host row under probing
+---@param yLo integer host top of the interaction pane under probing
+---@param yHi integer host bottom of the interaction pane under probing
 ---@param reopen (fun(rig: table))? reopens a voluntary child after a cancel tap
 ---@return boolean sealed true once a tap sealed exactly one reply
 local function tapSealsReply(rig, yLo, yHi, reopen)
@@ -1547,8 +1574,11 @@ local function tapSealsReply(rig, yLo, yHi, reopen)
     reopen(rig)
   end
   local id = "touch:party-reserve"
-  local x = 100
-  local y = yLo + 44
+  -- The fixture slot-1 panel rides at origin (128,8) with size
+  -- (128,48): its center resolves through the native hit test while
+  -- host coordinates carry the pane offset.
+  local x = 192
+  local y = yLo + 24
   if y > yHi then
     return false
   end
@@ -1585,10 +1615,10 @@ function T.voluntary_party_child_lists_focused_roster_and_pointer_seals_reserve(
     driveToMode(rig, "command")
     local commandRequest = openScreenRequest(rig)
     local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
-    local commandInk = renderedContents(rig)
     openPartyFromCommand(rig)
-    local partyInk = renderedContents(rig)
-    assertPaintsOwnRows(commandInk, partyInk, "5", "party roster" .. tag)
+    -- The open roster paints through the native party renderer with
+    -- its generated layout instead of the command fallback.
+    assertNativePartyPaint(rig, "party roster" .. tag)
     local function reopen()
       openPartyFromCommand(rig)
     end
@@ -1609,7 +1639,6 @@ function T.voluntary_party_child_lists_focused_roster_and_pointer_seals_reserve(
       foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
     })
     driveToMode(forced, "command")
-    local forcedCommandInk = renderedContents(forced)
     waitForBattleDecision(forced, "replacement")
     local replacementRequest = waitForScreenDecision(forced, "replacement")
     Assert.equal(forced.screen:status().mode, "use-next", "the wild faint offers its next mon" .. tag)
@@ -1617,7 +1646,7 @@ function T.voluntary_party_child_lists_focused_roster_and_pointer_seals_reserve(
     forced.pump(1)
     Assert.equal(forced.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
-    assertPaintsOwnRows(forcedCommandInk, renderedContents(forced), "5", "forced replacement roster" .. tag)
+    assertNativePartyPaint(forced, "forced replacement roster" .. tag)
     chooseReserveThroughChild(forced)
     Assert.equal(#forced.submits, 1, "the replacement seals exactly one reply" .. tag)
     Assert.deepEqual(
@@ -1799,16 +1828,16 @@ function T.bag_rows_print_their_retail_fonts_and_window_colors()
 end
 
 -- Drives the paired party list to the reserve mon's summary page: taps
--- the reserve row in the lower interaction pane, steps the mon menu to
+-- the reserve slot in the lower interaction pane, steps the mon menu to
 -- SUMMARY, confirms through the native press gate, and settles on the
 -- wrapper page.
 ---@param rig table live screen rig under test driving
 local function openReserveSummary(rig)
   openPartyFromCommand(rig)
-  -- Canonical modal rows paint at y = 32 + (index - 1) * 20 inside the
-  -- lower 256x192 pane; the reserve is the second row.
-  rig.screen:input({ { type = "pointer_down", pointerId = "touch:summary", x = 128, y = 254 } })
-  rig.screen:input({ { type = "pointer_up", pointerId = "touch:summary", x = 128, y = 254 } })
+  -- The fixture slot-1 panel centers on (192,32) with the lower-pane
+  -- offset; the reserve row answers the native hit test there.
+  rig.screen:input({ { type = "pointer_down", pointerId = "touch:summary", x = 192, y = 224 } })
+  rig.screen:input({ { type = "pointer_up", pointerId = "touch:summary", x = 192, y = 224 } })
   rig.pump(1)
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "confirm" })
@@ -1867,7 +1896,11 @@ function T.party_summary_shows_its_staged_words_and_facts()
     ["DEFENSE"] = true,
     [tostring(level)] = true,
     [tostring(Experience.expFor(curve, level + 1) - live.experience)] = true,
-    [tostring(live.condition.currentHp) .. "/" .. tostring(derived.maxHp)] = true,
+    -- HP prints in three centered parts (PrintHPStat), not one joined
+    -- string: the current value, the slash, and the maximum.
+    [tostring(live.condition.currentHp)] = true,
+    ["/"] = true,
+    [tostring(derived.maxHp)] = true,
     [tostring(derived.attack)] = true,
     [tostring(derived.defense)] = true,
   }
@@ -2286,24 +2319,15 @@ function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
     driveToMode(rig, "command")
     local commandRequest = openScreenRequest(rig)
     local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
-    local commandInk = renderedContents(rig)
     openPartyFromCommand(rig)
-    -- No pump ran since the child opened: its own rows already paint.
-    local partyInk = renderedContents(rig)
-    -- The compact modal drops row sub-facts, so the level marker only
-    -- paints on paired; compact proves the same entries through the
-    -- painted roster occupancy instead. Both markers read already-painted
-    -- vocabulary, never new paint expectations.
-    local partyMarker = "19"
-    if layout == "compact" then
-      partyMarker = "6/6"
-    end
-    assertPaintsOwnRows(commandInk, partyInk, partyMarker, "party roster" .. tag)
+    -- The open roster paints through the native party renderer with
+    -- its generated layout instead of the command fallback.
+    assertNativePartyPaint(rig, "party roster" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "party cancel returns to command" .. tag)
     Assert.equal(openScreenRequest(rig).requestId, commandRequest.requestId, "cancel keeps the command request" .. tag)
     openPartyFromCommand(rig)
-    Assert.deepEqual(renderedContents(rig), partyInk, "reopen paints the same roster" .. tag)
+    assertNativePartyPaint(rig, "reopened party roster" .. tag)
     chooseReserveThroughChild(rig)
     Assert.equal(#rig.submits, 1, "keys seal exactly one reply" .. tag)
     Assert.deepEqual(rig.submits[1].choices[1], expectedSwitch, "keys name the stable reserve" .. tag)
@@ -2604,9 +2628,12 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     rig.pump(1)
     Assert.equal(rig.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(rig, replacementRequest)
-    local replacementInk = renderedContents(rig)
-    Assert.isTrue(replacementInk["Choose a Pokémon."] ~= nil, "replacement titles its modal" .. tag)
-    Assert.isTrue(replacementInk["2/6"] ~= nil, "replacement lists both roster slots" .. tag)
+    -- The forced roster paints through the native renderer with its
+    -- generated layout and focuses its eligible reserve.
+    local replacementView = rig.screen:view().childView
+    Assert.equal(replacementView.partyPage, "list", "replacement opens the native roster" .. tag)
+    assertNativePartyPaint(rig, "forced replacement roster" .. tag)
+    Assert.equal(replacementView.focusId, "party:1", "replacement focuses its eligible reserve" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(#rig.submits, 0, "forced cancel seals nothing" .. tag)
     Assert.equal(rig.screen:status().mode, "child", "forced cancel keeps the child" .. tag)
@@ -2617,25 +2644,10 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     rig.battle:dispose()
   end
 end
--- its own modal geometry: compact stays a fullscreen modal and the
--- paired screen keeps its lower-pane modal, both focus the same
--- reserve with the same guidance and roster count, and cancelling
--- from either returns to the command prompt without sealing a reply.
----@param ink table<string, integer> drawn text census under inspection
----@return integer? focused child row number under inspection
-local function focusedChildRow(ink)
-  for content, _ in pairs(ink) do
-    local standard = tostring(content):match("^> (%d+)%.$")
-    if standard ~= nil then
-      return tonumber(standard)
-    end
-    local compact = tostring(content):match("^\226\128\163 (%d+)%.$")
-    if compact ~= nil then
-      return tonumber(compact)
-    end
-  end
-  return nil
-end
+-- The voluntary party child shares its native roster across display
+-- cases: paired and compact focus the same reserve, move it together,
+-- paint it through the same native renderer, and cancelling from
+-- either returns to the command prompt without sealing a reply.
 
 ---@param rig table live screen rig under test driving
 ---@return table<string, integer> drawn text census for one rendered frame
@@ -2649,7 +2661,7 @@ local function drawnInk(rig)
   end
   return ink
 end
-function T.same_party_child_shares_wording_across_layouts_while_keeping_its_own_modal()
+function T.same_party_child_shares_focus_across_layouts_behind_the_native_roster()
   local captured = {}
   for _, layout in ipairs({ "paired", "compact" }) do
     local tag = " (" .. layout .. ")"
@@ -2665,18 +2677,13 @@ function T.same_party_child_shares_wording_across_layouts_while_keeping_its_own_
     driveToMode(rig, "command")
     openPartyFromCommand(rig)
     Assert.equal(rig.screen:status().mode, "child", "the Pokemon command opens the party child" .. tag)
-    rig.windows.calls = {}
-    local openedInk = drawnInk(rig)
-    local openedFocus = focusedChildRow(openedInk)
+    assertNativePartyPaint(rig, "voluntary party roster" .. tag)
+    local openedFocus = rig.screen:view().childView.focusId
     Assert.notNil(openedFocus, "the open child focuses its reserve" .. tag)
-    local frames = {}
-    for _, call in ipairs(rig.windows.calls) do
-      frames[#frames + 1] = call
-    end
-    captured[layout] = { ink = openedInk, frames = frames, focus = openedFocus }
+    captured[layout] = { focus = openedFocus }
     press(rig, { type = "navigate", direction = "down" })
     Assert.equal(rig.screen:status().mode, "child", "navigation keeps the party child" .. tag)
-    captured[layout].movedFocus = focusedChildRow(drawnInk(rig))
+    captured[layout].movedFocus = rig.screen:view().childView.focusId
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "cancelling the party child returns to command" .. tag)
     Assert.equal(#rig.submits, 0, "cancelling the party child seals no reply" .. tag)
@@ -2689,47 +2696,6 @@ function T.same_party_child_shares_wording_across_layouts_while_keeping_its_own_
     captured.compact.movedFocus,
     "navigation moves both layouts to the same reserve"
   )
-  Assert.isTrue(captured.paired.ink["Select a reserve."] ~= nil, "the paired modal guides its voluntary party child")
-  Assert.isTrue(
-    captured.compact.ink["Select a reserve."] ~= nil,
-    "the compact modal guides its voluntary party child identically"
-  )
-  local shared = {}
-  for content, _ in pairs(captured.compact.ink) do
-    if content:match("^%d+/%d+$") ~= nil then
-      shared[#shared + 1] = content
-    end
-  end
-  Assert.isTrue(#shared >= 1, "the compact modal counts its occupied roster")
-  for _, fraction in ipairs(shared) do
-    Assert.isTrue(
-      captured.paired.ink[fraction] ~= nil,
-      "the paired modal counts its occupied roster identically: " .. fraction
-    )
-  end
-  local compactFrame = nil
-  for _, call in ipairs(captured.compact.frames) do
-    if type(call.applicationBox) == "table" then
-      compactFrame = call.applicationBox
-    end
-  end
-  Assert.notNil(compactFrame, "the compact child frames its fullscreen modal")
-  Assert.deepEqual(
-    { x = compactFrame.x, y = compactFrame.y, width = compactFrame.width, height = compactFrame.height },
-    { x = 8, y = 8, width = 240, height = 176 },
-    "the compact child keeps its fullscreen modal frame"
-  )
-  local pairedModal = false
-  for _, call in ipairs(captured.paired.frames) do
-    Assert.isNil(call.applicationBox, "the paired child keeps its lower-pane modal")
-    if type(call.box) == "table" then
-      local box = call.box
-      if box.x == 0 and box.y == 0 and box.width == 256 and box.height == 192 then
-        pairedModal = true
-      end
-    end
-  end
-  Assert.isTrue(pairedModal, "the paired child draws its lower-pane modal window")
 end
 
 -- Native focus authority for voluntary and forced party selection: keyboard
@@ -2757,21 +2723,26 @@ function T.native_party_focus_and_fragment_authority()
     local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
     requireChildOwner("native party focus authority")
     openPartyFromCommand(rig)
-    -- Native focus starts on the lead; the reserve is the next source row.
-    Assert.equal(focusedChildRow(drawnInk(rig)), 1, "the native focus starts on the lead" .. tag)
+    -- Native focus starts on the lead; right reaches the reserve slot
+    -- through the fixture topology, skipping nothing while occupied.
+    local function focusId()
+      return rig.screen:view().childView.focusId
+    end
+    Assert.equal(focusId(), "party:0", "the native focus starts on the lead" .. tag)
     -- A bare input moves no focus: edges wait for the accepted tick.
-    rig.screen:input({ { type = "navigate", direction = "down" } })
-    Assert.equal(focusedChildRow(drawnInk(rig)), 1, "the navigation edge waits for the accepted source tick" .. tag)
+    rig.screen:input({ { type = "navigate", direction = "right" } })
+    Assert.equal(focusId(), "party:0", "the navigation edge waits for the accepted source tick" .. tag)
     rig.pump(1)
-    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the accepted tick applies the buffered edge once" .. tag)
-    rig.screen:input({ { type = "navigate", direction = "up" } })
-    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the return edge waits for the accepted source tick" .. tag)
+    Assert.equal(focusId(), "party:1", "the accepted tick applies the buffered edge once" .. tag)
+    rig.screen:input({ { type = "navigate", direction = "left" } })
+    Assert.equal(focusId(), "party:1", "the return edge waits for the accepted source tick" .. tag)
     rig.pump(1)
-    Assert.equal(focusedChildRow(drawnInk(rig)), 1, "the accepted tick restores the lead focus" .. tag)
-    -- A matched tap on the reserve row seals its projected fragment.
-    local reserveY = yBase + 44
-    rig.screen:input({ { type = "pointer_down", pointerId = "tap:reserve", x = 128, y = reserveY } })
-    rig.screen:input({ { type = "pointer_up", pointerId = "tap:reserve", x = 128, y = reserveY } })
+    Assert.equal(focusId(), "party:0", "the accepted tick restores the lead focus" .. tag)
+    -- A matched tap on the reserve slot seals its projected fragment:
+    -- the fixture slot-1 panel centers on (192,32) with the pane offset.
+    local reserveY = yBase + 24
+    rig.screen:input({ { type = "pointer_down", pointerId = "tap:reserve", x = 192, y = reserveY } })
+    rig.screen:input({ { type = "pointer_up", pointerId = "tap:reserve", x = 192, y = reserveY } })
     rig.pump(1)
     press(rig, { type = "confirm" })
     press(rig, { type = "confirm" })
@@ -2800,7 +2771,7 @@ function T.native_party_focus_and_fragment_authority()
     Assert.equal(forced.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
     requireChildOwner("native forced replacement authority")
-    Assert.equal(focusedChildRow(drawnInk(forced)), 2, "the forced child focuses its eligible reserve" .. tag)
+    Assert.equal(forced.screen:view().childView.focusId, "party:1", "the forced child focuses its eligible reserve" .. tag)
     press(forced, { type = "cancel" })
     Assert.equal(#forced.submits, 0, "forced cancel seals nothing" .. tag)
     Assert.equal(forced.screen:status().mode, "child", "forced cancel keeps the child" .. tag)

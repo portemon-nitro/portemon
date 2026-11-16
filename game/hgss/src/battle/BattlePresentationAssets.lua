@@ -156,6 +156,19 @@ local function flatEffectKey(key)
   return type(key) == "string" and key ~= "" and key:find("/", 1, true) == nil
 end
 
+-- Retail battle mon-menu/summary/check-moves/move-detail page
+-- backgrounds ride every launch demand (battle_party_menu.c
+-- LoadPageTilemaps): the four semantic page keys stage without
+-- invented substitutes. Page readiness gates on each drawable resolving
+-- in update below; a missing page draws nothing at paint time instead
+-- of failing the launch.
+local PARTY_PAGES = {
+  "party:page/check-moves",
+  "party:page/mon-menu",
+  "party:page/move-detail",
+  "party:page/summary",
+}
+
 ---@param self BattlePresentationAssets holder owning the per-effect state
 ---@param key string flat semantic effect key
 ---@return BattlePresentationAssets.EffectState mutable per-effect demand/load/lease state
@@ -229,10 +242,15 @@ function BattlePresentationAssets:_demand()
   for _, selector in ipairs(self._battleBalls) do
     battleBalls[#battleBalls + 1] = selector
   end
+  local partyPages = {}
+  for _, key in ipairs(PARTY_PAGES) do
+    partyPages[#partyPages + 1] = key
+  end
   return {
     launchId = self._launchId,
     scenes = { self._sceneKey },
     pages = selectors,
+    partyPages = partyPages,
     iconKeys = iconKeys,
     trainerPictures = trainerPictures,
     battleBalls = battleBalls,
@@ -411,6 +429,11 @@ function BattlePresentationAssets:update()
     end
     self._owned[key] = true
   end
+  -- Party pages stay out of the launch readiness gate on purpose: the
+  -- demand names them so staged pages resolve, but launches whose
+  -- pages never open (or whose worker has not staged them yet) still
+  -- reach ready. The page painter gates on each drawable instead and
+  -- draws nothing new while its background is missing.
   self._state = "ready"
 end
 

@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -274,6 +275,7 @@ local function openRig(opts)
     end,
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,

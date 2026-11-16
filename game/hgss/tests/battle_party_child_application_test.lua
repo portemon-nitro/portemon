@@ -12,6 +12,7 @@
 -- application receipt on the child view.
 
 local Assert = require("tests.support.Assert")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 
@@ -21,7 +22,13 @@ local T = {}
 
 ---@return table<string, unknown> battle child coordinator under test driving
 local function coordinator()
-  return BattleSubflows.new({ launchId = "launch-party-child" })
+  -- Production always lends the staged party manifest, so children
+  -- resolve through the same generated geometry instead of an
+  -- invented fallback.
+  return BattleSubflows.new({
+    launchId = "launch-party-child",
+    battleMenus = { party = { manifest = PartyPresentationFixture.manifest() } },
+  })
 end
 
 ---@return table<integer, table<string, unknown>> detached own-party snapshot
@@ -97,7 +104,9 @@ function T.voluntary_switch_seals_the_projected_reserve_fragment_once()
   local flows = coordinator()
   local options = switchOptions(2)
   Assert.isTrue(flows:open(partyIntent({ options = options })), "the voluntary party child opens")
-  drive(flows, { type = "navigate", direction = "down" })
+  -- The fixture roster walks slot 0 right to the reserve slot 1;
+  -- confirming opens its menu and seals Switch exactly once.
+  drive(flows, { type = "navigate", direction = "right" })
   drive(flows, { type = "confirm" })
   drive(flows, { type = "confirm" })
   for _ = 1, 12 do
@@ -125,6 +134,8 @@ function T.forced_replacement_holds_on_cancel_and_seals_on_confirm()
   drive(flows, { type = "cancel" })
   Assert.isNil(flows:takeResult(), "a forced replacement has no cancel result")
   Assert.isTrue(flows:status().active, "a forced replacement keeps owning input after cancel")
+  -- The forced roster focuses its eligible reserve on open; confirming
+  -- twice seals Switch without navigating.
   drive(flows, { type = "confirm" })
   drive(flows, { type = "confirm" })
   for _ = 1, 12 do
@@ -177,7 +188,7 @@ function T.party_child_view_carries_the_native_party_application_receipt()
   local view = flows:status().childView
   Assert.notNil(view, "the open party exposes its child view")
   Assert.equal(view.kind, "party", "the child view names the party")
-  Assert.equal(#view.rows, 6, "setup: all six roster rows are visible before the receipt check")
+  Assert.isNil(view.rows, "the native list projects no invented rows")
   Assert.equal(view.application, "party", "the party view carries its native application receipt")
   flows:dispose()
 end
@@ -216,7 +227,7 @@ function T.versioned_rosters_replay_the_frozen_party_flows(context)
     local flows = coordinator()
     local intent = partyIntent({ options = options, party = roster })
     Assert.isTrue(flows:open(intent), "the voluntary party child opens on " .. versionId)
-    drive(flows, { type = "navigate", direction = "down" })
+    drive(flows, { type = "navigate", direction = "right" })
     drive(flows, { type = "confirm" })
     drive(flows, { type = "confirm" })
     for _ = 1, 12 do

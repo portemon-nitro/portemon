@@ -213,8 +213,12 @@ local function moveFacts(deps, move, entry)
           if type(record.moveType) == "string" then
             display.type = record.moveType
           end
-          -- The move-detail page prints power, accuracy, and class from
-          -- the catalog move facts, like the names and types above.
+          -- The move-detail page prints power, accuracy, class, and
+          -- the catalog description from the move facts, like the names
+          -- and types above.
+          if type(record.description) == "string" and record.description ~= "" then
+            display.description = record.description
+          end
           if type(record.power) == "number" then
             display.power = record.power
           end

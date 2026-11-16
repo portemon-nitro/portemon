@@ -15,6 +15,8 @@
 
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
+local BattlePartyPages = require("game.hgss.src.battle.BattlePartyPages")
+local MonCache = require("libs.assets.src.MonCache")
 
 -- Retail bag/party menu sounds (battle_bag_menu.c, battle_party_menu.c
 -- PlaySE call sites; battle_dpad_cursor.c voices SELECT on moves).
@@ -32,7 +34,6 @@ local SELECT_SOUND = "SEQ_SE_DP_SELECT"
 -- Unknown reasons pass through unchanged so future kernel reasons stay
 -- visible instead of vanishing behind a generic fallback.
 local NO_EFFECT_KEY = "battle/narration/item-no-effect"
-local NO_ENERGY_KEY = "battle/party/message/no-energy"
 local BAG_REASON_KEYS = {
   no_aim_doubles = "battle/bag/message/no-aim-doubles",
   no_room = "battle/bag/message/no-room",
@@ -59,6 +60,7 @@ local PARTY_REASON_KEYS = {
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog for pocket grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
 ---@field _battleMenus table<string, unknown>? borrowed native battle menu renderer and manifest services
+---@field _partySection table<string, unknown>? borrowed battle manifest party section behind page sprite anchors
 ---@field _audioEffect? fun(symbol: string) borrowed battle sound boundary behind menu feedback
 ---@field _resolveMessage? fun(key: string, subs: table<integer, string>?): string borrowed staged message resolver behind retail text
 ---@field _active string? live child kind: party, bag, target, move, learn, or naming
@@ -206,6 +208,9 @@ function BattleSubflows:_tickSoundBefore()
     bagListPage = type(page) == "table" and page.current or nil,
     partyPage = type(view) == "table" and view.partyPage or nil,
     pageSlot = type(view) == "table" and view.pageSlot or nil,
+    pageAccept = type(view) == "table" and view.pageAccept or 0,
+    press = type(view) == "table" and view.pagePress ~= nil or false,
+    cursorActive = type(view) == "table" and view.cursorActive or nil,
   }
 end
 
@@ -227,6 +232,19 @@ function BattleSubflows:_emitTickSounds(before)
   local afterPageSlot = type(afterView) == "table" and afterView.pageSlot or nil
   if before.pending == false and afterPending == true then
     self:_play(DECIDE_SOUND)
+    return
+  end
+  -- A stamped wrapper acceptance voices its DECIDE on the input tick
+  -- like the decomp Handle call sites, ahead of the gated transition.
+  local afterAccept = type(afterView) == "table" and afterView.pageAccept or 0
+  if (type(before.pageAccept) == "number" and before.pageAccept or 0) ~= afterAccept then
+    self:_play(DECIDE_SOUND)
+    return
+  end
+  -- The release tick applies the gated transition silently: its
+  -- DECIDE already voiced on acceptance, matching WaitButtonAnim.
+  local afterPress = type(afterView) == "table" and afterView.pagePress ~= nil or false
+  if before.press == true and afterPress == false then
     return
   end
   if before.staged == nil and afterStaged ~= nil then
@@ -259,6 +277,13 @@ function BattleSubflows:_emitTickSounds(before)
     self:_play(DECIDE_SOUND)
     return
   end
+  -- The first key press only activates the d-pad cursor (TryActivate
+  -- voices SELECT); touch deactivation stays silent like DeactivateCursor.
+  local afterCursorActive = type(afterView) == "table" and afterView.cursorActive or nil
+  if before.cursorActive ~= true and afterCursorActive == true then
+    self:_play(SELECT_SOUND)
+    return
+  end
   if before.focus ~= afterFocus then
     self:_play(SELECT_SOUND)
   end
@@ -269,6 +294,7 @@ end
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for pocket grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
 ---@field battleMenus table<string, unknown>? borrowed native battle menu renderer and manifest services
+---@field partySection table<string, unknown>? borrowed battle manifest party section behind page sprite anchors
 ---@field audioEffect? fun(symbol: string) borrowed battle sound boundary behind menu feedback
 ---@field resolveMessage? fun(key: string, subs: table<integer, string>?): string borrowed staged message resolver behind retail text
 
@@ -286,6 +312,9 @@ function BattleSubflows.new(opts)
   if opts.battleMenus ~= nil then
     assert(type(opts.battleMenus) == "table", "native battle menus arrive as a record")
   end
+  if opts.partySection ~= nil then
+    assert(type(opts.partySection) == "table", "the battle manifest party section arrives as a record")
+  end
   if opts.audioEffect ~= nil then
     assert(type(opts.audioEffect) == "function", "battle menu feedback arrives as a function")
   end
@@ -297,6 +326,7 @@ function BattleSubflows.new(opts)
     _itemCatalog = opts.itemCatalog,
     _monCatalog = opts.monCatalog,
     _battleMenus = opts.battleMenus,
+    _partySection = opts.partySection,
     _audioEffect = opts.audioEffect,
     _resolveMessage = opts.resolveMessage,
     _active = nil,
@@ -500,6 +530,7 @@ local function composeChild(self, intent)
     itemCatalog = self._itemCatalog,
     monCatalog = self._monCatalog,
     battleMenus = self._battleMenus,
+    partySection = self._partySection,
     resolveMessage = self._resolveMessage,
   })
 end
@@ -966,8 +997,9 @@ function BattleSubflows:tick()
         if self._cancellable then
           self._pending = result
         else
-          self._notice = "That choice cannot be cancelled."
-          self:_reopenComposed()
+          -- Retail holds silently in SWITCH_NO_CANCEL: cancel is the
+          -- screen's own permission, not a battle notice, and the cursor
+          -- stays where it was instead of rebuilding the picker.
         end
       end
     end
@@ -988,7 +1020,8 @@ function BattleSubflows:tick()
             launchId = self._launchId,
           }
         else
-          self._notice = "That choice cannot be cancelled."
+          -- Non-cancellable bag holds silently like the party list:
+          -- blocking cancel is the screen's own permission, not a notice.
         end
       end
     end
@@ -1059,60 +1092,126 @@ local function learnMoveLabel(entry)
   return "Unknown"
 end
 
--- Projects the retail battle mon-menu rows (battle_party_menu.c
--- PrintMonMenuPage): SHIFT always, SUMMARY and CHECK MOVES for non-eggs,
--- and back. Focus follows the native menu index; rows never seal.
----@param self BattleSubflows barrier under projection
----@param shell table<string, unknown> detached child view under filling
----@param native table<string, unknown> native party status under projection
----@param kind string projected child kind under mapping
----@return table<string, unknown> detached mon-menu child view
-local function projectMonMenu(self, shell, native, kind)
-  local entries = native.menu --[[@as table<integer, table<string, unknown>>]]
-  local rows = {}
-  for _, entry in ipairs(entries) do
-    if type(entry) == "table" and type(entry.kind) == "string" then
-      local id = nil
-      if entry.kind == "switch" then
-        id = "switch"
-      elseif entry.kind == "summary" then
-        id = "summary"
-      elseif entry.kind == "check_moves" then
-        id = "moves"
-      elseif entry.kind == "quit" then
-        id = "back"
-      end
-      if id ~= nil then
-        rows[#rows + 1] = {
-          id = id,
-          label = tostring(entry.label or id),
-          detail = "",
-          enabled = true,
-        }
-      end
+-- Resolves the staged window template boxes for one wrapper page:
+-- the manifest party section carries the transcribed AddWindow order
+-- behind text paint. Each box keeps its template palette bank so ink
+-- resolves through the window's own hardware bank (palette 9 for the
+-- mon-menu, move, and button windows, palette 13 for labels, values,
+-- and bars). Malformed or missing tables resolve to nil and
+-- the page keeps its background, sprites, and cursor without text.
+---@param self BattleSubflows barrier under resolution
+---@param page string wrapper page under resolution
+---@return table<integer, table<string, number>>? template boxes in tile units with their palette banks
+local function pageWindowBoxes(self, page)
+  local key = page == "mon_menu" and "monMenu"
+    or page == "summary" and "summary"
+    or page == "moves" and "checkMoves"
+    or page == "move_detail" and "moveDetail"
+    or nil
+  if key == nil then
+    return nil
+  end
+  local section = self._partySection --[[@as table<string, unknown>?]]
+  if type(section) ~= "table" then
+    return nil
+  end
+  local windows = section.windows --[[@as table<string, unknown>?]]
+  local staged = type(windows) == "table" and windows[key] or nil
+  if type(staged) ~= "table" then
+    return nil
+  end
+  local boxes = {} ---@type table<integer, table<string, number>>
+  for _, template in
+    ipairs(staged --[[@as table<integer, table<string, unknown>>]])
+  do
+    if
+      type(template) ~= "table"
+      or type(template.left) ~= "number"
+      or type(template.top) ~= "number"
+      or type(template.width) ~= "number"
+      or type(template.height) ~= "number"
+      or type(template.palette) ~= "number"
+    then
+      return nil
+    end
+    boxes[#boxes + 1] = {
+      left = template.left,
+      top = template.top,
+      width = template.width,
+      height = template.height,
+      palette = template.palette,
+    }
+  end
+  return boxes
+end
+
+-- Buttons behind one wrapper page in BattlePartyButton order for
+-- pressed/disabled faces (DrawPageButtons): prev/next page across
+-- mons, the page links, the move tabs, and cancel.
+local WRAPPER_BUTTONS = {
+  mon_menu = { 7, 8, 10, 6 },
+  summary = { 12, 13, 11, 6 },
+  moves = { 14, 15, 16, 17, 12, 13, 9, 6 },
+  move_detail = { 30, 31, 32, 33, 6 },
+}
+
+-- Resolves the tile-unit button rects for one wrapper page from the
+-- staged manifest table, keyed by decomp button. Malformed or missing
+-- tables resolve to nil and the page paints without faces.
+---@param self BattleSubflows barrier under resolution
+---@param page string wrapper page under resolution
+---@return table<integer, table<string, number>>? button rects by decomp button
+local function pageButtonRects(self, page)
+  local wanted = WRAPPER_BUTTONS[page]
+  if wanted == nil then
+    return nil
+  end
+  local section = self._partySection --[[@as table<string, unknown>?]]
+  if type(section) ~= "table" then
+    return nil
+  end
+  local staged = section.buttonRects --[[@as table<integer, table<string, unknown>>?]]
+  if type(staged) ~= "table" then
+    return nil
+  end
+  local rects = {} ---@type table<integer, table<string, number>>
+  for _, button in ipairs(wanted) do
+    local rect = staged[button + 1] --[[@as table<string, unknown>?]]
+    if
+      type(rect) ~= "table"
+      or type(rect.x) ~= "number"
+      or type(rect.y) ~= "number"
+      or type(rect.w) ~= "number"
+      or type(rect.h) ~= "number"
+    then
+      return nil
+    end
+    rects[button] = { x = rect.x, y = rect.y, w = rect.w, h = rect.h }
+  end
+  return rects
+end
+
+-- Resolves the d-pad cursor boxes for one wrapper page from the staged
+-- manifest table, falling back to the pinned decomp transcription.
+---@param self BattleSubflows barrier under resolution
+---@param page string wrapper page under resolution
+---@return table<integer, table<string, unknown>> cursor boxes in page order
+local function pageCursorBoxes(self, page)
+  return BattlePartyPages.cursorBoxes(page, self._partySection)
+end
+
+-- Counts occupied non-egg roster slots behind prev/next paging faces.
+---@param self BattleSubflows barrier under counting
+---@return integer occupied non-egg roster slot count
+local function multiMonCount(self)
+  local roster = self:_openParty()
+  local count = 0
+  for _, record in ipairs(roster) do
+    if type(record) == "table" and type(record.slot) == "number" and record.isEgg ~= true then
+      count = count + 1
     end
   end
-  local focusId = nil
-  local index = tonumber(native.menuIndex)
-  if index ~= nil and type(entries[index]) == "table" then
-    local focused = entries[index].kind
-    if focused == "switch" then
-      focusId = "switch"
-    elseif focused == "summary" then
-      focusId = "summary"
-    elseif focused == "check_moves" then
-      focusId = "moves"
-    elseif focused == "quit" then
-      focusId = "back"
-    end
-  end
-  shell.rows = rows
-  shell.focusId = focusId
-  shell.partyPage = "mon_menu"
-  if kind == "target" then
-    shell.stagedItem = self._stagedItem
-  end
-  return shell
+  return count
 end
 
 -- Finds one detached roster record by slot for page facts.
@@ -1124,6 +1223,28 @@ local function pageRecord(self, slot)
   for _, record in ipairs(roster) do
     if type(record) == "table" and record.slot == slot then
       return record
+    end
+  end
+  return nil
+end
+
+-- Resolves one battle ability key to its catalog description, nil
+-- without a catalog or description so rows without one keep shape.
+---@param self BattleSubflows barrier under projection
+---@param key string ability identity under lookup
+---@return string? catalog ability description, nil when unavailable
+local function abilityDescription(self, key)
+  local catalog = self._monCatalog
+  if catalog ~= nil then
+    local lookup = catalog.ability --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>?]]
+    if type(lookup) == "function" then
+      local ok, record = pcall(lookup, catalog, key)
+      if ok and type(record) == "table" then
+        local description = record.description --[[@as string?]]
+        if type(description) == "string" and description ~= "" then
+          return description
+        end
+      end
     end
   end
   return nil
@@ -1222,11 +1343,546 @@ local function monRowLabel(self, record, slot)
   return self:_resolveOr(monNameKey(slot), name, { name })
 end
 
--- Projects the retail battle summary/check-moves/move-detail rows
--- (battle_party_menu.c pages 2-4) over the detached roster: the staged
--- stat block, move names, and move-detail words with prev/next
--- navigation and back controls. Pages never seal; only the list SHIFT
--- seals its kernel fragment.
+-- Resolves one roster record to its retail status word for the status
+-- icon (battle_party_menu.c ShowStatusIcon over NARC status sprites):
+-- faint, sleep, poison, burn, freeze, or paralysis, nil while healthy
+-- so healthy mons place no status sprite.
+---@param record table<string, unknown> detached roster record under display
+---@return string? retail status word, nil when healthy
+local function pageStatusWord(record)
+  if (tonumber(record.hp) or 0) <= 0 then
+    return "faint"
+  end
+  local condition = type(record.condition) == "string" and record.condition:lower() or ""
+  if condition == "sleep" then
+    return "sleep"
+  elseif condition == "poison" or condition == "bad-poison" or condition == "toxic" then
+    return "poison"
+  elseif condition == "burn" or condition == "freeze" or condition == "paralysis" then
+    return condition
+  end
+  return nil
+end
+
+-- Resolves one roster record to its mon type keys through the borrowed
+-- mon catalog species facts. Anything unanswerable places no type
+-- icons instead of inventing types.
+---@param self BattleSubflows barrier under projection
+---@param record table<string, unknown> detached roster record under display
+---@return string[] mon type keys in catalog order, empty when unanswerable
+-- Resolves one roster record to its mon catalog species facts through
+-- the borrowed catalog, nil when unanswerable so callers keep their
+-- neutral shape instead of inventing display facts.
+---@param self BattleSubflows barrier under projection
+---@param record table<string, unknown> detached roster record under display
+---@return table<string, unknown>? catalog species facts, nil when unanswerable
+local function speciesFacts(self, record)
+  local species = record.species
+  local catalog = self._monCatalog
+  if type(species) ~= "string" or type(catalog) ~= "table" then
+    return nil
+  end
+  local lookup = catalog.species --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>?]]
+  if type(lookup) ~= "function" then
+    return nil
+  end
+  local ok, facts = pcall(lookup, catalog, species)
+  if not ok or type(facts) ~= "table" then
+    return nil
+  end
+  return facts
+end
+
+local function pageMonTypes(self, record)
+  local facts = speciesFacts(self, record)
+  if facts == nil then
+    return {}
+  end
+  local types = {} ---@type string[]
+  -- Unit fakes stage `types` on the species facts; the real catalog
+  -- nests them per form (`forms[form].types`, see MonCatalog:form).
+  local staged = facts.types
+  if type(staged) ~= "table" then
+    local forms = facts.forms
+    if type(forms) == "table" then
+      local formIndex = tonumber(record.form) or 0
+      local formFacts = forms[formIndex] or forms[0]
+      if type(formFacts) == "table" then
+        staged = formFacts.types
+      end
+    end
+  end
+  if type(staged) == "table" then
+    local seen = {} ---@type table<string, boolean>
+    for _, key in ipairs(staged) do
+      -- Retail ShowMonTypeIcons shows the second icon only when the
+      -- types differ: a duplicated entry paints once, never twice.
+      if type(key) == "string" and key ~= "" and seen[key] ~= true then
+        seen[key] = true
+        types[#types + 1] = key
+      end
+    end
+  end
+  return types
+end
+
+-- Names whether one roster record carries the female gender behind its
+-- staged symbol, so paint selects the retail female ink (3,4,0) instead
+-- of the male ink (7,8,0) without sniffing the symbol text.
+---@param record table<string, unknown> detached roster record under display
+---@return boolean female true while the record is female
+local function monGenderFemale(record)
+  return record.gender == "female"
+end
+
+-- Resolves one roster record to its experience-bar fill (DrawExpBar):
+-- the experience earned toward the next level over the growth span,
+-- empty at the level cap or without answerable growth facts.
+---@param self BattleSubflows barrier under projection
+---@param record table<string, unknown> detached roster record under display
+---@return integer current experience earned toward the next level
+---@return integer max experience span of the current level
+local function expBarFill(self, record)
+  local level = tonumber(record.level) or 0
+  local experience = tonumber(record.experience)
+  if level >= 100 or experience == nil then
+    return 0, 0
+  end
+  local facts = speciesFacts(self, record)
+  local curveKey = type(facts) == "table" and facts.growthCurve or nil
+  local catalog = self._monCatalog
+  local curveOf = type(catalog) == "table" and catalog.growthCurve or nil
+  if type(curveKey) ~= "string" or type(curveOf) ~= "function" then
+    return 0, 0
+  end
+  local okCurve, curve = pcall(curveOf, catalog, curveKey)
+  if not okCurve or type(curve) ~= "table" then
+    return 0, 0
+  end
+  local Experience = require("libs.mons.src.gen4.Experience")
+  local okBase, base = pcall(Experience.expFor, curve, level)
+  local okNext, following = pcall(Experience.expFor, curve, level + 1)
+  if not okBase or not okNext or type(base) ~= "number" or type(following) ~= "number" then
+    return 0, 0
+  end
+  local current = experience - base
+  local span = following - base
+  if span <= 0 or current <= 0 then
+    return 0, 0
+  end
+  if current > span then
+    current = span
+  end
+  return current, span
+end
+
+-- Resolves one roster record to its canonical mon icon selector through
+-- the shared MonCache spelling, nil without a species so icon-less
+-- records place no icon.
+---@param record table<string, unknown> detached roster record under display
+---@return string? canonical mon icon selector, nil without a species
+local function pageIconKey(record)
+  if type(record.species) ~= "string" then
+    return nil
+  end
+  local form = tonumber(record.form) or 0
+  return MonCache.iconSelector(record.species, form --[[@as integer]], record.isEgg == true)
+end
+
+---@class BattlePageSpriteAnchors
+---@field monIcon { x: number, y: number } staged mon icon anchor
+---@field statusIcon { x: number, y: number } staged status icon anchor
+---@field monMenuIcon { x: number, y: number } staged mon-menu icon anchor
+---@field summaryHeldItem { x: number, y: number } staged summary held-item anchor
+---@field heldItemDelta { x: number, y: number } staged held-item offset from the mon icon
+---@field capsuleDelta { x: number, y: number } staged capsule offset from the mon icon
+---@field moveDetailMoveIcon { x: number, y: number } staged move-detail move icon anchor
+---@field categoryIcon { x: number, y: number } staged move category icon anchor
+---@field summaryTypes table<integer, { x: number, y: number }> staged summary mon-type anchors
+---@field checkMovesTypes table<integer, { x: number, y: number }> staged check-moves mon-type anchors
+---@field moveDetailTypes table<integer, { x: number, y: number }> staged move-detail mon-type anchors
+---@field checkMovesMoves table<integer, { x: number, y: number }> staged check-moves move icon anchors
+
+-- Pinned retail page sprite anchors (battle_party_menu.c
+-- ShowMonMenuSprites/ShowSummarySprites/ShowCheckMovesSprites/
+-- ShowMoveDetailSprites: mon icon (24,12), status (198,20), mon-menu
+-- icon (128,72), mon types (130,16)/(164,16), the held item at the
+-- mon-icon delta (8,8) plus the summary anchor (20,132), the capsule at
+-- the mon-icon delta (16,8), move-detail move icon (136,48), category
+-- icon (24,88), and the gBattlePartyCheckMovesMoveIconPos columns):
+-- the manifest path is preferred, this table is the decomp-verified
+-- fallback for old caches that predate staged sprite positions, and a
+-- unit test pins them equal.
+local FALLBACK_POSITIONS = {
+  monIcon = { x = 24, y = 12 },
+  statusIcon = { x = 198, y = 20 },
+  monMenuIcon = { x = 128, y = 72 },
+  summaryHeldItem = { x = 20, y = 132 },
+  heldItemDelta = { x = 8, y = 8 },
+  capsuleDelta = { x = 16, y = 8 },
+  moveDetailMoveIcon = { x = 136, y = 48 },
+  categoryIcon = { x = 24, y = 88 },
+  summaryTypes = { { x = 130, y = 16 }, { x = 164, y = 16 } },
+  checkMovesTypes = { { x = 130, y = 16 }, { x = 164, y = 16 } },
+  moveDetailTypes = { { x = 130, y = 16 }, { x = 164, y = 16 } },
+  checkMovesMoves = { { x = 24, y = 80 }, { x = 152, y = 80 }, { x = 24, y = 128 }, { x = 152, y = 128 } },
+} --[[@as BattlePageSpriteAnchors]]
+
+---@param value unknown candidate anchor under validation
+---@return boolean valid true while the value carries numeric x and y
+local function isAnchor(value)
+  return type(value) == "table" and type(value.x) == "number" and type(value.y) == "number"
+end
+
+---@param value unknown candidate anchor list under validation
+---@param needed integer consumed anchor count under validation
+---@return table<integer, { x: number, y: number }>? validated anchor copies, nil when short or malformed
+local function anchorList(value, needed)
+  if type(value) ~= "table" or #value < needed then
+    return nil
+  end
+  local anchors = {} ---@type table<integer, { x: number, y: number }>
+  for index = 1, needed do
+    local anchor = value[index] --[[@as { x: number, y: number }?]]
+    if not isAnchor(anchor) then
+      return nil
+    end
+    assert(anchor ~= nil, "anchors validate before staging")
+    anchors[index] = { x = anchor.x, y = anchor.y }
+  end
+  return anchors
+end
+
+-- Resolves the page sprite anchors from a battle manifest party section:
+-- the staged spritePositions table with its per-page mon-type and
+-- check-moves move lists plus the fixed icon anchors, copied so the
+-- projection never mutates staged cache state. Anything absent or
+-- malformed (old caches, partial transcriptions) resolves to nil and the
+-- projection keeps its pinned retail fallback instead of inventing geometry.
+---@param partySection table<string, unknown>? battle manifest party section under resolution
+---@return BattlePageSpriteAnchors? validated page sprite positions, nil while unstaged
+local function resolvePositions(partySection)
+  if type(partySection) ~= "table" then
+    return nil
+  end
+  local staged = partySection.spritePositions --[[@as table<string, unknown>?]]
+  if type(staged) ~= "table" then
+    return nil
+  end
+  local fixed = staged.fixed --[[@as table<string, unknown>?]]
+  if type(fixed) ~= "table" then
+    return nil
+  end
+  local anchors = {} ---@type table<string, unknown>
+  for _, key in ipairs({
+    "monIcon",
+    "statusIcon",
+    "monMenuIcon",
+    "summaryHeldItem",
+    "heldItemDelta",
+    "capsuleDelta",
+    "moveDetailMoveIcon",
+    "categoryIcon",
+  }) do
+    local anchor = fixed[key] --[[@as { x: number, y: number }?]]
+    if not isAnchor(anchor) then
+      return nil
+    end
+    assert(anchor ~= nil, "anchors validate before staging")
+    anchors[key] = { x = anchor.x, y = anchor.y }
+  end
+  local lists = {
+    summaryTypes = 2,
+    checkMovesTypes = 2,
+    moveDetailTypes = 2,
+    checkMovesMoves = 4,
+  }
+  for key, needed in pairs(lists) do
+    local validated = anchorList(staged[key], needed)
+    if validated == nil then
+      return nil
+    end
+    anchors[key] = validated
+  end
+  return anchors --[[@as BattlePageSpriteAnchors]]
+end
+
+-- Resolves the page sprite anchors behind one projection: the staged
+-- manifest positions while present, the pinned retail fallback otherwise.
+---@param self BattleSubflows barrier under projection
+---@return BattlePageSpriteAnchors page sprite positions behind the projection
+local function pagePositions(self)
+  return resolvePositions(self._partySection) or FALLBACK_POSITIONS
+end
+
+-- Shared sprite placements above the summary/move wrapper pages
+-- (battle_party_menu.c ShowSummarySprites/ShowCheckMovesSprites/
+-- ShowMoveDetailSprites): the staged mon icon, the status icon while
+-- ailed, the page's mon type icons, and the held-item icon at the
+-- mon-icon delta. Only the summary page shows the second held-item
+-- icon at the summary anchor. Unanswerable facts place nothing;
+-- missing drawables draw nothing at paint time.
+---@param self BattleSubflows barrier under projection
+---@param record table<string, unknown> detached roster record under display
+---@param positions BattlePageSpriteAnchors page sprite positions under projection
+---@param typeAnchors table<integer, { x: number, y: number }> staged mon-type anchors behind the page
+---@param summaryAnchor boolean true while the page shows the summary held-item anchor
+---@return table<integer, table<string, unknown>> shared sprite placements
+local function pageBaseSprites(self, record, positions, typeAnchors, summaryAnchor)
+  local sprites = {} ---@type table<integer, table<string, unknown>>
+  local iconKey = pageIconKey(record)
+  if iconKey ~= nil then
+    sprites[#sprites + 1] = { kind = "icon", key = iconKey, x = positions.monIcon.x, y = positions.monIcon.y }
+  end
+  local status = pageStatusWord(record)
+  if status ~= nil then
+    sprites[#sprites + 1] = { kind = "status", key = status, x = positions.statusIcon.x, y = positions.statusIcon.y }
+  end
+  for index, key in ipairs(pageMonTypes(self, record)) do
+    local anchor = typeAnchors[index]
+    if anchor == nil then
+      break
+    end
+    sprites[#sprites + 1] = { kind = "mon-type", key = key, x = anchor.x, y = anchor.y }
+  end
+  local held = type(record.heldItem) == "string" and record.heldItem or nil
+  if held ~= nil and held ~= "" and held ~= "NONE" then
+    sprites[#sprites + 1] = {
+      kind = "held-item",
+      key = held,
+      x = positions.monIcon.x + positions.heldItemDelta.x,
+      y = positions.monIcon.y + positions.heldItemDelta.y,
+    }
+    if summaryAnchor == true then
+      sprites[#sprites + 1] = {
+        kind = "held-item",
+        key = held,
+        x = positions.summaryHeldItem.x,
+        y = positions.summaryHeldItem.y,
+      }
+    end
+  end
+  local capsule = record.capsule
+  if type(capsule) == "table" and tonumber(capsule.id) ~= nil and tonumber(capsule.id) ~= 0 then
+    sprites[#sprites + 1] = {
+      kind = "capsule",
+      key = tostring(capsule.id),
+      x = positions.monIcon.x + positions.capsuleDelta.x,
+      y = positions.monIcon.y + positions.capsuleDelta.y,
+    }
+  end
+  return sprites
+end
+
+-- Merges one held move entry with its mon catalog facts for the page
+-- model: roster text wins where the roster carries curated display
+-- facts, the borrowed catalog fills live gaps (live entries carry
+-- only their move key, PP, and PP Ups), and anything unanswerable
+-- keeps its neutral default instead of inventing display text.
+---@param self BattleSubflows barrier under projection
+---@param entry table<string, unknown> detached held move entry under merging
+---@return table<string, unknown> merged move display facts
+local function pageMoveFacts(self, entry)
+  local key = nil
+  if type(entry.move) == "string" and entry.move ~= "" then
+    key = entry.move
+  elseif type(entry.key) == "string" and entry.key ~= "" then
+    key = entry.key
+  end
+  local facts = {
+    key = key,
+    name = type(entry.name) == "string" and entry.name ~= "" and entry.name or key or "Unknown",
+    type = type(entry.type) == "string" and entry.type or nil,
+    description = type(entry.description) == "string" and entry.description or nil,
+    power = tonumber(entry.power),
+    accuracy = tonumber(entry.accuracy),
+    category = type(entry.category) == "string" and entry.category or nil,
+    pp = tonumber(entry.pp) or 0,
+    maxPp = tonumber(entry.maxPp),
+  } --[[@as table<string, unknown>]]
+  local catalog = self._monCatalog
+  if type(key) == "string" and type(catalog) == "table" then
+    local lookup = catalog.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>?]]
+    if type(lookup) == "function" then
+      local ok, record = pcall(lookup, catalog, key)
+      if ok and type(record) == "table" then
+        if type(record.name) == "string" and record.name ~= "" then
+          facts.name = record.name
+        end
+        if facts.type == nil and type(record.moveType) == "string" then
+          facts.type = record.moveType
+        end
+        if facts.description == nil and type(record.description) == "string" and record.description ~= "" then
+          facts.description = record.description
+        end
+        if facts.power == nil and type(record.power) == "number" then
+          facts.power = record.power
+        end
+        if facts.accuracy == nil and type(record.accuracy) == "number" then
+          facts.accuracy = record.accuracy
+        end
+        if facts.category == nil and type(record.category) == "string" then
+          facts.category = record.category
+        end
+        -- Retail max PP from the catalog base and PP Ups
+        -- (moveFacts), falling back to current PP without a catalog.
+        if facts.maxPp == nil and type(record.basePp) == "number" then
+          local ups = tonumber(entry.ppUps) or 0
+          facts.maxPp = record.basePp + math.floor(record.basePp * ups / 5)
+        end
+      end
+    end
+  end
+  if facts.maxPp == nil then
+    facts.maxPp = facts.pp
+  end
+  return facts
+end
+
+-- Projects the retail battle mon-menu page (battle_party_menu.c page 1,
+-- PrintMonMenuPage): the centered mon name with its gender symbol, the
+-- SHIFT/SUMMARY/CHECK MOVES buttons, and the cancel box. Focus follows
+-- the native menu index the controller owns; the page seals nothing
+-- itself (SHIFT seals its kernel fragment through the list result).
+-- Eggs blank the SUMMARY/CHECK MOVES windows and disable their faces.
+---@param self BattleSubflows barrier under projection
+---@param shell table<string, unknown> detached child view under filling
+---@param native table<string, unknown> native party status under projection
+---@param kind string projected child kind under mapping
+---@return table<string, unknown> detached mon-menu child view
+local function projectMonMenu(self, shell, native, kind)
+  local entries = native.menu --[[@as table<integer, table<string, unknown>>]]
+  local index = tonumber(native.menuIndex)
+  local focusedKind = nil
+  if index ~= nil and type(entries) == "table" and type(entries[index]) == "table" then
+    focusedKind = entries[index].kind
+  end
+  -- Decomp Handle order behind the focused entry: SHIFT, SUMMARY,
+  -- CHECK MOVES, cancel.
+  local cursorMap = { switch = 0, summary = 1, check_moves = 2, quit = 3 }
+  local cursor = cursorMap[focusedKind]
+  if cursor == nil then
+    cursor = 0
+  end
+  local focusMap = { switch = "switch", summary = "summary", check_moves = "moves", quit = "back" }
+  local slot = tonumber(native.menuSlot) or 0
+  local record = pageRecord(self, slot) or {}
+  local isEgg = record.isEgg == true
+  local positions = pagePositions(self)
+  shell.pageSlot = slot
+  shell.rows = nil
+  shell.pageCursor = cursor
+  -- The cursor rides the focused box like every wrapper page: touch
+  -- deactivation has already confirmed by the time paint runs, so the
+  -- retained focus stays visible.
+  shell.cursorActive = true
+  shell.windowBoxes = pageWindowBoxes(self, "mon_menu")
+  shell.pageButtonRects = pageButtonRects(self, "mon_menu")
+  shell.pageCursorBoxes = pageCursorBoxes(self, "mon_menu")
+  shell.pageIsEgg = isEgg
+  -- The armed native press dips its button behind the gated dispatch:
+  -- the phases map onto the retail PRESS/HOLD frames.
+  local press = type(native.menuPress) == "table" and native.menuPress or nil
+  if type(press) == "table" then
+    local pressed = type(press.index) == "number" and type(entries) == "table" and entries[press.index] or nil
+    local pressedKind = type(pressed) == "table" and pressed.kind or nil
+    local button = cursorMap[pressedKind]
+    local frame = press.phase == "selected" and 2 or 1
+    if button ~= nil then
+      shell.pagePress = { button = button, phase = frame }
+    else
+      shell.pagePress = nil
+    end
+  else
+    shell.pagePress = nil
+  end
+  -- The child stamps its accept sequence when the press arms, so the
+  -- barrier voices DECIDE on acceptance like the decomp Handle call
+  -- sites; the release tick stays silent behind the press guard.
+  shell.pageAccept = tonumber(native.menuAccept) or 0
+  shell.focusId = focusMap[focusedKind] or "switch"
+  -- Hit regions in decomp hitbox order with the shared cancel rect
+  -- so pointer taps resolve through the same geometry paint uses.
+  local regions = {} ---@type table<integer, table<string, unknown>>
+  for pos, box in ipairs(BattlePartyPages.hitboxes("mon_menu", self._partySection)) do
+    regions[#regions + 1] = {
+      id = BattlePartyPages.inputIds("mon_menu")[pos],
+      x = box.left,
+      y = box.top,
+      w = box.right - box.left,
+      h = box.bottom - box.top,
+    }
+  end
+  local cancel = BattlePartyPages.CANCEL_RECT
+  regions[#regions + 1] =
+    { id = "back", x = cancel.left, y = cancel.top, w = cancel.right - cancel.left, h = cancel.bottom - cancel.top }
+  shell.pageRegions = regions
+  -- Window text roles in PrintMonMenuPage order: the centered name
+  -- with its gender symbol, then the three button labels. Eggs carry
+  -- no SUMMARY/CHECK MOVES text; the disabled faces paint the intent.
+  local windows = {} ---@type table<integer, table<string, unknown>>
+  windows[#windows + 1] = { role = "mon-name", text = monRowLabel(self, record, slot) }
+  windows[#windows + 1] = {
+    role = "mon-gender",
+    text = monGenderSub(self, record) or "",
+    female = monGenderFemale(record),
+  }
+  windows[#windows + 1] = { role = "shift-button", text = self:_resolveOr("battle/party/button/shift", "SHIFT") }
+  if isEgg then
+    windows[#windows + 1] = { role = "summary-button", text = "" }
+    windows[#windows + 1] = { role = "moves-button", text = "" }
+  else
+    windows[#windows + 1] =
+      { role = "summary-button", text = self:_resolveOr("battle/party/button/summary", "SUMMARY") }
+    windows[#windows + 1] =
+      { role = "moves-button", text = self:_resolveOr("battle/party/button/check-moves", "CHECK MOVES") }
+  end
+  -- The retail refusal message (CanSwitchToSelectedMon) prints over
+  -- the mon menu through the message window until acknowledged.
+  if type(native.message) == "string" and native.message ~= "" then
+    windows[#windows + 1] = { role = "message", text = native.message }
+  end
+  shell.pageWindows = windows
+  -- ShowMonMenuSprites anchors: the mon icon, the held item at the
+  -- mon-icon delta, and the capsule at the capsule delta. No
+  -- status/type icons ride this page.
+  local sprites = {} ---@type table<integer, table<string, unknown>>
+  local iconKey = pageIconKey(record)
+  if iconKey ~= nil then
+    sprites[#sprites + 1] = { kind = "icon", key = iconKey, x = positions.monMenuIcon.x, y = positions.monMenuIcon.y }
+  end
+  local held = type(record.heldItem) == "string" and record.heldItem or nil
+  if held ~= nil and held ~= "" and held ~= "NONE" then
+    sprites[#sprites + 1] = {
+      kind = "held-item",
+      key = held,
+      x = positions.monMenuIcon.x + positions.heldItemDelta.x,
+      y = positions.monMenuIcon.y + positions.heldItemDelta.y,
+    }
+  end
+  local capsule = record.capsule
+  if type(capsule) == "table" and tonumber(capsule.id) ~= nil and tonumber(capsule.id) ~= 0 then
+    sprites[#sprites + 1] = {
+      kind = "capsule",
+      key = tostring(capsule.id),
+      x = positions.monMenuIcon.x + positions.capsuleDelta.x,
+      y = positions.monMenuIcon.y + positions.capsuleDelta.y,
+    }
+  end
+  shell.pageSprites = sprites
+  shell.partyPage = "mon_menu"
+  if kind == "target" then
+    shell.stagedItem = self._stagedItem
+  end
+  return shell
+end
+
+-- Projects the retail battle summary/check-moves/move-detail pages
+-- (battle_party_menu.c pages 2-4) over the detached roster: the retail
+-- page model carries the page enum, slot, selected move, window text
+-- roles in Print* order with staged msg 0006 text, and sprite placements
+-- above. Pages project no invented rows: paint and taps read the page
+-- model, and only the list SHIFT seals its kernel fragment.
 ---@param self BattleSubflows barrier under projection
 ---@param shell table<string, unknown> detached child view under filling
 ---@param native table<string, unknown> native page status under projection
@@ -1238,57 +1894,107 @@ local function projectPartyPage(self, shell, native, kind, page)
   assert(rawSlot % 1 == 0, "page slots stay integral")
   local slot = rawSlot --[[@as integer]]
   local record = pageRecord(self, slot) or {}
+  local positions = pagePositions(self)
   local hp = tonumber(record.hp) or 0
   local maxHp = tonumber(record.maxHp) or 0
   shell.pageSlot = slot
+  shell.rows = nil
+  -- The numeric cursor, its active flag, and the press dip ride the
+  -- native page status: focus, sounds, and paint resolve through the
+  -- decomp cursor boxes and button animation behind them.
+  local cursor = tonumber(native.pageCursor) or 0
+  shell.pageCursor = cursor
+  shell.cursorActive = native.cursorActive == true
+  shell.pagePress = type(native.pagePress) == "table" and native.pagePress or nil
+  -- Accepted wrapper inputs stamp their sequence behind the barrier
+  -- DECIDE beat, matching the decomp Handle call sites that voice on
+  -- acceptance instead of on the gated transition.
+  shell.pageAccept = tonumber(native.pageAccept) or 0
+  shell.windowBoxes = pageWindowBoxes(self, page)
+  -- Button rects behind pressed/disabled faces and cursor boxes behind
+  -- the d-pad cursor: staged manifest geometry, absent without it.
+  shell.pageButtonRects = pageButtonRects(self, page)
+  shell.pageCursorBoxes = pageCursorBoxes(self, page)
+  -- Prev/next paging disables to the single-mon face while only one
+  -- occupied non-egg mon exists (HasMultipleNonEggMons).
+  shell.pageMultiMon = multiMonCount(self) > 1
+  -- Stable focus identity behind the numeric cursor for tick sounds
+  -- and hit regions; the raw cursor stays authoritative.
+  local ids = BattlePartyPages.inputIds(page)
+  shell.focusId = ids[cursor + 1] or (type(native.pageFocus) == "string" and native.pageFocus or nil)
+  -- Hit regions in decomp hitbox order with the shared cancel rect
+  -- so pointer taps resolve through the same geometry paint uses.
+  local regions = {} ---@type table<integer, table<string, unknown>>
+  for index, box in ipairs(BattlePartyPages.hitboxes(page, self._partySection)) do
+    regions[#regions + 1] = {
+      id = ids[index],
+      x = box.left,
+      y = box.top,
+      w = box.right - box.left,
+      h = box.bottom - box.top,
+    }
+  end
+  local cancel = BattlePartyPages.CANCEL_RECT
+  regions[#regions + 1] =
+    { id = "back", x = cancel.left, y = cancel.top, w = cancel.right - cancel.left, h = cancel.bottom - cancel.top }
+  shell.pageRegions = regions
   if page == "summary" then
+    -- Window text roles in PrintSummaryPage order: mon name and gender,
+    -- level and remaining experience, HP counts and bar, the five
+    -- battle stats, ability name and description, held item, and the
+    -- check-moves button.
     local level = tonumber(record.level) or 0
     local nextExp = tonumber(record.nextExp) or 0
-    local rows = {
-      {
-        id = "summary:mon",
-        label = monRowLabel(self, record, slot),
-        sub = monGenderSub(self, record),
-        detail = "",
-        enabled = false,
-      },
-      {
-        id = "summary:level",
-        label = self:_resolveOr("battle/party/stat/level", "Lv."),
-        detail = self:_resolveOr("battle/party/stat/level-value", tostring(level), { tostring(level) }),
-        enabled = false,
-      },
-      {
-        id = "summary:exp",
-        label = self:_resolveOr("battle/party/stat/exp", "NEXT LV"),
-        detail = self:_resolveOr("battle/party/stat/exp-value", tostring(nextExp), { tostring(nextExp) }),
-        enabled = false,
-      },
-      {
-        id = "summary:hp",
-        label = self:_resolveOr("battle/party/stat/hp", "HP"),
-        detail = self:_resolveOr("battle/party/stat/hp-current", tostring(hp), { tostring(hp) })
-          .. self:_resolveOr("battle/party/stat/hp-slash", "/")
-          .. self:_resolveOr("battle/party/stat/hp-max", tostring(maxHp), { tostring(maxHp) }),
-        enabled = false,
-      },
+    local windows = {} ---@type table<integer, table<string, unknown>>
+    windows[#windows + 1] = { role = "mon-name", text = monRowLabel(self, record, slot) }
+    windows[#windows + 1] = {
+      role = "mon-gender",
+      text = monGenderSub(self, record) or "",
+      female = monGenderFemale(record),
     }
+    windows[#windows + 1] = { role = "level-label", text = self:_resolveOr("battle/party/stat/level", "Lv.") }
+    windows[#windows + 1] = {
+      role = "level-value",
+      text = self:_resolveOr("battle/party/stat/level-value", tostring(level), { tostring(level) }),
+    }
+    windows[#windows + 1] = { role = "exp-label", text = self:_resolveOr("battle/party/stat/exp", "NEXT LV") }
+    windows[#windows + 1] = {
+      role = "exp-value",
+      text = self:_resolveOr("battle/party/stat/exp-value", tostring(nextExp), { tostring(nextExp) }),
+    }
+    -- The experience bar fills behind the staged track (DrawExpBar):
+    -- the experience earned toward the next level over its span,
+    -- empty at the level cap or without answerable growth facts.
+    local expCurrent, expSpan = expBarFill(self, record)
+    windows[#windows + 1] = { role = "exp-bar", current = expCurrent, max = expSpan }
+    windows[#windows + 1] = { role = "hp-label", text = self:_resolveOr("battle/party/stat/hp", "HP") }
+    -- HP prints in three centered parts (PrintHPStat): the current
+    -- value right-aligned to the middle, the slash centered, and the
+    -- maximum left of it.
+    windows[#windows + 1] = {
+      role = "hp-value",
+      current = self:_resolveOr("battle/party/stat/hp-current", tostring(hp), { tostring(hp) }),
+      slash = self:_resolveOr("battle/party/stat/hp-slash", "/"),
+      max = self:_resolveOr("battle/party/stat/hp-max", tostring(maxHp), { tostring(maxHp) }),
+      text = tostring(hp) .. "/" .. tostring(maxHp),
+    }
+    windows[#windows + 1] = { role = "hp-bar", current = hp, max = maxHp }
     -- The five battle stats print in retail print order
     -- (PrintAttack/Defense/Speed/SpAttack/SpDefense).
     local stats = {
-      { id = "summary:attack", key = "attack", field = "attack", fallback = "ATTACK" },
-      { id = "summary:defense", key = "defense", field = "defense", fallback = "DEFENSE" },
-      { id = "summary:speed", key = "speed", field = "speed", fallback = "SPEED" },
-      { id = "summary:sp-attack", key = "sp-attack", field = "specialAttack", fallback = "SP. ATK" },
-      { id = "summary:sp-defense", key = "sp-defense", field = "specialDefense", fallback = "SP. DEF" },
+      { key = "attack", field = "attack", fallback = "ATTACK" },
+      { key = "defense", field = "defense", fallback = "DEFENSE" },
+      { key = "speed", field = "speed", fallback = "SPEED" },
+      { key = "sp-attack", field = "specialAttack", fallback = "SP. ATK" },
+      { key = "sp-defense", field = "specialDefense", fallback = "SP. DEF" },
     }
     for _, stat in ipairs(stats) do
       local value = tonumber(record[stat.field]) or 0
-      rows[#rows + 1] = {
-        id = stat.id,
-        label = self:_resolveOr("battle/party/stat/" .. stat.key, stat.fallback),
-        detail = self:_resolveOr("battle/party/stat/" .. stat.key .. "-value", tostring(value), { tostring(value) }),
-        enabled = false,
+      windows[#windows + 1] =
+        { role = stat.key .. "-label", text = self:_resolveOr("battle/party/stat/" .. stat.key, stat.fallback) }
+      windows[#windows + 1] = {
+        role = stat.key .. "-value",
+        text = self:_resolveOr("battle/party/stat/" .. stat.key .. "-value", tostring(value), { tostring(value) }),
       }
     end
     local ability = type(record.ability) == "string" and record.ability or nil
@@ -1297,107 +2003,111 @@ local function projectPartyPage(self, shell, native, kind, page)
       local display = abilityDisplayName(self, ability)
       abilityLabel = self:_resolveOr("battle/party/ability/name", display, { display })
     end
-    rows[#rows + 1] = { id = "summary:ability", label = abilityLabel, detail = "", enabled = false }
+    windows[#windows + 1] = { role = "ability-name", text = abilityLabel }
+    local abilityDesc = ""
+    if ability ~= nil and ability ~= "" then
+      abilityDesc = abilityDescription(self, ability) or ""
+    end
+    windows[#windows + 1] = { role = "ability-desc", text = abilityDesc }
     local held = type(record.heldItem) == "string" and record.heldItem or nil
     local itemLabel = self:_resolveOr("battle/party/item/none", "No item held")
     if held ~= nil and held ~= "" and held ~= "NONE" then
       local display = itemDisplayName(self, held)
       itemLabel = self:_resolveOr("battle/party/item/name", display, { display })
     end
-    rows[#rows + 1] = { id = "summary:item", label = itemLabel, detail = "", enabled = false }
-    rows[#rows + 1] = { id = "summary:prev", label = "PREV", detail = "", enabled = true }
-    rows[#rows + 1] = { id = "summary:next", label = "NEXT", detail = "", enabled = true }
-    rows[#rows + 1] = {
-      id = "summary:moves",
-      label = self:_resolveOr("battle/party/button/check-moves", "CHECK MOVES"),
-      detail = "",
-      enabled = true,
-    }
-    rows[#rows + 1] = { id = "back", label = "Back", detail = "", enabled = true }
-    shell.rows = rows
-    shell.focusId = type(native.pageFocus) == "string" and native.pageFocus or "summary:moves"
+    windows[#windows + 1] = { role = "held-item", text = itemLabel }
+    windows[#windows + 1] =
+      { role = "button", text = self:_resolveOr("battle/party/button/check-moves", "CHECK MOVES") }
+    shell.pageWindows = windows
+    shell.pageSprites = pageBaseSprites(self, record, positions, positions.summaryTypes, true)
     shell.partyPage = "summary"
   elseif page == "moves" then
-    local rows = {}
+    -- Window text roles in PrintCheckMovesPage order: the mon name
+    -- with its gender symbol, the four move names with their PP
+    -- windows, then the summary button. Retail prints every slot
+    -- (MOVE_NONE breaks only the tap); empty slots carry no text
+    -- and place no type icon.
     local moves = type(record.moves) == "table" and record.moves or {}
+    local windows = {} ---@type table<integer, table<string, unknown>>
+    windows[#windows + 1] = { role = "mon-name", text = monRowLabel(self, record, slot) }
+    windows[#windows + 1] = {
+      role = "mon-gender",
+      text = monGenderSub(self, record) or "",
+      female = monGenderFemale(record),
+    }
+    local sprites = pageBaseSprites(self, record, positions, positions.checkMovesTypes, false)
     for moveSlot = 0, 3 do
       local entry = moves[moveSlot + 1]
-      if type(entry) == "table" then
-        local name = tostring(entry.name or entry.move or "Unknown")
-        rows[#rows + 1] = {
-          id = "move:" .. tostring(moveSlot),
-          label = self:_resolveOr(moveNameKey(moveSlot), name, { name }),
-          sub = self:_resolveOr("battle/party/move/pp", "PP") .. " " .. tostring(entry.pp or 0) .. "/" .. tostring(
-            entry.maxPp or 0
-          ),
-          detail = "",
-          enabled = true,
+      if type(entry) == "table" and (entry.move ~= nil or entry.key ~= nil) then
+        local facts = pageMoveFacts(self, entry)
+        local name = tostring(facts.name)
+        windows[#windows + 1] =
+          { role = "move-name:" .. tostring(moveSlot), text = self:_resolveOr(moveNameKey(moveSlot), name, { name }) }
+        -- Move PP prints in positioned parts (PrintMoveListPP): the PP
+        -- label, the current value right-aligned, the slash, and the
+        -- maximum, instead of one stacked string.
+        windows[#windows + 1] = {
+          role = "move-pp:" .. tostring(moveSlot),
+          label = self:_resolveOr("battle/party/move/pp", "PP"),
+          current = self:_resolveOr("battle/party/move/pp-current", tostring(facts.pp), { tostring(facts.pp) }),
+          slash = self:_resolveOr("battle/party/move/pp-slash", "/"),
+          max = self:_resolveOr("battle/party/move/pp-max", tostring(facts.maxPp), { tostring(facts.maxPp) }),
+          text = tostring(facts.pp) .. "/" .. tostring(facts.maxPp),
+          currentCount = facts.pp,
+          maxCount = facts.maxPp,
         }
+        if type(facts.type) == "string" and facts.type ~= "" then
+          local anchor = positions.checkMovesMoves[moveSlot + 1]
+          sprites[#sprites + 1] = { kind = "move-type", key = facts.type, x = anchor.x, y = anchor.y }
+        end
       else
-        rows[#rows + 1] =
-          { id = "move:" .. tostring(moveSlot), label = "Empty", detail = "", enabled = false, empty = true }
+        windows[#windows + 1] = { role = "move-name:" .. tostring(moveSlot), text = "" }
       end
     end
-    rows[#rows + 1] = { id = "moves:prev", label = "PREV", detail = "", enabled = true }
-    rows[#rows + 1] = { id = "moves:next", label = "NEXT", detail = "", enabled = true }
-    rows[#rows + 1] = {
-      id = "moves:summary",
-      label = self:_resolveOr("battle/party/button/summary", "SUMMARY"),
-      detail = "",
-      enabled = true,
-    }
-    rows[#rows + 1] = { id = "back", label = "Back", detail = "", enabled = true }
-    shell.rows = rows
-    shell.focusId = type(native.pageFocus) == "string" and native.pageFocus or "move:0"
+    windows[#windows + 1] = { role = "button", text = self:_resolveOr("battle/party/button/summary", "SUMMARY") }
+    shell.pageWindows = windows
+    shell.pageSprites = sprites
     shell.partyPage = "moves"
   else
-    local rawMove = tonumber(native.pageMove) or 0
-    local moveSlot = math.floor(rawMove)
+    -- Retail detail content follows context->selectedMove, not the
+    -- cursor: hovering cancel keeps showing the selected move.
+    local moveSlot = math.floor(tonumber(native.pageMove) or cursor)
     if moveSlot < 0 or moveSlot > 3 then
       moveSlot = 0
     end
     local moves = type(record.moves) == "table" and record.moves or {}
     local entry = moves[moveSlot + 1]
-    local moveName = tostring(type(entry) == "table" and (entry.name or entry.move) or "Unknown")
-    local rows = {
-      {
-        id = "move_detail:mon",
-        label = monRowLabel(self, record, slot),
-        sub = monGenderSub(self, record),
-        detail = "",
-        enabled = false,
-      },
-      {
-        id = "move_detail:move",
-        label = self:_resolveOr(moveNameKey(moveSlot), moveName, { moveName }),
-        detail = "",
-        enabled = false,
-      },
+    local facts = type(entry) == "table" and pageMoveFacts(self, entry) or { name = "Unknown", pp = 0, maxPp = 0 }
+    local moveName = tostring(facts.name)
+    -- Window text roles in PrintMoveDetailPage order: the move name,
+    -- power, accuracy, category, description, and PP parts.
+    local windows = {} ---@type table<integer, table<string, unknown>>
+    windows[#windows + 1] = { role = "mon-name", text = monRowLabel(self, record, slot) }
+    windows[#windows + 1] = {
+      role = "mon-gender",
+      text = monGenderSub(self, record) or "",
+      female = monGenderFemale(record),
     }
-    local power = type(entry) == "table" and tonumber(entry.power) or nil
-    local powerDetail = self:_resolveOr("battle/party/move/no-value", "---")
-    if power ~= nil and power > 1 then
-      powerDetail = self:_resolveOr("battle/party/move/power-value", tostring(power), { tostring(power) })
+    windows[#windows + 1] = { role = "pp-label", text = self:_resolveOr("battle/party/move/pp-label", "PP") }
+    windows[#windows + 1] =
+      { role = "move-name", text = self:_resolveOr(moveNameKey(moveSlot), moveName, { moveName }) }
+    windows[#windows + 1] =
+      { role = "accuracy-label", text = self:_resolveOr("battle/party/move/accuracy", "ACCURACY") }
+    local powerText = self:_resolveOr("battle/party/move/no-value", "---")
+    if facts.power ~= nil and facts.power > 1 then
+      powerText = self:_resolveOr("battle/party/move/power-value", tostring(facts.power), { tostring(facts.power) })
     end
-    rows[#rows + 1] = {
-      id = "move_detail:power",
-      label = self:_resolveOr("battle/party/move/power", "POWER"),
-      detail = powerDetail,
-      enabled = false,
-    }
-    local accuracy = type(entry) == "table" and tonumber(entry.accuracy) or nil
-    local accuracyDetail = self:_resolveOr("battle/party/move/no-value", "---")
-    if accuracy ~= nil and accuracy > 0 then
-      accuracyDetail = self:_resolveOr("battle/party/move/accuracy-value", tostring(accuracy), { tostring(accuracy) })
+    windows[#windows + 1] = { role = "power-value", text = powerText }
+    windows[#windows + 1] =
+      { role = "category-label", text = self:_resolveOr("battle/party/move/category", "CATEGORY") }
+    local accuracyText = self:_resolveOr("battle/party/move/no-value", "---")
+    if facts.accuracy ~= nil and facts.accuracy > 0 then
+      accuracyText =
+        self:_resolveOr("battle/party/move/accuracy-value", tostring(facts.accuracy), { tostring(facts.accuracy) })
     end
-    rows[#rows + 1] = {
-      id = "move_detail:accuracy",
-      label = self:_resolveOr("battle/party/move/accuracy", "ACCURACY"),
-      detail = accuracyDetail,
-      enabled = false,
-    }
-    local categoryKey, categoryFallback = nil, ""
-    local category = type(entry) == "table" and entry.category or nil
+    windows[#windows + 1] = { role = "accuracy-value", text = accuracyText }
+    windows[#windows + 1] = { role = "power-label", text = self:_resolveOr("battle/party/move/power", "POWER") }
+    local category = facts.category
     if category == "physical" then
       categoryKey, categoryFallback = "battle/party/move/category-physical", "PHYSICAL"
     elseif category == "special" then
@@ -1405,25 +2115,35 @@ local function projectPartyPage(self, shell, native, kind, page)
     elseif category == "status" then
       categoryKey, categoryFallback = "battle/party/move/category-status", "STATUS"
     end
-    rows[#rows + 1] = {
-      id = "move_detail:category",
-      label = self:_resolveOr("battle/party/move/category", "CATEGORY"),
-      detail = categoryKey ~= nil and self:_resolveOr(categoryKey, categoryFallback) or "",
-      enabled = false,
+    windows[#windows + 1] =
+      { role = "category-value", text = categoryKey ~= nil and self:_resolveOr(categoryKey, categoryFallback) or "" }
+    -- Retail move detail prints the move description between the
+    -- category and the PP (PrintMoveDescription, msg 0749). Windows
+    -- without a description carry no text so synthetic rosters without
+    -- a catalog keep their shape.
+    windows[#windows + 1] =
+      { role = "move-desc", text = type(facts.description) == "string" and facts.description or "" }
+    windows[#windows + 1] = {
+      role = "pp-value",
+      current = self:_resolveOr("battle/party/move/pp-current", tostring(facts.pp), { tostring(facts.pp) }),
+      slash = self:_resolveOr("battle/party/move/pp-slash", "/"),
+      max = self:_resolveOr("battle/party/move/pp-max", tostring(facts.maxPp), { tostring(facts.maxPp) }),
+      text = tostring(facts.pp) .. "/" .. tostring(facts.maxPp),
+      currentCount = facts.pp,
+      maxCount = facts.maxPp,
     }
-    local pp = type(entry) == "table" and tonumber(entry.pp) or 0
-    local maxPp = type(entry) == "table" and tonumber(entry.maxPp) or 0
-    rows[#rows + 1] = {
-      id = "move_detail:pp",
-      label = self:_resolveOr("battle/party/move/pp-label", "PP"),
-      detail = self:_resolveOr("battle/party/move/pp-current", tostring(pp), { tostring(pp) })
-        .. self:_resolveOr("battle/party/move/pp-slash", "/")
-        .. self:_resolveOr("battle/party/move/pp-max", tostring(maxPp), { tostring(maxPp) }),
-      enabled = false,
-    }
-    rows[#rows + 1] = { id = "back", label = "Back", detail = "", enabled = true }
-    shell.rows = rows
-    shell.focusId = "back"
+    shell.pageWindows = windows
+    local sprites = pageBaseSprites(self, record, positions, positions.moveDetailTypes, false)
+    if type(facts.type) == "string" and facts.type ~= "" then
+      sprites[#sprites + 1] =
+        { kind = "move-type", key = facts.type, x = positions.moveDetailMoveIcon.x, y = positions.moveDetailMoveIcon.y }
+    end
+    if type(category) == "string" and category ~= "" then
+      sprites[#sprites + 1] =
+        { kind = "category", key = category, x = positions.categoryIcon.x, y = positions.categoryIcon.y }
+    end
+    shell.pageSprites = sprites
+    shell.pageMove = moveSlot
     shell.partyPage = "move_detail"
   end
   if kind == "target" then
@@ -1432,11 +2152,11 @@ local function projectPartyPage(self, shell, native, kind, page)
   return shell
 end
 
--- Projects the native party/target roster rows for paint and hit
--- regions: the native controller status carries slot occupancy, kernel
--- eligibility, and focus while the barrier only maps them onto the
--- existing modal rows. Only kernel-projected fragments enable a row;
--- anything else names its refusal without submitting.
+-- Projects the native party/target roster for paint and hit
+-- regions: the native renderer paints the roster through the staged
+-- layout, so the barrier projects no invented rows. Focus follows the
+-- native cursor node; only kernel-projected fragments seal, anything
+-- else names its refusal through the native controller.
 ---@param native table<string, unknown> native party status record under projection
 ---@param kind string projected child kind under mapping
 ---@return table<string, unknown> detached party/target child view
@@ -1447,7 +2167,7 @@ local function projectRosterRows(self, native, kind)
     interactive = true,
     notice = self._notice,
     cancellable = self._cancellable,
-    rows = {},
+    rows = nil,
     focusId = nil,
     native = native,
   } --[[@as table<string, unknown>]]
@@ -1465,57 +2185,21 @@ local function projectRosterRows(self, native, kind)
   if wrapperPage == "summary" or wrapperPage == "moves" or wrapperPage == "move_detail" then
     return projectPartyPage(self, shell, native, kind, wrapperPage)
   end
-  if native.state == "context" and type(native.menu) == "table" then
+  -- Retail SHIFT refusals show their CanSwitch message over the mon
+  -- menu and stay there: the native controller parks in "message" with
+  -- its menu retained, so the barrier keeps projecting mon-menu while
+  -- the message is up instead of dropping to the list.
+  if (native.state == "context" or native.state == "message") and type(native.menu) == "table" then
     return projectMonMenu(self, shell, native, kind)
   end
   shell.partyPage = "list"
-  local slots = view.slots --[[@as table<integer, table<string, unknown>>]]
-  local rows = {}
-  for slot = 0, 5 do
-    local record = slots[slot + 1]
-    local label = "Empty"
-    local sub = nil
-    local detail = ""
-    local enabled = false
-    local reason = nil
-    local occupied = false
-    if type(record) == "table" and record.occupied == true then
-      occupied = true
-      local name = record.displayName
-      label = tostring(type(name) == "string" and name ~= "" and name or "Unknown")
-      if type(record.level) == "number" then
-        sub = "Lv" .. tostring(record.level)
-      end
-      local hp = tonumber(record.currentHp) or 0
-      local maxHp = tonumber(record.maxHp) or 0
-      detail = self:_resolveOr("battle/party/stat/hp", "HP") .. " " .. tostring(hp) .. "/" .. tostring(maxHp)
-      if record.eligible == true then
-        enabled = true
-        detail = detail .. " OK"
-      elseif hp <= 0 then
-        reason = self:_resolveOr(NO_ENERGY_KEY, "It is fainted.", { label })
-        detail = detail .. " KO"
-      else
-        reason = self:_refusalText(nil)
-      end
-    end
-    rows[#rows + 1] = {
-      id = "party:" .. tostring(slot),
-      label = label,
-      sub = sub,
-      detail = detail,
-      enabled = enabled,
-      reason = reason,
-      occupied = occupied,
-    }
-  end
   local cursor = native.cursorNode
   if type(cursor) == "number" then
     shell.focusId = "party:" .. tostring(cursor)
   elseif cursor == "cancel" then
     shell.focusId = "back"
   end
-  shell.rows = rows
+  shell.rows = nil
   if kind == "target" then
     shell.stagedItem = self._stagedItem
   end
@@ -1817,6 +2501,10 @@ local function projectMoveRows(self, native)
       }
     end
   end
+  -- Retail Restore PP carries a cancel button back to the party list
+  -- (battle_party_menu.c HandleRestorePPInput case 4): taps need the
+  -- same back row keyboard B already owns.
+  view.rows[#view.rows + 1] = { id = "back", label = "Back", detail = "", enabled = true }
   if type(native.moveSlot) == "number" then
     view.focusId = "move:" .. tostring(native.moveSlot)
   end
@@ -1858,11 +2546,23 @@ local function projectLearnRows(self)
     } --[[@as table<string, unknown>]]
     if type(facts) == "table" and type(facts[index]) == "table" then
       row.facts = facts[index]
+      -- Retail learn rows print PP like the move list
+      -- (PrintLearnMovePage via PrintMoveListPP).
+      local fact = facts[index] --[[@as table<string, unknown>]]
+      local pp = tonumber(fact.pp)
+      local maxPp = tonumber(fact.maxPp)
+      if pp ~= nil then
+        if maxPp == nil then
+          maxPp = pp
+        end
+        row.sub = self:_resolveOr("battle/party/move/pp", "PP") .. " " .. tostring(pp) .. "/" .. tostring(maxPp)
+      end
     end
     rows[#rows + 1] = row
   end
   rows[#rows + 1] = { id = "learn:decline", label = "Decline", detail = "Keep moves", enabled = true }
   local focusId = nil
+  local nativeNotice = nil
   if self._composed ~= nil then
     local ok, native = pcall(self._composed.draw, self._composed, nil)
     if ok and type(native) == "table" and native.open ~= false then
@@ -1872,13 +2572,20 @@ local function projectLearnRows(self)
       elseif moveSlot == 4 then
         focusId = "learn:decline"
       end
+      -- Retail HM guard surfaces its msg 60 text over the list: the
+      -- native picker refuses with its protected notice, the barrier
+      -- maps that reason to the staged party key.
+      local notice = native.notice
+      if type(notice) == "table" and notice.reason == "hm" then
+        nativeNotice = self:_resolveOr("battle/party/message/hm-forget", "HM moves can’t be forgotten now.")
+      end
     end
   end
   local view = {
     kind = "learn",
     purpose = self._purpose,
     interactive = true,
-    notice = self._notice,
+    notice = self._notice or nativeNotice,
     cancellable = false,
     rows = rows,
     focusId = focusId,
@@ -2058,7 +2765,34 @@ function BattleSubflows:activateControl(id)
   if view == nil then
     return false
   end
+  -- Wrapper pages validate against the decomp input order: every
+  -- stable control identity arms while foreign identities refuse.
+  -- Taps on empty move slots arm but stay on the list like retail
+  -- MOVE_NONE breaks.
+  local wrapper = type(view.partyPage) == "string" and view.partyPage or nil
+  if wrapper == "mon_menu" or wrapper == "summary" or wrapper == "moves" or wrapper == "move_detail" then
+    for _, knownId in ipairs(BattlePartyPages.inputIds(wrapper)) do
+      if knownId == id then
+        self._queued[#self._queued + 1] = { type = "tap", id = id }
+        return true
+      end
+    end
+    return false
+  end
+  -- The native renderer paints the roster through the staged layout,
+  -- so list taps validate as slot identities the composed child
+  -- expands through the same native geometry; unknown ids refuse.
+  -- Opening fails closed without a native layout, so an open
+  -- party/target child always owns one.
   local known = id == "back"
+  if not known and (self._active == "party" or self._active == "target") then
+    local slot = tonumber(id:match("^party:(%d+)$") or "")
+    if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 5 then
+      known = true
+    end
+  end
+  -- Bag, learn, and move rows still project their rows behind
+  -- validation; party/target rows are gone with their invented modal.
   if not known and type(view.rows) == "table" then
     for _, row in
       ipairs(view.rows --[[@as table<integer, table<string, unknown>>]])

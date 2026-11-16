@@ -2885,6 +2885,7 @@ local function checkManifestHeader(manifest, context)
     pictures = true,
     menus = true,
     bag = true,
+    party = true,
     messages = true,
     transitions = true,
     audioRoles = true,
@@ -3190,6 +3191,321 @@ local function checkLowerMenu(lower, images, context)
   end
 end
 
+-- Retail battle-party screen (battle_party_menu.c
+-- BattlePartyMenu_LoadBgGraphics plus LoadPageTilemaps and the transcribed
+-- window/hitbox/button-rect/cursor-box/sprite-position tables): ten
+-- LoadPageTilemaps page pairs with their staged layer images, the
+-- transcribed window templates and touchscreen hitboxes in Handle input
+-- order, the 34 button tile rects, the d-pad cursor boxes per page (the
+-- contest pages alias the learn/forget tables), the sprite icon positions
+-- with their fixed Show*Sprites anchors, and the staged button faces.
+local function checkParty(party, images, context)
+  SchemaCheck.checkRecord(party, {
+    pages = true,
+    windows = true,
+    hitboxes = true,
+    buttonRects = true,
+    cursorBoxes = true,
+    spritePositions = true,
+    buttons = true,
+    expTiles = true,
+  }, context, CODE_MANIFEST, "manifest party")
+  if not Validate.isArray(party.pages) or #party.pages ~= 10 then
+    fail(CODE_MANIFEST, "manifest party.pages must carry its ten LoadPageTilemaps pairs", context)
+  end
+  for index, page in ipairs(party.pages) do
+    local pageField = "manifest party.pages[" .. index .. "]"
+    SchemaCheck.checkRecord(page, {
+      key = true,
+      layers = true,
+    }, context, CODE_MANIFEST, pageField)
+    checkString(page.key, context, CODE_MANIFEST, pageField .. ".key")
+    if page.key:match("^party:page/") == nil then
+      fail(CODE_MANIFEST, pageField .. ".key stages under party:page/ keys", context)
+    end
+    if not Validate.isArray(page.layers) or #page.layers ~= 2 then
+      fail(CODE_MANIFEST, pageField .. " keeps its two tilemap layers", context)
+    end
+    for layerIndex, layer in ipairs(page.layers) do
+      local layerField = pageField .. ".layers[" .. layerIndex .. "]"
+      SchemaCheck.checkRecord(layer, {
+        image = true,
+        x = true,
+        y = true,
+        width = true,
+        height = true,
+      }, context, CODE_MANIFEST, layerField)
+      checkImageRef(images, layer.image, context, layerField .. ".image")
+      checkInt(layer.width, 256, 256, context, CODE_MANIFEST, layerField .. ".width")
+      checkInt(layer.height, 192, 192, context, CODE_MANIFEST, layerField .. ".height")
+    end
+  end
+  SchemaCheck.checkRecord(party.windows, {
+    base = true,
+    partyList = true,
+    monMenu = true,
+    summary = true,
+    checkMoves = true,
+    moveDetail = true,
+    restorePP = true,
+    learnMove = true,
+    forgetMove = true,
+    contestForgetMove = true,
+  }, context, CODE_MANIFEST, "manifest party.windows")
+  for key, count in pairs({
+    base = 2,
+    partyList = 6,
+    monMenu = 4,
+    summary = 35,
+    checkMoves = 11,
+    moveDetail = 17,
+    restorePP = 5,
+    learnMove = 6,
+    forgetMove = 12,
+    contestForgetMove = 7,
+  }) do
+    local windows = party.windows[key]
+    local windowsField = "manifest party.windows." .. key
+    if not Validate.isArray(windows) or #windows ~= count then
+      fail(CODE_MANIFEST, windowsField .. " keeps its transcribed count", context)
+    end
+    for windowIndex, window in ipairs(windows) do
+      SchemaCheck.checkRecord(window, {
+        bg = true,
+        left = true,
+        top = true,
+        width = true,
+        height = true,
+        palette = true,
+        baseTile = true,
+      }, context, CODE_MANIFEST, windowsField .. "[" .. windowIndex .. "]")
+    end
+  end
+  SchemaCheck.checkRecord(party.hitboxes, {
+    partyList = true,
+    monMenu = true,
+    summary = true,
+    checkMoves = true,
+    moveDetail = true,
+    restorePP = true,
+    learnMove = true,
+    forgetMove = true,
+  }, context, CODE_MANIFEST, "manifest party.hitboxes")
+  for key, count in pairs({
+    partyList = 6,
+    monMenu = 3,
+    summary = 3,
+    checkMoves = 7,
+    moveDetail = 4,
+    restorePP = 4,
+    learnMove = 6,
+    forgetMove = 2,
+  }) do
+    local hitboxes = party.hitboxes[key]
+    local hitboxField = "manifest party.hitboxes." .. key
+    if not Validate.isArray(hitboxes) or #hitboxes ~= count then
+      fail(CODE_MANIFEST, hitboxField .. " keeps its Handle input order", context)
+    end
+    for boxIndex, box in ipairs(hitboxes) do
+      SchemaCheck.checkRecord(box, {
+        top = true,
+        bottom = true,
+        left = true,
+        right = true,
+      }, context, CODE_MANIFEST, hitboxField .. "[" .. boxIndex .. "]")
+    end
+  end
+  if not Validate.isArray(party.buttonRects) or #party.buttonRects ~= 34 then
+    fail(CODE_MANIFEST, "manifest party.buttonRects keeps its 34 BattlePartyButton rects", context)
+  end
+  for rectIndex, rect in ipairs(party.buttonRects) do
+    SchemaCheck.checkRecord(rect, {
+      x = true,
+      y = true,
+      w = true,
+      h = true,
+    }, context, CODE_MANIFEST, "manifest party.buttonRects[" .. rectIndex .. "]")
+  end
+  SchemaCheck.checkRecord(party.cursorBoxes, {
+    partyList = true,
+    monMenu = true,
+    summary = true,
+    checkMoves = true,
+    moveDetail = true,
+    restorePP = true,
+    learnMove = true,
+    forgetMove = true,
+    learnMoveContest = true,
+    forgetMoveContest = true,
+  }, context, CODE_MANIFEST, "manifest party.cursorBoxes")
+  for key, count in pairs({
+    partyList = 7,
+    monMenu = 4,
+    summary = 4,
+    checkMoves = 8,
+    moveDetail = 5,
+    restorePP = 5,
+    learnMove = 7,
+    forgetMove = 3,
+    learnMoveContest = 7,
+    forgetMoveContest = 3,
+  }) do
+    local boxes = party.cursorBoxes[key]
+    local boxesField = "manifest party.cursorBoxes." .. key
+    if not Validate.isArray(boxes) or #boxes ~= count then
+      fail(CODE_MANIFEST, boxesField .. " keeps its page boxes", context)
+    end
+    for boxIndex, box in ipairs(boxes) do
+      SchemaCheck.checkRecord(box, {
+        left = true,
+        top = true,
+        right = true,
+        bottom = true,
+        up = true,
+        down = true,
+        leftNeighbor = true,
+        rightNeighbor = true,
+      }, context, CODE_MANIFEST, boxesField .. "[" .. boxIndex .. "]")
+    end
+  end
+  -- The contest pages reuse the learn/forget cursor tables through
+  -- gBattlePartyPageCursorBoxes: the staged aliases must match box for
+  -- box instead of transcribing a second copy.
+  for _, pair in ipairs({ { "learnMoveContest", "learnMove" }, { "forgetMoveContest", "forgetMove" } }) do
+    local aliasKey, sourceKey = pair[1], pair[2]
+    local aliasBoxes, sourceBoxes = party.cursorBoxes[aliasKey], party.cursorBoxes[sourceKey]
+    for boxIndex, box in ipairs(aliasBoxes) do
+      local sourceBox = sourceBoxes[boxIndex]
+      for _, field in ipairs({ "left", "top", "right", "bottom", "up", "down", "leftNeighbor", "rightNeighbor" }) do
+        if box[field] ~= sourceBox[field] then
+          fail(
+            CODE_MANIFEST,
+            "manifest party.cursorBoxes."
+              .. aliasKey
+              .. "["
+              .. boxIndex
+              .. "]."
+              .. field
+              .. " aliases its "
+              .. sourceKey
+              .. " box",
+            context
+          )
+        end
+      end
+    end
+  end
+  -- Retail battle-party sprite icon positions (the BattlePartyMenuPos
+  -- pairs plus the fixed Show*Sprites anchors): per-page icon lists in
+  -- ShowSpriteAt order with the shared fixed anchors behind every
+  -- detail page.
+  local positions = party.spritePositions
+  SchemaCheck.checkRecord(positions, {
+    listIcons = true,
+    listStatusIcons = true,
+    summaryTypes = true,
+    checkMovesTypes = true,
+    checkMovesMoves = true,
+    moveDetailTypes = true,
+    learnMoveTypes = true,
+    learnMoveMoves = true,
+    forgetMoveTypes = true,
+    fixed = true,
+  }, context, CODE_MANIFEST, "manifest party.spritePositions")
+  for key, count in pairs({
+    listIcons = 6,
+    listStatusIcons = 6,
+    summaryTypes = 2,
+    checkMovesTypes = 2,
+    checkMovesMoves = 4,
+    moveDetailTypes = 2,
+    learnMoveTypes = 2,
+    learnMoveMoves = 5,
+    forgetMoveTypes = 2,
+  }) do
+    local spots = positions[key]
+    local spotsField = "manifest party.spritePositions." .. key
+    if not Validate.isArray(spots) or #spots ~= count then
+      fail(CODE_MANIFEST, spotsField .. " keeps its source icon count", context)
+    end
+    for spotIndex, spot in ipairs(spots) do
+      local spotField = spotsField .. "[" .. spotIndex .. "]"
+      SchemaCheck.checkRecord(spot, { x = true, y = true }, context, CODE_MANIFEST, spotField)
+      checkInt(spot.x, 0, 255, context, CODE_MANIFEST, spotField .. ".x")
+      checkInt(spot.y, 0, 191, context, CODE_MANIFEST, spotField .. ".y")
+    end
+  end
+  SchemaCheck.checkRecord(positions.fixed, {
+    monIcon = true,
+    statusIcon = true,
+    monMenuIcon = true,
+    summaryHeldItem = true,
+    moveDetailMoveIcon = true,
+    contestMoveIcon = true,
+    categoryIcon = true,
+    heldItemDelta = true,
+    capsuleDelta = true,
+  }, context, CODE_MANIFEST, "manifest party.spritePositions.fixed")
+  for anchorKey, anchor in pairs(positions.fixed) do
+    local anchorField = "manifest party.spritePositions.fixed." .. tostring(anchorKey)
+    SchemaCheck.checkRecord(anchor, { x = true, y = true }, context, CODE_MANIFEST, anchorField)
+    checkInt(anchor.x, 0, 255, context, CODE_MANIFEST, anchorField .. ".x")
+    checkInt(anchor.y, 0, 191, context, CODE_MANIFEST, anchorField .. ".y")
+  end
+  -- Battle-party button faces (StoreButtonTilemaps/StoreLargeButtonTilemaps
+  -- atlas rects through the staged screen palette): rest, press, and
+  -- disabled frames repaint over the staged page raster and stage here.
+  if not Validate.isArray(party.buttons) then
+    fail(CODE_MANIFEST, "manifest party.buttons stages its face inventory", context)
+  end
+  local stagedFaces = {}
+  for faceIndex, face in ipairs(party.buttons) do
+    local faceField = "manifest party.buttons[" .. faceIndex .. "]"
+    SchemaCheck.checkRecord(face, {
+      button = true,
+      frame = true,
+      variant = true,
+      image = true,
+    }, context, CODE_MANIFEST, faceField)
+    checkInt(face.button, 0, 33, context, CODE_MANIFEST, faceField .. ".button")
+    checkInt(face.frame, 0, 3, context, CODE_MANIFEST, faceField .. ".frame")
+    if face.variant ~= "self" and face.variant ~= "partner" then
+      fail(CODE_MANIFEST, faceField .. ".variant stages its mon variant", context)
+    end
+    checkImageRef(images, face.image, context, faceField .. ".image")
+    local faceKey = face.button .. ":" .. face.frame .. ":" .. face.variant
+    if stagedFaces[faceKey] ~= nil then
+      fail(CODE_MANIFEST, faceField .. " stages its face twice", context)
+    end
+    stagedFaces[faceKey] = true
+  end
+  -- Retail summary experience-bar tiles (battle_party_menu.c
+  -- DrawExpBar): one staged tile per fill level (0-8) through the
+  -- track cells' palette bank.
+  if not Validate.isArray(party.expTiles) then
+    fail(CODE_MANIFEST, "manifest party.expTiles stages its bar tile inventory", context)
+  end
+  local stagedLevels = {}
+  for tileIndex, tile in ipairs(party.expTiles) do
+    local tileField = "manifest party.expTiles[" .. tileIndex .. "]"
+    SchemaCheck.checkRecord(tile, {
+      level = true,
+      image = true,
+    }, context, CODE_MANIFEST, tileField)
+    checkInt(tile.level, 0, 8, context, CODE_MANIFEST, tileField .. ".level")
+    checkImageRef(images, tile.image, context, tileField .. ".image")
+    if stagedLevels[tile.level] ~= nil then
+      fail(CODE_MANIFEST, tileField .. " stages its level twice", context)
+    end
+    stagedLevels[tile.level] = true
+  end
+  for level = 0, 8 do
+    if stagedLevels[level] ~= true then
+      fail(CODE_MANIFEST, "manifest party.expTiles stages no level " .. tostring(level), context)
+    end
+  end
+end
+
 local function checkMenus(manifest, context)
   local menus = manifest.menus
   SchemaCheck.checkRecord(menus, {
@@ -3437,6 +3753,7 @@ local function checkMenus(manifest, context)
     end
     stagedFaces[faceKey] = true
   end
+  checkParty(manifest.party, bagImages, context)
 end
 
 local function checkHealthBox(section, context, field)

@@ -12,6 +12,7 @@
 local BattleRenderer = {}
 
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
+local BattlePartyPages = require("game.hgss.src.battle.BattlePartyPages")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
@@ -3038,6 +3039,11 @@ end
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param child table<string, unknown> detached child view under drawing
 local function drawChildFooter(text, view, child)
+  -- Party and target children own no modal footer: the native roster
+  -- and the retail wrapper pages carry their own chrome.
+  if child.kind == "party" or child.kind == "target" then
+    return
+  end
   if child.kind == "learn" then
     text.drawText("BACK", CHILD_NOTICE.x, CHILD_NOTICE.y)
     return
@@ -3063,8 +3069,6 @@ local function drawChildFooter(text, view, child)
   end
   if child.cancellable == true then
     text.drawText("BACK", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
-  elseif child.kind == "party" or child.kind == "target" then
-    text.drawText("No retreat!", CHILD_BACK_LABEL.x, CHILD_BACK_LABEL.y)
   end
   local notice = child.notice
   if type(notice) ~= "string" or notice == "" then
@@ -3487,116 +3491,620 @@ local function drawBagChild(resources, view, child)
   end
 end
 
--- Retail ink behind battle wrapper rows (battle_party_menu.c Print*
--- family): content labels print font 0 MAKE_TEXT_COLOR(15,14,0) while
--- their values print font 0 MAKE_TEXT_COLOR(1,2,0) out of the staged
--- party window bank. The level value keeps the label slots (15,14,0)
--- (PrintLevelAndNextExp), like the move-list PP (PrintMoveListPP) and
--- the move-detail PP (PrintMovePP). Check-moves move names and the
--- navigation buttons print font 4 MAKE_TEXT_COLOR(7,8,9); gender
--- symbols print font 0 MAKE_TEXT_COLOR(7,8,0)/(3,4,0). Origins reuse
--- the paired modal columns so paint and taps keep agreeing; only the
--- fits widen so the staged words paint whole.
-local PARTY_PAGE_LABEL_X = 44
-local PARTY_PAGE_SUB_X = 116
-local PARTY_PAGE_DETAIL_X = 156
+-- Retail ink behind battle wrapper pages (battle_party_menu.c Print*
+-- family): window text prints through its own template palette bank in
+-- the staged party palette (9 for mon-menu, move, and button windows,
+-- 13 for labels, values, and bars), the page button through the font-4
+-- menu slots (7,8,9).
 
----@param id string stable wrapper row identity under drawing
----@return boolean true for the font-4 navigation and move-name rows
-local function partyPageMenuRow(id)
-  if id == "back" then
-    return true
+---@param sprite table<string, unknown> projected wrapper sprite under drawing
+---@return string? semantic drawable key behind the sprite, nil without an established provider
+local function partyPageSpriteKey(sprite)
+  local kind = sprite.kind --[[@as string]]
+  local key = sprite.key --[[@as string?]]
+  if type(key) ~= "string" or key == "" then
+    if kind ~= "icon" then
+      return nil
+    end
   end
-  if id == "summary:prev" or id == "summary:next" or id == "summary:moves" then
-    return true
+  if kind == "icon" then
+    return "battle:icon:" .. tostring(sprite.key) .. ":frame:1"
   end
-  if id == "moves:prev" or id == "moves:next" or id == "moves:summary" then
-    return true
+  if kind == "mon-type" or kind == "move-type" then
+    return "battle:move-type-icon:" .. tostring(key):lower()
   end
-  return id:match("^move:%d+$") ~= nil
+  if kind == "category" then
+    return "battle:move-category-icon:" .. tostring(key):lower()
+  end
+  if kind == "status" then
+    return "battle:status-icon:" .. tostring(key):lower()
+  end
+  if kind == "held-item" then
+    return "battle:item-icon:" .. tostring(key)
+  end
+  -- Ball-capsule marks project from roster capsule data, but no seal
+  -- art is staged for the battle path yet: the sprite resolves to
+  -- nothing instead of an invented mark.
+  if kind == "capsule" then
+    return nil
+  end
+  return nil
 end
 
----@param page string wrapper page under drawing
----@param id string stable wrapper row identity under drawing
----@return integer, integer, integer value foreground, shadow, and background slots
-local function partyPageValueSlots(page, id)
-  if id == "summary:level" or id == "move_detail:pp" or page == "moves" then
-    return 15, 14, 0
+-- Resolves one wrapper sprite draw position: the staged anchor names
+-- the sprite origin, so drawables carrying their staged cell offset
+-- paint at anchor plus offset while bare drawables center on the anchor
+-- through their measured extent (unmeasurable stand-ins keep the
+-- compact 16-pixel default so headless recording stays drawable-shaped).
+---@param art table<string, unknown> resolved drawable under drawing
+---@param sprite table<string, unknown> projected wrapper sprite under drawing
+---@return number draw x
+---@return number draw y
+local function partyPageSpritePos(art, sprite)
+  local x = tonumber(sprite.x) or 0
+  local y = tonumber(sprite.y) or 0
+  local offset = art.offset --[[@as table<string, number>?]]
+  if type(offset) == "table" then
+    return x + (tonumber(offset.x) or 0), y + (tonumber(offset.y) or 0)
   end
-  return 1, 2, 0
+  local width, height = drawableDims(art)
+  if type(width) ~= "number" or type(height) ~= "number" then
+    width, height = 16, 16
+  end
+  return x - math.floor(width / 2), y - math.floor(height / 2)
+end
+
+-- Code window indices behind wrapper page text (battle_party_menu.c
+-- Print* call sites with windowSet 0): shared windows ride their
+-- fixed indices while per-set windows read the first set.
+local SUMMARY_BUTTON = { [0] = 12, [1] = 13, [2] = 11, [3] = 6 }
+local MOVES_BUTTON = { [0] = 14, [1] = 15, [2] = 16, [3] = 17, [4] = 12, [5] = 13, [6] = 9, [7] = 6 }
+
+-- Press-dip frame behind the staged phase (UpdateButtonAnim PRESS,
+-- HOLD, RELEASE paints PRESSED, SELECTED, NORMAL).
+local PRESS_FRAME = { [1] = 1, [2] = 2, [3] = 0 }
+
+---@param child table<string, unknown> detached wrapper child view under lookup
+---@param index integer code window index under lookup
+---@return table<string, number>? pixel origin, extent, and palette bank, nil without a staged template
+local function pageWindowBox(child, index)
+  local boxes = child.windowBoxes --[[@as table<integer, table<string, number>>?]]
+  local box = type(boxes) == "table" and boxes[index + 1] or nil
+  if type(box) ~= "table" then
+    return nil
+  end
+  -- The template palette selects the SUB_BG bank the window prints
+  -- through (battle_party_menu.c WindowTemplate palette: 9 for the
+  -- mon-menu, move, and button windows, 13 for labels, values, and
+  -- bars). The staged party palette mirrors the hardware banks, so the
+  -- bank rides the pixel box into every ink lookup below. A box without
+  -- its template palette draws nothing, like a missing window.
+  if type(box.palette) ~= "number" then
+    return nil
+  end
+  return {
+    x = box.left * 8,
+    y = box.top * 8,
+    w = box.width * 8,
+    h = box.height * 8,
+    bank = box.palette,
+  }
+end
+
+-- Prints one wrapper window string through its template palette bank:
+-- single-line text prints at its origin, centered, or right-aligned,
+-- while embedded line breaks (ability/move descriptions carry the ROM
+-- 0xE000 breaks as "\n") flow to the next 16-pixel row like the
+-- retail text printer (render_text.c CHAR_LF advances currentY past the
+-- row). Alignment measures each row on its own so centered wrapped
+-- text stays centered.
+---@param text table<string, unknown> borrowed text services
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param role string source font role behind measurement (font 0 reads hud, font 4 reads menu)
+---@param content string text under drawing
+---@param box table<string, number> window pixel origin, extent, and palette bank under drawing
+---@param spec table<string, unknown> in-window origin, alignment, and palette slots
+local function pageText(text, view, role, content, box, spec)
+  if content == "" then
+    return
+  end
+  local bank = box.bank
+  local palette =
+    sourcePalette(view, "party", bank, spec.fg --[[@as integer]], spec.sh --[[@as integer]], spec.bg --[[@as integer]])
+  local baseY = box.y + (tonumber(spec.y) or 0)
+  local row = 0
+  for line in (content .. "\n"):gmatch("(.-)\n") do
+    if line ~= "" then
+      local x = box.x + (tonumber(spec.x) or 0)
+      if spec.align == "center" then
+        x = box.x + math.floor((box.w - measureRoleText(text, role, line)) / 2)
+      elseif spec.align == "right" then
+        x = box.x + box.w - measureRoleText(text, role, line) + (tonumber(spec.dx) or 0)
+      end
+      drawRoleText(text, role, line, x, baseY + row * 16, palette)
+    end
+    row = row + 1
+  end
+end
+
+-- Draws one wrapper text role through its transcribed window: single
+-- text prints at its origin, centered, or right-aligned; the HP/PP
+-- splits print their positioned parts; the gender symbol rides the
+-- mon-name window right edge in its gender ink; the HP bar fills its
+-- window in the HP color pair. Missing windows or text draw nothing.
+---@param text table<string, unknown> borrowed text services
+---@param graphics table<string, unknown> borrowed host graphics
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param entry table<string, unknown> projected window content under drawing
+---@param box table<string, number> window pixel origin and extent under drawing
+---@param spec table<string, unknown> transcribed text layout behind the role
+local function drawWrapperRole(text, graphics, view, entry, box, spec)
+  local role = spec.font == "menu" and "menu" or "hud"
+  if spec.bar == true then
+    local current = tonumber(entry.current) or 0
+    local max = tonumber(entry.max) or 0
+    if current <= 0 or max <= 0 then
+      return
+    end
+    local pixels = BattleScene.hpPixels(current, max)
+    local colorIdx = BattleScene.hpColorIdx(pixels)
+    if pixels <= 0 or colorIdx == 0 then
+      return
+    end
+    local dark, light = 1, 2
+    if colorIdx == 2 then
+      dark, light = 3, 4
+    elseif colorIdx == 1 then
+      dark, light = 5, 6
+    end
+    -- The retail HP bar fills through its own window palette
+    -- (FillWindowPixelRect on the palette-9 HP bar window), so the
+    -- fill resolves through the box bank like the tile fill.
+    local bank = box.bank
+    local darkInk = sourcePalette(view, "party", bank, dark, dark, dark).foreground
+    local lightInk = sourcePalette(view, "party", bank, light, light, light).foreground
+    graphics.setColor(lightInk.r / 255, lightInk.g / 255, lightInk.b / 255, 1)
+    graphics.rectangle("fill", box.x, box.y + 1, pixels, 1)
+    graphics.setColor(darkInk.r / 255, darkInk.g / 255, darkInk.b / 255, 1)
+    graphics.rectangle("fill", box.x, box.y + 2, pixels, 2)
+    graphics.setColor(lightInk.r / 255, lightInk.g / 255, lightInk.b / 255, 1)
+    graphics.rectangle("fill", box.x, box.y + 4, pixels, 1)
+    graphics.setColor(1, 1, 1, 1)
+    return
+  end
+  local bank = box.bank
+  local palette =
+    sourcePalette(view, "party", bank, spec.fg --[[@as integer]], spec.sh --[[@as integer]], spec.bg --[[@as integer]])
+  if spec.parts == "hp" then
+    -- HP prints in three centered parts (PrintHPStat): the current
+    -- value right-aligned to the slash middle, the slash centered, and
+    -- the maximum left of it.
+    local slash = tostring(entry.slash or "/")
+    local slashWidth = measureRoleText(text, role, slash)
+    local middle = math.floor((box.w - slashWidth) / 2)
+    local current = tostring(entry.current or "")
+    if current ~= "" then
+      drawRoleText(text, role, current, box.x + middle - measureRoleText(text, role, current), box.y, palette)
+    end
+    drawRoleText(text, role, slash, box.x + middle, box.y, palette)
+    local max = tostring(entry.max or "")
+    if max ~= "" then
+      drawRoleText(text, role, max, box.x + middle + slashWidth, box.y, palette)
+    end
+    return
+  end
+  if spec.parts == "move-pp" then
+    -- Move PP prints in positioned parts (PrintMoveListPP): the PP
+    -- label, the current value right-aligned, the slash, and the
+    -- maximum, instead of one stacked string.
+    local label = tostring(entry.label or "")
+    if label ~= "" then
+      drawRoleText(text, role, label, box.x + 40, box.y + 24, palette)
+    end
+    local slash = tostring(entry.slash or "/")
+    local slashWidth = measureRoleText(text, role, slash)
+    local current = tostring(entry.current or "")
+    if current ~= "" then
+      drawRoleText(text, role, current, box.x + 80 - measureRoleText(text, role, current), box.y + 24, palette)
+    end
+    drawRoleText(text, role, slash, box.x + 80, box.y + 24, palette)
+    local max = tostring(entry.max or "")
+    if max ~= "" then
+      drawRoleText(text, role, max, box.x + 80 + slashWidth, box.y + 24, palette)
+    end
+    return
+  end
+  if spec.parts == "pp" then
+    local slash = tostring(entry.slash or "/")
+    local slashWidth = measureRoleText(text, role, slash)
+    local middle = math.floor((box.w - slashWidth) / 2)
+    local current = tostring(entry.current or "")
+    if current ~= "" then
+      drawRoleText(text, role, current, box.x + middle - measureRoleText(text, role, current), box.y, palette)
+    end
+    drawRoleText(text, role, slash, box.x + middle, box.y, palette)
+    local max = tostring(entry.max or "")
+    if max ~= "" then
+      drawRoleText(text, role, max, box.x + middle + slashWidth, box.y, palette)
+    end
+    return
+  end
+  local content = tostring(entry.text or "")
+  if content == "" then
+    return
+  end
+  pageText(text, view, role, content, box, spec)
+end
+
+-- Draws the wrapper page text through the transcribed text layout:
+-- every role prints through its window template with its retail font,
+-- origin, alignment, and ink; the gender symbol takes its gender ink
+-- on the mon-name window.
+---@param text table<string, unknown> borrowed text services
+---@param graphics table<string, unknown> borrowed host graphics
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
+-- Retail gender inks behind the wrapper mon-name printers: the
+-- summary/check-moves/move-detail name printer (PrintMonName font 0)
+-- inks male (7,8,0) and female (3,4,0), while the centered mon-menu
+-- name printer (PrintMonNameCentered) inks male (10,11,0) and female
+-- (12,13,0). The projected entry carries the explicit flag so paint
+-- never sniffs the symbol text.
+---@param entry table<string, unknown> projected gender window under inking
+---@param page string wrapper page under inking
+---@return integer, integer, integer foreground, shadow, and background slots
+local function genderInk(entry, page)
+  local female = entry.female == true
+  if page == "mon_menu" then
+    if female then
+      return 12, 13, 0
+    end
+    return 10, 11, 0
+  end
+  if female then
+    return 3, 4, 0
+  end
+  return 7, 8, 0
+end
+
+-- Draws the mon-menu name block like PrintMonNameCentered: the name
+-- centered with its gender symbol offset past it by the retail gap,
+-- the symbol in its gender ink. Eggs and genderless mons center the
+-- bare name.
+---@param text table<string, unknown> borrowed text services
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
+---@param box table<string, number> window pixel origin and extent under drawing
+---@param nameEntry table<string, unknown> projected mon-name window under drawing
+---@param genderEntry table<string, unknown>? projected mon-gender window under drawing
+local function drawMonMenuName(text, view, child, box, nameEntry, genderEntry)
+  local _ = child
+  local name = tostring(nameEntry.text or "")
+  local symbol = ""
+  if type(genderEntry) == "table" then
+    symbol = tostring(genderEntry.text or "")
+  end
+  local gap = symbol ~= "" and 8 or 0
+  local nameWidth = measureRoleText(text, "menu", name)
+  local symbolWidth = 0
+  if symbol ~= "" then
+    symbolWidth = measureRoleText(text, "hud", symbol)
+  end
+  local x = box.x + math.floor((box.w - nameWidth - symbolWidth - gap) / 2)
+  -- The mon-menu windows print through the palette-9 bank, so both the
+  -- centered name and the gender symbol resolve through the box bank.
+  local bank = box.bank
+  if name ~= "" then
+    local palette = sourcePalette(view, "party", bank, 7, 8, 9)
+    drawRoleText(text, "menu", name, x, box.y + 7, palette)
+  end
+  if symbol ~= "" then
+    local fg, sh, bg = genderInk(genderEntry or {}, "mon_menu")
+    local palette = sourcePalette(view, "party", bank, fg, sh, bg)
+    drawRoleText(text, "hud", symbol, x + nameWidth + gap, box.y + 8, palette)
+  end
+end
+
+-- Draws the experience-bar fill like DrawExpBar: the staged per-level
+-- tile behind the filled pixels, over the 8-tile track. Missing staged
+-- tiles draw nothing, leaving the empty track the page raster carries.
+---@param assets table<string, unknown> borrowed asset holder under drawing
+---@param graphics table<string, unknown> borrowed host graphics under drawing
+---@param entry table<string, unknown> projected experience-bar window under drawing
+local function drawExpBarTiles(assets, graphics, entry)
+  local current = tonumber(entry.current) or 0
+  local max = tonumber(entry.max) or 0
+  local pixels = 0
+  if max > 0 and current > 0 then
+    pixels = math.floor(current * 64 / max)
+    if pixels < 0 then
+      pixels = 0
+    elseif pixels > 64 then
+      pixels = 64
+    end
+    if pixels == 0 then
+      pixels = 1
+    end
+  end
+  for column = 0, 7 do
+    local level = pixels - column * 8
+    if level < 0 then
+      level = 0
+    elseif level > 8 then
+      level = 8
+    end
+    local art = assets:drawable("party:exp:" .. tostring(level))
+    if art ~= nil then
+      drawArtwork(graphics, art, nil, 80 + column * 8, 64)
+    end
+  end
+end
+
+local function drawWrapperText(wrapperAssets, text, graphics, view, child)
+  local page = child.partyPage --[[@as string]]
+  local layout = BattlePartyPages.textLayout(page)
+  local windows = child.pageWindows --[[@as table<integer, table<string, unknown>>?]]
+  local byRole = {} ---@type table<string, table<string, unknown>>
+  if type(windows) == "table" then
+    for _, window in ipairs(windows) do
+      if type(window) == "table" and type(window.role) == "string" then
+        byRole[window.role] = window
+      end
+    end
+  end
+  if page == "mon_menu" then
+    local nameEntry = byRole["mon-name"]
+    if nameEntry ~= nil then
+      local box = pageWindowBox(child, 0)
+      if box ~= nil then
+        drawMonMenuName(text, view, child, box, nameEntry, byRole["mon-gender"])
+      end
+    end
+  end
+  for role, spec in pairs(layout) do
+    local entry = byRole[role]
+    -- The mon-menu name block paints above as one centered unit, so
+    -- the generic loop skips both halves of it.
+    if entry ~= nil and not (page == "mon_menu" and (role == "mon-name" or role == "mon-gender")) then
+      local box = pageWindowBox(child, spec.window --[[@as integer]])
+      if box ~= nil then
+        if role == "mon-gender" then
+          local symbol = tostring(entry.text or "")
+          if symbol ~= "" then
+            local fg, sh, bg = genderInk(entry, page)
+            pageText(text, view, "hud", symbol, box, { align = "right", y = 0, fg = fg, sh = sh, bg = bg })
+          end
+        else
+          drawWrapperRole(text, graphics, view, entry, box, spec)
+        end
+      end
+    end
+  end
+  -- The experience bar paints its staged tiles instead of window
+  -- text, and the refusal message prints over the mon menu through
+  -- the message window.
+  local expEntry = byRole["exp-bar"]
+  if expEntry ~= nil then
+    drawExpBarTiles(wrapperAssets, graphics, expEntry)
+  end
+  local messageEntry = byRole["message"]
+  if messageEntry ~= nil then
+    local message = tostring(messageEntry.text or "")
+    if message ~= "" then
+      local palette = sourcePalette(view, "narration", 0, 1, 2, 15)
+      local row = 0
+      for line in message:gmatch("[^\n]+") do
+        drawRoleText(text, "narration", line, 16, 152 + row * 16, palette)
+        row = row + 1
+      end
+    end
+  end
 end
 
 ---@param text table<string, unknown> borrowed text services
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param child table<string, unknown> detached wrapper child view under drawing
----@param row table<string, unknown> projected wrapper row under drawing
----@param y number row top under drawing
-local function drawPartyPageRow(text, view, child, row, y)
+---@param byRole table<string, table<string, unknown>> projected windows by retail print role
+local function drawWrapperFace(assets, graphics, child, button, frame)
+  local rects = child.pageButtonRects --[[@as table<integer, table<string, number>>?]]
+  local rect = type(rects) == "table" and rects[button] or nil
+  if rect == nil then
+    return
+  end
+  local face = assets:drawable("party:button:" .. tostring(button) .. ":" .. tostring(frame))
+  if face ~= nil then
+    drawArtwork(graphics, face, nil, rect.x * 8, rect.y * 8)
+  end
+end
+
+-- Retail mon-menu input behind its pressed face (HandleMonMenuInput
+-- through StartButtonAnim): SHIFT, SUMMARY, CHECK MOVES, cancel.
+local MONMENU_BUTTON = { [0] = 7, [1] = 8, [2] = 10, [3] = 6 }
+
+-- Repaints disabled and pressed wrapper button faces (DrawPageButtons
+-- and UpdateButtonAnim): mon-menu eggs disable SUMMARY/CHECK MOVES,
+-- prev/next disable to their face behind a single mon, empty move
+-- slots disable, the staged press dips through PRESSED/SELECTED/NORMAL,
+-- and the move-detail tab keeps its SELECTED face.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
+local function drawWrapperFaces(resources, view, child)
+  local assets = assert(resources.assets, "the battle wrapper borrows its asset holder")
+  local graphics = assert(resources.graphics, "the battle wrapper borrows its host graphics")
+  local _ = view
   local page = child.partyPage --[[@as string]]
-  local id = row.id --[[@as string]]
-  local marker = child.focusId == id and "> " or "  "
-  if partyPageMenuRow(id) then
-    local palette = sourcePalette(view, "party", 0, 7, 8, 9)
-    drawRoleText(
-      text,
-      "menu",
-      marker .. fitLabel(text, tostring(row.label or ""), 160, "menu"),
-      PARTY_PAGE_LABEL_X,
-      y,
-      palette
-    )
-  else
-    local labelPalette = sourcePalette(view, "party", 0, 15, 14, 0)
-    drawRoleText(
-      text,
-      "hud",
-      marker .. fitLabel(text, tostring(row.label or ""), 160, "hud"),
-      PARTY_PAGE_LABEL_X,
-      y,
-      labelPalette
-    )
-  end
-  local sub = row.sub --[[@as string?]]
-  if type(sub) == "string" and sub ~= "" then
-    local subPalette = nil
-    if sub == "♂" then
-      subPalette = sourcePalette(view, "party", 0, 7, 8, 0)
-    elseif sub == "♀" then
-      subPalette = sourcePalette(view, "party", 0, 3, 4, 0)
-    else
-      local foreground, shadow, background = partyPageValueSlots(page, id)
-      subPalette = sourcePalette(view, "party", 0, foreground, shadow, background)
+  local press = child.pagePress --[[@as table<string, unknown>?]]
+  local pressButton = nil
+  local pressFrame = nil
+  if type(press) == "table" then
+    local button = nil
+    if page == "mon_menu" then
+      button = MONMENU_BUTTON[tonumber(press.button) or -1]
+    elseif page == "summary" then
+      button = SUMMARY_BUTTON[tonumber(press.button) or -1]
+    elseif page == "moves" then
+      button = MOVES_BUTTON[tonumber(press.button) or -1]
+    elseif page == "move_detail" and tonumber(press.button) == 4 then
+      button = 6
     end
-    drawRoleText(text, "hud", sub, PARTY_PAGE_SUB_X, y, subPalette)
+    local frame = PRESS_FRAME[tonumber(press.phase) or 0]
+    if button ~= nil and frame ~= nil then
+      pressButton = button
+      pressFrame = frame
+    end
   end
-  local detail = row.detail --[[@as string?]]
-  if type(detail) == "string" and detail ~= "" then
-    local foreground, shadow, background = partyPageValueSlots(page, id)
-    local detailPalette = sourcePalette(view, "party", 0, foreground, shadow, background)
-    drawRoleText(text, "hud", detail, PARTY_PAGE_DETAIL_X, y, detailPalette)
+  if page == "mon_menu" then
+    if child.pageIsEgg == true then
+      drawWrapperFace(assets, graphics, child, 8, 3)
+      drawWrapperFace(assets, graphics, child, 10, 3)
+    end
+  elseif page == "summary" then
+    if child.pageMultiMon ~= true then
+      drawWrapperFace(assets, graphics, child, 12, 3)
+      drawWrapperFace(assets, graphics, child, 13, 3)
+    end
+  elseif page == "moves" then
+    if child.pageMultiMon ~= true then
+      drawWrapperFace(assets, graphics, child, 12, 3)
+      drawWrapperFace(assets, graphics, child, 13, 3)
+    end
+    local windows = child.pageWindows --[[@as table<integer, table<string, unknown>>?]]
+    if type(windows) == "table" then
+      local known = {}
+      for _, window in ipairs(windows) do
+        local slot = type(window) == "table"
+          and type(window.role) == "string"
+          and tonumber(window.role:match("^move%-name:(%d+)$") or "")
+        if slot ~= nil and tostring(window.text or "") ~= "" then
+          known[slot] = true
+        end
+      end
+      for moveSlot = 0, 3 do
+        if known[moveSlot] ~= true and (pressButton ~= 14 + moveSlot) then
+          drawWrapperFace(assets, graphics, child, 14 + moveSlot, 3)
+        end
+      end
+    end
+  elseif page == "move_detail" then
+    local selected = tonumber(child.pageMove) or 0
+    if pressButton ~= 30 + selected then
+      drawWrapperFace(assets, graphics, child, 30 + selected, 2)
+    end
+  end
+  if pressButton ~= nil and pressFrame ~= nil then
+    drawWrapperFace(assets, graphics, child, pressButton, pressFrame)
+  end
+end
+
+-- Draws the d-pad cursor corners around the focused wrapper box while
+-- the cursor is active (BattleDpadCursor_SetRect over the page cursor
+-- boxes; set by keys, cleared by touch), like the bag cursor corners.
+-- A missing staged corner draws nothing instead of a text marker.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
+local function drawWrapperCursor(resources, view, child)
+  if child.cursorActive ~= true then
+    return
+  end
+  local boxes = child.pageCursorBoxes --[[@as table<integer, table<string, unknown>>?]]
+  local cursor = tonumber(child.pageCursor) or 0
+  local box = type(boxes) == "table" and boxes[cursor + 1] or nil
+  if type(box) ~= "table" then
+    return
+  end
+  -- The wrapper corners shimmer through the staged per-frame translate
+  -- pulse like the bag corners (BattleCursor_Update ticks every corner
+  -- each task); a focus move or page turn restarts at zero offset.
+  local frames = view.wrapperCursorFrames --[[@as table<string, table<string, unknown>>?]]
+  if type(frames) ~= "table" then
+    frames = view.bagCursorFrames --[[@as table<string, table<string, unknown>>?]]
+  end
+  local tick = tonumber(view.wrapperCursorTick) or 0
+  local function frameOffset(corner)
+    local staged = type(frames) == "table" and frames[corner] or nil
+    local list = type(staged) == "table" and staged.frames or nil
+    if type(list) ~= "table" then
+      return 0, 0
+    end
+    local total = 0
+    for _, frame in ipairs(list) do
+      total = total + (tonumber(frame.duration) or 0)
+    end
+    if total <= 0 then
+      return 0, 0
+    end
+    local at = tick % total
+    local elapsed = 0
+    for _, frame in ipairs(list) do
+      local duration = tonumber(frame.duration) or 0
+      if duration > 0 and at < elapsed + duration then
+        return tonumber(frame.x) or 0, tonumber(frame.y) or 0
+      end
+      elapsed = elapsed + duration
+    end
+    return 0, 0
+  end
+  local assets = assert(resources.assets, "the battle wrapper borrows its asset holder")
+  local graphics = assert(resources.graphics, "the battle wrapper borrows its host graphics")
+  local corners = {
+    { key = "battle:cursor-tl", corner = "tl", x = box.left, y = box.top },
+    { key = "battle:cursor-tr", corner = "tr", x = box.right, y = box.top },
+    { key = "battle:cursor-bl", corner = "bl", x = box.left, y = box.bottom },
+    { key = "battle:cursor-br", corner = "br", x = box.right, y = box.bottom },
+  }
+  for _, corner in ipairs(corners) do
+    local art = assets:drawable(corner.key)
+    if art ~= nil then
+      local width, height = drawableDims(art)
+      if type(width) ~= "number" or type(height) ~= "number" then
+        width, height = 16, 16
+      end
+      local dx, dy = frameOffset(corner.corner)
+      drawArtwork(graphics, art, nil, corner.x + dx - math.floor(width / 2), corner.y + dy - math.floor(height / 2))
+    end
   end
 end
 
 -- Draws one battle summary, move-list, or move-detail wrapper page over
--- the paired modal: every projected row paints through its retail font
--- and window colors behind the staged party bank. Rows past the sixth
--- stay unpainted like every other modal page, so paint and taps keep
--- agreeing; keyboard navigation still reaches the actions underneath.
+-- the paired modal: the staged ROM page background composites at the
+-- pane origin, every projected window prints its text through the
+-- staged party palette, and every projected sprite draws at its retail
+-- anchor through its established provider. A missing background draws
+-- nothing new (the modal chrome underneath stays), and any sprite
+-- without a resolved drawable is skipped.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param child table<string, unknown> detached wrapper child view under drawing
 local function drawPartyPageChild(resources, view, child)
+  local assets = assert(resources.assets, "the battle wrapper borrows its asset holder")
+  local graphics = assert(resources.graphics, "the battle wrapper borrows its host graphics")
   local text = assert(resources.text, "the battle wrapper borrows its text services")
-  local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
-  if type(rows) ~= "table" then
+  local page = child.partyPage --[[@as string]]
+  local artKey = BattlePartyPages.pageArtKey(page) or ("party:page/" .. page)
+  local pageArt = assets:drawable(artKey)
+  if pageArt == nil then
     return
   end
-  for index, row in ipairs(rows) do
-    if index > 6 then
-      break
-    end
-    if type(row) == "table" and type(row.id) == "string" and row.empty ~= true then
-      drawPartyPageRow(text, view, child, row, CHILD_ROW_Y0 + (index - 1) * CHILD_ROW_H + 4)
+  drawArtwork(graphics, pageArt, nil, 0, 0)
+  drawWrapperFaces(resources, view, child)
+  drawWrapperText(assets, text, graphics, view, child)
+  drawWrapperCursor(resources, view, child)
+  local sprites = child.pageSprites --[[@as table<integer, table<string, unknown>>?]]
+  if type(sprites) ~= "table" then
+    return
+  end
+  for _, sprite in ipairs(sprites) do
+    if type(sprite) == "table" and type(sprite.kind) == "string" then
+      local key = partyPageSpriteKey(sprite)
+      if key ~= nil then
+        local art = assets:drawable(key)
+        if art ~= nil then
+          local drawX, drawY = partyPageSpritePos(art, sprite)
+          drawArtwork(graphics, art, nil, drawX, drawY)
+        end
+      end
     end
   end
 end
@@ -3624,22 +4132,22 @@ local function drawChild(resources, view, child)
     drawChildFooter(text, view, child)
     return
   end
-  text.drawText(fitLabel(text, BattleChildText.title(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
-  local occupancy = BattleChildText.occupancy(child)
-  if occupancy ~= nil then
-    text.drawText(occupancy, 216, CHILD_TITLE.y)
-  end
-  -- Summary, move-list, and move-detail wrapper pages paint through
-  -- their retail fonts and window colors; the list and mon-menu pages
-  -- keep the established tabular treatment.
-  if (child.kind == "party" or child.kind == "target") and type(child.partyPage) == "string" then
-    local wrapper = child.partyPage --[[@as string]]
-    if wrapper == "summary" or wrapper == "moves" or wrapper == "move_detail" then
-      drawPartyPageChild(resources, view, child)
-      drawChildFooter(text, view, child)
-      return
+  -- Party and target lists paint through the native party renderer
+  -- alone, and the mon-menu/summary/move pages paint through their
+  -- retail page painter alone: the barrier projects no invented rows,
+  -- so without native paint the modal stays blank like the pending
+  -- picker instead of inventing a modal list.
+  if child.kind == "party" or child.kind == "target" then
+    if type(child.partyPage) == "string" then
+      local wrapper = child.partyPage --[[@as string]]
+      if wrapper == "mon_menu" or wrapper == "summary" or wrapper == "moves" or wrapper == "move_detail" then
+        drawPartyPageChild(resources, view, child)
+        return
+      end
     end
+    return
   end
+  text.drawText(fitLabel(text, BattleChildText.title(child), CHILD_TITLE.maxWidth), CHILD_TITLE.x, CHILD_TITLE.y)
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
   if type(rows) == "table" then
     local drawRow = child.kind == "learn" and drawLearnRow or drawTabularRow
@@ -3669,6 +4177,16 @@ function BattleRenderer.drawNativeChild(resources, child, _)
     return false
   end
   if child.kind == "party" or child.kind == "target" then
+    -- Battle mon-menu, summary, move-list, and move-detail wrapper
+    -- pages own the modal: the native roster stays hidden so the
+    -- wrapper rows paint.
+    local wrapper = type(child.partyPage) == "string" and child.partyPage or nil
+    if wrapper == nil and type(native.page) == "string" then
+      wrapper = native.page
+    end
+    if wrapper == "mon_menu" or wrapper == "summary" or wrapper == "moves" or wrapper == "move_detail" then
+      return false
+    end
     local party = menus.party --[[@as table<string, unknown>?]]
     if type(party) ~= "table" or type(party.renderer) ~= "table" then
       return false

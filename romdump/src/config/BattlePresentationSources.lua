@@ -1091,6 +1091,41 @@ BattlePresentationSources.BAG_BUTTON_FACES = {
 -- from sBallSpriteResources in battle_anim_data.s.  The table is indexed by
 -- ballId - 1 for IDs 1..24; each family advances its member IDs by the
 -- source stride shown here.
+BattlePresentationSources.PARTY_SCREEN = {
+  -- Retail battle-party screen (battle_party_menu.c
+  -- BattlePartyMenu_LoadBgGraphics): character member 22 loads to
+  -- SUB_BG layer 3, button-tilemap screen members 20 (small buttons)
+  -- and 21 (large buttons) are cut into per-frame tilemaps by
+  -- StoreButtonTilemaps/StoreLargeButtonTilemaps, and palette member 23
+  -- loads the full 256-color SUB_BG palette (0x200 bytes). Page pairs
+  -- below transcribe sBattlePartyPageScreenFiles in page order
+  -- (party-list, mon-menu, summary, check-moves, move-detail,
+  -- restore-pp, learn-move, forget-move, learn-move-contest,
+  -- forget-move-contest); LoadPageTilemaps loads each pair to layers 6
+  -- and 7. Fonts print through the shared graphic/font bank staged by
+  -- TEXT_PALETTES.party; the user frame rides the dialogue frame
+  -- members exactly like field windows.
+  archive = "NARC_a_0_7_1",
+  character = 22,
+  buttonSmallScreen = 20,
+  buttonLargeScreen = 21,
+  palette = 23,
+  paletteBytes = 0x200,
+  font = { archive = "NARC_graphic_font", member = 7 },
+  pages = {
+    { key = "party:page/party-list", screens = { 1, 0 } },
+    { key = "party:page/mon-menu", screens = { 19, 18 } },
+    { key = "party:page/summary", screens = { 5, 4 } },
+    { key = "party:page/check-moves", screens = { 3, 2 } },
+    { key = "party:page/move-detail", screens = { 7, 6 } },
+    { key = "party:page/restore-pp", screens = { 9, 8 } },
+    { key = "party:page/learn-move", screens = { 11, 10 } },
+    { key = "party:page/forget-move", screens = { 15, 14 } },
+    { key = "party:page/learn-move-contest", screens = { 13, 12 } },
+    { key = "party:page/forget-move-contest", screens = { 17, 16 } },
+  },
+}
+
 local ballPictureKeys = {
   "MASTER_BALL",
   "ULTRA_BALL",
@@ -1128,6 +1163,531 @@ for ballId, itemKey in ipairs(ballPictureKeys) do
     paletteMember = 83 + ballId - 1,
   }
 end
+
+-- Retail battle-party window templates transcribed from
+-- asm/battle_menu_data.s (WindowTemplate is 8 bytes: bgId, left, top,
+-- width, height, palette, baseTile u16). Counts follow
+-- BattlePartyMenu_AddPageWindows exactly: 2 base windows plus 6
+-- party-list, 4 mon-menu, 35 summary, 11 check-moves, 17 move-detail,
+-- 5 restore-pp, 6 learn-move, 12 forget-move, and 7 contest-forget-move
+-- page windows (the learn-move-contest page reuses the learn-move
+-- templates per the shared AddPageWindows branch). Source order is the
+-- AddWindow order the renderer replays.
+BattlePresentationSources.PARTY_WINDOWS = {
+  base = {
+    { bg = 4, left = 2, top = 21, width = 22, height = 2, palette = 15, baseTile = 0x001F },
+    { bg = 4, left = 2, top = 19, width = 27, height = 4, palette = 15, baseTile = 0x001F },
+  },
+  partyList = {
+    { bg = 5, left = 0, top = 0, width = 15, height = 5, palette = 9, baseTile = 0x0085 },
+    { bg = 5, left = 16, top = 1, width = 15, height = 5, palette = 9, baseTile = 0x00D0 },
+    { bg = 5, left = 0, top = 6, width = 15, height = 5, palette = 9, baseTile = 0x011B },
+    { bg = 5, left = 16, top = 7, width = 15, height = 5, palette = 9, baseTile = 0x0166 },
+    { bg = 5, left = 0, top = 12, width = 15, height = 5, palette = 9, baseTile = 0x01B1 },
+    { bg = 5, left = 16, top = 13, width = 15, height = 5, palette = 9, baseTile = 0x01FC },
+  },
+  monMenu = {
+    { bg = 5, left = 10, top = 4, width = 12, height = 3, palette = 9, baseTile = 0x0001 },
+    { bg = 5, left = 11, top = 12, width = 10, height = 3, palette = 9, baseTile = 0x0025 },
+    { bg = 5, left = 1, top = 20, width = 11, height = 3, palette = 9, baseTile = 0x0043 },
+    { bg = 5, left = 14, top = 20, width = 11, height = 3, palette = 9, baseTile = 0x0064 },
+  },
+  summary = {
+    { bg = 5, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0125 },
+    { bg = 5, left = 1, top = 9, width = 11, height = 2, palette = 13, baseTile = 0x0149 },
+    { bg = 5, left = 1, top = 11, width = 18, height = 4, palette = 13, baseTile = 0x015F },
+    { bg = 5, left = 4, top = 16, width = 12, height = 2, palette = 13, baseTile = 0x01A7 },
+    { bg = 5, left = 24, top = 4, width = 7, height = 2, palette = 13, baseTile = 0x01BF },
+    { bg = 5, left = 28, top = 7, width = 3, height = 2, palette = 13, baseTile = 0x01CD },
+    { bg = 5, left = 28, top = 9, width = 3, height = 2, palette = 13, baseTile = 0x01D3 },
+    { bg = 5, left = 28, top = 15, width = 3, height = 2, palette = 13, baseTile = 0x01D9 },
+    { bg = 5, left = 28, top = 11, width = 3, height = 2, palette = 13, baseTile = 0x01DF },
+    { bg = 5, left = 28, top = 13, width = 3, height = 2, palette = 13, baseTile = 0x01E5 },
+    { bg = 5, left = 25, top = 6, width = 6, height = 1, palette = 9, baseTile = 0x01EB },
+    { bg = 5, left = 5, top = 4, width = 3, height = 2, palette = 13, baseTile = 0x01F1 },
+    { bg = 5, left = 13, top = 6, width = 6, height = 2, palette = 13, baseTile = 0x01F7 },
+    { bg = 5, left = 21, top = 4, width = 2, height = 2, palette = 13, baseTile = 0x0085 },
+    { bg = 5, left = 21, top = 7, width = 6, height = 2, palette = 13, baseTile = 0x0089 },
+    { bg = 5, left = 21, top = 9, width = 6, height = 2, palette = 13, baseTile = 0x0095 },
+    { bg = 5, left = 21, top = 15, width = 6, height = 2, palette = 13, baseTile = 0x00A1 },
+    { bg = 5, left = 21, top = 11, width = 6, height = 2, palette = 13, baseTile = 0x00AD },
+    { bg = 5, left = 21, top = 13, width = 6, height = 2, palette = 13, baseTile = 0x00B9 },
+    { bg = 5, left = 1, top = 4, width = 4, height = 2, palette = 13, baseTile = 0x00C5 },
+    { bg = 5, left = 1, top = 6, width = 11, height = 2, palette = 13, baseTile = 0x00CD },
+    { bg = 5, left = 13, top = 20, width = 11, height = 3, palette = 9, baseTile = 0x00E3 },
+    { bg = 5, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0137 },
+    { bg = 5, left = 1, top = 9, width = 11, height = 2, palette = 13, baseTile = 0x0261 },
+    { bg = 5, left = 1, top = 11, width = 18, height = 4, palette = 13, baseTile = 0x0277 },
+    { bg = 5, left = 4, top = 16, width = 12, height = 2, palette = 13, baseTile = 0x02BF },
+    { bg = 5, left = 24, top = 4, width = 7, height = 2, palette = 13, baseTile = 0x02D7 },
+    { bg = 5, left = 28, top = 7, width = 3, height = 2, palette = 13, baseTile = 0x02E5 },
+    { bg = 5, left = 28, top = 9, width = 3, height = 2, palette = 13, baseTile = 0x02EB },
+    { bg = 5, left = 28, top = 15, width = 3, height = 2, palette = 13, baseTile = 0x02F1 },
+    { bg = 5, left = 28, top = 11, width = 3, height = 2, palette = 13, baseTile = 0x02F7 },
+    { bg = 5, left = 28, top = 13, width = 3, height = 2, palette = 13, baseTile = 0x02FD },
+    { bg = 5, left = 25, top = 6, width = 6, height = 1, palette = 9, baseTile = 0x0303 },
+    { bg = 5, left = 5, top = 4, width = 3, height = 2, palette = 13, baseTile = 0x0309 },
+    { bg = 5, left = 13, top = 6, width = 6, height = 2, palette = 13, baseTile = 0x030F },
+  },
+  checkMoves = {
+    { bg = 5, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0125 },
+    { bg = 5, left = 1, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x0149 },
+    { bg = 5, left = 17, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x018F },
+    { bg = 5, left = 1, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x01D5 },
+    { bg = 5, left = 17, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x021B },
+    { bg = 5, left = 13, top = 20, width = 11, height = 3, palette = 9, baseTile = 0x0104 },
+    { bg = 5, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0137 },
+    { bg = 5, left = 1, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x0261 },
+    { bg = 5, left = 17, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x02A7 },
+    { bg = 5, left = 1, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x02ED },
+    { bg = 5, left = 17, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x0333 },
+  },
+  moveDetail = {
+    { bg = 4, left = 4, top = 5, width = 11, height = 2, palette = 13, baseTile = 0x009D },
+    { bg = 4, left = 23, top = 5, width = 5, height = 2, palette = 13, baseTile = 0x00B7 },
+    { bg = 4, left = 10, top = 16, width = 3, height = 2, palette = 13, baseTile = 0x00E1 },
+    { bg = 4, left = 10, top = 13, width = 3, height = 2, palette = 13, baseTile = 0x00E7 },
+    { bg = 4, left = 16, top = 8, width = 15, height = 10, palette = 13, baseTile = 0x00ED },
+    { bg = 4, left = 6, top = 10, width = 8, height = 2, palette = 13, baseTile = 0x019B },
+    { bg = 4, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x008B },
+    { bg = 4, left = 20, top = 5, width = 2, height = 2, palette = 13, baseTile = 0x00B3 },
+    { bg = 4, left = 1, top = 16, width = 8, height = 2, palette = 13, baseTile = 0x00C1 },
+    { bg = 4, left = 1, top = 13, width = 8, height = 2, palette = 13, baseTile = 0x00D1 },
+    { bg = 4, left = 1, top = 8, width = 12, height = 2, palette = 13, baseTile = 0x0183 },
+    { bg = 4, left = 4, top = 5, width = 11, height = 2, palette = 13, baseTile = 0x01AB },
+    { bg = 4, left = 23, top = 5, width = 5, height = 2, palette = 13, baseTile = 0x01C1 },
+    { bg = 4, left = 10, top = 16, width = 3, height = 2, palette = 13, baseTile = 0x01CB },
+    { bg = 4, left = 10, top = 13, width = 3, height = 2, palette = 13, baseTile = 0x01D1 },
+    { bg = 4, left = 16, top = 8, width = 15, height = 10, palette = 13, baseTile = 0x01D7 },
+    { bg = 4, left = 6, top = 10, width = 8, height = 2, palette = 13, baseTile = 0x026D },
+  },
+  restorePP = {
+    { bg = 4, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x008B },
+    { bg = 4, left = 1, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x009D },
+    { bg = 4, left = 17, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x00E3 },
+    { bg = 4, left = 1, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x0129 },
+    { bg = 4, left = 17, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x016F },
+  },
+  learnMove = {
+    { bg = 4, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0085 },
+    { bg = 4, left = 1, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x0097 },
+    { bg = 4, left = 17, top = 6, width = 14, height = 5, palette = 9, baseTile = 0x00DD },
+    { bg = 4, left = 1, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x0123 },
+    { bg = 4, left = 17, top = 12, width = 14, height = 5, palette = 9, baseTile = 0x0169 },
+    { bg = 4, left = 9, top = 18, width = 14, height = 5, palette = 9, baseTile = 0x01AF },
+  },
+  forgetMove = {
+    { bg = 5, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0001 },
+    { bg = 5, left = 4, top = 5, width = 11, height = 2, palette = 13, baseTile = 0x0013 },
+    { bg = 5, left = 20, top = 5, width = 2, height = 2, palette = 13, baseTile = 0x0029 },
+    { bg = 5, left = 23, top = 5, width = 5, height = 2, palette = 13, baseTile = 0x002D },
+    { bg = 5, left = 1, top = 16, width = 8, height = 2, palette = 13, baseTile = 0x005B },
+    { bg = 5, left = 1, top = 13, width = 8, height = 2, palette = 13, baseTile = 0x006B },
+    { bg = 5, left = 10, top = 16, width = 3, height = 2, palette = 13, baseTile = 0x007B },
+    { bg = 5, left = 10, top = 13, width = 3, height = 2, palette = 13, baseTile = 0x0081 },
+    { bg = 5, left = 16, top = 8, width = 15, height = 10, palette = 13, baseTile = 0x0087 },
+    { bg = 5, left = 1, top = 8, width = 12, height = 2, palette = 13, baseTile = 0x011D },
+    { bg = 5, left = 6, top = 10, width = 8, height = 2, palette = 13, baseTile = 0x0135 },
+    { bg = 5, left = 7, top = 20, width = 12, height = 3, palette = 9, baseTile = 0x0037 },
+  },
+  contestForgetMove = {
+    { bg = 5, left = 5, top = 1, width = 9, height = 2, palette = 13, baseTile = 0x0001 },
+    { bg = 5, left = 4, top = 8, width = 11, height = 2, palette = 13, baseTile = 0x0013 },
+    { bg = 5, left = 20, top = 8, width = 2, height = 2, palette = 13, baseTile = 0x0029 },
+    { bg = 5, left = 23, top = 8, width = 5, height = 2, palette = 13, baseTile = 0x002D },
+    { bg = 5, left = 2, top = 11, width = 12, height = 2, palette = 13, baseTile = 0x0145 },
+    { bg = 5, left = 16, top = 11, width = 15, height = 6, palette = 13, baseTile = 0x015D },
+    { bg = 5, left = 7, top = 20, width = 12, height = 3, palette = 9, baseTile = 0x0037 },
+  },
+}
+
+-- Retail battle-party touchscreen hitboxes transcribed from
+-- battle_party_menu.c in source order (rects are top, bottom, left,
+-- right bytes; each table ends in TOUCHSCREEN_RECTLIST_END, omitted
+-- here, as is the trailing cancel rect the Handle input orders exclude
+-- from their DEFINE_GET_PAGE_INPUT counts). Counts follow the page
+-- input orders exactly: party-list 6, mon-menu 3, summary 3,
+-- check-moves 7, move-detail 4, restore-pp 4, learn-move 6, forget-move
+-- 2. The contest learn/forget pages carry no hitbox table of their own:
+-- both view modes funnel through HandleLearnMoveInput and
+-- HandleForgetMoveInput, so no contest key is staged here.
+BattlePresentationSources.PARTY_HITBOXES = {
+  partyList = {
+    { top = 0, bottom = 47, left = 0, right = 127 },
+    { top = 8, bottom = 55, left = 128, right = 255 },
+    { top = 48, bottom = 95, left = 0, right = 127 },
+    { top = 56, bottom = 103, left = 128, right = 255 },
+    { top = 96, bottom = 143, left = 0, right = 127 },
+    { top = 104, bottom = 151, left = 128, right = 255 },
+  },
+  monMenu = {
+    { top = 8, bottom = 143, left = 8, right = 247 },
+    { top = 152, bottom = 191, left = 0, right = 103 },
+    { top = 152, bottom = 191, left = 104, right = 207 },
+  },
+  summary = {
+    { top = 152, bottom = 191, left = 0, right = 39 },
+    { top = 152, bottom = 191, left = 40, right = 79 },
+    { top = 152, bottom = 191, left = 96, right = 199 },
+  },
+  checkMoves = {
+    { top = 48, bottom = 95, left = 0, right = 127 },
+    { top = 48, bottom = 95, left = 128, right = 255 },
+    { top = 96, bottom = 143, left = 0, right = 127 },
+    { top = 96, bottom = 143, left = 128, right = 255 },
+    { top = 152, bottom = 191, left = 0, right = 39 },
+    { top = 152, bottom = 191, left = 40, right = 79 },
+    { top = 152, bottom = 191, left = 96, right = 199 },
+  },
+  moveDetail = {
+    { top = 152, bottom = 167, left = 88, right = 127 },
+    { top = 152, bottom = 167, left = 128, right = 167 },
+    { top = 168, bottom = 183, left = 88, right = 127 },
+    { top = 168, bottom = 183, left = 128, right = 167 },
+  },
+  restorePP = {
+    { top = 48, bottom = 95, left = 0, right = 127 },
+    { top = 48, bottom = 95, left = 128, right = 255 },
+    { top = 96, bottom = 143, left = 0, right = 127 },
+    { top = 96, bottom = 143, left = 128, right = 255 },
+  },
+  learnMove = {
+    { top = 48, bottom = 95, left = 0, right = 127 },
+    { top = 48, bottom = 95, left = 128, right = 255 },
+    { top = 96, bottom = 143, left = 0, right = 127 },
+    { top = 96, bottom = 143, left = 128, right = 255 },
+    { top = 144, bottom = 191, left = 64, right = 191 },
+    { top = 0, bottom = 39, left = 184, right = 255 },
+  },
+  forgetMove = {
+    { top = 152, bottom = 191, left = 0, right = 207 },
+    { top = 0, bottom = 39, left = 184, right = 255 },
+  },
+}
+
+-- Retail battle-party button rects transcribed from
+-- asm/battle_menu_data.s gBattlePartyButtonRects: 34 entries of
+-- {x, y, w, h} tile units in BattlePartyButton order (buttons 0-5 mon
+-- slots, 6 cancel, 7 shift, 8-11 menu, 12 prev-mon, 13 next-mon, 14-17
+-- move, 18 view-toggle, 19-22 restore-pp move, 23-26 learn-move,
+-- 27 new-move, 28-29 forget, 30-33 move-tab). DrawButton repaints the
+-- named rect through BuildButtonTilemap.
+BattlePresentationSources.PARTY_BUTTON_RECTS = {
+    { x = 0, y = 0, w = 16, h = 6 },
+    { x = 16, y = 1, w = 16, h = 6 },
+    { x = 0, y = 6, w = 16, h = 6 },
+    { x = 16, y = 7, w = 16, h = 6 },
+    { x = 0, y = 12, w = 16, h = 6 },
+    { x = 16, y = 13, w = 16, h = 6 },
+    { x = 27, y = 19, w = 5, h = 5 },
+    { x = 1, y = 1, w = 30, h = 17 },
+    { x = 0, y = 19, w = 13, h = 5 },
+    { x = 12, y = 19, w = 13, h = 5 },
+    { x = 13, y = 19, w = 13, h = 5 },
+    { x = 12, y = 19, w = 13, h = 5 },
+    { x = 0, y = 19, w = 5, h = 5 },
+    { x = 5, y = 19, w = 5, h = 5 },
+    { x = 0, y = 6, w = 16, h = 6 },
+    { x = 16, y = 6, w = 16, h = 6 },
+    { x = 0, y = 12, w = 16, h = 6 },
+    { x = 16, y = 12, w = 16, h = 6 },
+    { x = 23, y = 0, w = 9, h = 4 },
+    { x = 0, y = 6, w = 16, h = 6 },
+    { x = 16, y = 6, w = 16, h = 6 },
+    { x = 0, y = 12, w = 16, h = 6 },
+    { x = 16, y = 12, w = 16, h = 6 },
+    { x = 0, y = 6, w = 16, h = 6 },
+    { x = 16, y = 6, w = 16, h = 6 },
+    { x = 0, y = 12, w = 16, h = 6 },
+    { x = 16, y = 12, w = 16, h = 6 },
+    { x = 8, y = 18, w = 16, h = 6 },
+    { x = 0, y = 19, w = 26, h = 5 },
+    { x = 0, y = 19, w = 26, h = 5 },
+    { x = 11, y = 19, w = 5, h = 2 },
+    { x = 16, y = 19, w = 5, h = 2 },
+    { x = 11, y = 21, w = 5, h = 2 },
+    { x = 16, y = 21, w = 5, h = 2 },
+}
+
+-- Retail battle-party d-pad cursor boxes transcribed from
+-- asm/battle_menu_data.s gBattlePartyPageCursorBoxes for pages 0-7.
+-- Each box is {left, top, right, bottom} pixel edges plus the
+-- up/down/left/right neighbor indices. Retail names the edge fields
+-- width/height, but BattleDpadCursor_SetBoxes feeds them to
+-- BattleCursor_SetRect as right/bottom edges, so the staged names say
+-- what the values are. A neighbor at or above 0x80 links back through
+-- BattleDpadCursor_HasReturnLink instead of moving. Pages 8/9 carry no
+-- box table of their own: gBattlePartyPageCursorBoxes points them at
+-- the page-6 and page-7 tables, so they alias below instead of
+-- duplicating.
+BattlePresentationSources.PARTY_CURSOR_BOXES = {
+  partyList = {
+    { left = 8, top = 8, right = 120, bottom = 40, up = 6, down = 2, leftNeighbor = 6, rightNeighbor = 1 },
+    { left = 136, top = 16, right = 248, bottom = 48, up = 4, down = 3, leftNeighbor = 0, rightNeighbor = 2 },
+    { left = 8, top = 56, right = 120, bottom = 88, up = 0, down = 4, leftNeighbor = 1, rightNeighbor = 3 },
+    { left = 136, top = 64, right = 248, bottom = 96, up = 1, down = 5, leftNeighbor = 2, rightNeighbor = 4 },
+    { left = 8, top = 104, right = 120, bottom = 136, up = 2, down = 1, leftNeighbor = 3, rightNeighbor = 5 },
+    { left = 136, top = 112, right = 248, bottom = 144, up = 3, down = 6, leftNeighbor = 4, rightNeighbor = 6 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 5, down = 0, leftNeighbor = 5, rightNeighbor = 0 },
+  },
+  monMenu = {
+    { left = 16, top = 16, right = 240, bottom = 136, up = 0, down = 129, leftNeighbor = 0, rightNeighbor = 0 },
+    { left = 8, top = 160, right = 96, bottom = 184, up = 0, down = 1, leftNeighbor = 1, rightNeighbor = 2 },
+    { left = 112, top = 160, right = 200, bottom = 184, up = 0, down = 2, leftNeighbor = 1, rightNeighbor = 3 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 0, down = 3, leftNeighbor = 2, rightNeighbor = 3 },
+  },
+  summary = {
+    { left = 8, top = 160, right = 32, bottom = 184, up = 0, down = 0, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 48, top = 160, right = 72, bottom = 184, up = 1, down = 1, leftNeighbor = 0, rightNeighbor = 2 },
+    { left = 104, top = 160, right = 192, bottom = 184, up = 2, down = 2, leftNeighbor = 1, rightNeighbor = 3 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 3, down = 3, leftNeighbor = 2, rightNeighbor = 3 },
+  },
+  checkMoves = {
+    { left = 8, top = 56, right = 120, bottom = 88, up = 0, down = 2, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 136, top = 56, right = 248, bottom = 88, up = 1, down = 3, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 8, top = 104, right = 120, bottom = 136, up = 0, down = 132, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 136, top = 104, right = 248, bottom = 136, up = 1, down = 135, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 8, top = 160, right = 32, bottom = 184, up = 2, down = 4, leftNeighbor = 4, rightNeighbor = 5 },
+    { left = 48, top = 160, right = 72, bottom = 184, up = 2, down = 5, leftNeighbor = 4, rightNeighbor = 6 },
+    { left = 104, top = 160, right = 192, bottom = 184, up = 3, down = 6, leftNeighbor = 5, rightNeighbor = 7 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 3, down = 7, leftNeighbor = 6, rightNeighbor = 7 },
+  },
+  moveDetail = {
+    { left = 92, top = 157, right = 124, bottom = 165, up = 0, down = 2, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 132, top = 157, right = 164, bottom = 165, up = 1, down = 3, leftNeighbor = 0, rightNeighbor = 4 },
+    { left = 92, top = 173, right = 124, bottom = 181, up = 0, down = 2, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 132, top = 173, right = 164, bottom = 181, up = 1, down = 3, leftNeighbor = 2, rightNeighbor = 4 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 4, down = 4, leftNeighbor = 131, rightNeighbor = 4 },
+  },
+  restorePP = {
+    { left = 8, top = 56, right = 120, bottom = 88, up = 0, down = 2, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 136, top = 56, right = 248, bottom = 88, up = 1, down = 3, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 8, top = 104, right = 120, bottom = 136, up = 0, down = 4, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 136, top = 104, right = 248, bottom = 136, up = 1, down = 4, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 131, down = 4, leftNeighbor = 4, rightNeighbor = 4 },
+  },
+  learnMove = {
+    { left = 8, top = 56, right = 120, bottom = 88, up = 5, down = 2, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 136, top = 56, right = 248, bottom = 88, up = 5, down = 3, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 8, top = 104, right = 120, bottom = 136, up = 0, down = 4, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 136, top = 104, right = 248, bottom = 136, up = 1, down = 6, leftNeighbor = 2, rightNeighbor = 3 },
+    { left = 72, top = 152, right = 184, bottom = 184, up = 2, down = 4, leftNeighbor = 4, rightNeighbor = 6 },
+    { left = 192, top = 8, right = 248, bottom = 24, up = 5, down = 129, leftNeighbor = 0, rightNeighbor = 5 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 3, down = 6, leftNeighbor = 4, rightNeighbor = 6 },
+  },
+  forgetMove = {
+    { left = 8, top = 160, right = 200, bottom = 184, up = 1, down = 0, leftNeighbor = 0, rightNeighbor = 2 },
+    { left = 192, top = 8, right = 248, bottom = 24, up = 1, down = 130, leftNeighbor = 0, rightNeighbor = 1 },
+    { left = 224, top = 160, right = 248, bottom = 184, up = 1, down = 2, leftNeighbor = 0, rightNeighbor = 2 },
+  },
+}
+-- The contest learn/forget pages reuse the learn-move and forget-move
+-- cursor tables through gBattlePartyPageCursorBoxes. The aliases share
+-- the staged tables above; no box is transcribed twice.
+BattlePresentationSources.PARTY_CURSOR_BOXES.learnMoveContest = BattlePresentationSources.PARTY_CURSOR_BOXES.learnMove
+BattlePresentationSources.PARTY_CURSOR_BOXES.forgetMoveContest =
+  BattlePresentationSources.PARTY_CURSOR_BOXES.forgetMove
+
+-- Retail battle-party sprite icon positions transcribed from
+-- asm/battle_menu_data.s BattlePartyMenuPos pairs (x, y i32 LE) and the
+-- fixed Show*Sprites anchors in battle_party_menu.c. The per-page icon
+-- lists ride the ShowSpriteAt calls: list mon/status icons from
+-- ShowPartyListSprites, type icons from ShowMonTypeIcons per page, and
+-- move-type icons from ShowMoveTypeIcons/ShowMoveContestTypeIcons (the
+-- learn-move list carries the fifth new-move spot at (88, 176) behind
+-- menu->context->move). The fixed anchors are the literal ShowSpriteAt
+-- coordinates: the mon icon at (24, 12) on every detail page, the mon
+-- menu at (128, 72), the summary held item at (20, 132), the selected
+-- move at (136, 48) on move-detail/forget-move but (136, 72) on the
+-- contest forget page behind its condition markers, the damage category
+-- at (24, 88), and the held-item (+8, +8) and capsule (+16, +8) deltas
+-- the list, menu, and detail pages all apply to the mon icon spot.
+BattlePresentationSources.PARTY_SPRITE_POSITIONS = {
+  listIcons = {
+    { x = 16, y = 16 },
+    { x = 144, y = 24 },
+    { x = 16, y = 64 },
+    { x = 144, y = 72 },
+    { x = 16, y = 112 },
+    { x = 144, y = 120 },
+  },
+  listStatusIcons = {
+    { x = 28, y = 40 },
+    { x = 156, y = 48 },
+    { x = 28, y = 88 },
+    { x = 156, y = 96 },
+    { x = 28, y = 136 },
+    { x = 156, y = 144 },
+  },
+  summaryTypes = {
+    { x = 130, y = 16 },
+    { x = 164, y = 16 },
+  },
+  checkMovesTypes = {
+    { x = 130, y = 16 },
+    { x = 164, y = 16 },
+  },
+  checkMovesMoves = {
+    { x = 24, y = 80 },
+    { x = 152, y = 80 },
+    { x = 24, y = 128 },
+    { x = 152, y = 128 },
+  },
+  moveDetailTypes = {
+    { x = 130, y = 16 },
+    { x = 164, y = 16 },
+  },
+  learnMoveTypes = {
+    { x = 130, y = 16 },
+    { x = 164, y = 16 },
+  },
+  learnMoveMoves = {
+    { x = 24, y = 80 },
+    { x = 152, y = 80 },
+    { x = 24, y = 128 },
+    { x = 152, y = 128 },
+    { x = 88, y = 176 },
+  },
+  forgetMoveTypes = {
+    { x = 130, y = 16 },
+    { x = 164, y = 16 },
+  },
+  fixed = {
+    monIcon = { x = 24, y = 12 },
+    statusIcon = { x = 198, y = 20 },
+    monMenuIcon = { x = 128, y = 72 },
+    summaryHeldItem = { x = 20, y = 132 },
+    moveDetailMoveIcon = { x = 136, y = 48 },
+    contestMoveIcon = { x = 136, y = 72 },
+    categoryIcon = { x = 24, y = 88 },
+    heldItemDelta = { x = 8, y = 8 },
+    capsuleDelta = { x = 16, y = 8 },
+  },
+}
+-- Retail battle-party button faces (battle_party_menu.c
+-- StoreButtonTilemaps/StoreLargeButtonTilemaps cutting the member-20
+-- small-button and member-21 large-button tilemap atlases,
+-- GetButtonTilemap, BuildButtonTilemap): per-frame atlas rects in tiles
+-- with the mon family carrying a partner variant at x + 16. Buttons
+-- follow the BattlePartyButton order (0-5 mon slots, 6 cancel, 7 shift,
+-- 8-11 menu, 12 prev-mon, 13 next-mon, 14-17 move, 18 view-toggle,
+-- 19-22 restore-pp move, 23-26 learn-move, 27 new-move, 28-29 forget,
+-- 30-33 move-tab). Rest, press, and disabled frames repaint over the
+-- staged page raster; the egg/fainted/partner/new-move palette
+-- overrides in BuildButtonTilemap stay runtime-applied.
+BattlePresentationSources.PARTY_BUTTON_FACES = {
+  small = { archive = "NARC_a_0_7_1", member = 20, kind = "map" },
+  large = { archive = "NARC_a_0_7_1", member = 21, kind = "map" },
+  families = {
+    mon = {
+      atlas = "small",
+      w = 16,
+      h = 6,
+      frames = { { x = 0, y = 0 }, { x = 0, y = 6 }, { x = 0, y = 12 }, { x = 0, y = 18 } },
+      partnerFrames = { { x = 16, y = 0 }, { x = 16, y = 6 }, { x = 16, y = 12 }, { x = 16, y = 18 } },
+      buttons = { 0, 1, 2, 3, 4, 5 },
+    },
+    menu = {
+      atlas = "small",
+      w = 13,
+      h = 5,
+      frames = { { x = 0, y = 39 }, { x = 0, y = 44 }, { x = 13, y = 39 }, { x = 13, y = 44 } },
+      buttons = { 8, 9, 10, 11 },
+    },
+    prevMon = {
+      atlas = "small",
+      w = 5,
+      h = 5,
+      frames = { { x = 0, y = 49 }, { x = 5, y = 49 }, { x = 10, y = 49 }, { x = 15, y = 49 } },
+      buttons = { 12 },
+    },
+    nextMon = {
+      atlas = "small",
+      w = 5,
+      h = 5,
+      frames = { { x = 0, y = 54 }, { x = 5, y = 54 }, { x = 10, y = 54 }, { x = 15, y = 54 } },
+      buttons = { 13 },
+    },
+    cancel = {
+      atlas = "small",
+      w = 5,
+      h = 5,
+      frames = { { x = 26, y = 24 }, { x = 26, y = 29 }, { x = 26, y = 34 }, { x = 26, y = 39 } },
+      buttons = { 6 },
+    },
+    forget = {
+      atlas = "small",
+      w = 26,
+      h = 5,
+      frames = { { x = 0, y = 24 }, { x = 0, y = 29 }, { x = 0, y = 34 } },
+      buttons = { 28, 29 },
+    },
+    viewToggle = {
+      atlas = "small",
+      w = 9,
+      h = 4,
+      frames = { { x = 20, y = 49 }, { x = 20, y = 53 }, { x = 20, y = 57 } },
+      buttons = { 18 },
+    },
+    moveTab = {
+      atlas = "small",
+      w = 5,
+      h = 2,
+      frames = { { x = 0, y = 59 }, { x = 5, y = 59 }, { x = 10, y = 59 } },
+      buttons = { 30, 31, 32, 33 },
+    },
+    shift = {
+      atlas = "large",
+      w = 30,
+      h = 17,
+      frames = { { x = 0, y = 0 }, { x = 0, y = 17 }, { x = 0, y = 34 } },
+      buttons = { 7 },
+    },
+    move = {
+      atlas = "large",
+      w = 16,
+      h = 6,
+      frames = { { x = 0, y = 51 }, { x = 16, y = 51 }, { x = 0, y = 57 }, { x = 16, y = 57 } },
+      buttons = { 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27 },
+    },
+  },
+  staged = {
+    { button = 0, frames = { 0, 1, 2, 3 }, variants = { "self", "partner" } },
+    { button = 1, frames = { 0, 1, 2, 3 }, variants = { "self", "partner" } },
+    { button = 2, frames = { 0, 1, 2, 3 }, variants = { "self", "partner" } },
+    { button = 3, frames = { 0, 1, 2, 3 }, variants = { "self", "partner" } },
+    { button = 4, frames = { 0, 1, 2, 3 }, variants = { "self", "partner" } },
+    { button = 5, frames = { 0, 1, 2, 3 }, variants = { "self", "partner" } },
+    { button = 6, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 7, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 8, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 9, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 10, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 11, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 12, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 13, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 14, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 15, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 16, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 17, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 18, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 19, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 20, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 21, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 22, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 23, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 24, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 25, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 26, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 27, frames = { 0, 1, 2, 3 }, variants = { "self" } },
+    { button = 28, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 29, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 30, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 31, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 32, frames = { 0, 1, 2 }, variants = { "self" } },
+    { button = 33, frames = { 0, 1, 2 }, variants = { "self" } },
+  },
+}
 
 BattlePresentationSources.BALL_PICTURES = {
   archive = "NARC_a_0_0_8",
@@ -1202,18 +1762,21 @@ BattlePresentationSources.TEXT_PALETTES = {
   -- bank while fonts 4 and 0 ride the existing menu and hud roles.
   bag = { narc = "NARC_a_0_7_7", member = 3, banks = 12 },
   -- Retail battle-party window palette (battle_party_menu.c
-  -- BattlePartyMenu_LoadBgGraphics): the font member behind SUB_BG bank
-  -- 13, the bank every summary/check-moves/move-detail window template
-  -- selects (palette 0x0D). The loader patches four slots from the
-  -- party screen member ("background palette 13: the window frame
-  -- palette with two colours from palette 9"): u16 indices 0x9A/0x9C
-  -- are colors 154-157 of the screen member, landing on font slots 7/8
-  -- and 3/4. The patch carries the gender-symbol colors the font alone
-  -- cannot supply, so the staged palette transcribes it exactly.
+  -- BattlePartyMenu_LoadBgGraphics): the screen member's sixteen
+  -- sixteen-color banks behind MAKE_TEXT_COLOR prints; every window
+  -- template selects its bank (palette 9 for the mon-menu, move, and
+  -- button windows, palette 13 for the labels, values, and bars).
+  -- SUB_BG bank 13 is then overwritten with the font member plus the
+  -- four patched screen slots ("background palette 13: the window
+  -- frame palette with two colours from palette 9"): u16 indices
+  -- 0x9A/0x9C are colors 154-157 of the screen member, landing on font
+  -- slots 7/8 and 3/4 and carrying the gender-symbol colors. The staged
+  -- palette mirrors the hardware banks exactly so each window resolves
+  -- its ink through its template palette.
   party = {
-    narc = "NARC_graphic_font",
-    member = 7,
-    banks = 1,
+    banks = 16,
+    base = { narc = "NARC_a_0_7_1", member = 23 },
+    fontBank = { bank = 13, narc = "NARC_graphic_font", member = 7 },
     patch = {
       archive = "NARC_a_0_7_1",
       member = 23,

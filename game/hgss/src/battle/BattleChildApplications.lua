@@ -21,6 +21,7 @@
 -- drained as evidence, never as acceptance.
 
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
+local BattlePartyPages = require("game.hgss.src.battle.BattlePartyPages")
 local MonCache = require("libs.assets.src.MonCache")
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
@@ -69,55 +70,6 @@ end
 ---@return table<string, number> rectangle center
 local function rectCenter(rect)
   return { x = rect.x + rect.width / 2, y = rect.y + rect.height / 2 }
-end
-
--- Resolves one native party hit target over the canonical modal rows:
--- roster rows select by slot, the footer cancels.
----@param x number tap horizontal position under hit-testing
----@param y number tap vertical position under hit-testing
----@return table<string, unknown>? native hit target, nil outside every control
-local function battlePartyHit(x, y)
-  for slot = 0, 5 do
-    if hitContains(rowRect(slot + 1), x, y) then
-      return { kind = "slot", slot = slot }
-    end
-  end
-  if hitContains(CHILD_BACK, x, y) then
-    return { kind = "cancel" }
-  end
-  return nil
-end
-
-local function fallbackPartyLayout(cancellable)
-  -- Linear mon-menu neighbors behind the fallback layout: the native
-  -- cursor boxes stay undecoded, so the menu walks its entries in order
-  -- (up/down) instead of inventing grid links. Production layouts carry
-  -- the generated source neighbor map and ignore this fallback.
-  local function menuLayout(_, count)
-    local rows = {}
-    for index = 1, count do
-      rows[index] = {
-        x = 0,
-        y = index - 1,
-        width = 1,
-        height = 1,
-        up = math.max(1, index - 1),
-        down = math.min(count, index + 1),
-        left = index,
-        right = index,
-      }
-    end
-    return rows
-  end
-  local function menuHit(_, _, _, _)
-    return nil
-  end
-  return {
-    neighbors = PartyScreenLayout.defaultNeighbors(cancellable),
-    hitTest = battlePartyHit,
-    menuLayout = menuLayout,
-    menuHit = menuHit,
-  }
 end
 
 -- Resolves one native learning hit target over the canonical modal rows:
@@ -169,18 +121,21 @@ end
 local function battleTapPoint(kind, id, layout, _menus)
   local _ = _menus
   if kind == "party" or kind == "target" then
+    -- Party taps resolve through the native generated hit geometry
+    -- alone: without it the tap names nothing instead of inventing a
+    -- modal row that production never paints.
+    if type(layout) ~= "table" then
+      return nil
+    end
     local slot = tonumber(id:match("^party:(%d+)$") or "")
     if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 5 then
-      if type(layout) == "table" then
-        return rectCenter(assert(layout.slotRects[slot + 1], "native party layout carries every slot"))
-      end
-      return rectCenter(rowRect(math.floor(slot) + 1))
+      return rectCenter(assert(layout.slotRects[slot + 1], "native party layout carries every slot"))
     end
     if id == "back" then
-      if type(layout) == "table" and layout.cancelRect ~= nil then
+      if layout.cancelRect ~= nil then
         return rectCenter(layout.cancelRect)
       end
-      return rectCenter(CHILD_BACK)
+      return nil
     end
     return nil
   end
@@ -267,6 +222,99 @@ local function expandTaps(kind, events, layout, menus)
 end
 
 BattleChildApplications.KINDS = { party = true, bag = true, learn = true, naming = true, evolution = true }
+
+-- Retail mon-menu tap identities behind their native menu entries:
+-- the wrapper page paints the full-screen buttons while the native
+-- controller keeps its dropdown geometry, so taps translate through
+-- the generated menu touch targets.
+local MONMENU_TAP_KINDS = { switch = "switch", summary = "summary", moves = "check_moves", back = "quit" }
+
+-- Translates mon-menu page taps into the native controller pointer
+-- pairs (battle_party_menu.c GetMonMenuInput touch-first order): over
+-- the open mon menu, each wrapper identity drives the staged dropdown
+-- entry it names; eggs carry no SUMMARY/CHECK MOVES entries, so those
+-- taps drop silently like the retail egg break. Over the refusal
+-- message, any tap acknowledges at the tapped region center. Every
+-- other event travels untouched.
+---@param child table<string, unknown> composed party child under routing
+---@param events table<integer, table<string, unknown>> semantic input batch under routing
+---@return table<integer, table<string, unknown>> batch with mon-menu taps translated
+local function monMenuTaps(child, events)
+  local status = child._controller:status()
+  if type(status) ~= "table" or (status.state ~= "context" and status.state ~= "message") then
+    return events
+  end
+  local menu = type(status.menu) == "table" and status.menu or {}
+  local translated = {}
+  local taps = 0
+  for _, event in ipairs(events) do
+    local id = type(event) == "table" and event.type == "tap" and type(event.id) == "string" and event.id or nil
+    local kind = id ~= nil and MONMENU_TAP_KINDS[id] or nil
+    if kind == nil then
+      translated[#translated + 1] = event
+    elseif status.state == "message" then
+      -- The refusal message acknowledges any tap: reuse the tapped
+      -- region center in native coordinates.
+      local ids = BattlePartyPages.inputIds("mon_menu")
+      local boxes = BattlePartyPages.hitboxes("mon_menu", child._partySection)
+      local point = nil
+      for pos, known in ipairs(ids) do
+        if known == id and type(boxes[pos]) == "table" then
+          local box = boxes[pos]
+          point = { x = box.left + (box.right - box.left) / 2, y = box.top + (box.bottom - box.top) / 2 }
+        end
+      end
+      if point == nil then
+        local cancel = BattlePartyPages.CANCEL_RECT
+        point =
+          { x = cancel.left + (cancel.right - cancel.left) / 2, y = cancel.top + (cancel.bottom - cancel.top) / 2 }
+      end
+      taps = taps + 1
+      local pointerId = "battle-menu-tap:" .. tostring(taps)
+      translated[#translated + 1] = { type = "pointer_down", pointerId = pointerId, x = point.x, y = point.y }
+      translated[#translated + 1] = { type = "pointer_up", pointerId = pointerId, x = point.x, y = point.y }
+    else
+      local index = nil
+      for candidate, entry in ipairs(menu) do
+        if type(entry) == "table" and entry.kind == kind then
+          index = candidate
+        end
+      end
+      if index == nil then
+        -- No such entry (eggs hide SUMMARY/CHECK MOVES): silent.
+      else
+        local layout = child._layout
+        local menuLayout = type(layout) == "table" and layout.menuLayout or nil
+        local records = type(menuLayout) == "function" and menuLayout("topLevel", #menu) or nil
+        local target = type(records) == "table" and records[index] or nil
+        local touch = type(target) == "table" and target.touch or nil
+        if type(touch) == "table" then
+          local right = touch.right == 0 and 256 or touch.right
+          taps = taps + 1
+          local pointerId = "battle-menu-tap:" .. tostring(taps)
+          local x = touch.left + (right - touch.left) / 2
+          local y = touch.top + (touch.bottom - touch.top) / 2
+          translated[#translated + 1] = { type = "pointer_down", pointerId = pointerId, x = x, y = y }
+          translated[#translated + 1] = { type = "pointer_up", pointerId = pointerId, x = x, y = y }
+        end
+      end
+    end
+  end
+  return translated
+end
+
+-- Retail HM set behind the battle forget guard (src/item.c sTMHMMoves
+-- HM01-HM08): these held moves refuse with msg 60 instead of sealing.
+BattleChildApplications.HM_MOVES = {
+  CUT = true,
+  FLY = true,
+  SURF = true,
+  STRENGTH = true,
+  WHIRLPOOL = true,
+  ROCK_SMASH = true,
+  WATERFALL = true,
+  ROCK_CLIMB = true,
+}
 
 BattleChildApplications.RECEIPTS = {
   party = "party",
@@ -472,7 +520,11 @@ end
 ---@param roster table<integer, table<string, unknown>> detached own-party snapshot under projection
 ---@param eligible table<integer, boolean> eligible combatants under projection
 ---@return table<string, unknown> battle-local party facts model
-local function battlePartyModel(roster, eligible)
+---@param roster table<integer, table<string, unknown>> detached own-party snapshot under projection
+---@param eligible table<integer, boolean> eligible combatants under projection
+---@param gateActive boolean true while active mons stay ineligible behind the switch refusal
+---@return table<string, unknown> battle-local party facts model
+local function battlePartyModel(roster, eligible, gateActive)
   local function refreshModel()
     local slots = {}
     for slot = 0, 5 do
@@ -497,9 +549,15 @@ local function battlePartyModel(roster, eligible)
         if type(record.species) == "string" then
           iconKey = MonCache.iconSelector(record.species, type(record.form) == "number" and record.form or 0, false)
         end
+        -- Retail roster gates precede kernel eligibility for switching:
+        -- fainted, egg, and active mons never switch even if a stale
+        -- projection still marks them eligible. Item targeting answers
+        -- the kernel alone, so an active holder stays eligible there.
+        local kernelEligible = eligible[record.combatant] == true
+        local rosterEligible = not fainted and record.isEgg ~= true and (gateActive ~= true or record.active ~= true)
         slots[record.slot + 1] = {
           occupied = true,
-          eligible = eligible[record.combatant] == true,
+          eligible = kernelEligible and rosterEligible,
           combatant = record.combatant,
           displayName = type(record.name) == "string" and record.name or "Unknown",
           level = record.level,
@@ -509,6 +567,7 @@ local function battlePartyModel(roster, eligible)
           iconKey = iconKey,
           genderSymbol = record.gender,
           isEgg = record.isEgg == true,
+          active = record.active == true,
           moves = record.moves,
         }
       end
@@ -1848,6 +1907,23 @@ local function resolveBattleLabel(services, key, fallback)
   return fallback
 end
 
+-- Resolves one staged battle message with its source substitutions in
+-- message order (battle_party_menu.c Buffer* + StringExpandPlaceholders).
+-- Unknown resolvers fall back to English so tests without the manifest
+-- still prove the refusal path owns a message.
+---@param services table<string, unknown> borrowed battle services under resolution
+---@param key string staged message key under resolution
+---@param fallback string current English text while no resolver is borrowed
+---@param subs table<integer, string>? source substitutions in message order
+---@return string resolved retail text or its fallback
+local function resolveBattleText(services, key, fallback, subs)
+  local resolve = type(services) == "table" and services.resolveMessage or nil
+  if type(resolve) == "function" then
+    return resolve(key, subs or {})
+  end
+  return fallback
+end
+
 -- Composes one native Party target picker in its item-target context over
 -- the detached roster. The kernel item fragments for the staged serving
 -- own eligibility through the injected action policy; the picker stages
@@ -1862,7 +1938,7 @@ end
 function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, services, options)
   assert(type(roster) == "table", "target pickers read the detached roster")
   assert(type(itemKey) == "string" and itemKey ~= "", "target pickers stage their item")
-  local model = battlePartyModel(roster, eligible)
+  local model = battlePartyModel(roster, eligible, false)
   local function evaluateTarget(record, _)
     assert(type(record) == "table", "target evaluation reads its slot record")
     if eligible[record.combatant] == true then
@@ -1881,11 +1957,18 @@ function BattleChildApplications.openTargetPicker(roster, eligible, itemKey, ser
   local battleMenus = type(services.battleMenus) == "table" and services.battleMenus or nil
   local partyMenus = battleMenus ~= nil and battleMenus.party or nil
   local partyManifest = type(partyMenus) == "table" and partyMenus.manifest or nil
-  local nativePartyLayout = type(partyManifest) == "table"
-      and PartyScreenLayout.resolve({ manifest = partyManifest, cancellable = true })
-    or nil
+  -- Target selection resolves through the native generated hit
+  -- geometry alone: without a staged manifest the picker composes
+  -- nothing instead of inventing modal rows production never paints.
+  if type(partyManifest) ~= "table" then
+    return nil, "target selection needs its native party manifest"
+  end
+  local okLayout, nativePartyLayout = pcall(PartyScreenLayout.resolve, { manifest = partyManifest, cancellable = true })
+  if not okLayout then
+    return nil, tostring(nativePartyLayout)
+  end
   local function targetLayout()
-    return nativePartyLayout or fallbackPartyLayout(true)
+    return nativePartyLayout
   end
   local ok, controller = pcall(PartyScreenController.new, {
     context = "item_target",
@@ -1947,18 +2030,89 @@ local function openPartyChild(intent, services)
       eligible[combatant] = true
     end
   end
-  if next(eligible) == nil then
+  -- Retail opens the party list even with no enabled reserve (trapped,
+  -- all fainted): viewing summary/moves stays available while SHIFT
+  -- refuses with its CanSwitch message. Forced replacement still fails
+  -- closed without a legal reserve since the battle cannot continue.
+  if next(eligible) == nil and intent.purpose == "replacement" then
     return nil, "no eligible reserve answers the request"
   end
-  local model = battlePartyModel(intent.party --[[@as table<integer, table<string, unknown>>]], eligible)
+  -- Kernel disabled switch reasons by replacement combatant for the
+  -- trapped/reserved branches of CanSwitchToSelectedMon. Active,
+  -- fainted, and egg refusals derive from the detached roster below.
+  local disabledReasons = {}
+  if type(options.actors) == "table" then
+    for _, actor in ipairs(options.actors) do
+      if type(actor) == "table" and type(actor.choices) == "table" then
+        for _, choice in ipairs(actor.choices) do
+          local fragment = type(choice) == "table" and choice.choice or nil
+          local payload = type(fragment) == "table" and fragment.payload or nil
+          if
+            type(choice) == "table"
+            and choice.enabled ~= true
+            and type(fragment) == "table"
+            and fragment.kind == "switch"
+            and type(payload) == "table"
+            and type(payload.replacement) == "number"
+            and type(choice.reason) == "string"
+          then
+            disabledReasons[payload.replacement] = choice.reason
+          end
+        end
+      end
+    end
+  end
+  local actorCombatant = nil
+  if type(options.actors) == "table" and type(options.actors[1]) == "table" then
+    local actor = options.actors[1]
+    if type(actor.combatant) == "number" then
+      actorCombatant = actor.combatant
+    end
+  end
+  local activeName = nil
+  for _, record in
+    ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
+  do
+    if type(record) == "table" and type(record.name) == "string" and record.name ~= "" then
+      if record.active == true or record.combatant == actorCombatant then
+        activeName = record.name
+        break
+      end
+    end
+  end
+  if activeName == nil then
+    for _, record in
+      ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
+    do
+      if
+        type(record) == "table"
+        and record.combatant == actorCombatant
+        and type(record.name) == "string"
+        and record.name ~= ""
+      then
+        activeName = record.name
+        break
+      end
+    end
+  end
+  local model = battlePartyModel(intent.party --[[@as table<integer, table<string, unknown>>]], eligible, true)
   local battleMenus = type(services.battleMenus) == "table" and services.battleMenus or nil
   local partyMenus = battleMenus ~= nil and battleMenus.party or nil
   local partyManifest = type(partyMenus) == "table" and partyMenus.manifest or nil
-  local nativePartyLayout = type(partyManifest) == "table"
-      and PartyScreenLayout.resolve({ manifest = partyManifest, cancellable = intent.cancellable == true })
-    or nil
+  -- Party selection resolves through the native generated hit geometry
+  -- alone: without a staged manifest the picker composes nothing
+  -- instead of inventing modal rows production never paints. The
+  -- failure surfaces through the barrier as a visible refusal.
+  if type(partyManifest) ~= "table" then
+    return nil, "party selection needs its native party manifest"
+  end
+  local okLayout, nativePartyLayout =
+    pcall(PartyScreenLayout.resolve, { manifest = partyManifest, cancellable = intent.cancellable == true })
+  if not okLayout then
+    return nil, tostring(nativePartyLayout)
+  end
   local function pickLayout()
-    return nativePartyLayout or fallbackPartyLayout(intent.cancellable == true)
+    return nativePartyLayout
   end
   local initialFocus = nil
   -- Mandatory replacement and the optional Shift offer both open on
@@ -1978,7 +2132,9 @@ local function openPartyChild(intent, services)
         break
       end
     end
-    assert(initialFocus ~= nil, "reserve pickers focus an eligible reserve")
+    if intent.purpose == "replacement" then
+      assert(initialFocus ~= nil, "reserve pickers focus an eligible reserve")
+    end
   end
   -- Retail battle party mon menu (battle_party_menu.c PrintMonMenuPage
   -- with msg_0006_00015 SHIFT): selecting the mon offers SHIFT to switch,
@@ -1999,24 +2155,101 @@ local function openPartyChild(intent, services)
       }
     end
     entries[#entries + 1] =
-      { kind = "quit", label = resolveBattleLabel(services, "battle/party/button/cancel", "QUIT") }
+      { kind = "quit", label = resolveBattleLabel(services, "battle/party/button/cancel", "CANCEL") }
     return entries
   end
   local function submenuFor(_, kind)
     error("battle party selection has no " .. tostring(kind) .. " submenu", 2)
+  end
+  -- Retail CanSwitchToSelectedMon order (battle_party_menu.c): partner,
+  -- fainted (77), active (76), egg (79), reserved (93), trapped (78).
+  -- Partner needs multi-battle position data the intent does not carry,
+  -- so singles resolve the other five here with staged msg 0006 text.
+  ---@param slot integer roster slot under refusal lookup
+  ---@return string? refusal text, nil while the slot can switch
+  local function switchRefusalText(slot)
+    local target = nil
+    for _, record in
+      ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(record) == "table" and record.slot == slot then
+        target = record
+        break
+      end
+    end
+    if type(target) ~= "table" or type(target.combatant) ~= "number" then
+      return nil
+    end
+    local name = type(target.name) == "string" and target.name ~= "" and target.name or "Unknown"
+    -- Retail roster checks precede kernel eligibility in CanSwitch
+    -- order: fainted (77), active (76), and egg (79) refuse even if a
+    -- stale projection still marks the slot eligible.
+    if (tonumber(target.hp) or 0) <= 0 then
+      return resolveBattleText(
+        services,
+        "battle/party/message/no-energy",
+        name .. " has no energy\nleft to battle!",
+        { name }
+      )
+    end
+    if target.active == true or target.combatant == actorCombatant then
+      return resolveBattleText(
+        services,
+        "battle/party/message/already-in-battle",
+        name .. " is already\nin battle!",
+        { name }
+      )
+    end
+    if target.isEgg == true then
+      return resolveBattleText(services, "battle/party/message/egg", "An Egg can’t battle!", {})
+    end
+    if eligible[target.combatant] == true then
+      return nil
+    end
+    local kernelReason = disabledReasons[target.combatant]
+    if kernelReason == "reserved" then
+      return resolveBattleText(
+        services,
+        "battle/party/message/already-selected",
+        name .. " has already been\nselected.",
+        { name }
+      )
+    end
+    if kernelReason == "trapped" then
+      local holder = activeName or name
+      return resolveBattleText(
+        services,
+        "battle/party/message/cant-switch-out",
+        holder .. " can’t be switched\nout!",
+        { holder }
+      )
+    end
+    if kernelReason == "fainted" then
+      return resolveBattleText(
+        services,
+        "battle/party/message/no-energy",
+        name .. " has no energy\nleft to battle!",
+        { name }
+      )
+    end
+    return resolveBattleText(services, "battle/party/message/no-effect", "That choice is unavailable.", {})
   end
   local ok, controller = pcall(PartyScreenController.new, {
     context = "battle_pick",
     model = model,
     layout = pickLayout,
     initialFocus = initialFocus,
-    actionPolicy = { menuFor = menuFor, submenuFor = submenuFor },
+    actionPolicy = { menuFor = menuFor, submenuFor = submenuFor, switchRefusalText = switchRefusalText },
     allowCancel = intent.cancellable == true,
   })
   if not ok then
     return nil, tostring(controller)
   end
   local identity = childIdentity("party", intent)
+  -- Battle manifest party section behind the transcribed wrapper
+  -- input geometry (hitboxes, cursor boxes); staged tables win while
+  -- present, the pinned decomp transcriptions otherwise.
+  local partySection = type(services.partySection) == "table" and services.partySection or nil
   local child = {
     _kind = "party",
     _identity = identity,
@@ -2025,6 +2258,7 @@ local function openPartyChild(intent, services)
     _layout = nativePartyLayout,
     _menus = partyMenus,
     _options = options,
+    _partySection = partySection,
     _nativeIntent = nil,
     _nativeResult = nil,
     _inputApplied = false,
@@ -2032,13 +2266,19 @@ local function openPartyChild(intent, services)
     _disposed = false,
     _page = nil,
     _pageSlot = nil,
-    _pageMove = nil,
-    _pageFocus = nil,
+    _selectedMove = 0,
+    _acceptSeq = 0,
+    _cursor = 0,
+    _cursorActive = false,
+    _prevCursor = nil,
+    _press = nil,
   }
   -- Retail battle summary/move pages (battle_party_menu.c pages 2-4)
-  -- over the detached roster: simplified rows with the same
-  -- mon-menu/summary/check-moves navigation (DECIDE on every confirm
-  -- and back, SELECT on cursor moves via the owning barrier). Pages
+  -- over the detached roster: touch resolves through the transcribed
+  -- hitboxes (CheckTouchHitbox order), the d-pad through the transcribed
+  -- cursor boxes (BattleDpadCursor_HandleInput with its activation gate
+  -- and return links), and every accepted press dips its button behind
+  -- a gated press (WaitButtonAnim) before the transition applies. Pages
   -- never seal; only the list SHIFT seals its kernel fragment.
   ---@param slot integer roster slot under lookup
   ---@return table<string, unknown>? detached roster record
@@ -2052,13 +2292,15 @@ local function openPartyChild(intent, services)
     end
     return nil
   end
-  ---@return table<integer, integer> occupied roster slots in ascending order
+  ---@return table<integer, integer> occupied non-egg roster slots in ascending order
   local function occupiedSlots()
     local found = {}
     for _, record in
       ipairs(intent.party --[[@as table<integer, table<string, unknown>>]])
     do
-      if type(record) == "table" and type(record.slot) == "number" then
+      -- Retail FindNextMon skips eggs and empty slots when paging
+      -- summary and check-moves: only occupied non-egg slots participate.
+      if type(record) == "table" and type(record.slot) == "number" and record.isEgg ~= true then
         found[#found + 1] = record.slot
       end
     end
@@ -2080,8 +2322,35 @@ local function openPartyChild(intent, services)
     if at == nil then
       return slot
     end
-    local nextIndex = math.min(math.max(at + delta, 1), #slots)
+    if #slots <= 1 then
+      return slot
+    end
+    -- Retail wraps past the ends instead of clamping, returning 0xFF
+    -- (stay) only when no other eligible mon exists.
+    local step = delta < 0 and -1 or 1
+    local nextIndex = ((at - 1 + step) % #slots) + 1
     return slots[nextIndex]
+  end
+  ---@param moveSlot integer held move slot under occupancy lookup
+  ---@return boolean occupied true while the slot carries a known move
+  local function moveOccupied(moveSlot)
+    local record = rosterRecord(assert(child._pageSlot, "move pages name their mon"))
+    local entry = type(record) == "table" and type(record.moves) == "table" and record.moves[moveSlot + 1] or nil
+    -- Retail ignores empty move slots (MOVE_NONE breaks the tap).
+    return type(entry) == "table" and (entry.move ~= nil or entry.key ~= nil)
+  end
+  ---@param apply fun() deferred page transition behind the press dip
+  ---@param button integer decomp input index behind the button animation
+  ---@return nil
+  local function stagePress(apply, button)
+    -- The staged button and its phase while the press dip shows
+    -- (PRESS, HOLD, RELEASE like ButtonAnimState, then the release
+    -- observation); edges in between are dropped and the deferred
+    -- transition applies once the release is observed, matching
+    -- WaitButtonAnim. Every staged press is an accepted input behind
+    -- the barrier DECIDE beat.
+    child._acceptSeq = child._acceptSeq + 1
+    child._press = { button = button, phase = 1, apply = apply }
   end
   ---@param slot integer roster slot behind the summary page
   ---@return nil
@@ -2089,8 +2358,11 @@ local function openPartyChild(intent, services)
     assert(rosterRecord(slot) ~= nil, "summary pages name an occupied slot")
     child._page = "summary"
     child._pageSlot = slot
-    child._pageMove = nil
-    child._pageFocus = "summary:moves"
+    -- SetPageCursor seats no summary position (SetBoxes resets to 0);
+    -- the cursor-active flag rides across pages untouched.
+    child._cursor = BattlePartyPages.initialCursor("summary", child._selectedMove)
+    child._prevCursor = nil
+    child._press = nil
   end
   ---@param slot integer roster slot behind the move list
   ---@return nil
@@ -2098,8 +2370,30 @@ local function openPartyChild(intent, services)
     assert(rosterRecord(slot) ~= nil, "move pages name an occupied slot")
     child._page = "moves"
     child._pageSlot = slot
-    child._pageMove = nil
-    child._pageFocus = "move:0"
+    child._cursor = BattlePartyPages.initialCursor("moves", child._selectedMove)
+    child._prevCursor = nil
+    child._press = nil
+  end
+  ---@param slot integer roster slot behind move detail
+  ---@param moveSlot integer selected move slot behind move detail
+  ---@return nil
+  local function openDetail(slot, moveSlot)
+    assert(rosterRecord(slot) ~= nil, "move detail names its mon")
+    child._page = "move_detail"
+    child._pageSlot = slot
+    child._selectedMove = moveSlot
+    child._cursor = BattlePartyPages.initialCursor("move_detail", child._selectedMove)
+    child._prevCursor = nil
+    child._press = nil
+  end
+  ---@return nil
+  local function closePage()
+    -- CLOSE_MESSAGE returns to the mon menu with the menu retained:
+    -- the controller keeps its focused entry, so no cursor is reseated
+    -- here (retail only records monMenuPosition for its own cursor).
+    child._page = nil
+    child._pageSlot = nil
+    child._press = nil
   end
   -- Drains one navigation intent from the native mon menu: SUMMARY and
   -- CHECK MOVES open their wrapper page while the controller returns
@@ -2119,51 +2413,132 @@ local function openPartyChild(intent, services)
       openMoves(stashed.slot)
     end
   end
-  ---@param id string stable page control identity under activation
+  -- Handles one decomp input index on the open wrapper page behind
+  -- the press dip: paging wraps past the ends, empty move slots stay,
+  -- and cancel returns to the mon menu while the controller keeps its
+  -- focused entry. Anything unhandled stays without sealing.
+  ---@param input integer decomp input index in Handle order
   ---@return nil
-  local function pageTap(id)
+  local function handleWrapperInput(input)
     local page = child._page
     if page == "summary" then
-      if id == "summary:prev" then
-        child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), -1)
-      elseif id == "summary:next" then
-        child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), 1)
-      elseif id == "summary:moves" then
-        openMoves(assert(child._pageSlot, "summary pages name their mon"))
-      elseif id == "back" then
-        child._page = nil
-        child._pageSlot = nil
-        child._pageFocus = nil
+      local slot = assert(child._pageSlot, "summary pages name their mon")
+      if input == 0 then
+        local next = neighborSlot(slot, -1)
+        if next ~= slot then
+          local target = next
+          stagePress(function()
+            child._pageSlot = target
+          end, input)
+        end
+      elseif input == 1 then
+        local next = neighborSlot(slot, 1)
+        if next ~= slot then
+          local target = next
+          stagePress(function()
+            child._pageSlot = target
+          end, input)
+        end
+      elseif input == 2 then
+        local target = slot
+        stagePress(function()
+          openMoves(target)
+        end, input)
+      elseif input == 3 then
+        stagePress(closePage, input)
       end
       return
     end
     if page == "moves" then
-      local slot = tonumber(id:match("^move:(%d+)$") or "")
-      if slot ~= nil and slot % 1 == 0 and slot >= 0 and slot <= 3 then
-        child._page = "move_detail"
-        child._pageMove = math.floor(slot)
-        child._pageFocus = "back"
+      local slot = assert(child._pageSlot, "move pages name their mon")
+      if input >= 0 and input <= 3 then
+        if moveOccupied(input) then
+          local moveSlot = input
+          stagePress(function()
+            openDetail(slot, moveSlot)
+          end, input)
+        end
         return
       end
-      if id == "moves:prev" then
-        child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), -1)
-      elseif id == "moves:next" then
-        child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), 1)
-      elseif id == "moves:summary" then
-        openSummary(assert(child._pageSlot, "move pages name their mon"))
-      elseif id == "back" then
-        child._page = nil
-        child._pageSlot = nil
-        child._pageFocus = nil
+      if input == 4 then
+        local next = neighborSlot(slot, -1)
+        if next ~= slot then
+          local target = next
+          stagePress(function()
+            child._pageSlot = target
+          end, input)
+        end
+      elseif input == 5 then
+        local next = neighborSlot(slot, 1)
+        if next ~= slot then
+          local target = next
+          stagePress(function()
+            child._pageSlot = target
+          end, input)
+        end
+      elseif input == 6 then
+        local target = slot
+        stagePress(function()
+          openSummary(target)
+        end, input)
+      elseif input == 7 then
+        stagePress(closePage, input)
       end
       return
     end
     if page == "move_detail" then
-      if id == "back" then
-        openMoves(assert(child._pageSlot, "move detail names its mon"))
+      local slot = assert(child._pageSlot, "move detail names its mon")
+      if input >= 0 and input <= 3 then
+        -- Reselecting the shown tab re-shows its detail immediately:
+        -- the decomp plays DECIDE but stages no button animation for
+        -- tab switches, returning straight to SHOW_MOVE_DETAIL. An
+        -- empty tab breaks unless it is already selected.
+        if input == child._selectedMove or moveOccupied(input) then
+          child._acceptSeq = child._acceptSeq + 1
+          openDetail(slot, input)
+        end
+        return
+      end
+      if input == 4 then
+        local target = slot
+        stagePress(function()
+          openMoves(target)
+        end, input)
       end
       return
     end
+  end
+  ---@param id string stable page control identity under activation
+  ---@return integer? decomp input index in Handle order, nil for foreign identities
+  local function wrapperInputForId(id)
+    local page = child._page
+    if page ~= "summary" and page ~= "moves" and page ~= "move_detail" then
+      return nil
+    end
+    for index, known in ipairs(BattlePartyPages.inputIds(page)) do
+      if known == id then
+        return index - 1
+      end
+    end
+    return nil
+  end
+  ---@param id string stable page control identity under activation
+  ---@return nil
+  local function pageTap(id)
+    if child._press ~= nil then
+      return
+    end
+    local input = wrapperInputForId(id)
+    if input == nil then
+      return
+    end
+    -- Touch deactivates the d-pad cursor and resets its position
+    -- (DeactivateCursor); the transition reseats it behind
+    -- SetPageCursor while paging refresh keeps the reset.
+    child._cursorActive = false
+    child._cursor = 0
+    child._prevCursor = nil
+    handleWrapperInput(input)
   end
   ---@param events table<integer, table<string, unknown>> semantic input batch under page routing
   ---@return nil
@@ -2172,76 +2547,43 @@ local function openPartyChild(intent, services)
       if type(event) ~= "table" or type(event.type) ~= "string" then
         break
       end
+      -- The press dip gates input like WaitButtonAnim: edges in
+      -- between are dropped, never queued.
+      if child._press ~= nil then
+        break
+      end
+      local page = child._page
+      if page ~= "summary" and page ~= "moves" and page ~= "move_detail" then
+        break
+      end
       if event.type == "tap" and type(event.id) == "string" then
         pageTap(event.id)
       elseif event.type == "navigate" and type(event.direction) == "string" then
-        local page = child._page
-        local direction = event.direction
-        if page == "summary" then
-          if direction == "left" then
-            child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), -1)
-          elseif direction == "right" then
-            child._pageSlot = neighborSlot(assert(child._pageSlot, "summary pages name their mon"), 1)
-          elseif direction == "up" or direction == "down" then
-            if child._pageFocus == "summary:moves" then
-              child._pageFocus = "back"
-            else
-              child._pageFocus = "summary:moves"
-            end
-          end
-        elseif page == "moves" then
-          local move = tonumber((child._pageFocus or ""):match("^move:(%d+)$") or "")
-          if direction == "up" then
-            if move == nil then
-              child._pageFocus = "move:3"
-            elseif move > 0 then
-              child._pageFocus = "move:" .. tostring(move - 1)
-            end
-          elseif direction == "down" then
-            if move == nil then
-              child._pageFocus = "move:0"
-            elseif move < 3 then
-              child._pageFocus = "move:" .. tostring(move + 1)
-            end
-          elseif direction == "left" then
-            child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), -1)
-          elseif direction == "right" then
-            child._pageSlot = neighborSlot(assert(child._pageSlot, "move pages name their mon"), 1)
-          end
+        -- The first key press only activates the cursor (TryActivate);
+        -- motion, A, and B run once it is active.
+        if child._cursorActive ~= true then
+          child._cursorActive = true
+        else
+          local step =
+            BattlePartyPages.stepCursor(page, partySection, child._cursor, child._prevCursor, event.direction)
+          child._cursor = step.pos
+          child._prevCursor = step.prev
         end
       elseif event.type == "confirm" then
-        local page = child._page
-        if page == "summary" then
-          if child._pageFocus == "summary:moves" then
-            openMoves(assert(child._pageSlot, "summary pages name their mon"))
-          elseif child._pageFocus == "back" then
-            child._page = nil
-            child._pageSlot = nil
-            child._pageFocus = nil
-          else
-            child._pageFocus = "summary:moves"
-          end
-        elseif page == "moves" then
-          local move = tonumber((child._pageFocus or ""):match("^move:(%d+)$") or "")
-          if move ~= nil then
-            child._page = "move_detail"
-            child._pageMove = move
-            child._pageFocus = "back"
-          else
-            child._pageFocus = "move:0"
-          end
-        elseif page == "move_detail" then
-          openMoves(assert(child._pageSlot, "move detail names its mon"))
+        if child._cursorActive ~= true then
+          child._cursorActive = true
+        else
+          handleWrapperInput(child._cursor)
         end
       elseif event.type == "cancel" then
-        local page = child._page
-        if page == "summary" or page == "moves" then
-          child._page = nil
-          child._pageSlot = nil
-          child._pageMove = nil
-          child._pageFocus = nil
-        elseif page == "move_detail" then
-          openMoves(assert(child._pageSlot, "move detail names its mon"))
+        -- B answers the page cancel button and voices its DECIDE, but
+        -- the first press only activates the cursor like every other
+        -- edge (TryActivate consumes it); the cursor stays as the next
+        -- opening reseats it.
+        if child._cursorActive ~= true then
+          child._cursorActive = true
+        else
+          handleWrapperInput(BattlePartyPages.cancelInput(page))
         end
       end
     end
@@ -2256,13 +2598,32 @@ local function openPartyChild(intent, services)
       self._inputApplied = true
       return
     end
-    self._controller:updateFixed(expandTaps("party", events, self._layout, self._menus))
+    self._controller:updateFixed(expandTaps("party", monMenuTaps(self, events), self._layout, self._menus))
     harvest(self, self._controller)
     drainPageIntent()
     self._inputApplied = true
   end
   ---@param _ integer source ticks under stepping
   function child:stepSourceTick(_)
+    local press = self._press
+    if press ~= nil then
+      -- The press dip advances PRESS, HOLD, RELEASE like
+      -- UpdateButtonAnim; the deferred transition applies once the
+      -- release is observed while input stays gated. A press staged
+      -- by this tick's input paints its first frame before advancing.
+      if self._inputApplied and press.phase == 1 then
+        self._inputApplied = false
+        return
+      end
+      if press.phase < 3 then
+        press.phase = press.phase + 1
+      else
+        self._press = nil
+        press.apply()
+      end
+      self._inputApplied = false
+      return
+    end
     if self._inputApplied then
       self._inputApplied = false
       return
@@ -2284,8 +2645,30 @@ local function openPartyChild(intent, services)
     if self._page ~= nil then
       nativeView.page = self._page
       nativeView.pageSlot = self._pageSlot
-      nativeView.pageMove = self._pageMove
-      nativeView.pageFocus = self._pageFocus
+      nativeView.pageMove = self._selectedMove
+      -- Stable focus identity behind the numeric cursor plus the raw
+      -- cursor state the barrier voices and paint resolve through.
+      local ids = BattlePartyPages.inputIds(self._page)
+      nativeView.pageFocus = ids[self._cursor + 1]
+      nativeView.pageCursor = self._cursor
+      nativeView.cursorActive = self._cursorActive
+      if self._press ~= nil then
+        nativeView.pagePress = { button = self._press.button, phase = self._press.phase }
+      end
+      nativeView.pageAccept = self._acceptSeq
+    else
+      -- The native mon-menu press stamps the barrier DECIDE beat like
+      -- the decomp Handle call sites: the first draw the press arms
+      -- bumps the sequence, and the release draw clears it silently.
+      if view.menuPress ~= nil then
+        if self._menuPressArmed ~= true then
+          self._menuPressArmed = true
+          self._acceptSeq = self._acceptSeq + 1
+        end
+      else
+        self._menuPressArmed = nil
+      end
+      nativeView.menuAccept = self._acceptSeq
     end
     return nativeView
   end
@@ -2390,13 +2773,54 @@ end
 -- the battle-action learning child and the post-battle evolution child,
 -- which carries no kernel fragments and answers its own domain instead.
 ---@param prompt table<string, unknown> staged learning prompt under composition
+---@param services table<string, unknown>? borrowed battle services for catalog PP facts
 ---@return table<string, unknown>? composed move picker
 ---@return string? failure cause
-local function composeLearnPicker(prompt)
+local function composeLearnPicker(prompt, services)
   assert(type(prompt) == "table", "learning pickers carry their staged prompt")
-  local model, _ = battleSummaryModel(prompt)
+  local model, rows = battleSummaryModel(prompt)
+  -- Retail learn rows print PP like the move list (PrintMoveListPP):
+  -- resolve each held max from the mon catalog base PP and PP Ups,
+  -- falling back to current PP without a catalog.
+  local catalog = type(services) == "table" and services.monCatalog or nil
+  if type(rows) == "table" then
+    for _, row in ipairs(rows) do
+      if type(row) == "table" and type(row.maxPp) ~= "number" then
+        local max = tonumber(row.pp) or 0
+        if type(catalog) == "table" then
+          local lookup = catalog.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>?]]
+          if type(lookup) == "function" and type(row.move) == "string" then
+            local ok, facts = pcall(lookup, catalog, row.move)
+            if ok and type(facts) == "table" and type(facts.basePp) == "number" then
+              local ups = tonumber(row.ppUps) or 0
+              max = facts.basePp + math.floor(facts.basePp * ups / 5)
+            end
+          end
+        end
+        row.maxPp = max
+      end
+    end
+  end
   local function summaryLayout()
     return { hitTest = battleLearnHit }
+  end
+  -- Retail forget guards (battle_party_menu.c IsSelectedMoveHM): HM
+  -- moves cannot be forgotten. The picker refuses these rows with its
+  -- protected notice instead of sealing, matching the native message
+  -- and stay-on-list behavior.
+  local protected = nil
+  local moves = prompt.currentMoves
+  if type(moves) == "table" then
+    for index = 1, 4 do
+      local entry = moves[index]
+      local key = type(entry) == "table" and entry.move or nil
+      if type(key) == "string" and BattleChildApplications.HM_MOVES[key] == true then
+        if protected == nil then
+          protected = {}
+        end
+        protected[index] = "hm"
+      end
+    end
   end
   local ok, controller = pcall(SummaryController.new, {
     mode = "move_pick",
@@ -2416,6 +2840,7 @@ local function composeLearnPicker(prompt)
       context = "replace_machine",
       prospectiveMove = prompt.incomingMove,
       incomingMove = prompt.incomingMove,
+      protected = protected,
     },
   })
   if not ok then
@@ -2453,7 +2878,7 @@ local function openLearnChild(intent, services)
   assert(type(intent.options) == "table", "learning children carry their decision options")
   local _, rows = battleSummaryModel(request --[[@as table<string, unknown>]])
   local _ = services
-  local controller, controllerErr = composeLearnPicker(request --[[@as table<string, unknown>]])
+  local controller, controllerErr = composeLearnPicker(request --[[@as table<string, unknown>]], services)
   if controller == nil then
     return nil, controllerErr
   end
