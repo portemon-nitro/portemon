@@ -4806,9 +4806,27 @@ function FieldBattlePresentation:_stepTransition()
   end
   local ok, err = pcall(function()
     local phase = transition:status().phase
-    if phase == "new" or phase == "pending" then
-      local readiness = transition:prepare(assert(self._transitionContext))
+    if phase == "new" or phase == "pending" or phase == "ready" then
+      local readiness = phase
+      if phase ~= "ready" then
+        readiness = transition:prepare(assert(self._transitionContext))
+      end
       if readiness == "ready" then
+        -- The native effect starts only once its battle-music banks
+        -- stage: effect initialization voices the music on the same
+        -- tick, so a cold bank holds the visual instead of letting the
+        -- transition (and the cover handoff behind it) outrun the music.
+        if self._pendingFailed then
+          return
+        end
+        local musicReady, musicFailure = self:_battleMusicStaged()
+        if musicReady == nil then
+          self:_failMusic(assert(musicFailure, "music staging failures carry a reason"))
+          return
+        end
+        if musicReady == false then
+          return
+        end
         self:_startReadyTransition()
       end
       return
@@ -5037,14 +5055,19 @@ function FieldBattlePresentation:_stepCover()
       self:_startBattleMusic()
     end
     self:_stepCoverUp()
+    if self._transition == nil and self._cover >= FieldBattlePresentation.COVER_MAX then
+      -- Without a native effect the cover-full tick owns the music
+      -- start: the handoff below waits for the staged voice instead of
+      -- releasing the field under silence while cold banks still build.
+      self:_startBattleMusic()
+    end
     if
       self._cover >= FieldBattlePresentation.COVER_MAX
       and (self._transition == nil or self._transition:status().phase == "complete")
+      and self._musicStarted
+      and not self._pendingFailed
     then
       host.notify("cover-complete")
-    end
-    if self._transition == nil and self._cover >= FieldBattlePresentation.COVER_MAX then
-      self:_startBattleMusic()
     end
     return
   end
@@ -5162,6 +5185,28 @@ function FieldBattlePresentation:_portEnterReady()
   return ok and ready == true
 end
 
+-- Reports whether the launch battle-music voice can stage this tick:
+-- true once its track banks publish, false while the worker still
+-- builds them, nil with a terminal reason when the role or the banks
+-- fail closed. Side-effect free: the gated transition start holds on
+-- false without voicing, suspending field policy, or latching the
+-- one-shot music attempt, so the later voice still fires synchronously
+-- with the native effect initialization.
+---@return boolean? ready true when the music voice can stage, false while building
+---@return string? terminal failure, nil unless staging failed closed
+function FieldBattlePresentation:_battleMusicStaged()
+  local role = self._musicRole
+  if type(role) ~= "string" or role == "" then
+    return nil, "battle music needs its staged track role for launch " .. tostring(self._launchId)
+  end
+  local bankIds = self._musicBankIds
+  if bankIds == nil or #bankIds == 0 then
+    bankIds = self:_audioBanks()
+    self._musicBankIds = bankIds
+  end
+  return checkAudioBanks(self, { audio = { banks = bankIds, cries = {} } })
+end
+
 -- Starts the source-defined battle music role once its files stage: an
 -- unstaged bank holds the voice without failing the launch or silencing
 -- the field, and the covering ticks retry until staged. Field policy
@@ -5177,27 +5222,17 @@ function FieldBattlePresentation:_startBattleMusic()
   end
   local launchId = self._launchId
   local descriptor = self._descriptor
-  local role = self._musicRole
-  if type(role) ~= "string" or role == "" then
-    self._musicStarted = true
-    self:_failMusic("battle music needs its staged track role for launch " .. tostring(launchId))
-    return
-  end
-  local bankIds = self._musicBankIds
-  if bankIds == nil or #bankIds == 0 then
-    bankIds = self:_audioBanks()
-    self._musicBankIds = bankIds
-  end
-  local ready, failure = checkAudioBanks(self, { audio = { banks = bankIds, cries = {} } })
+  local ready, failure = self:_battleMusicStaged()
   if ready == nil then
     self._musicStarted = true
-    self:_failMusic(assert(failure, "music bank failures carry a reason"))
+    self:_failMusic(assert(failure, "music staging failures carry a reason"))
     return
   end
   if ready == false then
     return
   end
   self._musicStarted = true
+  local role = assert(self._musicRole, "staged battle music carries its track role")
   -- Field policy suspends on the same launch audio boundary the
   -- coordinator admits: in production the screen controller and the
   -- field controller are one object, while tests may substitute the
