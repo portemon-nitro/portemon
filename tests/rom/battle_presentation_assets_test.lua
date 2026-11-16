@@ -722,6 +722,8 @@ function T.battle_bag_and_party_messages_stage_with_source_placeholders(romFs, v
   Assert.equal(stagedSubstitutions(entries, "battle/bag/message/no-aim-doubles"), 0, versionId .. ": doubles aim carries no placeholder")
   Assert.equal(stagedSubstitutions(entries, "battle/bag/message/embargo"), 2, versionId .. ": embargo names its move and mon")
   Assert.equal(stagedSubstitutions(entries, "battle/bag/message/no-stealing"), 1, versionId .. ": trainer escapes name the player")
+  Assert.equal(stagedSubstitutions(entries, "battle/narration/identified"), 2, versionId .. ": identification names its attacker and defender")
+  Assert.equal(stagedSubstitutions(entries, "battle/narration/aimed"), 2, versionId .. ": the aim line names its attacker and defender")
   for slot = 0, 5 do
     Assert.equal(stagedSubstitutions(entries, "battle/party/mon-name/" .. slot), 1, versionId .. ": mon-name " .. slot .. " carries its nickname")
   end

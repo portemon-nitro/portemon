@@ -754,6 +754,23 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
     return actors[1], targets[1], targets
   end
 
+  -- Frozen roles behind one applied-feedback admission the retail
+  -- scripts anchor on the side-effect mon: status, confusion, and
+  -- stage programs play with attacker == defender == subject
+  -- (BattleController_EmitSetStatus2Effect carries the same battler
+  -- twice), so every role pictures the operation subject instead of
+  -- the move user and target.
+  ---@param appliedOp table<string, unknown> applied operation carrying its subject
+  ---@return table<string, unknown> attacker binding
+  ---@return table<string, unknown> defender binding
+  ---@return table<integer, table<string, unknown>> ordered target bindings
+  local function admitSubjectRoles(appliedOp)
+    local subject = (appliedOp --[[@as table<string, unknown>]]).subject
+    assert(type(subject) == "table", "applied feedback names its subject")
+    local pictured = resolveRoles(packet, { subject }, "subject", slotGeometry)
+    return pictured[1], pictured[1], pictured
+  end
+
   -- Soft topology behind an omission: roles that resolve picture
   -- nothing new, so unresolvable roles degrade to explicit false
   -- bindings instead of failing the surrounding narration and
@@ -842,12 +859,10 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
     })
   end
 
-  ---@param effectKey string admitted catalog key behind the request
-  ---@param stage string anchor stage behind the request
-  ---@param invocationKind string? source caller kind, feedback-script when absent
-  ---@param appliedOp table<string, unknown>? applied operation carrying the subject fallback
-  local function pushOperationAdmit(effectKey, stage, invocationKind, appliedOp)
-    local attacker, defender, targets = admitRoles(appliedOp)
+  ---@param effectKey string admitted catalog key behind the gate
+  ---@param appliedOp table<string, unknown>? applied operation carrying the gated subject
+  ---@return string admit or explicit omit reason behind the gate
+  local function gateOperationDisposition(effectKey, appliedOp)
     local disposition = "admit" ---@type string
     if options ~= nil and options.battleScene == false and not SUBSTITUTE_GATE_ROOTS[effectKey] then
       disposition = "omit:scene-off" --[[@as string]]
@@ -859,7 +874,40 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
         disposition = "omit:substitute-gate" --[[@as string]]
       end
     end
-    pushRequest(effectKey, invocationKind or "feedback-script", disposition, stage, 1, {
+    return disposition
+  end
+
+  ---@param effectKey string admitted catalog key behind the request
+  ---@param stage string anchor stage behind the request
+  ---@param invocationKind string? source caller kind, feedback-script when absent
+  ---@param appliedOp table<string, unknown>? applied operation carrying the subject fallback
+  local function pushOperationAdmit(effectKey, stage, invocationKind, appliedOp)
+    local attacker, defender, targets = admitRoles(appliedOp)
+    pushRequest(
+      effectKey,
+      invocationKind or "feedback-script",
+      gateOperationDisposition(effectKey, appliedOp),
+      stage,
+      1,
+      {
+        attacker = attacker,
+        defender = defender,
+        targets = targets,
+        context = requestContext(0, nil),
+      }
+    )
+  end
+
+  -- Applied feedback the retail scripts anchor on the side-effect mon:
+  -- status, confusion, and stage programs address attacker == defender
+  -- == subject, never the move user, so the frozen roles picture the
+  -- subject while the scene and substitute gates still apply.
+  ---@param effectKey string admitted catalog key behind the request
+  ---@param stage string anchor stage behind the request
+  ---@param appliedOp table<string, unknown> applied operation carrying its subject
+  local function pushSubjectOperationAdmit(effectKey, stage, appliedOp)
+    local attacker, defender, targets = admitSubjectRoles(appliedOp)
+    pushRequest(effectKey, "feedback-script", gateOperationDisposition(effectKey, appliedOp), stage, 1, {
       attacker = attacker,
       defender = defender,
       targets = targets,
@@ -942,7 +990,7 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
       if applied.application == "rest" then
         pushOmit("omit:rest-uses-own-move")
       elseif type(root) == "string" then
-        pushOperationAdmit(root, "before-feedback-message", nil, applied)
+        pushSubjectOperationAdmit(root, "before-feedback-message", applied)
       else
         pushOmit("omit:status-route-pending-producer-facts")
       end
@@ -956,13 +1004,13 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
           condition --[[@as string]]
         ] or nil
         if type(root) == "string" and (outcome == "blocked" or outcome == "self-hit" or outcome == "passed") then
-          pushOperationAdmit(root, "before-feedback-message", nil, applied)
+          pushSubjectOperationAdmit(root, "before-feedback-message", applied)
         else
           pushOmit("omit:gate-outcome-carries-no-root")
         end
       end
     elseif operationKind == "confusion-applied" then
-      pushOperationAdmit("BATTLE_ANIMATION_CONFUSED", "before-feedback-message", nil, applied)
+      pushSubjectOperationAdmit("BATTLE_ANIMATION_CONFUSED", "before-feedback-message", applied)
     elseif operationKind == "stage-changed" then
       if applied.method == "reset" or applied.method == "copy" or applied.profile == "silent" then
         pushOmit("omit:silent-stage-carries-no-root")
@@ -970,8 +1018,16 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
         local before = applied.before
         local after = applied.after
         if type(before) == "number" and type(after) == "number" and after ~= before then
-          local root = after > before and "BATTLE_ANIMATION_STAT_BOOST" or "BATTLE_ANIMATION_STAT_DROP"
-          pushOperationAdmit(root, "before-feedback-message", nil, applied)
+          -- Only the group's first uncapped change owns the feedback:
+          -- UpdateStatStage plays its animation once per group behind
+          -- the UPDATE_STAT_STAGES flag, so later group members narrate
+          -- without replaying the root.
+          if applied.feedbackOwner ~= true then
+            pushOmit("omit:stage-feedback-owned-elsewhere")
+          else
+            local root = after > before and "BATTLE_ANIMATION_STAT_BOOST" or "BATTLE_ANIMATION_STAT_DROP"
+            pushSubjectOperationAdmit(root, "before-feedback-message", applied)
+          end
         else
           pushOmit("omit:uncapped-stage-carries-no-root")
         end

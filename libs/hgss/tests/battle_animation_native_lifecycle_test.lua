@@ -70,7 +70,7 @@ local function blendProgram()
         pictureSets = {},
         pictureAttributeOffset = false,
         managedSpriteOffset = false,
-        backgroundPositionEnabled = false,
+        backgroundPositionEnabled = true,
       },
     },
   })
@@ -160,6 +160,92 @@ function T.aborted_work_restores_only_owned_fields()
   Assert.equal(#journal.released, #journal.acquired, "the abort releases every staged lease exactly once")
   player:cancel(handle, "repeated")
   Assert.equal(player:status(handle), "cancelled", "repeated cancellation stays silent")
+end
+
+local function panelProgram(scriptArgs)
+  local instruction = {
+    op = "invoke-battle-animation-callback",
+    callback = "battle-sprite-panel-slide-up",
+    taskKind = "battle-sprite-panel-slide",
+    taskContext = "sprite-system",
+    parameters = {
+      firstPanelOffsetX = 0,
+      firstPanelOffsetY = -3,
+      secondPanelOffsetX = 12,
+      secondPanelOffsetY = 4,
+      durationTicks = 37,
+    },
+    resourceKeys = {},
+    runtimeSelection = "object-window-stripe-selection",
+  }
+  for graphic = 0, 3 do
+    instruction.resourceKeys["stripeGraphic" .. graphic .. "Char"] = "test/char" .. graphic
+    instruction.resourceKeys["stripeGraphic" .. graphic .. "Palette"] = "test/palette" .. graphic
+    instruction.resourceKeys["stripeGraphic" .. graphic .. "Screen"] = "test/screen" .. graphic
+  end
+  if scriptArgs ~= nil then
+    instruction.args = scriptArgs
+  end
+  return programOf({ instruction })
+end
+
+local function startPanelled(scriptArgs)
+  local spawned = {}
+  local stubTasks = {
+    create = function(kind, args, context, services)
+      spawned[#spawned + 1] = { kind = kind, args = args }
+      return {
+        stepSourceTick = function() end,
+        status = function()
+          return "complete"
+        end,
+        cancel = function() end,
+        dispose = function() end,
+      }
+    end,
+  }
+  local scene = sceneWithPair()
+  local audio = {}
+  function audio.play(_name) end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  local resources = {}
+  function resources.resolve(key)
+    return { key = key, lease = key }
+  end
+  function resources.release(_lease) end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = stubTasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(packet(), panelProgram(scriptArgs)))
+  for _ = 1, 4 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the panel occurrence drains to completion")
+  Assert.equal(#spawned, 1, "the panel occurrence spawns exactly one task")
+  return spawned[1]
+end
+
+function T.panel_script_words_reach_their_task()
+  local drop = startPanelled({ 1, 0 })
+  Assert.equal(drop.kind, "battle-sprite-panel-slide", "the drop spawns its panel task")
+  Assert.equal(drop.args.graphic, 1, "the drop script selects the lowering stripes")
+  Assert.equal(drop.args.target, 0, "the drop script silhouettes the attacker slot")
+  local present = startPanelled({ 2, 1 })
+  Assert.equal(present.args.graphic, 2, "the script graphic reaches the task")
+  Assert.equal(present.args.target, 1, "the script target reaches the task")
+  local bare = startPanelled(nil)
+  Assert.equal(bare.args.graphic, 0, "a wordless script defaults to the first graphic")
+  Assert.equal(bare.args.target, 0, "a wordless script defaults to the attacker slot")
 end
 
 return { tests = T }

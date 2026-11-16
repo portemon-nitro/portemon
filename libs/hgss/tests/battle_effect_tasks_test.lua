@@ -368,36 +368,90 @@ function T.configured_sprite_task_runs_from_typed_parameters()
   Assert.equal(#journal.released, #journal.acquired, "cancellation releases every holding once")
 end
 
-function T.palette_fade_task_steps_source_coefficients()
+function T.palette_fade_interpolates_holds_and_clears_on_return()
+  -- Selector 33 lowers the battle-background fade (retail
+  -- BattleAnimFunc_FadeBgPalette over MAIN_BG): the compiled start/end
+  -- coefficients interpolate the battlefield toward the target color,
+  -- never a battler picture, so no activation is pictured and no lease
+  -- stages. Completion holds the faded palette like hardware until the
+  -- next fade overwrites it; the scripted return fade clears it and
+  -- cancellation restores the journaled compositor instead.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
-  local activation = { combatant = 1, activation = 1 }
-  local task = assert(BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", {
-    callback = "pokemon-picture-and-battle-palette-fade",
-    taskContext = "battle-palette",
-    parameters = {
-      paletteTarget = "battle-animation-palette-target",
-      wait = 4,
-      startCoefficient = 10,
-      endCoefficient = 200,
-      nextColor = 300,
-    },
-    activation = activation,
-  }, occurrenceContext(), services))
+  local function compositorOf()
+    return assert(scene:animationFrame().main, "the fade publishes its main-engine state").compositor
+  end
+  local function fadeArgs(startCoefficient, endCoefficient, nextColor)
+    return {
+      callback = "pokemon-picture-and-battle-palette-fade",
+      taskContext = "battle-palette",
+      parameters = {
+        paletteTarget = "battle-animation-palette-target",
+        wait = 4,
+        startCoefficient = startCoefficient,
+        endCoefficient = endCoefficient,
+        nextColor = nextColor,
+      },
+    }
+  end
+  local function runToCompletion(task)
+    for _ = 1, 300 do
+      task:stepSourceTick({ tick = 1 })
+      if task:status() == "complete" then
+        return true
+      end
+    end
+    return task:status() == "complete"
+  end
+  local task = assert(
+    BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", fadeArgs(10, 200, 300), occurrenceContext(), services)
+  )
   Assert.equal(task:status(), "pending", "palette fades open pending")
   task:stepSourceTick({ tick = 1 })
-  local changed = #scene:effectViews() > 0 or scene:pictureState(activation) ~= nil
-  Assert.isTrue(changed, "the fade stages an observable change instead of idling on a timer")
-  for _ = 1, 300 do
-    task:stepSourceTick({ tick = 1 })
-    if task:status() == "complete" then
-      break
-    end
-  end
-  Assert.equal(task:status(), "complete", "the fade reaches its source-defined completion")
-  Assert.equal(#scene:effectViews(), 0, "completion releases every transient record")
+  local early = compositorOf().battlefieldFade
+  Assert.notNil(early, "the fade stages its battlefield fade instead of idling on a timer")
+  Assert.equal(early.amount, 10, "the first tick carries the compiled start coefficient")
+  Assert.equal(early.color.r, 300 % 32, "the fade decodes the target red channel")
+  task:stepSourceTick({ tick = 1 })
+  task:stepSourceTick({ tick = 1 })
+  local late = compositorOf().battlefieldFade
+  Assert.notNil(late, "the fade keeps publishing its battlefield fade across ticks")
+  Assert.isTrue(
+    (early.amount or 0) ~= (late.amount or 0),
+    "the working fade advances toward its requested strength instead of idling"
+  )
+  Assert.isTrue(runToCompletion(task), "the fade reaches its source-defined completion")
+  Assert.equal(
+    compositorOf().battlefieldFade.amount,
+    16,
+    "completion holds the clipped end coefficient like hardware holds its palette"
+  )
   Assert.equal(#journal.released, #journal.acquired, "completion releases every staged lease once")
   task:dispose()
+  -- A Leer-style darken holds its own end coefficient the same way.
+  local darken = assert(
+    BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", fadeArgs(0, 12, 0), occurrenceContext(), services)
+  )
+  Assert.isTrue(runToCompletion(darken), "the darken reaches its own completion")
+  Assert.equal(compositorOf().battlefieldFade.amount, 12, "the darken holds its compiled end coefficient")
+  darken:dispose()
+  -- The scripted return fade clears the held palette.
+  local back = assert(
+    BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", fadeArgs(12, 0, 0), occurrenceContext(), services)
+  )
+  Assert.isTrue(runToCompletion(back), "the return fade reaches its own completion")
+  local settled = compositorOf()
+  Assert.isTrue(
+    settled.battlefieldFade == nil or (settled.battlefieldFade.amount or 0) == 0,
+    "the return fade leaves no battlefield darkening behind"
+  )
+  back:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the fade legs release every staged lease once")
+end
+
+function T.palette_fade_cancel_restores_the_compositor_and_malformed_stays_loud()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
   local cancelling = assert(BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", {
     callback = "pokemon-picture-and-battle-palette-fade",
     taskContext = "battle-palette",
@@ -408,14 +462,103 @@ function T.palette_fade_task_steps_source_coefficients()
       endCoefficient = 200,
       nextColor = 300,
     },
-    activation = activation,
   }, occurrenceContext(55), services))
   cancelling:stepSourceTick({ tick = 1 })
   cancelling:cancel("superseded")
   Assert.equal(cancelling:status(), "cancelled", "cancellation lands on cancelled")
   cancelling:dispose()
-  Assert.isTrue(scene:pictureState(activation) == nil, "cancelling the fade leaves no patch behind")
+  Assert.isTrue(
+    scene:animationFrame().main.compositor.battlefieldFade == nil,
+    "cancelling the fade leaves no compositor fade behind"
+  )
   Assert.equal(#journal.released, #journal.acquired, "cancellation releases every holding once")
+  local ok, failure = pcall(BattleEffectTasks.create, "pokemon-picture-and-battle-palette-fade", {
+    callback = "pokemon-picture-and-battle-palette-fade",
+    taskContext = "battle-palette",
+    parameters = {
+      paletteTarget = "battle-animation-palette-target",
+    },
+  }, occurrenceContext(), services)
+  Assert.isFalse(ok, "a fade without compiled timing never yields a runnable task")
+  Assert.isTrue(
+    string.find(tostring(failure), "pokemon-picture-and-battle-palette-fade", 1, true) ~= nil,
+    "the timing-less fade fails closed naming itself: " .. tostring(failure)
+  )
+  Assert.equal(#journal.released, #journal.acquired, "the rejected construction leaks no lease")
+end
+
+function T.attacker_obj_window_task_drives_the_compositor_window_seam()
+  -- Selector 21 (BattleAnimFunc_ShowAttackerObjWindowSprites) owns the
+  -- native OBJ window across its delay/show/hold phasing: the show tick
+  -- publishes the connected windows record where the compositor reader
+  -- resolves it (windows.objWindow/outside, never the dead objectWindow
+  -- top-level field), and the destroy tick restores the journaled
+  -- compositor instead of stranding the window. Masks mirror the native
+  -- register state through the plane mapping in the composite contract
+  -- (world3d is BG0, window is BG1, transition is BG2, battlefield is
+  -- BG3): outside shows every plane while the attacker silhouette keeps
+  -- the world3d picture the native OBJ gate shows, hiding only the
+  -- background transition and battlefield planes the native inside mask
+  -- clears.
+  local scene = sceneWithPair()
+  local services, _ = journalServices(scene)
+  local function windowsOf()
+    return assert(scene:animationFrame().main, "the window task publishes its main-engine state").compositor.windows
+  end
+  local task = assert(
+    BattleEffectTasks.create("battle-visual-show-attacker-obj-window-sprites", {}, occurrenceContext(), services)
+  )
+  Assert.equal(task:status(), "pending", "object-window tasks open pending")
+  for _ = 1, 10 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(task:status(), "running", "the delay never completes the window")
+  Assert.isNil(windowsOf(), "the delay publishes no window")
+  task:stepSourceTick({ tick = 1 })
+  local shown = windowsOf()
+  Assert.notNil(shown, "the show tick publishes the connected windows record")
+  local objWindow = assert(shown.objWindow, "the show tick names the object window")
+  local outside = assert(shown.outside, "the show tick names the outside window")
+  Assert.deepEqual(
+    objWindow.mask,
+    { world3d = true, window = true, transition = false, battlefield = false },
+    "the inside mask keeps the attacker picture while clearing the background planes"
+  )
+  Assert.deepEqual(
+    outside.mask,
+    { world3d = true, window = true, transition = true, battlefield = true },
+    "the outside mask keeps every plane visible"
+  )
+  for _ = 1, 9 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.equal(task:status(), "running", "the hold keeps the window owned")
+    Assert.notNil(windowsOf(), "the hold keeps the window published")
+  end
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the hold boundary completes the window")
+  Assert.isNil(windowsOf(), "the destroy tick restores the journaled compositor")
+  task:dispose()
+  Assert.isNil(windowsOf(), "disposal after completion restores nothing twice")
+  local cancelScene = sceneWithPair()
+  local cancelServices, _ = journalServices(cancelScene)
+  local cancelling = assert(
+    BattleEffectTasks.create(
+      "battle-visual-show-attacker-obj-window-sprites",
+      {},
+      occurrenceContext(),
+      cancelServices
+    )
+  )
+  for _ = 1, 11 do
+    cancelling:stepSourceTick({ tick = 1 })
+  end
+  cancelling:cancel("superseded")
+  Assert.equal(cancelling:status(), "cancelled", "cancellation lands on cancelled")
+  cancelling:dispose()
+  Assert.isNil(
+    cancelScene:animationFrame().main.compositor.windows,
+    "cancelling the window leaves no compositor window behind"
+  )
 end
 
 local function horizontalOffsetArgs(pictureTarget, durationTicks, signedOffset, activation)
@@ -823,33 +966,6 @@ function T.borrowed_player_leases_are_never_reacquired()
   Assert.equal(#journal.acquired, 0, "player-held dependencies are borrowed, never reacquired")
   Assert.equal(#journal.released, 0, "borrowed runs release nothing they do not own")
   task:dispose()
-end
-
-function T.palette_overlay_stages_a_visible_fade_while_running()
-  local scene = sceneWithPair()
-  local services, journal = journalServices(scene)
-  local activation = { combatant = 1, activation = 1 }
-  local task = assert(BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", {
-    parameters = {
-      paletteTarget = "battle-animation-palette-target",
-      wait = 4,
-      startCoefficient = 0,
-      endCoefficient = 16,
-      nextColor = 300,
-    },
-    activation = activation,
-  }, occurrenceContext(), services))
-  task:stepSourceTick({ tick = 1 })
-  local running = scene:pictureState(activation)
-  Assert.isTrue(
-    running ~= nil and running.paletteFade ~= nil,
-    "the running fade stages its clipped source coefficients"
-  )
-  Assert.equal(running.paletteFade.finish, 16, "the extreme end coefficient survives clipping")
-  task:cancel("superseded")
-  Assert.isNil(scene:pictureState(activation), "cancelling the fade leaves no patch behind")
-  task:dispose()
-  Assert.equal(#journal.released, #journal.acquired, "the fade releases every holding once")
 end
 
 function T.negative_offsets_wrap_without_leaking()

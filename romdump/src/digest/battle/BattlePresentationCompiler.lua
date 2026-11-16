@@ -6884,8 +6884,12 @@ local function stageSelectedSources(state, role, operands, sourceSelections)
     -- (BattleScene:installBackgroundLayer), never as uploaded RGBA
     -- textures: the staged character keeps its decoded tile bytes beside
     -- the palette and screen records, and skips the sprite raster queue.
+    -- Object-window stripes install the same way through the panel task
+    -- (BattleScene:installStripeLayer); only their slot names differ.
     local kind = source.kind
     if role == "battle-background" and slot == "character" then
+      kind = "tiles"
+    elseif role == "battle-animation-callback" and string.find(slot, "^stripeGraphic%dChar$") ~= nil then
       kind = "tiles"
     end
     local previous = state.resolvedResources[resourceKey]
@@ -6989,6 +6993,7 @@ local function selectedSourceOutput(resourceKeys, selection, isCallbackPlan)
     callback = selection.callback,
     actionProfile = selection.actionProfile,
     callbackCases = selection.callbackCases,
+    args = selection.args,
   }
   if isCallbackPlan then
     output.context = selection.context

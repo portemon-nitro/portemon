@@ -216,6 +216,103 @@ function T.applied_sleep_admits_while_rest_uses_its_own_move()
   Assert.equal(rest[1].disposition, "omit:rest-uses-own-move", "rest keeps its move root only")
 end
 
+function T.side_effect_feedback_pictures_its_subject_not_the_move_user()
+  local geometry = ManifestFixture.manifest().battlefield.slots
+  local before = views()
+  -- Retail UpdateStatStage and status applications play their
+  -- boost/drop feedback on the side-effect mon with attacker ==
+  -- defender == subject (BattleController_EmitSetStatus2Effect carries
+  -- the same battler twice); the move user only owns the primary move
+  -- root.
+  local changed = {
+    kind = "stage-changed",
+    subject = { combatant = 2, activation = 9 },
+    source = { kind = "move", key = "GROWL", actor = { combatant = 1, activation = 7 } },
+    stat = "attack",
+    before = 0,
+    after = -1,
+    method = "delta",
+    profile = "standard",
+    groupFirstSequence = 9,
+    feedbackOwner = true,
+  }
+  local appliedOperation = {
+    kind = "status-applied",
+    subject = { combatant = 2, activation = 9 },
+    source = { kind = "move", key = "HYPNOSIS", actor = { combatant = 1, activation = 7 } },
+    condition = "sleep",
+    application = "standard",
+  }
+  local packet = packetFor(before, before, {
+    rawEvent(9, "stage", { kind = "move", key = "GROWL" }, { target = 2, stat = "attack", before = 0, after = -1 },
+      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
+      { context = {}, operation = changed }),
+    rawEvent(10, "status", { kind = "move", key = "HYPNOSIS" }, { target = 2, key = "sleep" },
+      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
+      { context = {}, operation = appliedOperation }),
+  }, "selection-probe", 4)
+  local requests = select(packet, packet.events[1], geometry)
+  Assert.equal(requests[1].effectKey, "BATTLE_ANIMATION_STAT_DROP", "the drop selects its feedback member")
+  Assert.equal(requests[1].disposition, "admit", "the applied stage change admits its feedback root")
+  Assert.equal(requests[1].playback.topology.attacker.combatant, 2, "stage feedback pictures its subject as attacker")
+  Assert.equal(requests[1].playback.topology.defender.combatant, 2, "stage feedback pictures its subject as defender")
+  Assert.equal(#requests[1].playback.topology.targets, 1, "stage feedback carries its subject target")
+  Assert.equal(requests[1].playback.topology.targets[1].combatant, 2, "stage feedback targets its subject")
+  local applied = select(packet, packet.events[2], geometry)
+  Assert.equal(applied[1].effectKey, "BATTLE_ANIMATION_ASLEEP", "sleep selects its feedback member")
+  Assert.equal(applied[1].playback.topology.attacker.combatant, 2, "status feedback pictures its subject as attacker")
+  Assert.equal(applied[1].playback.topology.defender.combatant, 2, "status feedback pictures its subject as defender")
+end
+
+function T.stage_group_admits_only_its_first_feedback()
+  local geometry = ManifestFixture.manifest().battlefield.slots
+  local before = views()
+  -- Tickle lowers two stats on one target: only the first uncapped
+  -- change owns the feedback root, the second narrates without
+  -- replaying it, matching UpdateStatStage's single animation.
+  local first = {
+    kind = "stage-changed",
+    subject = { combatant = 2, activation = 9 },
+    source = { kind = "move", key = "TICKLE", actor = { combatant = 1, activation = 7 } },
+    stat = "attack",
+    before = 0,
+    after = -1,
+    method = "delta",
+    profile = "standard",
+    groupFirstSequence = 9,
+    feedbackOwner = true,
+  }
+  local second = {
+    kind = "stage-changed",
+    subject = { combatant = 2, activation = 9 },
+    source = { kind = "move", key = "TICKLE", actor = { combatant = 1, activation = 7 } },
+    stat = "defense",
+    before = 0,
+    after = -1,
+    method = "delta",
+    profile = "standard",
+    groupFirstSequence = 9,
+    feedbackOwner = false,
+  }
+  local packet = packetFor(before, before, {
+    rawEvent(9, "stage", { kind = "move", key = "TICKLE" }, { target = 2, stat = "attack", before = 0, after = -1 },
+      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
+      { context = {}, operation = first }),
+    rawEvent(10, "stage", { kind = "move", key = "TICKLE" }, { target = 2, stat = "defense", before = 0, after = -1 },
+      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
+      { context = {}, operation = second }),
+  }, "selection-probe", 4)
+  local owned = select(packet, packet.events[1], geometry)
+  Assert.equal(owned[1].effectKey, "BATTLE_ANIMATION_STAT_DROP", "the group owner selects the drop root")
+  Assert.equal(owned[1].disposition, "admit", "the group owner admits its feedback")
+  local follower = select(packet, packet.events[2], geometry)
+  Assert.equal(
+    follower[1].disposition,
+    "omit:stage-feedback-owned-elsewhere",
+    "later group members narrate without replaying the root"
+  )
+end
+
 function T.experience_admits_per_boundary_for_the_active_recipient()
   local geometry = ManifestFixture.manifest().battlefield.slots
   local before = views()

@@ -1151,10 +1151,15 @@ local function newBlendTransition(args, context, services)
     )
   end
   -- Timing-less spawns retire synchronously only for verified marker
-  -- kinds; this body fails them closed above. Timed spawns always take
-  -- the sweep below.
+  -- kinds; this body fails them closed above. Timed spawns sweep the
+  -- viewport only while the compiled background flag stays set: a
+  -- picture-attribute shake (selector-36 flag 0x100 without 0x400,
+  -- battle_anim effects ShakeTargets/Wobble family) moves its named
+  -- pictures and parks the viewport, while a background-enabled run
+  -- carries both. An absent flag keeps the legacy sweep so older
+  -- synthetic programs without lowered flags still scroll.
   local sweep = nil
-  if duration ~= nil then
+  if duration ~= nil and parameters.backgroundPositionEnabled ~= false then
     sweep = scrollSweepFor(parameters, duration)
   end
   local saved = scene.scroll(scene)
@@ -2768,6 +2773,443 @@ function BattleBlendCoefficientTask:dispose()
   end
   self._disposed = true
   teardownCoefficientBlend(self)
+end
+
+-- Owns one battle-background palette fade: the compiled start/end
+-- coefficients interpolate linearly over the compiled boundary and land
+-- in the task-owned compositor fade the scene carries for the
+-- battlefield plane, mirroring the native FadeBgPalette register hold
+-- (battle_anim_funcs.c PaletteData_BeginPaletteFade over MAIN_BG).
+-- Completion holds the final amount exactly like hardware holds the
+-- faded palette until the next fade overwrites it; cancel/dispose
+-- restores the journaled compositor instead of stranding a darkened
+-- battlefield. Despite the composite task-kind name, the retail
+-- selector-33 operation fades only the background palette: it carries
+-- no battler target, so this body owns no picture patch.
+---@class BattleBackgroundFadeTask
+---@field _scene table<string, unknown> scene behind the owned compositor fade
+---@field _kind string task kind behind the run
+---@field _from integer compiled start coefficient in 0..16
+---@field _to integer compiled end coefficient in 0..16
+---@field _colorR integer fade target red in 0..31
+---@field _colorG integer fade target green in 0..31
+---@field _colorB integer fade target blue in 0..31
+---@field _duration integer source ticks behind completion
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _disposed boolean release has run
+local BattleBackgroundFadeTask = {}
+BattleBackgroundFadeTask.__index = BattleBackgroundFadeTask
+
+---@param value unknown compiled fade channel under validation
+---@return integer channel in 0..31
+local function clampFadeChannel(value)
+  if type(value) ~= "number" or value ~= value then
+    return 0
+  end
+  local channel = math.floor(value)
+  if channel < 0 then
+    return 0
+  elseif channel > 31 then
+    return 31
+  end
+  return channel
+end
+
+---@param kind string task kind behind construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable fade task
+local function newBackgroundFadeTask(kind, args, context, services)
+  checkVisualArgs(args, kind)
+  local _ = context
+  local scene = checkScene(services, kind)
+  if type(scene.writeAnimationCompositor) ~= "function" or type(scene.restoreAnimationCompositor) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " fades through the scene compositor seam", 0)
+  end
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+  end
+  local duration = visualDuration(parameters, kind)
+  if duration == nil then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " retires only on compiled timing operands", 0)
+  end
+  local startCoefficient = parameters.startCoefficient
+  local endCoefficient = parameters.endCoefficient
+  if type(startCoefficient) ~= "number" or type(endCoefficient) ~= "number" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " interpolates its compiled coefficients", 0)
+  end
+  local color = parameters.nextColor
+  if type(color) ~= "number" or color % 1 ~= 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its compiled target color", 0)
+  end
+  local word = math.floor(color) % 65536
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _from = clipBlendCoefficient(startCoefficient),
+    _to = clipBlendCoefficient(endCoefficient),
+    _colorR = clampFadeChannel(word % 32),
+    _colorG = clampFadeChannel(math.floor(word / 32) % 32),
+    _colorB = clampFadeChannel(math.floor(word / 1024) % 32),
+    _duration = duration,
+    _ticks = 0,
+    _state = "pending",
+    _disposed = false,
+  }, BattleBackgroundFadeTask)
+end
+
+-- Drops the owned compositor fade, restoring whatever the journal held
+-- before this task wrote it.
+---@param self BattleBackgroundFadeTask fade task under teardown
+local function teardownBackgroundFade(self)
+  self._scene.restoreAnimationCompositor(self._scene, self, "main")
+end
+
+---@param self BattleBackgroundFadeTask fade task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattleBackgroundFadeTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  local progress = self._ticks / self._duration
+  if progress > 1 then
+    progress = 1
+  end
+  local amount = math.floor(self._from + (self._to - self._from) * progress + 0.5)
+  local ok, err = pcall(self._scene.writeAnimationCompositor, self._scene, self, "main", {
+    battlefieldFade = {
+      color = { r = self._colorR, g = self._colorG, b = self._colorB },
+      amount = amount,
+    },
+  })
+  if not ok then
+    teardownBackgroundFade(self)
+    error(err, 0)
+  end
+  if self._ticks >= self._duration then
+    self._state = "complete"
+  end
+end
+
+---@param self BattleBackgroundFadeTask
+---@return string
+function BattleBackgroundFadeTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "background fade tasks report a known run state")
+  return self._state
+end
+
+---@param self BattleBackgroundFadeTask
+---@param reason string cancellation cause under diagnosis
+function BattleBackgroundFadeTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  teardownBackgroundFade(self)
+end
+
+---@param self BattleBackgroundFadeTask
+function BattleBackgroundFadeTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  if self._state ~= "complete" then
+    teardownBackgroundFade(self)
+  end
+end
+
+-- Owns one object-window panel slide: the scrolled stripe backdrop the
+-- object window reveals through the affected battler's silhouette
+-- (retail BattleAnimTask_ObjWindowBgScroll with
+-- BattleAnimObjWindowBg_Start over GF_BG_LYR_MAIN_2). The compiled
+-- first-panel offsets are the scroll velocity, the second-panel offsets
+-- are the held blend pair, and the runtime graphic/target args select
+-- the stripe files and the silhouetted side (Arg0 graphic, Arg1 target
+-- with 0 naming the attacker). The 37-tick boundary runs one setup
+-- tick, one blend-setup tick, twenty-two scroll ticks, twelve blend-out
+-- ticks, and the destroy tick; the scroll applies on every tick but the
+-- destroy tick, and the fade steps the held pair to 0/16 over the last
+-- twelve. Completion runs the destroy tick (stripe, window, blend, and
+-- silhouette all go); cancel/dispose restores the journaled compositor
+-- and drops the stripe instead of stranding it.
+---@class BattlePanelSlideTask
+---@field _scene table<string, unknown> scene behind the owned stripe, scroll, blend, window, and silhouette
+---@field _kind string task kind behind the run
+---@field _staged table<integer, BattleEffectLeaseRecord> staged stripe leases behind exactly-once release
+---@field _bySlot table<string, BattleEffectLeaseRecord> staged leases by stripe slot
+---@field _graphic integer runtime stripe graphic selection in 0..3
+---@field _activation table<string, unknown> silhouetted combatant and activation pair
+---@field _velocityX integer horizontal stripe velocity in native pixels per tick
+---@field _velocityY integer vertical stripe velocity in native pixels per tick
+---@field _blendA integer held blend A coefficient
+---@field _blendB integer held blend B coefficient
+---@field _duration integer source ticks behind completion
+---@field _ticks integer source ticks advanced
+---@field _installed boolean the stripe layer is live in the scene
+---@field _state string pending, running, complete, or cancelled
+---@field _disposed boolean release has run
+local BattlePanelSlideTask = {}
+BattlePanelSlideTask.__index = BattlePanelSlideTask
+
+local PANEL_SLIDE_BLEND_OUT_TICKS = 12
+local PANEL_SLIDE_FADE_OUT_A = 0
+local PANEL_SLIDE_FADE_OUT_B = 16
+
+---@param lease unknown staged lease under validation
+---@param kind string task kind under diagnosis
+---@return table<string, unknown> decoded stripe payload behind the lease
+local function stripePayload(lease, kind)
+  if type(lease) ~= "table" or type(lease.data) ~= "table" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " stages decoded stripe records", 0)
+  end
+  return lease.data --[[@as table<string, unknown>]]
+end
+
+---@param _ table<integer, BattleEffectLeaseRecord> staged occurrence leases under counting
+---@param bySlot table<string, BattleEffectLeaseRecord> staged leases by stripe slot
+---@param slot string owned stripe slot behind lookup
+---@param kind string task kind under diagnosis
+---@return table<string, unknown> staged lease behind the slot
+local function stripeLease(_, bySlot, slot, kind)
+  local record = bySlot[slot]
+  if type(record) ~= "table" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " stages a stripe lease for " .. slot, 0)
+  end
+  local lease = record.lease
+  if type(lease) ~= "table" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " stages a stripe lease for " .. slot, 0)
+  end
+  return lease --[[@as table<string, unknown>]]
+end
+
+---@param kind string task kind behind construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable panel-slide task
+local function newPanelSlideTask(kind, args, context, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  assert(type(scene.installStripeLayer) == "function", "panel slides install their stripe layer")
+  assert(type(scene.setStripeScroll) == "function", "panel slides scroll their stripe layer")
+  assert(type(scene.removeStripeLayer) == "function", "panel slides remove their stripe layer")
+  assert(type(scene.setObjWindowSilhouette) == "function", "panel slides silhouette their battler")
+  assert(type(scene.writeAnimationCompositor) == "function", "panel slides write their compositor")
+  assert(type(scene.restoreAnimationCompositor) == "function", "panel slides restore their compositor")
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+  end
+  local duration = visualDuration(parameters, kind)
+  if duration == nil then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " retires only on compiled timing operands", 0)
+  end
+  local velocityX = parameters.firstPanelOffsetX
+  local velocityY = parameters.firstPanelOffsetY
+  local blendA = parameters.secondPanelOffsetX
+  local blendB = parameters.secondPanelOffsetY
+  for _, field in ipairs({ velocityX, velocityY, blendA, blendB }) do
+    if type(field) ~= "number" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries numeric panel offsets", 0)
+    end
+  end
+  local resourceKeys = args.resourceKeys
+  if type(resourceKeys) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages its stripe resources", 0)
+  end
+  local graphic = args.graphic
+  if graphic == nil then
+    graphic = 0
+  end
+  if type(graphic) ~= "number" or graphic % 1 ~= 0 or graphic < 0 or graphic > 3 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects a stripe graphic in 0..3", 0)
+  end
+  local target = args.target
+  if target == nil then
+    target = 0
+  end
+  if type(target) ~= "number" or target % 1 ~= 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects its silhouette target numerically", 0)
+  end
+  local topology = type(context) == "table" and context.topology or nil
+  local attacker = type(topology) == "table" and topology.attacker or nil
+  local targets = type(topology) == "table" and topology.targets or nil
+  local firstTarget = type(targets) == "table" and targets[1] or nil
+  local selected = nil ---@type table<string, unknown>?
+  if target == 0 then
+    selected = attacker
+  else
+    selected = (type(firstTarget) == "table" and type(firstTarget.combatant) == "number") and firstTarget or attacker
+  end
+  if type(selected) ~= "table" or type(selected.combatant) ~= "number" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " silhouettes a resolved occurrence battler", 0)
+  end
+  local staged = {}
+  local bySlot = {}
+  for row = 0, 3 do
+    for _, slot in ipairs({ "Char", "Palette", "Screen" }) do
+      local slotName = "stripeGraphic" .. row .. slot
+      local resourceKey = resourceKeys[slotName]
+      if type(resourceKey) ~= "string" or resourceKey == "" then
+        releaseStaged(staged)
+        error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages its stripe resource " .. slotName, 0)
+      end
+      stageLease(kind, resourceKey, services, staged)
+      bySlot[slotName] = staged[#staged]
+    end
+  end
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _staged = staged,
+    _bySlot = bySlot,
+    _graphic = graphic,
+    _activation = { combatant = selected.combatant, activation = selected.activation },
+    _velocityX = math.floor(velocityX),
+    _velocityY = math.floor(velocityY),
+    _blendA = clipBlendCoefficient(blendA),
+    _blendB = clipBlendCoefficient(blendB),
+    _duration = duration,
+    _ticks = 0,
+    _installed = false,
+    _state = "pending",
+    _disposed = false,
+  }, BattlePanelSlideTask)
+end
+
+-- Installs the runtime stripe graphic and stages the window, blend, and
+-- silhouette behind the scroll run. The graphic payload rides the three
+-- staged slots of the runtime graphic row.
+---@param self BattlePanelSlideTask panel-slide task under installation
+local function installPanelSlide(self)
+  local prefix = "stripeGraphic" .. self._graphic
+  local bySlot = self._bySlot
+  local character = stripePayload(stripeLease(self._staged, bySlot, prefix .. "Char", self._kind), self._kind)
+  local palette = stripePayload(stripeLease(self._staged, bySlot, prefix .. "Palette", self._kind), self._kind)
+  local screen = stripePayload(stripeLease(self._staged, bySlot, prefix .. "Screen", self._kind), self._kind)
+  if type(character.tiles) ~= "string" or type(character.depth) ~= "number" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. self._kind .. " installs 4bpp stripe characters", 0)
+  end
+  if type(palette.colors) ~= "table" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. self._kind .. " installs its stripe palette", 0)
+  end
+  if type(screen.width) ~= "number" or type(screen.height) ~= "number" or type(screen.entries) ~= "table" then
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. self._kind .. " installs its stripe tilemap", 0)
+  end
+  self._scene.installStripeLayer(self._scene, {
+    characters = character.tiles,
+    colorMode = "4bpp",
+    map = screen,
+    palette = palette,
+  })
+  self._installed = true
+end
+
+-- Restores everything the run owns: the stripe layer drops, the
+-- journaled compositor returns, and the silhouette clears. Silent when
+-- nothing is installed so repeated teardown stays quiet.
+---@param self BattlePanelSlideTask panel-slide task under teardown
+local function teardownPanelSlide(self)
+  if self._installed then
+    self._installed = false
+    self._scene.removeStripeLayer(self._scene)
+  end
+  self._scene.setObjWindowSilhouette(self._scene, nil)
+  self._scene.restoreAnimationCompositor(self._scene, self, "main")
+end
+
+---@param self BattlePanelSlideTask panel-slide task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattlePanelSlideTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  if self._ticks >= self._duration then
+    self._state = "complete"
+    teardownPanelSlide(self)
+    return
+  end
+  if not self._installed then
+    installPanelSlide(self)
+    self._scene.setObjWindowSilhouette(self._scene, self._activation)
+  end
+  self._scene.setStripeScroll(self._scene, self._velocityX * self._ticks, self._velocityY * self._ticks)
+  local eva, evb = self._blendA, self._blendB
+  local fadeStart = self._duration - PANEL_SLIDE_BLEND_OUT_TICKS
+  if self._ticks > fadeStart then
+    local step = self._ticks - fadeStart
+    eva = math.max(PANEL_SLIDE_FADE_OUT_A, self._blendA - step)
+    evb = math.min(PANEL_SLIDE_FADE_OUT_B, self._blendB + step)
+  end
+  -- Retail blend: G2_SetBlendAlpha(BG2, BG0|BG3|OBJ|BD, eva, evb)
+  -- (battle_anim_effects.c). The stripe stays the first target while
+  -- the mon picture behind it is a second target, so the 12/4 hold
+  -- reads as a translucent wash instead of a solid slab. Native
+  -- priorities put the stripe (base 1) above the battler sprites
+  -- (2); the world plane carries our mon pictures, so it rides at 2
+  -- under the transition at 1. The inside mask keeps world3d visible
+  -- for the same reason the attacker-window task does: hiding it
+  -- would punch a mon-shaped hole with no blend partner behind the
+  -- stripe.
+  local ok, err = pcall(self._scene.writeAnimationCompositor, self._scene, self, "main", {
+    blend = { mode = "alpha", eva = eva, evb = evb, evy = 0 },
+    firstTarget = { transition = true },
+    secondTarget = { world3d = true, battlefield = true },
+    priority = { world3d = 2, transition = 1 },
+    windows = {
+      objWindow = {
+        mask = { world3d = true, window = true, transition = true, battlefield = false },
+      },
+      outside = {
+        mask = { world3d = true, window = true, transition = false, battlefield = true },
+      },
+    },
+  })
+  if not ok then
+    teardownPanelSlide(self)
+    error(err, 0)
+  end
+end
+
+---@param self BattlePanelSlideTask
+---@return string
+function BattlePanelSlideTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "panel slides report a known run state")
+  return self._state
+end
+
+---@param self BattlePanelSlideTask
+---@param reason string cancellation cause under diagnosis
+function BattlePanelSlideTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  teardownPanelSlide(self)
+end
+
+---@param self BattlePanelSlideTask
+function BattlePanelSlideTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  if self._state ~= "complete" then
+    teardownPanelSlide(self)
+  end
+  releaseStaged(self._staged)
 end
 
 -- Effect backdrop plane behind battle-background-resource-load and its
@@ -4407,8 +4849,19 @@ function BattleTwoStateTask:dispose()
 end
 
 -- Object-window sprite task with native delay/show/hold phasing: an
--- invisible delay, one show tick publishing the object-window state,
--- a hold, then exact window cleanup and completion.
+-- invisible delay, one show tick publishing the connected window state,
+-- a hold, then exact window cleanup and completion. The published masks
+-- mirror the native register state
+-- (BattleAnimFunc_ShowAttackerObjWindowSprites in
+-- battle_anim_move_effects.c) through the composite plane mapping
+-- (world3d is BG0, window is BG1, transition is BG2, battlefield is
+-- BG3): outside the window every plane stays visible, while inside
+-- only the window (BG1) plane stays visible with the background
+-- transition and battlefield planes cleared. The attacker's picture
+-- rides the world3d plane in this engine (native battlers are OBJ
+-- sprites gated through the object flag instead), so the inside mask
+-- keeps world3d visible rather than punching an attacker-shaped hole
+-- through the mon the window frames.
 ---@class BattleObjWindowTask
 ---@field _scene table<string, unknown> scene behind the window writes
 ---@field _ticks integer source ticks advanced
@@ -4426,6 +4879,9 @@ local OBJ_WINDOW_HOLD_TICKS = 10
 ---@return BattleObjWindowTask runnable window task
 local function newObjWindowTask(kind, services)
   local scene = checkScene(services, kind)
+  if type(scene.writeAnimationCompositor) ~= "function" or type(scene.restoreAnimationCompositor) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " owns its window through the scene compositor seam", 0)
+  end
   return setmetatable({
     _scene = scene,
     _kind = kind,
@@ -4438,15 +4894,16 @@ end
 
 ---@param self BattleObjWindowTask window task under window publication
 local function publishObjWindow(self)
-  if type(self._scene.writeAnimationCompositor) == "function" then
-    self._scene:writeAnimationCompositor(self, "main", {
-      objectWindow = {
-        visible = "object-window",
-        outside = { bg0 = false, bg1 = false, bg2 = false, bg3 = false, obj = false },
-        inside = { bg1 = false, obj = false },
+  self._scene:writeAnimationCompositor(self, "main", {
+    windows = {
+      objWindow = {
+        mask = { world3d = true, window = true, transition = false, battlefield = false },
       },
-    })
-  end
+      outside = {
+        mask = { world3d = true, window = true, transition = true, battlefield = true },
+      },
+    },
+  })
 end
 
 ---@param self BattleObjWindowTask window task under window cleanup
@@ -4455,11 +4912,7 @@ local function teardownObjWindow(self)
     return
   end
   self._released = true
-  if type(self._scene.writeAnimationCompositor) == "function" then
-    self._scene:writeAnimationCompositor(self, "main", {
-      objectWindow = { visible = "none" },
-    })
-  end
+  self._scene.restoreAnimationCompositor(self._scene, self, "main")
 end
 
 ---@param self BattleObjWindowTask
@@ -4503,6 +4956,9 @@ function BattleObjWindowTask:dispose()
     return
   end
   self._disposed = true
+  if self._state ~= "complete" then
+    teardownObjWindow(self)
+  end
 end
 
 -- Resolves the picture activation a motion task owns: the explicit
@@ -5374,6 +5830,10 @@ function BattleEffectTasks.create(kind, args, context, services)
     assert(type(services) == "table", "object-window sprites require their services record")
     return newObjWindowTask(kind, services)
   end
+  if kind == "battle-sprite-panel-slide" then
+    assert(type(services) == "table", "panel slides require their services record")
+    return newPanelSlideTask(kind, args or {}, context or {}, services)
+  end
   if kind == "pokemon-picture-sinusoidal-position-motion" then
     assert(type(services) == "table", "sinusoidal motion requires its services record")
     return newSinusoidalMotionTask(kind, args or {}, context or {}, services)
@@ -5389,6 +5849,10 @@ function BattleEffectTasks.create(kind, args, context, services)
   if kind == "battle-sprite-mosaic-transition" then
     assert(type(services) == "table", "sprite mosaic requires its services record")
     return newMosaicTask(kind, args or {}, services)
+  end
+  if kind == "pokemon-picture-and-battle-palette-fade" then
+    assert(type(services) == "table", "background palette fades require their services record")
+    return newBackgroundFadeTask(kind, args or {}, context or {}, services)
   end
   if SOUND_TASK_KINDS[kind] == true then
     assert(type(services) == "table", "sound tasks require their services record")

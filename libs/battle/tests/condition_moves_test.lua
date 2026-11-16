@@ -724,19 +724,54 @@ function T.ingrain_roots_healing_on_the_user()
   Assert.isTrue(probe.ctx:hasBattleEffect(1, "ingrain"), "ingrain roots its healing")
 end
 
--- Lock-On and Mind Reader promise the next strike; foresight and odor
--- sleuth identify ghosts for normal and fighting strikes.
+-- Lock-On and Mind Reader promise the next strike; foresight, odor
+-- sleuth, and Miracle Eye identify ghosts for normal and fighting
+-- strikes. Every marking move also voices its own subscript line behind
+-- the use announcement: lock-on takes aim while foresight, odor sleuth,
+-- and Miracle Eye identify the defender (subscript_0079_LockOn msg 378,
+-- subscript_0100_Foresight and subscript_0158_MiracleEye msg 432).
+---@param outbox table<integer, table<string, unknown>> emitted kernel events under inspection
+---@param kind string narrating event kind under lookup
+---@return table<string, unknown>? first matching event, nil when the move stays silent
+local function narratingEvent(outbox, kind)
+  for _, event in ipairs(outbox) do
+    if type(event) == "table" and event.kind == kind then
+      return event --[[@as table<string, unknown>]]
+    end
+  end
+  return nil
+end
+
+---@param probe table finished condition probe under inspection
+---@param kind string expected narrating event kind
+---@param moveKey string move identity for diagnostics
+local function assertVoices(probe, kind, moveKey)
+  local voiced = narratingEvent(probe.state.outbox, kind)
+  Assert.notNil(voiced, moveKey .. " voices its " .. kind .. " line behind its marker")
+  assert(voiced ~= nil, "the " .. moveKey .. " narration stays available")
+  Assert.equal(voiced.payload.user, 1, "the " .. kind .. " names its attacker")
+  Assert.equal(voiced.payload.target, 2, "the " .. kind .. " names its defender")
+end
+
 function T.lock_on_and_foresight_shape_later_strikes()
   conditionOwner("lock-on and foresight own their markers")
   local probe = runCondition("LOCK_ON", moveFacts("LOCK_ON", { accuracy = 0, moveType = "normal" }), FIXED_SEED)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "lock-on connects")
   Assert.isTrue(probe.ctx:hasBattleEffect(2, "lockon"), "lock-on marks the defender")
-  local identified =
-    runCondition("FORESIGHT", moveFacts("FORESIGHT", { accuracy = 0, moveType = "fighting" }), FIXED_SEED)
-  local identifiedOutcome = identified.outcome --[[@as table<string, unknown>]]
-  Assert.equal(identifiedOutcome.result, "hit", "foresight connects")
-  Assert.isTrue(identified.ctx:hasBattleEffect(2, "foresight"), "foresight identifies the defender")
+  assertVoices(probe, "aimed", "LOCK_ON")
+  local mindReader =
+    runCondition("MIND_READER", moveFacts("MIND_READER", { accuracy = 0, moveType = "normal" }), FIXED_SEED)
+  Assert.equal(mindReader.outcome.result, "hit", "mind reader connects")
+  Assert.isTrue(mindReader.ctx:hasBattleEffect(2, "lockon"), "mind reader marks like lock-on")
+  assertVoices(mindReader, "aimed", "MIND_READER")
+  for _, move in ipairs({ "FORESIGHT", "ODOR_SLEUTH" }) do
+    local identified = runCondition(move, moveFacts(move, { accuracy = 0, moveType = "fighting" }), FIXED_SEED)
+    local identifiedOutcome = identified.outcome --[[@as table<string, unknown>]]
+    Assert.equal(identifiedOutcome.result, "hit", move .. " connects")
+    Assert.isTrue(identified.ctx:hasBattleEffect(2, "foresight"), move .. " identifies the defender")
+    assertVoices(identified, "identified", move)
+  end
   local miracleEye =
     runCondition("MIRACLE_EYE", moveFacts("MIRACLE_EYE", { accuracy = 0, moveType = "psychic" }), FIXED_SEED)
   local miracleOutcome = miracleEye.outcome --[[@as table<string, unknown>]]
@@ -746,6 +781,7 @@ function T.lock_on_and_foresight_shape_later_strikes()
     miracleEye.ctx:hasBattleEffect(2, "foresight"),
     "Miracle Eye does not reuse Foresight's narrower marker"
   )
+  assertVoices(miracleEye, "identified", "MIRACLE_EYE")
 end
 
 -- Magnet Rise levitates for five turns and refuses the grounded-already

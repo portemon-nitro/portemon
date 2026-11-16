@@ -330,6 +330,17 @@ local CONFIGURED_SPRITE_PARAMETERS = {
 
 BattleAnimationSources.CONFIGURED_SPRITE_TASK_COUNT = #CONFIGURED_SPRITE_TASKS
 
+-- Build-only member rows from battle_anim_data.s::gBattleAnimObjWindowBgFiles.
+-- Each row is {graphics, palette, screen} in NARC_a_0_0_7 for one
+-- BattleAnimObjWindowBg graphic selection (the runtime Arg0); the fourth
+-- table word duplicates the screen and carries no distinct member.
+BattleAnimationSources.OBJECT_WINDOW_BG_ROWS = {
+  { 0x36, 0x126, 0x37 },
+  { 0x30, 0x123, 0x31 },
+  { 0x32, 0x124, 0x33 },
+  { 0x34, 0x125, 0x35 },
+}
+
 -- Build-only member rows from overlay_07.s::ov07_02234F48. Each row is
 -- {character, palette, screen-default, screen-alternate, auxiliary}; the
 -- runtime-selected screen column is chosen by ov07_0221DDB0.
@@ -2109,14 +2120,46 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
     -- same hold and blend; only the scroll velocity (the lowered
     -- offsets) and the graphic/target selection vary, and none of
     -- those gate completion, so no lowered operand can wedge the run.
+    -- The graphic and target ride the runtime animation args
+    -- (BattleAnimObjWindowBg_InitParams reads Arg0/Arg1): every script
+    -- in the corpus passes both words, so the compiler lowers them onto
+    -- the invocation and the player loads them into the scratch
+    -- context exactly like CallFunc, while every graphic row still
+    -- stages at compile time for the runtime selection.
+    if count ~= 2 then
+      return nil, "object window scroll carries its graphic and target selections"
+    end
     local offsetY = ({ [80] = 3, [81] = -3, [82] = 3, [83] = -6 })[selector]
     local callback = offsetY == 3 and "battle-sprite-panel-slide-down"
       or offsetY == -3 and "battle-sprite-panel-slide-up"
       or "battle-sprite-panel-slide-far-up"
+    local sourceSelections = {}
+    for graphic = 0, 3 do
+      local row = BattleAnimationSources.OBJECT_WINDOW_BG_ROWS[graphic + 1]
+      sourceSelections["stripeGraphic" .. graphic .. "Char"] = {
+        archiveSymbol = BattleAnimationSources.LOWER_NARC,
+        memberId = row[1],
+        decoder = "char",
+        kind = "texture",
+      }
+      sourceSelections["stripeGraphic" .. graphic .. "Palette"] = {
+        archiveSymbol = BattleAnimationSources.LOWER_NARC,
+        memberId = row[2],
+        decoder = "palette",
+        kind = "palette",
+      }
+      sourceSelections["stripeGraphic" .. graphic .. "Screen"] = {
+        archiveSymbol = BattleAnimationSources.LOWER_NARC,
+        memberId = row[3],
+        decoder = "screen",
+        kind = "map",
+      }
+    end
     return {
       callback = callback,
       taskKind = "battle-sprite-panel-slide",
       context = "sprite-system",
+      runtimeSelection = "object-window-stripe-selection",
       parameters = {
         firstPanelOffsetX = 0,
         firstPanelOffsetY = offsetY,
@@ -2124,6 +2167,8 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
         secondPanelOffsetY = 4,
         durationTicks = 37,
       },
+      sourceSelections = sourceSelections,
+      args = { operands[3], operands[4] },
     }
   end
   return nil, "battle animation callback selector is outside the normalized source set"

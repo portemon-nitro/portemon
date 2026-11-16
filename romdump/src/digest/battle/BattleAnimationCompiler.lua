@@ -104,6 +104,7 @@ local function checkSourceInputResult(key, offset, result, requiredSlots, option
       and field ~= "op"
       and field ~= "pictureSets"
       and field ~= "vanished"
+      and field ~= "args"
     then
       error(decodeError(key, offset, "source resolver returned an unsupported field " .. tostring(field)), 0)
     end
@@ -1152,13 +1153,23 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
             or resolved.taskKind == "battle-background-sprite-slide-transition"
           then
             expectedSlots = { "character", "palette", "screenDefault", "screenBattlerClassFour", "screenContextFlag" }
+          elseif resolved.taskKind == "battle-sprite-panel-slide" then
+            expectedSlots = {}
+            for graphic = 0, 3 do
+              expectedSlots[#expectedSlots + 1] = "stripeGraphic" .. graphic .. "Char"
+              expectedSlots[#expectedSlots + 1] = "stripeGraphic" .. graphic .. "Palette"
+              expectedSlots[#expectedSlots + 1] = "stripeGraphic" .. graphic .. "Screen"
+            end
           end
           local checkedResourceKeys = checkSourceInputResult(key, offset, resolved, expectedSlots)
-          if
-            next(checkedResourceKeys) ~= nil
-            and resolved.runtimeSelection ~= "battle-background-three-way-screen-selection"
-          then
-            error(decodeError(key, offset, "source callback resources have no runtime selection"), 0)
+          if next(checkedResourceKeys) ~= nil then
+            local selection = resolved.runtimeSelection
+            if
+              selection ~= "battle-background-three-way-screen-selection"
+              and selection ~= "object-window-stripe-selection"
+            then
+              error(decodeError(key, offset, "source callback resources have no runtime selection"), 0)
+            end
           end
           instruction = {
             op = "invoke-battle-animation-callback",
@@ -1170,6 +1181,9 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
             resourceKeys = next(checkedResourceKeys) ~= nil and checkedResourceKeys or nil,
             runtimeSelection = resolved.runtimeSelection,
           }
+          if resolved.args ~= nil then
+            instruction.args = resolved.args
+          end
           offset = offset + 8 + count * 4
         end
       else

@@ -839,8 +839,15 @@ local function battlerPicture(assets, battler, row)
   end
   local settledX, settledY = settledPictureCenter(battler, row)
   local picture = {
+    combatant = battler.combatant,
+    activation = battler.activation,
     image = image.image,
     imageKind = image.imageKind,
+    -- The 2D object-window silhouette redraws this same portrait
+    -- through the shared sampler: pooled portrait cells are indexed
+    -- atlas windows, so the raw page image alone draws opaque and
+    -- would mask the stripe as a rectangle instead of the mon shape.
+    sampler = cell,
     centerX = settledX + numberOr(battler.entryDx, 0) + numberOr(battler.shakeDx, 0) + numberOr(battler.motionDx, 0),
     centerY = settledY + numberOr(battler.entryDy, 0) + numberOr(battler.motionDy, 0),
     zCenter = row.depth,
@@ -1316,6 +1323,33 @@ local function compositionAnimation(view, engine, priorityOverride)
   -- through the composite resolve; the fade-buffer copy needs no
   -- stored content because every plane re-renders from source.
   local grayscaleBattlefield = engine == "main" and compositor.paletteGrayscale == true
+  -- Scripted MAIN_BG palette fades darken the battlefield plane toward
+  -- their target color by the interpolated amount (retail
+  -- BattleAnimFunc_FadeBgPalette over the battle BG mask); battler
+  -- pictures and HUD keep their own colors.
+  local battlefieldFade = nil
+  if engine == "main" and type(compositor.battlefieldFade) == "table" then
+    local source = compositor.battlefieldFade --[[@as table<string, unknown>]]
+    local color = type(source.color) == "table" and source.color --[[@as table<string, unknown>]] or {}
+    local function channel(value)
+      if type(value) ~= "number" or value ~= value then
+        return 0
+      end
+      local floored = math.floor(value)
+      if floored < 0 then
+        return 0
+      elseif floored > 31 then
+        return 31
+      end
+      return floored
+    end
+    battlefieldFade = {
+      colorR = channel(color.r),
+      colorG = channel(color.g),
+      colorB = channel(color.b),
+      amount = clampCoefficient(source.amount),
+    }
+  end
   return {
     visible = visible,
     priority = priority,
@@ -1326,6 +1360,7 @@ local function compositionAnimation(view, engine, priorityOverride)
     blend = blend,
     brightness = brightness,
     grayscaleBattlefield = grayscaleBattlefield,
+    battlefieldFade = battlefieldFade,
     objTargets = compositor.objTargets or {},
   }
 end
@@ -1387,6 +1422,75 @@ local function mainBattlerPlaneCleared(view)
   return type(bg2) == "table" and bg2.cleared == true
 end
 
+-- Builds the object-window coverage fragment for a panel run: the
+-- affected battler's live portrait shape feeds window coverage only
+-- (never visible color), so the stripe transition shows exactly
+-- through the mon silhouette. The fragment reuses the submitted live
+-- picture geometry; stationary panel targets carry no entry offsets.
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param submissions table<integer, table<string, unknown>> collected picture submissions under matching
+---@return table<string, unknown>? window-mode OBJ fragment, nil without a silhouette request
+local function silhouetteFragment(view, submissions)
+  local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
+  local silhouette = type(sceneAnimation) == "table" and sceneAnimation.objWindowSilhouette or nil
+  if type(silhouette) ~= "table" then
+    return nil
+  end
+  local combatant = silhouette.combatant
+  local activation = silhouette.activation
+  if type(combatant) ~= "number" or type(activation) ~= "number" then
+    return nil
+  end
+  local picture = nil
+  for _, submission in ipairs(submissions) do
+    if submission.combatant == combatant and submission.activation == activation and submission.kind ~= "shadow" then
+      picture = submission
+      break
+    end
+  end
+  if picture == nil or picture.image == nil then
+    return nil
+  end
+  local captured = picture
+  local function draw(graphics)
+    -- Silhouette coverage samples through the portrait sampler so
+    -- indexed atlas pages resolve their transparent texels exactly
+    -- like the 3D picture pass; raw page draws stay opaque.
+    local art = captured.sampler or captured.image
+    local image = captured.image
+    local width = captured.width or 80
+    local height = captured.height or 80
+    local x = (captured.centerX or 128) - width / 2
+    local y = (captured.centerY or 96) - height / 2
+    local frameW, frameH = captured.frameW, captured.frameH
+    if type(frameW) == "number" and type(frameH) == "number" then
+      local pageWidth = image.width or width
+      local pageHeight = image.height or height
+      if type(image.getDimensions) == "function" then
+        pageWidth, pageHeight = image:getDimensions()
+      end
+      local quad = graphics.newQuad(captured.frameX or 0, captured.frameY or 0, frameW, frameH, pageWidth, pageHeight)
+      if captured.flipH == true then
+        drawArtwork(graphics, art, quad, x + width, y, 0, -1, 1)
+      else
+        drawArtwork(graphics, art, quad, x, y)
+      end
+    else
+      if captured.flipH == true then
+        drawArtwork(graphics, art, nil, x + width, y, 0, -1, 1)
+      else
+        drawArtwork(graphics, art, nil, x, y)
+      end
+    end
+  end
+  return {
+    objPriority = 0,
+    submissionOrder = 1,
+    oamMode = "object-window",
+    draw = draw,
+  }
+end
+
 -- Presents one main-engine frame through the screen compositor.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
@@ -1400,11 +1504,20 @@ local function presentMainFrame(resources, view, layout, planes, objects)
   collectParticlePrimitives(view, primitives)
   local players, enemies = BattleViewRoster.liveSides(view)
   local singles = not doublesFormat(view, players, enemies)
-  for _, picture in ipairs(collectPictureSubmissions(assets, view, players, enemies, singles)) do
+  local submissions = collectPictureSubmissions(assets, view, players, enemies, singles)
+  for _, picture in ipairs(submissions) do
     local primitive = pictureToPrimitive(picture, #primitives + 1)
     if primitive ~= nil then
       primitives[#primitives + 1] = primitive
     end
+  end
+  local frameObjects = {}
+  for _, fragment in ipairs(objects) do
+    frameObjects[#frameObjects + 1] = fragment
+  end
+  local silhouette = silhouetteFragment(view, submissions)
+  if silhouette ~= nil then
+    frameObjects[#frameObjects + 1] = silhouette
   end
   local framePlanes = planes
   if mainBattlerPlaneCleared(view) then
@@ -1421,7 +1534,7 @@ local function presentMainFrame(resources, view, layout, planes, objects)
     animation = compositionAnimation(view, "main"),
     primitives = primitives,
     planes = framePlanes,
-    objects = objects,
+    objects = frameObjects,
     layout = layout,
     scanlines = frameScanlines(view),
     scanlineLayer = "battlefield",
@@ -2414,6 +2527,50 @@ local function drawSourceMainScene(resources, view)
   drawTrainerPictures(graphics, assets, view)
 end
 
+-- Draws one panel stripe layer on the transition plane with wrapping:
+-- the scrolled tilemap tiles across the pane so the object window can
+-- reveal it through the silhouette while the battlefield stays put.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param stripe { raster: table<string, unknown>, scrollX: number?, scrollY: number? } stripe snapshot under drawing
+local function drawStripes(graphics, assets, stripe)
+  if type(assets.stripeBackground) ~= "function" then
+    return
+  end
+  local image = assets:stripeBackground(stripe.raster)
+  if image == nil then
+    return
+  end
+  local periodX, periodY = 256, 256
+  if type(stripe.raster) == "table" then
+    if type(stripe.raster.width) == "number" and stripe.raster.width > 0 then
+      periodX = stripe.raster.width
+    end
+    if type(stripe.raster.height) == "number" and stripe.raster.height > 0 then
+      periodY = stripe.raster.height
+    end
+  end
+  local scrollX = numberOr(stripe.scrollX, 0)
+  local scrollY = numberOr(stripe.scrollY, 0)
+  local baseX = -(scrollX % periodX)
+  local baseY = -(scrollY % periodY)
+  local function paint(x, y)
+    if type(image.drawQuad) == "function" then
+      local width = image.width or periodX
+      local height = image.height or periodY
+      local quad = graphics.newQuad(0, 0, width, height, width, height)
+      image:drawQuad(graphics, quad, x, y)
+    else
+      graphics.draw(image, x, y)
+    end
+  end
+  for _, dx in ipairs({ 0, periodX }) do
+    for _, dy in ipairs({ 0, periodY }) do
+      paint(baseX + dx, baseY + dy)
+    end
+  end
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 local function drawDetail(resources, view)
@@ -2445,6 +2602,14 @@ local function drawDetail(resources, view)
       draw = drawDetailWindow,
     },
   }
+  local stripe = view.sceneAnimation ~= nil and view.sceneAnimation.stripe or nil
+  if type(stripe) == "table" and stripe.raster ~= nil then
+    local stripeSnapshot = stripe
+    local function drawStripeTransition()
+      drawStripes(graphics, assets, stripeSnapshot)
+    end
+    planes.transition = { draw = drawStripeTransition }
+  end
   local function drawDetailObjects()
     drawThrownBall(graphics, assets, view)
     local players, enemies = BattleViewRoster.liveSides(view)

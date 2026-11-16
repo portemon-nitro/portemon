@@ -57,6 +57,8 @@ function T.battle_narration_records_keep_semantic_keys_and_source_bank_ids()
     ["battle/narration/got-away"] = 781,
     ["battle/narration/fled-with-item"] = 782,
     ["battle/narration/fled-run-away"] = 783,
+    ["battle/narration/identified"] = 432,
+    ["battle/narration/aimed"] = 378,
   }
   local banks = {
     ["battle/child/party-title"] = "partyResult",

@@ -632,6 +632,8 @@ end
 --     {win0,win1,objWindow,outside}, blend {mode,eva,evb,evy} and
 --     brightness {mode,coefficient}. grayscaleBattlefield forces the
 --     native MAIN_BG fade-buffer grayscale on the battlefield plane.
+--     battlefieldFade {colorR,colorG,colorB 0..31, amount 0..16} fades
+--     the battlefield plane toward its target color by the amount.
 --     Roles are world3d (main) or menu
 --     (sub), window, transition, battlefield, objects.
 --   frame.primitives: ordered native polygon array for the shared 3D target.
@@ -1073,6 +1075,18 @@ local function driveComposite(graphics, self, frame, worldRole)
   })
   local grayscale = animation.grayscaleBattlefield == true and 1 or 0
   shader:send("u_grayscaleBattlefield", grayscale)
+  local fade = animation.battlefieldFade
+  if type(fade) == "table" then
+    shader:send("u_battlefieldFadeColor", {
+      (fade.colorR or 0) / 31,
+      (fade.colorG or 0) / 31,
+      (fade.colorB or 0) / 31,
+    })
+    shader:send("u_battlefieldFadeAmount", fade.amount or 0)
+  else
+    shader:send("u_battlefieldFadeColor", { 0, 0, 0 })
+    shader:send("u_battlefieldFadeAmount", 0)
+  end
   local direction = 0
   if brightnessMode == "up" then
     direction = 1

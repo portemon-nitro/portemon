@@ -860,6 +860,25 @@ function BattlePresentationAssets:sceneLayer()
   return self._sceneLayer
 end
 
+---@param raster table<string, unknown> cached stripe raster from the panel task
+---@return table<string, unknown>? image handle, nil when this host has no mutable layer adapter
+---@return string? terminal image failure
+function BattlePresentationAssets:stripeBackground(raster)
+  if type(self._assets.background) ~= "function" then
+    return nil
+  end
+  local image, failure = self._assets.background(raster)
+  if failure ~= nil then
+    self._state = "failed"
+    self._error = "battle stripe image failed for launch " .. self._launchId .. ": " .. tostring(failure)
+    return nil, self._error
+  end
+  if image ~= nil then
+    self._owned["battle-stripes"] = true
+  end
+  return image
+end
+
 ---@param raster table<string, unknown> cached BG3 raster from BattleScene
 ---@return table<string, unknown>? image handle, nil when this host has no mutable layer adapter
 ---@return string? terminal image failure

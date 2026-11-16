@@ -1095,14 +1095,39 @@ end
 Handlers["start-battler-effect"] = handleStartBattlerEffect
 
 local function handleInvokeBattleAnimationCallback(exec, instruction, index)
-  local record = exec.spawn(instruction.taskKind, "general", {
+  -- The object-window backdrop reads its graphic and target selections
+  -- from the runtime animation args (BattleAnimObjWindowBg_InitParams
+  -- reads Arg0/Arg1); the compiler stages every graphic row, and the
+  -- task selects by the live args. Script words carried on the
+  -- invocation load the scratch context exactly like CallFunc (later
+  -- words zeroed like the zero-initialized interpreter); without them
+  -- the args default to zero.
+  local spawnArgs = {
     callback = instruction.callback,
     taskContext = instruction.taskContext,
     battlerTarget = instruction.battlerTarget,
     parameters = instruction.parameters,
     resourceKeys = instruction.resourceKeys,
     runtimeSelection = instruction.runtimeSelection,
-  })
+  }
+  if instruction.taskKind == "battle-sprite-panel-slide" then
+    local scriptArgs = instruction.args
+    if type(scriptArgs) == "table" then
+      for argIndex, value in ipairs(scriptArgs) do
+        if type(value) ~= "number" or value % 1 ~= 0 then
+          exec.fail("panel slides carry integer script arguments")
+          return "done"
+        end
+        exec.setParam(argIndex - 1, value)
+      end
+      for slot = #scriptArgs, 9 do
+        exec.setParam(slot, 0)
+      end
+    end
+    spawnArgs.graphic = exec.getParam(0)
+    spawnArgs.target = exec.getParam(1)
+  end
+  local record = exec.spawn(instruction.taskKind, "general", spawnArgs)
   if record == nil then
     return "done"
   end

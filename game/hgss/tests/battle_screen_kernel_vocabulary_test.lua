@@ -359,4 +359,28 @@ function T.move_use_announces_its_user()
   assertNoPlaceholder(timeline, "move-used")
 end
 
+-- Marking moves voice their subscript lines behind the use announcement:
+-- Foresight, Odor Sleuth, and Miracle Eye voice the identification line
+-- (subscript_0100_Foresight and subscript_0158_MiracleEye msg 432) while
+-- Lock-On and Mind Reader voice the aim line (subscript_0079_LockOn
+-- msg 378); both name the attacker and the defender.
+function T.marking_moves_narrate_both_battlers()
+  local timeline = BattleTimeline.new({})
+  timeline:reset(openingView())
+  local identified = event("identified", { user = 1, target = 3 }, { [1] = 52, [3] = 57 })
+  identified.cause = { key = "FORESIGHT" }
+  local aimed = event("aimed", { user = 1, target = 3 }, { [1] = 52, [3] = 57 })
+  aimed.cause = { key = "LOCK_ON" }
+  timeline:present(packet(1, { identified, aimed }))
+  local messages = collectMessages(timeline)
+  Assert.isTrue(messages:find("LEAD", 1, true) ~= nil, "the marking lines name the attacker: " .. messages)
+  Assert.isTrue(messages:find("FOE", 1, true) ~= nil, "the marking lines name the defender: " .. messages)
+  Assert.isTrue(
+    messages:find("unrepresentable", 1, true) == nil,
+    "marking moves never show the placeholder: " .. messages
+  )
+  assertNoPlaceholder(timeline, "identified")
+  assertNoPlaceholder(timeline, "aimed")
+end
+
 return { tests = T }

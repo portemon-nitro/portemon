@@ -8,9 +8,9 @@ engine build with LÖVE that reads your ROM directly, then uses it to run the ga
 
 This project is not an emulator and does not ship copyrighted ROM data,
 dialogue, graphics, models, or audio. You must provide your own compatible ROM;
-the importer recognizes only the supported canonical US dumps. Your ROM file
-stays where you keep it: the app records only a small pointer to it, never a
-copy, and derived game data is compiled straight from the original.
+the importer recognizes only the supported canonical US dumps. The game stores
+the **location** of your ROM and continuously references it when it needs more
+data. This means you should NOT move your ROM file after importing it.
 
 ## Contributing
 

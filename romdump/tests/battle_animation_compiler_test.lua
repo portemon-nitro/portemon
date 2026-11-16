@@ -18,6 +18,28 @@ local function u32(value)
   )
 end
 
+-- Headless lowering has no staged archive: map each physical source
+-- slot to a fake content key so the program shape (offsets, runtime
+-- selection, slot closure) still validates.
+local function stageTestResourceKeys(resolved)
+  if type(resolved) ~= "table" or type(resolved.sourceSelections) ~= "table" then
+    return resolved
+  end
+  local resourceKeys = {}
+  for slot in pairs(resolved.sourceSelections) do
+    resourceKeys[slot] = "test/" .. slot
+  end
+  return {
+    callback = resolved.callback,
+    taskKind = resolved.taskKind,
+    context = resolved.context,
+    runtimeSelection = resolved.runtimeSelection,
+    parameters = resolved.parameters,
+    resourceKeys = resourceKeys,
+    args = resolved.args,
+  }
+end
+
 function T.dispatch_labels_cover_the_native_table_without_the_guard_overrun()
   local Sources = require("romdump.src.config.BattleAnimationSources")
   Assert.equal(Sources.DISPATCH_EXTENT_BYTES, 0x160, "pinned table byte extent stays explicit")
@@ -1017,16 +1039,27 @@ end
 function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()
   local Sources = require("romdump.src.config.BattleAnimationSources")
   local cases = {
-    { selector = 80, callback = "battle-sprite-panel-slide-down", offsetY = 3 },
-    { selector = 81, callback = "battle-sprite-panel-slide-up", offsetY = -3 },
-    { selector = 82, callback = "battle-sprite-panel-slide-down", offsetY = 3 },
-    { selector = 83, callback = "battle-sprite-panel-slide-far-up", offsetY = -6 },
+    { selector = 80, callback = "battle-sprite-panel-slide-down", offsetY = 3, args = { 0, 0 } },
+    { selector = 81, callback = "battle-sprite-panel-slide-up", offsetY = -3, args = { 1, 0 } },
+    { selector = 82, callback = "battle-sprite-panel-slide-down", offsetY = 3, args = { 2, 0 } },
+    { selector = 83, callback = "battle-sprite-panel-slide-far-up", offsetY = -6, args = { 3, 0 } },
   }
   for _, expected in ipairs(cases) do
-    local plan = Sources.resolveSourceSelection("battle-animation-callback", { expected.selector, 0 })
+    local plan =
+      Sources.resolveSourceSelection("battle-animation-callback", { expected.selector, 2, expected.args[1], expected.args[2] })
     Assert.equal(plan.callback, expected.callback)
     Assert.equal(plan.taskKind, "battle-sprite-panel-slide")
     Assert.equal(plan.context, "sprite-system")
+    Assert.equal(plan.runtimeSelection, "object-window-stripe-selection")
+    Assert.deepEqual(plan.args, expected.args, "the script words lower onto the invocation")
+    local stripeSlots = 0
+    for slot in pairs(assert(plan.sourceSelections, "panel slides stage their stripe sources")) do
+      local graphic, kind = string.match(slot, "^stripeGraphic(%d)(%a+)$")
+      Assert.isTrue(graphic ~= nil and tonumber(graphic) >= 0 and tonumber(graphic) <= 3, "stripe slot names its graphic: " .. tostring(slot))
+      Assert.isTrue(kind == "Char" or kind == "Palette" or kind == "Screen", "stripe slot names its kind: " .. tostring(slot))
+      stripeSlots = stripeSlots + 1
+    end
+    Assert.equal(stripeSlots, 12, "panel slides stage all four stripe graphics")
     Assert.deepEqual(plan.parameters, {
       firstPanelOffsetX = 0,
       firstPanelOffsetY = expected.offsetY,
@@ -1036,16 +1069,18 @@ function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()
     })
   end
 
-  local stream = table.concat({ u32(45), u32(80), u32(0), u32(45), u32(82), u32(0) })
+  local stream = table.concat({ u32(45), u32(80), u32(2), u32(0), u32(0), u32(45), u32(82), u32(2), u32(2), u32(1) })
   local program = compiler().compile({
     key = "battle-sprite-panel-callbacks",
     stream = stream,
     resolveSourceInput = function(role, operands)
-      return Sources.resolveSourceSelection(role, operands)
+      return stageTestResourceKeys(Sources.resolveSourceSelection(role, operands))
     end,
   })
   Assert.equal(program.instructions[1].callback, "battle-sprite-panel-slide-down")
   Assert.equal(program.instructions[2].callback, "battle-sprite-panel-slide-down")
+  Assert.deepEqual(program.instructions[1].args, { 0, 0 }, "the boost words lower onto the invocation")
+  Assert.deepEqual(program.instructions[2].args, { 2, 1 }, "the script words lower onto the invocation")
   Assert.deepEqual(program.instructions[1].parameters, {
     firstPanelOffsetX = 0,
     firstPanelOffsetY = 3,
@@ -1053,6 +1088,7 @@ function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()
     secondPanelOffsetY = 4,
     durationTicks = 37,
   })
+  Assert.equal(program.instructions[1].runtimeSelection, "object-window-stripe-selection")
   Assert.isNil(program.instructions[1].selector, "callback selectors stay producer-only")
 end
 
@@ -4251,13 +4287,14 @@ function T.computed_callback_durations_pass_the_normalized_callback_schema()
   assertSchema(mosaic, "mosaic")
   local panel = assert(compiler().compile({
     key = "panel-with-computed-duration",
-    stream = table.concat({ u32(45), u32(80), u32(0) }),
+    stream = table.concat({ u32(45), u32(80), u32(2), u32(0), u32(0) }),
     resolveSourceInput = function(role, operands)
-      return Sources.resolveSourceSelection(role, operands)
+      return stageTestResourceKeys(Sources.resolveSourceSelection(role, operands))
     end,
   }))
   Assert.equal(panel.instructions[1].callback, "battle-sprite-panel-slide-down")
   Assert.equal(panel.instructions[1].parameters.durationTicks, 37)
+  Assert.deepEqual(panel.instructions[1].args, { 0, 0 }, "the script words lower onto the invocation")
   assertSchema(panel, "panel")
 end
 

@@ -1638,6 +1638,8 @@ local function fullManifest()
         ["battle/narration/bag-guard-spec"] = messageRecord({ "Your team became shrouded in a white mist!" }),
         ["battle/narration/bag-getting-pumped"] = messageRecord({ false, " is getting pumped!" }),
         ["battle/narration/transformed"] = messageRecord({ false, " transformed into ", false, "!" }),
+        ["battle/narration/identified"] = messageRecord({ false, " identified ", false, "!" }),
+        ["battle/narration/aimed"] = messageRecord({ false, " took aim at ", false, "!" }),
         ["battle/narration/foretold/own"] = messageRecord({ false, " foresaw an attack!" }),
         ["battle/narration/foretold/wild"] = messageRecord({ "The wild ", false, " foresaw an attack!" }),
         ["battle/narration/foretold/foe"] = messageRecord({ "The foe’s ", false, " foresaw an attack!" }),

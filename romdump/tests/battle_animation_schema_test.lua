@@ -791,6 +791,12 @@ function T.animation_callback_schema_keeps_randomized_motion_target_typed()
 end
 
 function T.animation_callback_schema_closes_panel_slide_profiles_and_offsets()
+  local resourceKeys = {}
+  for graphic = 0, 3 do
+    resourceKeys["stripeGraphic" .. graphic .. "Char"] = "stripe-graphic-" .. graphic .. "-char"
+    resourceKeys["stripeGraphic" .. graphic .. "Palette"] = "stripe-graphic-" .. graphic .. "-palette"
+    resourceKeys["stripeGraphic" .. graphic .. "Screen"] = "stripe-graphic-" .. graphic .. "-screen"
+  end
   for _, callback in ipairs({
     "battle-sprite-panel-slide-down",
     "battle-sprite-panel-slide-up",
@@ -801,6 +807,8 @@ function T.animation_callback_schema_closes_panel_slide_profiles_and_offsets()
       callback = callback,
       taskKind = "battle-sprite-panel-slide",
       taskContext = "sprite-system",
+      runtimeSelection = "object-window-stripe-selection",
+      resourceKeys = resourceKeys,
       parameters = {
         firstPanelOffsetX = 0,
         firstPanelOffsetY = -6,

@@ -1969,6 +1969,10 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   ["battle/party/move-name/3"] = { bank = "partyResult", messageId = 70 },
   ["battle/party/move-name/4"] = { bank = "partyResult", messageId = 73 },
   ["battle/narration/transformed"] = { bank = "scriptController", messageId = 345 },
+  -- Marking moves voice their subscript lines: lock-on takes aim (msg 378)
+  -- while foresight, odor sleuth, and miracle eye identify (msg 432).
+  ["battle/narration/identified"] = { bank = "scriptController", messageId = 432 },
+  ["battle/narration/aimed"] = { bank = "scriptController", messageId = 378 },
   ["battle/narration/foretold/own"] = { bank = "scriptController", messageId = 472 },
   ["battle/narration/foretold/wild"] = { bank = "scriptController", messageId = 473 },
   ["battle/narration/foretold/foe"] = { bank = "scriptController", messageId = 474 },

@@ -102,6 +102,8 @@ function BattleScene.new()
     _battlerSpriteSlots = {},
     _animationSprites = {},
     _animationSpriteManagers = {},
+    _stripe = nil,
+    _objWindowSilhouette = nil,
     _nextEffect = 1,
     _particleSystems = {},
     _drawParticleSystems = nil,
@@ -1213,6 +1215,48 @@ function BattleScene:writeAnimationCompositor(owner, engine, patch)
   end
 end
 
+-- Restores animation compositor fields one owner wrote while it still
+-- owns them: later owner writes are never restored away. Silent when
+-- nothing is journaled. Battle-background palette fades own their
+-- battlefield fade exactly like picture writes own their overlays, so
+-- cancellation mid-fade never strands a darkened battlefield.
+---@param owner table<string, unknown>|integer owning task behind the restore
+---@param engine string "main" or "sub" engine behind the state
+function BattleScene:restoreAnimationCompositor(owner, engine)
+  if self._released then
+    return
+  end
+  local journal = self._animationJournals[owner]
+  if journal == nil then
+    return
+  end
+  local state = self._animationCompositor[engine]
+  local remaining = {}
+  for index = #journal, 1, -1 do
+    local record = journal[index]
+    if type(record) == "table" and record.compositor == engine then
+      if state ~= nil then
+        if record.had then
+          state[record.field] = record.old
+        else
+          state[record.field] = nil
+        end
+      end
+    else
+      remaining[#remaining + 1] = record
+    end
+  end
+  if #remaining == 0 then
+    self._animationJournals[owner] = nil
+  else
+    local ordered = {}
+    for index = #remaining, 1, -1 do
+      ordered[#ordered + 1] = remaining[index]
+    end
+    self._animationJournals[owner] = ordered
+  end
+end
+
 -- Writes the full 192-row source scanline buffer in native row order.
 -- Wave rows differ across scanlines instead of shifting one viewport.
 ---@param rows table<integer, table<string, integer>> per-row offsets, exactly 192 entries
@@ -1312,6 +1356,21 @@ function BattleScene:animationFrame()
   end
   local mainCompositor = self._animationCompositor.main or {}
   local subCompositor = self._animationCompositor.sub or {}
+  local stripe = nil
+  if self._stripe ~= nil then
+    stripe = {
+      raster = self._stripe.rasterizer:render(),
+      scrollX = self._stripe.scrollX,
+      scrollY = self._stripe.scrollY,
+    }
+  end
+  local silhouette = nil
+  if self._objWindowSilhouette ~= nil then
+    silhouette = {
+      combatant = self._objWindowSilhouette.combatant,
+      activation = self._objWindowSilhouette.activation,
+    }
+  end
   return {
     main = planes.main,
     sub = planes.sub,
@@ -1320,6 +1379,8 @@ function BattleScene:animationFrame()
     scanlineBuffer = rowsCopy,
     pictures = pictures,
     particles = {},
+    stripe = stripe,
+    objWindowSilhouette = silhouette,
     displayPolicy = {
       suspendHealthbarUpdates = self._wrapperDisplayPolicy.suspendHealthbarUpdates == true,
       updateBattlerG3 = self._wrapperDisplayPolicy.updateBattlerG3 == true,
@@ -2228,6 +2289,110 @@ function BattleScene:backgroundRaster()
   return self._backgroundRasterizer:render()
 end
 
+-- Installs the object-window stripe backdrop behind one panel-slide run:
+-- the scrolled stripe tilemap the object window reveals through the
+-- affected battler's silhouette (retail BattleAnimTask_ObjWindowBgScroll
+-- BG2). Unlike effect background layers it never replaces the
+-- persistent battlefield; the renderer draws it on the transition plane
+-- under the compositor window masks. Color index zero stays
+-- transparent like any effect plane.
+---@param payload { characters: string, colorMode: string, map: { width: integer, height: integer, entries: table[] }, palette: { colors: table[] } } decoded stripe slots
+function BattleScene:installStripeLayer(payload)
+  assert(not self._released, "released scenes install no stripes")
+  assert(self._stripe == nil, "stripe layers install once per panel run")
+  assert(type(payload) == "table", "stripe layers carry their decoded payload")
+  assert(type(payload.characters) == "string", "stripe layers carry packed tile bytes")
+  assert(payload.colorMode == "4bpp" or payload.colorMode == "8bpp", "stripe layers declare their encoding")
+  assert(type(payload.map) == "table", "stripe layers carry their tilemap")
+  local map = payload.map --[[@as table<string, unknown>]]
+  assert(
+    type(map.width) == "number" and type(map.height) == "number" and type(map.entries) == "table",
+    "stripe tilemaps carry their dimensions"
+  )
+  local entries = map.entries --[[@as table<integer, unknown>]]
+  assert(
+    type(payload.palette) == "table" and type(payload.palette.colors) == "table",
+    "stripe layers carry their palette"
+  )
+  -- The staged stripe palette carries only its own sixteen colors
+  -- while the stripe tilemap references higher banks (bank 8 in every
+  -- shipped graphic, matching the file's PMCP bank placement): the
+  -- colors ride the highest referenced bank and lower banks stay
+  -- transparent, so the isolated raster resolves exactly the texels
+  -- the window reveals.
+  local staged = payload.palette.colors --[[@as table<integer, unknown>]]
+  local topBank = 0
+  for _, entry in ipairs(entries) do
+    if type(entry) == "table" and type(entry.palette) == "number" and entry.palette > topBank then
+      topBank = math.floor(entry.palette)
+    end
+  end
+  local colors = {}
+  for index = 1, (topBank + 1) * 16 do
+    colors[index] = { r = 0, g = 0, b = 0 }
+  end
+  for index, color in ipairs(staged) do
+    if type(color) ~= "table" then
+      break
+    end
+    local slot = topBank * 16 + index
+    if slot > (topBank + 1) * 16 then
+      break
+    end
+    local typed = color --[[@as table<string, unknown>]]
+    colors[slot] = { r = typed.r or 0, g = typed.g or 0, b = typed.b or 0 }
+  end
+  self._stripe = {
+    rasterizer = NitroBg3.new({
+      characters = payload.characters,
+      map = { width = map.width, height = map.height, entries = entries },
+      palette = { colors = colors },
+      colorMode = payload.colorMode,
+      transparentZero = true,
+    }),
+    scrollX = 0,
+    scrollY = 0,
+  }
+end
+
+-- Moves the installed stripe backdrop by native pixels; the renderer
+-- draws the transition plane shifted by this offset with wrapping.
+---@param x number horizontal stripe scroll in native pixels
+---@param y number vertical stripe scroll in native pixels
+function BattleScene:setStripeScroll(x, y)
+  assert(not self._released, "released scenes scroll no stripes")
+  local stripe = assert(self._stripe, "stripe scroll requires an installed stripe layer")
+  assert(type(x) == "number" and type(y) == "number", "stripe scroll carries numeric offsets")
+  stripe.scrollX, stripe.scrollY = x, y
+end
+
+-- Removes the panel stripe backdrop without touching the persistent BG3.
+function BattleScene:removeStripeLayer()
+  assert(not self._released, "released scenes remove no stripes")
+  assert(self._stripe ~= nil, "stripe removal requires an installed stripe layer")
+  self._stripe = nil
+end
+
+---@return boolean true while a panel stripe layer is installed
+function BattleScene:hasStripeLayer()
+  return self._stripe ~= nil
+end
+
+-- Names the battler whose silhouette feeds the object-window coverage
+-- while a panel run owns it; the renderer draws the live portrait
+-- shape as window-mode coverage. Nil clears the request.
+---@param activation table<string, unknown>? combatant and activation behind the silhouette, absent to clear
+function BattleScene:setObjWindowSilhouette(activation)
+  assert(not self._released, "released scenes name no silhouette")
+  if activation == nil then
+    self._objWindowSilhouette = nil
+    return
+  end
+  assert(type(activation.combatant) == "number", "silhouettes retain their source combatant")
+  assert(type(activation.activation) == "number", "silhouettes retain their source activation")
+  self._objWindowSilhouette = { combatant = activation.combatant, activation = activation.activation }
+end
+
 ---@return boolean true when a staged BG3 layer is installed
 function BattleScene:hasBackground()
   return self._background ~= nil
@@ -2804,6 +2969,8 @@ function BattleScene:release()
   self._animationJournals = {}
   self._animationSprites = {}
   self._animationSpriteManagers = {}
+  self._stripe = nil
+  self._objWindowSilhouette = nil
   self._scanlineRows = nil
 end
 

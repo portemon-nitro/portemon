@@ -260,6 +260,7 @@ local VISUAL_UPDATE_KINDS = {
 local RUNTIME_SELECTIONS = {
   ["battle-background-screen-selection"] = true,
   ["battle-background-three-way-screen-selection"] = true,
+  ["object-window-stripe-selection"] = true,
   ["battler-resource-selection"] = true,
   ["battler-pokemon-picture-resource"] = true,
   ["battler-particle-position-pair"] = true,
@@ -389,9 +390,18 @@ local SINUSOIDAL_POSITION_PARAMETERS = {
   durationTicks = { min = 0, max = 0xFFFFFFFF },
 }
 
+local PANEL_SLIDE_RESOURCE_SLOTS = {}
+for graphic = 0, 3 do
+  PANEL_SLIDE_RESOURCE_SLOTS[#PANEL_SLIDE_RESOURCE_SLOTS + 1] = "stripeGraphic" .. graphic .. "Char"
+  PANEL_SLIDE_RESOURCE_SLOTS[#PANEL_SLIDE_RESOURCE_SLOTS + 1] = "stripeGraphic" .. graphic .. "Palette"
+  PANEL_SLIDE_RESOURCE_SLOTS[#PANEL_SLIDE_RESOURCE_SLOTS + 1] = "stripeGraphic" .. graphic .. "Screen"
+end
+
 local PANEL_SLIDE_PROFILE = {
   taskKind = "battle-sprite-panel-slide",
   taskContext = "sprite-system",
+  runtimeSelection = "object-window-stripe-selection",
+  resourceSlots = PANEL_SLIDE_RESOURCE_SLOTS,
   parameters = {
     firstPanelOffsetX = { min = -0x8000, max = 0x7FFF },
     firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
@@ -1159,6 +1169,18 @@ local RESOURCE_KEY_SLOTS = {
   screenBattlerClassFour = true,
   screenContextFlag = true,
   template = true,
+  stripeGraphic0Char = true,
+  stripeGraphic0Palette = true,
+  stripeGraphic0Screen = true,
+  stripeGraphic1Char = true,
+  stripeGraphic1Palette = true,
+  stripeGraphic1Screen = true,
+  stripeGraphic2Char = true,
+  stripeGraphic2Palette = true,
+  stripeGraphic2Screen = true,
+  stripeGraphic3Char = true,
+  stripeGraphic3Palette = true,
+  stripeGraphic3Screen = true,
 }
 
 local SPRITE_EFFECT_MODES = {
@@ -1416,6 +1438,15 @@ local function checkCallbackInvocation(instruction, context, code, field)
     )
   elseif instruction.resourceKeys ~= nil then
     fail(code, field .. ".resourceKeys are not declared by this callback profile", context)
+  end
+  if instruction.args ~= nil then
+    if not Validate.isArray(instruction.args) or #instruction.args > 10 then
+      fail(code, field .. ".args carries at most ten source animation arguments", context)
+    else
+      for index, value in ipairs(instruction.args) do
+        SchemaCheck.checkInteger(value, context, code, field .. ".args[" .. index .. "]")
+      end
+    end
   end
   checkParameters(instruction.parameters, profile.parameters, context, code, field)
 end
@@ -1936,6 +1967,7 @@ local OPERATIONS = {
       "parameters",
       "resourceKeys",
       "runtimeSelection",
+      "args",
     },
     check = checkCallbackInvocation,
   },

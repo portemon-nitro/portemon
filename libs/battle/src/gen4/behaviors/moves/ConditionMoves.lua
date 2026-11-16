@@ -1871,13 +1871,19 @@ local function stepLockOn(ctx, frame)
   if ctx:hasBattleEffect(defender, "substitute") then
     return { kind = "complete", result = "failed" }
   end
+  local user = userOf(record)
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("lockon"),
     activeScope(ctx, defender),
-    moveSource(userOf(record)),
-    { version = 1, attacker = userOf(record) }
+    moveSource(user),
+    { version = 1, attacker = user }
   )
   emitUsed(ctx, record)
+  -- The subscript voices the aim line behind the attack message and
+  -- animation (msg_0197_00378): the bare marker write carries no event,
+  -- so the line needs its own narration-only emission. It owns no
+  -- execution facts, so the use keeps the action's single visual.
+  ctx:emit("aimed", causeFor(record), { user = user, target = defender })
   return { kind = "complete", result = "hit" }
 end
 
@@ -1890,13 +1896,19 @@ local function stepForesight(ctx, frame)
   assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local user = userOf(record)
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("foresight"),
     activeScope(ctx, defender),
-    moveSource(userOf(record)),
+    moveSource(user),
     { version = 1 }
   )
   emitUsed(ctx, record)
+  -- The subscript voices the identification line behind the attack
+  -- message (msg_0197_00432): the bare marker write carries no event,
+  -- so the line needs its own narration-only emission. It owns no
+  -- execution facts, so the use keeps the action's single visual.
+  ctx:emit("identified", causeFor(record), { user = user, target = defender })
   return { kind = "complete", result = "hit" }
 end
 
@@ -1907,13 +1919,18 @@ local function stepMiracleEye(ctx, frame)
   assert(type(frame) == "table", "conditions step from their move frame")
   local record = frame --[[@as table<string, unknown>]]
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
+  local user = userOf(record)
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("miracleeye"),
     activeScope(ctx, defender),
-    moveSource(userOf(record)),
+    moveSource(user),
     { version = 1 }
   )
   emitUsed(ctx, record)
+  -- Miracle Eye voices the same identification line as Foresight
+  -- (msg_0197_00432) behind its own marker: narration-only, so the use
+  -- keeps the action's single visual.
+  ctx:emit("identified", causeFor(record), { user = user, target = defender })
   return { kind = "complete", result = "hit" }
 end
 

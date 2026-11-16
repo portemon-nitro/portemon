@@ -1,9 +1,9 @@
--- Common picture movement and fade families: motion writes the canonical
--- battler center with exact endpoints, never the crop/texture byte, and
--- palette fades visibly progress to their requested strength instead of
--- idling on a timer. These probes run the real task bodies against a real
--- scene; the field names below are the current task vocabulary and the
--- locked canonical center names the scene must carry.
+-- Common picture movement family: motion writes the canonical
+-- battler center with exact endpoints, never the crop/texture byte.
+-- These probes run the real task bodies against a real scene; the field
+-- names below are the current task vocabulary and the locked canonical
+-- center names the scene must carry. Palette-fade ownership lives with
+-- the task factory suite.
 
 local Assert = require("tests.support.Assert")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
@@ -76,55 +76,6 @@ function T.picture_motion_endpoints_persist_after_completion()
   local final = scene:pictureState(activation)
   Assert.notNil(final, "normal completion preserves the terminal picture write")
   Assert.equal(final.centerX, 16, "the terminal center keeps the commanded endpoint")
-end
-
-function T.palette_fades_progress_to_their_requested_strength()
-  local scene = sceneWithPair()
-  local journal = { acquired = {}, released = {} }
-  local resources = {}
-  function resources.resolve(key)
-    journal.acquired[#journal.acquired + 1] = key
-    return { key = key, lease = key }
-  end
-  function resources.release(lease)
-    journal.released[#journal.released + 1] = lease
-  end
-  local services = { scene = scene, audio = {}, resources = resources }
-  local activation = { combatant = 1, activation = 1 }
-  local args = {
-    callback = "pokemon-picture-and-battle-palette-fade",
-    taskContext = "battle-palette",
-    parameters = {
-      paletteTarget = "battle-animation-palette-target",
-      wait = 4,
-      startCoefficient = 10,
-      endCoefficient = 200,
-      nextColor = 300,
-    },
-    activation = activation,
-  }
-  local task = assert(BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", args, occurrenceContext(), services))
-  task:stepSourceTick({ tick = 1 })
-  local early = scene:pictureState(activation)
-  Assert.notNil(early, "the fade publishes picture state while running")
-  task:stepSourceTick({ tick = 2 })
-  task:stepSourceTick({ tick = 3 })
-  local late = scene:pictureState(activation)
-  Assert.notNil(late, "the fade keeps publishing picture state across ticks")
-  Assert.isFalse(
-    (early.paletteFade == nil and late.paletteFade == nil)
-      or (
-        type(early.paletteFade) == "table"
-        and type(late.paletteFade) == "table"
-        and early.paletteFade.current == late.paletteFade.current
-        and early.paletteFade.intensity == late.paletteFade.intensity
-      ),
-    "the working fade advances toward its requested strength instead of idling"
-  )
-  Assert.isTrue(runToCompletion(task, 300), "the fade reaches its source-defined completion")
-  local final = scene:pictureState(activation)
-  Assert.notNil(final, "completion leaves an explicit terminal fade record")
-  Assert.notNil(final.paletteFade, "the terminal record carries the fade instead of bare removal")
 end
 
 return { tests = T }

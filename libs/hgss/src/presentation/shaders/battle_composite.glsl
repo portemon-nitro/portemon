@@ -67,6 +67,8 @@ uniform vec4 u_blendCoefficients;
 uniform vec4 u_blendMode;
 uniform vec2 u_brightness;
 uniform float u_grayscaleBattlefield;
+uniform vec3 u_battlefieldFadeColor;
+uniform float u_battlefieldFadeAmount;
 vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
 {
   vec2 uv = texture_coords;
@@ -81,6 +83,12 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
     vec3 bg5 = floor(battlefield.rgb * 31.0 + 0.5);
     float level = floor((bg5.b * 29.0 + bg5.r * 76.0 + bg5.g * 151.0) / 256.0);
     battlefield.rgb = vec3(level / 31.0);
+  }
+  // Native MAIN_BG palette fade (battle_anim_funcs.c FadeBgPalette):
+  // the battlefield texel mixes toward the target color by amount/16.
+  float fadeAmount = clamp(u_battlefieldFadeAmount, 0.0, 16.0);
+  if (fadeAmount > 0.5) {
+    battlefield.rgb = mix(battlefield.rgb, u_battlefieldFadeColor, fadeAmount / 16.0);
   }
   vec4 obj = Texel(u_objColor, uv);
   vec4 meta = Texel(u_objMeta, uv);

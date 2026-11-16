@@ -3434,6 +3434,47 @@ local function translateSketched(self, event)
   )
 end
 local translateMimicked = translateSilent
+---@param self BattleTimeline
+---@param event table<string, unknown> identification event under narration
+local function translateIdentified(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local user = payload.user
+  local target = payload.target
+  assert(type(user) == "number", "identification narration names its attacker")
+  assert(type(target) == "number", "identification narration names its defender")
+  -- subscript_0100_Foresight and subscript_0158_MiracleEye print the
+  -- line with WaitButtonABTime 30.
+  enqueueMessage(
+    self,
+    messageText(self, "battle/narration/identified", {
+      combatName(self, user --[[@as integer]]),
+      combatName(self, target --[[@as integer]]),
+    }),
+    false,
+    30,
+    true
+  )
+end
+---@param self BattleTimeline
+---@param event table<string, unknown> aim event under narration
+local function translateAimed(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local user = payload.user
+  local target = payload.target
+  assert(type(user) == "number", "aim narration names its attacker")
+  assert(type(target) == "number", "aim narration names its defender")
+  -- subscript_0079_LockOn prints the line with WaitButtonABTime 30.
+  enqueueMessage(
+    self,
+    messageText(self, "battle/narration/aimed", {
+      combatName(self, user --[[@as integer]]),
+      combatName(self, target --[[@as integer]]),
+    }),
+    false,
+    30,
+    true
+  )
+end
 local function translateCharged(self, event)
   local targetValue = (event.payload --[[@as table<string, unknown>]]).target
   assert(type(targetValue) == "number", "charged event names its battler")
@@ -3912,6 +3953,8 @@ local OTHER_TRANSLATORS = {
   transformed = translateTransformed,
   sketched = translateSketched,
   mimicked = translateMimicked,
+  identified = translateIdentified,
+  aimed = translateAimed,
   switch = translateSwitch,
   ["status-gate"] = translateStatusGate,
   ["item-intent"] = translateIntent,
