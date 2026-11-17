@@ -182,6 +182,7 @@ end
 ---@field bag { pages: { image: string, x: integer, y: integer, width: integer, height: integer }[], finger: { image: string, width: integer, height: integer }, cursor: table<string, { image: string, width: integer, height: integer }>, buttons: table<integer, { button: integer, frame: integer, bank: integer, image: string }> }
 ---@field messages { roles: table<string, { font: string }> }
 ---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
+---@field party { pages: { key: string, layers: table[] }[], buttons: { button: integer, frame: integer, variant: "self"|"partner", image: string }[], expTiles: { level: integer, image: string }[] }
 
 -- The one staged/planning decision. BattlePresentationCache.load answers
 -- either a verified manifest that passed
@@ -2884,15 +2885,15 @@ function FieldBattlePresentation:_preparationServices()
     -- rest frames ride the staged page raster): the staged press and
     -- disabled patches repaint the pressed or empty button. Missing
     -- staged art keeps the page under the existing pending path.
-    local faceButton, faceFrame, faceBank = tostring(key):match("^bag:button:(%d+):(%d+):(%d+)$")
-    if faceButton ~= nil then
+    local bagButton, bagFrame, bagBank = tostring(key):match("^bag:button:(%d+):(%d+):(%d+)$")
+    if bagButton ~= nil then
       local staged = stagedManifest(envelope._manifest)
       local bag = staged ~= nil and staged.bag or nil
       local buttons = type(bag) == "table" and bag.buttons or nil
       if type(buttons) == "table" then
-        local button = tonumber(faceButton)
-        local frame = tonumber(faceFrame)
-        local bank = tonumber(faceBank)
+        local button = tonumber(bagButton)
+        local frame = tonumber(bagFrame)
+        local bank = tonumber(bagBank)
         for _, entry in ipairs(buttons) do
           if type(entry) == "table" and entry.button == button and entry.frame == frame and entry.bank == bank then
             if type(entry.image) == "string" then
@@ -2990,11 +2991,11 @@ function FieldBattlePresentation:_preparationServices()
         end
         return drawGraphics.draw(pixels, x, y)
       end
-      function composite:draw(drawGraphics, x, y, ...)
+      function composite:draw(drawGraphics, x, y)
         drawLayer(self.layers[2], drawGraphics, x, y, nil)
         drawLayer(self.layers[1], drawGraphics, x, y, nil)
       end
-      function composite:drawQuad(drawGraphics, quad, x, y, ...)
+      function composite:drawQuad(drawGraphics, quad, x, y)
         drawLayer(self.layers[2], drawGraphics, x, y, quad)
         drawLayer(self.layers[1], drawGraphics, x, y, quad)
       end

@@ -1,9 +1,21 @@
--- Projects Mailbox child presentation into the current display topology.
+-- Owns the retail Mailbox list geometry and fits its native 256x192
+-- surface into the current display. The list, the action menu, the yes/no
+-- prompts, and the read letter are one screen here: every mode resolves a
+-- single interactive pane, so the interface is scaled, centered, and framed
+-- like the other PC applications instead of drawing at raw host origin.
+
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
+
 local MailboxInterface = {}
+
+local DISPLAY = { id = "mailbox", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
+local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
 -- Mail/read geometry follows overlay_103's window records and list-menu
 -- construction (`ov103_021EEEC4`, `ov103_021ECF68`, `ov103_021EE930`).
-MailboxInterface.defaults = {
+MailboxInterface.geometry = {
   pageControls = {
     -- The retained hitboxes center on the retail page-arrow anchors
     -- (24,176)/(56,176): the compiled arrow frames draw centered on
@@ -54,16 +66,16 @@ MailboxInterface.defaults = {
     { x = 136, y = 128, width = 109, height = 32 },
   },
   closeButton = { x = 192, y = 160, width = 64, height = 32 },
-  letter = {
-    author = { x = 32, y = 8 },
-    lines = {
-      { x = 24, y = 24, width = 208, height = 32 },
-      { x = 24, y = 64, width = 208, height = 32 },
-      { x = 24, y = 104, width = 208, height = 32 },
-    },
-  },
+  -- The framed message box (window template 24: MAIN_0, 2, 19, 27x4):
+  -- erase prompts, hold prompts, erase results, and the action-menu
+  -- question all print here.
   confirmation = { x = 16, y = 152, width = 216, height = 32 },
-  actionMenu = { x = 72, y = 40, width = 88, height = 96, rowHeight = 16 },
+  -- The action menu is the shared touchscreen list menu
+  -- (MailboxApp_OpenMailMenu): 11 middle tiles framed from tile column 18,
+  -- which the four actions start at tile row 5 and the two-action variant
+  -- (empty party) starts at tile row 11. Retail highlights only the frame
+  -- at the cursor.
+  actionMenu = { x = 18, y = 5, width = 11, emptyPartyY = 11 },
   -- The Yes / No pair beside the confirmation box, mirroring the
   -- Storage YES/NO rects beside its message window.
   yesNo = {
@@ -72,81 +84,108 @@ MailboxInterface.defaults = {
   },
 }
 
-function MailboxInterface.plan(display, mode, manifest)
-  assert(type(display) == "table", "mailbox presentation needs display facts")
-  assert(mode == "mailbox" or mode == "read" or mode == "confirm", "mailbox presentation mode is explicit")
-  assert(type(manifest) == "table", "mailbox presentation needs its manifest")
-  return {
-    mode = mode,
-    width = display.width,
-    height = display.height,
-    topology = display.topology,
-    pixelRatio = display.pixelRatio,
-    pageControls = MailboxInterface.defaults.pageControls,
-    cursorGrid = MailboxInterface.defaults.cursorGrid,
-    mailCells = MailboxInterface.defaults.mailCells,
-    closeButton = MailboxInterface.defaults.closeButton,
-    letter = MailboxInterface.defaults.letter,
-    confirmation = MailboxInterface.defaults.confirmation,
-    actionMenu = MailboxInterface.defaults.actionMenu,
-    yesNo = MailboxInterface.defaults.yesNo,
-  }
-end
-
 local function hitRect(rect, x, y)
   return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
 end
 
-function MailboxInterface.events(plan, events, phase)
-  local routed = {}
-  for _, event in ipairs(events) do
-    if event.type == "pointer_down" or event.type == "touch" then
-      local x, y = event.x, event.y
-      -- YesNoPrompt answers on the confirm box: YES confirms, NO
-      -- declines, matching the retained confirm=yes key semantics.
-      if phase == "confirm" and plan.yesNo ~= nil then
-        if hitRect(plan.yesNo.yes, x, y) then
-          routed[#routed + 1] = { type = "confirm" }
-        elseif hitRect(plan.yesNo.no, x, y) then
-          routed[#routed + 1] = { type = "cancel" }
-        end
-      else
-        local previous = plan.pageControls.previous
-        local nextPage = plan.pageControls.next
-        local target
-        if hitRect(previous, x, y) then
-          target = "previous"
-        elseif hitRect(nextPage, x, y) then
-          target = "next"
-        end
-        if target ~= nil then
-          routed[#routed + 1] = { type = "page", direction = target }
-        elseif phase == "list" and plan.mailCells ~= nil then
-          -- Retail touch selects through the grid hitboxes: tapping a
-          -- mail cell moves the cursor there (GridOnTouch), tapping
-          -- CLOSE reports input 10. The state resolves occupancy.
-          local tapped = false
-          for input, cell in ipairs(plan.mailCells) do
-            if hitRect(cell, x, y) then
-              routed[#routed + 1] = { type = "grid", input = input - 1 }
-              tapped = true
-              break
-            end
-          end
-          if not tapped and plan.closeButton ~= nil and hitRect(plan.closeButton, x, y) then
-            routed[#routed + 1] = { type = "grid", input = 10 }
-          end
-        elseif phase == "viewer" and plan.closeButton ~= nil and hitRect(plan.closeButton, x, y) then
-          -- The read view closes through the same CLOSE hitbox retail
-          -- checks in MailboxApp_IsCloseMailInput.
-          routed[#routed + 1] = { type = "cancel" }
-        end
-      end
-    else
-      routed[#routed + 1] = event
+local function render(resources, view, plan)
+  local renderer = assert(resources.mailboxRenderer, "Mailbox presentation borrows its owned renderer")
+  local graphics = assert(resources.graphics, "Mailbox drawing borrows the host graphics namespace")
+  local geometry = assert(plan.content.geometry, "Mailbox plans carry their geometry")
+  for _, pane in ipairs(plan.panes) do
+    LogicalSurface.draw(graphics, pane.placement, function()
+      renderer:draw(view, resources, geometry)
+    end)
+  end
+end
+
+-- Projects one already-placed logical press: the confirmation pair
+-- answers on the prompt, page arrows page, the mail grid selects its cell
+-- (CLOSE reports input 10), and the read leaf closes on any press.
+---@param event table<string, unknown>
+---@param view table<string, unknown>
+---@param plan table<string, unknown>
+---@return table<string, unknown>?
+local function mapInput(event, view, plan)
+  if event.type ~= "pointer_down" and event.type ~= "touch" then
+    return event
+  end
+  local geometry = plan.content.geometry
+  if event.outside == true or type(event.x) ~= "number" or type(event.y) ~= "number" then
+    return nil
+  end
+  if view.viewMode == "read" then
+    return { type = "close", source = "touch" }
+  end
+  local x, y = event.x, event.y
+  if view.phase == "confirm" then
+    if hitRect(geometry.yesNo.yes, x, y) then
+      return { type = "confirm" }
+    end
+    if hitRect(geometry.yesNo.no, x, y) then
+      return { type = "cancel" }
+    end
+    return nil
+  end
+  -- Only the list services its own controls: the action menu, the prompts,
+  -- and the read letter never page or reselect behind their own screen.
+  if view.phase ~= "list" then
+    return nil
+  end
+  if hitRect(geometry.pageControls.previous, x, y) then
+    return { type = "page", direction = "previous" }
+  end
+  if hitRect(geometry.pageControls.next, x, y) then
+    return { type = "page", direction = "next" }
+  end
+  for index, cell in ipairs(geometry.mailCells) do
+    if hitRect(cell, x, y) then
+      return { type = "grid", input = index - 1 }
     end
   end
-  return routed
+  if hitRect(geometry.closeButton, x, y) then
+    return { type = "grid", input = 10 }
+  end
+  return nil
+end
+
+-- Fits the native surface as the one interactive pane: every Mailbox
+-- mode is one 256x192 screen here, so a wide, tall, or dual-display host
+-- frames the same application instead of splitting the list and the
+-- letter across screens.
+---@param context ApplicationLayout.Context
+---@param view table<string, unknown>
+---@return table<string, unknown>
+local function fit(context, view)
+  local layout = ApplicationLayout.coverOrFrame(context, DISPLAY, { maxOverdraw = ZERO_CROP })
+  local pane = layout.placements[DISPLAY.id]
+  local mode = assert(view.mode, "Mailbox plans carry their mode")
+  if pane == nil then
+    return {
+      panes = {},
+      frames = layout.frames or {},
+      content = { mode = mode, geometry = MailboxInterface.geometry },
+      inputKey = "mailbox-inactive",
+      render = render,
+      mapInput = mapInput,
+    }
+  end
+  return {
+    panes = { { id = DISPLAY.id, placement = pane, interactive = true } },
+    frames = layout.frames or {},
+    content = { mode = mode, geometry = MailboxInterface.geometry },
+    inputKey = "mailbox",
+    render = render,
+    mapInput = mapInput,
+  }
+end
+
+-- The Mailbox presents one fitted native surface: unlike the Storage and
+-- MailView pairs, its list, prompts, and read letter never split across
+-- two displays, so every classification resolves the same resolver.
+---@return table<string, fun(context: ApplicationLayout.Context, view: table<string, unknown>): table<string, unknown>>
+function MailboxInterface.defaults()
+  return { dualDisplay = fit, nativeLike = fit, wide = fit, tall = fit }
 end
 
 return MailboxInterface

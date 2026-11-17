@@ -1364,12 +1364,6 @@ local function pageStatusWord(record)
   return nil
 end
 
--- Resolves one roster record to its mon type keys through the borrowed
--- mon catalog species facts. Anything unanswerable places no type
--- icons instead of inventing types.
----@param self BattleSubflows barrier under projection
----@param record table<string, unknown> detached roster record under display
----@return string[] mon type keys in catalog order, empty when unanswerable
 -- Resolves one roster record to its mon catalog species facts through
 -- the borrowed catalog, nil when unanswerable so callers keep their
 -- neutral shape instead of inventing display facts.
@@ -1440,8 +1434,8 @@ end
 -- empty at the level cap or without answerable growth facts.
 ---@param self BattleSubflows barrier under projection
 ---@param record table<string, unknown> detached roster record under display
----@return integer current experience earned toward the next level
----@return integer max experience span of the current level
+---@return number current experience earned toward the next level
+---@return number max experience span of the current level
 local function expBarFill(self, record)
   local level = tonumber(record.level) or 0
   local experience = tonumber(record.experience)
@@ -1759,13 +1753,13 @@ local function projectMonMenu(self, shell, native, kind)
   end
   -- Decomp Handle order behind the focused entry: SHIFT, SUMMARY,
   -- CHECK MOVES, cancel.
-  local cursorMap = { switch = 0, summary = 1, check_moves = 2, quit = 3 }
+  local cursorMap = { switch = 0, summary = 1, check_moves = 2, quit = 3 } ---@type table<string, integer>
   local cursor = cursorMap[focusedKind]
   if cursor == nil then
     cursor = 0
   end
   local focusMap = { switch = "switch", summary = "summary", check_moves = "moves", quit = "back" }
-  local slot = tonumber(native.menuSlot) or 0
+  local slot = tonumber(native.menuSlot) or 0 --[[@as integer]]
   local record = pageRecord(self, slot) or {}
   local isEgg = record.isEgg == true
   local positions = pagePositions(self)
@@ -2108,6 +2102,7 @@ local function projectPartyPage(self, shell, native, kind, page)
     windows[#windows + 1] = { role = "accuracy-value", text = accuracyText }
     windows[#windows + 1] = { role = "power-label", text = self:_resolveOr("battle/party/move/power", "POWER") }
     local category = facts.category
+    local categoryKey, categoryFallback
     if category == "physical" then
       categoryKey, categoryFallback = "battle/party/move/category-physical", "PHYSICAL"
     elseif category == "special" then

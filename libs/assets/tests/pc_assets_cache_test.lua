@@ -123,9 +123,9 @@ local function mailboxAnimationFrame(animId)
   }
 end
 
-function T.mailbox_sprite_roles_are_required_for_publication()
+function T.mailbox_sprite_roles_and_list_menu_are_required_for_publication()
   local manifest = PcPresentationFixture.manifest()
-  manifest.mailbox.ui = { animations = {} }
+  manifest.mailbox.ui.animations = {}
   for _, animId in ipairs({ 0, 1, 2, 4, 5 }) do
     manifest.mailbox.ui.animations[animId] = { frames = { mailboxAnimationFrame(animId) } }
   end
@@ -141,6 +141,12 @@ function T.mailbox_sprite_roles_are_required_for_publication()
   local emptied = copyValue(manifest)
   emptied.mailbox.ui.animations[5] = { frames = {} }
   Assert.isFalse(PcAssetSchema.isValidManifest(emptied), "a mailbox role with no rendered frames is rejected")
+  local withoutListMenu = copyValue(manifest)
+  withoutListMenu.mailbox.ui.listMenu = nil
+  Assert.isFalse(
+    PcAssetSchema.isValidManifest(withoutListMenu),
+    "a mailbox manifest without its action-menu list menu is rejected"
+  )
 end
 
 return { tests = T }

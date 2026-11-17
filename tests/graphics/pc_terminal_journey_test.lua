@@ -360,6 +360,7 @@ function T.pending_wallpaper_replacement_repaints_the_admitted_pixels(scope)
     storageRenderer = renderer,
     mailboxRenderer = {},
     photoAlbumRenderer = {},
+    partyScreenRenderer = {},
     textRenderer = {},
     windowRenderer = {},
     bagRenderer = {},

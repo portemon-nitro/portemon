@@ -319,6 +319,49 @@ local function compileMailboxAnimations(archive, assets, dependencies)
   return { animations = animations }, sequences
 end
 
+-- Compiles the shared touchscreen list-menu strip and its first palette
+-- bank: the Mailbox action menu frames its options with these 8x8 tiles and
+-- prints the labels in this palette (touchscreen_list_menu.c).
+local function compileListMenu(romFs, assets, dependencies, selections)
+  local source = PcSources.listMenu
+  local archiveBytes, readError = romFs:readSourcePath(source.path)
+  if archiveBytes == nil then
+    error(readError or ("list-menu archive is unavailable: " .. source.path), 0)
+  end
+  local Narc = require("libs.nds.src.nitro.Narc")
+  local archive, narcError = Narc.open(archiveBytes, source.path)
+  if archive == nil then
+    error(narcError, 0)
+  end
+  local charBytes, charHash = unpackMember(archive, source.char)
+  local paletteBytes, paletteHash = unpackMember(archive, source.palette)
+  dependencies[#dependencies + 1] = { role = "listMenu.character", sha1 = charHash }
+  dependencies[#dependencies + 1] = { role = "listMenu.palette", sha1 = paletteHash }
+  selections["mailbox.listMenu"] = {
+    path = source.path,
+    members = { char = source.char, palette = source.palette },
+  }
+  local charData = decode("decodeChar", charBytes, "listMenu.character")
+  local paletteData = decode("decodePalette", paletteBytes, "listMenu.palette")
+  local tileIndices = {}
+  for index = 0, math.floor(#charData.tiles / 32) - 1 do
+    tileIndices[#tileIndices + 1] = index
+  end
+  local image = G2dRasterizer.renderTiles(charData, paletteData, tileIndices, { role = "mailbox.listMenu" })
+  local path = PcCache.assetDir() .. "/list-menu-tiles.png"
+  assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+  local palette = {}
+  for index = 1, 16 do
+    local color = paletteData.colors[index]
+    assert(color ~= nil, "the list menu palette carries its first bank")
+    palette[index] = { r = color.r, g = color.g, b = color.b }
+  end
+  return {
+    tiles = { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 },
+    palette = palette,
+  }
+end
+
 local function mergeSequences(first, second)
   for key, value in pairs(second) do
     assert(first[key] == nil, "PC sequence roles are unique")
@@ -869,6 +912,7 @@ local function _compile(romFs)
     end
   end
   mailboxUi.backgrounds = mailboxUiBackgrounds
+  mailboxUi.listMenu = compileListMenu(romFs, assets, dependencies, selections)
 
   local albumUi, albumSequences = compileAlbumAnimations(photoArchive, assets, dependencies)
   local albumBackgrounds = {}

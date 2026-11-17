@@ -195,7 +195,20 @@ function PcPresentationFixture.manifest()
     },
     mailbox = {
       background = { main = visual("mailbox-background") },
-      ui = { animations = mailboxAnimations },
+      ui = {
+        animations = mailboxAnimations,
+        backgrounds = { subBg7 = visual("mailbox-sub-background") },
+        listMenu = {
+          tiles = writeVisual("list-menu-tiles", 8 * 22, 8),
+          palette = (function()
+            local colors = {}
+            for index = 1, 16 do
+              colors[index] = { r = index * 4, g = index * 4, b = index * 4 }
+            end
+            return colors
+          end)(),
+        },
+      },
       geometry = { visibleLetters = 10 },
       pageSize = 10,
     },

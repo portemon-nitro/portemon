@@ -12,6 +12,7 @@ local MailboxRenderer = {}
 MailboxRenderer.__index = MailboxRenderer
 local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
+local ListMenuFrame = require("libs.hgss.src.ui.ListMenuFrame")
 local MailTemplate = require("libs.hgss.src.field.MailTemplate")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
@@ -29,7 +30,6 @@ local ACTION_MESSAGE_IDS = { read = 5, erase = 6, give = 7, cancel = 8 }
 local TITLE_MESSAGE_ID = 0
 local PAGER_SLASH_MESSAGE_ID = 2
 local CANCEL_MESSAGE_ID = 3
-local CLOSE_MESSAGE_ID = 4
 local AUTHOR_MESSAGE_ID = 9
 local ERASED_MESSAGE_ID = 11
 local OUTCOME_MESSAGE_IDS = { returned = 13, discarded = 14 }
@@ -157,20 +157,19 @@ local function authorPromptTokens(self, status, text)
 end
 
 -- Resolves the compiled sprite frames one mailbox list status draws: the
--- cursor flash driven by the retail grid input, the static sprite-3
--- close target, and the page arrows at their page controls. Every input
--- anchors on its decoded grid cell (row inputs use anim 5, CLOSE input
--- 10 uses anim 4). Anim 3 is set by no code and no template and stays
--- undrawn.
+-- cursor flash driven by the retail grid input, the static sprite-3 close
+-- target, and the page arrows present at the current page. Every input
+-- anchors on its decoded grid cell (row inputs use anim 5, CLOSE input 10
+-- uses anim 4). Anim 3 is set by no code and no template and stays undrawn.
 ---@alias MailboxSpriteFrame { image: string, width: number, height: number, anchorX: number, anchorY: number, duration: number }
 ---@alias MailboxSpritePlacement { frame: MailboxSpriteFrame, cx: number, cy: number }
 ---@param manifest table<string, unknown>
 ---@param status table<string, unknown>
----@return table<string, unknown> sprites { previous: MailboxSpritePlacement?, next: MailboxSpritePlacement?, close: MailboxSpritePlacement?, cursor: MailboxSpritePlacement? }
-local function mailboxSprites(manifest, status)
-  local sprites = {}
+---@return table<string, MailboxSpriteFrame> frames by drawn role
+local function mailboxSpriteFrames(manifest, status)
+  local frames = {}
   if status.mode ~= "mailbox" then
-    return sprites
+    return frames
   end
   local mailbox = assert(manifest.mailbox, "mailbox sprites use the compiled mailbox records")
   local ui = assert(mailbox.ui, "mailbox sprites use the compiled mailbox UI")
@@ -178,42 +177,61 @@ local function mailboxSprites(manifest, status)
   local function frameOf(animId, role)
     local entry = animations[animId]
     assert(type(entry) == "table", "mailbox source animation is compiled: " .. role)
-    local frames = entry.frames
-    assert(type(frames) == "table", "mailbox source animation carries rendered frames: " .. role)
-    return assert(frames[1], "mailbox source animation carries its first frame: " .. role)
+    local roles = entry.frames
+    assert(type(roles) == "table", "mailbox source animation carries rendered frames: " .. role)
+    return assert(roles[1], "mailbox source animation carries its first frame: " .. role)
   end
-  local presentation = assert(status.presentation, "mailbox sprites use the source geometry")
-  local controls = assert(presentation.pageControls, "page arrows use the source hitbox geometry")
   local lastPage = status.lastPage or 0
   if lastPage > 0 then
     if status.page > 0 then
-      local frame = frameOf(SPRITE_ROLE_ANIMATIONS.pagePrevious, "pagePrevious")
-      local box = controls.previous
-      sprites.previous = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
+      frames.previous = frameOf(SPRITE_ROLE_ANIMATIONS.pagePrevious, "pagePrevious")
     end
     if status.page < lastPage then
-      local frame = frameOf(SPRITE_ROLE_ANIMATIONS.pageNext, "pageNext")
-      local box = controls.next
-      sprites.next = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
+      frames.next = frameOf(SPRITE_ROLE_ANIMATIONS.pageNext, "pageNext")
     end
   end
-  local closeFrame = frameOf(SPRITE_ROLE_ANIMATIONS.closeStatic, "closeStatic")
-  -- Sprite 3 is static: it rides the CLOSE anchor every list frame
-  -- and is never re-animated. No palette flash is applied: the
-  -- renderer owns no flash pattern to reuse.
-  sprites.close = { frame = closeFrame, cx = CLOSE_ANCHOR.x, cy = CLOSE_ANCHOR.y }
+  frames.close = frameOf(SPRITE_ROLE_ANIMATIONS.closeStatic, "closeStatic")
   local input = status.cursorInput
   assert(
     type(input) == "number" and input % 1 == 0 and input >= 0 and input <= CLOSE_INPUT,
     "mailbox cursor uses retail grid inputs 0-10"
   )
-  local animId = input == CLOSE_INPUT and SPRITE_ROLE_ANIMATIONS.cursor.close or SPRITE_ROLE_ANIMATIONS.cursor.cell
-  local frame = frameOf(animId, input == CLOSE_INPUT and "cursorClose" or "cursorCell")
-  local grid = assert(presentation.cursorGrid, "mailbox cursor uses the source cursor grid")
-  local cells = assert(grid.cells, "mailbox cursor uses the compiled grid cells")
-  local anchor = assert(cells[input + 1], "mailbox cursor input has a decoded grid cell")
-  -- Every grid input parks the cursor flash on its decoded cell.
-  sprites.cursor = { frame = frame, cx = anchor.x, cy = anchor.y }
+  local close = input == CLOSE_INPUT
+  frames.cursor = frameOf(
+    close and SPRITE_ROLE_ANIMATIONS.cursor.close or SPRITE_ROLE_ANIMATIONS.cursor.cell,
+    close and "cursorClose" or "cursorCell"
+  )
+  return frames
+end
+
+-- Places those frames on the interface geometry: the page arrows center on
+-- their source hitboxes, the static close target rides the CLOSE anchor (it
+-- is never re-animated), and every grid input parks the cursor flash on its
+-- decoded cell center.
+---@param manifest table<string, unknown>
+---@param status table<string, unknown>
+---@param geometry table<string, unknown> the interface geometry drawing uses
+---@return table<string, MailboxSpritePlacement> placements by drawn role
+local function mailboxSprites(manifest, status, geometry)
+  local sprites = {}
+  local frames = mailboxSpriteFrames(manifest, status)
+  local controls = assert(geometry.pageControls, "page arrows use the source hitbox geometry")
+  for _, role in ipairs({ "previous", "next" }) do
+    local frame = frames[role]
+    if frame ~= nil then
+      local box = controls[role]
+      sprites[role] = { frame = frame, cx = box.x + box.width / 2, cy = box.y + box.height / 2 }
+    end
+  end
+  if frames.close ~= nil then
+    sprites.close = { frame = frames.close, cx = CLOSE_ANCHOR.x, cy = CLOSE_ANCHOR.y }
+  end
+  if frames.cursor ~= nil then
+    local grid = assert(geometry.cursorGrid, "mailbox cursor uses the source cursor grid")
+    local cells = assert(grid.cells, "mailbox cursor uses the compiled grid cells")
+    local anchor = assert(cells[status.cursorInput + 1], "mailbox cursor input has a decoded grid cell")
+    sprites.cursor = { frame = frames.cursor, cx = anchor.x, cy = anchor.y }
+  end
   return sprites
 end
 
@@ -251,15 +269,12 @@ local function requiredPaths(manifest, status)
     for _, row in ipairs(status.rows or {}) do
       add(assert(manifest.mail.stationery[row.letter.type]).background.image)
     end
-    local sprites = mailboxSprites(manifest, status)
-    for _, key in ipairs({ "previous", "next", "close" }) do
-      if sprites[key] ~= nil then
-        add(assert(sprites[key].frame.image, "Mailbox sprites carry compiled paths"))
-      end
+    for _, frame in pairs(mailboxSpriteFrames(manifest, status)) do
+      add(assert(frame.image, "Mailbox sprites carry compiled paths"))
     end
-    if sprites.cursor ~= nil then
-      add(assert(sprites.cursor.frame.image, "Mailbox sprites carry compiled paths"))
-    end
+    -- The action menu draws through the list-menu strip: stage it with the
+    -- rest of the list chrome so opening the menu never waits a tick.
+    add(assert(manifest.mailbox.ui.listMenu, "Mailbox actions draw the compiled list menu").tiles.image)
   end
   return paths
 end
@@ -351,20 +366,28 @@ end
 -- is invented outside the compiled message banks.
 ---@param self MailboxRenderer
 ---@param resources table<string, unknown>
+---@param geometry table<string, unknown>
 ---@param prompt table<string, unknown>
 ---@param withChoices boolean
-local function drawConfirm(self, resources, prompt, withChoices)
+local function drawConfirm(self, resources, geometry, prompt, withChoices)
   local text = assert(resources.textRenderer, "confirmation text borrows the field text renderer")
   local window = assert(resources.windowRenderer, "confirmation borrows the shared field-window renderer")
-  local box = assert(resources.presentation.confirmation, "confirmations use the source box geometry")
+  local box = assert(geometry.confirmation, "confirmations use the source box geometry")
   window:drawWindow(box, resources.applicationFrameIndex, text:windowBackgroundColor())
-  local bank = assert(self.manifest.text.banks[prompt.bank], "Mailbox prompts come from a compiled bank")
-  drawMailLine(text, assert(bank[prompt.id], "each Mailbox prompt has a compiled source message"), box.x + 8, box.y + 8)
+  local tokens = prompt.tokens
+  if tokens == nil then
+    local bank = assert(self.manifest.text.banks[prompt.bank], "Mailbox prompts come from a compiled bank")
+    tokens = assert(bank[prompt.id], "each Mailbox prompt has a compiled source message")
+  end
+  -- The message box is the source text window itself: prompts print at its
+  -- top-left and the frame surrounds that box, so a two-line source prompt
+  -- fills the 216x32 box exactly.
+  drawMailLine(text, tokens, box.x, box.y)
   if withChoices then
     drawYesNo(
       window,
       text,
-      assert(resources.presentation.yesNo, "confirmations hit-test the Yes/No pair"),
+      assert(geometry.yesNo, "confirmations hit-test the Yes/No pair"),
       text:windowBackgroundColor()
     )
   end
@@ -378,16 +401,16 @@ end
 ---@param self MailboxRenderer
 ---@param resources table<string, unknown>
 ---@param status table<string, unknown>
-local function drawListChrome(self, resources, status)
+---@param geometry table<string, unknown>
+local function drawListChrome(self, resources, status, geometry)
   local graphics = self.graphics
   local text = assert(resources.textRenderer, "mailbox chrome borrows the field text renderer")
   local bank = assert(self.manifest.text.banks[232], "Mailbox chrome comes from source bank 232")
   text:drawLine(assert(bank[TITLE_MESSAGE_ID], "the Mailbox title has a compiled source label"), 100, 4)
   local lastPage = status.lastPage or 0
-  local presentation = assert(status.presentation, "mailbox chrome uses the source geometry")
-  local controls = presentation.pageControls
+  local controls = assert(geometry.pageControls, "mailbox chrome uses the source geometry")
   graphics.setColor(1, 1, 1, 1)
-  local sprites = mailboxSprites(self.manifest, status)
+  local sprites = mailboxSprites(self.manifest, status, geometry)
   if lastPage > 0 then
     if status.page > 0 then
       local sprite = assert(sprites.previous, "the previous arrow draws from its source frame")
@@ -422,46 +445,57 @@ local function drawListChrome(self, resources, status)
   text:drawLine(assert(bank[CANCEL_MESSAGE_ID], "the Mailbox cancel button has a compiled source label"), 200, 168)
 end
 
-function MailboxRenderer:draw(status, resources)
+-- Draws the retail action menu: the framed message box with the source
+-- author question (MailboxApp_PrintMailPrompt) and the shared touchscreen
+-- list menu of the source actions at its own tile position
+-- (MailboxApp_OpenMailMenu). The four-action list starts at tile row 5 and
+-- the READ/CANCEL list of an empty party at row 11; retail repaints only
+-- the frame at the cursor.
+---@param self MailboxRenderer
+---@param resources table<string, unknown>
+---@param status table<string, unknown>
+---@param geometry table<string, unknown>
+local function drawActionMenu(self, resources, status, geometry)
+  local text = assert(resources.textRenderer, "the action menu borrows the field text renderer")
+  drawConfirm(self, resources, geometry, { tokens = authorPromptTokens(self, status, text) }, false)
+  local actions = assert(status.menuActions, "the action phase lists its source actions")
+  local bank = assert(self.manifest.text.banks[232], "Mailbox action labels come from source bank 232")
+  local labels = {}
+  for index, action in ipairs(actions) do
+    local messageId =
+      assert(ACTION_MESSAGE_IDS[action], "each Mailbox action has a compiled source label: " .. tostring(action))
+    labels[index] = assert(bank[messageId], "each Mailbox action has a compiled source label")
+  end
+  local menu = assert(geometry.actionMenu, "actions frame through the source list menu")
+  local visuals = assert(self.manifest.mailbox.ui.listMenu, "Mailbox actions draw the compiled list menu")
+  ListMenuFrame.draw(self.graphics, self:_prepared(visuals.tiles), visuals.palette, text, {
+    x = menu.x,
+    y = #labels == 4 and menu.y or assert(menu.emptyPartyY, "the two-action list starts at its source row"),
+    width = menu.width,
+    labels = labels,
+    cursor = assert(status.actionIndex, "the action phase carries its selected row") - 1,
+    highlightFill = false,
+  })
+end
+
+-- Draws one published Mailbox snapshot inside its admitted pane: the read
+-- letter, or the list with its action menu and prompts. Geometry arrives
+-- from the interface plan, so drawing and pointer mapping share one owner.
+---@param status table<string, unknown>
+---@param resources table<string, unknown>
+---@param geometry table<string, unknown>
+function MailboxRenderer:draw(status, resources, geometry)
   assert(not self.released, "disposed mailbox renderer cannot draw")
   assert(type(status) == "table", "mailbox renderer needs a status snapshot")
   assert(type(resources) == "table", "mailbox drawing borrows field presentation resources")
+  assert(type(geometry) == "table", "mailbox drawing uses the interface geometry")
   local graphics = self.graphics
-  if status.viewMode == "read" and status.letter ~= nil then
-    local letter = status.letter
-    local visual = assert(self.manifest.mail.stationery[letter.type]).background
-    local geometry = assert(status.presentation.letter, "letter text uses source overlay geometry")
-    graphics.setColor(1, 1, 1, 1)
-    ImageSampling.draw(graphics, self:_prepared(visual), nil, visual.anchorX, visual.anchorY)
-    local text = assert(resources.textRenderer, "mail drawing borrows the field text renderer")
-    text:drawText(letter.author.name, geometry.author.x, geometry.author.y)
-    for index, line in ipairs(letter.lines) do
-      if line ~= false then
-        local placement = assert(geometry.lines[index], "each Mail line uses its source window anchor")
-        drawMailLine(text, MailTemplate.expandLine(line, self.catalog), placement.x, placement.y)
-      end
-    end
-    for index, location in ipairs(self.manifest.mail.geometry.iconLocations) do
-      local icon = status.icons and status.icons[index]
-      if icon ~= nil and icon.iconKey ~= nil then
-        local provider = assert(resources.monIconProvider, "letter icons borrow the shared mon icon provider")
-        graphics.setColor(1, 1, 1, 1)
-        ImageSampling.draw(
-          graphics,
-          provider:handleFor(icon.iconKey),
-          provider:quadFor(icon.iconKey, 1),
-          location.x,
-          location.y
-        )
-      end
-    end
-    local bank = assert(self.manifest.text.banks[232], "Mailbox chrome comes from source bank 232")
-    -- The read close path blinks the CLOSE region on alternate ticks
-    -- while its flash stage runs.
-    local flash = status.closeFlash
-    if flash == nil or flash.ticks % 2 == 0 then
-      text:drawLine(assert(bank[CLOSE_MESSAGE_ID], "the letter close button has a compiled source label"), 200, 168)
-    end
+  if status.viewMode == "read" and status.view ~= nil then
+    self:_drawMailPaneRead(
+      status.view,
+      resources,
+      assert(resources.mailViewGeometry, "reads draw the source MailView geometry")
+    )
   elseif status.mode == "mailbox" then
     local visual = assert(self.manifest.mailbox.background.main, "Mailbox background is compiled")
     graphics.setColor(1, 1, 1, 1)
@@ -500,75 +534,43 @@ function MailboxRenderer:draw(status, resources)
     -- The compiled list-cursor flash rides the selected row (anim 5)
     -- or parks on CLOSE at (224,176) when no row is selected (anim 4);
     -- the selection rectangle stays as the legibility mark.
-    local sprites = mailboxSprites(self.manifest, status)
+    local sprites = mailboxSprites(self.manifest, status, geometry)
     if sprites.cursor ~= nil then
       local sprite = sprites.cursor
       local frame = sprite.frame
       graphics.setColor(1, 1, 1, 1)
       ImageSampling.draw(graphics, self:_prepared(frame), nil, sprite.cx + frame.anchorX, sprite.cy + frame.anchorY)
     end
-    drawListChrome(self, resources, status)
-    local window = assert(resources.windowRenderer, "Mailbox controls borrow the shared field-window renderer")
-    local frameIndex = resources.applicationFrameIndex
+    drawListChrome(self, resources, status, geometry)
+    assert(resources.windowRenderer, "Mailbox controls borrow the shared field-window renderer")
     if status.phase == "action" then
-      local menu = assert(status.presentation.actionMenu)
-      -- The msg-9 author question sits above the action menu with the
-      -- selected letter author spliced in upstream.
-      local promptTokens = authorPromptTokens(self, status, text)
-      local promptLines = 1
-      for _, token in ipairs(promptTokens) do
-        if token.kind == "line_break" then
-          promptLines = promptLines + 1
-        end
-      end
-      drawMailLine(text, promptTokens, menu.x, menu.y - promptLines * text.fontDef.lineHeight - 4)
-      window:drawWindow(menu, frameIndex, text:windowBackgroundColor())
-      local labels = assert(self.manifest.text.banks[232], "Mailbox action labels come from source bank 232")
-      for index, action in ipairs(status.menuActions) do
-        local messageId =
-          assert(ACTION_MESSAGE_IDS[action], "each Mailbox action has a compiled source label: " .. tostring(action))
-        local rowY = menu.y + 8 + (index - 1) * menu.rowHeight
-        if index == status.actionIndex then
-          local selected = FieldMenuTheme.colors.selected
-          graphics.setColor(selected[1], selected[2], selected[3], selected[4])
-          graphics.rectangle("fill", menu.x + 4, rowY - 2, menu.width - 8, menu.rowHeight)
-        end
-        text:drawLine(assert(labels[messageId], "each Mailbox action has a compiled source label"), menu.x + 8, rowY)
-      end
+      drawActionMenu(self, resources, status, geometry)
     elseif status.phase == "confirm" or status.phase == "holdMail" then
-      drawConfirm(self, {
-        textRenderer = text,
-        windowRenderer = window,
-        applicationFrameIndex = frameIndex,
-        presentation = assert(status.presentation, "confirmations use the source box geometry"),
-      }, assert(status.prompt, "destructive Mail operations carry their source prompt"), true)
+      drawConfirm(
+        self,
+        resources,
+        geometry,
+        assert(status.prompt, "destructive Mail operations carry their source prompt"),
+        true
+      )
     elseif status.phase == "erased" then
-      drawConfirm(self, {
-        textRenderer = text,
-        windowRenderer = window,
-        applicationFrameIndex = frameIndex,
-        presentation = assert(status.presentation, "confirmations use the source box geometry"),
-      }, { bank = 232, id = ERASED_MESSAGE_ID }, false)
+      drawConfirm(self, resources, geometry, { bank = 232, id = ERASED_MESSAGE_ID }, false)
     elseif status.phase == "result" then
       local outcome = assert(status.outcome, "erase results carry their committed outcome")
       local messageId = assert(
         OUTCOME_MESSAGE_IDS[outcome.outcome],
         "each Mailbox erase outcome has a compiled source message: " .. tostring(outcome.outcome)
       )
-      drawConfirm(self, {
-        textRenderer = text,
-        windowRenderer = window,
-        applicationFrameIndex = frameIndex,
-        presentation = assert(status.presentation, "confirmations use the source box geometry"),
-      }, { bank = 232, id = messageId }, false)
+      drawConfirm(self, resources, geometry, { bank = 232, id = messageId }, false)
     end
   elseif status.mode == "confirm" then
-    drawConfirm(self, {
-      textRenderer = assert(resources.textRenderer, "confirmation text borrows the field text renderer"),
-      windowRenderer = assert(resources.windowRenderer, "confirmation borrows the shared field-window renderer"),
-      applicationFrameIndex = resources.applicationFrameIndex,
-      presentation = assert(status.presentation, "confirmations use the source box geometry"),
-    }, assert(status.prompt, "destructive Mail operations carry their source prompt"), true)
+    drawConfirm(
+      self,
+      resources,
+      geometry,
+      assert(status.prompt, "destructive Mail operations carry their source prompt"),
+      true
+    )
   end
 end
 
@@ -610,9 +612,11 @@ function MailboxRenderer:drawMailPane(view, paneId, resources)
   end
 end
 
--- Draws the read interaction pane: the stationery background, the stored
--- author at the source anchor, the catalog-expanded lines, the stored
--- string icons, and the close label.
+-- Draws the read pane: the stationery background, the stored author at the
+-- source window anchor, the catalog-expanded lines, and the stored mon
+-- icons. The source icon locations are sprite centers, so each icon's
+-- rendered frame centers on them; the source draws the close label on the
+-- list screen the letter replaces, so the letter pane carries none.
 ---@param self MailboxRenderer
 ---@param view table<string, unknown>
 ---@param resources table<string, unknown>
@@ -633,23 +637,21 @@ function MailboxRenderer:_drawMailPaneRead(view, resources, geometry)
       drawMailLine(text, MailTemplate.expandLine(line, self.catalog), placement.x, placement.y)
     end
   end
+  local provider = resources.monIconProvider
   for index, location in ipairs(self.manifest.mail.geometry.iconLocations) do
     local icon = view.icons and view.icons[index]
     if icon ~= nil and icon.iconKey ~= nil then
-      local provider = assert(resources.monIconProvider, "read icons borrow the shared mon icon provider")
+      local icons = assert(provider, "read icons borrow the shared mon icon provider")
+      local size = icons:dimensions(icon.iconKey)
       graphics.setColor(1, 1, 1, 1)
       ImageSampling.draw(
         graphics,
-        provider:handleFor(icon.iconKey),
-        provider:quadFor(icon.iconKey, 1),
-        location.x,
-        location.y
+        icons:handleFor(icon.iconKey),
+        icons:quadFor(icon.iconKey, 1),
+        location.x - math.floor(size.width / 2),
+        location.y - math.floor(size.height / 2)
       )
     end
-  end
-  if view.closeLabel ~= false then
-    local bank = assert(self.manifest.text.banks[232], "the read close label comes from source bank 232")
-    text:drawLine(assert(bank[CLOSE_MESSAGE_ID], "the letter close button has a compiled source label"), 200, 168)
   end
 end
 

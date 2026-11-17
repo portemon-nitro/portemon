@@ -104,6 +104,12 @@ PcSources.stationeryWrite = {
   -- The touch pixel test rejects BG2 character pixel index 1.
   touchRejectIndex = 1,
 }
+-- The shared touchscreen list-menu graphics behind the Mailbox action menu
+-- (mailbox_app.c sMailboxMailMenuTemplate via TouchscreenListMenuSpawner):
+-- data/sbox_gra carries the 8x8 frame tiles in member 1 and their palette in
+-- member 0, the same pair the Pokegear context menus draw with.
+PcSources.listMenu = { path = "a/1/6/5", char = 1, palette = 0 }
+
 -- ov14_021F5950 selects the byte offsets; member65 banks0/1 load to
 -- MAIN_BG slots12/13, and Window.paletteNum selects the palette.
 PcSources.storageWindowFrames = {

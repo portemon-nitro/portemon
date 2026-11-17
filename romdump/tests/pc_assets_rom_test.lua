@@ -481,6 +481,20 @@ function T.real_source_compiles_party_mail_bank_and_sprite_roles(romFs, _)
     local entry = assert(animations[animId], "the sprite role animation is compiled: " .. animId)
     Assert.equal(#entry.frames, 1, "the role animation carries its single source frame: " .. animId)
   end
+  local listMenu = assert(manifest.mailbox.ui.listMenu, "mailbox UI carries its action-menu list menu")
+  Assert.isTrue(
+    listMenu.tiles.width > 0 and listMenu.tiles.width % 8 == 0 and listMenu.tiles.height == 8,
+    "the list menu compiles one row of whole 8px source tiles"
+  )
+  Assert.equal(#listMenu.palette, 16, "the list menu keeps its sixteen source colors")
+  local listMenuSelection =
+    assert(bundle.provenance.selections["mailbox.listMenu"], "the compiler records the list menu source")
+  Assert.equal(listMenuSelection.path, PcSources.listMenu.path, "the list menu selection names its archive")
+  Assert.deepEqual(
+    listMenuSelection.members,
+    { char = PcSources.listMenu.char, palette = PcSources.listMenu.palette },
+    "the list menu selection records its character and palette members"
+  )
   for _, key in ipairs({
     "mailbox.animation.0",
     "mailbox.animation.1",

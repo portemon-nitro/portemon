@@ -11,6 +11,7 @@
 -- namespace arrives through resources.
 
 local PokegearAtlas = require("libs.hgss.src.presentation.PokegearAtlas")
+local ListMenuFrame = require("libs.hgss.src.ui.ListMenuFrame")
 local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
 
 local imageAt = PokegearMapLayers.imageAt
@@ -40,7 +41,7 @@ local MENU_ROW = 4
 ---@param text table<string, unknown>? borrowed text primitives
 ---@param menu table<string, unknown> tile geometry with labels and cursor
 local function drawMenu(graphics, tiles, colors, text, menu)
-  PokegearMapLayers.drawListMenuFrame(graphics, tiles, colors, text, {
+  ListMenuFrame.draw(graphics, tiles, colors, text, {
     x = menu.x, --[[@as integer]]
     y = MENU_ROW,
     width = menu.width, --[[@as integer]]

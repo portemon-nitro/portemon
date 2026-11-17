@@ -432,6 +432,19 @@ local function buildPresenters(owner)
           })
         end)
       end
+    elseif inputKey == "mailbox" or inputKey == "mailbox-inactive" then
+      -- The Party menu's Mail read and confirmation leaves are the same
+      -- Mailbox surfaces the PC child draws: one fitted native pane.
+      ApplicationPresentation.draw(hostGraphics, {
+        graphics = hostGraphics,
+        mailViewGeometry = MailViewInterface.TEXT,
+        mailboxRenderer = assert(owner.mailboxRenderer, "Mailbox drawing borrows its owned renderer"),
+        monIconProvider = assert(owner.monIconProvider, "Mailbox drawing borrows the shared mon icon provider"),
+        itemIconProvider = assert(owner.itemIconProvider, "Mailbox drawing borrows the shared item icon provider"),
+        textRenderer = assert(owner.textRenderer, "Mailbox drawing borrows the field text renderer"),
+        windowRenderer = assert(owner.windowRenderer, "Mailbox drawing borrows the shared field-window renderer"),
+        applicationFrameIndex = assert(owner.applicationFrameIndex, "Mailbox drawing borrows the selected frame"),
+      }, status, plan)
     elseif inputKey == "easy-chat" or inputKey == "easy-chat-inactive" then
       owner:drawEasyChat(status)
     else
@@ -1053,6 +1066,14 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
       end
       return true
     end
+    -- While the parked give-target picker owns the screen, the list
+    -- beneath draws no mon icons: polling its empty demand here would
+    -- retire the picker's adopted icon pages every tick (the picker
+    -- prepares its own demand on its gated tick), so only the list
+    -- chrome stays hot for the return.
+    if status.phase == "picker" then
+      return assert(self.mailboxRenderer, "Mailbox borrows its owned renderer"):prepare(status)
+    end
     for _, icon in ipairs(assert(status.icons, "Mailbox status publishes message icon snapshots")) do
       iconKeys[#iconKeys + 1] = icon.iconKey
     end
@@ -1080,12 +1101,14 @@ function FieldPresentationResources:pcApplicationResources(runtime)
   end
   return {
     drawEasyChat = drawEasyChat,
+    graphics = assert(love and love.graphics, "PC applications draw through the host graphics namespace"),
     mailViewGeometry = MailViewInterface.TEXT,
     icons = assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"),
     itemIcons = assert(self.itemIconProvider, "Storage borrows the shared item icon provider"),
     storageRenderer = assert(self.storageRenderer, "Storage borrows its owned renderer"),
     mailboxRenderer = assert(self.mailboxRenderer, "Mailbox borrows its owned renderer"),
     photoAlbumRenderer = assert(self.photoAlbumRenderer, "Photo Album borrows its owned renderer"),
+    partyScreenRenderer = assert(self.partyScreenRenderer, "Mailbox pickers borrow the shared party renderer"),
     monCatalog = assert(runtime.monCatalog, "Photo Album borrows the shared mon catalog"),
     monIconProvider = assert(self.monIconProvider, "Mailbox borrows the shared mon icon provider"),
     itemIconProvider = assert(self.itemIconProvider, "Mailbox borrows the shared item icon provider"),

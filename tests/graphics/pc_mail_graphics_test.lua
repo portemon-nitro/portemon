@@ -197,7 +197,7 @@ function T.native_write_views_render_source_chrome_text_and_pulse(scope)
         focusPos = 0,
         pulseLevel = 0,
       }
-      local plan = MailViewInterface.plan(measurement(), "write", {
+      local plan = MailViewInterface.plan(measurement(), {
         hitMasks = assert(version.manifest.mail.stationery[stationeryType].write).hitMasks,
       })
       Assert.equal(plan.inputKey, "mail-view", "the write screen plans its native view")

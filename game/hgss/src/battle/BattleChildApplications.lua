@@ -519,9 +519,6 @@ end
 -- never consulted.
 ---@param roster table<integer, table<string, unknown>> detached own-party snapshot under projection
 ---@param eligible table<integer, boolean> eligible combatants under projection
----@return table<string, unknown> battle-local party facts model
----@param roster table<integer, table<string, unknown>> detached own-party snapshot under projection
----@param eligible table<integer, boolean> eligible combatants under projection
 ---@param gateActive boolean true while active mons stay ineligible behind the switch refusal
 ---@return table<string, unknown> battle-local party facts model
 local function battlePartyModel(roster, eligible, gateActive)
@@ -2515,6 +2512,7 @@ local function openPartyChild(intent, services)
     if page ~= "summary" and page ~= "moves" and page ~= "move_detail" then
       return nil
     end
+    ---@cast page string
     for index, known in ipairs(BattlePartyPages.inputIds(page)) do
       if known == id then
         return index - 1
@@ -2556,6 +2554,7 @@ local function openPartyChild(intent, services)
       if page ~= "summary" and page ~= "moves" and page ~= "move_detail" then
         break
       end
+      ---@cast page string
       if event.type == "tap" and type(event.id) == "string" then
         pageTap(event.id)
       elseif event.type == "navigate" and type(event.direction) == "string" then

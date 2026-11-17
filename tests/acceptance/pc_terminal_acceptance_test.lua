@@ -418,7 +418,10 @@ local function assertMessageIds(task, expected)
   Assert.deepEqual(actual, expected, "the source shell exposes the expected retained menu entries")
 end
 
-function T.tests.player_room_mailbox_event_shows_empty_mailbox_warning_and_returns()
+-- The source player-room Mailbox background event: an empty Mailbox follows
+-- the source warning path, and a seeded one opens the production child over
+-- the still-visible field with no fade, then releases the field on close.
+function T.tests.player_room_mailbox_event_warns_when_empty_and_opens_over_the_field()
   withPlayerRoom(function(game)
     local event, scriptId = playerRoomMailboxEvent(game)
     Assert.notNil(event, "the source player-room Mailbox background event is present in the generated map")
@@ -443,6 +446,29 @@ function T.tests.player_room_mailbox_event_shows_empty_mailbox_warning_and_retur
     Assert.isFalse(host:isActive(), "an empty Mailbox follows the source warning path without a blank child")
     Assert.isNil(game:snapshot().foregroundScript, "the source event continuation completes")
     Assert.isFalse(game:snapshot().fieldLocked, "the source event releases player input after the warning")
+
+    -- The same event with Mail present opens the production child instead of
+    -- warning, over the visible field: the room Mailbox does not fade.
+    seedMailbox(game, 1)
+    game:pressAction()
+    Assert.equal(game:interaction().scriptId, scriptId, "the room event restarts its canonical script")
+    advanceSourceDialogueUntil(game, "the full Mailbox child", function()
+      return host:isActive()
+    end)
+    Assert.equal(host:status().app, "mailbox", "seeded Mailbox records open the production child")
+    Assert.isFalse(
+      game.runtime.screenFade:isOpaque(),
+      "the player-room Mailbox opens over the visible field without a fade"
+    )
+    -- Readiness is forced so the input-gated child can close headlessly;
+    -- the fade assertion above already proved the no-fade contract.
+    local handle = assert(host:activeHandle())
+    host:setPresentationReady(handle, true)
+    pressCancel(game)
+    game:advanceUntil("the closed Mailbox releases the field", function(snapshot)
+      return not host:isActive() and not snapshot.fieldLocked
+    end, 240)
+    Assert.equal(assert(game.runtime.mailbox):usedCount(), 1, "opening and cancelling preserves the Mailbox record")
   end)
 end
 

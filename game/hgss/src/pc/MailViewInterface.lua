@@ -1,10 +1,11 @@
--- Bounded native MailView read/write plan and mapped source controls.
--- The geometry follows the retail MailView exactly (mail_view.c): three
--- 208x32 line windows, the Confirm/Cancel button pair, and the source
--- half-open touch rectangles with the BG2 character-pixel-1 rejection
--- already baked into the generated masks. Read mode shows the stored
--- author and captured icons; write mode shows the three sentence windows
--- with the source Confirm/Cancel labels and never draws author/icons.
+-- Bounded native MailView write plan and mapped source controls. The
+-- geometry follows the retail MailView exactly (mail_view.c): three 208x32
+-- line windows, the Confirm/Cancel button pair, and the source half-open
+-- touch rectangles with the BG2 character-pixel-1 rejection already baked
+-- into the generated masks. The write screen shows the three sentence
+-- windows with the source Confirm/Cancel labels and never draws the author
+-- or the captured icons. TEXT also carries the read screen's author and
+-- line anchors the Mailbox read leaf draws with.
 -- No saved values, asset acquisition, or custody lives here: the plan
 -- only places the native controls and projects raw input onto them.
 
@@ -108,8 +109,7 @@ end
 
 -- Maps one already-placed logical event: keys pass through for the
 -- owner's modality handling, pointer presses project onto the source
--- controls, and everything else is consumed silently. Read mode has no
--- write controls: an in-bounds press closes the letter.
+-- controls, and everything else is consumed silently.
 ---@param event table<string, unknown>
 ---@param _ table<string, unknown> unused detached view
 ---@param plan table<string, unknown>
@@ -126,17 +126,11 @@ local function mapInput(event, _, plan)
     return nil
   end
   if event.type == "pointer_down" and type(event.x) == "number" and type(event.y) == "number" then
-    if plan.mode ~= "write" then
-      return { type = "close", source = "touch" }
-    end
     local masks = assert(plan.masks, "write mapping needs its generated masks")
     return mapControls(masks, event.x, event.y)
   end
   if event.type == "pointer_move" or event.type == "pointer_up" or event.type == "pointer_scroll" then
     return nil
-  end
-  if plan.mode ~= "write" and (event.type == "confirm" or event.type == "cancel") then
-    return { type = "close", source = "key" }
   end
   local copy = {}
   for key, value in pairs(event) do
@@ -145,9 +139,9 @@ local function mapInput(event, _, plan)
   return copy
 end
 
-local function blankPlan(mode)
+local function blankPlan()
   return {
-    mode = mode,
+    mode = "write",
     panes = {},
     frames = {},
     content = { panes = {} },
@@ -158,12 +152,11 @@ local function blankPlan(mode)
 end
 
 ---@param geometry table<string, unknown>?
----@param mode string
 ---@param view table<string, unknown>
 ---@return table<string, unknown>
-local function planFromGeometry(geometry, mode, view)
+local function planFromGeometry(geometry, view)
   if geometry == nil then
-    return blankPlan(mode)
+    return blankPlan()
   end
   local panes = {}
   for _, pane in ipairs({ "upper", "lower" }) do
@@ -179,46 +172,46 @@ local function planFromGeometry(geometry, mode, view)
     interactive = interactive or pane.interactive
   end
   if not interactive then
-    return blankPlan(mode)
+    return blankPlan()
   end
   local controls = {}
   for _, rect in ipairs(MailViewInterface.CONTROLS) do
     controls[#controls + 1] = copyRect(rect)
   end
   return {
-    mode = mode,
+    mode = "write",
     controls = controls,
     masks = view.hitMasks,
     panes = panes,
     frames = geometry.frames or {},
-    content = { panes = panes, mode = mode },
+    content = { panes = panes, mode = "write" },
     inputKey = "mail-view",
     render = render,
     mapInput = mapInput,
   }
 end
 
-local function resolversFor(mode, view)
+local function resolversFor(view)
   local function nativeLike(context, _)
-    return planFromGeometry(ApplicationLayout.coverOrFrame(context, LOWER, { maxOverdraw = ZERO_CROP }), mode, view)
+    return planFromGeometry(ApplicationLayout.coverOrFrame(context, LOWER, { maxOverdraw = ZERO_CROP }), view)
   end
   local function dualDisplay(context, _)
     local geometry = ApplicationLayout.nativeDual(context, UPPER, LOWER, { lower = { maxOverdraw = ZERO_CROP } })
-    return planFromGeometry(geometry, mode, view)
+    return planFromGeometry(geometry, view)
   end
   local function wide(context, seen)
     local geometry = ApplicationLayout.sideBySide(context, UPPER, LOWER)
     if geometry == nil then
       return context.nativeLikeInterface(context, seen)
     end
-    return planFromGeometry(geometry, mode, view)
+    return planFromGeometry(geometry, view)
   end
   local function tall(context, seen)
     local geometry = ApplicationLayout.stacked(context, UPPER, LOWER)
     if geometry == nil then
       return context.nativeLikeInterface(context, seen)
     end
-    return planFromGeometry(geometry, mode, view)
+    return planFromGeometry(geometry, view)
   end
   return {
     dualDisplay = dualDisplay,
@@ -234,17 +227,13 @@ end
 -- region fits. The view carries the generated write masks; no saved
 -- values or asset handles are read.
 ---@param display table<string, unknown> current display facts
----@param mode "read"|"write"
----@param view table<string, unknown> detached snapshot carrying write hitMasks in write mode
+---@param view table<string, unknown> detached snapshot carrying the write hitMasks
 ---@return table<string, unknown> bounded application plan
-function MailViewInterface.plan(display, mode, view)
+function MailViewInterface.plan(display, view)
   assert(type(display) == "table", "MailView presentation needs display facts")
-  assert(mode == "read" or mode == "write", "MailView presentation mode is explicit")
   assert(type(view) == "table", "MailView presentation needs its detached view")
-  if mode == "write" then
-    checkMasks(assert(view.hitMasks, "write mapping needs its generated masks"))
-  end
-  local resolvers = resolversFor(mode, view)
+  checkMasks(assert(view.hitMasks, "write mapping needs its generated masks"))
+  local resolvers = resolversFor(view)
   local configuration = ApplicationLayout.classify(display, nil)
   local selection = ApplicationLayout.selectSurfaces(display)
   local context = {
@@ -260,8 +249,7 @@ end
 
 -- Projects one raw batch through the admitted interaction placement:
 -- padding, outside points, and source mask misses never reach the owner.
--- Keys pass through for the owner's modality handling; read mode closes
--- on a new key or an in-bounds touch and has no write controls.
+-- Keys pass through for the owner's modality handling.
 ---@param plan table<string, unknown> resolved MailView plan
 ---@param rawEvents table[] host event batch
 ---@param hitMasks table[] five generated rect-local masks in cursor order
@@ -269,11 +257,7 @@ end
 function MailViewInterface.events(plan, rawEvents, hitMasks)
   assert(type(plan) == "table", "MailView input needs its resolved plan")
   assert(type(rawEvents) == "table", "MailView input needs an event batch")
-  assert(plan.mode == "read" or plan.mode == "write", "MailView input needs its admitted mode")
-  -- Read mode has no write controls, so no masks are admitted or needed.
-  if plan.mode == "write" then
-    checkMasks(hitMasks)
-  end
+  checkMasks(hitMasks)
   local interactive = nil
   for _, pane in ipairs(assert(plan.panes, "MailView input maps through the admitted placement")) do
     if pane.interactive then
@@ -294,22 +278,14 @@ function MailViewInterface.events(plan, rawEvents, hitMasks)
       if interactive ~= nil and type(event.x) == "number" and type(event.y) == "number" then
         local x, y = LayoutGeometry.hostToLogical(interactive.placement, event.x, event.y)
         if x ~= nil and y ~= nil then
-          if plan.mode == "read" then
-            routed[#routed + 1] = { type = "close", source = "touch" }
-          else
-            local action = mapControls(hitMasks, x, y)
-            if action ~= nil then
-              routed[#routed + 1] = action
-            end
+          local action = mapControls(hitMasks, x, y)
+          if action ~= nil then
+            routed[#routed + 1] = action
           end
         end
-      elseif plan.mode == "read" and interactive ~= nil then
-        routed[#routed + 1] = { type = "close", source = "touch" }
       end
     elseif event.type == "pointer_up" or event.type == "pointer_move" or event.type == "pointer_scroll" then
       -- The source samples new presses only; motion and releases never act.
-    elseif plan.mode == "read" then
-      routed[#routed + 1] = { type = "close", source = "key" }
     else
       local copy = {}
       for key, value in pairs(event) do

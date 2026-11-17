@@ -13,6 +13,7 @@
 ---@class PokegearPhoneRenderer
 local PokegearPhoneRenderer = {}
 
+local ListMenuFrame = require("libs.hgss.src.ui.ListMenuFrame")
 local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
@@ -500,7 +501,7 @@ local function drawMenu(graphics, images, text, menu, content)
   local tiles =
     PokegearMapLayers.imageAt(images, assert(content.menuTiles, "the phone plan resolves its list-menu tile strip"))
   local palette = assert(content.menuPalette, "the phone plan resolves its list-menu palette")
-  PokegearMapLayers.drawListMenuFrame(graphics, tiles, palette --[[@as table<integer, table<string, number>>]], text, {
+  ListMenuFrame.draw(graphics, tiles, palette --[[@as table<integer, table<string, number>>]], text, {
     x = frame.x,
     y = frame.y,
     width = frame.width,

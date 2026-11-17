@@ -618,6 +618,23 @@ function FieldTextRenderer:textWidth(text)
   return width
 end
 
+-- The measured width of one prepared token line: the same glyph advance
+-- geometry textWidth uses, so compiled labels and plain strings center
+-- through one measurement.
+---@param tokens MessageToken[]
+---@return number
+function FieldTextRenderer:lineWidth(tokens)
+  local def = self.fontDef
+  local width = 0
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      local glyph = def.glyphs[token.code] or def.glyphs[0]
+      width = width + glyph.advance + (def.letterSpacing or 0)
+    end
+  end
+  return width
+end
+
 -- Returns the source field-window fill color (palette slot 15, represented by
 -- Lua entry 16). ROM palettes are byte-valued; normalized fixture palettes are
 -- accepted so the same semantic accessor remains deterministic in headless UI.

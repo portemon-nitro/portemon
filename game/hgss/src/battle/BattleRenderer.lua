@@ -3608,7 +3608,7 @@ local function pageText(text, view, role, content, box, spec)
   if content == "" then
     return
   end
-  local bank = box.bank
+  local bank = box.bank --[[@as integer]]
   local palette =
     sourcePalette(view, "party", bank, spec.fg --[[@as integer]], spec.sh --[[@as integer]], spec.bg --[[@as integer]])
   local baseY = box.y + (tonumber(spec.y) or 0)
@@ -3660,7 +3660,7 @@ local function drawWrapperRole(text, graphics, view, entry, box, spec)
     -- The retail HP bar fills through its own window palette
     -- (FillWindowPixelRect on the palette-9 HP bar window), so the
     -- fill resolves through the box bank like the tile fill.
-    local bank = box.bank
+    local bank = box.bank --[[@as integer]]
     local darkInk = sourcePalette(view, "party", bank, dark, dark, dark).foreground
     local lightInk = sourcePalette(view, "party", bank, light, light, light).foreground
     graphics.setColor(lightInk.r / 255, lightInk.g / 255, lightInk.b / 255, 1)
@@ -3672,7 +3672,7 @@ local function drawWrapperRole(text, graphics, view, entry, box, spec)
     graphics.setColor(1, 1, 1, 1)
     return
   end
-  local bank = box.bank
+  local bank = box.bank --[[@as integer]]
   local palette =
     sourcePalette(view, "party", bank, spec.fg --[[@as integer]], spec.sh --[[@as integer]], spec.bg --[[@as integer]])
   if spec.parts == "hp" then
@@ -3736,14 +3736,6 @@ local function drawWrapperRole(text, graphics, view, entry, box, spec)
   pageText(text, view, role, content, box, spec)
 end
 
--- Draws the wrapper page text through the transcribed text layout:
--- every role prints through its window template with its retail font,
--- origin, alignment, and ink; the gender symbol takes its gender ink
--- on the mon-name window.
----@param text table<string, unknown> borrowed text services
----@param graphics table<string, unknown> borrowed host graphics
----@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
----@param child table<string, unknown> detached wrapper child view under drawing
 -- Retail gender inks behind the wrapper mon-name printers: the
 -- summary/check-moves/move-detail name printer (PrintMonName font 0)
 -- inks male (7,8,0) and female (3,4,0), while the centered mon-menu
@@ -3752,7 +3744,9 @@ end
 -- never sniffs the symbol text.
 ---@param entry table<string, unknown> projected gender window under inking
 ---@param page string wrapper page under inking
----@return integer, integer, integer foreground, shadow, and background slots
+---@return integer foreground slot
+---@return integer shadow slot
+---@return integer background slot
 local function genderInk(entry, page)
   local female = entry.female == true
   if page == "mon_menu" then
@@ -3793,7 +3787,7 @@ local function drawMonMenuName(text, view, child, box, nameEntry, genderEntry)
   local x = box.x + math.floor((box.w - nameWidth - symbolWidth - gap) / 2)
   -- The mon-menu windows print through the palette-9 bank, so both the
   -- centered name and the gender symbol resolve through the box bank.
-  local bank = box.bank
+  local bank = box.bank --[[@as integer]]
   if name ~= "" then
     local palette = sourcePalette(view, "party", bank, 7, 8, 9)
     drawRoleText(text, "menu", name, x, box.y + 7, palette)
@@ -3840,6 +3834,15 @@ local function drawExpBarTiles(assets, graphics, entry)
   end
 end
 
+-- Draws the wrapper page text through the transcribed text layout:
+-- every role prints through its window template with its retail font,
+-- origin, alignment, and ink; the gender symbol takes its gender ink
+-- on the mon-name window.
+---@param wrapperAssets table<string, unknown> borrowed asset holder under drawing
+---@param text table<string, unknown> borrowed text services
+---@param graphics table<string, unknown> borrowed host graphics
+---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+---@param child table<string, unknown> detached wrapper child view under drawing
 local function drawWrapperText(wrapperAssets, text, graphics, view, child)
   local page = child.partyPage --[[@as string]]
   local layout = BattlePartyPages.textLayout(page)
@@ -3901,10 +3904,13 @@ local function drawWrapperText(wrapperAssets, text, graphics, view, child)
   end
 end
 
----@param text table<string, unknown> borrowed text services
----@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
+-- Draws one wrapper button face at its retail tile rectangle through the
+-- staged party button art, nil art drawing nothing.
+---@param assets table<string, unknown> borrowed asset holder under drawing
+---@param graphics table<string, unknown> borrowed host graphics under drawing
 ---@param child table<string, unknown> detached wrapper child view under drawing
----@param byRole table<string, table<string, unknown>> projected windows by retail print role
+---@param button integer retail button identity under drawing
+---@param frame integer retail face frame under drawing
 local function drawWrapperFace(assets, graphics, child, button, frame)
   local rects = child.pageButtonRects --[[@as table<integer, table<string, number>>?]]
   local rect = type(rects) == "table" and rects[button] or nil
@@ -3987,7 +3993,7 @@ local function drawWrapperFaces(resources, view, child)
       end
     end
   elseif page == "move_detail" then
-    local selected = tonumber(child.pageMove) or 0
+    local selected = tonumber(child.pageMove) or 0 --[[@as integer]]
     if pressButton ~= 30 + selected then
       drawWrapperFace(assets, graphics, child, 30 + selected, 2)
     end

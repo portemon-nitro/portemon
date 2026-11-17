@@ -458,8 +458,23 @@ function PcAssetSchema.assertManifest(manifest)
   local mailbox = root.mailbox --[[@as table<string, unknown>]]
   exactKeys(mailbox, { background = true, ui = true, geometry = true, pageSize = true }, "mailbox")
   checkVisualMap(mailbox.background, "mailbox.background", 1)
-  checkVisualMap(mailbox.ui, "mailbox.ui")
   local mailboxUi = mailbox.ui --[[@as table<string, unknown>]]
+  exactKeys(mailboxUi, { animations = true, backgrounds = true, listMenu = true }, "mailbox.ui")
+  for _, role in ipairs({ "animations", "backgrounds" }) do
+    checkVisualMap(mailboxUi[role], "mailbox.ui." .. role)
+  end
+  local listMenu = mailboxUi.listMenu --[[@as table<string, unknown>]]
+  exactKeys(listMenu, { tiles = true, palette = true }, "mailbox.ui.listMenu")
+  checkVisual({
+    image = listMenu.tiles.image,
+    width = listMenu.tiles.width,
+    height = listMenu.tiles.height,
+    anchorX = listMenu.tiles.anchorX,
+    anchorY = listMenu.tiles.anchorY,
+  }, "mailbox.ui.listMenu.tiles")
+  for index = 1, 16 do
+    checkColor(listMenu.palette[index], "mailbox.ui.listMenu.palette[" .. index .. "]")
+  end
   local mailboxAnimations = mailboxUi.animations
   if type(mailboxAnimations) ~= "table" then
     fail("mailbox.ui.animations must be a record")

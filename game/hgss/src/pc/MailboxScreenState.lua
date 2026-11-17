@@ -5,9 +5,9 @@
 -- through the shared composer and the existing Party give controller.
 -- Stored-letter Give keeps its existing move semantics and earns no
 -- written-letter statistics.
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local Mail = require("libs.mons.src.gen4.Mail")
 local MailboxInterface = require("game.hgss.src.pc.MailboxInterface")
-local MailViewInterface = require("game.hgss.src.pc.MailViewInterface")
 local Mon = require("libs.mons.src.Mon")
 
 ---@class MailboxScreenState
@@ -51,6 +51,7 @@ local Mon = require("libs.mons.src.Mon")
 ---@field uiInput string? current input profile for the host
 ---@field closedKind string? stored close kind reported once the flash completes
 ---@field feedbackPending boolean? acknowledged give feedback returns to the list
+---@field presentation ApplicationPresentation fits the native surface into the display
 ---@field disposed boolean lifetime ended
 ---@field resultTaken boolean published result was drained
 local MailboxScreenState = {}
@@ -235,6 +236,7 @@ function MailboxScreenState.new(opts)
     _intent = nil,
     uiInput = nil,
   }, MailboxScreenState)
+  state.presentation = ApplicationPresentation.new(MailboxInterface.defaults())
   state:_refresh()
   return state
 end
@@ -589,17 +591,18 @@ function MailboxScreenState:updateFixed(events)
     return
   end
   self.uiInput = nil
-  if self.mode == "mailbox" or self.mode == "confirm" then
-    events = MailboxInterface.events(self:status().presentation, events, self.phase)
-  end
   if self.mode == "read" then
     if not self:_pollReadPreparation() then
       return
     end
-    local plan = MailViewInterface.plan(self.measureDisplay(), "read", {})
-    local mapped = MailViewInterface.events(plan, events, {})
-    for _, event in ipairs(mapped) do
-      if event.type == "close" then
+  end
+  -- Pointer input maps through the published plan, so the fitted pane and
+  -- the hit geometry always agree; keys pass straight through.
+  events = self.presentation:mapInput(events, self:status())
+  if self.mode == "read" then
+    for _, event in ipairs(events) do
+      -- The read leaf draws no controls: any new press closes the letter.
+      if event.type == "close" or event.type == "confirm" or event.type == "cancel" then
         self:_beginClose("closed")
         cue(self, "SEQ_SE_DP_DECIDE")
         break
@@ -893,12 +896,6 @@ function MailboxScreenState:status()
       itemIconKey = stationery.itemKey,
     }
   end
-  local presentation
-  if viewer then
-    presentation = MailViewInterface.plan(self.measureDisplay(), "read", {})
-  else
-    presentation = MailboxInterface.plan(self.measureDisplay(), self.mode, self.manifest)
-  end
   local readView = nil
   if viewer and letter ~= nil then
     readView = {
@@ -906,10 +903,9 @@ function MailboxScreenState:status()
       stationeryType = letter.type,
       letter = letter,
       icons = icons,
-      closeLabel = self.closeFlash == nil or self.closeFlash.ticks % 2 == 0,
     }
   end
-  return {
+  local view = {
     mode = viewer and "read" or self.mode,
     viewMode = viewer and "read" or "mailbox",
     phase = self.phase,
@@ -933,8 +929,9 @@ function MailboxScreenState:status()
     icons = icons,
     lines = letter and copy(letter.lines) or {},
     view = readView,
-    presentation = presentation,
   }
+  view.presentation = self.presentation:resolve(self.measureDisplay(), view)
+  return view
 end
 
 function MailboxScreenState:draw(resources, status)
@@ -943,18 +940,60 @@ function MailboxScreenState:draw(resources, status)
     return self.compose:draw(resources)
   end
   if self.picker ~= nil then
-    return self.picker:draw(resources)
+    -- The parked give-target picker draws through the shared party
+    -- presenter exactly like the bag and party menus draw it: a pending
+    -- picker draws nothing (the field stays visible), a failed one
+    -- raises its cause, and a ready one paints its windowed panes. The
+    -- outer application frames ride the published plan through the host.
+    local pickerStatus = self.picker:status()
+    local waitState = pickerStatus.preparationState
+    if waitState ~= nil and waitState ~= "ready" then
+      if waitState == "failed" then
+        error("party picker preparation failed: " .. tostring(pickerStatus.preparationError), 0)
+      end
+      return
+    end
+    local plan = assert(pickerStatus.presentation, "the party picker presents its plan")
+    local hostGraphics = assert(resources.graphics, "party picker drawing borrows the host graphics namespace")
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      partyScreenRenderer = assert(resources.partyScreenRenderer, "party picker borrows the shared party renderer"),
+      icons = assert(resources.monIconProvider, "party picker borrows the shared mon icon provider"),
+      text = assert(resources.textRenderer, "party picker borrows the field text renderer"),
+    }, pickerStatus, plan)
+    return
   end
   local value = status or self:status()
-  if value.viewMode == "read" and value.view ~= nil then
-    return assert(resources.mailboxRenderer, "Mailbox borrows its owned renderer"):drawMailPane(
-      value.view,
-      nil,
-      resources
-    )
+  ApplicationPresentation.draw(
+    assert(resources.graphics, "Mailbox drawing borrows the host graphics namespace"),
+    resources,
+    value,
+    value.presentation
+  )
+end
+
+-- The plan the open child just drew, so the host can decorate it with its
+-- outer application frames: the composer's write plan (or its nested
+-- editor's plan), the parked give-target picker's plan while it owns the
+-- screen, otherwise the fitted Mailbox surface.
+---@return ApplicationPlan?
+function MailboxScreenState:presentationPlan()
+  if self.disposed then
+    return nil
   end
-  local renderer = assert(resources.mailboxRenderer, "mailbox presentation provides its owned renderer")
-  renderer:draw(value, resources)
+  local composer = self.compose
+  if composer ~= nil then
+    return assert(composer:status().presentation, "the composer presents its write plan")
+  end
+  local picker = self.picker
+  if picker ~= nil then
+    local pickerStatus = picker:status()
+    if pickerStatus.preparationState ~= "ready" then
+      return nil
+    end
+    return assert(pickerStatus.presentation, "the party picker presents its plan")
+  end
+  return self:status().presentation
 end
 
 function MailboxScreenState:result()
@@ -1020,6 +1059,7 @@ function MailboxScreenState:dispose()
     self.picker:dispose()
     self.picker = nil
   end
+  self.presentation:dispose()
 end
 
 function MailboxScreenState:isActive()

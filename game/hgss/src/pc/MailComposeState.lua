@@ -5,6 +5,7 @@
 -- or stats: an accepted whole letter returns to the caller, which owns
 -- final custody through MailActions. The final result is observable only
 -- after the exit fade and cleanup, then exactly once.
+local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local Mail = require("libs.mons.src.gen4.Mail")
 local MailTemplate = require("libs.hgss.src.field.MailTemplate")
 local MailViewInterface = require("game.hgss.src.pc.MailViewInterface")
@@ -174,7 +175,7 @@ end
 
 function MailComposeState:_resolvePlan()
   local display = self._measureDisplay()
-  self._resolvedPlan = MailViewInterface.plan(display, "write", { hitMasks = self._hitMasks })
+  self._resolvedPlan = MailViewInterface.plan(display, { hitMasks = self._hitMasks })
   return self._resolvedPlan
 end
 
@@ -776,8 +777,13 @@ function MailComposeState:draw(resources, status)
     drawEasyChat(assert(value.child, "the nested editor carries its status"))
     return
   end
-  local renderer = assert(resources.mailboxRenderer, "write views borrow the shared stationery renderer")
-  renderer:drawMailPane(value.view or value, nil, resources)
+  local plan = assert(value.presentation, "composition draws through its resolved write plan")
+  ApplicationPresentation.draw(
+    assert(resources.graphics, "composition drawing borrows the host graphics namespace"),
+    resources,
+    value.view or value,
+    plan
+  )
 end
 
 function MailComposeState:takeResult()

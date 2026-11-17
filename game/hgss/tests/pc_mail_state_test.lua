@@ -198,7 +198,7 @@ local function settle(compose)
   error("the composer never settles into its write screen", 0)
 end
 
-local function openMailbox(slots, partyHasMembers)
+local function openMailbox(slots, partyHasMembers, measure, createPartyPicker)
   local values = {}
   for slot = 0, Mailbox.CAPACITY - 1 do
     values[slot + 1] = slots[slot] or false
@@ -208,17 +208,23 @@ local function openMailbox(slots, partyHasMembers)
     mode = "mailbox",
     partyHasMembers = partyHasMembers,
     mailbox = mailbox,
-    mailActions = { preview = function() end, commit = function() end },
+    mailActions = {
+      preview = function() end,
+      commit = function() end,
+      revisionSnapshot = function()
+        return {}
+      end,
+    },
     manifest = manifest(),
     itemCatalog = {
       item = function(_, key)
         return { icon = key, name = key }
       end,
     },
-    measureDisplay = measurement,
+    measureDisplay = measure or measurement,
     audio = { play = function() end },
     charmap = CatalogFixture.CHARMAP,
-    createPartyPicker = function()
+    createPartyPicker = createPartyPicker or function()
       error("opening the list does not open a picker")
     end,
   }),
@@ -244,6 +250,125 @@ function T.mailbox_actions_follow_party_presence()
   nonempty:updateFixed({ { type = "confirm" } })
   Assert.deepEqual(nonempty:status().menuActions, { "read", "erase", "give", "cancel" })
   nonempty:dispose()
+end
+
+-- The one fitted mailbox surface: one interactive native pane, scaled up into
+-- the host inside complete outer frames.
+---@param plan ApplicationPlan the resolved mailbox plan under assertion
+---@param what string the mode the plan describes
+local function assertFittedMailboxPlan(plan, what)
+  Assert.equal(plan.inputKey, "mailbox", what .. " plans the mailbox surface")
+  Assert.equal(#plan.panes, 1, what .. " draws on one native pane")
+  local pane = plan.panes[1]
+  Assert.equal(pane.id, "mailbox", what .. " keeps the mailbox pane identity")
+  Assert.isTrue(pane.interactive, what .. " keeps the interaction pane")
+  Assert.isTrue(
+    pane.placement.logicalWidth == 256 and pane.placement.logicalHeight == 192,
+    what .. " preserves the native logical surface"
+  )
+  Assert.isTrue(pane.placement.scale > 1, what .. " scales the native surface up instead of clipping it")
+  Assert.isTrue(#plan.frames > 0, what .. " keeps the outer application frame")
+end
+
+-- A 16:9 host fits the same native 256x192 Mailbox surface for the list and
+-- the read letter instead of drawing either at raw host origin.
+function T.mailbox_presents_one_fitted_surface_in_every_mode()
+  local display = {
+    width = 1280,
+    height = 720,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 1280, height = 720 },
+      role = "world",
+      touch = true,
+    }),
+    pixelRatio = 1,
+    signature = "pc-mail-test:1280x720",
+  }
+  local state = openMailbox({ [0] = letter("MISTY") }, true, function()
+    return display
+  end)
+  assertFittedMailboxPlan(state:status().presentation, "the list")
+
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().viewMode, "read", "READ opens the letter")
+  assertFittedMailboxPlan(state:status().presentation, "the read letter")
+  state:dispose()
+end
+
+-- The parked give-target picker is a Party surface: it draws through the
+-- shared party presenter while it owns the screen, draws nothing while its
+-- icons are still preparing, and names its cause when preparation failed.
+function T.parked_give_picker_draws_through_the_shared_party_presenter()
+  local graphics = { push = function() end, pop = function() end }
+  local presenter, icons, text = { drawPane = function() end }, { sentinel = "icons" }, { sentinel = "text" }
+  local renders = 0
+  local pickerStatus = { preparationState = "pending" }
+  local plan
+  plan = {
+    inputKey = "party",
+    panes = {},
+    frames = {},
+    content = {},
+    mapInput = function()
+      return nil
+    end,
+    render = function(borrowed, view, drawing)
+      renders = renders + 1
+      Assert.isTrue(borrowed.partyScreenRenderer == presenter, "the picker draws through the shared party presenter")
+      Assert.isTrue(borrowed.graphics == graphics, "the picker borrows the host graphics namespace")
+      Assert.isTrue(borrowed.icons == icons, "the picker borrows the shared mon icon provider")
+      Assert.isTrue(borrowed.text == text, "the picker borrows the field text renderer")
+      Assert.isTrue(view == pickerStatus, "the picker draws its own live snapshot")
+      Assert.isTrue(drawing == plan, "the picker draws its own published plan")
+    end,
+  }
+  pickerStatus.presentation = plan
+  local picker = {
+    updateFixed = function() end,
+    takeIntent = function()
+      return nil
+    end,
+    takeResult = function()
+      return nil
+    end,
+    status = function()
+      return pickerStatus
+    end,
+    dispose = function() end,
+  }
+  local state = openMailbox({ [0] = letter("MISTY") }, true, nil, function(role)
+    Assert.equal(role, "stored", "a stored letter opens the picker in its give context")
+    return picker
+  end)
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(state:status().phase, "picker", "the GIVE action parks the give-target picker")
+  local resources =
+    { graphics = graphics, partyScreenRenderer = presenter, monIconProvider = icons, textRenderer = text }
+
+  state:draw(resources)
+  Assert.equal(renders, 0, "a picker with pending icons draws nothing")
+  Assert.isNil(state:presentationPlan(), "a pending picker offers the host no outer frames")
+
+  pickerStatus.preparationState = "failed"
+  pickerStatus.preparationError = "party icon page missing"
+  local ok, failure = pcall(function()
+    state:draw(resources)
+  end)
+  Assert.isFalse(ok, "a failed picker preparation raises instead of drawing")
+  Assert.isTrue(tostring(failure):find("party icon page missing", 1, true) ~= nil, "the failure names its cause")
+  Assert.isNil(state:presentationPlan(), "a failed picker offers the host no outer frames")
+
+  pickerStatus.preparationState = "ready"
+  pickerStatus.preparationError = nil
+  state:draw(resources)
+  Assert.equal(renders, 1, "a ready picker draws its party plan once")
+  Assert.isTrue(state:presentationPlan() == plan, "the host decorates the plan the picker drew")
+  state:dispose()
 end
 
 function T.mailbox_mode_requires_party_presence_snapshot()

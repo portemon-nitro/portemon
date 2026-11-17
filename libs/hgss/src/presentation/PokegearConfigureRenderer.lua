@@ -10,6 +10,7 @@
 ---@class PokegearConfigureRenderer
 local PokegearConfigureRenderer = {}
 
+local ListMenuFrame = require("libs.hgss.src.ui.ListMenuFrame")
 local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
 
 local drawSprite = PokegearMapLayers.drawSprite
@@ -144,20 +145,14 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
         PokegearMapLayers.imageAt(images, assert(content.menuTiles, "the setup plan resolves its list-menu tile strip"))
       local palette = assert(content.menuPalette, "the setup plan resolves its list-menu palette")
       local tileFrame = frame --[[@as table<string, integer>]]
-      PokegearMapLayers.drawListMenuFrame(
-        graphics,
-        tiles,
-        palette --[[@as table<integer, table<string, number>>]],
-        text,
-        {
-          x = tileFrame.x,
-          y = tileFrame.y,
-          width = tileFrame.width,
-          labels = labels --[[@as string[] ]],
-          cursor = cursorOption,
-          highlightFill = false,
-        }
-      )
+      ListMenuFrame.draw(graphics, tiles, palette --[[@as table<integer, table<string, number>>]], text, {
+        x = tileFrame.x,
+        y = tileFrame.y,
+        width = tileFrame.width,
+        labels = labels --[[@as string[] ]],
+        cursor = cursorOption,
+        highlightFill = false,
+      })
     end
   end
   graphics.setColor(1, 1, 1, 1)

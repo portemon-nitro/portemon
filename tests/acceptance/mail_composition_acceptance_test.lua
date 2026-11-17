@@ -1288,7 +1288,7 @@ function T.tests.native_letter_plan_prepares_without_draw_and_reports_missing_ar
     -- The native write plan carries source geometry and masks, maps
     -- the three line windows and the Confirm/Cancel pair, and rejects
     -- padding and mask misses without acquiring anything.
-    local plan = MailView.plan(display, "write", { hitMasks = write.hitMasks })
+    local plan = MailView.plan(display, { hitMasks = write.hitMasks })
     Assert.equal(plan.inputKey, "mail-view", "the write screen plans its native view")
     Assert.equal(#plan.controls, 5, "the write screen keeps its five source controls")
     local mapped = MailView.events(plan, { { type = "pointer_down", x = 100, y = 40 } }, write.hitMasks)
@@ -1300,9 +1300,6 @@ function T.tests.native_letter_plan_prepares_without_draw_and_reports_missing_ar
       0,
       "padding maps to nothing"
     )
-    local readPlan = MailView.plan(display, "read", {})
-    Assert.equal(readPlan.inputKey, "mail-view", "the read screen plans its native view")
-    Assert.equal(#MailView.events(readPlan, { { type = "confirm" } }, {}), 1, "read closes on its source key")
 
     -- A failed preparation surfaces its missing art without drawing
     -- and publishes no result or custody change.
