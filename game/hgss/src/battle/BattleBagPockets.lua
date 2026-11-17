@@ -283,7 +283,7 @@ BattleBagPockets.CURSOR_BOXES = {
     { x = 136, y = 16, w = 112, h = 56, up = 2, down = 3, left = 0, right = 2 },
     { x = 136, y = 88, w = 112, h = 56, up = 2, down = 5, left = 1, right = 3 },
     { x = 8, y = 160, w = 192, h = 24, up = 1, down = 4, left = 4, right = 5 },
-    { x = 224, y = 160, w = 24, h = 24, up = 3, down = 5, left = 4, right = 5 },
+    { x = 224, y = 160, w = 24, h = 24, up = 131, down = 5, left = 4, right = 5 },
   },
   item_list = {
     { x = 8, y = 16, w = 112, h = 32, up = 0, down = 2, left = 0, right = 1 },
@@ -292,7 +292,7 @@ BattleBagPockets.CURSOR_BOXES = {
     { x = 136, y = 64, w = 112, h = 32, up = 1, down = 5, left = 2, right = 3 },
     { x = 8, y = 112, w = 112, h = 32, up = 2, down = 6, left = 4, right = 5 },
     { x = 136, y = 112, w = 112, h = 32, up = 3, down = 6, left = 4, right = 5 },
-    { x = 224, y = 160, w = 24, h = 24, up = 5, down = 6, left = 6, right = 6 },
+    { x = 224, y = 160, w = 24, h = 24, up = 133, down = 6, left = 6, right = 6 },
   },
   use_item = {
     { x = 8, y = 160, w = 192, h = 24, up = 0, down = 0, left = 0, right = 1 },

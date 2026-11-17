@@ -2350,6 +2350,31 @@ local function drawChildModal(resources, view, content, placement)
         end
       end
     end
+    -- D-pad cursor corners frame the focused box while the cursor is
+    -- active (BattleDpadCursor_SetRect over the page cursor boxes; set
+    -- by keys, cleared by touch), exactly like the paired modal.
+    -- Sprites center on the corners like the item spots. A missing
+    -- staged corner draws nothing under the existing pending path,
+    -- never a substitute or a text marker.
+    local bagTick = view.bagCursorTick --[[@as integer?]] or 0
+    for _, corner in
+      ipairs(BattleBagPockets.cursorDraws(childView.native, bagPage, childView.focusId, bagTick, view.bagCursorFrames))
+    do
+      local cornerArt = assets:drawable(corner.key)
+      if cornerArt ~= nil then
+        local width, height = 32, 32
+        if type(cornerArt.getDimensions) == "function" then
+          width, height = cornerArt:getDimensions()
+        end
+        local cornerX = corner.x - math.floor(width / 2)
+        local cornerY = corner.y - math.floor(height / 2)
+        if type(cornerArt.draw) == "function" then
+          cornerArt:draw(resources.graphics, cornerX, cornerY)
+        else
+          resources.graphics.draw(cornerArt, cornerX, cornerY)
+        end
+      end
+    end
   end
   drawLabel(text, fitText(text, tostring(childPlan.title or ""), 200), 12, 10)
   if type(childView) == "table" then

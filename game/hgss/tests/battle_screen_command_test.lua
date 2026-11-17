@@ -480,7 +480,7 @@ local function openRig(opts)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
   rig.audio = { plays = {} }
-  function rig.audio.play(name)
+  function rig.audio.play(_, name)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
@@ -1208,13 +1208,14 @@ function T.navigation_follows_the_native_topology()
   rig.battle:dispose()
 end
 
--- Confirming a move remembers its fight-menu cell, and reopening
--- reselects it while the slot stays enabled, matching the native
--- move-cursor save and restore.
-function T.first_keyboard_edge_reveals_then_fight_left_and_right_follow_native_slots()
+-- The first keyboard edge reveals the native cursor without moving it
+-- (BattleDpadCursor_TryActivate), and every later edge that changes the
+-- focus voices SELECT while a clamped edge stays silent.
+function T.keyboard_edges_reveal_move_and_select_from_the_first_command()
   local rig = openRig({ launchId = "launch-screen-native-cursor-reveal" })
   driveToMode(rig, "command", true)
   local initial = rig.screen:view()
+  rig.audio.plays = {}
 
   rig.screen:input({ { type = "navigate", direction = "left" } })
   rig.pump(1)
@@ -1229,6 +1230,16 @@ function T.first_keyboard_edge_reveals_then_fight_left_and_right_follow_native_s
   rig.screen:input({ { type = "navigate", direction = "right" } })
   rig.pump(1)
   local right = rig.screen:view().selection
+  local voices = {}
+  for index, symbol in ipairs(rig.audio.plays) do
+    voices[index] = symbol
+  end
+  -- Right clamps on the lower-right command: the focus keeps its cell
+  -- and the cursor stays silent like the native cursor.
+  rig.screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  local clamped = rig.screen:view().selection
+  local voicedAfterClamp = #rig.audio.plays
 
   rig.screen:input({ { type = "cancel" } })
   local modeAfterCancel = rig.screen:status().mode
@@ -1244,6 +1255,13 @@ function T.first_keyboard_edge_reveals_then_fight_left_and_right_follow_native_s
   Assert.equal(left, "bag", "left from Fight selects Bag")
   Assert.equal(up, "fight", "up from Bag returns to Fight")
   Assert.equal(right, "pokemon", "right from Fight selects Pokémon")
+  Assert.deepEqual(
+    voices,
+    { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" },
+    "the reveal and each focus change voice select once"
+  )
+  Assert.equal(clamped, "pokemon", "right clamps on the lower-right command")
+  Assert.equal(voicedAfterClamp, #voices, "a clamped edge with no focus change stays silent")
   Assert.equal(modeAfterCancel, "command", "cancel on the first command does not flee")
   Assert.notNil(requestAfterCancel, "the command request stays open after cancel")
   Assert.equal(submissionsAfterCancel, 0, "cancel does not seal or flee the first command")
@@ -1461,7 +1479,7 @@ function openSealingScreen(launchId, specs, requestId)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
   rig.audio = { plays = {} }
-  function rig.audio.play(name)
+  function rig.audio.play(_, name)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
@@ -3451,7 +3469,7 @@ local function openWeakTerminalRig(launchId)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
   rig.audio = { plays = {} }
-  function rig.audio.play(name)
+  function rig.audio.play(_, name)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
@@ -3619,7 +3637,7 @@ local function openLongOutcomeRig(launchId)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
   rig.audio = { plays = {} }
-  function rig.audio.play(name)
+  function rig.audio.play(_, name)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end
@@ -3764,7 +3782,7 @@ local function openPacedScreen(launchId, speed)
     rig.windows.calls[#rig.windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
   rig.audio = { plays = {} }
-  function rig.audio.play(name)
+  function rig.audio.play(_, name)
     rig.audio.plays[#rig.audio.plays + 1] = name
     return true
   end

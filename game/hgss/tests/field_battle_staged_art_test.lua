@@ -241,6 +241,13 @@ function T.staged_keys_resolve_to_their_verified_manifest_paths()
     ["bag:screen:1"] = manifest.bag.pages[1].image,
     ["bag:screen:2"] = manifest.bag.pages[2].image,
     ["bag:screen:3"] = manifest.bag.pages[3].image,
+    -- The d-pad focus corners frame every bag and party-wrapper focus box
+    -- (BattleDpadCursor_SetRect); each corner name resolves its own staged
+    -- pulse art.
+    ["battle:cursor-tl"] = manifest.bag.cursor.tl.image,
+    ["battle:cursor-tr"] = manifest.bag.cursor.tr.image,
+    ["battle:cursor-bl"] = manifest.bag.cursor.bl.image,
+    ["battle:cursor-br"] = manifest.bag.cursor.br.image,
   }
   for key, path in pairs(expected) do
     Assert.equal(resolvedPath(envelope, pool, key), path, "staged key resolves its manifest path: " .. key)
@@ -263,6 +270,7 @@ function T.staged_keys_resolve_to_their_verified_manifest_paths()
     "bag:screen:1@general",
     "bag:bogus",
     "bag",
+    "battle:cursor",
   }) do
     Assert.isNil(resolvedPath(envelope, pool, key), "key without staged art resolves to nothing: " .. key)
   end

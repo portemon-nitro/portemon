@@ -359,7 +359,9 @@ function T.restricted_bags_refuse_with_their_retail_message()
     for _ = 1, 10 do
       fixture.screen:updateFixed(TICK)
     end
-    fixture.screen:input({ { type = "navigate", direction = "down" } })
+    -- The compact 2x2 grid draws Bag right of Fight, so the setup
+    -- walk steps right after the reveal edge.
+    fixture.screen:input({ { type = "navigate", direction = "right" } })
     for _ = 1, 10 do
       fixture.screen:updateFixed(TICK)
     end

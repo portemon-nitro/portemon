@@ -800,6 +800,10 @@ local function newBattleBagBrowser(inventory, catalog, intent)
     _positions = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 },
     _page = "pocket_menu",
     _menuFocus = 0,
+    -- Recorded return-link position behind the pocket-menu cursor
+    -- (BattleDpadCursor prevPosition): the cancel-adjacent edge
+    -- (page-0 box 5 up 0x83) leads back through it, 0xFF/nil without one.
+    _menuPrev = nil,
     _pocket = nil,
     _useCell = nil,
     -- Item-list d-pad cursor box behind the saved cell: retail keeps the
@@ -808,6 +812,10 @@ local function newBattleBagBrowser(inventory, catalog, intent)
     -- empty cells) while the saved cell only moves on a stocked confirm.
     -- 6 focuses Back; confirming it returns to the pocket menu.
     _cursor = 0,
+    -- Recorded return-link position behind the item-list cursor: Back
+    -- up (page-1 box 6 up 0x85) leads back to the cell the cursor came
+    -- from (4 or 5), nil without one.
+    _listPrev = nil,
     _message = nil,
     _intent = nil,
     _result = nil,
@@ -911,7 +919,9 @@ local function newBattleBagBrowser(inventory, catalog, intent)
     browser._page = "item_list"
     -- Entering the list seats the cursor on the saved cell
     -- (ShowItemListPage seats the cursor at pocketPositions).
+    -- SetBoxes resets the return-link record behind the new page.
     browser._cursor = browser._positions[pocket]
+    browser._listPrev = nil
     clampPage(pocket)
   end
   -- Stages one button press behind the animation gate
@@ -946,19 +956,85 @@ local function newBattleBagBrowser(inventory, catalog, intent)
       pending()
     end
   end
+  ---@param direction string D-pad direction under stepping
+  ---@return integer decomp direction code behind the step
+  local function bagDirectionCode(direction)
+    if direction == "up" then
+      return 0
+    end
+    if direction == "down" then
+      return 1
+    end
+    if direction == "left" then
+      return 2
+    end
+    assert(direction == "right", "bag dpad steps name their direction")
+    return 3
+  end
+  ---@param box table<string, unknown> cursor box behind the neighbor lookup
+  ---@param code integer decomp direction code under lookup
+  ---@return integer neighbor box index with its return-link flag
+  local function bagNeighbor(box, code)
+    if code == 0 then
+      return box.up
+    end
+    if code == 1 then
+      return box.down
+    end
+    if code == 2 then
+      return box.left
+    end
+    return box.right
+  end
+  ---@param box table<string, unknown> newly entered cursor box under link lookup
+  ---@param code integer decomp direction code under lookup
+  ---@return boolean linked true while the opposite edge carries the return flag
+  local function bagHasReturnLink(box, code)
+    -- BattleDpadCursor_HasReturnLink: the neighbor opposite the move
+    -- direction carries bit 7 back to the box the cursor came from.
+    if code == 0 then
+      return (box.down % 256) >= 128
+    end
+    if code == 1 then
+      return (box.up % 256) >= 128
+    end
+    if code == 2 then
+      return (box.right % 256) >= 128
+    end
+    return (box.left % 256) >= 128
+  end
   ---@param focus integer pocket-menu focus under motion
   ---@param direction string D-pad direction under motion
   ---@return integer settled pocket-menu focus
   local function moveMenuFocus(focus, direction)
     -- Neighbors ride the transcribed page-0 cursor boxes
     -- (sBattleBagPage0CursorBoxes) so motion and paint share one table.
+    -- A flagged neighbor (bit 7, page-0 box 5 up 0x83) leads back
+    -- through the recorded position when one exists, else strips its
+    -- flag like the source (BattleDpadCursor_HandleInput).
     local boxes = BattleBagPockets.CURSOR_BOXES.pocket_menu
+    local code = bagDirectionCode(direction)
     local row = boxes[focus + 1] or boxes[1]
-    local neighbor = row[direction]
-    if type(neighbor) ~= "number" then
+    local raw = bagNeighbor(row, code) % 256
+    local input = raw
+    if input >= 128 then
+      local prev = browser._menuPrev
+      if prev ~= nil then
+        input = prev
+      else
+        input = input - 128
+      end
+    end
+    assert(type(boxes[input + 1]) == "table", "pocket-menu dpad neighbors stay on their page")
+    if input == focus then
       return focus
     end
-    return math.floor(neighbor)
+    local next = nil
+    if bagHasReturnLink(boxes[input + 1], code) then
+      next = focus
+    end
+    browser._menuPrev = next
+    return input
   end
   -- Moves the item-list d-pad cursor across its static boxes: the six
   -- cells roam freely (even onto empty cells) with Back as box 6 below
@@ -968,21 +1044,40 @@ local function newBattleBagBrowser(inventory, catalog, intent)
   -- behind the animation gate (HandleItemListInput animates buttons 12
   -- and 13 through WaitButtonAnim). Page turns reset only the saved
   -- cell (ChangeItemPage clears pocketPositions); the cursor keeps its box.
+  -- Back up carries the 0x85 return link back to the recorded cell
+  -- (4 or 5); down onto Back records it like the source.
   ---@param pocket integer zero-based battle pocket under motion
   ---@param direction string D-pad direction under motion
   ---@return integer? page-turn delta, nil for plain cursor motion
   local function moveListCursor(pocket, direction)
     local cursor = browser._cursor
+    local code = bagDirectionCode(direction)
     if cursor == 6 then
-      -- Up from Back returns to the bottom-right cell; every other edge
-      -- keeps it (Page1CursorBoxes cancel neighbors).
-      if direction == "up" then
-        browser._cursor = 5
+      local boxes = BattleBagPockets.CURSOR_BOXES.item_list
+      local raw = bagNeighbor(boxes[7], code) % 256
+      local input = raw
+      if input >= 128 then
+        local prev = browser._listPrev
+        if prev ~= nil then
+          input = prev
+        else
+          input = input - 128
+        end
       end
+      if input == cursor then
+        return nil
+      end
+      local next = nil
+      if bagHasReturnLink(boxes[input + 1], code) then
+        next = cursor
+      end
+      browser._listPrev = next
+      browser._cursor = input
       return nil
     end
     local col = cursor % 2
     local row = math.floor(cursor / 2)
+    local boxes = BattleBagPockets.CURSOR_BOXES.item_list
     if direction == "left" then
       if col == 0 then
         if pageCount(pocket) > 1 then
@@ -990,7 +1085,13 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         end
         return nil
       end
-      browser._cursor = row * 2
+      local input = row * 2
+      if input ~= cursor and bagHasReturnLink(boxes[input + 1], code) then
+        browser._listPrev = cursor
+      else
+        browser._listPrev = nil
+      end
+      browser._cursor = input
     elseif direction == "right" then
       if col == 1 then
         if pageCount(pocket) > 1 then
@@ -998,18 +1099,40 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         end
         return nil
       end
-      browser._cursor = row * 2 + 1
+      local input = row * 2 + 1
+      if input ~= cursor and bagHasReturnLink(boxes[input + 1], code) then
+        browser._listPrev = cursor
+      else
+        browser._listPrev = nil
+      end
+      browser._cursor = input
     elseif direction == "up" then
       if row == 0 then
         return nil
       end
-      browser._cursor = (row - 1) * 2 + col
+      local input = (row - 1) * 2 + col
+      if input ~= cursor and bagHasReturnLink(boxes[input + 1], code) then
+        browser._listPrev = cursor
+      else
+        browser._listPrev = nil
+      end
+      browser._cursor = input
     elseif direction == "down" then
       if row == 2 then
+        -- Down onto Back records the origin cell behind the 0x85
+        -- return link (BattleDpadCursor_HasReturnLink checks the
+        -- destination up edge on a down move).
+        browser._listPrev = cursor
         browser._cursor = 6
         return nil
       end
-      browser._cursor = (row + 1) * 2 + col
+      local input = (row + 1) * 2 + col
+      if input ~= cursor and bagHasReturnLink(boxes[input + 1], code) then
+        browser._listPrev = cursor
+      else
+        browser._listPrev = nil
+      end
+      browser._cursor = input
     end
     return nil
   end
@@ -1128,13 +1251,30 @@ local function newBattleBagBrowser(inventory, catalog, intent)
       else
         local kind = event.type
         if kind == "tap" and type(event.id) == "string" then
-          -- Touch deactivates the d-pad cursor (DeactivateCursor)
+          -- Touch deactivates the d-pad cursor (DeactivateCursor:
+          -- active false plus ResetPosition to 0 with prev 0xFF)
           -- while the tap resolves through the hitboxes below.
-          browser._cursorActive = false
+          -- A disabled or empty tap keeps the reset position like
+          -- the source instead of retaining the old focus.
+          if browser._page == "pocket_menu" then
+            browser._cursorActive = false
+            browser._menuFocus = 0
+            browser._menuPrev = nil
+          elseif browser._page == "item_list" then
+            browser._cursorActive = false
+            browser._cursor = 0
+            browser._listPrev = nil
+          elseif browser._page == "use_item" then
+            browser._cursorActive = false
+            browser._useFocus = "use"
+          end
           browser:handleTap(event.id)
         elseif kind == "navigate" and type(event.direction) == "string" then
-          browser._cursorActive = true
-          if browser._page == "pocket_menu" then
+          -- The first key press only activates the cursor
+          -- (BattleDpadCursor_TryActivate); motion runs once active.
+          if browser._cursorActive ~= true then
+            browser._cursorActive = true
+          elseif browser._page == "pocket_menu" then
             browser._menuFocus = moveMenuFocus(browser._menuFocus --[[@as integer]], event.direction)
           elseif browser._page == "item_list" and browser._pocket ~= nil then
             local pocket = browser._pocket --[[@as integer]]
@@ -1146,7 +1286,7 @@ local function newBattleBagBrowser(inventory, catalog, intent)
                 browser._pages[pocket] = (browser._pages[pocket] + turn) % count
                 -- Turning the page resets the saved cell
                 -- (ChangeItemPage clears pocketPositions); the cursor
-                -- keeps its box.
+                -- keeps its box and its return-link record.
                 browser._positions[pocket] = 0
                 clampPage(pocket)
               end)
@@ -1160,8 +1300,12 @@ local function newBattleBagBrowser(inventory, catalog, intent)
             end
           end
         elseif kind == "confirm" then
-          browser._cursorActive = true
-          if browser._page == "pocket_menu" then
+          -- Message acknowledgement answers A/B directly (WaitMessageInput
+          -- reads keys without the d-pad cursor); every browser page
+          -- activates first like TryActivate, consuming the edge.
+          if browser._page ~= "message" and browser._cursorActive ~= true then
+            browser._cursorActive = true
+          elseif browser._page == "pocket_menu" then
             local focus = browser._menuFocus
             if focus >= 0 and focus <= 3 then
               startPress(focus, function()
@@ -1194,10 +1338,11 @@ local function newBattleBagBrowser(inventory, catalog, intent)
             if browser._cursor == 6 then
               -- Confirming Back returns to the pocket menu with the
               -- pocket focused (ShowPocketMenuPage seats the cursor at
-              -- the pocket).
+              -- the pocket, SetBoxes clearing the return record).
               startPress(14, function()
                 browser._page = "pocket_menu"
                 browser._menuFocus = pocket
+                browser._menuPrev = nil
               end)
             else
               local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
@@ -1230,14 +1375,18 @@ local function newBattleBagBrowser(inventory, catalog, intent)
             browser._message = nil
           end
         elseif kind == "cancel" then
-          browser._cursorActive = true
-          if browser._page == "pocket_menu" then
+          -- B also activates first like TryActivate; the message page
+          -- answers B directly without the cursor.
+          if browser._page ~= "message" and browser._cursorActive ~= true then
+            browser._cursorActive = true
+          elseif browser._page == "pocket_menu" then
             browser._result = { kind = "closed" }
           elseif browser._page == "item_list" then
             local pocket = browser._pocket --[[@as integer]]
             startPress(14, function()
               browser._page = "pocket_menu"
               browser._menuFocus = pocket
+              browser._menuPrev = nil
             end)
           elseif browser._page == "use_item" then
             startPress(16, function()
@@ -1248,11 +1397,15 @@ local function newBattleBagBrowser(inventory, catalog, intent)
             browser._message = nil
           end
         elseif kind == "pointer_up" and type(event.x) == "number" and type(event.y) == "number" then
-          browser._cursorActive = false
           local px, py = event.x, event.y
           if browser._page == "pocket_menu" then
             local hit = BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.pocketMenu, px, py)
             if hit ~= nil then
+              -- Touch deactivates with ResetPosition (active false,
+              -- position 0, prev 0xFF); the hit then resolves like a tap.
+              browser._cursorActive = false
+              browser._menuFocus = 0
+              browser._menuPrev = nil
               if hit >= 0 and hit <= 3 then
                 browser._menuFocus = hit
                 local pocket = hit
@@ -1268,6 +1421,9 @@ local function newBattleBagBrowser(inventory, catalog, intent)
           elseif browser._page == "item_list" and browser._pocket ~= nil then
             local hit = BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.itemList, px, py)
             if hit ~= nil then
+              browser._cursorActive = false
+              browser._cursor = 0
+              browser._listPrev = nil
               if hit >= 0 and hit <= 5 then
                 browser:handleTap("bag:" .. tostring(hit))
               elseif hit == 6 then
@@ -1280,6 +1436,10 @@ local function newBattleBagBrowser(inventory, catalog, intent)
             end
           elseif browser._page == "use_item" then
             local hit = BattleBagPockets.hitIndex(BattleBagPockets.HITBOXES.useItem, px, py)
+            if hit == 0 or hit == 1 then
+              browser._cursorActive = false
+              browser._useFocus = "use"
+            end
             if hit == 0 then
               browser:handleTap("use")
             elseif hit == 1 then
@@ -1314,8 +1474,9 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         return
       end
       if id == "last_used" then
-        -- A disabled shortcut is ignored without moving focus
-        -- (HandlePocketMenuInput breaks when lastUsedItem is none).
+        -- A disabled shortcut is ignored behind the touch reset
+        -- (HandlePocketMenuInput breaks when lastUsedItem is none,
+        -- DeactivateCursor already reseated the cursor at 0).
         if browser._lastUsed == nil then
           return
         end
@@ -1353,8 +1514,9 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         cell = math.floor(cell)
         local key = BattleBagPockets.POCKET_KEYS[pocket + 1]
         local entry = groups[key][browser._pages[pocket] * 6 + cell + 1]
-        -- Empty cells are ignored without moving the d-pad cursor
-        -- (HandleItemListInput breaks when GetItemOnPage is none).
+        -- Empty cells are ignored behind the touch reset
+        -- (HandleItemListInput breaks when GetItemOnPage is none,
+        -- DeactivateCursor already reseated the cursor at 0).
         if entry == nil then
           return
         end
@@ -1371,6 +1533,7 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         startPress(14, function()
           browser._page = "pocket_menu"
           browser._menuFocus = pocket
+          browser._menuPrev = nil
         end)
         return
       end
@@ -2509,10 +2672,9 @@ local function openPartyChild(intent, services)
   ---@return integer? decomp input index in Handle order, nil for foreign identities
   local function wrapperInputForId(id)
     local page = child._page
-    if page == nil or (page ~= "summary" and page ~= "moves" and page ~= "move_detail") then
+    if type(page) ~= "string" or (page ~= "summary" and page ~= "moves" and page ~= "move_detail") then
       return nil
     end
-    ---@cast page string
     for index, known in ipairs(BattlePartyPages.inputIds(page)) do
       if known == id then
         return index - 1
@@ -2551,10 +2713,9 @@ local function openPartyChild(intent, services)
         break
       end
       local page = child._page
-      if page == nil or (page ~= "summary" and page ~= "moves" and page ~= "move_detail") then
+      if type(page) ~= "string" or (page ~= "summary" and page ~= "moves" and page ~= "move_detail") then
         break
       end
-      ---@cast page string
       if event.type == "tap" and type(event.id) == "string" then
         pageTap(event.id)
       elseif event.type == "navigate" and type(event.direction) == "string" then

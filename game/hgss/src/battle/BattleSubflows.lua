@@ -1459,8 +1459,8 @@ local function expBarFill(self, record)
   if not okBase or not okNext or type(base) ~= "number" or type(following) ~= "number" then
     return 0, 0
   end
-  local current = experience - base
-  local span = following - base
+  local current = math.floor(experience - base)
+  local span = math.floor(following - base)
   if span <= 0 or current <= 0 then
     return 0, 0
   end
@@ -1759,7 +1759,9 @@ local function projectMonMenu(self, shell, native, kind)
     cursor = 0
   end
   local focusMap = { switch = "switch", summary = "summary", check_moves = "moves", quit = "back" }
-  local slot = math.floor(tonumber(native.menuSlot) or 0)
+  local rawSlot = tonumber(native.menuSlot) or 0
+  assert(rawSlot % 1 == 0, "page slots stay integral")
+  local slot = rawSlot --[[@as integer]]
   local record = pageRecord(self, slot) or {}
   local isEgg = record.isEgg == true
   local positions = pagePositions(self)

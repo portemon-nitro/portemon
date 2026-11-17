@@ -1238,8 +1238,16 @@ end
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openBagFromCommand(rig)
   driveToMode(rig, "command")
-  press(rig, { type = "navigate", direction = "down" })
-  press(rig, { type = "navigate", direction = "left" })
+  -- The paired grid reaches Bag down then left; the compact 2x2 grid
+  -- draws Bag right of Fight, so it takes right. The first edge only
+  -- reveals the cursor in both cases.
+  if rig.layout == "compact" then
+    press(rig, { type = "navigate", direction = "right" })
+    press(rig, { type = "navigate", direction = "right" })
+  else
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "left" })
+  end
   press(rig, { type = "confirm" })
   Assert.equal(rig.screen:status().mode, "child", "the Bag command opens the bag child (" .. rig.layout .. ")")
 end
@@ -1247,12 +1255,14 @@ end
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToMedicineFirstCell(rig)
   press(rig, { type = "confirm" })
+  press(rig, { type = "confirm" })
   settlePress(rig)
   settlePress(rig)
 end
 
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToBallsFirstCell(rig)
+  press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
   settlePress(rig)

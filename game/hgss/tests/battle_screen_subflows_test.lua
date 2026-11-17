@@ -467,9 +467,17 @@ local function openPartyFromCommand(rig)
   waitForMenuInput(rig)
   -- Source 3x2 cursor grid: Fight spans the upper row while Bag, Run,
   -- and Pokemon fill the lower row, so Pokemon takes down, right, right.
-  press(rig, { type = "navigate", direction = "down" })
-  press(rig, { type = "navigate", direction = "right" })
-  press(rig, { type = "navigate", direction = "right" })
+  -- The compact 2x2 grid draws Pokemon under Fight, so it takes down.
+  -- The first edge only reveals the cursor in both cases.
+  if rig.layout == "compact" then
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "down" })
+  else
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "right" })
+    press(rig, { type = "navigate", direction = "right" })
+  end
+  Assert.equal(rig.screen:view().selection, "pokemon", "setup: the keys reach Pokemon (" .. rig.layout .. ")")
   press(rig, { type = "confirm" })
   local status = rig.screen:status()
   Assert.equal(
@@ -488,8 +496,17 @@ end
 ---@param rig table live screen rig under test driving, resting on its command prompt
 local function openBagFromCommand(rig)
   waitForMenuInput(rig)
-  press(rig, { type = "navigate", direction = "down" })
-  press(rig, { type = "navigate", direction = "left" })
+  -- The paired grid reaches Bag down then left; the compact 2x2 grid
+  -- draws Bag right of Fight, so it takes right. The first edge only
+  -- reveals the cursor in both cases.
+  if rig.layout == "compact" then
+    press(rig, { type = "navigate", direction = "right" })
+    press(rig, { type = "navigate", direction = "right" })
+  else
+    press(rig, { type = "navigate", direction = "down" })
+    press(rig, { type = "navigate", direction = "left" })
+  end
+  Assert.equal(rig.screen:view().selection, "bag", "setup: the keys reach Bag (" .. rig.layout .. ")")
   press(rig, { type = "confirm" })
   Assert.equal(rig.screen:status().mode, "child", "the Bag command opens the bag child (" .. rig.layout .. ")")
 end
@@ -498,12 +515,15 @@ end
 -- row. Confirming a pocket opens its item list on the remembered cell.
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToMedicineFirstCell(rig)
+  -- Fresh browsers hide the cursor; the first key only activates it.
+  press(rig, { type = "confirm" })
   press(rig, { type = "confirm" })
   settlePress(rig)
 end
 
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToBallsFirstCell(rig)
+  press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "confirm" })
   settlePress(rig)
@@ -2086,8 +2106,9 @@ function T.bag_use_page_paints_through_its_retail_windows()
 end
 
 -- Retail d-pad cursor (BattleDpadCursor_SetRect): four staged corners
--- frame the focused box while the cursor is active. Fresh browsers
--- hide it; the first key shows it; touch clears it again.
+-- frame the focused box while the cursor is active on both the pocket
+-- menu and the item list. Fresh browsers hide it; the first key shows
+-- it without moving it.
 function T.bag_cursor_corners_frame_the_focused_box()
   local tag = " (paired)"
   requireChildOwner("battle bag cursor")
@@ -2123,14 +2144,28 @@ function T.bag_cursor_corners_frame_the_focused_box()
   openBagFromCommand(rig)
   Assert.equal(#cursorDraws(), 0, "fresh browsers hide the cursor" .. tag)
   press(rig, { type = "navigate", direction = "right" })
+  Assert.equal(#cursorDraws(), 4, "the first key frames the opening box without moving" .. tag)
+  press(rig, { type = "navigate", direction = "right" })
   local corners = cursorDraws()
-  Assert.equal(#corners, 4, "the first key frames the focused box" .. tag)
+  Assert.equal(#corners, 4, "the second key frames the moved box" .. tag)
   -- Right from pocket 0 focuses the balls box (136,16,112,56); the
   -- rig fakes 80x80 corners, so each centers 40 above-left of its spot.
   Assert.deepEqual(corners[1], { handle = "battle:cursor-tl", x = 136 - 40, y = 16 - 40 })
   Assert.deepEqual(corners[2], { handle = "battle:cursor-tr", x = 248 - 40, y = 16 - 40 })
   Assert.deepEqual(corners[3], { handle = "battle:cursor-bl", x = 136 - 40, y = 72 - 40 })
   Assert.deepEqual(corners[4], { handle = "battle:cursor-br", x = 248 - 40, y = 72 - 40 })
+  -- The focused pocket opens its item list, where the same corners ride
+  -- the focused cell's box instead of the pocket's.
+  press(rig, { type = "confirm" })
+  settlePress(rig)
+  Assert.equal(rig.screen:view().childView.bagPage, "item_list", "confirming the balls pocket lists its cells")
+  press(rig, { type = "navigate", direction = "right" })
+  Assert.equal(rig.screen:view().childView.focusId, "bag:1", "right steps onto the second cell")
+  corners = cursorDraws()
+  Assert.equal(#corners, 4, "the list focus frames the second cell")
+  -- Cell 1 rides the (136,16,112,32) item-list cursor box.
+  Assert.deepEqual(corners[1], { handle = "battle:cursor-tl", x = 136 - 40, y = 16 - 40 })
+  Assert.deepEqual(corners[4], { handle = "battle:cursor-br", x = 248 - 40, y = 48 - 40 })
   rig.screen:dispose()
   rig.battle:dispose()
 end
@@ -2465,6 +2500,8 @@ function T.crowded_browse_pages_and_restores_after_target_cancel()
     driveToMode(scroller, "command")
     openBagFromCommand(scroller)
     -- The HP/PP pocket holds the crowded stock; confirm it from the menu.
+    -- The first key only activates the fresh cursor.
+    press(scroller, { type = "confirm" })
     press(scroller, { type = "confirm" })
     settlePress(scroller)
     if layout == "paired" then
@@ -2593,6 +2630,8 @@ function T.crowded_browse_pages_and_restores_after_target_cancel()
     press(empty, { type = "navigate", direction = "left" })
     press(empty, { type = "confirm" })
     if empty.screen:status().mode == "child" then
+      -- Fresh browsers hide the cursor; the first B only activates it.
+      press(empty, { type = "cancel" })
       press(empty, { type = "cancel" })
       Assert.equal(empty.screen:status().mode, "command", "empty cancel returns to command" .. tag)
     else
@@ -2840,6 +2879,8 @@ function T.trainer_doll_refusal_shows_its_staged_message_page()
   openBagFromCommand(rig)
   -- Pocket menu opens on HP/PP; BATTLE ITEMS sits right-down in the
   -- grid, so right then down focuses it before confirming its list.
+  -- The first key only activates the fresh cursor.
+  press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "navigate", direction = "right" })
   press(rig, { type = "navigate", direction = "down" })
   press(rig, { type = "confirm" })

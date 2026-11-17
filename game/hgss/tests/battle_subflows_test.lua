@@ -125,6 +125,9 @@ end
 
 ---@param flows table<string, unknown> coordinator waiting on a bag selection
 local function useBagItem(flows)
+  -- The first key after touch only activates the d-pad cursor
+  -- (BattleDpadCursor_TryActivate); the second selects the cell.
+  drive(flows, { type = "confirm" })
   drive(flows, { type = "confirm" })
   settlePress(flows)
   drive(flows, { type = "confirm" })
@@ -139,6 +142,7 @@ local function tapBagItem(flows)
   flows:tick()
   settlePress(flows)
   flows:tick()
+  drive(flows, { type = "confirm" })
   drive(flows, { type = "confirm" })
   for _ = 1, 8 do
     flows:tick()
@@ -639,6 +643,9 @@ function T.bag_try_use_item_refusals_resolve_their_staged_keys()
     "MARKER:battle/bag/message/embargo#2",
     "embargo resolves its staged key with its move and holder, got " .. tostring(medicineReason ~= nil and medicineReason.reason or "no-row")
   )
+  -- The tap entry left the cursor inactive, so the first B only
+  -- activates before the second returns to the pocket menu.
+  drive(flows, { type = "cancel" })
   drive(flows, { type = "cancel" })
   settlePress(flows)
   openBattlePocket(flows, 3)
@@ -696,6 +703,9 @@ function T.empty_bag_opens_and_cancels()
   local flows = coordinator(ItemFixture.makeCatalog())
   local options = itemOptions({})
   Assert.isTrue(flows:open(bagIntent({}, options)), "the empty bag opens")
+  -- The first B only activates the cursor (TryActivate).
+  drive(flows, { type = "cancel" })
+  Assert.isNil(flows:takeResult(), "activation seals nothing")
   drive(flows, { type = "cancel" })
   local result = flows:takeResult()
   Assert.notNil(result, "bag cancel stages a result")
@@ -1102,7 +1112,9 @@ function T.bag_pocket_tabs_match_between_keys_and_pointer()
   Assert.equal(#opened.rows, 6, "the menu shows four pockets plus last-used and back")
   Assert.equal(opened.rows[1].id, "bagpocket:0", "pocket options keep stable rows")
   Assert.equal(opened.focusId, "bagpocket:0", "the menu opens on the first pocket")
-  -- Keys open the crowded HP/PP pocket through the menu.
+  -- Keys open the crowded HP/PP pocket through the menu; the first key
+  -- only activates the cursor (TryActivate).
+  drive(keyed, { type = "confirm" })
   drive(keyed, { type = "confirm" })
   settlePress(keyed)
   local listed = keyed:status().childView --[[@as table<string, unknown>]]
@@ -1119,6 +1131,7 @@ function T.bag_pocket_tabs_match_between_keys_and_pointer()
   keyed:closeChild()
   -- Keys hop one pocket over through the menu; pointer takes the same hop.
   Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys reopen the bag")
+  drive(keyed, { type = "navigate", direction = "down" })
   drive(keyed, { type = "navigate", direction = "down" })
   drive(keyed, { type = "confirm" })
   settlePress(keyed)
@@ -1147,6 +1160,8 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   local resting = flows:status().childView --[[@as table<string, unknown>]]
   Assert.equal(resting.currentPocket, "hp_pp", "the browse reaches the serving pocket")
   -- The crowded pocket sorts by native id; walk down to the serving.
+  -- The first key only activates the cursor (TryActivate).
+  drive(flows, { type = "navigate", direction = "down" })
   drive(flows, { type = "navigate", direction = "down" })
   resting = flows:status().childView --[[@as table<string, unknown>]]
   Assert.equal(resting.focusId, "bag:2", "the serving cell takes focus")
@@ -1206,6 +1221,7 @@ function T.refused_throws_and_empty_bags_close_without_hidden_screens()
   Assert.isFalse(listedView.rows[1].enabled == true, "the refused cell stays disabled")
   Assert.equal(listedView.rows[1].reason, "the attendant blocks its use", "the refused row names its kernel reason")
   drive(flows, { type = "confirm" })
+  drive(flows, { type = "confirm" })
   Assert.isNil(flows:takeResult(), "selecting the refused cell seals no reply")
   settlePress(flows)
   Assert.equal(flows:status().childView.bagPage, "use_item", "selecting opens the use-item page")
@@ -1215,6 +1231,8 @@ function T.refused_throws_and_empty_bags_close_without_hidden_screens()
   Assert.isTrue(empty:open(bagIntent({}, itemOptions({}))), "the empty bag opens on its pocket menu")
   Assert.equal(empty:status().childView.bagPage, "pocket_menu", "the empty bag opens on its pocket menu")
   Assert.equal(empty:status().childView.focusId, "bagpocket:0", "the empty menu opens on the first pocket")
+  drive(empty, { type = "cancel" })
+  Assert.isNil(empty:takeResult(), "activation seals nothing")
   drive(empty, { type = "cancel" })
   local result = empty:takeResult()
   Assert.notNil(result, "empty cancel stages a result")

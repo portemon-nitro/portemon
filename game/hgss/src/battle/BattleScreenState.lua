@@ -192,6 +192,27 @@ local COMMAND_SLOT_CELLS = {
   run = { x = 1, y = 1 },
 }
 
+-- Compact single-pane command navigation follows the drawn two-by-two
+-- grid (Fight/Bag over Pokemon/Run): keypad motion walks its own rows
+-- and columns and clamps at the grid edges. Grid cells name ordinary
+-- slots so special contexts navigate by the slot their command
+-- replaces, like the paired grid.
+local COMPACT_COMMAND_GRID = {
+  { "fight", "bag" },
+  { "pokemon", "run" },
+}
+local COMPACT_COMMAND_WIDTH = 2
+local COMPACT_COMMAND_HEIGHT = 2
+
+-- Compact cursor cell behind one ordinary command slot, mirroring
+-- COMMAND_SLOT_CELLS for the paired layout.
+local COMPACT_SLOT_CELLS = {
+  fight = { x = 0, y = 0 },
+  bag = { x = 1, y = 0 },
+  pokemon = { x = 0, y = 1 },
+  run = { x = 1, y = 1 },
+}
+
 -- Native target-cursor priority behind the opening cell
 -- (battle_input.c BattleInput_CursorMove_TargetMenu): the upper-left
 -- foe, the upper-right foe, the lower-left ally, else the lower-right
@@ -5148,6 +5169,13 @@ function BattleScreenState:_playCancelFeedback()
   self:_playCue({ kind = "effect", symbol = BattleAudio.SINK_SOUNDS.decide })
 end
 
+-- Voices one staged select cue behind a keypad focus move: cursor
+-- motion on the main battle menus answers with SELECT like the retail
+-- d-pad cursor, while edges that keep the focus stay silent.
+function BattleScreenState:_playMoveFeedback()
+  self:_playCue("select")
+end
+
 ---@param fragment table<string, unknown> prepared choice fragment under staging
 function BattleScreenState:_seal(fragment)
   assert(self._request ~= nil and self._options ~= nil, "replies answer the open request")
@@ -6491,6 +6519,12 @@ function BattleScreenState:_consume(event)
     return
   end
   if self._buttonFeedback ~= nil or revealCursor then
+    if revealCursor then
+      -- The first keypad edge only reveals the native cursor without
+      -- moving it; the reveal still answers with SELECT like the
+      -- subflow TryActivate edge.
+      self:_playMoveFeedback()
+    end
     return
   end
   -- The bound nickname completion owns its semantic edges ahead of the
@@ -6915,6 +6949,15 @@ end
 
 ---@param direction string? navigation direction under selection
 function BattleScreenState:_navigate(direction)
+  local before = self._selection
+  self:_stepNavigation(direction)
+  if self._selection ~= before then
+    self:_playMoveFeedback()
+  end
+end
+
+---@param direction string? navigation direction under selection
+function BattleScreenState:_stepNavigation(direction)
   if self._mode == "shift" or self._mode == "use-next" then
     if
       type(direction) == "string"
@@ -6949,6 +6992,10 @@ end
 ---@param direction string? source keypad direction under selection
 function BattleScreenState:_navigateCommand(direction)
   if type(direction) ~= "string" then
+    return
+  end
+  if self:_compactLayout() then
+    self:_navigateCompactCommand(direction)
     return
   end
   local x, y = self._commandX, self._commandY
@@ -6988,6 +7035,73 @@ function BattleScreenState:_navigateCommand(direction)
   self._selection = destination
 end
 
+-- Names the ordinary command slot behind one offered command identity
+-- for cursor navigation: the slot the offered identity replaces.
+---@param id string? offered command identity under lookup
+---@return string? ordinary slot behind the identity, nil without one
+function BattleScreenState:_commandSlot(id)
+  if type(id) ~= "string" then
+    return nil
+  end
+  local ids = self:_surfaceIds()
+  for index, offered in ipairs(ids) do
+    if offered == id then
+      return SURFACE_LABEL_KEYS[index]
+    end
+  end
+  return nil
+end
+
+-- Answers whether the resolved plan is the compact single-pane
+-- composition: command navigation follows the drawn two-by-two grid
+-- there instead of the paired three-by-two cursor grid. An unknown or
+-- unpublished plan keeps the paired grid.
+---@return boolean true while the compact pane owns the battle
+function BattleScreenState:_compactLayout()
+  if self._session == nil then
+    return false
+  end
+  local ok, plan = pcall(self._session.plan, self._session)
+  if not ok or type(plan) ~= "table" then
+    return false
+  end
+  local content = plan.content
+  return type(content) == "table" and content.compact == true
+end
+
+-- Steps the main-menu cursor across the compact two-by-two grid:
+-- motion clamps at the grid edges and only settles on offered kind
+-- slots. The paired cursor cell stays synced behind every step so a
+-- layout change keeps the remembered command.
+---@param direction string source keypad direction under selection
+function BattleScreenState:_navigateCompactCommand(direction)
+  local slot = self:_commandSlot(self._selection)
+  local cell = slot ~= nil and COMPACT_SLOT_CELLS[slot] or nil
+  if cell == nil then
+    return
+  end
+  local x, y = cell.x, cell.y
+  if direction == "left" then
+    x = x - 1
+  elseif direction == "right" then
+    x = x + 1
+  elseif direction == "up" then
+    y = y - 1
+  elseif direction == "down" then
+    y = y + 1
+  else
+    return
+  end
+  x = math.max(0, math.min(COMPACT_COMMAND_WIDTH - 1, x))
+  y = math.max(0, math.min(COMPACT_COMMAND_HEIGHT - 1, y))
+  local destination = self:_surfaceCommand(COMPACT_COMMAND_GRID[y + 1][x + 1])
+  if destination == nil then
+    return
+  end
+  self:_syncCommandCursor(destination)
+  self._selection = destination
+end
+
 ---@param direction string? source keypad direction under selection
 function BattleScreenState:_navigateTargets(direction)
   if self._targetCandidates == nil or type(self._selection) ~= "string" then
@@ -7015,6 +7129,10 @@ function BattleScreenState:_navigateTargets(direction)
       self._lastTargetSelection = self._selection
       self._selection = "cancel"
     end
+    return
+  end
+  if self:_compactLayout() then
+    self:_navigateCompactTargets(direction)
     return
   end
   if self._selection == "cancel" then
@@ -7061,6 +7179,58 @@ function BattleScreenState:_navigateTargets(direction)
     end
     x = x + delta.x
     y = y + delta.y
+  end
+end
+
+-- Steps target selection across the compact vertical dock: the admitted
+-- rows walk in projected order with Back beneath, so up and down move
+-- while sideways edges keep the list. A lone upper-row target still
+-- reaches Back, which the paired grid cannot offer it.
+---@param direction string? source keypad direction under selection
+function BattleScreenState:_navigateCompactTargets(direction)
+  if direction ~= "up" and direction ~= "down" then
+    return
+  end
+  if self._selection == "cancel" then
+    if direction == "up" then
+      for _, candidate in ipairs(self._targetCandidates) do
+        local candidateId = type(candidate) == "table" and candidate.controlId or nil
+        if candidateId == self._lastTargetSelection and candidate.enabled == true then
+          self._selection = candidateId
+          return
+        end
+      end
+    end
+    return
+  end
+  local rows = {}
+  for _, candidate in ipairs(self._targetCandidates) do
+    if type(candidate) == "table" and type(candidate.controlId) == "string" and candidate.enabled == true then
+      rows[#rows + 1] = candidate.controlId
+    end
+  end
+  local at = nil
+  for index, id in ipairs(rows) do
+    if id == self._selection then
+      at = index
+      break
+    end
+  end
+  if at == nil then
+    return
+  end
+  if direction == "up" then
+    if at > 1 then
+      self._lastTargetSelection = self._selection
+      self._selection = rows[at - 1]
+    end
+    return
+  end
+  self._lastTargetSelection = self._selection
+  if at < #rows then
+    self._selection = rows[at + 1]
+  else
+    self._selection = "cancel"
   end
 end
 

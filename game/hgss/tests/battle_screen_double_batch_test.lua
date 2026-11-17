@@ -566,6 +566,7 @@ end
 ---@param rig table live screen rig under test driving, resting on the open bag child
 local function walkToMedicineFirstCell(rig)
   press(rig, { type = "confirm" })
+  press(rig, { type = "confirm" })
   rig.pump(2)
 end
 

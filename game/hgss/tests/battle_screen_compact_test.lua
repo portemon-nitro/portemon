@@ -868,7 +868,11 @@ local function openRig(opts)
     { species = "EEVEE", level = 20, seed = 0x33333333 },
     { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" }
   )
-  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local itemCatalog = ItemFixture.makeCatalog()
+  local bag = HgssBagService.new({ catalog = itemCatalog })
+  for _, stocked in ipairs(opts.bag or {}) do
+    Assert.isTrue(bag:add(stocked.key, stocked.qty), "the rig stocks its " .. stocked.key)
+  end
   local launchId = opts.launchId or "launch-single-pane"
   local launch = {
     id = launchId,
@@ -903,6 +907,7 @@ local function openRig(opts)
     measureDisplay = function()
       return rig.measurement
     end,
+    itemCatalog = itemCatalog,
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -1851,6 +1856,125 @@ function T.uncontrolled_compact_move_releases_do_not_select()
   Assert.equal(#moveRig.audio.plays, moveSounds, "invalid compact move edges play no sound")
   moveRig.screen:dispose()
   moveRig.battle:dispose()
+end
+
+-- The compact command grid is two-by-two (Fight/Bag over Pokemon/Run):
+-- keypad motion walks its own rows and columns instead of the paired
+-- three-by-two cursor grid, clamping at the grid edges.
+function T.compact_command_navigation_follows_the_two_by_two_grid()
+  local rig = openRig({ launchId = "launch-compact-command-grid", measurement = compactMeasurement() })
+  driveToMode(rig, "command")
+  local function move(direction)
+    rig.screen:input({ { type = "navigate", direction = direction } })
+    rig.pump(1)
+    return rig.screen:view().selection
+  end
+  Assert.equal(rig.screen:view().selection, "fight", "the prompt rests on Fight")
+  Assert.equal(move("right"), "fight", "the first edge only reveals the compact cursor")
+  Assert.equal(move("right"), "bag", "right from Fight reaches Bag on the top row")
+  Assert.equal(move("down"), "run", "down from Bag reaches Run on the bottom row")
+  Assert.equal(move("left"), "pokemon", "left from Run reaches Pokemon")
+  Assert.equal(move("up"), "fight", "up from Pokemon returns to Fight")
+  Assert.equal(move("left"), "fight", "left clamps on the top-left command")
+  Assert.equal(move("down"), "pokemon", "down from Fight reaches Pokemon in its own column")
+  Assert.equal(move("down"), "pokemon", "down clamps on the bottom-left command")
+  Assert.equal(move("right"), "run", "right from Pokemon reaches Run")
+  Assert.equal(move("right"), "run", "right clamps on the bottom-right command")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- The compact target dock is a vertical list of the admitted rows with
+-- Back beneath: keypad motion walks the rows in order instead of the
+-- paired two-by-two button grid, so every admitted target stays
+-- reachable and down from the last row reaches Back.
+function T.compact_target_navigation_walks_the_row_order()
+  local rig = openRig({ launchId = "launch-compact-target-rows", measurement = compactMeasurement() })
+  driveToMode(rig, "command")
+  local screen = rig.screen
+  screen._mode = "target"
+  screen._selection = "target:1"
+  screen._lastTargetSelection = nil
+  screen._targetGroup = nil
+  screen._targetCandidates = {
+    { id = "target:1", controlId = "target:1", enabled = true },
+    { id = "target:0", controlId = "target:0", enabled = true },
+  }
+  screen:_navigate("down")
+  Assert.equal(screen._selection, "target:0", "down walks to the next admitted row")
+  screen:_navigate("down")
+  Assert.equal(screen._selection, "cancel", "down from the last row reaches Back")
+  screen:_navigate("up")
+  Assert.equal(screen._selection, "target:0", "up from Back restores the previous row")
+  screen:_navigate("up")
+  Assert.equal(screen._selection, "target:1", "up walks back to the first row")
+  screen:_navigate("left")
+  Assert.equal(screen._selection, "target:1", "a sideways edge keeps the vertical list")
+  -- A lone upper-row target still reaches Back: the paired grid would
+  -- strand it on its row with no enabled neighbor below.
+  screen._selection = "target:1"
+  screen._lastTargetSelection = nil
+  screen._targetCandidates = {
+    { id = "target:1", controlId = "target:1", enabled = true },
+  }
+  screen:_navigate("down")
+  Assert.equal(screen._selection, "cancel", "down from a lone upper target reaches Back")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- The compact bag frames its focused box with the staged d-pad cursor
+-- corners like the paired modal: a fresh browser hides the cursor, the
+-- activating key frames the opening box, and the next key moves it.
+function T.compact_bag_draws_cursor_corners_around_keyboard_focus()
+  local rig = openRig({
+    launchId = "launch-compact-bag-cursor",
+    measurement = compactMeasurement(),
+    bag = { { key = "POTION", qty = 5 } },
+  })
+  local function cursorDraws()
+    local graphics = FakeGraphics.new({})
+    rig.screen:draw({ graphics = graphics })
+    local found = {}
+    for _, drawn in ipairs(graphics.draws) do
+      local image = drawn.image
+      if
+        type(image) == "table"
+        and type(image.handle) == "string"
+        and image.handle:match("^battle:cursor%-") ~= nil
+      then
+        found[#found + 1] = { handle = image.handle, x = drawn.x, y = drawn.y }
+      end
+    end
+    return found
+  end
+  driveToMode(rig, "command")
+  -- The reveal edge then Bag on the compact 2x2 grid's top row.
+  press(rig, { type = "navigate", direction = "right" })
+  press(rig, { type = "navigate", direction = "right" })
+  press(rig, { type = "confirm" })
+  rig.pump(2)
+  Assert.equal(rig.screen:status().mode, "child", "the compact Bag opens its child")
+  Assert.equal(rig.screen:view().childView.bagPage, "pocket_menu", "the child opens on its pocket menu")
+  Assert.equal(#cursorDraws(), 0, "fresh browsers hide the cursor")
+  local boxes = require("game.hgss.src.battle.BattleBagPockets").CURSOR_BOXES.pocket_menu
+  -- The rig fakes 80x80 corners, so each centers 40 above-left of its spot.
+  local function assertCorners(box, what)
+    local corners = cursorDraws()
+    Assert.equal(#corners, 4, what .. " frames all four corners")
+    Assert.deepEqual(corners[1], { handle = "battle:cursor-tl", x = box.x - 40, y = box.y - 40 }, what .. " hugs the top-left")
+    Assert.deepEqual(
+      corners[4],
+      { handle = "battle:cursor-br", x = box.x + box.w - 40, y = box.y + box.h - 40 },
+      what .. " hugs the bottom-right"
+    )
+  end
+  press(rig, { type = "navigate", direction = "down" })
+  assertCorners(boxes[1], "the activating key")
+  press(rig, { type = "navigate", direction = "down" })
+  assertCorners(boxes[2], "the moved focus")
+  rig.screen:dispose()
+  rig.battle:dispose()
 end
 
 -- A pair that cannot fit at least 1x takes the compact pane instead of

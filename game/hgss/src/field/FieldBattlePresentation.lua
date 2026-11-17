@@ -180,9 +180,17 @@ end
 ---@field battleBalls { entries: table<string, table<string, unknown>> }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
 ---@field bag { pages: { image: string, x: integer, y: integer, width: integer, height: integer }[], finger: { image: string, width: integer, height: integer }, cursor: table<string, { image: string, width: integer, height: integer }>, buttons: table<integer, { button: integer, frame: integer, bank: integer, image: string }> }
----@field party { pages: { key: string, layers: { image: string, x: integer, y: integer, width: integer, height: integer }[] }[], buttons: { button: integer, frame: integer, variant: "self"|"partner", image: string }[], expTiles: { level: integer, image: string }[] }
 ---@field messages { roles: table<string, { font: string }> }
+---@field party FieldBattlePresentation.StagedPartySection
 ---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
+
+--- Retail battle-party wrapper art (battle_party_menu.c LoadPageTilemaps,
+-- GetButtonTilemap, DrawExpBar): the staged page layer pairs, button
+-- faces, and experience-bar tiles this module resolves.
+---@class FieldBattlePresentation.StagedPartySection
+---@field pages { key: string, layers: { image: string, x: integer, y: integer, width: integer, height: integer }[] }[]
+---@field buttons { button: integer, frame: integer, variant: "self"|"partner", image: string }[]
+---@field expTiles { level: integer, image: string }[]
 
 -- The one staged/planning decision. BattlePresentationCache.load answers
 -- either a verified manifest that passed
@@ -2870,7 +2878,7 @@ function FieldBattlePresentation:_preparationServices()
     -- frames center on the focused box corners while the cursor is
     -- active, advanced by tick like BattleCursor_Update. Missing
     -- staged art keeps the rows under the existing pending path.
-    local cursorCorner = tostring(key):match("^battle:cursor%-(tl|tr|bl|br)$")
+    local cursorCorner = tostring(key):match("^battle:cursor%-([tb][lr])$")
     if cursorCorner ~= nil then
       local staged = stagedManifest(envelope._manifest)
       local bag = staged ~= nil and staged.bag or nil

@@ -114,6 +114,9 @@ function T.stocked_bag_opens_stages_and_cancels_without_touching_detached_stock(
   Assert.isTrue(flows:open(bagIntent(inventory)), "the stocked bag opens")
   Assert.equal(flows:status().kind, "bag", "the open child is the bag")
   walkToMedicine(flows)
+  -- The first key after touch only activates the d-pad cursor
+  -- (BattleDpadCursor_TryActivate); the second selects the cell.
+  drive(flows, { type = "confirm" })
   drive(flows, { type = "confirm" })
   settlePress(flows)
   drive(flows, { type = "confirm" })
@@ -203,6 +206,7 @@ function T.versioned_item_catalogs_replay_the_stocked_bag_flow(context)
     local view = flows:status().childView
     Assert.notNil(view, "the open bag exposes its child view on " .. versionId)
     Assert.equal(view.application, "bag", "the bag view carries its native application receipt on " .. versionId)
+    drive(flows, { type = "confirm" })
     drive(flows, { type = "confirm" })
     settlePress(flows)
     drive(flows, { type = "confirm" })
@@ -343,8 +347,9 @@ function T.gated_presses_wait_out_the_dip_before_turning()
   flows:dispose()
 end
 
--- Retail cursor visibility (BattleDpadCursor active flag): hidden until
--- the first key press, cleared again by touch.
+-- Retail cursor visibility and activation (BattleDpadCursor active
+-- flag plus TryActivate): hidden until the first key press, which only
+-- shows the cursor without moving it, and cleared again by touch.
 function T.cursor_hides_until_keys_and_clears_on_touch()
   local catalog = ItemFixture.makeCatalog()
   local flows = coordinator(catalog)
@@ -352,6 +357,13 @@ function T.cursor_hides_until_keys_and_clears_on_touch()
   Assert.isFalse(flows:status().childView.native.cursorActive, "fresh browsers hide the cursor")
   drive(flows, { type = "navigate", direction = "right" })
   Assert.isTrue(flows:status().childView.native.cursorActive, "the first key shows the cursor")
+  Assert.equal(
+    flows:status().childView.focusId,
+    "bagpocket:0",
+    "the first key never moves the pocket cursor (TryActivate consumes it)"
+  )
+  drive(flows, { type = "navigate", direction = "right" })
+  Assert.equal(flows:status().childView.focusId, "bagpocket:2", "the second key walks the pocket cursor")
   Assert.isTrue(flows:activateControl("bagpocket:2"), "touch takes the balls pocket")
   flows:tick()
   Assert.isFalse(
@@ -360,6 +372,29 @@ function T.cursor_hides_until_keys_and_clears_on_touch()
   )
   settlePress(flows)
   Assert.equal(flows:status().childView.bagPage, "item_list", "the touch still turns the page")
+  flows:dispose()
+end
+
+-- Retail item-list Back return link (sBattleBagPage1CursorBoxes box 6
+-- up 0x85): down onto Back records the origin cell, and up leads back
+-- through it instead of always landing on the bottom-right cell.
+function T.item_list_back_up_returns_through_the_recorded_cell()
+  local catalog = ItemFixture.makeCatalog()
+  local flows = coordinator(catalog)
+  Assert.isTrue(flows:open(bagIntent({ POTION = 1 })), "the stocked bag opens")
+  walkToMedicine(flows)
+  -- Activate without moving, then walk 0 -> 2 -> 4 -> Back(6).
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "navigate", direction = "down" })
+  drive(flows, { type = "navigate", direction = "down" })
+  Assert.equal(flows:status().childView.focusId, "back", "down from the bottom-left cell reaches Back")
+  drive(flows, { type = "navigate", direction = "up" })
+  Assert.equal(
+    flows:status().childView.focusId,
+    "bag:4",
+    "up from Back returns through the recorded bottom-left cell, not the bottom-right one"
+  )
   flows:dispose()
 end
 
