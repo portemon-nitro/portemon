@@ -3,8 +3,7 @@ rem Run the game on Windows (scripts\run.bat).
 rem
 rem Checks PATH for love, offers a one-time local install into
 rem scripts\bin\ from the official LOVE release on approval, then boots
-rem the game the way scripts/run.sh does (love app/ --dev). Dev-only
-rem tooling (StyLua, LuaLS, hook setup) stays Unix-side.
+rem the game the way scripts/run.sh
 setlocal
 
 set "ROOT=%~dp0.."
@@ -65,7 +64,7 @@ set "LOVE=%LOVEDIR%\love.exe"
 set "PATH=%LOVEDIR%;%PATH%"
 "%LOVE%" --version
 pushd "%ROOT%"
-"%LOVE%" app --dev %*
+"%LOVE%" app %*
 set "STATUS=%ERRORLEVEL%"
 popd
 exit /b %STATUS%
