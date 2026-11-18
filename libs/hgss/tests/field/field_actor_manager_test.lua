@@ -2292,6 +2292,69 @@ function T.autonomous_wander_settles_before_its_wait()
   mgr:dispose()
 end
 
+-- One committed autonomous step publishes the object's destination facts
+-- exactly once, so the composition can spawn that object's own source terrain
+-- responses at its own tile.
+function T.autonomous_step_publishes_its_destination_facts_once()
+  local mgr = manager(
+    { object({ movementType = "wander_around", xRange = -1, yRange = -1 }) },
+    { autonomyRng = deterministicRng({ 3, 0 }) }
+  )
+  local actorId = "map:61:object:0"
+  Assert.isNil(mgr:takeCommittedSteps(), "map entry commits no step")
+  for tick = 1, 8 do
+    mgr:step(tick)
+    Assert.isNil(mgr:takeCommittedSteps(), "an in-flight walk publishes nothing")
+  end
+
+  mgr:step(9)
+  local steps = assert(mgr:takeCommittedSteps(), "the committed autonomous step is observable")
+  Assert.equal(#steps, 1, "one committed step publishes one record")
+  local step = steps[1]
+  Assert.equal(step.actorId, actorId)
+  Assert.equal(step.mapId, 61)
+  Assert.equal(step.fieldX, 3, "the record carries the committed destination")
+  Assert.equal(step.fieldZ, 3)
+  Assert.equal(step.facing, "east", "the record carries the object's step facing")
+  Assert.equal(step.visible, true)
+  Assert.equal(step.large, false, "an ordinary map object never disturbs the tile behind")
+  Assert.isTrue(type(step.worldY) == "number", "the record carries its world height")
+  Assert.isNil(mgr:takeCommittedSteps(), "the publication is consumed exactly once")
+  mgr:dispose()
+end
+
+-- A walk-in-place never occupies a new tile, so it publishes no step: the
+-- object's grass stays held exactly as it was.
+function T.walk_in_place_publishes_no_committed_step()
+  local mgr = manager({ object({ movementType = "stationary" }) })
+  local actorId = "map:61:object:0"
+  mgr:beginScriptedAction(actorId, { action = "walk_in_place", direction = "east", speed = "normal" })
+  mgr:advanceScriptedAction(actorId, 8, 8)
+  mgr:commitScriptedAction(actorId)
+  Assert.isNil(mgr:takeCommittedSteps(), "a hold that keeps its tile publishes no step")
+  mgr:dispose()
+end
+
+-- A scripted object walk commits through the same publication as an
+-- autonomous step, so script-driven objects rustle their own grass too.
+function T.scripted_walk_publishes_its_committed_step()
+  local mgr = manager({ object({ movementType = "stationary" }) })
+  local actorId = "map:61:object:0"
+  mgr:setFacing(actorId, "east")
+  mgr:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
+  mgr:advanceScriptedAction(actorId, 8, 8)
+  mgr:commitScriptedAction(actorId)
+  local steps = assert(mgr:takeCommittedSteps(), "the committed scripted step is observable")
+  Assert.equal(#steps, 1)
+  Assert.equal(steps[1].actorId, actorId)
+  Assert.equal(steps[1].fieldX, 3, "the record carries the committed destination")
+  Assert.equal(steps[1].fieldZ, 3)
+  Assert.equal(steps[1].facing, "east")
+  Assert.equal(steps[1].visible, true)
+  Assert.isNil(mgr:takeCommittedSteps(), "the publication is consumed exactly once")
+  mgr:dispose()
+end
+
 function T.autonomous_pattern_continues_without_an_idle_boundary()
   local mgr = manager({
     object({

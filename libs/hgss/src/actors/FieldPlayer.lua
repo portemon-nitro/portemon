@@ -75,6 +75,7 @@ end
 ---@field private _scriptedMotion { action: string, direction: string?, distance: string?, speed: string?, hop: boolean?, gestureName: string?, durationTicks: integer, progressTicks: integer, startGesturePose: string?, startGestureTick: integer?, startGestureOffsetY: number, advancement: "caller"|"tick" }?
 ---@field private _scriptedPoseDelta integer? pose ticks the last scripted locomotion tick advanced; kept through its commit tick and the ordinary field update, cleared by the next ordinary step/turn, scripted begin, or cancel
 ---@field private _movementRevision integer committed tile commits observed by followers
+---@field private _committedTerrainSteps table[]? tile steps committed since the last terrain drain
 ---@field private _lastTraversalKind string traversal kind of the last committed tile
 ---@field private _movementStartRevision integer resolved translation starts observed by followers
 ---@field private _movementTransaction FieldPlayer.MovementTransaction? latest resolved translation start
@@ -234,6 +235,7 @@ function FieldPlayer.new(options)
     _gestureTick = nil,
     _gestureOffsetY = 0,
     _movementRevision = 0,
+    _committedTerrainSteps = nil,
     _lastTraversalKind = "idle",
     _movementStartRevision = 0,
     _movementTransaction = nil,
@@ -1045,10 +1047,39 @@ function FieldPlayer:committedAnchor()
   }
 end
 
+-- Every committed tile publishes the facts of that step exactly once: the
+-- session turns them into the source terrain responses at the tile the player
+-- entered, whichever owner drove the step (ordinary input, a jump, planned
+-- traversal, or a scripted walk).
 ---@param kind string
 function FieldPlayer:_commitTile(kind)
   self._movementRevision = self._movementRevision + 1
   self._lastTraversalKind = kind
+  local steps = self._committedTerrainSteps
+  if steps == nil then
+    steps = {}
+    self._committedTerrainSteps = steps
+  end
+  steps[#steps + 1] = {
+    fieldX = self.fieldX,
+    fieldZ = self.fieldZ,
+    worldY = self.worldY,
+    facing = self.facing,
+    cellKey = self.committedSourceCellKey,
+    sourceSurfaceId = self.committedSourceSurfaceId,
+  }
+end
+
+-- Take every committed tile step since the previous drain; absent when no
+-- step committed. The session consumes these exactly once per fixed tick.
+---@return table[]?
+function FieldPlayer:takeCommittedTerrainSteps()
+  local steps = self._committedTerrainSteps
+  if steps == nil then
+    return nil
+  end
+  self._committedTerrainSteps = nil
+  return steps
 end
 
 ---@param out { x: number, y: number, z: number }
@@ -1342,6 +1373,8 @@ function FieldPlayer:commitScriptedAction()
     self.worldX, self.worldY, self.worldZ = self.to.worldX, self.to.worldY, self.to.worldZ
     self.surfaceId = self.to.surfaceId
     if moved then
+      self.committedSourceCellKey = self.to.sourceCellKey
+      self.committedSourceSurfaceId = self.to.sourceSurfaceId
       self:_commitTile("scripted")
     end
   end

@@ -70,6 +70,9 @@ local function sessionOptions(overrides)
       updateFixed = function()
         return false
       end,
+      takeCommittedTerrainSteps = function()
+        return nil
+      end,
       presentationState = function()
         return { locomotionActive = false, gesturePose = nil, gestureTick = nil, gestureOffsetY = 0 }
       end,
@@ -174,6 +177,10 @@ local function sessionOptions(overrides)
   for key, value in pairs(overrides or {}) do
     options[key] = value
   end
+  options.actors.takeCommittedSteps = options.actors.takeCommittedSteps
+    or function()
+      return nil
+    end
   return options
 end
 

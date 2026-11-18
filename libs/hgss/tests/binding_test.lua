@@ -592,6 +592,9 @@ T["session script phase"] = function()
       self.motion = "idle"
       return false
     end,
+    takeCommittedTerrainSteps = function()
+      return nil
+    end,
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
     end,
@@ -654,6 +657,9 @@ T["session script phase"] = function()
   local actors = {
     beginFixedStep = function() end,
     step = function() end,
+    takeCommittedSteps = function()
+      return nil
+    end,
     cameraTargetId = function()
       return nil
     end,

@@ -49,7 +49,6 @@ FollowingMonController.__index = FollowingMonController
 ---@field _movementType string persistent follower map-object movement mode
 ---@field _lastFollowerCommand { direction: string, speed: string }? last real follower walk; descriptive only, never an obligation
 ---@field _action { progress: integer, duration: integer }?
----@field _committedStep table<string, unknown>? the latest committed follower step, consumed once by the composition
 ---@field _suspended boolean
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
 ---@field isEnabled fun(self: FollowingMonController): boolean
@@ -109,8 +108,6 @@ FollowingMonController.__index = FollowingMonController
 ---@field _enqueueReplay fun(self: FollowingMonController, mapId: integer, direction: string, speed: string)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
 ---@field _advanceAction fun(self: FollowingMonController)
----@field _recordCommittedStep fun(self: FollowingMonController, actorId: string)
----@field takeCommittedStep fun(self: FollowingMonController): table<string, unknown>?
 
 FollowingMonController.PARTNER_NUMERIC_ID = 253
 FollowingMonController.MAX_QUEUED_ANCHORS = 8
@@ -243,7 +240,6 @@ function FollowingMonController.new(opts)
     _movementType = "follow_player",
     _lastFollowerCommand = nil,
     _action = nil,
-    _committedStep = nil,
     _suspended = false,
   }, FollowingMonController)
   ---@cast self FollowingMonController
@@ -501,6 +497,7 @@ function FollowingMonController:_spec(mapId, fieldX, fieldZ, facing, worldY, ini
     facing = facing,
     worldY = worldY,
     initiallyVisible = initiallyVisible,
+    large = self:partnerSourceState() ~= 0,
   }
 end
 
@@ -691,7 +688,6 @@ function FollowingMonController:_handleMapChange(mapId, coveredRebuild)
   self._lastMovementTransactionRevision = 0
   self._consumedStep = nil
   self._ledgeLanding = nil
-  self._committedStep = nil
   self._paused = false
 end
 
@@ -1191,45 +1187,7 @@ function FollowingMonController:_advanceAction()
   if progress >= action.duration then
     self._actors:commitScriptedAction(partnerId)
     self._action = nil
-    self:_recordCommittedStep(partnerId)
   end
-end
-
--- Publish the facts of one just-committed follower step. The composition
--- consumes this exactly once to spawn the step's source terrain responses at
--- the follower's own tile; the follower-owned step effects never belong to the
--- player's tile.
----@param self FollowingMonController
----@param actorId string
-function FollowingMonController:_recordCommittedStep(actorId)
-  local actor = self._actors:getById(actorId)
-  if actor == nil then
-    return
-  end
-  local position = assert(actor:getFieldPosition(), "committed follower step requires its field position")
-  local world = actor:getWorldPosition()
-  self._committedStep = {
-    actorId = actorId,
-    mapId = actor.mapId,
-    fieldX = position.fieldX,
-    fieldZ = position.fieldZ,
-    worldY = assert(world.y, "committed follower step requires its world height"),
-    facing = actor.facing,
-    cellKey = actor.cellKey,
-    sourceSurfaceId = actor:getSourceSurfaceId(),
-    visible = self._actors:isVisible(actorId) == true,
-    large = self:partnerSourceState() ~= 0,
-  }
-end
-
--- Take the latest committed follower step, exactly once. Returns nil when no
--- step committed since the previous read or across a map ownership change.
----@param self FollowingMonController
----@return table<string, unknown>?
-function FollowingMonController:takeCommittedStep()
-  local step = self._committedStep
-  self._committedStep = nil
-  return step
 end
 
 -- One fixed-tick reconciliation: map ownership, party identity, placement,
@@ -1299,7 +1257,6 @@ function FollowingMonController:handleMapExit()
   self._pendingHiddenLead = nil
   self._rejoinHidden = false
   self._mapEntry = false
-  self._committedStep = nil
   self._suspended = true
 end
 

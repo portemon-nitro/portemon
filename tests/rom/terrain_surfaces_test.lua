@@ -170,6 +170,9 @@ function T.field_player_traverses_new_bark_east_staircase(romFs)
   local actors = {
     beginFixedStep = function() end,
     step = function() end,
+    takeCommittedSteps = function()
+      return nil
+    end,
     cameraTargetId = function()
       return nil
     end,

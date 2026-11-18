@@ -283,6 +283,10 @@ local function baseOptions(overrides)
   end
   local scheduler = options.scriptScheduler
   options.actors.beginFixedStep = options.actors.beginFixedStep or function() end
+  options.actors.takeCommittedSteps = options.actors.takeCommittedSteps
+    or function()
+      return nil
+    end
   scheduler.autonomousActorsLocked = scheduler.autonomousActorsLocked or function()
     return false
   end
@@ -325,6 +329,10 @@ local function baseOptions(overrides)
       out.gestureTick = nil
       out.gestureOffsetY = 0
       return out
+    end
+  player.takeCommittedTerrainSteps = player.takeCommittedTerrainSteps
+    or function()
+      return nil
     end
   return options
 end
@@ -4063,8 +4071,9 @@ end
 ---@param player FieldPlayer
 ---@param steps table[]
 ---@param visual FieldPlayerVisual?
+---@param terrainEffects table?
 ---@return FieldSession session, table scheduler, FakeServices services, string instanceId
-local function scriptedPlayerSession(map, player, steps, visual)
+local function scriptedPlayerSession(map, player, steps, visual, terrainEffects)
   local manager = {
     getActor = function()
       return nil
@@ -4163,6 +4172,7 @@ local function scriptedPlayerSession(map, player, steps, visual)
     player = player,
     playerVisual = visual,
     scriptScheduler = scheduler,
+    terrainEffects = terrainEffects,
   }))
   return session, scheduler, services, instanceId
 end
@@ -4238,43 +4248,89 @@ function T.unlocked_scripted_fast_walk_keeps_its_two_frame_pose_cadence()
   Assert.isNil(services.events:eventFor("script.error", instanceId), "the fast scripted walk must not fault")
 end
 
--- The terrain-effect clock advances with every live owner. The player is one
--- owner; the walking partner is the other, so a held follower grass effect can
--- release on the follower's own displacement instead of the player's.
-function T.session_publishes_the_live_partner_as_a_terrain_effect_owner()
+-- A scripted player walk is a real map-object step in retail, so it spawns
+-- the same source grass response at the tile the player enters as an ordinary
+-- walk does. The response belongs to the player's own displacement.
+function T.scripted_player_walk_spawns_its_own_grass_response()
+  local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
+  local map = movementMap({ ["1:4"] = { behavior = MetatileBehavior.BEHAVIOR.TALL_GRASS } })
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 0, fieldZ = 4, surfaceId = 0, facing = "east" })
+  local emitted = {}
+  local terrainEffects = {
+    updateFixed = function() end,
+    emitAll = function(_, responses)
+      for _, response in ipairs(responses) do
+        emitted[#emitted + 1] = response
+      end
+    end,
+  }
+  local session = scriptedPlayerSession(map, player, {
+    S.applyMovement({ actor = "player", movement = { S.m.walk({ direction = "east", speed = "normal", tiles = 1 }) } }),
+    S.waitMovement(),
+    S.stop(),
+  }, nil, terrainEffects)
+
+  for _ = 1, 40 do
+    session:updateFixed({})
+    if player.fieldX == 1 and player.motion == "idle" then
+      break
+    end
+  end
+  Assert.equal(player.fieldX, 1, "the scripted walk commits on its destination tile")
+  Assert.equal(#emitted, 1, "the scripted step spawns exactly one grass response")
+  Assert.equal(emitted[1].kind, "tall_grass", "the scripted step names the entered tile's grass")
+  Assert.equal(emitted[1].fieldX, 1, "the scripted step response anchors its destination")
+  Assert.equal(emitted[1].fieldZ, 4)
+  Assert.equal(emitted[1].ownerKey, "player", "the player owns the scripted step's response")
+end
+
+-- The terrain-effect clock advances with every live owner: the player plus
+-- every object published on the actor world's current map, keyed by its actor
+-- identity so each held effect releases on the object that stepped into it.
+function T.session_publishes_every_live_actor_as_a_terrain_effect_owner()
   local captured = {}
   local terrainEffects = {
     updateFixed = function(_, owners)
-      local partner = owners["field:partner"]
+      local first = owners["map:61:object:0"]
+      local second = owners["map:61:object:1"]
       captured[#captured + 1] = {
         playerX = owners.player.fieldX,
         playerZ = owners.player.fieldZ,
         playerFacing = owners.player.facing,
-        partnerX = partner and partner.fieldX or nil,
-        partnerZ = partner and partner.fieldZ or nil,
-        partnerFacing = partner and partner.facing or nil,
+        firstX = first and first.fieldX or nil,
+        firstZ = first and first.fieldZ or nil,
+        firstFacing = first and first.facing or nil,
+        secondX = second and second.fieldX or nil,
+        secondFacing = second and second.facing or nil,
       }
     end,
     emitAll = function() end,
     emit = function() end,
   }
-  local partner = { fieldX = 4, fieldZ = 6, facing = "north" }
+  local objects = {
+    { id = "map:61:object:0", fieldX = 4, fieldZ = 6, facing = "north" },
+    { id = "map:61:object:1", fieldX = 9, fieldZ = 2, facing = "west" },
+  }
   local actors = {
+    currentMapId = 61,
     beginFixedStep = function() end,
     step = function() end,
     cameraTargetId = function()
       return nil
     end,
-    partnerId = function()
-      return "field:partner"
-    end,
-    getPosition = function(_, actorId)
-      Assert.equal(actorId, "field:partner", "only the live partner is queried")
-      return { fieldX = partner.fieldX, fieldZ = partner.fieldZ }
-    end,
-    getById = function(_, actorId)
-      Assert.equal(actorId, "field:partner", "only the live partner is queried")
-      return { facing = partner.facing }
+    actorsOf = function(_, mapId)
+      Assert.equal(mapId, 61, "only the current actor map supplies owners")
+      local view = {}
+      for index, object in ipairs(objects) do
+        view[index] = {
+          actorId = object.id,
+          facing = object.facing,
+          getFieldPosition = function()
+            return { fieldX = object.fieldX, fieldZ = object.fieldZ }
+          end,
+        }
+      end
+      return view
     end,
   }
   local player = defaultPlayer()
@@ -4287,14 +4343,17 @@ function T.session_publishes_the_live_partner_as_a_terrain_effect_owner()
   session:updateFixed({})
   Assert.equal(#captured, 1)
   Assert.equal(captured[1].playerX, player.fieldX)
-  Assert.equal(captured[1].partnerX, 4, "the partner joins the owner set at its live tile")
-  Assert.equal(captured[1].partnerZ, 6)
-  Assert.equal(captured[1].partnerFacing, "north", "the partner owner carries its own facing")
+  Assert.equal(captured[1].playerFacing, player.facing)
+  Assert.equal(captured[1].firstX, 4, "every live object joins the owner set at its tile")
+  Assert.equal(captured[1].firstZ, 6)
+  Assert.equal(captured[1].firstFacing, "north", "each owner carries its own facing")
+  Assert.equal(captured[1].secondX, 9, "all live objects own their effects, not only the partner")
+  Assert.equal(captured[1].secondFacing, "west")
 
-  partner.fieldX, partner.fieldZ, partner.facing = 5, 6, "east"
+  objects[1].fieldX, objects[1].fieldZ, objects[1].facing = 5, 6, "east"
   session:updateFixed({})
-  Assert.equal(captured[2].partnerX, 5, "the partner owner follows the live actor tile")
-  Assert.equal(captured[2].partnerFacing, "east")
+  Assert.equal(captured[2].firstX, 5, "an owner record follows the live actor tile")
+  Assert.equal(captured[2].firstFacing, "east")
 end
 
 -- On-frame map scripts are only evaluated on a settled player boundary. A

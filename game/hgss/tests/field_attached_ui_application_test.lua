@@ -109,6 +109,9 @@ local function idlePlayer()
     updateFixed = function()
       return false
     end,
+    takeCommittedTerrainSteps = function()
+      return nil
+    end,
     collisionCandidatesInto = function(self, out)
       out[1] = { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId }
       out[2] = nil
@@ -194,6 +197,9 @@ local function modalSession(overrides)
     actors = {
       beginFixedStep = function() end,
       step = function() end,
+      takeCommittedSteps = function()
+        return nil
+      end,
       cameraTargetId = function()
         return nil
       end,

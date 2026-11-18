@@ -1651,36 +1651,6 @@ function FieldRuntime:_composeFieldServices(boot)
   scriptComposition.restore()
 end
 
--- A committed follower step spawns that step's source terrain responses at
--- the follower's own tile (MapObject_SpawnTallGrassOnStep), including the tile
--- behind a large east/west-facing follower. A hidden partner spawns nothing,
--- matching the source invisible-object guard. The effect is owned by the
--- partner actor, so it holds and releases on the partner's own displacement.
----@param currentMap RuntimeFieldMap
-function FieldRuntime:_emitFollowerStepEffects(currentMap)
-  local step = self.followingMon:takeCommittedStep()
-  if step == nil or step.visible ~= true then
-    return
-  end
-  if currentMap == nil or currentMap.mapId ~= step.mapId then
-    return
-  end
-  local responses = require("libs.hgss.src.world.FieldTerrainResponse").resolveActorStep({
-    map = currentMap,
-    fieldX = step.fieldX,
-    fieldZ = step.fieldZ,
-    worldY = step.worldY,
-    facing = step.facing,
-    cellKey = step.cellKey,
-    sourceSurfaceId = step.sourceSurfaceId,
-    large = step.large == true,
-  })
-  for _, response in ipairs(responses) do
-    response.ownerKey = step.actorId
-  end
-  self.fieldTerrainEffectController:emitAll(responses)
-end
-
 function FieldRuntime:_processApricornDate()
   local now = self.localClock:nowLocal()
   local result = self.martService:processApricornDate({ year = now.year, month = now.month, day = now.day })
@@ -2201,7 +2171,9 @@ function FieldRuntime:update(dt)
         local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
         if self.transition.phase ~= FieldTransition.PHASES.preview then
           self.followingMon:update()
-          self:_emitFollowerStepEffects(currentMap)
+          -- The follower commits its own step after the session tick; publish
+          -- it in this same tick so its grass lands with its feet.
+          self.session:emitCommittedActorSteps()
         end
       elseif entry:isActive() then
         -- Map entry owns publication of the destination actor set. Until it

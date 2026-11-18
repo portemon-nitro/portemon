@@ -22,6 +22,9 @@ local function idlePlayer()
     updateFixed = function()
       return false
     end,
+    takeCommittedTerrainSteps = function()
+      return nil
+    end,
     collisionCandidatesInto = function(self, out)
       out[1] = { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId }
       out[2] = nil
@@ -210,6 +213,10 @@ local function optionsWith(overrides)
   for key, value in pairs(overrides or {}) do
     options[key] = value
   end
+  options.actors.takeCommittedSteps = options.actors.takeCommittedSteps
+    or function()
+      return nil
+    end
   return options
 end
 

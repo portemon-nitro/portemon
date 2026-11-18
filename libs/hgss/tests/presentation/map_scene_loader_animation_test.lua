@@ -1123,6 +1123,9 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
       playerSteps = playerSteps + 1
       return false
     end,
+    takeCommittedTerrainSteps = function()
+      return nil
+    end,
     collapseRenderInterpolation = function() end,
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
@@ -1194,6 +1197,9 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
     end,
     beginFixedStep = function() end,
     step = function() end,
+    takeCommittedSteps = function()
+      return nil
+    end,
   }
   ---@cast actors FieldActorManager
   local input = {

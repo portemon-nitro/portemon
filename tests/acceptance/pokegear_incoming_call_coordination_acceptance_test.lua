@@ -391,6 +391,9 @@ local function makeFieldSession(opts)
     updateFixed = function()
       return false
     end,
+    takeCommittedTerrainSteps = function()
+      return nil
+    end,
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
     end,
@@ -473,6 +476,9 @@ local function makeFieldSession(opts)
     actors = {
       beginFixedStep = function() end,
       step = function() end,
+      takeCommittedSteps = function()
+        return nil
+      end,
       cameraTargetId = function()
         return nil
       end,

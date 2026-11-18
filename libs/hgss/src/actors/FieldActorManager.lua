@@ -43,6 +43,9 @@ local CAMERA_FOCUS_ACTOR_ID = "script:camera_target"
 -- unsupported map-actor action.
 local FOCUS_WALK_KINDS = { walk = true }
 local FOCUS_HOLD_KINDS = { walk_in_place = true, delay = true, face = true }
+-- The scripted actions that occupy a new tile (walk-in-place holds its tile
+-- and never spawns a step response).
+local SCRIPTED_STEP_ACTIONS = { walk = true, jump = true, trajectory_segment = true }
 local FOCUS_STEP_DELTAS = {
   north = { fieldX = 0, fieldZ = -1 },
   south = { fieldX = 0, fieldZ = 1 },
@@ -189,6 +192,7 @@ end
 ---@field _drawRecordByActorId table<string, FieldActorManager.DrawRecord>
 ---@field _renderSample { x: number?, y: number?, z: number? }
 ---@field _autonomyCapability FieldActorManager.AutonomyCapability
+---@field _committedSteps FieldActorManager.CommittedStep[] tile steps committed since the last drain
 ---@field _playerFacts { fieldX: integer?, fieldZ: integer?, positionYBand: integer? }
 ---@field _presentationSample FieldObjectActor.PresentationState
 ---@field autonomy FieldActorAutonomy
@@ -247,6 +251,8 @@ end
 ---@field beginScriptedAction fun(self: FieldActorManager, actorId: string, action: table<string, unknown>)
 ---@field advanceScriptedAction fun(self: FieldActorManager, actorId: string, progressTicks: integer, durationTicks: integer)
 ---@field commitScriptedAction fun(self: FieldActorManager, actorId: string)
+---@field takeCommittedSteps fun(self: FieldActorManager): FieldActorManager.CommittedStep[]?
+---@field _recordCommittedStep fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor)
 ---@field cancelScriptedMovement fun(self: FieldActorManager, actorId: string)
 ---@field isScriptedMoving fun(self: FieldActorManager, actorId: string): boolean
 ---@field _advanceAutonomousAction fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor, action: table<string, unknown>)
@@ -260,6 +266,19 @@ end
 ---@field isPlacementRejection fun(err: unknown): boolean
 ---@class FieldActorManager.Actor: FieldObjectActor
 ---@field movementType string
+---@field large boolean? source follower shape nibble is nonzero
+
+---@class FieldActorManager.CommittedStep
+---@field actorId string
+---@field mapId integer
+---@field fieldX integer
+---@field fieldZ integer
+---@field worldY number
+---@field facing FieldDirection
+---@field cellKey string?
+---@field sourceSurfaceId integer?
+---@field visible boolean
+---@field large boolean source follower shape nibble is nonzero: east/west steps also disturb the tile behind
 
 ---@class FieldActorManager.Entry
 ---@field runtimeMap RuntimeFieldMap
@@ -389,6 +408,7 @@ function FieldActorManager.new(opts)
     _renderSample = { x = 0, y = 0, z = 0 },
     _playerFacts = {},
     _presentationSample = { gesturePose = nil, gestureTick = nil, gestureOffsetY = 0 },
+    _committedSteps = {},
     autonomy = FieldActorAutonomy.new({
       rng = opts.autonomyRng or ScriptRng.new(opts.autonomySeed or "field:autonomy"),
       profiles = FieldObjectMovement,
@@ -1517,6 +1537,12 @@ function FieldActorManager:leaveMap(mapId)
   if not entry then
     return
   end
+  local steps = self._committedSteps
+  for index = #steps, 1, -1 do
+    if steps[index].mapId == mapId then
+      table.remove(steps, index)
+    end
+  end
   retireEntry(self, entry)
 end
 
@@ -1813,6 +1839,45 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
   else
     actor:settlePresentation()
   end
+  if action.reservationKey ~= nil then
+    self:_recordCommittedStep(entry, actor)
+  end
+end
+
+-- Publish one just-committed tile step so the composition can spawn that
+-- object's own source terrain responses (MapObject_SpawnStepStartEffects) at
+-- the object's own tile. Only moving actions reach here: a walk-in-place never
+-- changes the tile it stands on.
+---@param entry FieldActorManager.Entry
+---@param actor FieldActorManager.Actor
+function FieldActorManager:_recordCommittedStep(entry, actor)
+  local state = actor:numericState()
+  local world = actor:getWorldPosition()
+  self._committedSteps[#self._committedSteps + 1] = {
+    actorId = actor.actorId,
+    mapId = entry.runtimeMap.mapId,
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    worldY = assert(world.y, "committed step requires its world height"),
+    facing = actor.facing,
+    cellKey = actor.cellKey,
+    sourceSurfaceId = actor:getSourceSurfaceId(),
+    visible = state.visible == 1,
+    large = actor.large == true,
+  }
+end
+
+-- Take every committed tile step since the previous drain; absent when the
+-- map committed none. The session consumes these exactly once per drain.
+---@return FieldActorManager.CommittedStep[]?
+---@param self FieldActorManager
+function FieldActorManager:takeCommittedSteps()
+  local steps = self._committedSteps
+  if #steps == 0 then
+    return nil
+  end
+  self._committedSteps = {}
+  return steps
 end
 
 function FieldActorManager:beginFixedStep()
@@ -2312,6 +2377,7 @@ local CARDINAL_FACINGS = { north = true, south = true, west = true, east = true 
 ---@field fieldZ integer
 ---@field facing FieldDirection
 ---@field worldY number? terrain surface hint for stacked maps
+---@field large boolean? source follower shape nibble is nonzero: east/west steps also disturb the tile behind
 ---@field solid boolean? must be absent or false; the partner never blocks
 ---@field initiallyVisible boolean? install-only visibility; absent means visible
 
@@ -2331,6 +2397,9 @@ local function checkPartnerSpec(self, spec)
   end
   if spec.initiallyVisible ~= nil then
     assert(type(spec.initiallyVisible) == "boolean", "partner initial visibility must be boolean when present")
+  end
+  if spec.large ~= nil then
+    assert(type(spec.large) == "boolean", "partner large shape flag must be boolean when present")
   end
   if not CARDINAL_FACINGS[spec.facing] then
     Errors.raise(
@@ -2455,6 +2524,7 @@ local function constructPartner(self, entry, spec, surface, initiallyVisible)
       numericSlot = numericSlot,
     }) --[[@as FieldActorManager.Actor]]
     actor.actorId = PARTNER_ACTOR_ID
+    actor.large = spec.large == true
     actor:setVisible(initiallyVisible ~= false)
   end)
   if not ok then
@@ -3186,6 +3256,9 @@ function FieldActorManager:commitScriptedAction(actorId)
   local destination =
     assert(actor:commitScriptedAction() --[[@as FieldActorResolvedPosition]], "scripted action destination is missing")
   publishResolvedPosition(entry, actor, destination)
+  if SCRIPTED_STEP_ACTIONS[m.action] == true and (m.startFieldX ~= m.destFieldX or m.startFieldZ ~= m.destFieldZ) then
+    self:_recordCommittedStep(entry, actor)
+  end
 end
 
 ---@param actorId string
@@ -3347,6 +3420,7 @@ function FieldActorManager:dispose()
   end
   self.unsubscribe, self.eventState = nil, nil
   self.pendingFlags = {}
+  self._committedSteps = {}
 end
 
 return FieldActorManager

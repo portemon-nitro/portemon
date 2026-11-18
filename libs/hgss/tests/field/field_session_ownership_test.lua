@@ -39,6 +39,9 @@ local function basePlayer(overrides)
     updateFixed = function(_)
       return false
     end,
+    takeCommittedTerrainSteps = function()
+      return nil
+    end,
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
     end,
@@ -94,6 +97,10 @@ local function makeSession(opts)
       end,
     }
   ) --[[@as FieldActorManager]]
+  actors.takeCommittedSteps = actors.takeCommittedSteps
+    or function()
+      return nil
+    end
   local scheduler = opts.scheduler
     or {
       step = function() end,

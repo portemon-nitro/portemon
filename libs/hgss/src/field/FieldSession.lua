@@ -230,7 +230,7 @@ end
 ---@field coordinateProbe { fieldX: integer, fieldZ: integer, facing: string }
 ---@field terrainResponseInput table<string, unknown>
 ---@field terrainOwners table<string, { fieldX: integer, fieldZ: integer, facing: string }>
----@field partnerTerrainOwner { fieldX: integer, fieldZ: integer, facing: string }
+---@field terrainOwnerRecords table<string, { fieldX: integer, fieldZ: integer, facing: string }>
 ---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")?, scriptedPoseDelta: integer? }
 ---@field carriedMovementInput table<string, unknown>
 ---@field heldMovementInput table<string, unknown>
@@ -258,10 +258,8 @@ local function newTickScratch(actorLocked)
     cameraTarget = { x = 0, y = 0, z = 0 },
     entranceInput = { map = nil, player = nil, transition = { ownsField = false } },
     coordinateProbe = { fieldX = 0, fieldZ = 0, facing = "south" },
-    terrainOwners = {
-      player = nil,
-    },
-    partnerTerrainOwner = { fieldX = 0, fieldZ = 0, facing = "south" },
+    terrainOwners = {},
+    terrainOwnerRecords = {},
     terrainResponseInput = {
       committed = true,
       destination = {
@@ -813,32 +811,99 @@ function FieldSession:_advanceTick()
   self.tick = self.tick + 1
 end
 
--- The installed walking partner as a terrain-effect owner, or nil when the
--- actor world holds none. Reuses one scratch record per tick.
+-- Every live object on the actor world's current map owns the held effect it
+-- stepped into, plus the player. Reuses one owner record per actor across
+-- ticks so a stationary field allocates nothing.
 ---@param self FieldSession
----@return { actorId: string, owner: { fieldX: integer, fieldZ: integer, facing: string } }?
-function FieldSession:_livePartnerTerrainOwner()
-  local actors = self.actors
-  if type(actors.partnerId) ~= "function" or type(actors.getPosition) ~= "function" then
-    return nil
+---@return table<string, { fieldX: integer, fieldZ: integer, facing: string }>
+function FieldSession:_collectTerrainOwners()
+  local owners = self._tickScratch.terrainOwners
+  for key in pairs(owners) do
+    owners[key] = nil
   end
-  local actorId = actors:partnerId()
-  if actorId == nil then
-    return nil
+  local playerOwner = self._tickScratch.terrainInput
+  playerOwner.fieldX = self.player.fieldX
+  playerOwner.fieldZ = self.player.fieldZ
+  playerOwner.facing = self.player.facing
+  owners.player = playerOwner
+  local mapId = self.actors.currentMapId
+  if mapId == nil then
+    return owners
   end
-  local position = actors:getPosition(actorId)
-  if position == nil then
-    return nil
+  local records = self._tickScratch.terrainOwnerRecords
+  for _, actor in ipairs(self.actors:actorsOf(mapId)) do
+    local record = records[actor.actorId]
+    if record == nil then
+      record = { fieldX = 0, fieldZ = 0, facing = "south" }
+      records[actor.actorId] = record
+    end
+    local position = actor:getFieldPosition()
+    record.fieldX = position.fieldX
+    record.fieldZ = position.fieldZ
+    record.facing = actor.facing
+    owners[actor.actorId] = record
   end
-  local actor = type(actors.getById) == "function" and actors:getById(actorId) or nil
-  if actor == nil then
-    return nil
+  for actorId in pairs(records) do
+    if owners[actorId] == nil then
+      records[actorId] = nil
+    end
   end
-  local owner = self._tickScratch.partnerTerrainOwner
-  owner.fieldX = position.fieldX
-  owner.fieldZ = position.fieldZ
-  owner.facing = actor.facing
-  return { actorId = actorId, owner = owner }
+  return owners
+end
+
+-- Publish one committed tile step as that stepping object's source terrain
+-- responses at its own tile (MapObject_SpawnStepStartEffects), including the
+-- tile behind a large east/west-facing follower.
+---@param step { fieldX: integer, fieldZ: integer, worldY: number, facing: string, cellKey: string?, sourceSurfaceId: integer?, large: boolean? }
+---@param ownerKey string
+function FieldSession:_emitStepResponses(step, ownerKey)
+  if self.terrainEffects == nil or self.currentMap.collision == nil then
+    return
+  end
+  local responses = require("libs.hgss.src.world.FieldTerrainResponse").resolveActorStep({
+    map = self.currentMap,
+    fieldX = step.fieldX,
+    fieldZ = step.fieldZ,
+    worldY = step.worldY,
+    facing = step.facing,
+    cellKey = step.cellKey,
+    sourceSurfaceId = step.sourceSurfaceId,
+    large = step.large,
+  })
+  for _, response in ipairs(responses) do
+    response.ownerKey = ownerKey
+  end
+  self.terrainEffects:emitAll(responses)
+end
+
+-- Publish every map-object tile step committed since the previous drain. An
+-- invisible object spawns no presentation response (the source hides its
+-- billboard); the effect otherwise belongs to the object that stepped, so it
+-- holds and releases on that object's own displacement. The composition calls
+-- this again after its own post-session actor reconciliation; the drain is
+-- idempotent.
+function FieldSession:emitCommittedActorSteps()
+  local steps = self.actors:takeCommittedSteps()
+  if steps == nil then
+    return
+  end
+  for _, step in ipairs(steps) do
+    if step.visible then
+      self:_emitStepResponses(step, step.actorId)
+    end
+  end
+end
+
+-- Publish every player tile step this tick. Ordinary input steps, jumps,
+-- planned traversal, and scripted walks all reach this one owner.
+function FieldSession:_emitCommittedPlayerSteps()
+  local steps = self.player:takeCommittedTerrainSteps()
+  if steps == nil then
+    return
+  end
+  for _, step in ipairs(steps) do
+    self:_emitStepResponses(step, "player")
+  end
 end
 
 function FieldSession:_emitTerrainResponse()
@@ -1316,26 +1381,11 @@ function FieldSession:updateFixed(inputSnapshot)
   local carriedBoundaryDirection = self._boundaryMovementDirection
   self._boundaryMovementDirection = nil
   if self.terrainEffects then
-    -- The effect clock advances with every live owner: the player and, when
-    -- one is installed, the walking partner. Each effect remembers the object
-    -- that stepped into it, so a follower's held grass releases on the
-    -- follower's own displacement instead of the player's.
-    local terrainInput = self._tickScratch.terrainInput
-    terrainInput.fieldX = self.player.fieldX
-    terrainInput.fieldZ = self.player.fieldZ
-    terrainInput.facing = self.player.facing
-    local terrainOwners = self._tickScratch.terrainOwners
-    terrainOwners.player = terrainInput
-    for key in pairs(terrainOwners) do
-      if key ~= "player" then
-        terrainOwners[key] = nil
-      end
-    end
-    local partnerTerrainOwner = self:_livePartnerTerrainOwner()
-    if partnerTerrainOwner ~= nil then
-      terrainOwners[partnerTerrainOwner.actorId] = partnerTerrainOwner.owner
-    end
-    self.terrainEffects:updateFixed(terrainOwners)
+    -- The effect clock advances with every live owner: the player and every
+    -- object on the current actor map. Each effect remembers the object that
+    -- stepped into it, so held grass releases on that object's own
+    -- displacement instead of on the player's.
+    self.terrainEffects:updateFixed(self:_collectTerrainOwners())
   end
   -- The door/stair choreography drives the player during the locked
   -- transition: the pose clock hears the locomotion state at tick start, the
@@ -1507,6 +1557,10 @@ function FieldSession:updateFixed(inputSnapshot)
   local scriptedLocomotionAtTickStart =
     self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
   local playerInputOwnedAtTickStart, modalInputOwnedAtTickStart = runScriptPhase(self, inputSnapshot)
+  -- A scripted walk commits during the script phase, before the ordinary
+  -- update: publish its step before any higher-priority owner can claim the
+  -- tick and return early.
+  self:_emitCommittedPlayerSteps()
   if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
     return
   end
@@ -1594,6 +1648,7 @@ function FieldSession:updateFixed(inputSnapshot)
   actorContext.autonomousLocked = self.scriptScheduler:autonomousActorsLocked()
   actorContext.playerCandidates = self.player:collisionCandidatesInto(self._tickScratch.collisionCandidates)
   self.actors:step(self.tick + 1, actorContext)
+  self:emitCommittedActorSteps()
 
   if self.childResumePending then
     self:_advanceTick()
@@ -1882,7 +1937,7 @@ function FieldSession:updateFixed(inputSnapshot)
         self.mapEntryController:begin("connection")
       end
     end
-    self:_emitTerrainResponse()
+    self:_emitCommittedPlayerSteps()
     if self.audio and not zoneChanged then
       self.audio:updateField()
     end

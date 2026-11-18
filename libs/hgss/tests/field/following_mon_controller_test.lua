@@ -1040,26 +1040,31 @@ end
 
 -- A committed follower step publishes its destination facts exactly once so
 -- the composition can spawn that step's source terrain responses (tall grass)
--- at the follower's own tile. The runtime never guesses: every fact comes from
--- the actor the manager just committed.
+-- at the follower's own tile. The manager owns the publication for every map
+-- object; the partner's placement spec supplies the source shape nibble that
+-- also disturbs the tile behind an east/west step.
 function T.committed_follower_step_publishes_its_destination_facts_once()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
-  Assert.isNil(w.controller:takeCommittedStep(), "installation commits no step")
+  Assert.isNil(w.mgr:takeCommittedSteps(), "installation commits no step")
 
   local vacated = driveScriptedWalk(w, "south", "normal")
-  local commit = assert(w.controller:takeCommittedStep(), "the completed follower step is observable")
-  Assert.equal(commit.actorId, partnerId)
+  local steps = assert(w.mgr:takeCommittedSteps(), "the completed follower step is observable")
+  local commit
+  for _, step in ipairs(steps) do
+    if step.actorId == partnerId and step.fieldX == vacated.fieldX and step.fieldZ == vacated.fieldZ then
+      commit = step
+    end
+  end
+  Assert.notNil(commit, "the follower committed onto the vacated tile")
   Assert.equal(commit.mapId, 61)
-  Assert.equal(commit.fieldX, vacated.fieldX, "the follower committed onto the vacated tile")
-  Assert.equal(commit.fieldZ, vacated.fieldZ, "the follower committed onto the vacated tile")
   Assert.equal(commit.facing, "south")
   Assert.equal(commit.visible, true, "the visible partner reports its step")
   Assert.equal(commit.large, true, "the fixture lead carries a nonzero source shape nibble")
   Assert.isTrue(type(commit.worldY) == "number", "the committed step carries its world height")
-  Assert.isNil(w.controller:takeCommittedStep(), "the observation is consumed exactly once")
+  Assert.isNil(w.mgr:takeCommittedSteps(), "the observation is consumed exactly once")
   w.mgr:dispose()
 end
 

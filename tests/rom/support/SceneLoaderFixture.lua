@@ -249,6 +249,9 @@ function SceneLoaderFixture.newHarness(versionId, opts)
   local actors = {
     beginFixedStep = function() end,
     step = function() end,
+    takeCommittedSteps = function()
+      return nil
+    end,
     cameraTargetId = function()
       return nil
     end,
