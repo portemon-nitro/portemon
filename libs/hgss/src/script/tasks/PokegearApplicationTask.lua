@@ -52,8 +52,25 @@ local function validCallRequest(request)
   then
     return false
   end
+  if record.isScriptedCall ~= nil then
+    if type(record.isScriptedCall) ~= "number" or record.isScriptedCall % 1 ~= 0 then
+      return false
+    end
+  end
+  if record.callScriptID ~= nil then
+    if type(record.callScriptID) ~= "number" or record.callScriptID % 1 ~= 0 then
+      return false
+    end
+  end
   for key in pairs(record) do
-    if key ~= "id" and key ~= "contact" and key ~= "direction" and key ~= "kind" then
+    if
+      key ~= "id"
+      and key ~= "contact"
+      and key ~= "direction"
+      and key ~= "kind"
+      and key ~= "isScriptedCall"
+      and key ~= "callScriptID"
+    then
       return false
     end
   end
@@ -117,7 +134,14 @@ function PokegearApplicationTask.create(spec, ctx)
   local source = spec.request --[[@as table<string, string>]]
   return {
     kind = "call",
-    request = { id = source.id, contact = source.contact, direction = source.direction, kind = source.kind },
+    request = {
+      id = source.id,
+      contact = source.contact,
+      direction = source.direction,
+      kind = source.kind,
+      isScriptedCall = source.isScriptedCall,
+      callScriptID = source.callScriptID,
+    },
     parentOwner = spec.parentOwner,
     completed = false,
   }

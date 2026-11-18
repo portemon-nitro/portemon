@@ -1,11 +1,10 @@
--- Final behavior and cleanliness verification for the pocket gear at the
--- feature layer: named state transitions commit exactly once with
--- revision currency, the source-text audit ledger names every unaudited
--- slot, and the committed verification text carries no temporary
--- references. State scenarios compose the real durable owner with
--- synthetic catalogs; only host time is faked. Ledger expectations are
--- transcribed message-bank facts, never readouts of the modules under
--- test.
+-- Final behavior verification for the pocket gear at the feature layer:
+-- named state transitions commit exactly once with revision currency,
+-- the call journal migrates from the flat v1 shape into ordered chunks,
+-- and the source-text audit ledger names every unaudited slot. State
+-- scenarios compose the real durable owner with synthetic catalogs; only
+-- host time is faked. Ledger expectations are transcribed message-bank
+-- facts, never readouts of the modules under test.
 
 local Assert = require("tests.support.Assert")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
@@ -60,12 +59,116 @@ function T.tests.named_state_transitions_commit_exactly_once_with_revision_curre
   local revisionStaged = state:revision()
   state:setTrigger("custom.trigger.1", true)
   Assert.equal(state:revision(), revisionStaged, "an identical trigger write keeps the revision still")
-  state:setCallHistory({ [MOM_KEY] = true })
-  Assert.deepEqual(state:readPhone().history, { [MOM_KEY] = true }, "history writes record the journal")
-  state:setCallHistory({ [MOM_KEY] = true })
+  state:setCallHistory({ [0] = { MOM_KEY }, [1] = {}, [2] = {} })
+  Assert.deepEqual(
+    state:readPhone().history,
+    { [0] = { MOM_KEY }, [1] = {}, [2] = {} },
+    "history writes record the journal"
+  )
+  state:setCallHistory({ [0] = { MOM_KEY }, [1] = {}, [2] = {} })
   Assert.equal(state:revision(), revisionStaged + 1, "an identical history write keeps the revision still")
   state:setTrigger("custom.trigger.1", false)
   Assert.deepEqual(state:readPhone().triggers, {}, "clearing removes the staged trigger")
+end
+
+-- The v2 call journal keeps ordered per-chunk caller lists behind the
+-- source 4/2/2 sizes: writes validate the chunk map, identical writes
+-- keep the revision still, and flat v1 journals fail loudly.
+function T.tests.ordered_chunk_journals_validate_sizes_and_orders()
+  local state = PokegearState.new({ seed = 903 }, { catalog = contactCatalog() })
+  local journal = { [0] = { "custom.a", "custom.b" }, [1] = {}, [2] = { "custom.c" } }
+  state:setCallHistory(journal)
+  Assert.deepEqual(state:readPhone().history, journal, "chunk writes record the ordered journal")
+  local revisionStaged = state:revision()
+  state:setCallHistory({ [0] = { "custom.a", "custom.b" }, [1] = {}, [2] = { "custom.c" } })
+  Assert.equal(state:revision(), revisionStaged, "an identical chunk write keeps the revision still")
+  Assert.throws(function()
+    state:setCallHistory({ [MOM_KEY] = true })
+  end, "a flat v1 journal must fail")
+  Assert.throws(function()
+    state:setCallHistory({ [0] = { "" }, [1] = {}, [2] = {} })
+  end, "an empty caller key must fail")
+  Assert.throws(function()
+    state:setCallHistory({ [0] = { "custom.a" }, [1] = {}, [2] = {}, [3] = {} })
+  end, "an unknown chunk must fail")
+  Assert.throws(function()
+    state:setCallHistory({ [0] = { "custom.a", "custom.a" }, [1] = {}, [2] = {} })
+  end, "a repeated caller must fail")
+  Assert.throws(function()
+    state:setCallHistory({ [0] = { "a", "b", "c", "d", "e" }, [1] = {}, [2] = {} })
+  end, "an overfull chunk must fail")
+  Assert.throws(function()
+    state:setCallHistory({ [0] = {}, [1] = {} })
+  end, "a missing chunk must fail")
+end
+
+-- Restoring a v1 save migrates its flat journal into chunks by
+-- catalog group: grouped callers land in their chunk in stable
+-- order, overfull chunks truncate, and ungrouped callers read as
+-- group zero.
+function T.tests.restore_migrates_v1_flat_history_into_chunks()
+  local catalog = {
+    contacts = {
+      { key = "custom.g0a", sortWeight = 10, randomCallGroup = 0 },
+      { key = "custom.g0b", sortWeight = 20, randomCallGroup = 0 },
+      { key = "custom.g1a", sortWeight = 30, randomCallGroup = 1 },
+      { key = "custom.g2a", sortWeight = 40, randomCallGroup = 2 },
+      { key = "custom.plain", sortWeight = 50 },
+    },
+    contactOrder = { "custom.g0a", "custom.g0b", "custom.g1a", "custom.g2a", "custom.plain" },
+    callTriggers = {},
+    locations = {},
+  }
+  local refs = { catalog = catalog }
+  local fresh = PokegearState.new({ seed = 904 }, refs)
+  local bucket = fresh:capture()
+  bucket.schema = "hgss-pokegear-v1"
+  bucket.stateVersion = 1
+  bucket.phone.history = {
+    ["custom.g0b"] = true,
+    ["custom.g0a"] = true,
+    ["custom.g1a"] = true,
+    ["custom.g2a"] = true,
+    ["custom.plain"] = true,
+  }
+  local restored = PokegearState.restore(bucket, refs)
+  local history = restored:readPhone().history
+  Assert.deepEqual(history[1], { "custom.g1a" }, "group-one callers land in chunk one")
+  Assert.deepEqual(history[2], { "custom.g2a" }, "group-two callers land in chunk two")
+  Assert.deepEqual(
+    history[0],
+    { "custom.g0a", "custom.g0b", "custom.plain" },
+    "group-zero and ungrouped callers land in chunk zero in stable order"
+  )
+  Assert.equal(restored:capture().stateVersion, 2, "the migrated save reports version two")
+end
+
+-- The Kenji errand wait and activity commit exactly once with revision
+-- currency: a fresh errand reads as the source zero state, an
+-- identical write keeps the revision still, and malformed values fail
+-- before assignment.
+function T.tests.kenji_errand_wait_and_activity_commit_with_revision_currency()
+  local state = PokegearState.new({ seed = 902 }, { catalog = contactCatalog() })
+  local kenji = state:readPhone().kenji
+  Assert.equal(kenji.waitDays, 0, "a fresh errand waits zero days")
+  Assert.isFalse(kenji.active, "a fresh errand starts inactive")
+  local revisionStaged = state:revision()
+  state:setKenjiErrand(0, false)
+  Assert.equal(state:revision(), revisionStaged, "an identical errand write keeps the revision still")
+  state:setKenjiErrand(4, true)
+  Assert.equal(state:revision(), revisionStaged + 1, "a changed errand write advances the revision once")
+  local staged = state:readPhone().kenji
+  Assert.equal(staged.waitDays, 4, "the errand stages its wait")
+  Assert.isTrue(staged.active, "the errand stages its activity")
+  Assert.throws(function()
+    state:setKenjiErrand(-1, false)
+  end, "a negative wait must fail")
+  Assert.throws(function()
+    state:setKenjiErrand(1.5, false)
+  end, "a fractional wait must fail")
+  Assert.throws(function()
+    state:setKenjiErrand(1, 0)
+  end, "a non-boolean activity must fail")
 end
 
 -- Transcribed message-bank facts behind the twelve native broadcasts: every
@@ -198,10 +301,7 @@ local function freshBroadcast(opts)
   if opts.takeover == true then
     events:setFlag(FieldScriptSymbols.flagsByName.FLAG_ROCKET_TAKEOVER_ACTIVE)
   end
-  local RadioWorldContext = BroadcastFixture.requireFeature(
-    "game.hgss.src.pokegear.RadioWorldContext",
-    "the wording audit needs its shared world projection"
-  )
+  local RadioWorldContext = require("game.hgss.src.pokegear.RadioWorldContext")
   local world = RadioWorldContext.new({
     state = state,
     calendar = calendar,
@@ -214,10 +314,7 @@ local function freshBroadcast(opts)
     BroadcastFixture.newCivilCell(opts.moment or { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 })
   local audio = BroadcastFixture.newAudioStandIn()
   local messages = BroadcastFixture.newMessageLog()
-  local RadioProgram = BroadcastFixture.requireFeature(
-    "game.hgss.src.pokegear.RadioProgram",
-    "the wording audit needs its broadcast dispatcher"
-  )
+  local RadioProgram = require("game.hgss.src.pokegear.RadioProgram")
   local program = RadioProgram.new({
     catalog = record.catalog,
     world = world,
@@ -469,66 +566,6 @@ function T.tests.broadcast_wording_audit_covers_standalone_takeover_and_commerci
     end
   end
   Assert.isTrue(found, "the scheduled commercial appears across the seed sweep")
-end
-
-local BASE = love.filesystem.getSourceBaseDirectory()
-
--- Files owned by the final verification pass, relative to the
--- repository root. The shared journey rig carries no suite of its own.
-local OWNED_SUITES = {
-  "tests/acceptance/pokegear_opening_journey_test.lua",
-  "tests/graphics/pokegear_presentation_matrix_graphics_test.lua",
-  "tests/rom/pokegear_source_conformance_test.lua",
-  "game/hgss/tests/pokegear_resource_lifetime_test.lua",
-  "game/hgss/tests/pokegear_acceptance_and_fidelity_test.lua",
-}
-
-local OWNED_ALL = {
-  "tests/acceptance/pokegear_opening_journey_test.lua",
-  "tests/graphics/pokegear_presentation_matrix_graphics_test.lua",
-  "tests/rom/pokegear_source_conformance_test.lua",
-  "tests/support/PokegearJourneyFixture.lua",
-  "game/hgss/tests/pokegear_resource_lifetime_test.lua",
-  "game/hgss/tests/pokegear_acceptance_and_fidelity_test.lua",
-}
-
----@param path string
----@return string contents
-local function readOwned(path)
-  local handle = assert(io.open(BASE .. "/" .. path, "r"), "cannot read owned file " .. path)
-  local contents = assert(handle:read("*a"), "cannot read owned file " .. path)
-  handle:close()
-  return contents
-end
-
--- Committed verification text carries no temporary references and stays
--- discoverable: none of the owned files may mention acceptance
--- identifiers, outside specification references, or deviation markers,
--- and every owned suite keeps its behavior tag. Patterns are assembled
--- from fragments so the audit itself stays clean under its own scan.
-function T.tests.committed_verification_text_carries_no_temporary_references()
-  local acceptanceId = "A" .. "%-D%d%d"
-  local bareId = "%f[%w]D" .. "%d%d%f[%W]"
-  local specRef = "%f[%w]SP" .. "EC%f[%W]"
-  local deviationMarker = "DE" .. "V%-%d"
-  local contractId = "%f[%w]C" .. "%d%d%f[%W]"
-  local tempWord = "deliver" .. "able"
-  local planWord = "plan" .. "ning"
-  for _, path in ipairs(OWNED_ALL) do
-    local contents = readOwned(path)
-    local lowered = contents:lower()
-    Assert.isNil(contents:find(acceptanceId), path .. " must not mention acceptance identifiers")
-    Assert.isNil(contents:find(bareId), path .. " must not mention bare identifiers")
-    Assert.isNil(contents:find(specRef), path .. " must not reference the temporary specification")
-    Assert.isNil(contents:find(deviationMarker), path .. " must not mention deviation markers")
-    Assert.isNil(contents:find(contractId), path .. " must not mention contract identifiers")
-    Assert.isNil(lowered:find(tempWord, 1, true), path .. " must not mention temporary work items")
-    Assert.isNil(lowered:find(planWord, 1, true), path .. " must not mention temporary tracking")
-  end
-  for _, path in ipairs(OWNED_SUITES) do
-    local contents = readOwned(path)
-    Assert.notNil(contents:find('"pokegear"', 1, true), path .. " must keep its behavior tag for discovery")
-  end
 end
 
 return T

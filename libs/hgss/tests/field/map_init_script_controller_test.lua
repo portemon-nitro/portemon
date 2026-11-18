@@ -24,15 +24,15 @@ function T.first_matching_rule_claims_once_and_rechecks_after_world_change()
       end,
     },
     scriptClient = {
-      startInitScript = function(_, id, tick)
-        starts[#starts + 1] = { id = id, tick = tick }
+      startInitScript = function(_, id, tick, mapScene)
+        starts[#starts + 1] = { id = id, tick = tick, mapScene = mapScene }
         return #starts == 1
       end,
     },
   })
 
   Assert.isTrue(controller:evaluate(1))
-  Assert.deepEqual(starts, { { id = "first", tick = 1 } })
+  Assert.deepEqual(starts, { { id = "first", tick = 1, mapScene = true } })
   value = 0
   Assert.isFalse(controller:evaluate(2))
   Assert.equal(#starts, 1)
@@ -54,8 +54,8 @@ function T.mixed_lifecycles_bind_and_dispatch_first_matching_event()
       end,
     },
     scriptClient = {
-      startInitScript = function(_, id, tick)
-        starts[#starts + 1] = { id = id, tick = tick }
+      startInitScript = function(_, id, tick, mapScene)
+        starts[#starts + 1] = { id = id, tick = tick, mapScene = mapScene }
         return true
       end,
     },
@@ -64,16 +64,16 @@ function T.mixed_lifecycles_bind_and_dispatch_first_matching_event()
   Assert.isTrue(controller:startLifecycle("on_load", 4))
   Assert.isTrue(controller:startLifecycle("on_transition", 3))
   Assert.deepEqual(starts, {
-    { id = "load", tick = 4 },
-    { id = "transition", tick = 3 },
+    { id = "load", tick = 4, mapScene = false },
+    { id = "transition", tick = 3, mapScene = false },
   })
   Assert.isTrue(controller:startLifecycle("on_resume", 5))
   Assert.isTrue(controller:evaluateFrame(6))
   Assert.deepEqual(starts, {
-    { id = "load", tick = 4 },
-    { id = "transition", tick = 3 },
-    { id = "resume", tick = 5 },
-    { id = "frame", tick = 6 },
+    { id = "load", tick = 4, mapScene = false },
+    { id = "transition", tick = 3, mapScene = false },
+    { id = "resume", tick = 5, mapScene = false },
+    { id = "frame", tick = 6, mapScene = true },
   })
 end
 

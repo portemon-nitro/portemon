@@ -150,7 +150,7 @@ local function fixtureManifest()
     mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png", 256, 192)
   end
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { foreground = configureForeground, patch = configurePatch, sprites = fixtureSprites() },
@@ -921,6 +921,9 @@ function T.live_phone_call_dims_the_strip_and_overlays_the_sprite(scope)
       accept = "custom.accept",
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+      resolvePhoneUiMessage = function(_, entryId)
+        return { text = "ui" .. tostring(entryId), tokens = { { kind = "glyph", text = "u" } } }
       end,
     },
     world = world,

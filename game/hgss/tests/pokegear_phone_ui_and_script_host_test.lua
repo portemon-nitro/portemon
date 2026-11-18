@@ -78,21 +78,6 @@ local function withUiMessages(messages)
   return messages
 end
 
--- Loads a phone module that does not exist yet at this baseline. The
--- failure names the missing behaviour instead of surfacing as a suite
--- load error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
-
 local function visualRef(path)
   return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
 end
@@ -146,7 +131,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -163,7 +148,7 @@ local function fixtureManifest()
           family = "kurt",
           sortWeight = 30,
           rematchWeekday = 6,
-          rematchTime = 0,
+          rematchTimeOfDay = 0,
         },
       },
       contactOrder = {
@@ -230,6 +215,10 @@ local function worldFixture()
       flags["mom.savings-choice"] = choice
       flags.savingsChoice = choice
     end,
+    -- The scripted Mother branch marks the after-naming conversation held.
+    setFlag = function(_, flag)
+      flags[flag] = true
+    end,
     rematchReady = rematchReady,
     rematches = rematches,
     queryRematch = function(_, contact)
@@ -260,10 +249,7 @@ end
 ---@param audio table
 ---@return table host
 local function openHost(record, world, audio)
-  local PokegearScriptHost = requireFeature(
-    "game.hgss.src.pokegear.PokegearScriptHost",
-    "the phone feature has no script host yet: menu and script entry cannot share one application lease"
-  )
+  local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
   local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
@@ -278,6 +264,12 @@ local function openHost(record, world, audio)
       program = "custom.program",
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+      -- Dynamic conversations (the scripted Mother savings offer, Kurt,
+      -- and the other incoming/outgoing handlers) resolve their bank
+      -- entries through this reader.
+      resolveContactEntry = function(_, _contact, entry)
+        return { tokens = { { kind = "glyph", code = entry, text = "dyn-" .. tostring(entry), raw = { 1 } } } }
       end,
     }),
     world = world,
@@ -337,15 +329,40 @@ local function phoneScriptSurface()
   return S
 end
 
+-- Stand-in for the field's phone call manager on the script-platform
+-- boundary. The real manager (IncomingCalls) is covered by its own suites;
+-- the platform only needs the stage/consume contract here.
+---@return table manager
+local function callManagerFake()
+  local manager = { staged = nil }
+  function manager:stageCall(request)
+    self.staged = request
+  end
+  function manager:takePendingCall()
+    local staged = self.staged
+    self.staged = nil
+    if staged == nil then
+      return nil
+    end
+    return {
+      contactKey = staged.contact,
+      isScriptedCall = staged.isScriptedCall,
+      callScriptID = staged.callScriptID,
+    }
+  end
+  return manager
+end
+
 ---@param host table
+---@param calls table?
 ---@return table harness
-local function schedulerHarness(host)
+local function schedulerHarness(host, calls)
   local Registry = require("libs.script.src.Registry")
   local Composition = require("libs.script.src.Composition")
   local TaskRegistry = require("libs.script.src.TaskRegistry")
   local Scheduler = require("libs.script.src.Scheduler")
   local HgssComposition = require("libs.hgss.src.script.Composition")
-  local services = { pokegearApplications = host }
+  local services = { pokegearApplications = host, phoneCalls = calls or callManagerFake() }
   local registry = Registry.new()
   local composition = Composition.new(registry)
   local taskRegistry = HgssComposition.registerTasks(TaskRegistry.new())
@@ -357,7 +374,7 @@ local function schedulerHarness(host)
       return composition:effective(id)
     end,
   })
-  return { registry = registry, composition = composition, scheduler = scheduler }
+  return { registry = registry, composition = composition, scheduler = scheduler, services = services }
 end
 
 -- One modal owner with two entry paths: the authorized parent script
@@ -366,10 +383,7 @@ end
 -- player movement, and keeps save capture denied until the return
 -- transition settles. Cancellation releases exactly once.
 function T.tests.script_application_lease_balances_input_routing_and_save_capture()
-  requireFeature(
-    "libs.hgss.src.script.tasks.PokegearApplicationTask",
-    "the phone feature has no scheduler task yet: a script cannot wait on its foreground call"
-  )
+  require("libs.hgss.src.script.tasks.PokegearApplicationTask")
   local S = phoneScriptSurface()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
@@ -388,7 +402,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
     api = 1,
     id = "test.phone_lease",
     steps = {
-      S.phoneSetCall({ contact = "custom.mom", direction = "outgoing", kind = "ordinary" }),
+      S.phoneSetCall({ contact = "custom.mom", scriptedCall = 2, callScriptID = 0 }),
       S.phoneRunCall(),
       S.stop(),
     },
@@ -451,7 +465,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
   Assert.notNil(terminal, "the confirmed savings choice reaches a terminal result")
   terminal = terminal --[[@as table]]
   Assert.equal(terminal.contact, "custom.mom", "the terminal result names its contact")
-  Assert.equal(terminal.kind, "ordinary", "the terminal result names its call kind")
+  Assert.equal(terminal.kind, "incoming", "the terminal result names its call kind")
   local again = host:result(handle)
   Assert.deepEqual(again, terminal, "the terminal result reads back identically until closed")
   Assert.isFalse(host:isStableForSave(), "save capture stays denied until the return transition settles")
@@ -514,14 +528,7 @@ end
 -- recreated, earlier effects are neither repeated nor undone, and
 -- repeated cancellation stays terminal without replay.
 function T.tests.missing_call_handle_after_commit_fails_without_replaying_effects()
-  local PokegearApplicationTask = requireFeature(
-    "libs.hgss.src.script.tasks.PokegearApplicationTask",
-    "the phone feature has no scheduler task yet: a lost call handle cannot fail without replaying its effects"
-  )
-  requireFeature(
-    "game.hgss.src.pokegear.PokegearScriptHost",
-    "the phone feature has no script host yet: a lost call handle cannot fail without replaying its effects"
-  )
+  local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -606,10 +613,7 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
 end
 
 function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: menu calls cannot return to their contact list"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -691,10 +695,7 @@ end
 -- one terminal result. Disposal with a pending acquisition releases the
 -- lease exactly once and refuses later opens.
 function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releases_once()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: cancellation cannot unwind each foreground stage"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -810,10 +811,7 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
 end
 
 function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_temporary()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: saved contact order cannot be displayed"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
@@ -874,10 +872,7 @@ end
 -- top 8+24i, bottom +16, x4..36). Taps in the lower 8px of a 24px band
 -- must not move the manual cursor; the upper 16px must.
 function T.tests.manual_move_touch_bands_are_sixteen_pixels_tall()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: manual bands cannot be checked"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate")
@@ -927,9 +922,9 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
   local Runtime = require("libs.script.src.Runtime")
   local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
   Assert.deepEqual(
-    S.phoneSetCall({ contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" }),
-    { op = "phone_set_call", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" },
-    "setup builds its ordinary op record"
+    S.phoneSetCall({ contact = "custom.trainer-plain", scriptedCall = 2, callScriptID = 4 }),
+    { op = "phone_set_call", contact = "custom.trainer-plain", scriptedCall = 2, callScriptID = 4 },
+    "setup builds its source-shaped op record"
   )
   Assert.deepEqual(S.phoneRunCall(), { op = "phone_run_call" }, "run builds its operand-free record")
   Assert.deepEqual(S.pokegearQuery({ kind = "contact_registered", contact = "custom.mom", result = S.var("seen") }), {
@@ -943,7 +938,7 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
       api = 1,
       id = "test.phone_shapes",
       steps = {
-        S.phoneSetCall({ contact = S.var("caller"), direction = "outgoing", kind = "rematch" }),
+        S.phoneSetCall({ contact = S.var("caller"), scriptedCall = 2, callScriptID = 9 }),
         S.phoneRunCall(),
         S.pokegearQuery({ kind = "rematch_ready", contact = "custom.leader-falkner", result = S.var("ready") }),
         S.pokegearUpdate({ kind = "register_contact", contact = "custom.mom" }),
@@ -956,7 +951,7 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     S.validate(S.script({
       api = 1,
       id = "test.phone_extra",
-      steps = { S.phoneSetCall({ contact = "c", direction = "outgoing", kind = "ordinary", extra = 1 }), S.stop() },
+      steps = { S.phoneSetCall({ contact = "c", scriptedCall = 2, callScriptID = 0, extra = 1 }), S.stop() },
     })),
     "extra setup keys never validate"
   )
@@ -990,9 +985,10 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     end,
   }
   local tasks = {}
+  local calls = callManagerFake()
   local run = {
     instance = { scriptId = "test.phone_ops", mode = "foreground", instanceId = "ops-1" },
-    services = { pokegearApplications = host, world = worldService },
+    services = { pokegearApplications = host, world = worldService, phoneCalls = calls },
     semantics = RuntimeValues,
     scheduler = {
       createTask = function(_, taskType, spec)
@@ -1054,28 +1050,28 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     pcall(Runtime.executeNode, { op = "pokegear_update", kind = "register_contact", contact = "custom.stranger" }, run)
   Assert.isFalse(updateOk, "unknown contacts never register")
   Assert.notNil(tostring(updateErr):find("custom.stranger", 1, true), "the failure names its contact")
-  local directionOk, directionErr = pcall(
+  local scriptedOk, scriptedErr = pcall(
     Runtime.executeNode,
-    { op = "phone_set_call", contact = "custom.trainer-plain", direction = "sideways", kind = "ordinary" },
+    { op = "phone_set_call", contact = "custom.trainer-plain", scriptedCall = -1, callScriptID = 0 },
     run
   )
-  Assert.isFalse(directionOk, "open directions never stage")
-  Assert.equal(directionErr.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its closed vocabulary")
+  Assert.isFalse(scriptedOk, "negative scripted markers never stage")
+  Assert.equal(scriptedErr.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its closed vocabulary")
   variables.caller = "custom.leader-falkner"
   Assert.equal(
     Runtime.executeNode({
       op = "phone_set_call",
       contact = { value = "var", id = "caller" },
-      direction = "outgoing",
-      kind = "rematch",
+      scriptedCall = 2,
+      callScriptID = 9,
     }, run),
     Runtime.OUTCOME_CONTINUE,
     "setup evaluates its operands at staging time"
   )
   Assert.deepEqual(
-    host:takeStagedCall("ops-1"),
-    { contact = "custom.leader-falkner", direction = "outgoing", kind = "rematch" },
-    "the staged request carries its evaluated contact"
+    calls:takePendingCall(),
+    { contactKey = "custom.leader-falkner", isScriptedCall = 2, callScriptID = 9 },
+    "the staged request carries its evaluated contact and source markers"
   )
   local lonelyOk, lonelyErr = pcall(Runtime.executeNode, { op = "phone_run_call" }, run)
   Assert.isFalse(lonelyOk, "running without a staged request never blocks")
@@ -1128,10 +1124,7 @@ end
 -- without injected context labels, starts its conversation at once,
 -- and disposes cleanly.
 function T.tests.direct_call_entry_opens_without_context_labels()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: direct entry cannot open without menu text"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1164,10 +1157,7 @@ end
 -- sort labels through the composition, and the detached menus publish
 -- those exact strings.
 function T.tests.context_menus_publish_their_injected_labels()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: context menus cannot publish injected labels"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1232,10 +1222,7 @@ end
 -- reference exactly like the production provider proves the call never
 -- asks for an unindexed sequence.
 function T.tests.phone_calls_dial_and_hang_up_through_indexed_sequences()
-  local PhoneCall = requireFeature(
-    "game.hgss.src.pokegear.PhoneCall",
-    "the phone card has no conversation engine yet: calls cannot dial through indexed sequences"
-  )
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local AudioErrors = require("libs.hgss.src.audio.AudioErrors")
   local played = {}
   local waits = {}
@@ -1292,10 +1279,14 @@ function T.tests.phone_calls_dial_and_hang_up_through_indexed_sequences()
     audio = audio,
   })
   local handle = call:begin({ id = "seq-call", contact = "custom.mom", direction = "outgoing", kind = "ordinary" })
+  Assert.deepEqual(played, { "SEQ_SE_GS_PHONE0" }, "opening a call starts the source dial tone")
+  -- The source dials one tone per stage: the second tone follows the
+  -- first one's wait, and the conversation waits on it in turn.
+  call:step(handle, { advance = true })
   Assert.deepEqual(
     played,
     { "SEQ_SE_GS_PHONE0", "SEQ_SE_GS_PHONE0" },
-    "opening a call dials the source dial tone twice"
+    "the second dial stage plays the source dial tone again"
   )
   call:step(handle, { advance = true })
   Assert.isTrue(#waits >= 1, "the connecting stage waits on the dial sequence")
@@ -1310,10 +1301,7 @@ end
 -- cleared, flips once per scrolled row, and survives view-only sorts,
 -- so the alternating bands follow slots instead of contacts.
 function T.tests.phone_list_background_flag_tracks_scrolled_rows()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: list bands cannot track scrolling"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local manifest = fixtureManifest()
   for index = 4, 8 do
@@ -1370,14 +1358,8 @@ end
 -- lease the strip forwards those touches to the phone; idle tabs keep
 -- their press-to-arm, release-to-select behavior.
 function T.tests.busy_phone_keeps_strip_touches_while_idle_tabs_still_select()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: strip touches cannot reach its live call"
-  )
-  local PokegearInterface = requireFeature(
-    "game.hgss.src.pokegear.PokegearInterface",
-    "the companion shell has no input owner yet: strip routing cannot defer to a busy call"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+  local PokegearInterface = require("game.hgss.src.pokegear.PokegearInterface")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1472,10 +1454,7 @@ end
 -- A recording fake engine observes the step count instead of walking a
 -- whole dialogue for every input shape.
 function T.tests.active_calls_step_once_per_fixed_tick_with_single_press_semantics()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: fixed ticks cannot own the live call"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1530,10 +1509,7 @@ end
 -- edge completes the open page instead of turning it, and the next
 -- forced edge turns the completed page with the reveal reset.
 function T.tests.call_text_types_at_the_configured_text_speed()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: call text cannot type at text speed"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1614,10 +1590,7 @@ end
 -- Frame, labels, and tap routing ride the shared choice projection;
 -- static calls never owe a choice (pinned elsewhere).
 function T.tests.dynamic_mother_choice_answers_through_controller_taps()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: dynamic choice cannot complete"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate")
@@ -1697,10 +1670,7 @@ end
 -- projection, a label tap answers its own semantic id, and border or
 -- outside taps answer nothing.
 function T.tests.other_call_menus_keep_their_own_frames_without_new_programs()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: source menu identities cannot frame"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1948,12 +1918,17 @@ function T.tests.direct_host_player_cancel_stages_the_hangup_and_releases_once()
     )
   end
   local debug = 0
+  local selects = 0
   for _, sequence in ipairs(played) do
-    if sequence == "SEQ_SE_DP_SELECT" or sequence == "SEQ_SE_DP_BOX03" then
+    if sequence == "SEQ_SE_DP_BOX03" then
       debug = debug + 1
+    end
+    if sequence == "SEQ_SE_DP_SELECT" then
+      selects = selects + 1
     end
   end
   Assert.equal(debug, 0, "the staged hangup plays no debug click tone")
+  Assert.equal(selects, 1, "the pre-hangup wait plays the source button tone once")
   Assert.equal(hangups, 1, "the settled hangup played its tone exactly once")
   Assert.equal(writes, 0, "the settled hangup repeats no committed effect")
   Assert.deepEqual(host:result(handle), terminal, "the terminal result reads back identically until close")
@@ -1970,10 +1945,7 @@ end
 -- session order, so formatting their names and classes at open is pure
 -- wasted message-provider work on the open path.
 function T.tests.open_resolves_labels_only_for_registered_contacts()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: the open path cannot skip unregistered contacts"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local resolvedNames, resolvedClasses = {}, {}
   local messages = {
     greeting = "custom.greeting",
@@ -1988,9 +1960,27 @@ function T.tests.open_resolves_labels_only_for_registered_contacts()
   }
   local catalog = {
     contacts = {
-      { key = "reg.one", family = "mother", name = { bank = 1, entry = 0 }, class = { bank = 2, entry = 0 }, sortWeight = 1 },
-      { key = "unreg.two", family = "kurt", name = { bank = 1, entry = 0 }, class = { bank = 2, entry = 0 }, sortWeight = 2 },
-      { key = "unreg.three", family = "kurt", name = { bank = 1, entry = 0 }, class = { bank = 2, entry = 0 }, sortWeight = 3 },
+      {
+        key = "reg.one",
+        family = "mother",
+        name = { bank = 1, entry = 0 },
+        class = { bank = 2, entry = 0 },
+        sortWeight = 1,
+      },
+      {
+        key = "unreg.two",
+        family = "kurt",
+        name = { bank = 1, entry = 0 },
+        class = { bank = 2, entry = 0 },
+        sortWeight = 2,
+      },
+      {
+        key = "unreg.three",
+        family = "kurt",
+        name = { bank = 1, entry = 0 },
+        class = { bank = 2, entry = 0 },
+        sortWeight = 3,
+      },
     },
     contactOrder = { "reg.one", "unreg.two", "unreg.three" },
   }
@@ -2023,10 +2013,7 @@ end
 -- the indicator. The presentation wrapper must forward the shell it is
 -- given, or the composed card always paints both.
 function T.tests.phone_presentation_forwards_shell_focus_to_renderer()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: the presentation cannot forward shell focus"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -2061,6 +2048,48 @@ function T.tests.phone_presentation_forwards_shell_focus_to_renderer()
   Assert.isTrue(type(seen[1]) == "table", "the phone presentation forwards the shell snapshot to its renderer")
   Assert.isFalse(seen[1].entered, "the forwarded shell carries the strip-owned focus")
   controller:dispose()
+end
+
+-- Scripted calls thread their source flags through the task: the
+-- staged request keeps isScriptedCall and callScriptID, and the poll
+-- opens the host with the same scripted identity instead of dropping
+-- it to an unscripted call.
+function T.tests.scripted_calls_thread_their_source_flags_through_the_task()
+  local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local host, _ = openHost(record, worldFixture(), countingAudio())
+  local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
+  local taskState = PokegearApplicationTask.create({
+    kind = "call",
+    request = {
+      id = "scripted-1",
+      contact = "custom.trainer-plain",
+      direction = "incoming",
+      kind = "ordinary",
+      isScriptedCall = 2,
+      callScriptID = 5,
+    },
+    parentOwner = "script:staged",
+  }, taskCtx)
+  Assert.equal(taskState.request.isScriptedCall, 2, "the staged request keeps its scripted flag")
+  Assert.equal(taskState.request.callScriptID, 5, "the staged request keeps its script identity")
+  local opened = nil
+  local realOpen = host.open
+  host.open = function(self, args)
+    opened = args
+    return realOpen(self, args)
+  end
+  PokegearApplicationTask.poll(taskState, taskCtx)
+  host.open = realOpen
+  Assert.notNil(opened, "the poll opens the host")
+  assert(type(opened) == "table", "host open args recorded above")
+  local request = assert(opened.request, "the host open carries its request")
+  Assert.equal(request.isScriptedCall, 2, "the host open keeps the scripted flag")
+  Assert.equal(request.callScriptID, 5, "the host open keeps the script identity")
+  host:cancel("test teardown")
 end
 
 return T

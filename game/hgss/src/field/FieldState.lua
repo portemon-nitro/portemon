@@ -1149,42 +1149,17 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
 end
 
--- Draws the open companion application through the shared shell renderer:
--- the normal and scripted surfaces share this one draw owner, and the
--- status shape is validated before anything draws. Plan images realize
--- lazily from the generated asset paths on first draw and are retained
--- for the field lifetime; draw itself never parses ROM data. No game
--- logic lives here: input, ticks, and effects stay with the owners.
----@param resources FieldPresentationResources
----@param appStatus table<string, unknown> the shell status
-function FieldState:_drawPokegearApplication(resources, appStatus)
-  assert(type(appStatus) == "table", "the companion application publishes its status")
-  -- An active word editor child draws through its own committed bundle
-  -- first: the retained map card underneath stays parked and no gear
-  -- texture realization, renderer, or application frame runs over it.
-  if type(appStatus.easyChat) == "table" then
-    resources:drawEasyChat(appStatus.easyChat)
-    return
-  end
-  local plan = assert(appStatus.presentation, "the companion application publishes its plan")
-  assert(type(plan) == "table", "the companion plan stays a record")
-  assert(
-    type(appStatus.tab) == "string" and type(appStatus.focus) == "string",
-    "the companion view carries its card identities"
-  )
-  local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
-  -- Companion chrome borrows the session image owner: one lease per
-  -- generated path, retained for the field lifetime like other pinned
-  -- chrome and returned exactly once at disposal. The sampler matches
-  -- the previous direct construction, which kept the host default
-  -- filtering through plain draws.
+-- Realizes companion plan images through the shared image owner: one
+-- lease per generated path, retained for the field lifetime and
+-- returned exactly once at disposal. The realized table carries the
+-- leases themselves so companion renderers draw through the lease
+-- sampler surface with zero new imports.
+---@param nodes table<integer, unknown> plan content nodes to realize
+---@return table<string, unknown> images by generated path
+function FieldState:_realizeCompanionImages(nodes)
   local pool = assert(self.runtime.imageAssets, "companion drawing borrows the shared image owner")
   self._pokegearImages = self._pokegearImages or {}
   self._pokegearLeases = self._pokegearLeases or {}
-  -- The realized table carries the leases themselves so companion
-  -- renderers draw through the lease sampler surface with zero new
-  -- imports; the parallel lease table behind disposal holds the same
-  -- borrows for their exactly-once return.
   local images = self._pokegearImages --[[@as table<string, unknown>]]
   local leases = self._pokegearLeases --[[@as table<string, unknown>]]
   local function acquire(path)
@@ -1222,12 +1197,43 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
       acquire(node)
     end
   end
-  realize(plan.content)
-  realize(plan.slots)
+  for _, node in ipairs(nodes) do
+    realize(node)
+  end
+  return images
+end
+
+-- Draws the open companion application through the shared shell renderer:
+-- the normal and scripted surfaces share this one draw owner, and the
+-- status shape is validated before anything draws. Plan images realize
+-- lazily from the generated asset paths on first draw and are retained
+-- for the field lifetime; draw itself never parses ROM data. No game
+-- logic lives here: input, ticks, and effects stay with the owners.
+---@param resources FieldPresentationResources
+---@param appStatus table<string, unknown> the shell status
+function FieldState:_drawPokegearApplication(resources, appStatus)
+  assert(type(appStatus) == "table", "the companion application publishes its status")
+  -- An active word editor child draws through its own committed bundle
+  -- first: the retained map card underneath stays parked and no gear
+  -- texture realization, renderer, or application frame runs over it.
+  if type(appStatus.easyChat) == "table" then
+    resources:drawEasyChat(appStatus.easyChat)
+    return
+  end
+  local plan = assert(appStatus.presentation, "the companion application publishes its plan")
+  assert(type(plan) == "table", "the companion plan stays a record")
+  assert(
+    type(appStatus.tab) == "string" and type(appStatus.focus) == "string",
+    "the companion view carries its card identities"
+  )
+  local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
+  local images = self:_realizeCompanionImages({ plan.content, plan.slots })
   local child = appStatus.child
   local childPresentation = type(child) == "table" and (child --[[@as table<string, unknown>]]).presentation or nil
   if type(childPresentation) == "table" then
-    realize((childPresentation --[[@as table<string, unknown>]]).content)
+    self:_realizeCompanionImages({
+      (childPresentation --[[@as table<string, unknown>]]).content,
+    })
   end
   -- Every other application draws through the shared presentation
   -- pipeline: the leaf render callback borrows resources, then the
@@ -1262,6 +1268,28 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
   end
 end
 
+-- Draws the script-owned Town map and Fly selector through the shared
+-- presentation pipeline: the plan carries its own leaf renderer and
+-- content, framed by nothing. Statuses without a view or plan draw
+-- nothing instead of failing the field frame.
+---@param resources FieldPresentationResources
+---@param appStatus table<string, unknown> the script host status
+function FieldState:_drawScriptFlyMap(resources, appStatus)
+  local plan = appStatus.presentation --[[@as table<string, unknown>]]
+  if type(plan) ~= "table" or type(plan.render) ~= "function" then
+    return
+  end
+  local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
+  local images = self:_realizeCompanionImages({ plan.content })
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+  ApplicationPresentation.draw(graphics, {
+    graphics = graphics,
+    images = images,
+    textRenderer = resources.textRenderer,
+    phoneNameTextRenderer = resources.phoneNameTextRenderer,
+  }, appStatus, plan)
+end
+
 -- Draws the incoming-call caller window while the coordinator rings: the
 -- view is read once per frame and the source tile window renders through
 -- the shared placement, window, and text primitives. Modal application
@@ -1275,6 +1303,13 @@ function FieldState:_drawIncomingCallBanner(resources, hostStatus)
     return
   end
   local runtime = assert(self.runtime, "field presentation needs its runtime")
+  -- An accepted or scripted companion call owns the foreground instead:
+  -- the banner yields to the live call surface.
+  local gearBundle = runtime.pokegear
+  local scriptHost = type(gearBundle) == "table" and gearBundle.scriptHost or nil
+  if scriptHost ~= nil and scriptHost:isActive() then
+    return
+  end
   ---@type { notification: fun(self: table<string, unknown>): unknown }?
   local coordinator = runtime.incomingCalls
   if coordinator == nil then
@@ -1673,6 +1708,22 @@ function FieldState:draw()
   self:_drawEntryCoverIfNeeded(width, height)
   if not legendCinematic then
     self:_drawScriptScreenFadeIfNeeded()
+  end
+  -- The script-owned companion child draws through the shared companion
+  -- pipeline above the field's own covers: an accepted incoming call or a
+  -- scripted phone call owns the foreground while it is live, and the Town
+  -- map and Fly selector draw through their own plan when the lease holds
+  -- them instead. The card replaces the field presentation, so a field
+  -- cover never hides it; this site never prepares or steps the child.
+  local gearBundle = self.runtime.pokegear
+  local scriptHost = type(gearBundle) == "table" and gearBundle.scriptHost or nil
+  if scriptHost ~= nil and scriptHost:isActive() then
+    local scriptStatus = assert(scriptHost:status(), "active companion host publishes its status")
+    if scriptStatus.tab == "phone" then
+      self:_drawPokegearApplication(resources, scriptStatus)
+    elseif type(scriptStatus.view) == "table" and type(scriptStatus.presentation) == "table" then
+      self:_drawScriptFlyMap(resources, scriptStatus)
+    end
   end
   -- The script-owned starter modal draws over the restored field while the
   -- blocking choice owns it, but only once its surface is prepared. Before

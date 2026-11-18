@@ -17,6 +17,7 @@
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 
 ---@class PokegearCompositionBundle
 ---@field screenFactory fun(entry: table<string, unknown>?): table<string, unknown>
@@ -36,6 +37,13 @@ local PokegearComposition = {}
 -- below). It is never displayed on any composed path: the
 -- scheduler lane never views, and the idle list places no calls.
 local UNRESOLVED_GREETING = "phone.greeting.unresolved"
+
+-- The standard-bank script behind a forced phone trigger: the source starts
+-- it as the raw std index 0x7FF (2000 + 47), whose body plays the two
+-- PHONE0 tones, covers the screen, launches the call, restores the
+-- overworld and reveals it again.
+local PHONE_CALL_SCRIPT_BANK = 3
+local PHONE_CALL_SCRIPT_INDEX = 47
 
 ---@param value unknown
 ---@param what string
@@ -68,13 +76,9 @@ local function ringAudioFor(audio)
   local function isRingPlaying()
     return audio:isEffectPlaying(symbol)
   end
-  local function stopRing()
-    audio:stop(symbol)
-  end
   return {
     playRing = playRing,
     isRingPlaying = isRingPlaying,
-    stopRing = stopRing,
   }
 end
 
@@ -136,8 +140,8 @@ local function contactPlaces(catalog)
     ipairs(contacts --[[@as table<integer, unknown>]])
   do
     local entry = record --[[@as table<string, unknown>]]
-    if type(entry.key) == "string" and type(entry.map) == "number" then
-      local location = locationByMapRef[entry.map]
+    if type(entry.key) == "string" and type(entry.mapId) == "number" then
+      local location = locationByMapRef[entry.mapId]
       if location ~= nil then
         places[entry.key] = location
       end
@@ -676,6 +680,29 @@ function PokegearComposition.compose(runtime, owners)
     mapPanel = { markingFor = markingFor, rematchOnMap = rematchOnMap },
   })
 
+  -- Source GearPhoneRingManager_TryStartCall launches a forced trigger by
+  -- starting the standard-bank call script (StartMapSceneScript(sys, 0x7FF),
+  -- the script at index 47 of the standard bank that rings twice, covers the
+  -- screen and runs the call). The field owns that start; the manager only
+  -- asks for it, at the settled boundary where the trigger fired.
+  local function startCallScript()
+    local scripts = runtime.scripts
+    local client = type(scripts) == "table" and scripts.client or nil
+    local session = runtime.session
+    assert(
+      type(client) == "table" and type(client.startSceneScript) == "function",
+      "a forced phone call starts its source scene script through the field script client"
+    )
+    assert(type(session) == "table", "a forced phone call resolves the field tick it starts on")
+    local scriptId = ScriptIdentity.formatVanilla(PHONE_CALL_SCRIPT_BANK, PHONE_CALL_SCRIPT_INDEX)
+    return client:startSceneScript(scriptId, session.tick + 1)
+  end
+  -- Source GearPhoneRingManager_TryStartCall refuses every call on a map
+  -- whose header forbids incoming calls; the map header catalog answers
+  -- through the live world projection.
+  local function mapReceivesCalls()
+    return world:phoneSignal("incoming") == true
+  end
   local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
   local incoming = IncomingCalls.new({
     state = state,
@@ -686,6 +713,8 @@ function PokegearComposition.compose(runtime, owners)
     messages = messages,
     host = host,
     audio = ringAudioFor(audio),
+    startCallScript = startCallScript,
+    mapReceivesCalls = mapReceivesCalls,
   })
 
   -- The bound radio effect reader: the runtime owns the one

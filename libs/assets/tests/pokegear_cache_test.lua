@@ -58,7 +58,7 @@ end
 
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -105,7 +105,7 @@ function T.complete_publication_reads_ready_and_loads_its_manifest()
   local cache = stagedCache(nil, marker)
   Assert.isTrue(PokegearCache.isReady(cache, marker), "a complete publication must read ready")
   local manifest = PokegearCache.loadManifest(cache)
-  Assert.equal(manifest.schema, "g4-pokegear-assets-v3", "the loaded manifest keeps its schema identity")
+  Assert.equal(manifest.schema, "g4-pokegear-assets-v4", "the loaded manifest keeps its schema identity")
 end
 
 function T.stale_markers_and_missing_assets_refuse_without_raising()

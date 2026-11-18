@@ -322,7 +322,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       },
       fieldTerrainEffectController = {},
       scriptHosts = nil,
-      screenFade = nil,
+      screenFade = require("libs.hgss.src.transition.FieldScriptScreenFade").new(),
       auxiliaryFieldUi = {},
       contextChoiceProvider = {},
       menuHost = {},

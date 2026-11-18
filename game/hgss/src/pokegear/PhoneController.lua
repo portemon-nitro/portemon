@@ -1463,17 +1463,16 @@ function PhoneController:_callView()
   detached.className = self._classes[
     shown.contact --[[@as string]]
   ]
-  -- The live call publishes the source dim state with the caller-name
-  -- content for windows[1] in colors (1,2,0): the host boundary owns
-  -- the palette blend, the view owns the state and content. Exiting
-  -- the call clears the whole projection, dim and name with it.
+  -- The live call publishes the source dim state with the caller name the
+  -- renderer paints into windows[1]: the host boundary owns the palette
+  -- blend, the view owns the state and content. Exiting the call clears
+  -- the whole projection, dim and name with it.
   -- The fast-forward hitbox stays registered for the whole call in
   -- the source and unsets on exit; the view carries its geometry.
   -- No choiceCursor publication: the internal cursor still drives
   -- view.callMenu.cursor, and the choice rows answer through the
   -- shared menu projection.
   detached.dim = true
-  detached.nameWindow = { text = detached.name, colors = { 1, 2, 0 } }
   detached.fastForward = {
     x = FAST_FORWARD_HITBOX.x,
     y = FAST_FORWARD_HITBOX.y,
@@ -1621,6 +1620,7 @@ function PhoneController:status()
   return {
     open = true,
     tab = "phone",
+    focus = "phone",
     busy = inCall,
     dismissible = not inCall,
     nestedCancel = inMenu or inCall,

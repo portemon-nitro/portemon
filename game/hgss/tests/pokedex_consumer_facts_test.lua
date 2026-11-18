@@ -189,7 +189,7 @@ end
 
 local function phoneRuntime(owner)
   return {
-    session = { currentMap = { mapSectionNativeId = 7 } },
+    session = { currentMap = { mapId = 7, mapSectionNativeId = 7 } },
     playerData = { profile = { money = 3000 } },
     dexKnowledge = owner,
   }
@@ -207,7 +207,7 @@ function T.phone_facts_read_ownership_and_explicit_counts()
   local owner = openOwner()
   seedDisplayHistory(owner)
   local context = PhoneWorldContext.new({ state = {}, runtime = phoneRuntime(owner), flags = phoneFlags() })
-  local facts = context:callFacts({ map = 7 })
+  local facts = context:callFacts({ mapId = 7 })
   Assert.equal(facts.dexSeen, owner:countSeen("national"), "the seen fact counts explicit display members")
   Assert.equal(facts.dexSeen, 3, "outside keys never enter the seen fact")
   Assert.equal(facts.dexCaught, owner:countCaught("national"), "the caught fact counts explicit display members")
@@ -216,12 +216,117 @@ function T.phone_facts_read_ownership_and_explicit_counts()
   Assert.isFalse(owner:isNationalDexComplete(), "setup keeps the national set incomplete behind the ownership fact")
 end
 
+function T.phone_world_reads_attribute_absent_domain_owners()
+  local ScriptErrors = require("libs.script.src.errors")
+  local runtime = {
+    session = { currentMap = { mapId = 7 } },
+    playerData = { profile = { money = 3000 } },
+  }
+  local context = PhoneWorldContext.new({ state = {}, runtime = runtime, flags = phoneFlags() })
+  local function domainOf(key)
+    local ok, failure = pcall(function()
+      return context:read(key)
+    end)
+    Assert.isFalse(ok, "an absent owner never answers " .. key)
+    Assert.equal(failure.code, ScriptErrors.FEATURE_UNAVAILABLE, key .. " fails loud")
+    return failure.domain
+  end
+  Assert.equal(domainOf("daycare.status"), "daycare", "daycare reads name their domain")
+  Assert.equal(domainOf("safari.arrangement"), "safari", "safari reads name their domain")
+  Assert.equal(domainOf("kurt.pending"), "kurt", "kurt reads name their domain without an apricorn service")
+end
+
+function T.phone_world_reads_kurt_orders_through_the_apricorn_service()
+  local runtime = {
+    session = { currentMap = { mapId = 7 } },
+    playerData = { profile = { money = 3000 } },
+    martService = {
+      pendingKurt = function()
+        return { apricornKey = "WHITE_APRICORN", quantity = 3 }
+      end,
+    },
+  }
+  local context = PhoneWorldContext.new({ state = {}, runtime = runtime, flags = phoneFlags() })
+  local pending = context:read("kurt.pending")
+  Assert.equal(pending.quantity, 3, "the pending order carries its handed count")
+  Assert.equal(pending.apricorn, "WHITE_APRICORN", "the pending order carries its apricorn identity")
+  local empty = PhoneWorldContext.new({
+    state = {},
+    runtime = {
+      session = { currentMap = { mapId = 7 } },
+      playerData = { profile = { money = 3000 } },
+      martService = {
+        pendingKurt = function()
+          return nil
+        end,
+      },
+    },
+    flags = phoneFlags(),
+  })
+  Assert.deepEqual(empty:read("kurt.pending"), { quantity = 0 }, "no staged order reads as an empty box")
+end
+
 function T.phone_domain_reads_match_the_call_facts()
   local owner = openOwner()
   seedDisplayHistory(owner)
   local context = PhoneWorldContext.new({ state = {}, dex = owner })
   Assert.equal(context:read("dex.seen"), 3, "the seen domain read excludes outside keys")
   Assert.equal(context:read("dex.caught"), 3, "the caught domain read excludes outside keys")
+end
+
+function T.elm_kenji_and_safari_facts_thread_story_and_companion_state()
+  local flagsByName = FieldScriptSymbols.flagsByName
+  local varsByName = FieldScriptSymbols.variablesByName
+  local setFlags = {
+    [flagsByName.FLAG_GOT_EVERSTONE_FROM_ELM] = true,
+    [flagsByName.FLAG_SYS_HATCHED_TOGEPI_EGG] = true,
+    [flagsByName.FLAG_GAME_CLEAR] = true,
+  }
+  local flags = {
+    isFlagSet = function(_, flag)
+      return setFlags[flag] == true
+    end,
+    getVar = function(_, var)
+      if var == varsByName.VAR_UNK_4057 then
+        return 5
+      end
+      if var == varsByName.VAR_SCENE_ROCKET_TAKEOVER then
+        return 3
+      end
+      return nil
+    end,
+  }
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 11 }, {
+    catalog = { contacts = {}, contactOrder = {}, callTriggers = {}, locations = {} },
+  })
+  state:setKenjiErrand(3, true)
+  local runtime = {
+    session = { currentMap = { mapId = 7 } },
+    playerData = { profile = { money = 3000, badges = { zephyr = true, hive = true, plain = false } } },
+    localClock = {
+      nowLocal = function()
+        return { year = 2024, month = 1, day = 8, hour = 21, minute = 0, second = 0 }
+      end,
+    },
+  }
+  local context = PhoneWorldContext.new({ state = state, runtime = runtime, flags = flags })
+  local facts = context:callFacts({ mapId = 7 })
+  Assert.equal(facts.badges, 2, "the badge fact counts owned badges")
+  Assert.isTrue(facts.panicCall, "an unset panic flag reads as a pending panic call")
+  Assert.isTrue(facts.eggEvent, "an unset egg flag reads as a pending egg call")
+  Assert.isTrue(facts.eggGift, "an unset gift flag reads as a pending egg gift")
+  Assert.isTrue(facts.eggHatched, "the hatch flag reads directly")
+  Assert.isTrue(facts.everstone, "the everstone flag reads directly")
+  Assert.isTrue(facts.gameClear, "the clear flag reads directly")
+  Assert.isFalse(facts.ssTicket, "an unset ticket reads false")
+  Assert.isFalse(facts.pokerus, "an unset pokerus flag reads false")
+  Assert.isTrue(facts.takeover, "scene three reads as the takeover")
+  Assert.equal(facts.safariTest, 5, "the safari var reads directly")
+  Assert.equal(facts.hour, 21, "the hour fact carries the raw civil hour")
+  Assert.equal(facts.timeOfDay, 2, "hour twenty-one bands to evening")
+  Assert.equal(facts.kenjiWaitDays, 3, "the wait fact stages the durable errand wait")
+  Assert.isTrue(facts.kenjiActive, "the activity fact stages the durable errand flag")
 end
 
 local function stubMeasurement()

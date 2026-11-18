@@ -37,21 +37,6 @@ local T = {
   tests = {},
 }
 
--- Loads the map controller that does not exist yet at this baseline. The
--- failure names the missing behaviour instead of surfacing as a suite
--- load error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
-
 -- Synthetic companion family with two registered callers and their map
 -- locations over the synthetic region map, validated through the real
 -- asset schema so the journey borrows only genuine semantic references.
@@ -59,7 +44,7 @@ end
 local function fixtureManifest()
   local manifest = Fixture.manifest()
   manifest.catalog.contacts = {
-    { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTime = 0 },
+    { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTimeOfDay = 0 },
     { key = "test.caller.mom", family = "mother", sortWeight = 20 },
   }
   manifest.catalog.contactOrder = { "test.caller.falkner", "test.caller.mom" }
@@ -220,10 +205,7 @@ end
 -- random stream, and mutates no gear state; markers match the refresh
 -- snapshot, and a field battle only appears after a reopen.
 function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
-  local MapController = requireFeature(
-    "game.hgss.src.pokegear.MapController",
-    "the region map has no controller yet: live roamer and contact markers cannot project without moving their owners"
-  )
+  local MapController = require("game.hgss.src.pokegear.MapController")
   local validated = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(validated, "the synthetic companion catalog must validate through the asset schema")
   assert(validated ~= nil, "synthetic catalog validated above")

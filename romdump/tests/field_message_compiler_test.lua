@@ -62,6 +62,10 @@ local function sourceReferenceBankIds()
   ids[PokegearSources.phoneClassLabels.trainerBank] = true
   ids[PokegearSources.phoneClassLabels.landmarkBank] = true
   ids[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
+  -- The generic time-of-day phone greeting lives in bank 640 behind the
+  -- source greeting table; see FieldMessageCompiler's explicit phone
+  -- greeting bank set.
+  ids[640] = true
   -- The compiled region map names its places from this bank.
   ids[PokegearSources.regionMapMessageBank] = true
   -- The setup card reads its CHANGE/QUIT context labels from this bank.
@@ -205,62 +209,6 @@ function T.source_references_form_one_sorted_bank_set()
     "the compiler must expose source-derived bank selection"
   )
   local required = FieldMessageCompiler.requiredBankIds()
-  local expected = {}
-  for map in MapCatalog.all() do
-    expected[assert(map.messageMemberId)] = true
-  end
-  for _, bankId in pairs(ScriptMembers.banks) do
-    expected[assert(bankId)] = true
-  end
-  expected[MenuProtocol.STANDARD_MESSAGE_BANK] = true
-  -- The in-field Start Menu labels resolve from this bank through the
-  -- protocol constant; see FieldMessageCompiler's required bank set.
-  expected[MenuProtocol.START_MENU_MESSAGE_BANK] = true
-  -- Oak's scripted opening introduction reads directly from this bank; see
-  -- FieldMessageCompiler's OAK_INTRO_MESSAGE_BANK.
-  expected[219] = true
-  -- The friend-name buffer command reads the opposite protagonist's name
-  -- from this bank through the player gender; see FieldMessageCompiler's
-  -- opposite-protagonist name bank.
-  expected[445] = true
-  expected[40] = true
-  expected[265] = true
-  -- GetStdMsgNaix addresses these msgdata banks by immediate std index
-  -- (day-of-week siblings, Cameron, pokemart and various shops); bank 211
-  -- already rides a member association. See FieldMessageCompiler's
-  -- gScriptStdMsgBanks set.
-  expected[752] = true
-  expected[30] = true
-  expected[435] = true
-  -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
-  expected[21] = true
-  -- The Kurt confirm header pluralizes through this bank; see
-  -- FieldMessageCompiler's explicit plural bank set.
-  expected[224] = true
-  -- Retail blackout.c reads this global recovery message bank outside script
-  -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
-  expected[203] = true
-  -- Per-caller phone greeting banks ride the demandable pipeline through
-  -- the compiled pokegear catalog; see FieldMessageCompiler's explicit
-  -- phone bank set.
-  for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
-    expected[bankId] = true
-  end
-  expected[PokegearSources.phoneClassLabels.specialBank] = true
-  expected[PokegearSources.phoneClassLabels.trainerBank] = true
-  expected[PokegearSources.phoneClassLabels.landmarkBank] = true
-  expected[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
-  expected[PokegearSources.regionMapMessageBank] = true
-  expected[PokegearSources.configureMessageBank] = true
-  -- Word-command text reads its code-addressed banks through the script
-  -- host: the fixed-phrase pair, the raw Frontier intro bank, the plain
-  -- and article-bearing trainer class banks, and the Union language bank.
-  expected[202] = true
-  expected[723] = true
-  expected[730] = true
-  expected[731] = true
-  expected[738] = true
-
   Assert.deepEqual(required, sourceReferenceBankIds())
 
   local seen = {}
@@ -272,14 +220,6 @@ function T.source_references_form_one_sorted_bank_set()
     end
     seen[bankId] = true
   end
-  for bankId in pairs(expected) do
-    Assert.isTrue(seen[bankId], "every map/script message bank must be selected: " .. bankId)
-  end
-  local expectedCount = 0
-  for _ in pairs(expected) do
-    expectedCount = expectedCount + 1
-  end
-  Assert.equal(#required, expectedCount)
 
   local repeated = FieldMessageCompiler.requiredBankIds()
   Assert.isFalse(required == repeated, "each selection call must return a fresh array")

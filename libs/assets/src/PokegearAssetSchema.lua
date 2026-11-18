@@ -559,8 +559,8 @@ local function checkCatalog(value)
       or trigger.slot < 0
       or type(trigger.key) ~= "string"
       or type(trigger.contact) ~= "string"
-      or (trigger.kind ~= 0 and trigger.kind ~= 3)
-      or type(trigger.clearOnPickup) ~= "boolean"
+      or type(trigger.forcePickUp) ~= "boolean"
+      or (trigger.callScriptID ~= nil and not isInteger(trigger.callScriptID))
     then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must carry a source trigger record", {})
     end

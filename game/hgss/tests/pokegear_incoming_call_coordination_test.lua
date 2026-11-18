@@ -1,9 +1,10 @@
 -- Incoming call coordination while the gear stays closed: whole-minute
 -- eligibility with the first offline delta ignored, source trigger
 -- selection ahead of the random gate, exact inclusive random boundaries
--- with labelled draw traces, acceptance as the single clearing boundary
--- (event triggers clear, ordinary calls record history, expiry and failed
--- acquisition consume nothing), strict second-exact expiry with
+-- with labelled draw traces, acceptance as the single launch boundary
+-- (a trigger launch clears its own flag and records no caller, a random
+-- launch records one, expiry and failed acquisition consume nothing),
+-- strict second-exact expiry with
 -- backward-time protection, and nonstacking repeat tones without render
 -- driven draws. Every expectation replays the companion random streams
 -- independently and recomputes the source residues outside the behaviour
@@ -23,21 +24,6 @@ local T = {
   },
   tests = {},
 }
-
--- Loads the incoming-call coordinator that does not exist yet at this
--- baseline. The failure names the missing behaviour instead of surfacing
--- as a suite load error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
 
 local MOM_KEY = "custom.mom"
 local TRAINER_KEY = "custom.trainer-plain"
@@ -63,10 +49,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -97,28 +81,32 @@ end
 ---@param key string
 ---@param name string
 ---@param weight integer
+---@param family string
+---@param entryType integer? native caller type (GENERIC 0, GYMLEADER 12, ETHAN_LYRA 11, BUENA 10, IRWIN 14)
+---@param randomCallGroup integer? source random-call group 0..2
 ---@return table
-local function contactRecord(key, name, weight, family)
-  return { key = key, name = name, sortWeight = weight, family = family }
+local function contactRecord(key, name, weight, family, entryType, randomCallGroup)
+  local record = { key = key, name = name, sortWeight = weight, family = family }
+  if entryType ~= nil then
+    record.entryType = entryType
+  end
+  if randomCallGroup ~= nil then
+    record.randomCallGroup = randomCallGroup
+  end
+  return record
 end
 
--- The durable trigger facts the coordinator selects from. Each record
--- carries the trigger key, its owning contact, and the source call kind:
--- kind 3 is an event trigger that clears at acceptance, kind 0 is an
--- ordinary callback. The record shape is the proposal the coordinator
--- adopts; the clearing and history behaviour below is the locked contract.
+-- The durable trigger facts the coordinator selects from: the trigger
+-- key, its owning contact, and its source slot. Every trigger launches
+-- with the source isScriptedCall marker 3, so the launch clears the
+-- trigger it picked and records no recent caller; the clearing and
+-- history behaviour below is the locked contract.
 ---@param key string
 ---@param contact string
----@param kind integer
 ---@param slot integer?
----@param clearOnPickup boolean?
 ---@return table
-local function triggerRecord(key, contact, kind, slot, clearOnPickup)
-  slot = slot or (key == MOM_TRIGGER and 12 or 13)
-  if clearOnPickup == nil then
-    clearOnPickup = slot == 12
-  end
-  return { key = key, contact = contact, kind = kind, slot = slot, clearOnPickup = clearOnPickup }
+local function triggerRecord(key, contact, slot)
+  return { key = key, contact = contact, slot = slot or (key == MOM_TRIGGER and 12 or 13), forcePickUp = false }
 end
 
 -- Synthetic companion catalog validated through the real asset schema, so
@@ -132,7 +120,7 @@ local function fixtureManifest(contacts, triggers)
     order[#order + 1] = contact.key
   end
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -193,7 +181,7 @@ end
 ---@param stuck boolean? when true the sequence never completes on its own
 ---@return table
 local function ringAudio(stuck)
-  local audio = { plays = {}, playing = false, stops = 0, stuck = stuck == true }
+  local audio = { plays = {}, playing = false, stuck = stuck == true }
   ---@param sequence string
   function audio:playRing(sequence)
     self.plays[#self.plays + 1] = sequence
@@ -210,9 +198,6 @@ local function ringAudio(stuck)
   ---@return integer
   function audio:playCount()
     return #self.plays
-  end
-  function audio:stopRing()
-    self.stops = self.stops + 1
   end
   return audio
 end
@@ -264,7 +249,7 @@ local function freshProviders(seed, opts)
   local contacts = setup.contacts
     or {
       contactRecord(MOM_KEY, "MOM", 10, "mother"),
-      contactRecord(TRAINER_KEY, "JACE", 20, "trainer"),
+      contactRecord(TRAINER_KEY, "JACE", 20, "trainer", 0, 0),
     }
   local record = PokegearAssetSchema.validate(fixtureManifest(contacts, setup.triggers or {}))
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -299,11 +284,10 @@ end
 ---@param opts { contacts: table[]?, triggers: table[]?, setTriggers: string[]?, audio: table?, host: table? }?
 ---@return table
 local function freshCoordinator(seed, opts)
-  local IncomingCalls = requireFeature(
-    "game.hgss.src.pokegear.IncomingCalls",
-    "incoming calls have no field coordinator yet: minute eligibility, source draws, and the pending-caller handshake cannot run"
-  )
+  local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
   local providers = freshProviders(seed, opts)
+  local scriptStarts = {}
+  providers.scriptStarts = scriptStarts
   providers.calls = IncomingCalls.new({
     state = providers.state,
     catalog = providers.record.catalog,
@@ -312,6 +296,13 @@ local function freshCoordinator(seed, opts)
     world = providers.world,
     host = providers.host,
     audio = providers.audio,
+    startCallScript = function()
+      scriptStarts[#scriptStarts + 1] = true
+      return "scene-" .. tostring(#scriptStarts)
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
   return providers
 end
@@ -447,7 +438,7 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
   do
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
     })
     local calls = rig.calls
     calls:onFieldClock(moment(0))
@@ -486,7 +477,8 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
   -- re-evaluate after nine more minutes, and evaluates again only once
   -- the reset ten minutes have passed.
   do
-    local rig = freshCoordinator(seeds.fail51, { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer") } })
+    local rig =
+      freshCoordinator(seeds.fail51, { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer", 0, 0) } })
     local calls = rig.calls
     driveEligible(calls)
     calls:onOpportunity(opportunityArgs())
@@ -508,7 +500,8 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
   -- 50 inside category zero rings the lone candidate, and every draw
   -- matches the independent replay with the original pick arithmetic.
   do
-    local rig = freshCoordinator(seeds.pass50cat0, { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer") } })
+    local rig =
+      freshCoordinator(seeds.pass50cat0, { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer", 0, 0) } })
     local calls = rig.calls
     driveEligible(calls)
     calls:onOpportunity(opportunityArgs())
@@ -531,7 +524,8 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
   -- zero while 500, 799, and 800 stay silent in higher categories, and
   -- neither ringing nor silence evaluates again without fresh minutes.
   for _, edge in ipairs({ 499, 500, 799, 800 }) do
-    local rig = freshCoordinator(seeds[edge], { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer") } })
+    local rig =
+      freshCoordinator(seeds[edge], { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer", 0, 0) } })
     local calls = rig.calls
     driveEligible(calls)
     calls:onOpportunity(opportunityArgs())
@@ -563,22 +557,19 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
   end
 end
 
--- Accepting a call is the single clearing boundary: an ordinary incoming
--- records history without touching triggers, an event trigger survives
--- expiry and failed acquisition, and success clears the trigger before
--- any dialogue runs.
-function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_ring_expire_or_failure()
-  requireFeature(
-    "game.hgss.src.pokegear.IncomingCalls",
-    "incoming calls have no field coordinator yet: acceptance cannot clear triggers or record ordinary history"
-  )
+-- Accepting a call is the single launch boundary: a random incoming
+-- records history without touching triggers, a trigger ring survives
+-- expiry and failed acquisition, and a trigger launch clears its own flag
+-- before any dialogue runs.
+function T.tests.accepting_a_call_closes_exactly_one_launch_boundary()
   local seeds = scanSeeds()
 
   -- The ordinary random incoming records history at acceptance: the
   -- pass-seed ring names the plain caller, polls hold still, and
   -- accepting files history without setting or clearing any trigger.
   do
-    local rig = freshCoordinator(seeds.pass50cat0, { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer") } })
+    local rig =
+      freshCoordinator(seeds.pass50cat0, { contacts = { contactRecord(TRAINER_KEY, "JACE", 20, "trainer", 0, 0) } })
     local calls = rig.calls
     driveEligible(calls)
     calls:onOpportunity(opportunityArgs())
@@ -605,7 +596,7 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
   do
     local rig = freshCoordinator(seeds.pass50cat0, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
     })
     local calls = rig.calls
     driveEligible(calls)
@@ -623,7 +614,7 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
   do
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
     })
     local calls = rig.calls
     driveEligible(calls)
@@ -653,7 +644,7 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
   do
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
       host = failingHost(),
     })
     local calls = rig.calls
@@ -689,13 +680,10 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
   -- The live host is fixed at construction, so its providers are built
   -- first and the coordinator is composed around it.
   do
-    local IncomingCalls = requireFeature(
-      "game.hgss.src.pokegear.IncomingCalls",
-      "incoming calls have no field coordinator yet: acceptance cannot clear triggers through the typed host"
-    )
+    local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
     local providers = freshProviders(4242, {
       setTriggers = { "custom.clear-event" },
-      triggers = { triggerRecord("custom.clear-event", MOM_KEY, 3, 1, false) },
+      triggers = { triggerRecord("custom.clear-event", MOM_KEY, 1) },
     })
     local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
     local liveHost = PokegearScriptHost.new({
@@ -719,18 +707,24 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
       world = providers.world,
       host = liveHost,
       audio = providers.audio,
+      startCallScript = function()
+        return "scene-live"
+      end,
+      mapReceivesCalls = function()
+        return true
+      end,
     })
     driveEligible(calls)
     calls:onOpportunity(opportunityArgs())
     Assert.notNil(calls:notification(), "the event trigger rings for the success check")
     calls:accept("field:test-parent")
-    Assert.deepEqual(providers.state:readPhone().triggers, {}, "successful pickup clears the event trigger")
+    Assert.deepEqual(providers.state:readPhone().triggers, {}, "the launch clears the trigger it picked")
     Assert.isTrue(liveHost:isActive(), "acceptance enters the incoming call through the typed host")
     local active = liveHost:activeHandle()
     Assert.notNil(active, "the entered call holds a live handle before any dialogue step")
     Assert.isFalse(
       projectionMentions(providers.state:readPhone().history, MOM_KEY),
-      "clearing an event trigger records no ordinary history"
+      "a trigger launch records no recent caller"
     )
     Assert.isFalse(calls:notification(), "acceptance ends the event ring")
     liveHost:dispose()
@@ -745,17 +739,12 @@ end
 -- never stacks, the thirty-tick counter resets, stopping freezes the
 -- tone, and the clock alone never starts a new ring.
 function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat_tones()
-  requireFeature(
-    "game.hgss.src.pokegear.IncomingCalls",
-    "incoming calls have no field coordinator yet: expiry bounds and repeat tones cannot run"
-  )
-
   -- Exactly thirty seconds still ring; thirty-one expire without
   -- consuming the trigger.
   do
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
     })
     local calls = rig.calls
     driveEligible(calls)
@@ -781,7 +770,7 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
   do
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
     })
     local calls = rig.calls
     driveEligible(calls)
@@ -804,7 +793,7 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
   do
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
     })
     local calls = rig.calls
     driveEligible(calls)
@@ -831,7 +820,7 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
     local audio = ringAudio(true)
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
       audio = audio,
     })
     local calls = rig.calls
@@ -844,7 +833,6 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
     end
     Assert.equal(audio:playCount(), 1, "a stuck sequence is attempted exactly once across forty ticks")
     Assert.equal(audio.plays[1], "PHONE1", "the repeat attempt names the source ring sequence")
-    Assert.equal(audio.stops, 0, "stopping never cuts an already-playing effect")
     calls:dispose()
   end
 
@@ -856,7 +844,7 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
     local audio = ringAudio(false)
     local rig = freshCoordinator(4242, {
       setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY) },
       audio = audio,
     })
     local calls = rig.calls
@@ -879,7 +867,6 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
     end
     Assert.equal(audio:playCount(), frozen, "the silent clock after expiry schedules no tone")
     Assert.isFalse(calls:notification(), "the silent clock after expiry starts no new ring")
-    Assert.equal(audio.stops, 0, "expiry never cuts an already-playing effect")
     calls:onFieldClock(moment(30))
     calls:onOpportunity(opportunityArgs())
     local rearmed = calls:notification()

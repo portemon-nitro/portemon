@@ -1,13 +1,15 @@
--- Foreground phone conversations, earned rewards, and savings: conversation
--- effects run once at their source stage, missing world owners fail with
--- attribution instead of invented answers, battle winnings split into Mom
--- savings through capped source arithmetic, and savings purchases follow
--- source order with bounded gift queues. Lower-level cases pin request
--- rejection, every selector early return in source order, threshold and
--- tier boundaries on both sides, stale and replayed candidates, absent
--- versus zero owners, exactly-once battle publication, and companion
--- restore of staged savings. All expectations use synthetic contacts and
--- independent arithmetic, never the behaviour under test as its own oracle.
+-- Foreground phone conversations, earned rewards, and savings: every
+-- dynamic service family (Bill, Buena, friend, gym, Oak, Kurt, Day Care,
+-- Baoba) plays its source message progression behind its owner reads,
+-- missing world owners fail with attribution instead of invented
+-- answers, battle winnings split into Mom savings through capped source
+-- arithmetic, and savings purchases follow source order with bounded
+-- gift queues. Lower-level cases pin request rejection, every selector
+-- early return in source order, threshold and tier boundaries on both
+-- sides, stale and replayed candidates, absent versus zero owners,
+-- exactly-once battle publication, and companion restore of staged
+-- savings. All expectations use synthetic contacts and independent
+-- arithmetic, never the behaviour under test as its own oracle.
 
 local Assert = require("tests.support.Assert")
 
@@ -121,21 +123,6 @@ local function preparePurchases(expectedRevision, opts)
   return require("game.hgss.src.pokegear.PhoneRewards").preparePurchases(expectedRevision, opts)
 end
 
--- Loads a phone module that does not exist yet at this baseline. The
--- failure names the missing behaviour instead of surfacing as a suite load
--- error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
-
 local function visualRef(path)
   return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
 end
@@ -189,7 +176,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -255,6 +242,16 @@ local function instantAudio()
   }
 end
 
+---@param log string[] effect sink
+---@return table audio
+local function recordingInstantAudio(log)
+  local audio = instantAudio()
+  audio.play = function(_, sequence)
+    log[#log + 1] = sequence
+  end
+  return audio
+end
+
 local function phoneMessages()
   return {
     greeting = "custom.greeting",
@@ -270,6 +267,23 @@ local function phoneMessages()
   }
 end
 
+-- Settles the two source dial stages so the conversation opens: each
+-- stage waits on its tone before the next one plays, exactly like
+-- PhoneCall_InitialRing behind the connecting stage.
+---@param call table
+---@param handle table
+local function settleDial(call, handle)
+  for _ = 1, 8 do
+    if
+      (call:view(handle) --[[@as table<string, unknown>]]).stage ~= "connecting"
+    then
+      return
+    end
+    call:step(handle, {})
+  end
+  error("the source dial never settled", 0)
+end
+
 local function localPhoneSelectorFacts()
   return function()
     return { localMap = true }
@@ -279,10 +293,7 @@ end
 -- Native dialogue waits for text completion before entering the program
 -- stage. Repeated polls do not advance that stage.
 function T.tests.phone_text_wait_precedes_the_program_stage()
-  local PhoneCall = requireFeature(
-    "game.hgss.src.pokegear.PhoneCall",
-    "phone calls have no foreground session owner yet: conversation effects cannot stage once at their source step"
-  )
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -309,9 +320,9 @@ function T.tests.phone_text_wait_precedes_the_program_stage()
     kind = "ordinary",
   })
 
-  -- Reaching native dialogue stops at its text wait.
-  call:step(handle, {})
-  call:step(handle, {})
+  -- The two source dial stages settle, then reaching native dialogue
+  -- stops at its text wait.
+  settleDial(call, handle)
   Assert.equal((call:view(handle) --[[@as table]]).stage, "message", "native text holds before program effects")
 
   -- Repeated status and view reads never duplicate the staged effect.
@@ -337,10 +348,7 @@ end
 -- of cutting it, a second cancel restarts nothing, and forced release
 -- settles immediately without replaying the tone.
 function T.tests.normal_hangup_runs_the_source_three_message_timer()
-  local PhoneCall = requireFeature(
-    "game.hgss.src.pokegear.PhoneCall",
-    "phone calls have no foreground session owner yet: the normal hangup cannot stage its source timer"
-  )
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -390,12 +398,13 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
     direction = "outgoing",
     kind = "ordinary",
   })
-  Assert.equal(dials, 2, "opening a call dials the source dial tone twice")
-  call:step(handle, { advance = true })
+  Assert.equal(dials, 1, "opening a call starts the source dial")
+  settleDial(call, handle)
+  Assert.equal(dials, 2, "the second dial stage plays the source dial tone")
   Assert.equal(
     (call:view(handle) --[[@as table<string, unknown>]]).stage,
     "message",
-    "the first advance reaches native text"
+    "the settled dial reaches native text"
   )
   -- A player cancel during the message stages the normal hangup
   -- instead of cutting the call.
@@ -456,17 +465,21 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
       "every staged line is one of the three source messages"
     )
   end
-  local off, debug = 0, 0
+  local off, debug, selects = 0, 0, 0
   for _, sequence in ipairs(played) do
     if sequence == "SEQ_SE_GS_PHONE_OFF" then
       off = off + 1
     end
-    if sequence == "SEQ_SE_DP_SELECT" or sequence == "SEQ_SE_DP_BOX03" then
+    if sequence == "SEQ_SE_DP_BOX03" then
       debug = debug + 1
+    end
+    if sequence == "SEQ_SE_DP_SELECT" then
+      selects = selects + 1
     end
   end
   Assert.equal(off, 1, "the normal hangup plays the source PHONE_OFF tone exactly once")
   Assert.equal(debug, 0, "the normal hangup plays no debug click tone behind its staged lines")
+  Assert.equal(selects, 0, "a cancelled call skips the pre-hangup wait tone")
   -- Forced release of a live call settles immediately without
   -- replaying the tone.
   local secondHandle = call:begin({
@@ -475,17 +488,31 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
     direction = "outgoing",
     kind = "ordinary",
   })
-  -- The single-glyph greeting types: the first edge reaches native
-  -- text, the second completes the open page, and the third turns it
-  -- toward the staged hangup.
+  -- The dial settles, then the single-glyph greeting types: the first
+  -- edge completes the open page and the second turns it toward the
+  -- pre-hangup wait, which holds its page until a third press stages
+  -- the hangup.
+  settleDial(call, secondHandle)
   call:step(secondHandle, { advance = true })
   call:step(secondHandle, { advance = true })
+  Assert.equal(
+    (call:view(secondHandle) --[[@as table<string, unknown>]]).stage,
+    "message",
+    "the second call waits for a press after its script"
+  )
   call:step(secondHandle, { advance = true })
   Assert.equal(
     (call:view(secondHandle) --[[@as table<string, unknown>]]).stage,
     "hangingUp",
     "the second call reaches its staged hangup"
   )
+  local selectsAfter = 0
+  for _, sequence in ipairs(played) do
+    if sequence == "SEQ_SE_DP_SELECT" then
+      selectsAfter = selectsAfter + 1
+    end
+  end
+  Assert.equal(selectsAfter, 1, "the completed script plays the pre-hangup button tone once")
   local releasedBefore = 0
   for _, sequence in ipairs(played) do
     if sequence == "SEQ_SE_GS_PHONE_OFF" then
@@ -507,10 +534,7 @@ end
 -- names its missing owner before any effect, while a branch that needs no
 -- production state still answers locally.
 function T.tests.branches_without_their_world_owner_fail_with_attribution()
-  local PhoneWorldContext = requireFeature(
-    "game.hgss.src.pokegear.PhoneWorldContext",
-    "phone conversations have no world-context adapter yet: missing Kurt, Day Care, and Safari owners cannot fail with attribution"
-  )
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -588,10 +612,7 @@ end
 -- share, Mom's capacity caps the transfer, losses move nothing, repeats
 -- settle once, and stale candidates mutate no owner.
 function T.tests.battle_winnings_split_into_savings_from_the_capped_actual_gain()
-  local PhoneRewards = requireFeature(
-    "game.hgss.src.pokegear.PhoneRewards",
-    "phone rewards have no settlement owner yet: battle winnings cannot split into Mom savings"
-  )
+  local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -745,10 +766,7 @@ end
 -- tier crossing, and a full Bag keeps the queued gift pending without a
 -- reroll on the next collection.
 function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
-  local PhoneRewards = requireFeature(
-    "game.hgss.src.pokegear.PhoneRewards",
-    "phone rewards have no purchase owner yet: savings thresholds cannot enqueue gifts"
-  )
+  local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
@@ -1432,8 +1450,7 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
     direction = "outgoing",
     kind = "ordinary",
   })
-  call:step(handle, {})
-  call:step(handle, {})
+  settleDial(call, handle)
   -- The single-glyph page types first: the first edge completes it
   -- and the next turns toward the program that needs its owner.
   call:step(handle, { advance = true })
@@ -1787,10 +1804,7 @@ end
 -- offering to save money. A static choice writes nothing, even when an
 -- explicit answer arrives.
 function T.tests.mother_savings_choice_only_owes_on_source_dynamic_calls()
-  local MotherPhoneProgram = requireFeature(
-    "game.hgss.src.pokegear.phone.MotherPhoneProgram",
-    "mother policy has no savings owner yet: static calls cannot skip the choice"
-  )
+  local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProgram")
   ---@param facts table<string, unknown>
   ---@return table<string, unknown> session, table written flag sink
   local function openSession(facts)
@@ -1837,8 +1851,7 @@ end
 -- (retail order: scripted first, before localMap). The selector must
 -- reach dynamic, not script 23, and the savings choice is owed.
 function T.tests.scripted_mother_call_forces_dynamic_on_the_local_map()
-  local MotherPhoneProgram =
-    requireFeature("game.hgss.src.pokegear.phone.MotherPhoneProgram", "mother policy has no scripted-call fact yet")
+  local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProgram")
   Assert.isTrue(
     MotherPhoneProgram.isSavingsCall({
       scriptedCall = 2,
@@ -1892,7 +1905,7 @@ end
 -- resolveContactEntry with the Mom balance; the intro splits pages on
 -- line breaks and never pre-flattens Bank 664 multi-page copy.
 function T.tests.dynamic_mother_call_completes_through_intro_prompt_choice_and_result()
-  local PhoneCall = requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no dynamic mother path yet")
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate")
@@ -1908,6 +1921,11 @@ function T.tests.dynamic_mother_call_completes_through_intro_prompt_choice_and_r
     rematchReady = {},
     setMomSavingsChoice = function(_, choice)
       written.choice = choice
+    end,
+    -- The scripted Mother branch marks the after-naming conversation held.
+    setFlag = function(_, flag)
+      written.flags = written.flags or {}
+      written.flags[#written.flags + 1] = flag
     end,
     nativeSelectorFacts = function()
       return { localMap = true, gaveRivalName = true, talkedAfterNamingRival = true }
@@ -1940,8 +1958,7 @@ function T.tests.dynamic_mother_call_completes_through_intro_prompt_choice_and_r
     kind = "ordinary",
     isScriptedCall = 2,
   })
-  call:step(handle, {})
-  call:step(handle, {})
+  settleDial(call, handle)
   local greeting = call:view(handle)
   Assert.equal(greeting.stage, "message", "intro prints before the program stage")
   Assert.equal(
@@ -1976,7 +1993,7 @@ end
 -- takeover paths stay pinned, and the random window never leaves its
 -- three ids.
 function T.tests.irwin_outgoing_rolls_its_three_source_scripts()
-  local PhoneCall = requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no irwin selector yet")
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local manifest = fixtureManifest()
   manifest.catalog.contacts[#manifest.catalog.contacts + 1] =
@@ -2032,8 +2049,7 @@ end
 -- rematch stages readiness, item stages a contact gift, flag writes the
 -- named event flag, word draws its pick. None kinds do nothing.
 function T.tests.static_script_side_effects_stage_through_their_owners()
-  local PhoneCall =
-    requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no static side-effect applier yet")
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   -- Rematch kind stages readiness without needing a save owner.
   local manifest = fixtureManifest()
@@ -2072,7 +2088,7 @@ function T.tests.static_script_side_effects_stage_through_their_owners()
     random = PokegearRandom.new(5),
   })
   -- Trainer incoming with predefined 33 exercises the static path; the
-  -- contact needs a localScript-free record so incoming routes via
+  -- contact needs a table-free record so incoming routes via
   -- predefinedScript.
   local handle = call:begin({
     id = "rematch-1",
@@ -2088,8 +2104,7 @@ end
 -- Gift-full dynamic Mother ends with no choice: intro → gift-full 21 →
 -- hangup. The choice menu never opens and no flag is written.
 function T.tests.dynamic_mother_gift_full_ends_without_a_choice()
-  local PhoneCall =
-    requireFeature("game.hgss.src.pokegear.PhoneCall", "phone calls have no dynamic mother gift-full branch yet")
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate")
@@ -2155,6 +2170,880 @@ function T.tests.dynamic_mother_gift_full_ends_without_a_choice()
     call:step(handle, { advance = true })
   end
   Assert.notNil(call:result(handle), "gift-full completes through hangup")
+end
+
+-- Answers the open choice (when the scenario stops at one) and advances
+-- the call to its terminal result.
+---@param driven { call: table, handle: table }
+---@param choice string? semantic answer for the open menu
+---@return table terminal result
+local function settleCall(driven, choice)
+  local call, handle = driven.call, driven.handle
+  if choice ~= nil then
+    call:step(handle, { choice = choice })
+  end
+  for _ = 1, 80 do
+    local terminal = call:result(handle)
+    if terminal ~= nil then
+      return terminal
+    end
+    call:step(handle, { advance = true })
+  end
+  error("the call never reaches its terminal result", 0)
+end
+
+-- Dynamic Bill off-map outgoing plays its source conversation: the
+-- time-of-day greeting, the gendered intro (3/4), the box status (9
+-- when full, else 5/6/7), and the closer 8. The box name and free
+-- count stage through the pc owner; an absent pc owner fails with
+-- attribution instead of an invented box.
+function T.tests.bill_off_map_outgoing_plays_its_source_conversation()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] =
+    { key = "custom.bill", family = "bill", sortWeight = 60, messageBank = 665, greetingMsgSet = 5 }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.bill"
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the bill catalog validates")
+  assert(record ~= nil, "bill catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, catalogRefs(record))
+  state:registerContact("custom.bill")
+  local world = {
+    flags = {},
+    rematchReady = {},
+    pc = { freeSlots = 5, boxName = "BOX1" },
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return { playerGender = 0, timeOfDay = 1 }
+    end,
+  }
+  local seenEntries = {}
+  local messages = phoneMessages()
+  messages.resolveCallGreeting = function(_, contact, timeOfDay, isIncoming)
+    Assert.equal(contact, "custom.bill", "the greeting resolves for Bill")
+    return { tokens = { { kind = "glyph", code = 1, text = "bill-greeting", raw = { 1 } } } }
+  end
+  messages.resolveContactEntry = function(_, contact, entry, opts)
+    Assert.equal(contact, "custom.bill", "dynamic entries resolve for Bill")
+    seenEntries[#seenEntries + 1] = entry
+    Assert.equal(opts.boxName, "BOX1", "the box name stages for slot 10")
+    Assert.equal(opts.freeCount, 5, "the free count stages for slot 11")
+    -- Production bank entries carry their own page breaks; the stub
+    -- splits the same way so each source message prints as one page.
+    return {
+      tokens = {
+        { kind = "glyph", code = 1, text = "bill-" .. entry, raw = { 1 } },
+        { kind = "page_break", raw = {} },
+      },
+    }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(4242),
+  })
+  local handle = call:begin({
+    id = "bill-dynamic-1",
+    contact = "custom.bill",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  settleDial(call, handle)
+  local view = call:view(handle)
+  Assert.equal(view.stage, "message", "bill prints before the program stage")
+  local texts = {}
+  for _, line in
+    ipairs(view.lines --[[@as table]])
+  do
+    texts[#texts + 1] = tostring((line --[[@as table]]).text)
+  end
+  Assert.equal(texts[1], "bill-greeting", "the shared greeting opens")
+  Assert.equal(texts[2], "bill-3", "the male intro follows the greeting")
+  Assert.isTrue(texts[3] == "bill-5" or texts[3] == "bill-6" or texts[3] == "bill-7", "free boxes advise")
+  Assert.equal(texts[4], "bill-8", "the closer ends the conversation")
+  local terminal = settleCall({ call = call, handle = handle })
+  Assert.notNil(terminal, "the dynamic bill call completes through hangup")
+  Assert.isNil((terminal --[[@as table]]).error, "the dynamic bill call reports no feature failure")
+end
+
+-- Drives one dynamic call to its choice stage for menu answers: two
+-- greeting steps, then forced advances until the choice view or the
+-- terminal result.
+---@param driven { call: table, handle: table }
+---@return table choice view
+local function driveToChoice(driven)
+  local call, handle = driven.call, driven.handle
+  for _ = 1, 40 do
+    local view = call:view(handle)
+    if view.stage == "choice" then
+      return view
+    end
+    Assert.isNil(call:result(handle), "the menu call stays live before its answer")
+    call:step(handle, { advance = true })
+  end
+  error("the menu call owes its choice", 0)
+end
+
+-- Drives one dynamic native call through completion, collecting the
+-- printed bank entries in source order. The stubbed contact-entry
+-- reader records each entry and prints one page per entry so the
+-- source multi-message flow stays visible.
+---@param opts { key: string, family: string, bank: integer, direction: string, facts: table<string, unknown>, seed: integer?, seeking: boolean?, contactId: integer?, greetingMsgSet: integer?, window: { weekday: integer, timeOfDay: integer }?, extraContacts: table[]?, stopAtChoice: boolean?, audio: table?, worldExtra: table<string, unknown>? }
+---@return { entries: integer[], entryOpts: table[], terminal: table<string, unknown>?, call: table, handle: table, writes: { rematches: table[] }, choice: table? }
+local function driveDynamicEntries(opts)
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  local contact = { key = opts.key, family = opts.family, sortWeight = 60, messageBank = opts.bank }
+  if opts.contactId ~= nil then
+    contact.id = opts.contactId
+  end
+  if opts.greetingMsgSet ~= nil then
+    contact.greetingMsgSet = opts.greetingMsgSet
+  end
+  if opts.window ~= nil then
+    contact.rematchWeekday = opts.window.weekday
+    contact.rematchTimeOfDay = opts.window.timeOfDay
+  end
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] = contact
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = opts.key
+  for _, extra in ipairs(opts.extraContacts or {}) do
+    table.insert(manifest.catalog.contacts, 1, extra)
+    table.insert(manifest.catalog.contactOrder, 1, extra.key)
+  end
+  local record = PokegearAssetSchema.validate(manifest)
+  assert(record ~= nil, "dynamic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = opts.seed or 4242 }, catalogRefs(record))
+  state:registerContact(opts.key)
+  for _, extra in ipairs(opts.extraContacts or {}) do
+    state:registerContact(extra.key)
+  end
+  local writes = { rematches = {} }
+  local effects = {}
+  local world = {
+    flags = {},
+    rematchReady = {},
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return opts.facts
+    end,
+    queryRematch = function()
+      return opts.seeking == true and { stage = 1, wins = 0 } or nil
+    end,
+    setRematch = function(_, contactKey, record)
+      writes.rematches[#writes.rematches + 1] = { contact = contactKey, record = record }
+    end,
+  }
+  -- Trainer window reads ride the world record itself behind
+  -- rematchFacts, so the frozen facts double as world fields.
+  for name, value in pairs(opts.facts) do
+    if world[name] == nil then
+      world[name] = value
+    end
+  end
+  for name, value in pairs(opts.worldExtra or {}) do
+    world[name] = value
+  end
+  local seenEntries = {}
+  local seenOpts = {}
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, contactKey, entry, stageOpts)
+    Assert.equal(contactKey, opts.key, "dynamic entries resolve for the caller")
+    seenEntries[#seenEntries + 1] = entry
+    -- A missing slot staging still occupies its index so entries and
+    -- options stay aligned behind handlers that re-buffer.
+    seenOpts[#seenOpts + 1] = stageOpts ~= nil and stageOpts or false
+    return {
+      tokens = {
+        { kind = "glyph", code = 1, text = opts.key .. "-" .. entry, raw = { 1 } },
+        { kind = "page_break", raw = {} },
+      },
+    }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = opts.audio or recordingInstantAudio(effects),
+    random = PokegearRandom.new(opts.seed or 4242),
+  })
+  local handle = call:begin({
+    id = "dynamic-" .. opts.key,
+    contact = opts.key,
+    direction = opts.direction,
+    kind = "ordinary",
+  })
+  call:step(handle, {})
+  call:step(handle, {})
+  if opts.stopAtChoice == true then
+    return {
+      entries = seenEntries,
+      entryOpts = seenOpts,
+      terminal = nil,
+      call = call,
+      handle = handle,
+      writes = writes,
+      world = world,
+      effects = effects,
+      choice = driveToChoice({ call = call, handle = handle }),
+    }
+  end
+  local terminal = settleCall({ call = call, handle = handle })
+  Assert.notNil(terminal, "the dynamic call completes through hangup")
+  assert(terminal ~= nil, "dynamic call terminated above")
+  return {
+    entries = seenEntries,
+    entryOpts = seenOpts,
+    terminal = terminal,
+    call = call,
+    handle = handle,
+    writes = writes,
+    world = world,
+    effects = effects,
+  }
+end
+
+-- One owner read per dynamic family: each case supplies the answers its
+-- production branch reads, so the branch exercises its source path with
+-- no faked family logic.
+---@param dex table<string, unknown> staged dex facts
+---@return table<string, unknown> world
+local function oakWorld(dex)
+  local world = { flags = {} }
+  world.read = function(_, key)
+    Assert.notNil(dex[key], "oak reads a staged dex fact for " .. key)
+    return dex[key]
+  end
+  world.setFlag = function(_, flag)
+    world.flags[#world.flags + 1] = flag
+  end
+  return world
+end
+
+---@param key string expected read key
+---@param answer table<string, unknown> owner answer
+---@return table<string, unknown> world
+local function singleReadWorld(key, answer)
+  return {
+    read = function(_, readKey)
+      Assert.equal(readKey, key, "the branch reads its own owner")
+      return answer
+    end,
+  }
+end
+
+-- The friend outgoing coin flip decides between the fixed 10..12 and the
+-- region 86..158 branch, so the cases borrow seeds that draw each side.
+---@return integer fixedSeed, integer regionSeed
+local function friendCoinSeeds()
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local fixed, region = nil, nil
+  for seed = 1, 1000 do
+    local probe = PokegearRandom.new(seed)
+    if probe:lc("friend-coin") % 1000 < 500 then
+      fixed = fixed or seed
+    else
+      region = region or seed
+    end
+    if fixed ~= nil and region ~= nil then
+      break
+    end
+  end
+  assert(fixed ~= nil and region ~= nil, "both friend branches draw inside the seed scan")
+  return fixed, region
+end
+
+-- The compiled caller identity every branch of a family shares: the
+-- source bank its entries live in, the direction its calls open with,
+-- and the contact identity the compiled phonebook carries for the
+-- daycare pair.
+local FAMILY_DEFAULTS = {
+  buena = { family = "buena", bank = 641, direction = "outgoing" },
+  friend = { family = "friend", bank = 662, direction = "outgoing" },
+  gym = { family = "gym", bank = 644, direction = "outgoing" },
+  oak = { family = "oak", bank = 666, direction = "outgoing" },
+  kurt = { family = "kurt", bank = 643, direction = "outgoing" },
+  baoba = { family = "baoba", bank = 667, direction = "incoming" },
+  daycareMan = { family = "daycare", bank = 661, direction = "outgoing", contactId = 6 },
+  daycareLady = { family = "daycare", bank = 660, direction = "outgoing", contactId = 7 },
+}
+
+-- Fields a case declares as expectations instead of drive options; every
+-- other field is handed to the driver unchanged.
+local EXPECTATION_FIELDS = {
+  expect = true,
+  answer = true,
+  menu = true,
+  rematches = true,
+  rematchWins = true,
+  entryOpts = true,
+  noEntryOpts = true,
+  plays = true,
+  flags = true,
+}
+
+-- One dynamic family scenario: the branch-driving fields the source reads
+-- plus the messages, staging, effects, and writes it owes.
+---@class DynamicFamilyCase
+---@field name string scenario name carried by every failure message
+---@field opts table driveDynamicEntries options
+---@field expect (integer|{ lo: integer, hi: integer })[]? printed entries, in source order
+---@field answer string? semantic choice sent before settling
+---@field menu { id: integer, answers: string[], labels: string[] }? owed menu before the answer
+---@field rematches integer? staged invitation count
+---@field rematchWins integer? wins carried by the staged invitation
+---@field entryOpts { index: integer, fields: table<string, unknown> }[]? staged slot values
+---@field noEntryOpts integer? slot whose staging must stay absent
+---@field plays string[]? leading effects, in order
+---@field flags string[]? story-flag writes
+
+---@param name string scenario name carried by every failure message
+---@param defaults string family identity from FAMILY_DEFAULTS
+---@param fields table drive options and expectations
+---@return DynamicFamilyCase
+local function familyCase(name, defaults, fields)
+  local family = assert(FAMILY_DEFAULTS[defaults], name .. " names a known contact family")
+  local case = { name = name, opts = {} }
+  for field, value in pairs(family) do
+    case.opts[field] = value
+  end
+  for field, value in pairs(fields) do
+    if EXPECTATION_FIELDS[field] == true then
+      case[field] = value
+    else
+      case.opts[field] = value
+    end
+  end
+  case.opts.key = assert(case.opts.key or "custom." .. name:gsub("%s+", "-"), name .. " names its caller")
+  case.opts.facts = case.opts.facts or {}
+  return case
+end
+
+-- Every dynamic family branch the source selects, in one case table. A
+-- case names the compiled caller it drives, the owner answers its branch
+-- reads, and the source messages the branch must print: exact entry
+-- numbers where the source prints one, ranges where the source draws.
+---@return DynamicFamilyCase[]
+local function dynamicFamilyCases()
+  local fixedSeed, regionSeed = friendCoinSeeds()
+  local gymWindow = { weekday = 1, timeOfDay = 1 }
+  local function daycare(status)
+    return singleReadWorld("daycare.status", status)
+  end
+  local function safari(arrangement)
+    return singleReadWorld("safari.arrangement", arrangement)
+  end
+  local function kurt(order)
+    return singleReadWorld("kurt.pending", order)
+  end
+  return {
+    -- Buena: the gendered time-of-day intro and the random extra, then the
+    -- password-hour body for outgoing calls.
+    familyCase("buena incoming", "buena", {
+      direction = "incoming",
+      facts = { playerGender = 0, timeOfDay = 1 },
+      expect = { 5, { lo = 10, hi = 12 } },
+    }),
+    familyCase("buena female morning", "buena", {
+      direction = "incoming",
+      seed = 777,
+      facts = { playerGender = 1, timeOfDay = 0 },
+      expect = { 4, { lo = 10, hi = 12 } },
+    }),
+    familyCase("buena outgoing", "buena", {
+      facts = { playerGender = 0, timeOfDay = 1, hour = 10, gameClear = false },
+      expect = { 17, { lo = 21, hi = 31 } },
+    }),
+    familyCase("buena outgoing on air", "buena", {
+      seed = 777,
+      facts = { playerGender = 0, timeOfDay = 0, hour = 2, gameClear = false },
+      expect = { 15, 36 },
+    }),
+
+    -- Friend: the time-of-day intro, the caller-map location message with
+    -- its 10..12 fallback, and the outgoing coin flip.
+    familyCase("friend incoming", "friend", {
+      direction = "incoming",
+      facts = { timeOfDay = 1, mapId = 34 },
+      expect = { 5, 41 },
+    }),
+    familyCase("friend incoming off location", "friend", {
+      direction = "incoming",
+      seed = 777,
+      facts = { timeOfDay = 2, mapId = 9999 },
+      expect = { 6, { lo = 10, hi = 12 } },
+    }),
+    familyCase("friend outgoing fixed", "friend", {
+      seed = fixedSeed,
+      facts = { timeOfDay = 0, unlockLevel = 0, flypoint25 = false },
+      expect = { 7, { lo = 10, hi = 12 } },
+    }),
+    familyCase("friend outgoing region", "friend", {
+      seed = regionSeed,
+      facts = { timeOfDay = 2, unlockLevel = 0, flypoint25 = false },
+      expect = { 9, { lo = 86, hi = 158 } },
+    }),
+
+    -- Gym: the seeking body behind the staged record, then the outgoing
+    -- badge, seeking, window, and invitation branches.
+    familyCase("gym incoming seeking", "gym", {
+      direction = "incoming",
+      seeking = true,
+      facts = { timeOfDay = 1, badges = 16 },
+      expect = { 10, 11 },
+    }),
+    familyCase("gym incoming open", "gym", {
+      direction = "incoming",
+      seed = 777,
+      facts = { timeOfDay = 1, badges = 16 },
+      expect = { 10, { lo = 12, hi = 14 } },
+    }),
+    familyCase("gym outgoing badges", "gym", {
+      window = gymWindow,
+      facts = { badges = 3, weekday = 1, timeOfDay = 1 },
+      expect = { 2, 3 },
+    }),
+    familyCase("gym outgoing seeking", "gym", {
+      seed = 777,
+      seeking = true,
+      window = gymWindow,
+      facts = { badges = 16, weekday = 1, timeOfDay = 1 },
+      expect = { 2, 9 },
+    }),
+    familyCase("gym outgoing missed window", "gym", {
+      seed = 778,
+      window = gymWindow,
+      facts = { badges = 16, weekday = 2, timeOfDay = 1 },
+      expect = { 2, 4 },
+    }),
+    familyCase("gym outgoing declined", "gym", {
+      seed = 779,
+      window = gymWindow,
+      stopAtChoice = true,
+      facts = { badges = 16, weekday = 1, timeOfDay = 1 },
+      expect = { 2, 5 },
+      menu = { id = 6, answers = { "yes", "no" }, labels = { "suite-ui-271-18", "suite-ui-271-19" } },
+      answer = "no",
+      rematches = 0,
+    }),
+    familyCase("gym outgoing accepted", "gym", {
+      seed = 781,
+      window = gymWindow,
+      stopAtChoice = true,
+      facts = { badges = 16, weekday = 1, timeOfDay = 1 },
+      expect = { 2, 5 },
+      answer = "yes",
+      rematches = 1,
+    }),
+    familyCase("gym outgoing always-full dojo", "gym", {
+      key = "custom.gym-b",
+      seed = 782,
+      window = gymWindow,
+      stopAtChoice = true,
+      extraContacts = {
+        {
+          key = "custom.gym-a",
+          family = "gym",
+          sortWeight = 59,
+          messageBank = 644,
+          rematchWeekday = 1,
+          rematchTimeOfDay = 1,
+        },
+      },
+      worldExtra = {
+        queryRematch = function(_, contact)
+          return contact == "custom.gym-a" and { stage = 1, wins = 2 } or nil
+        end,
+      },
+      facts = { badges = 16, weekday = 1, timeOfDay = 1 },
+      answer = "yes",
+      rematches = 1,
+      rematchWins = 0,
+    }),
+
+    -- Oak: the gendered intro, then the johto or national evaluation menu
+    -- with its fanfare and acknowledgement write.
+    familyCase("oak johto evaluation", "oak", {
+      seed = 781,
+      stopAtChoice = true,
+      facts = { playerGender = 0, nationalDex = false, oakJohtoAcked = false },
+      worldExtra = oakWorld({
+        ["dex.johto-seen"] = 40,
+        ["dex.johto-caught"] = 30,
+        ["dex.johto-owned-ex-mythical"] = 30,
+        ["dex.johto-complete"] = false,
+      }),
+      expect = { 13, 15 },
+      menu = { id = 3, answers = { "evaluate", "quit" }, labels = { "suite-ui-271-10", "suite-ui-271-11" } },
+      answer = "evaluate",
+      plays = { "SEQ_ME_HYOUKA1" },
+      flags = {},
+    }),
+    familyCase("oak national evaluation", "oak", {
+      seed = 784,
+      stopAtChoice = true,
+      facts = { playerGender = 0, nationalDex = true, oakJohtoAcked = false },
+      worldExtra = {
+        read = function(_, key)
+          local dex = {
+            ["dex.national-seen"] = 300,
+            ["dex.national-caught"] = 200,
+            ["dex.national-owned-ex-mythical"] = 195,
+            ["dex.national-complete"] = false,
+          }
+          return dex[key]
+        end,
+      },
+      menu = {
+        id = 4,
+        answers = { "evaluate", "national", "quit" },
+        labels = { "suite-ui-271-12", "suite-ui-271-13", "suite-ui-271-14" },
+      },
+      answer = "national",
+      plays = { "SEQ_ME_HYOUKA1" },
+    }),
+    familyCase("oak quit", "oak", {
+      seed = 782,
+      stopAtChoice = true,
+      facts = { playerGender = 0, nationalDex = false, oakJohtoAcked = false },
+      worldExtra = oakWorld({}),
+      answer = "quit",
+      flags = {},
+    }),
+    familyCase("oak completed johto dex", "oak", {
+      seed = 783,
+      stopAtChoice = true,
+      facts = { playerGender = 1, nationalDex = false, oakJohtoAcked = false },
+      worldExtra = oakWorld({
+        ["dex.johto-seen"] = 100,
+        ["dex.johto-caught"] = 100,
+        ["dex.johto-owned-ex-mythical"] = 100,
+        ["dex.johto-complete"] = true,
+      }),
+      answer = "evaluate",
+      flags = { "FLAG_SYS_OAK_ACKNOWLEDGED_JOHTO_DEX_COMPLETION" },
+    }),
+
+    -- Kurt: the order-flag intro and the handed status beside the staged
+    -- ball and count.
+    familyCase("kurt handed order", "kurt", {
+      facts = { kurtFlag127 = false, kurtMaking = false },
+      worldExtra = kurt({ quantity = 3, apricorn = "WHITE_APRICORN" }),
+      expect = { 2, 3 },
+      entryOpts = { { index = 2, fields = { ballItem = "FAST_BALL", kurtCount = 3 } } },
+    }),
+    familyCase("kurt making order", "kurt", {
+      seed = 777,
+      facts = { kurtFlag127 = true, kurtMaking = true },
+      worldExtra = kurt({ quantity = 2, apricorn = "RED_APRICORN" }),
+      expect = { 6, 4 },
+    }),
+    familyCase("kurt empty box", "kurt", {
+      seed = 778,
+      facts = { kurtFlag127 = false, kurtMaking = false },
+      worldExtra = kurt({ quantity = 0 }),
+      expect = { 2, 5 },
+      noEntryOpts = 2,
+    }),
+
+    -- Day Care Man: the opener, the egg, empty, single, or pair status,
+    -- the compatibility branch, and the closer.
+    familyCase("daycare man pair", "daycareMan", {
+      worldExtra = daycare({
+        count = 2,
+        egg = false,
+        compatibility = 1,
+        nicknames = { "AAA", "BBB" },
+        growths = { 2, 3 },
+      }),
+      expect = { 2, 6, 8, 11 },
+      entryOpts = { { index = 2, fields = { nickA = "AAA", nickB = "BBB" } } },
+    }),
+    familyCase("daycare man egg", "daycareMan", {
+      seed = 777,
+      worldExtra = daycare({
+        count = 2,
+        egg = true,
+        compatibility = 0,
+        nicknames = { "AAA", "BBB" },
+        growths = { 0, 0 },
+      }),
+      expect = { 2, 3 },
+    }),
+    familyCase("daycare man single", "daycareMan", {
+      seed = 778,
+      worldExtra = daycare({ count = 1, egg = false, compatibility = 0, nicknames = { "AAA" }, growths = { 2 } }),
+      expect = { 2, 5, 11 },
+    }),
+    familyCase("daycare man empty", "daycareMan", {
+      seed = 779,
+      worldExtra = daycare({ count = 0, egg = false, compatibility = 0, nicknames = {}, growths = {} }),
+      expect = { 2, 4, 11 },
+    }),
+
+    -- Day Care Lady: the gendered intro, the stabled status, the per-mon
+    -- growth report, and the closing branch.
+    familyCase("daycare lady pair", "daycareLady", {
+      facts = { playerGender = 0 },
+      worldExtra = daycare({
+        count = 2,
+        egg = false,
+        compatibility = 0,
+        nicknames = { "AAA", "BBB" },
+        growths = { 2, 3 },
+      }),
+      expect = { 3, 5, 6, 6, 9 },
+      entryOpts = {
+        { index = 3, fields = { nickname = "AAA", growth = 2 } },
+        { index = 4, fields = { nickname = "BBB" } },
+      },
+    }),
+    familyCase("daycare lady single", "daycareLady", {
+      seed = 777,
+      facts = { playerGender = 1 },
+      worldExtra = daycare({ count = 1, egg = false, compatibility = 0, nicknames = { "AAA" }, growths = { 4 } }),
+      expect = { 4, 5, 6, 8 },
+    }),
+    familyCase("daycare lady level mon", "daycareLady", {
+      seed = 778,
+      facts = { playerGender = 0 },
+      worldExtra = daycare({ count = 1, egg = false, compatibility = 0, nicknames = { "AAA" }, growths = { 0 } }),
+      expect = { 3, 5, 9 },
+    }),
+    familyCase("daycare lady empty", "daycareLady", {
+      seed = 779,
+      facts = { playerGender = 0 },
+      worldExtra = daycare({ count = 0, egg = false, compatibility = 0, nicknames = {}, growths = {} }),
+      expect = { 3, 10 },
+    }),
+
+    -- Baoba: the arrangement branch by area count with the area names
+    -- staged for the text slots.
+    familyCase("baoba arranged areas", "baoba", {
+      facts = { playerGender = 0 },
+      worldExtra = safari({ count = 2, names = { "MEADOW", "MARSH" } }),
+      expect = { 16 },
+      entryOpts = { { index = 1, fields = { areaNames = { "MEADOW", "MARSH" } } } },
+    }),
+    familyCase("baoba no areas", "baoba", {
+      seed = 777,
+      facts = { playerGender = 1 },
+      worldExtra = safari({ count = 0, names = {} }),
+      expect = { 39 },
+    }),
+    familyCase("baoba full arrangement", "baoba", {
+      seed = 778,
+      facts = { playerGender = 0 },
+      worldExtra = safari({ count = 6, names = {} }),
+      expect = { 24 },
+    }),
+  }
+end
+
+---@param case DynamicFamilyCase
+local function runFamilyCase(case)
+  local played = driveDynamicEntries(case.opts)
+  if case.menu ~= nil then
+    local choice = assert(played.choice, case.name .. " owes its source menu")
+    Assert.equal(choice.stage, "choice", case.name .. " waits on its choice")
+    Assert.equal(choice.menuId, case.menu.id, case.name .. " opens its source menu")
+    Assert.deepEqual(choice.choices, case.menu.answers, case.name .. " carries its semantic answers")
+    Assert.deepEqual(choice.choiceLabels, case.menu.labels, case.name .. " resolves its labels through bank 271")
+  end
+  -- Printed entries and slot staging belong to the messages before the
+  -- owed answer; the answer's own messages follow it.
+  if case.expect ~= nil then
+    Assert.equal(#played.entries, #case.expect, case.name .. " prints its source message count")
+    for index, want in ipairs(case.expect) do
+      local got = assert(played.entries[index], case.name .. " prints source message " .. index)
+      if type(want) == "number" then
+        Assert.equal(got, want, case.name .. " prints entry " .. want .. " at message " .. index)
+      else
+        Assert.isTrue(
+          got >= want.lo and got <= want.hi,
+          case.name
+            .. " draws entry "
+            .. want.lo
+            .. ".."
+            .. want.hi
+            .. " at message "
+            .. index
+            .. ", got "
+            .. tostring(got)
+        )
+      end
+    end
+  end
+  for _, staged in ipairs(case.entryOpts or {}) do
+    local slot = assert(played.entryOpts[staged.index], case.name .. " stages slot " .. staged.index)
+    for field, want in pairs(staged.fields) do
+      if type(want) == "table" then
+        Assert.deepEqual(slot[field], want, case.name .. " stages " .. field .. " for its message slot")
+      else
+        Assert.equal(slot[field], want, case.name .. " stages " .. field .. " for its message slot")
+      end
+    end
+  end
+  if case.noEntryOpts ~= nil then
+    Assert.isFalse(played.entryOpts[case.noEntryOpts], case.name .. " stages no slot options")
+  end
+  local terminal = case.answer ~= nil and settleCall(played, case.answer) or played.terminal
+  assert(type(terminal) == "table", case.name .. " reaches its terminal result")
+  local failure = (terminal --[[@as table]]).error
+  Assert.isNil(
+    failure,
+    case.name .. " reports no feature failure: " .. tostring(type(failure) == "table" and failure.message or failure)
+  )
+  if case.rematches ~= nil then
+    Assert.equal(#played.writes.rematches, case.rematches, case.name .. " stages its source invitations")
+    if case.rematchWins ~= nil then
+      local staged = assert(played.writes.rematches[1], case.name .. " staged its invitation above")
+      Assert.equal(staged.record.wins, case.rematchWins, case.name .. " carries its staged win count")
+    end
+  end
+  for index, want in ipairs(case.plays or {}) do
+    Assert.equal(played.effects[index], want, case.name .. " plays source effect " .. index)
+  end
+  if case.flags ~= nil then
+    Assert.deepEqual(played.world.flags, case.flags, case.name .. " writes its story flags")
+  end
+end
+-- Every dynamic service family plays its source conversation: the compiled
+-- caller drives the real PhoneCall engine over the real state owner, and
+-- each case asserts the source message entries, staged slot values, owed
+-- menus, effects, and flag writes its branch owes.
+function T.tests.dynamic_families_play_their_source_conversations()
+  for _, case in ipairs(dynamicFamilyCases()) do
+    runFamilyCase(case)
+  end
+end
+
+-- The dojo-full quirk replicates the source single-iteration loop and
+-- count<5 comparison exactly, so a yes always reports full: the room
+-- branch stays unreachable as shipped.
+function T.tests.gym_dojo_quirk_always_reports_full()
+  local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
+  Assert.isTrue(
+    TrainerPhonePrograms.gymDojoFull("custom.gym-b", "custom.gym-a", true),
+    "a seeking first contact still reports full for other callers"
+  )
+  Assert.isTrue(
+    TrainerPhonePrograms.gymDojoFull("custom.gym-b", "custom.gym-a", false),
+    "a quiet first contact reports full for other callers"
+  )
+  Assert.isTrue(
+    TrainerPhonePrograms.gymDojoFull("custom.gym-a", "custom.gym-a", true),
+    "the first contact always reports full for itself"
+  )
+end
+
+-- A dynamic branch whose owner is absent terminates with the missing
+-- domain attributed instead of inventing an answer. Bill's owner is the
+-- box capacity owner the world simply does not have; the others stage a
+-- world read that reports its missing owner.
+function T.tests.dynamic_branches_without_their_owner_name_the_missing_domain()
+  local ScriptErrors = require("libs.script.src.errors")
+  ---@param domain string
+  ---@return table<string, unknown> world read that reports its missing owner
+  local function ownerless(domain)
+    return {
+      read = function()
+        error({
+          code = ScriptErrors.FEATURE_UNAVAILABLE,
+          message = "phone branch needs its missing " .. domain .. " owner",
+          context = { domain = domain },
+          domain = domain,
+        })
+      end,
+    }
+  end
+  ---@type { name: string, opts: table, domain: string, answer: string? }[]
+  local cases = {
+    {
+      name = "bill",
+      domain = "pc",
+      opts = {
+        key = "custom.bill-ownerless",
+        family = "bill",
+        bank = 665,
+        greetingMsgSet = 5,
+        direction = "outgoing",
+        facts = {},
+      },
+    },
+    {
+      name = "oak",
+      domain = "dex",
+      answer = "evaluate",
+      opts = {
+        key = "custom.oak-ownerless",
+        family = "oak",
+        bank = 666,
+        direction = "outgoing",
+        stopAtChoice = true,
+        facts = { playerGender = 0, nationalDex = false, oakJohtoAcked = false },
+        worldExtra = ownerless("dex"),
+      },
+    },
+    {
+      name = "kurt",
+      domain = "kurt",
+      opts = {
+        key = "custom.kurt-ownerless",
+        family = "kurt",
+        bank = 643,
+        direction = "outgoing",
+        facts = { kurtFlag127 = false, kurtMaking = false },
+        worldExtra = ownerless("kurt"),
+      },
+    },
+    {
+      name = "daycare",
+      domain = "daycare",
+      opts = {
+        key = "custom.daycare-ownerless",
+        family = "daycare",
+        bank = 661,
+        contactId = 6,
+        direction = "outgoing",
+        facts = {},
+        worldExtra = ownerless("daycare"),
+      },
+    },
+    {
+      name = "baoba",
+      domain = "safari",
+      opts = {
+        key = "custom.baoba-ownerless",
+        family = "baoba",
+        bank = 667,
+        direction = "incoming",
+        facts = { playerGender = 0 },
+        worldExtra = ownerless("safari"),
+      },
+    },
+  }
+  for _, case in ipairs(cases) do
+    local played = driveDynamicEntries(case.opts)
+    local terminal = case.answer ~= nil and settleCall(played, case.answer) or played.terminal
+    assert(type(terminal) == "table", case.name .. " terminates on its missing owner")
+    local failure = (terminal --[[@as table]]).error
+    Assert.notNil(failure, "the ownerless " .. case.name .. " call reports its missing owner")
+    Assert.equal((failure --[[@as table]]).domain, case.domain, "the " .. case.name .. " failure names its domain")
+  end
 end
 
 return T

@@ -52,9 +52,51 @@ end
 local function contactCatalog()
   return {
     contacts = {
-      { key = MOM_KEY, family = "mother", id = 1, trainer = 201, gift = 61, map = 0, sortWeight = 10 },
-      { key = NEIGHBOR_KEY, family = "friend", id = 10, trainer = 2, gift = 34, map = 8, sortWeight = 20 },
-      { key = TRAINER_KEY, family = "trainer", id = 30, trainer = 108, gift = 398, map = 259, sortWeight = 30 },
+      {
+        key = MOM_KEY,
+        family = "mother",
+        id = 1,
+        trainerClass = 201,
+        trainerId = 0,
+        mapId = 61,
+        gift = 0,
+        phoneScriptIfLocal = 1,
+        greetingMsgSet = 255,
+        rematchWeekday = 7,
+        rematchTimeOfDay = 3,
+        randomCallGroup = 0,
+        sortWeight = 10,
+      },
+      {
+        key = NEIGHBOR_KEY,
+        family = "friend",
+        id = 10,
+        trainerClass = 2,
+        trainerId = 8,
+        mapId = 34,
+        gift = 45,
+        phoneScriptIfLocal = 29,
+        greetingMsgSet = 0,
+        rematchWeekday = 1,
+        rematchTimeOfDay = 1,
+        randomCallGroup = 1,
+        sortWeight = 20,
+      },
+      {
+        key = TRAINER_KEY,
+        family = "trainer",
+        id = 30,
+        trainerClass = 108,
+        trainerId = 259,
+        mapId = 398,
+        gift = 0,
+        phoneScriptIfLocal = 181,
+        greetingMsgSet = 255,
+        rematchWeekday = 0,
+        rematchTimeOfDay = 1,
+        randomCallGroup = 2,
+        sortWeight = 30,
+      },
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
     callTriggers = {},
@@ -78,7 +120,7 @@ end
 ---@return table bundle, table runtime the composed bundle and its fake owner
 local function composeGear(friends)
   local runtime = {
-    session = { currentMap = { mapSectionNativeId = 8 } },
+    session = { currentMap = { mapId = 8, mapSectionNativeId = 8 } },
     eventState = {
       isFlagSet = function()
         return false
@@ -127,7 +169,12 @@ local function composeGear(friends)
     assets = assetFamily(friends.catalog),
     clock = runtime.localClock,
     audio = nil,
-    messages = { greeting = "test.greeting.ref" },
+    messages = {
+      greeting = "test.greeting.ref",
+      resolvePhoneUiMessage = function(_, entryId)
+        return { text = "ui" .. tostring(entryId), tokens = { { kind = "glyph", text = "u" } } }
+      end,
+    },
   })
   runtime.pokegear = bundle
   return bundle, runtime
@@ -144,8 +191,12 @@ local function phoneSnapshot(state)
   for key, value in pairs(phone.triggers) do
     copy.triggers[key] = value
   end
-  for key, value in pairs(phone.history) do
-    copy.history[key] = value
+  copy.history = {}
+  for chunk, list in pairs(phone.history) do
+    copy.history[chunk] = {}
+    for index, key in ipairs(list) do
+      copy.history[chunk][index] = key
+    end
   end
   return copy
 end

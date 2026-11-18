@@ -1,6 +1,10 @@
--- Native phone names, incoming caller labels, and call pages cross the
--- production field composition over the user's generated ROM cache. The
--- scenarios stop at detached views before the graphics host is invoked.
+-- Native phone text through the production field composition over the
+-- user's generated ROM cache: the Phone list rows and the incoming-call
+-- banner both read their caller names from the source bank, and a menu
+-- call publishes ROM-resolved dialogue pages through the field text path
+-- at the configured typing speed. One boot covers the acquisition, the
+-- list, the live call, and the incoming banner; the scenarios stop at
+-- detached views before the graphics host is invoked.
 
 local Assert = require("tests.support.Assert")
 local Fixture = require("tests.support.PokegearJourneyFixture")
@@ -62,7 +66,29 @@ local function actionEdge(game)
   game.runtime:releaseAction()
 end
 
-function T.tests.native_phone_rows_and_incoming_banner_share_rom_resolved_names()
+-- Opens the acquired gear card on the Phone tab and waits out its
+-- opening transition.
+local function openPhoneCard(game)
+  game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+  Fixture.openGearThroughMenu(game)
+  game:advanceUntil("the opening Phone transition completes", function()
+    local status = game.runtime.applicationHost:status().application
+    return status ~= nil and status.transition == nil
+  end, 40)
+end
+
+-- Advances the live conversation until the phone card releases it.
+local function settleCall(game)
+  for _ = 1, 400 do
+    if phoneView(game).call == nil then
+      return
+    end
+    actionEdge(game)
+  end
+  error("the live phone call never settled", 0)
+end
+
+function T.tests.phone_rows_banner_and_call_pages_share_one_rom_text_path()
   local sample = { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
   local clock = LocalClock.new(function()
     return {
@@ -84,8 +110,9 @@ function T.tests.native_phone_rows_and_incoming_banner_share_rom_resolved_names(
       state:registerContact(contact.key)
     end
 
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
-    Fixture.openGearThroughMenu(game)
+    -- The list rows: every acquired native caller shows the bank's
+    -- entry-zero name and its own class cell, never an internal key.
+    openPhoneCard(game)
     local rowsByKey = {}
     for _, row in ipairs(phoneView(game).list.rows) do
       rowsByKey[row.contact] = row
@@ -100,9 +127,7 @@ function T.tests.native_phone_rows_and_incoming_banner_share_rom_resolved_names(
           "",
           "Mom's native class window is blank, got "
             .. tostring(row.class)
-            .. " from class "
-            .. tostring(contact.contactClass)
-            .. " rule "
+            .. " from class rule "
             .. tostring(contact.class.kind)
             .. ":"
             .. tostring(contact.class.bank)
@@ -114,51 +139,17 @@ function T.tests.native_phone_rows_and_incoming_banner_share_rom_resolved_names(
         Assert.isFalse(row.class == contact.key, "the class cell never displays a caller key")
       end
     end
-    Fixture.closeGearThroughMenu(game)
 
-    for _, contact in ipairs(catalog.contacts) do
-      state:registerContact(contact.key)
-    end
-    local trigger = assert(catalog.callTriggers[1], "the source catalog has a native incoming-call trigger")
-    local calls = assert(game.runtime.incomingCalls, "the field runtime owns incoming-call policy")
-    calls:setTrigger(trigger.key, true)
-    sample.minute = 1
-    game:step()
-    game:step()
-
-    local notice = calls:notification()
-    Assert.isTrue(type(notice) == "table", "the production incoming-call policy publishes its eligible banner")
-    local contact = nil
-    for _, entry in ipairs(catalog.contacts) do
-      if entry.key == notice.contactKey then
-        contact = entry
-        break
-      end
-    end
-    contact = assert(contact, "the incoming banner caller resolves through the native phonebook")
-    Assert.equal(notice.name, sourceName(game, contact), "the banner uses the caller bank's entry-zero name")
-    Assert.isFalse(notice.name == notice.contactKey, "the incoming banner never exposes an internal caller key")
-    Assert.equal(notice.nameTokens[1], notice.name, "the banner text token carries its resolved caller name")
-  end, { localClock = clock })
-end
-
-function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_text_path()
-  Fixture.withGame(Fixture.TOWN, function(game)
-    local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns the ROM-derived phone catalog")
-    local mom = contactByFamily(catalog, "mother")
-    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
-    Fixture.openGearThroughMenu(game)
-    game:advanceUntil("the opening Phone transition completes", function()
-      local status = game.runtime.applicationHost:status().application
-      return status ~= nil and status.transition == nil
-    end, 40)
-    -- The gear opens with the strip focused: the first edge enters the
-    -- card, the second opens the row menu, the third starts the call,
-    -- and the fourth advances to the message stage.
+    -- The live menu call: the first edge enters the card, the second
+    -- opens the row menu, the third starts the call, and the source dial
+    -- then settles into the conversation.
     actionEdge(game)
     actionEdge(game)
     actionEdge(game)
-    actionEdge(game)
+    game:advanceUntil("the source dial settles into the conversation", function()
+      local call = phoneView(game).call
+      return call ~= nil and call.stage ~= "connecting"
+    end, 20)
     local call = assert(phoneView(game).call, "the live phone call publishes its detached text view")
     Assert.equal(call.contact, mom.key, "the selected menu row starts Mom's production phone call")
     Assert.equal(
@@ -204,7 +195,34 @@ function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_te
     actionEdge(game)
     local completed = assert(phoneView(game).call, "completing the page keeps the conversation")
     Assert.equal(completed.revealed, completed.total, "a forced edge completes the open page")
-  end)
+    settleCall(game)
+    Fixture.closeGearThroughMenu(game)
+
+    -- The incoming banner reads the same source names as the list rows:
+    -- the eligible trigger publishes its caller through the live policy.
+    for _, contact in ipairs(catalog.contacts) do
+      state:registerContact(contact.key)
+    end
+    local trigger = assert(catalog.callTriggers[1], "the source catalog has a native incoming-call trigger")
+    local calls = assert(game.runtime.incomingCalls, "the field runtime owns incoming-call policy")
+    calls:setTrigger(trigger.key, true)
+    sample.minute = sample.minute + 1
+    game:step()
+    game:step()
+    local notice = calls:notification()
+    Assert.isTrue(type(notice) == "table", "the production incoming-call policy publishes its eligible banner")
+    local bannerContact = nil
+    for _, entry in ipairs(catalog.contacts) do
+      if entry.key == notice.contactKey then
+        bannerContact = entry
+        break
+      end
+    end
+    bannerContact = assert(bannerContact, "the incoming banner caller resolves through the native phonebook")
+    Assert.equal(notice.name, sourceName(game, bannerContact), "the banner uses the caller bank's entry-zero name")
+    Assert.isFalse(notice.name == notice.contactKey, "the incoming banner never exposes an internal caller key")
+    Assert.equal(notice.nameTokens[1], notice.name, "the banner text token carries its resolved caller name")
+  end, { localClock = clock })
 end
 
 function T.tests.native_phone_menu_releases_a_wrong_bank_definition()
@@ -230,11 +248,7 @@ function T.tests.native_phone_menu_releases_a_wrong_bank_definition()
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
     game.runtime.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_GAVE_RIVAL_NAME_TO_OFFICER)
     game.runtime.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL)
-    Fixture.openGearThroughMenu(game)
-    game:advanceUntil("the opening Phone transition completes", function()
-      local status = game.runtime.applicationHost:status().application
-      return status ~= nil and status.transition == nil
-    end, 40)
+    openPhoneCard(game)
     actionEdge(game)
     actionEdge(game)
     actionEdge(game)

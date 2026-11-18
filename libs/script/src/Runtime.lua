@@ -2457,6 +2457,37 @@ do
     kindCodes = { [0] = "ordinary" },
   }
 
+  -- One evaluated source integer operand inside its native width: the
+  -- staged call markers are an unsigned byte and a phone-script number.
+  ---@param node table<string, unknown>
+  ---@param run table<string, unknown>
+  ---@param name string
+  ---@param op string
+  ---@param limit integer inclusive
+  ---@return integer
+  function GearEval.evalSourceCode(node, run, name, op, limit)
+    local value = semanticsFor(run).evaluateValue(node[name], run)
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > limit then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "phone setup names a source " .. name .. " inside its native width",
+        { scriptId = run.instance.scriptId, op = op, field = name, value = value }
+      )
+    end
+    return value --[[@as integer]]
+  end
+
+  -- The field's phone call manager (source GearPhoneRingManager): it holds
+  -- the one pending caller request a script setup writes and the launch
+  -- consumes.
+  ---@param run table<string, unknown>
+  ---@return table<string, unknown>
+  function GearEval.calls(run)
+    local calls = requireService(run, "phoneCalls")
+    assert(calls ~= nil, "phone call manager is available after the missing-service error")
+    return calls
+  end
+
   ---@param value unknown
   ---@param run table<string, unknown>
   ---@param op string
@@ -2577,52 +2608,43 @@ do
 
   local function handlePhoneSetCall(node, run)
     requireForeground(run, "phone_set_call")
-    local host = phoneService(run)
+    local calls = GearEval.calls(run)
     local contact = GearEval.evalContact(node, run, "contact", "phone_set_call")
-    local direction = GearEval.evalDirection(node, run, "direction", "phone_set_call")
-    local kind = GearEval.evalKind(node, run, "kind", "phone_set_call")
-    local staged = { contact = contact, direction = direction, kind = kind }
-    -- Scripted field calls (ScrCmd_SetPhoneCall operand 2/3) thread the
-    -- source scripted flag and script identity when the node carries
-    -- them; menu and synthetic requests omit both and stay unscripted.
-    for _, name in ipairs({ "isScriptedCall", "scriptedCall", "callScriptID", "scriptId" }) do
-      if node[name] ~= nil then
-        local value = semanticsFor(run).evaluateValue(node[name], run)
-        if type(value) == "number" and value % 1 == 0 then
-          if name == "isScriptedCall" or name == "scriptedCall" then
-            staged.isScriptedCall = value
-          else
-            staged.callScriptID = value
-          end
-        end
-      end
-    end
-    host:stageCall(run.instance.instanceId, staged)
+    local scriptedCall = GearEval.evalSourceCode(node, run, "scriptedCall", "phone_set_call", 0xFF)
+    local callScriptID = GearEval.evalSourceCode(node, run, "callScriptID", "phone_set_call", 0xFFFF)
+    -- The source setup stores the caller parameters on the ring manager,
+    -- which the launch reads back as an incoming call whose selector sees
+    -- the scripted marker and predefined script identity. Staging keeps
+    -- those source facts intact instead of collapsing them into a
+    -- direction and kind.
+    calls:stageCall({ contact = contact, isScriptedCall = scriptedCall, callScriptID = callScriptID })
     return Runtime.OUTCOME_CONTINUE
   end
 
   local function handlePhoneRunCall(_, run)
     requireForeground(run, "phone_run_call")
-    local host = phoneService(run)
-    local pending = host:takeStagedCall(run.instance.instanceId)
+    local calls = GearEval.calls(run)
+    local pending = calls:takePendingCall()
     if pending == nil then
       Errors.raise(
         ScriptErrors.FEATURE_UNAVAILABLE,
-        "phone run has no staged pending request",
+        "phone run has no pending call request",
         { scriptId = run.instance.scriptId, op = "phone_run_call" }
       )
     end
-    assert(type(pending) == "table", "staged phone requests stay records")
-    local staged = pending --[[@as table<string, string>]]
+    assert(type(pending) == "table", "pending phone requests stay records")
+    local manager = pending --[[@as table<string, unknown>]]
     local scriptId = run.instance.scriptId
-    assert(type(scriptId) == "string", "staged phone runs carry their script context")
+    assert(type(scriptId) == "string", "phone runs carry their script context")
+    -- Every launch is an incoming call, and the conversation selector reads
+    -- the source scripted marker and predefined script identity.
     local request = {
       id = "phone:" .. tostring(run.instance.instanceId) .. ":" .. tostring(run.tick),
-      contact = staged.contact,
-      direction = staged.direction,
-      kind = staged.kind,
-      isScriptedCall = staged.isScriptedCall,
-      callScriptID = staged.callScriptID,
+      contact = manager.contactKey,
+      direction = "incoming",
+      kind = "incoming",
+      isScriptedCall = manager.isScriptedCall,
+      callScriptID = manager.callScriptID,
     }
     return blockOnTask(run, "pokegear_application", {
       kind = "call",

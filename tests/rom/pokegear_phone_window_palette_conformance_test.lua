@@ -251,7 +251,7 @@ function T.phone_dim_variants_follow_the_source_blend(romFs, versionId)
   local manifest = assert(bundle.manifest, versionId .. " publishes its pokegear manifest")
   Assert.equal(
     manifest.schema,
-    "g4-pokegear-assets-v3",
+    "g4-pokegear-assets-v4",
     versionId .. " publishes the generated family with its dim roles"
   )
   local phone = assert(manifest.phone, versionId .. " publishes its phone section")

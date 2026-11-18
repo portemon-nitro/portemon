@@ -53,10 +53,20 @@ function FieldScriptScreenFade.new()
   }, FieldScriptScreenFade)
 end
 
+-- The script controllers own at most one fade at a time; starting a second
+-- fade while one is still active is a programming/source-sequencing error:
+-- two concurrent script screen fades must never blend.
+---@class FieldScriptScreenFadeSpec
+---@field direction "out"|"in"
+---@field color string
+---@field duration integer source frames
+---@field speed integer frames per step
+---@field screenScope "main"|"both"?
+
 -- Begin a screen fade. Starting a second fade while one is still active is a
 -- programming/source-sequencing error: two concurrent script screen fades
 -- must never blend.
----@param spec { direction: "out"|"in", color: string, duration: integer, speed: integer, screenScope?: "main"|"both" }
+---@param spec FieldScriptScreenFadeSpec
 ---@return integer lease
 function FieldScriptScreenFade:startFade(spec)
   assert(self:fadeDone(), "a script screen fade is already active")

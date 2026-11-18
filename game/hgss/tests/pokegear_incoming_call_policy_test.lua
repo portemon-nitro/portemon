@@ -1,7 +1,8 @@
 -- Incoming-call policy below the acceptance scenarios: collaborator and
 -- journal shape rejection, same-map exclusion, history-covered pool
--- resets, the kind-zero trigger clearing rule, quiet disposal, and
--- save/restore preservation with transient dropped. Every expectation
+-- resets, the source launch boundary (a trigger launch clears its flag
+-- and records no caller; a random launch records one), quiet disposal,
+-- and save/restore preservation with transient dropped. Every expectation
 -- replays the companion streams independently where draws matter. No
 -- derived assets are required. No ROM data is required.
 
@@ -47,10 +48,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -96,7 +95,7 @@ local function fixtureManifest(contacts, triggers)
     order[#order + 1] = contact.key
   end
   return assertManifest({
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -152,7 +151,6 @@ local function silentAudio()
   function audio:completeRing()
     self.playing = false
   end
-  function audio:stopRing() end
   return audio
 end
 
@@ -187,6 +185,8 @@ local function freshRig(seed, contacts, triggers, setTriggers)
     state:setTrigger(key, true)
   end
   local host = recordingHost()
+  local audio = silentAudio()
+  local scriptStarts = {}
   local calls = IncomingCalls.new({
     state = state,
     catalog = record.catalog,
@@ -194,9 +194,16 @@ local function freshRig(seed, contacts, triggers, setTriggers)
     random = PokegearRandom.new(seed),
     world = PhoneWorldContext.new({ state = state, flags = {} }),
     host = host,
-    audio = silentAudio(),
+    audio = audio,
+    startCallScript = function()
+      scriptStarts[#scriptStarts + 1] = true
+      return "scene-" .. tostring(#scriptStarts)
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
-  return { calls = calls, state = state, record = record, host = host }
+  return { calls = calls, state = state, record = record, host = host, audio = audio, scriptStarts = scriptStarts }
 end
 
 ---@param calls table
@@ -223,7 +230,10 @@ end
 -- Construction names its missing collaborators instead of staging a
 -- half-owned coordinator.
 function T.tests.incoming_call_construction_rejects_malformed_collaborators()
-  local record = fixtureManifest({ { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }, {})
+  local record = fixtureManifest(
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } },
+    {}
+  )
   local state = PokegearState.new({ seed = 7 }, { catalog = record.catalog })
   local good = {
     state = state,
@@ -233,6 +243,12 @@ function T.tests.incoming_call_construction_rejects_malformed_collaborators()
     world = PhoneWorldContext.new({ state = state, flags = {} }),
     host = recordingHost(),
     audio = silentAudio(),
+    startCallScript = function()
+      return "scene-1"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   }
   Assert.throws(function()
     IncomingCalls.new({})
@@ -250,15 +266,364 @@ function T.tests.incoming_call_construction_rejects_malformed_collaborators()
   Assert.throws(function()
     IncomingCalls.new(broken)
   end, "a malformed companion host must fail")
+  broken.host = good.host
+  broken.startCallScript = true
+  Assert.throws(function()
+    IncomingCalls.new(broken)
+  end, "a missing scene-script starter must fail")
   local calls = IncomingCalls.new(good)
   calls:dispose()
+end
+
+-- The random pool only admits native pool caller types in the drawn
+-- group: a mother-type contact never rings randomly, and a group-one
+-- contact stays silent on a category-zero draw.
+function T.tests.random_pool_admits_only_pool_types_in_the_drawn_group()
+  local seed = findPassingSeed()
+  local rig = freshRig(seed, {
+    { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother", entryType = 1, randomCallGroup = 0 },
+    {
+      key = "custom.trainer-late",
+      name = "LATE",
+      sortWeight = 20,
+      family = "trainer",
+      entryType = 0,
+      randomCallGroup = 1,
+    },
+  }, {}, {})
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(rig.calls:notification(), "no pool type in the drawn group stays silent")
+  rig.calls:dispose()
+end
+
+-- A full recent-caller chunk stays bounded exactly like the source
+-- SaveMisc add at launch: the candidate count captured at pick decides
+-- whether the launch clears the chunk before recording or shifts its
+-- oldest entry out.
+function T.tests.full_chunks_clear_or_shift_instead_of_growing()
+  local seed = findPassingSeed()
+  -- Five group-zero candidates against a four-slot chunk: the pick leaves
+  -- one uncovered caller, and the launch sees candidate count == size + 1
+  -- so it clears the chunk before recording.
+  local clearing = {
+    { key = "custom.a", name = "A", sortWeight = 10, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.b", name = "B", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.c", name = "C", sortWeight = 30, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.d", name = "D", sortWeight = 40, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.f", name = "F", sortWeight = 50, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.e", name = "E", sortWeight = 60, family = "trainer", entryType = 0, randomCallGroup = 1 },
+  }
+  local rig = freshRig(seed, clearing, {}, {})
+  rig.state:setCallHistory({
+    [0] = { "custom.a", "custom.b", "custom.c", "custom.d" },
+    [1] = { "custom.e" },
+    [2] = {},
+  })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.notNil(rig.calls:notification(), "the uncovered caller rings")
+  rig.calls:accept("field:test-parent")
+  Assert.deepEqual(
+    rig.state:readPhone().history,
+    { [0] = { "custom.f" }, [1] = { "custom.e" }, [2] = {} },
+    "the full chunk clears while the other chunk stays intact"
+  )
+  rig.calls:dispose()
+
+  -- The shift branch needs a pool whose candidate count is not the chunk
+  -- size plus one, so the launch keeps the chunk and drops its oldest
+  -- recorded caller instead.
+  local shifting = {
+    { key = "custom.k1", name = "K1", sortWeight = 5, family = "trainer", entryType = 201, randomCallGroup = 0 },
+    { key = "custom.k2", name = "K2", sortWeight = 6, family = "trainer", entryType = 201, randomCallGroup = 0 },
+    { key = "custom.k3", name = "K3", sortWeight = 10, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.k4", name = "K4", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.k5", name = "K5", sortWeight = 30, family = "trainer", entryType = 0, randomCallGroup = 0 },
+  }
+  local shiftingRig = freshRig(seed, shifting, {}, {})
+  shiftingRig.state:setCallHistory({
+    [0] = { "custom.k1", "custom.k2", "custom.k3", "custom.k4" },
+    [1] = {},
+    [2] = {},
+  })
+  driveEligible(shiftingRig.calls)
+  shiftingRig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  local ringing = shiftingRig.calls:notification()
+  Assert.notNil(ringing, "the shifted pool still rings")
+  assert(type(ringing) == "table", "ringing publishes its caller view")
+  Assert.equal(ringing.contactKey, "custom.k5", "only the uncovered caller can ring")
+  shiftingRig.calls:accept("field:test-parent")
+  Assert.deepEqual(
+    shiftingRig.state:readPhone().history[0],
+    { "custom.k2", "custom.k3", "custom.k4", "custom.k5" },
+    "the full chunk shifts its oldest caller out"
+  )
+  shiftingRig.calls:dispose()
+end
+
+-- The source candidate count is taken before the map exclusion, so a
+-- same-map caller still counts toward the full-chunk decision: a chunk
+-- holding the other four candidates stays whole at pick and clears only
+-- when the launch records, instead of being wiped at pick.
+function T.tests.the_candidate_count_covers_same_map_callers()
+  local seed = findPassingSeed()
+  local contacts = {
+    { key = "custom.a", name = "A", sortWeight = 10, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.b", name = "B", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = "custom.c", name = "C", sortWeight = 30, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    {
+      key = "custom.d",
+      name = "D",
+      sortWeight = 40,
+      family = "trainer",
+      entryType = 0,
+      randomCallGroup = 0,
+      place = "custom.new-bark-town",
+    },
+    { key = "custom.e", name = "E", sortWeight = 50, family = "trainer", entryType = 0, randomCallGroup = 0 },
+  }
+  local rig = freshRig(seed, contacts, {}, {})
+  rig.state:setCallHistory({ [0] = { "custom.a", "custom.b", "custom.c", "custom.d" }, [1] = {}, [2] = {} })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  local ringing = rig.calls:notification()
+  Assert.notNil(ringing, "the only off-map unrecorded caller rings")
+  assert(type(ringing) == "table", "ringing publishes its caller view")
+  Assert.equal(ringing.contactKey, "custom.e", "the same-map candidate never rings")
+  Assert.deepEqual(
+    rig.state:readPhone().history[0],
+    { "custom.a", "custom.b", "custom.c", "custom.d" },
+    "the pick alone leaves the chunk whole"
+  )
+  rig.calls:accept("field:test-parent")
+  Assert.deepEqual(
+    rig.state:readPhone().history[0],
+    { "custom.e" },
+    "the launch clears the covered chunk before recording"
+  )
+  rig.calls:dispose()
+end
+
+-- A fired trigger carries the source script identity into the host
+-- request: trigger rings launch with isScriptedCall 3 and the
+-- trigger's script, matching GearPhoneRingManager_SetCallerParams.
+function T.tests.trigger_rings_carry_their_source_script_identity()
+  local rig = freshRig(4242, {
+    { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother", entryType = 1, randomCallGroup = 0 },
+  }, {
+    { key = "custom.gift", contact = MOM_KEY, slot = 12, forcePickUp = false, callScriptID = 27 },
+  }, { "custom.gift" })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.notNil(rig.calls:notification(), "the scripted trigger rings")
+  rig.calls:accept("field:test-parent")
+  local request = assert(rig.host.opens[1], "acceptance opens the companion host").request
+  Assert.equal(request.isScriptedCall, 3, "trigger calls launch scripted")
+  Assert.equal(request.callScriptID, 27, "trigger calls carry their source script")
+  rig.calls:dispose()
+end
+
+-- Only the Day-Care Man trigger requires a registered number: his ring
+-- stays silent until registered, while other triggers ring for
+-- unregistered callers exactly like the source pick rule.
+function T.tests.only_the_daycare_man_trigger_requires_registration()
+  local contacts = {
+    { key = "custom.daycare-man", name = "MAN", sortWeight = 10, family = "daycare", id = 6 },
+    { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
+  }
+  local triggers = {
+    { key = "custom.man-egg", contact = "custom.daycare-man", slot = 5, forcePickUp = false },
+    { key = "custom.plain", contact = TRAINER_KEY, forcePickUp = false, slot = 6 },
+  }
+  local record = fixtureManifest(contacts, triggers)
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact(TRAINER_KEY)
+  state:setTrigger("custom.man-egg", true)
+  state:setTrigger("custom.plain", true)
+  local calls = IncomingCalls.new({
+    state = state,
+    catalog = record.catalog,
+    calendar = PokegearCalendar.new(state),
+    random = PokegearRandom.new(4242),
+    world = PhoneWorldContext.new({ state = state, flags = {} }),
+    host = recordingHost(),
+    audio = silentAudio(),
+    startCallScript = function()
+      return "scene-test"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
+  })
+  driveEligible(calls)
+  calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  local ringing = calls:notification()
+  Assert.notNil(ringing, "the unregistered ordinary trigger still rings")
+  assert(type(ringing) == "table", "ringing publishes its caller view")
+  Assert.equal(ringing.contactKey, TRAINER_KEY, "the daycare-man trigger stays silent until registered")
+  calls:dispose()
+end
+
+-- An expired ring quiets and restarts the whole manager: the view
+-- clears after thirty-one live seconds and the reset cooldown refuses
+-- an immediate re-ring.
+function T.tests.an_expired_ring_quiets_and_restarts_the_cooldown()
+  local seed = findPassingSeed()
+  local contacts =
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } }
+  local rig = freshRig(seed, contacts, {}, {})
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.notNil(rig.calls:notification(), "the eligible call rings")
+  rig.calls:onFieldClock(moment(20, 1))
+  Assert.notNil(rig.calls:notification(), "the anchored ring still rings")
+  rig.calls:onFieldClock(moment(20, 32))
+  Assert.isFalse(rig.calls:notification(), "thirty-one live seconds expire the ring")
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(rig.calls:notification(), "the reset cooldown refuses an instant re-ring")
+  rig.calls:dispose()
+end
+
+-- A map whose header forbids incoming calls refuses every call before the
+-- gate draw and every trigger, like the source TryStartCall: nothing rings,
+-- the pending trigger keeps its flag, and a forced trigger does not start
+-- its scene script either.
+function T.tests.a_map_that_forbids_incoming_calls_stays_silent()
+  local contacts =
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } }
+  local triggers = {
+    { key = "custom.plain", contact = TRAINER_KEY, forcePickUp = false, slot = 6 },
+    {
+      key = "custom.forced",
+      contact = TRAINER_KEY,
+      slot = 7,
+      callScriptID = 142,
+      forcePickUp = true,
+    },
+  }
+  local record = fixtureManifest(contacts, triggers)
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact(TRAINER_KEY)
+  state:setTrigger("custom.plain", true)
+  local scriptStarts = 0
+  local calls = IncomingCalls.new({
+    state = state,
+    catalog = record.catalog,
+    calendar = PokegearCalendar.new(state),
+    random = PokegearRandom.new(4242),
+    world = PhoneWorldContext.new({ state = state, flags = {} }),
+    host = recordingHost(),
+    audio = silentAudio(),
+    startCallScript = function()
+      scriptStarts = scriptStarts + 1
+      return "scene-covered"
+    end,
+    mapReceivesCalls = function()
+      return false
+    end,
+  })
+  driveEligible(calls)
+  calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(calls:notification(), "a map without incoming coverage never rings")
+  Assert.isFalse(calls:hasPendingCall(), "a silent map stages no caller")
+  Assert.isTrue(state:readPhone().triggers["custom.plain"] == true, "the refused trigger keeps its flag")
+  state:setTrigger("custom.forced", true)
+  calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.equal(scriptStarts, 0, "a map without incoming coverage starts no forced call script")
+  Assert.isTrue(state:readPhone().triggers["custom.forced"] == true, "the refused forced trigger keeps its flag")
+  calls:dispose()
+end
+
+-- The launch boundary restarts the eligibility clock: the source
+-- gearRingingManagerReset runs when the app launch reads the caller
+-- params, so an answered call cannot be followed by a re-ring inside the
+-- next ten minutes. A scripted setup consumes the same boundary.
+function T.tests.a_launch_restarts_the_eligibility_clock_exactly_once()
+  local contacts =
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } }
+  local triggers = {
+    { key = "custom.first", contact = TRAINER_KEY, forcePickUp = false, slot = 6 },
+    { key = "custom.second", contact = TRAINER_KEY, forcePickUp = false, slot = 7 },
+  }
+  local rig = freshRig(4242, contacts, triggers, { "custom.first" })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.notNil(rig.calls:notification(), "the eligible trigger rings")
+  local request = rig.calls:takePendingCall()
+  assert(type(request) == "table", "the launch consumes the ringing caller")
+  Assert.isNil(rig.state:readPhone().triggers["custom.first"], "the launch clears the trigger flag")
+  Assert.isFalse(rig.calls:notification(), "the consumed request leaves no window behind")
+
+  -- A surviving trigger proves the clock, not silence, refuses the ring.
+  rig.state:setTrigger("custom.second", true)
+  rig.calls:onFieldClock(moment(29))
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.isFalse(rig.calls:notification(), "nine fresh minutes refuse the ring")
+  rig.calls:onFieldClock(moment(39))
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.notNil(rig.calls:notification(), "ten fresh minutes ring the surviving trigger")
+
+  -- A scripted setup consumes the same boundary: the manager refuses a
+  -- second pending request while one waits, and the launch clears it.
+  local scripted = freshRig(4242, contacts, triggers, {})
+  scripted.calls:stageCall({ contact = TRAINER_KEY, isScriptedCall = 2, callScriptID = 0 })
+  Assert.isTrue(scripted.calls:hasPendingCall(), "a scripted setup publishes its pending caller")
+  Assert.throws(function()
+    scripted.calls:stageCall({ contact = TRAINER_KEY, isScriptedCall = 2, callScriptID = 1 })
+  end, "one pending call owns the phone line")
+  local pending = scripted.calls:takePendingCall()
+  assert(type(pending) == "table", "the launch consumes the scripted request")
+  Assert.equal(pending.contactKey, TRAINER_KEY, "the scripted request names its caller")
+  Assert.equal(pending.isScriptedCall, 2, "the scripted request carries its marker")
+  Assert.equal(pending.callScriptID, 0, "the scripted request carries its script identity")
+  -- A marker that is neither 3 nor 0 closes neither boundary half: a
+  -- script setup carries no trigger and no chunk, so nothing moves.
+  Assert.equal(#scripted.state:readPhone().history[0], 0, "a scripted launch records no recent caller")
+  Assert.deepEqual(scripted.state:readPhone().triggers, {}, "a scripted launch clears no trigger")
+  Assert.isFalse(scripted.calls:hasPendingCall(), "the consumed scripted request leaves nothing behind")
+  Assert.isNil(scripted.calls:takePendingCall(), "the launch boundary consumes exactly once")
+  scripted.calls:dispose()
+  rig.calls:dispose()
+end
+
+-- A civil-day advance drives the Kenji errand exactly like the
+-- source daily update: a covering wait decrements with the activity
+-- cleared and the invitation kept, while an expired wait rolls a
+-- fresh 1-6 day wait and clears the staged invitation and gift.
+function T.tests.a_civil_day_advance_drives_the_kenji_errand_wait()
+  local KENJI_KEY = "custom.kenji"
+  local contacts = {
+    { key = KENJI_KEY, name = "KENJI", sortWeight = 20, family = "kenji", entryType = 0, randomCallGroup = 0 },
+  }
+  local rig = freshRig(4242, contacts, {}, {})
+  rig.state:setKenjiErrand(3, true)
+  rig.state:setRematch(KENJI_KEY, { stage = 1, wins = 0 })
+  rig.state:setContactReward(KENJI_KEY, { item = "ITEM_PROTEIN", quantity = 1 })
+  rig.calls:onFieldClock({ year = 2024, month = 1, day = 8, hour = 23, minute = 59, second = 0 })
+  rig.calls:onFieldClock({ year = 2024, month = 1, day = 9, hour = 0, minute = 1, second = 0 })
+  local covered = rig.state:readPhone()
+  Assert.equal(covered.kenji.waitDays, 2, "a covering wait decrements by the elapsed day")
+  Assert.isFalse(covered.kenji.active, "the daily update always clears the activity flag")
+  Assert.notNil(covered.rematches[KENJI_KEY], "a covering wait keeps the staged invitation")
+  Assert.notNil(covered.contacts[KENJI_KEY].reward, "a covering wait keeps the staged gift")
+  rig.state:setKenjiErrand(1, true)
+  rig.calls:onFieldClock({ year = 2024, month = 1, day = 11, hour = 0, minute = 1, second = 0 })
+  local expired = rig.state:readPhone()
+  local reroll = expired.kenji.waitDays
+  Assert.isTrue(reroll >= 1 and reroll <= 6, "an expired wait rolls a fresh one-to-six day wait")
+  Assert.isFalse(expired.kenji.active, "an expired wait clears the activity flag")
+  Assert.isNil(expired.rematches[KENJI_KEY], "an expired wait clears the staged invitation")
+  Assert.isNil(expired.contacts[KENJI_KEY].reward, "an expired wait clears the staged gift")
+  rig.calls:dispose()
 end
 
 -- Fresh owners count live minutes from their initial calendar sample,
 -- while restored owners discard only the first offline report.
 function T.tests.cooldown_counts_from_first_live_minute_for_fresh_and_restored_owners()
   local seed = findPassingSeed()
-  local contacts = { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }
+  local contacts =
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } }
   local fresh = freshRig(seed, contacts, {}, {})
   fresh.calls:onFieldClock(moment(0))
   fresh.calls:onFieldClock(moment(9))
@@ -289,6 +654,12 @@ function T.tests.cooldown_counts_from_first_live_minute_for_fresh_and_restored_o
     world = PhoneWorldContext.new({ state = restoredState, flags = {} }),
     host = recordingHost(),
     audio = silentAudio(),
+    startCallScript = function()
+      return "scene-test"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
   local offline = { year = 2024, month = 1, day = 11, hour = 10, minute = 0, second = 0 }
   local calendarBeforeOffline = restoredState:readCalendar()
@@ -337,6 +708,12 @@ function T.tests.cooldown_counts_from_first_live_minute_for_fresh_and_restored_o
     world = PhoneWorldContext.new({ state = sameTimeState, flags = {} }),
     host = recordingHost(),
     audio = silentAudio(),
+    startCallScript = function()
+      return "scene-test"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
   sameTime:onFieldClock(base)
   sameTime:onFieldClock(moment(1))
@@ -363,6 +740,12 @@ function T.tests.cooldown_counts_from_first_live_minute_for_fresh_and_restored_o
     world = PhoneWorldContext.new({ state = backwardState, flags = {} }),
     host = recordingHost(),
     audio = silentAudio(),
+    startCallScript = function()
+      return "scene-test"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
   backward:onFieldClock({ year = 2024, month = 1, day = 8, hour = 9, minute = 59, second = 0 })
   backward:onFieldClock({ year = 2024, month = 1, day = 8, hour = 10, minute = 8, second = 0 })
@@ -376,18 +759,19 @@ function T.tests.cooldown_counts_from_first_live_minute_for_fresh_and_restored_o
 end
 
 -- Corrupt selected facts fail with attribution instead of selecting a
--- plausible caller: an unknown trigger kind and a trigger naming a
--- contact outside the catalog both name their trigger key.
+-- plausible caller: a corrupt pickup flag and a trigger naming a contact
+-- outside the catalog both fail their manifest and their trigger key.
 function T.tests.corrupt_selected_trigger_facts_fail_with_attribution()
-  local contacts = { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }
-  local invalidKind = fixtureManifest(contacts, {})
-  invalidKind.catalog.callTriggers = {
-    { key = "custom.bad-kind", contact = TRAINER_KEY, kind = 7, slot = 1, clearOnPickup = false },
+  local contacts =
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } }
+  local invalidPickup = fixtureManifest(contacts, {})
+  invalidPickup.catalog.callTriggers = {
+    { key = "custom.bad-kind", contact = TRAINER_KEY, slot = 1, forcePickUp = "yes" },
   }
-  Assert.isNil(PokegearAssetSchema.validate(invalidKind), "the strict schema rejects unknown trigger kinds")
+  Assert.isNil(PokegearAssetSchema.validate(invalidPickup), "the strict schema rejects a non-boolean pickup flag")
   local danglingContact = fixtureManifest(contacts, {})
   danglingContact.catalog.callTriggers = {
-    { key = "custom.ghost", contact = "custom.ghost", kind = 3, slot = 1, clearOnPickup = false },
+    { key = "custom.ghost", contact = "custom.ghost", slot = 1, forcePickUp = false },
   }
   Assert.isNil(PokegearAssetSchema.validate(danglingContact), "the strict schema rejects dangling contacts")
 end
@@ -398,8 +782,24 @@ end
 function T.tests.callers_on_the_current_map_stay_silent_while_elsewhere_rings()
   local seed = findPassingSeed()
   local contacts = {
-    { key = NEAR_KEY, name = "NEAR", sortWeight = 10, family = "trainer", place = "custom.new-bark-town" },
-    { key = FAR_KEY, name = "FAR", sortWeight = 20, family = "trainer", place = "custom.far-town" },
+    {
+      key = NEAR_KEY,
+      name = "NEAR",
+      sortWeight = 10,
+      family = "trainer",
+      entryType = 0,
+      randomCallGroup = 0,
+      place = "custom.new-bark-town",
+    },
+    {
+      key = FAR_KEY,
+      name = "FAR",
+      sortWeight = 20,
+      family = "trainer",
+      entryType = 0,
+      randomCallGroup = 0,
+      place = "custom.far-town",
+    },
   }
   local rig = freshRig(seed, contacts, {}, {})
   driveEligible(rig.calls)
@@ -420,15 +820,16 @@ end
 
 -- A pool fully covered by call history resets its covering entries
 -- before filtering, so a heard pool can ring again instead of draining
--- the cooldown into silence.
+-- the cooldown into silence. The reset writes at pick; the picked caller
+-- lands in the journal only at the launch, like the source.
 function T.tests.a_history_covered_pool_resets_before_filtering()
   local seed = findPassingSeed()
   local contacts = {
-    { key = NEAR_KEY, name = "NEAR", sortWeight = 10, family = "trainer" },
-    { key = FAR_KEY, name = "FAR", sortWeight = 20, family = "trainer" },
+    { key = NEAR_KEY, name = "NEAR", sortWeight = 10, family = "trainer", entryType = 0, randomCallGroup = 0 },
+    { key = FAR_KEY, name = "FAR", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
   }
   local rig = freshRig(seed, contacts, {}, {})
-  rig.state:setCallHistory({ [NEAR_KEY] = true, [FAR_KEY] = true })
+  rig.state:setCallHistory({ [0] = { NEAR_KEY, FAR_KEY }, [1] = {}, [2] = {} })
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
   local ringing = rig.calls:notification()
@@ -438,32 +839,12 @@ function T.tests.a_history_covered_pool_resets_before_filtering()
     ringing.contactKey == NEAR_KEY or ringing.contactKey == FAR_KEY,
     "the reset pool still picks a catalogued caller"
   )
-  Assert.deepEqual(rig.state:readPhone().history, {}, "the reset drops exactly the covering entries")
+  Assert.equal(#rig.state:readPhone().history[0], 0, "the pick alone records no caller")
+  rig.calls:accept("field:test-parent")
+  local journal = rig.state:readPhone().history
+  Assert.equal(#journal[0], 1, "the launch records into the reset chunk")
+  Assert.equal(journal[0][1], ringing.contactKey, "the reset pool records exactly its picked caller")
   rig.calls:dispose()
-end
-
--- The call journal validates before assignment and a same-value write
--- never moves the revision.
-function T.tests.the_call_journal_validates_before_assignment()
-  local record = fixtureManifest({ { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }, {})
-  local state = PokegearState.new({ seed = 7 }, { catalog = record.catalog })
-  Assert.throws(function()
-    state:setCallHistory("custom.trainer-plain")
-  end, "a non-table journal must fail")
-  Assert.throws(function()
-    state:setCallHistory({ [""] = true })
-  end, "an empty caller key must fail")
-  Assert.throws(function()
-    state:setCallHistory({ [TRAINER_KEY] = "yes" })
-  end, "a non-set journal value must fail")
-  local revision = state:revision()
-  state:setCallHistory({})
-  Assert.equal(state:revision(), revision, "rewriting the empty journal moves no revision")
-  state:setCallHistory({ [TRAINER_KEY] = true })
-  Assert.isTrue(state:readPhone().history[TRAINER_KEY] == true, "the recorded caller joins the journal")
-  local recorded = state:revision()
-  state:setCallHistory({ [TRAINER_KEY] = true })
-  Assert.equal(state:revision(), recorded, "recording the same caller moves no revision")
 end
 
 -- Saving keeps the durable trigger and history facts while dropping the
@@ -473,10 +854,10 @@ function T.tests.saved_companions_keep_triggers_and_history_but_drop_the_ring()
   local seed = findPassingSeed()
   local contacts = {
     { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
-    { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" },
+    { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
   }
   local rig = freshRig(seed, contacts, {
-    { key = MOM_TRIGGER, contact = MOM_KEY, kind = 3, slot = 12, clearOnPickup = true },
+    { key = MOM_TRIGGER, contact = MOM_KEY, slot = 12, forcePickUp = false },
   }, { MOM_TRIGGER })
   local random = PokegearRandom.new(seed)
   rig.calls = IncomingCalls.new({
@@ -487,6 +868,12 @@ function T.tests.saved_companions_keep_triggers_and_history_but_drop_the_ring()
     world = PhoneWorldContext.new({ state = rig.state, flags = {} }),
     host = rig.host,
     audio = silentAudio(),
+    startCallScript = function()
+      return "scene-test"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
@@ -505,6 +892,12 @@ function T.tests.saved_companions_keep_triggers_and_history_but_drop_the_ring()
     world = PhoneWorldContext.new({ state = restored, flags = {} }),
     host = host,
     audio = silentAudio(),
+    startCallScript = function()
+      return "scene-test"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
   })
   Assert.isFalse(returned:notification(), "the restore drops the transient ring")
   returned:onFieldClock(moment(20))
@@ -523,7 +916,12 @@ end
 -- Accepting without a ring fails, disposal is idempotent, and disposed
 -- coordinators stay quiet instead of acting on borrowed owners.
 function T.tests.quiet_disposal_and_no_acceptance_without_a_ring()
-  local rig = freshRig(4242, { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }, {}, {})
+  local rig = freshRig(
+    4242,
+    { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 } },
+    {},
+    {}
+  )
   Assert.throws(function()
     rig.calls:accept("field:test-parent")
   end, "accepting without a ring must fail")
@@ -538,32 +936,69 @@ function T.tests.quiet_disposal_and_no_acceptance_without_a_ring()
   end, "a disposed coordinator takes no opportunity")
 end
 
--- A kind-zero trigger records ordinary history at acceptance without
--- clearing its flag: only event triggers clear, exactly once.
-function T.tests.a_kind_zero_trigger_records_history_without_clearing()
-  local rig = freshRig(
-    4242,
-    {
-      { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
-      { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" },
-    },
-    { { key = "custom.callback", contact = TRAINER_KEY, kind = 0, slot = 1, clearOnPickup = false } },
-    { "custom.callback" }
-  )
+-- The source launch boundary reads isScriptedCall, never a trigger
+-- classification: a trigger launch (marker 3) clears the trigger it
+-- launched and records no recent caller, exactly like
+-- FieldSystem_InitPokegearArgs.
+function T.tests.a_trigger_launch_clears_its_flag_and_records_no_caller()
+  local rig = freshRig(4242, {
+    { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
+    { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
+  }, { { key = "custom.callback", contact = TRAINER_KEY, forcePickUp = false, slot = 1 } }, { "custom.callback" })
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
   local ringing = rig.calls:notification()
-  Assert.notNil(ringing, "the ordinary trigger rings")
+  Assert.notNil(ringing, "the trigger rings")
   assert(type(ringing) == "table", "ringing publishes its caller view")
-  Assert.equal(ringing.contactKey, TRAINER_KEY, "the ordinary trigger names its caller")
+  Assert.equal(ringing.contactKey, TRAINER_KEY, "the trigger names its caller")
   rig.calls:accept("field:test-parent")
   Assert.equal(#rig.host.opens, 1, "acceptance enters the companion host exactly once")
-  Assert.isTrue(rig.state:readPhone().history[TRAINER_KEY] == true, "accepting the ordinary trigger records its caller")
+  Assert.equal(rig.state:readPhone().triggers["custom.callback"], nil, "the launch clears its own trigger flag")
+  local journal = rig.state:readPhone().history
+  for chunk = 0, 2 do
+    Assert.equal(#journal[chunk], 0, "a trigger launch records no recent caller in chunk " .. chunk)
+  end
+  Assert.isFalse(rig.calls:notification(), "acceptance ends the ring")
+  rig.calls:dispose()
+end
+
+-- A forced trigger answers itself the way the source does: the caller
+-- lands on the manager (so the caller window shows) and the field starts
+-- the standard-bank call scene script, which is what rings and launches the
+-- call. Nothing opens here, the manager starts no tone loop of its own, and
+-- the trigger flag clears at the launch boundary rather than at the trigger.
+function T.tests.a_forced_trigger_starts_the_source_call_scene_script()
+  local rig = freshRig(4242, {
+    { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
+    { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer", entryType = 0, randomCallGroup = 0 },
+  }, {
+    {
+      key = "custom.forced",
+      contact = TRAINER_KEY,
+      slot = 7,
+      callScriptID = 142,
+      forcePickUp = true,
+    },
+  }, { "custom.forced" })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
+  Assert.equal(#rig.scriptStarts, 1, "a forced trigger starts the source call scene script")
+  Assert.equal(#rig.host.opens, 0, "the trigger itself opens nothing")
+  local notice = rig.calls:notification()
+  assert(type(notice) == "table", "the forced caller window publishes while its scene script rings")
+  Assert.equal(notice.contactKey, TRAINER_KEY, "the forced window names its caller")
+  Assert.equal(#rig.audio.plays, 0, "the manager starts no tone loop behind a forced call")
   Assert.isTrue(
-    rig.state:readPhone().triggers["custom.callback"] == true,
-    "accepting the ordinary trigger never clears its flag"
+    rig.state:readPhone().triggers["custom.forced"] == true,
+    "the forced trigger keeps its flag until the launch reads it"
   )
-  Assert.isFalse(rig.calls:notification(), "acceptance ends the ordinary ring")
+  local pending = rig.calls:takePendingCall()
+  assert(type(pending) == "table", "the launch consumes the pending forced caller")
+  Assert.equal(pending.contactKey, TRAINER_KEY, "the pending request names its caller")
+  Assert.equal(pending.isScriptedCall, 3, "the pending request carries the scripted marker")
+  Assert.equal(pending.callScriptID, 142, "the pending request carries the trigger script identity")
+  Assert.isNil(rig.state:readPhone().triggers["custom.forced"], "the launch clears the trigger flag")
+  Assert.isFalse(rig.calls:notification(), "the consumed request leaves no window behind")
   rig.calls:dispose()
 end
 

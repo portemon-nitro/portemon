@@ -2509,7 +2509,7 @@ local function openPartyChild(intent, services)
   ---@return integer? decomp input index in Handle order, nil for foreign identities
   local function wrapperInputForId(id)
     local page = child._page
-    if page ~= "summary" and page ~= "moves" and page ~= "move_detail" then
+    if page == nil or (page ~= "summary" and page ~= "moves" and page ~= "move_detail") then
       return nil
     end
     ---@cast page string
@@ -2551,7 +2551,7 @@ local function openPartyChild(intent, services)
         break
       end
       local page = child._page
-      if page ~= "summary" and page ~= "moves" and page ~= "move_detail" then
+      if page == nil or (page ~= "summary" and page ~= "moves" and page ~= "move_detail") then
         break
       end
       ---@cast page string

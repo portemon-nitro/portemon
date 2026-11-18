@@ -573,6 +573,56 @@ function PokedexKnowledge:countCaught(mode)
   return count
 end
 
+-- The source mythical sets behind the Oak ratings
+-- (sNationalMythicals/sJohtoMythicals order): excluded from the owned
+-- rating count exactly like Pokedex_CountOwned_ExcludeMythical.
+PokedexKnowledge.NATIONAL_MYTHICALS = {
+  "MEW",
+  "CELEBI",
+  "JIRACHI",
+  "DEOXYS",
+  "PHIONE",
+  "MANAPHY",
+  "DARKRAI",
+  "SHAYMIN",
+  "ARCEUS",
+}
+
+PokedexKnowledge.JOHTO_MYTHICALS = {
+  "MEW",
+  "CELEBI",
+}
+
+-- Counts owned mons excluding the mode's mythical set behind the Oak
+-- rating: the johto set excludes Mew and Celebi, the national set
+-- all nine mythicals.
+---@param mode string
+---@return integer
+function PokedexKnowledge:countOwnedExcludeMythical(mode)
+  if MODES[mode] ~= true then
+    fail("dex counts read exactly johto or national mode", { mode = mode })
+  end
+  local excluded = {}
+  for _, key in ipairs(PokedexKnowledge.NATIONAL_MYTHICALS) do
+    excluded[key] = true
+  end
+  if mode == "johto" then
+    excluded = {}
+    for _, key in ipairs(PokedexKnowledge.JOHTO_MYTHICALS) do
+      excluded[key] = true
+    end
+  end
+  local catalog = self._pokedexCatalog --[[@as table<string, unknown>]]
+  local orders = catalog.dexOrders --[[@as table<string, string[]>]]
+  local count = 0
+  for _, key in ipairs(orders[mode]) do
+    if self._caught[key] == true and excluded[key] ~= true then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 ---@return boolean
 function PokedexKnowledge:isJohtoDexComplete()
   local catalog = self._pokedexCatalog --[[@as table<string, unknown>]]

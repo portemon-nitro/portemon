@@ -1630,14 +1630,16 @@ end
 
 -- SetPhoneCall stages one evaluated setup request without blocking: the
 -- three operands stay value references (the single real use stages them
--- through script variables) and the runtime maps the evaluated direction
--- and kind codes onto the closed foreground vocabulary.
+-- through script variables). Source operands are the caller number, the
+-- scripted-call marker (ScrCmd_SetPhoneCall's isScriptedCall, 2 for a
+-- map-script call) and the predefined phone-script identity; the launch
+-- itself always opens the call as incoming (PokegearArgs isScriptedLaunch).
 function GearLowering.setPhoneCall(ins)
   return {
     op = "phone_set_call",
     contact = Operands.varRef(ins.operands[1]),
-    direction = Operands.varRef(ins.operands[2]),
-    kind = Operands.varRef(ins.operands[3]),
+    scriptedCall = Operands.varRef(ins.operands[2]),
+    callScriptID = Operands.varRef(ins.operands[3]),
   }
 end
 

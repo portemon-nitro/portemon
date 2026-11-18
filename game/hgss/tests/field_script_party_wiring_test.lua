@@ -72,7 +72,7 @@ local function stubRuntime()
     },
     fieldTerrainEffectController = {},
     scriptHosts = nil,
-    screenFade = nil,
+    screenFade = require("libs.hgss.src.transition.FieldScriptScreenFade").new(),
     auxiliaryFieldUi = {},
     contextChoiceProvider = {},
     menuHost = {},

@@ -150,7 +150,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field private overworld table<string, unknown>|nil
 ---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
----@field private acceptedAmbientCallHandle table<string, unknown>? private incoming call handle owned by this field session
+---@field private fieldCallHandle table<string, unknown>? private foreground call handle this field session steps and releases
 ---@field childResumePending boolean
 ---@field battleActive boolean whether an application battle owns player input
 ---@field foregroundHold boolean whether a presented battle holds field gameplay advancement
@@ -522,7 +522,7 @@ function FieldSession.new(options)
     incomingCalls = options.incomingCalls,
     pokegearApplications = options.pokegearApplications,
     easyChatScriptHost = options.easyChatScriptHost,
-    acceptedAmbientCallHandle = nil,
+    fieldCallHandle = nil,
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
@@ -548,30 +548,31 @@ function FieldSession:beginMapEntry()
   self._entryTerrainPending = true
 end
 
--- Cancels only the incoming-call handle admitted by this session. Scripted
--- Pokegear tasks remain owned by their scheduler and never enter this lane.
+-- Cancels only the foreground call handle this session opened (an
+-- answered ring or a forced source trigger). Scripted Pokegear tasks
+-- remain owned by their scheduler and never enter this lane.
 ---@param self FieldSession
 ---@param reason string
-function FieldSession:_cancelAmbientCall(reason)
-  local handle = self.acceptedAmbientCallHandle
+function FieldSession:_cancelFieldCall(reason)
+  local handle = self.fieldCallHandle
   if handle == nil then
     return
   end
-  local host = assert(self.pokegearApplications, "an accepted ambient call keeps its composed host")
+  local host = assert(self.pokegearApplications, "an owned field call keeps its composed host")
   local activeHandle = host:activeHandle()
   if activeHandle == handle then
     host:cancel(reason)
   elseif activeHandle == nil then
     host:close(handle)
   end
-  self.acceptedAmbientCallHandle = nil
+  self.fieldCallHandle = nil
   self.input:clearUi()
 end
 
 -- Releases the session-owned call before FieldRuntime disposes the shared
 -- phone host. The host's cancel operation releases the feature lease once.
 function FieldSession:dispose()
-  self:_cancelAmbientCall("field-session-disposed")
+  self:_cancelFieldCall("field-session-disposed")
 end
 
 -- A surfing avatar must stand on surfable water: an old save, warp, or
@@ -750,7 +751,7 @@ function FieldSession:_phoneClaimed()
   if hostModal(self.martHost) or hostModal(self.monNaming) or hostModal(self.pcApplications) then
     return true
   end
-  if hostModal(self.pokegearApplications) or self.acceptedAmbientCallHandle ~= nil then
+  if hostModal(self.pokegearApplications) or self.fieldCallHandle ~= nil then
     return true
   end
   local easyChatHost = self.easyChatScriptHost
@@ -764,9 +765,11 @@ function FieldSession:_phoneClaimed()
 end
 
 -- Offers one phone opportunity to the ambient incoming-call collaborator:
--- a claimed tick clears only transient ring state, a settled tick
--- evaluates. Mid-step ticks offer nothing so the banner never interrupts
--- motion. Absent collaborators cost nothing.
+-- a claimed tick quiets the line, a settled tick evaluates. Mid-step ticks
+-- offer nothing so the banner never interrupts motion. Absent
+-- collaborators cost nothing. A forced source trigger answers itself: the
+-- collaborator stages its caller and starts the source scene script, which
+-- then owns the field until the call returns.
 ---@param self FieldSession
 ---@param claimed boolean
 local function offerPhoneOpportunity(self, claimed)
@@ -786,11 +789,12 @@ end
 -- The idle-boundary gate for the Start Menu open edge: the menu may open
 -- only at a settled field boundary -- player idle, transition idle, no
 -- dialogue/signpost/script menu/context choice, no active foreground
--- script owner and no explicit player input lock. Any non-idle player
--- motion means "not idle"; the active application branch above has already
--- returned before this code runs.
+-- script owner, no script-owned companion call, and no explicit player
+-- input lock. Any non-idle player motion means "not idle"; the active
+-- application branch above has already returned before this code runs.
 ---@return boolean
 local function canOpenStartMenu(self)
+  local pokegearBusy = self.pokegearApplications ~= nil and self.pokegearApplications:isActive()
   return self.player.motion == "idle"
     and self.transition.phase == FieldTransition.PHASES.idle
     and not self.dialogue:isModal()
@@ -799,6 +803,7 @@ local function canOpenStartMenu(self)
     and not self.contextChoice:isActive()
     and not isForegroundActive(self.scriptScheduler)
     and not isPlayerInputOwned(self.scriptScheduler)
+    and not pokegearBusy
     and not self.battleActive
 end
 
@@ -1401,8 +1406,8 @@ function FieldSession:updateFixed(inputSnapshot)
     transitionInput = nil -- the map-entry script, not the preview, owns A
   end
   local playerAdvanced = self.transition:updateFixed(transitionInput)
-  if self.acceptedAmbientCallHandle ~= nil and self.transition.phase ~= FieldTransition.PHASES.idle then
-    self:_cancelAmbientCall("field-transition-started")
+  if self.fieldCallHandle ~= nil and self.transition.phase ~= FieldTransition.PHASES.idle then
+    self:_cancelFieldCall("field-transition-started")
   end
   if self.transition.locked or self.transition.completed then
     if not playerAdvanced and self.player.motion == "idle" then
@@ -1439,20 +1444,20 @@ function FieldSession:updateFixed(inputSnapshot)
     return
   end
 
-  local ambientCallHandle = self.acceptedAmbientCallHandle
-  if ambientCallHandle ~= nil then
-    local host = assert(self.pokegearApplications, "an accepted ambient call keeps its composed host")
+  local callHandle = self.fieldCallHandle
+  if callHandle ~= nil then
+    local host = assert(self.pokegearApplications, "an owned field call keeps its composed host")
     local activeHostHandle = host:activeHandle()
-    if activeHostHandle ~= nil and activeHostHandle ~= ambientCallHandle then
-      self.acceptedAmbientCallHandle = nil
+    if activeHostHandle ~= nil and activeHostHandle ~= callHandle then
+      self.fieldCallHandle = nil
       self.input:clearUi()
     else
-      if activeHostHandle == ambientCallHandle then
-        host:step(ambientCallHandle, self.input:uiSnapshot(self.tick + 1))
+      if activeHostHandle == callHandle then
+        host:step(callHandle, self.input:uiSnapshot(self.tick + 1))
       end
-      if host:result(ambientCallHandle) ~= nil then
-        host:close(ambientCallHandle)
-        self.acceptedAmbientCallHandle = nil
+      if host:result(callHandle) ~= nil then
+        host:close(callHandle)
+        self.fieldCallHandle = nil
         self.input:clearUi()
       end
     end
@@ -1626,9 +1631,9 @@ function FieldSession:updateFixed(inputSnapshot)
     and self.incomingCalls:notification() ~= false
   then
     assert(self.pokegearApplications, "incoming calls require the composed companion host")
-    self.acceptedAmbientCallHandle = self.incomingCalls:accept("field:incoming")
+    self.fieldCallHandle = self.incomingCalls:accept("field:incoming")
     assert(
-      self.pokegearApplications:activeHandle() == self.acceptedAmbientCallHandle,
+      self.pokegearApplications:activeHandle() == self.fieldCallHandle,
       "accepted incoming call handle belongs to the composed companion host"
     )
     self.input:beginUi(self.tick + 1)
@@ -1990,8 +1995,8 @@ function FieldSession:updateFixed(inputSnapshot)
   self.camera:updateFixed(cameraTargetInto(self))
   -- The ambient phone opportunity lives at this settled boundary, after
   -- every higher-priority owner declined the tick by falling through.
-  -- A claimed tick clears only transient ring state; a settled idle tick
-  -- evaluates. Ticks that moved the player offer nothing.
+  -- A claimed tick quiets the line; a settled idle tick evaluates. Ticks
+  -- that moved the player offer nothing.
   if self.incomingCalls ~= nil and self.player.motion == "idle" then
     offerPhoneOpportunity(self, self:_phoneClaimed())
   end

@@ -60,6 +60,65 @@ for colorCode = 0, 6 do
   COLOR_BY_APRICORN[APRICORN_BY_COLOR[colorCode]] = colorCode
 end
 
+-- The screen service the script platform fades through. The source cover
+-- exists to hide a screen takeover; this port presents a call as a framed
+-- window over the live field, so the cover pair a source call script wraps
+-- around its launch (fade out, run, reveal) has nothing to hide and is not
+-- presented: an outgoing cover is dropped while the phone manager holds a
+-- pending call or the companion holds a live one, and a reveal is dropped
+-- when this controller covers nothing.
+---@class FieldScriptScreenService
+---@field startFade fun(self: FieldScriptScreenService, spec: FieldScriptScreenFadeSpec): integer?
+---@field fadeDone fun(self: FieldScriptScreenService): boolean
+---@field isOpaque fun(self: FieldScriptScreenService): boolean
+---@field clearIfCurrent fun(self: FieldScriptScreenService, lease: integer): boolean
+
+---@param fade FieldScriptScreenFade the field script screen-fade owner
+---@param companion PokegearScriptHost? the script-owned companion host
+---@param calls IncomingCalls? the field's phone call manager
+---@return FieldScriptScreenService
+local function companionScreen(fade, companion, calls)
+  assert(type(fade) == "table", "the script screen fade requires its owner")
+  local function callHandoffPending()
+    if type(calls) == "table" and calls:hasPendingCall() then
+      return true
+    end
+    return type(companion) == "table" and companion:isCallActive()
+  end
+  -- Drops the covers and reveals the presented call already replaces.
+  ---@param _ FieldScriptScreenService
+  ---@param spec FieldScriptScreenFadeSpec
+  ---@return integer? the fade lease, when one started
+  local function startFade(_, spec)
+    assert(type(spec) == "table", "script screen fades start from their spec")
+    if spec.direction == "out" then
+      if callHandoffPending() then
+        return nil
+      end
+    elseif fade:status().coefficient == 0 then
+      return nil
+    end
+    return fade:startFade(spec)
+  end
+  ---@param _ FieldScriptScreenService
+  ---@return boolean
+  local function fadeDone(_)
+    return fade:fadeDone()
+  end
+  ---@param _ FieldScriptScreenService
+  ---@return boolean
+  local function isOpaque(_)
+    return fade:isOpaque()
+  end
+  ---@param _ FieldScriptScreenService
+  ---@param lease integer
+  ---@return boolean cleared
+  local function clearIfCurrent(_, lease)
+    return fade:clearIfCurrent(lease)
+  end
+  return { startFade = startFade, fadeDone = fadeDone, isOpaque = isOpaque, clearIfCurrent = clearIfCurrent }
+end
+
 -- Builds the compiled phonebook index behind contact-number resolution:
 -- phonebook number to semantic key and trainer number to phonebook
 -- number. Pure data over the compiled catalog; resolution failures
@@ -77,8 +136,10 @@ function FieldScriptComposition.phoneContactIndex(catalog)
     local entry = record --[[@as table<string, unknown>]]
     if type(entry.key) == "string" and type(entry.id) == "number" then
       byId[entry.id] = entry.key
-      if type(entry.trainer) == "number" then
-        byTrainer[entry.trainer] = entry.id
+      -- First contact wins a shared trainer number, matching the
+      -- native loader's first-match return.
+      if type(entry.trainerId) == "number" and byTrainer[entry.trainerId] == nil then
+        byTrainer[entry.trainerId] = entry.id
       end
     end
   end
@@ -613,6 +674,7 @@ function FieldScriptComposition.compose(runtime, options)
   -- through a fabricated owner.
   local gear = runtime.pokegear
   local gearHost = type(gear) == "table" and gear.scriptHost or nil
+  local gearCalls = type(gear) == "table" and gear.incoming or nil
   local gearRadio = type(gear) == "table" and gear.radioEffects or nil
   local gearCatalog = runtime.pokegearCatalog
   -- The narrow dex count and grant service over the single composed
@@ -696,7 +758,7 @@ function FieldScriptComposition.compose(runtime, options)
     -- a test host overrides it: the shake is a view-only displacement the
     -- real camera owns, so there is no separate shake backend to compose.
     camera = (runtime.scriptHosts and runtime.scriptHosts.camera) or runtime.camera,
-    screen = runtime.screenFade,
+    screen = companionScreen(runtime.screenFade, gearHost, gearCalls),
     events = runtime.scriptHosts and runtime.scriptHosts.events,
     auxiliaryUi = runtime.auxiliaryFieldUi,
     contextChoice = runtime.contextChoiceProvider,
@@ -748,6 +810,7 @@ function FieldScriptComposition.compose(runtime, options)
     apricornKurt = apricornKurtService(runtime),
     kurtBoxHost = assert(runtime.kurtBoxHost, "Kurt Box host is composed before field scripts"),
     pokegearApplications = gearHost,
+    phoneCalls = gearCalls,
     phoneContactIndex = FieldScriptComposition.phoneContactIndex(gearCatalog),
     pokegearState = runtime.pokegearState,
     phoneGifts = FieldScriptComposition.phoneGiftQueries(

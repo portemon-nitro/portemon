@@ -81,8 +81,9 @@ end
 
 ---@param target string|integer canonical script identity or zero-based index
 ---@param tick integer
+---@param mapScene boolean source map-scene launch (frame table) rather than a map-load launch
 ---@return boolean started
-function ScriptInteractionClient:startInitScript(target, tick)
+function ScriptInteractionClient:startInitScript(target, tick, mapScene)
   local scriptId = target
   if type(target) == "number" then
     scriptId = ScriptIdentity.formatVanilla(assert(self._scriptBankId), target)
@@ -95,9 +96,13 @@ function ScriptInteractionClient:startInitScript(target, tick)
   if composed == nil then
     error("missing generated map-init script " .. scriptId)
   end
-  -- Map initialization never implicitly owns player input; only an explicit
-  -- source lock opcode executed by this script can acquire it.
-  local instanceId = self._scheduler:startInteraction({ type = "map_init", scriptId = scriptId }, composed, tick, false)
+  -- Source StartMapSceneScript (the frame table) runs a field task, so the
+  -- field is not interactable while it lives; StartMapLoadScript (the
+  -- load/transition/resume lifecycles) runs the script synchronously
+  -- during the load and owns nothing afterwards.
+  local ownsField = mapScene == true
+  local instanceId =
+    self._scheduler:startInteraction({ type = "map_init", scriptId = scriptId }, composed, tick, ownsField)
   assert(instanceId ~= nil, "map-init scheduler start did not create an instance")
   self._initLifecycleActive = true
   self._initLifecycleInstanceId = instanceId
@@ -127,6 +132,28 @@ function ScriptInteractionClient:setScriptBankId(scriptBankId)
     "script bank id must be an integer"
   )
   self._scriptBankId = scriptBankId
+end
+
+-- Start one source map-scene script the field itself decided to run (a
+-- forced phone call, an event cutscene): source StartMapSceneScript creates
+-- a field task, so the field is not interactable while the script lives.
+-- Returns the scheduler instance id, or nil when a foreground owner already
+-- holds the field. A script that cannot compose is a composition fault
+-- raised loudly.
+---@param scriptId string
+---@param tick integer
+---@return string? instanceId
+function ScriptInteractionClient:startSceneScript(scriptId, tick)
+  assert(type(scriptId) == "string" and scriptId ~= "", "scene script identity required")
+  assert(type(tick) == "number" and tick == tick and tick % 1 == 0 and tick >= 0, "tick required")
+  if self._scheduler:foregroundEnvironmentId() ~= nil then
+    return nil
+  end
+  local composed = self._compose(scriptId)
+  if composed == nil then
+    error("missing generated scene script " .. scriptId)
+  end
+  return self._scheduler:startInteraction({ type = "map_scene", scriptId = scriptId }, composed, tick, true)
 end
 
 -- Start a runtime-owned application script (e.g. the field-move entry)

@@ -15,6 +15,113 @@ local TrainerPhonePrograms = {}
 
 TrainerPhonePrograms.DEFAULT_GYM_WEEKDAY = "saturday"
 
+-- The dynamic gym-outgoing menu answers behind touchscreen menu 6
+-- (bank-271 entries 18/19, Yes/No).
+TrainerPhonePrograms.GYM_MENU_CHOICES = { "yes", "no" }
+
+-- Resolves the dynamic gym outgoing opener bank entry 2.
+---@return integer gym bank entry for the opener
+function TrainerPhonePrograms.gymOutgoingOpenerEntry()
+  return 2
+end
+
+-- Resolves the dynamic gym outgoing branch bank entry: 3 below
+-- sixteen badges, 9 while the caller seeks a rematch, 4 outside the
+-- rematch window, else the invitation 5 with the yes/no menu owed.
+---@param hasBadges boolean sixteen-badge gate behind flag0
+---@param seeking boolean staged rematch invitation behind flag1
+---@param windowOk boolean rematch weekday and time match
+---@return integer gym bank entry for the branch
+function TrainerPhonePrograms.gymOutgoingBranchEntry(hasBadges, seeking, windowOk)
+  if hasBadges ~= true then
+    return 3
+  end
+  if seeking == true then
+    return 9
+  end
+  if windowOk ~= true then
+    return 4
+  end
+  return 5
+end
+
+-- Replicates the source dojo-full quirk exactly: the loop runs once
+-- over the first compiled gym contact by source bug, and the
+-- comparison keeps the source count<5 shape, so a yes always stages
+-- the invitation with entry 6 and the room branch stays unreachable
+-- as shipped (phone_scripts_gym_leader.c isDojoFull).
+---@param callerKey string calling contact key
+---@param firstKey string first compiled gym contact key
+---@param firstSeeking boolean staged invitation on the first contact
+---@return boolean dojo full
+function TrainerPhonePrograms.gymDojoFull(callerKey, firstKey, firstSeeking)
+  local count = 0
+  -- Single-iteration source loop: only the first gym contact counts.
+  if callerKey ~= firstKey and firstSeeking == true then
+    count = count + 1
+  end
+  return count < 5
+end
+
+-- Resolves the dynamic gym outgoing answer bank entry: 7 on no,
+-- 6 on yes with the staged invitation, else the unreachable room 8.
+---@param answer string "yes"|"no" menu answer
+---@param dojoFull boolean source dojo-full reading
+---@return integer gym bank entry for the answer
+function TrainerPhonePrograms.gymOutgoingAnswerEntry(answer, dojoFull)
+  assert(answer == "yes" or answer == "no", "gym answers name their menu choice")
+  if answer == "no" then
+    return 7
+  end
+  if dojoFull == true then
+    return 6
+  end
+  return 8
+end
+
+-- Advances the dynamic gym-outgoing menu: no answer waits, no ends
+-- with 7 and no write, yes stages the seeking invitation with 6
+-- behind the source always-full reading. Wins carry over from the
+-- staged record exactly like the static rematch kind.
+---@param session table<string, unknown> program session
+---@param input table<string, unknown> player input
+---@return string|{ status: string, entry: integer? } outcome
+function TrainerPhonePrograms.stepGymMenu(session, input)
+  assert(type(session) == "table", "gym menu steps its session")
+  assert(type(input) == "table", "gym menu reads its input")
+  local choice = input.choice
+  if choice == nil then
+    return { status = "waiting" }
+  end
+  assert(choice == "yes" or choice == "no", "gym answers name their menu choice")
+  local facts = session.facts --[[@as table<string, unknown>]]
+  assert(type(facts) == "table", "gym answers read their labelled facts")
+  session.effectDone = true
+  if choice == "no" then
+    return { status = "done", entry = 7 }
+  end
+  local full = facts.dynamicGymDojoFull
+  assert(type(full) == "boolean", "gym answers read the staged dojo reading")
+  if full ~= true then
+    return { status = "done", entry = 8 }
+  end
+  local world = session.world --[[@as table<string, unknown>]]
+  assert(type(world) == "table", "gym invitations stage through the borrowed world")
+  local setRematch = world.setRematch
+  assert(type(setRematch) == "function", "gym invitations stage through durable companion state")
+  local contact = session.contact --[[@as string]]
+  local wins = 0
+  local query = world.queryRematch
+  if type(query) == "function" then
+    local current = query(world, contact)
+    if type(current) == "table" and type(current.wins) == "number" then
+      wins = current.wins --[[@as integer]]
+    end
+  end
+  setRematch(world, contact, { stage = 1, wins = wins })
+  return { status = "done", entry = 6 }
+end
+
 -- Rematch resolution outcomes that preserve the staged invitation: only
 -- a qualified win clears readiness, so a full party, a blackout, a
 -- loss, or a cancellation never completes a rematch spuriously.
@@ -89,6 +196,7 @@ function TrainerPhonePrograms.select(world, request)
     contact = request.contact,
     family = request.family,
     world = world,
+    facts = request.facts,
     effectDone = false,
   }
 end
@@ -98,12 +206,16 @@ end
 -- native invitation stage yet. Returns done once the branch resolves.
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
----@return string "done"
+---@return string|{ status: string, entry: integer? } outcome
 function TrainerPhonePrograms.step(session, input)
   assert(type(session) == "table", "trainer programs step their session")
   assert(type(input) == "table", "trainer programs read their input")
   assert(type(session.program) == "string", "trainer sessions carry their program")
   assert(type(session.contact) == "string", "trainer sessions carry their contact")
+  local facts = session.facts --[[@as table<string, unknown>]]
+  if type(facts) == "table" and facts.dynamicGymMenu == true then
+    return TrainerPhonePrograms.stepGymMenu(session, input)
+  end
   if session.effectDone == true then
     return "done"
   end
@@ -141,7 +253,7 @@ local function catalogWindow(contact, catalog)
     if type(entry) == "table" then
       local record = entry --[[@as table<string, unknown>]]
       if record.key == contact then
-        local weekday, timeOfDay = record.rematchWeekday, record.rematchTime
+        local weekday, timeOfDay = record.rematchWeekday, record.rematchTimeOfDay
         if
           type(weekday) == "number"
           and weekday % 1 == 0

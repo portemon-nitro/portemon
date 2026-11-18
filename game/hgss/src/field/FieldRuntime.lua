@@ -594,6 +594,7 @@ end
 ---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
 ---@field _trainerCatalog table<string, unknown>? composed immutable trainer template catalog (nil before composition)
 ---@field _trainerFactory table<string, unknown>? composed native trainer party materializer (nil before composition)
+---@field _encounterCatalog table<string, unknown>? composed immutable encounter table catalog (nil before composition)
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind knowledge (nil after teardown)
@@ -3014,13 +3015,29 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
   local messages = {}
   local contactsByKey = {}
   local firstRef = nil
+  -- Maps a map header identity onto its native map section for caller
+  -- landmarks, mirroring MapHeader_GetMapSec behind slot 3.
+  ---@param headerId integer map header identity
+  ---@return integer map section
+  local function headerMapSection(headerId)
+    assert(type(headerId) == "number" and headerId % 1 == 0, "caller landmarks read header identities")
+    local okMaps, maps = pcall(require, "romdump.src.catalog.hgss.maps")
+    assert(okMaps and type(maps) == "table", "caller landmarks read the static map-header catalog")
+    local byId = (maps --[[@as table<string, unknown>]]).byId
+    assert(type(byId) == "table", "caller landmarks read indexed map headers")
+    local header = (byId --[[@as table<integer, unknown>]])[headerId]
+    assert(type(header) == "table", "caller landmarks need a header for the caller map")
+    local section = (header --[[@as table<string, unknown>]]).mapSectionNativeId
+    assert(type(section) == "number" and section % 1 == 0, "caller landmarks read native map sections")
+    return section
+  end
   for _, record in
     ipairs(contacts --[[@as table<integer, unknown>]])
   do
     local contact = record --[[@as table<string, unknown>]]
     local key = contact.key
     local bank = contact.messageBank
-    local entry = contact.greeting
+    local entry = contact.phoneScriptIfLocal
     assert(type(key) == "string" and key ~= "", "companion greeting references name their contact")
     assert(
       type(bank) == "number" and bank % 1 == 0 and bank >= 0,
@@ -3043,6 +3060,41 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
   end
   assert(firstRef ~= nil, "companion greeting references need at least one compiled contact")
   messages.greeting = firstRef
+  -- Per-call substitution staging behind generic and word scripts:
+  -- the conversation engine draws the chatter species pair and the
+  -- word pick before the text prints, and the resolvers below read
+  -- them back by caller. One foreground call owns the lease, so one
+  -- staged entry at a time is exact.
+  messages.speciesStaging = {}
+  messages.wordStaging = {}
+  ---@param contactKey string
+  ---@param resolveMessage fun(bankId: integer, messageId: integer, contactKey: string): table<string, unknown>
+  ---@return string word display text
+  local function wordTextFor(contactKey, resolveMessage)
+    local staging = assert(messages.wordStaging, "word scripts stage their pick before the text prints")
+    local stored = (staging --[[@as table<string, unknown>]])[contactKey]
+    assert(type(stored) == "table", "word scripts stage their pick for the caller")
+    local record = stored --[[@as table<string, unknown>]]
+    local base, pick = record.base, record.pick
+    assert(type(base) == "string" and type(pick) == "number", "word picks carry their bank reference and draw")
+    local PhoneGreetingSets = require("game.hgss.src.pokegear.PhoneGreetingSets")
+    local bank, entry = PhoneGreetingSets.wordEntry(base --[[@as string]], pick --[[@as integer]])
+    return resolveMessage(bank, entry, contactKey).text
+  end
+  ---@param contactKey string
+  ---@param which string "a" for the party mon, "b" for the encounter mon
+  ---@return string species display name
+  local function speciesNameFor(contactKey, which)
+    local staging = assert(messages.speciesStaging, "generic chatter stages its species pair before the text prints")
+    local pair = (staging --[[@as table<string, unknown>]])[contactKey]
+    assert(type(pair) == "table", "generic chatter stages species for its caller")
+    local key = (pair --[[@as table<string, unknown>]])[which]
+    assert(type(key) == "string" and key ~= "", "generic chatter stages species keys")
+    local monCatalog = assert(runtime.monCatalog, "species names resolve through the domain mon catalog")
+    local species = monCatalog:species(key --[[@as string]])
+    assert(type(species) == "table" and type(species.name) == "string", "species keys resolve names")
+    return species.name --[[@as string]]
+  end
   local function resolve(bankId, messageId, contactKey)
     local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bankId: integer): table<string, unknown>? , Errors.Error?]]
     local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bankId: integer)]]
@@ -3097,6 +3149,25 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
             elseif slot == 1 then
               local contact = assert(contactsByKey[contactKey], "caller-name substitution resolves a catalog contact")
               text = resolve(contact.messageBank, 0).text
+            elseif slot == 4 then
+              -- Word-kind scripts buffer the drawn bank entry at slot 4
+              -- (BufferString slot 4 behind WORD side effects).
+              text = wordTextFor(contactKey, resolve)
+            elseif slot == 10 then
+              -- Slot 10 is the Mom balance behind dynamic Mother entries
+              -- and the caller-party species behind generic chatter.
+              -- Static lines never address it for Mother, so the static
+              -- path carries no balance and keeps the historical zero.
+              local contact = assert(contactsByKey[contactKey], "slot-ten substitution resolves a catalog contact")
+              if contact.family == "mother" then
+                text = "0"
+              else
+                text = speciesNameFor(contactKey, "a")
+              end
+            elseif slot == 11 then
+              -- Slot 11 is the map encounter species behind generic
+              -- chatter (BufferSpeciesName slot 11).
+              text = speciesNameFor(contactKey, "b")
             elseif slot == 2 or slot == 3 then
               local mapSection = nil
               if slot == 2 then
@@ -3107,7 +3178,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
               else
                 local contact =
                   assert(contactsByKey[contactKey], "caller landmark substitution resolves a catalog contact")
-                mapSection = contact.map
+                mapSection = headerMapSection(contact.mapId)
               end
               assert(
                 type(mapSection) == "number" and mapSection % 1 == 0,
@@ -3191,6 +3262,34 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
     return resolve(message.bank, message.entry, contactKey)
   end
   messages.resolveLine = resolveLine
+  -- The source time-of-day greeting behind static calls: bank 640
+  -- indexed by the contact greeting set, the call time band, the
+  -- direction, and the player gender, exactly like
+  -- PhoneCall_PrintGreeting over sGreetingMsgIDs. A 0xFF set or an
+  -- unknown contact skips the greeting with nil instead of text.
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@param timeOfDay integer 0 morning, 1 day, 2 night
+  ---@param isIncoming boolean
+  ---@return table<string, unknown>? formatted greeting text, nil when the caller skips it
+  local function resolveCallGreeting(_, contactKey, timeOfDay, isIncoming)
+    local contact = contactsByKey[contactKey]
+    if type(contact) ~= "table" then
+      return nil
+    end
+    local set = (contact --[[@as table<string, unknown>]]).greetingMsgSet
+    if type(set) ~= "number" or set == 255 then
+      return nil
+    end
+    assert(timeOfDay == 0 or timeOfDay == 1 or timeOfDay == 2, "call greetings read the call time band")
+    local gender = profile.gender == 0 and 0 or profile.gender == 1 and 1 or nil
+    assert(gender ~= nil, "call greetings have a native player gender")
+    local GreetingSets = require("game.hgss.src.pokegear.PhoneGreetingSets")
+    local entry = GreetingSets.entry(set, timeOfDay, isIncoming == true, gender)
+    assert(type(entry) == "number", "call greetings resolve a bank 640 entry")
+    return resolve(640, entry, contactKey)
+  end
+  messages.resolveCallGreeting = resolveCallGreeting
   -- Direct bank-entry reader behind the dynamic Mother flow: intro
   -- 664.(7+param), prompt 22/23/24/27/28, gift-full 21, result 25/26.
   -- Entries resolve through the caller's own bank with the same player
@@ -3209,6 +3308,63 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
     local balance = type(opts) == "table" and opts.balance or nil
     if balance ~= nil then
       assert(type(balance) == "number" and balance % 1 == 0, "phone balance formats its integer slot")
+    end
+    -- Dynamic Bill stages the active box name and free count for the
+    -- slot-10/11 substitutions behind GearPhoneCall_Bill case 2
+    -- (BufferString slot 10, BufferIntegerAsString slot 11).
+    local boxName = type(opts) == "table" and opts.boxName or nil
+    if boxName ~= nil then
+      assert(type(boxName) == "string" and boxName ~= "", "phone box names format their string slot")
+    end
+    local freeCount = type(opts) == "table" and opts.freeCount or nil
+    if freeCount ~= nil then
+      assert(type(freeCount) == "number" and freeCount % 1 == 0, "phone box counts format their integer slot")
+    end
+    -- Dynamic Kurt stages the ball item and handed quantity for the
+    -- slot-10/11 substitutions behind GearPhoneCall_Kurt case 1
+    -- (BufferItemName slot 10, BufferIntegerAsString slot 11).
+    local ballItem = type(opts) == "table" and opts.ballItem or nil
+    if ballItem ~= nil then
+      assert(type(ballItem) == "string" and ballItem ~= "", "phone ball items format their string slot")
+    end
+    local kurtCount = type(opts) == "table" and opts.kurtCount or nil
+    if kurtCount ~= nil then
+      assert(type(kurtCount) == "number" and kurtCount % 1 == 0, "phone kurt counts format their integer slot")
+    end
+    -- Dynamic Day Care Man stages both stabled nicknames for slots
+    -- 10/11 behind the whole call, exactly like the selection-time
+    -- buffers; the Lady re-buffers one nickname and growth per
+    -- growth report instead.
+    local nickA = type(opts) == "table" and opts.nickA or nil
+    if nickA ~= nil then
+      assert(type(nickA) == "string" and nickA ~= "", "phone nicknames format their string slot")
+    end
+    local nickB = type(opts) == "table" and opts.nickB or nil
+    if nickB ~= nil then
+      assert(type(nickB) == "string" and nickB ~= "", "phone nicknames format their string slot")
+    end
+    local nickname = type(opts) == "table" and opts.nickname or nil
+    if nickname ~= nil then
+      assert(type(nickname) == "string" and nickname ~= "", "phone nicknames format their string slot")
+    end
+    local growth = type(opts) == "table" and opts.growth or nil
+    if growth ~= nil then
+      assert(type(growth) == "number" and growth % 1 == 0, "phone growth formats its integer slot")
+    end
+    -- Dynamic Oak stages the seen and owned counts for slots 5/6
+    -- behind the evaluation message, like BufferIntegerAsString in
+    -- GearPhoneCall_ProfOak case 3.
+    local seenCount = type(opts) == "table" and opts.seenCount or nil
+    if seenCount ~= nil then
+      assert(type(seenCount) == "number" and seenCount % 1 == 0, "phone dex counts format their integer slot")
+    end
+    local ownedCount = type(opts) == "table" and opts.ownedCount or nil
+    if ownedCount ~= nil then
+      assert(type(ownedCount) == "number" and ownedCount % 1 == 0, "phone dex counts format their integer slot")
+    end
+    local areaNames = type(opts) == "table" and opts.areaNames or nil
+    if areaNames ~= nil then
+      assert(type(areaNames) == "table", "phone area names stage their string slots")
     end
     local bankId, messageId = contact.messageBank, entry
     local acquire = provider.acquireBank
@@ -3245,6 +3401,19 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
             elseif slot == 1 then
               local contactRecord = assert(contactsByKey[contactKey])
               text = resolve(contactRecord.messageBank, 0, contactKey).text
+            elseif slot == 5 then
+              -- Slot 5 is the seen count behind dynamic Oak
+              -- evaluations; other families leave it unresolved so
+              -- the provider reports the missing substitution.
+              if contact.family == "oak" and seenCount ~= nil then
+                text = tostring(seenCount)
+              end
+            elseif slot == 6 then
+              -- Slot 6 is the owned count behind dynamic Oak
+              -- evaluations.
+              if contact.family == "oak" and ownedCount ~= nil then
+                text = tostring(ownedCount)
+              end
             elseif slot == 2 or slot == 3 then
               local mapSection = nil
               if slot == 2 then
@@ -3254,7 +3423,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
                 mapSection = currentMap.mapSectionNativeId
               else
                 local contactRecord = assert(contactsByKey[contactKey])
-                mapSection = contactRecord.map
+                mapSection = headerMapSection(contactRecord.mapId)
               end
               local landmarkBankId, landmarkEntryId = phoneLabels.bank, mapSection
               local landmarkBank = assert(provider.acquireBank(phoneLabels.bank))
@@ -3264,8 +3433,44 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
                 landmarkBankId, landmarkEntryId = phoneLabels.fallbackBank, phoneLabels.fallbackEntry
               end
               text = resolve(landmarkBankId, landmarkEntryId, contactKey).text
-            elseif slot == 10 then
-              text = tostring(balance or 0)
+            elseif slot == 10 or slot == 12 or slot == 13 or slot == 14 then
+              if contact.family == "bill" and boxName ~= nil then
+                text = boxName
+              elseif contact.family == "kurt" and ballItem ~= nil then
+                local item = assert(runtime.itemCatalog, "phone ball names resolve through the item catalog")
+                local definition = item:item(ballItem --[[@as string]])
+                assert(
+                  type(definition) == "table" and type((definition --[[@as table<string, unknown>]]).name) == "string",
+                  "phone ball items resolve display names"
+                )
+                text = (definition --[[@as table<string, unknown>]]).name --[[@as string]]
+              elseif contact.family == "daycare" and nickA ~= nil then
+                text = nickA
+              elseif contact.family == "daycare" and nickname ~= nil then
+                text = nickname
+              elseif contact.family == "baoba" and areaNames ~= nil then
+                text = areaNames[slot - 9]
+              else
+                text = tostring(balance or 0)
+              end
+            elseif slot == 11 then
+              -- Slot 11 is the free box count behind dynamic Bill
+              -- status lines, the handed quantity behind Kurt, the
+              -- second nickname behind the Day Care Man pair report,
+              -- the growth behind Lady reports, and the second area
+              -- name behind Baoba; other families leave it unresolved
+              -- so the provider reports the missing substitution.
+              if contact.family == "bill" and freeCount ~= nil then
+                text = tostring(freeCount)
+              elseif contact.family == "kurt" and kurtCount ~= nil then
+                text = tostring(kurtCount)
+              elseif contact.family == "daycare" and nickB ~= nil then
+                text = nickB
+              elseif contact.family == "daycare" and growth ~= nil then
+                text = tostring(growth)
+              elseif contact.family == "baoba" and areaNames ~= nil then
+                text = areaNames[2]
+              end
             end
             if text == nil then
               return nil
@@ -3298,7 +3503,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
   local function resolvePhoneUiMessage(_, entryId)
     local known = type(entryId) == "number"
       and entryId % 1 == 0
-      and ((entryId >= 8 and entryId <= 19) or entryId == 22 or (entryId >= 33 and entryId <= 35))
+      and ((entryId >= 8 and entryId <= 19) or entryId == 22 or (entryId >= 30 and entryId <= 35) or entryId == 37)
     if not known then
       local failure = Errors.new(
         ScriptErrors.FEATURE_UNAVAILABLE,
@@ -3743,6 +3948,7 @@ function FieldRuntime:composeEncounters(compiled)
     game = self.versionId,
     speciesTypes = slotTypes,
   })
+  self._encounterCatalog = catalog
 end
 
 -- Composes the concrete trainer materializer over a compiled trainer

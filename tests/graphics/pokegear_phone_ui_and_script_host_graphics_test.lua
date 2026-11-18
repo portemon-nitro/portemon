@@ -140,7 +140,7 @@ local function fixtureManifest(contacts, order)
     menuPalette[index] = { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
   end
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },

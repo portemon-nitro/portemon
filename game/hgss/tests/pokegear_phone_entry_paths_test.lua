@@ -19,21 +19,6 @@ local T = {
   tests = {},
 }
 
--- Loads a phone module that does not exist yet at this baseline. The
--- failure names the missing behaviour instead of surfacing as a suite
--- load error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
-
 local function visualRef(path)
   return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
 end
@@ -52,10 +37,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -89,7 +72,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -104,7 +87,7 @@ local function fixtureManifest()
           family = "mother",
           sortWeight = 10,
           rematchWeekday = 6,
-          rematchTime = 0,
+          rematchTimeOfDay = 0,
         },
         { key = "custom.trainer-plain", family = "kurt", sortWeight = 20 },
       },
@@ -160,6 +143,11 @@ local function worldFixture()
       flags["mom.savings-choice"] = choice
       flags.savingsChoice = choice
     end,
+    -- Story flag writes resolve through the shared world boundary; the
+    -- scripted Mother branch marks the after-naming conversation held.
+    setFlag = function(_, name)
+      flags[name] = true
+    end,
     rematchReady = rematchReady,
     nativeSelectorFacts = function()
       return {
@@ -202,7 +190,12 @@ local function settleCall(host, handle)
     if result ~= nil then
       return result --[[@as table]]
     end
-    host:step(handle, { { type = "advance" } })
+    -- The dynamic savings offer owes its menu once the intro prints, so
+    -- the driving edge follows the published stage.
+    local status = host:status()
+    local call = status and status.view and status.view.call
+    local edge = type(call) == "table" and call.stage == "choice" and "confirm" or "advance"
+    host:step(handle, { { type = edge } })
   end
   error("the foreground call never reached its terminal result", 0)
 end
@@ -261,7 +254,21 @@ local function schedulerHarness(host)
       return nil
     end,
   }
-  local services = { pokegearApplications = host, world = world, events = events }
+  -- Stand-in for the field's phone call manager on the script-platform
+  -- boundary; the real manager is covered by its own suites.
+  local calls = { staged = nil }
+  function calls:stageCall(request)
+    self.staged = request
+  end
+  function calls:takePendingCall()
+    local staged = self.staged
+    self.staged = nil
+    if staged == nil then
+      return nil
+    end
+    return { contactKey = staged.contact, isScriptedCall = staged.isScriptedCall, callScriptID = staged.callScriptID }
+  end
+  local services = { pokegearApplications = host, world = world, events = events, phoneCalls = calls }
   local registry = Registry.new()
   local composition = Composition.new(registry)
   local taskRegistry = HgssComposition.registerTasks(TaskRegistry.new())
@@ -273,7 +280,7 @@ local function schedulerHarness(host)
       return composition:effective(id)
     end,
   })
-  return { registry = registry, composition = composition, scheduler = scheduler, events = events }
+  return { registry = registry, composition = composition, scheduler = scheduler, events = events, calls = calls }
 end
 
 -- The same predefined invitation through menu acceptance and script
@@ -281,14 +288,8 @@ end
 -- each path returns to its distinct owner. The parent script stays
 -- blocked until its call reports exactly one consumed result.
 function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
-  local PhoneController = requireFeature(
-    "game.hgss.src.pokegear.PhoneController",
-    "the phone card has no controller yet: menu entry cannot share its conversation engine with scripts"
-  )
-  local PokegearScriptHost = requireFeature(
-    "game.hgss.src.pokegear.PokegearScriptHost",
-    "the phone feature has no script host yet: scripted entry cannot share its conversation engine with the menu"
-  )
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+  local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
   local S = phoneScriptSurface()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
@@ -302,6 +303,17 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local menuState = PokegearState.new({ seed = 2024 }, { catalog = record.catalog })
   menuState:registerContact("custom.mom")
   local menuWorld = worldFixture()
+  -- Both entry paths reach Mother's dynamic savings offer: the menu call
+  -- is an outgoing call away from home with the rival named, and the
+  -- source scripted call carries the scripted-call marker (2) that
+  -- selects the same branch ahead of every other check.
+  local function dynamicMotherFacts()
+    return { localMap = false, gaveRivalName = true, talkedAfterNamingRival = true, eggCallPending = false }
+  end
+  menuWorld.nativeSelectorFacts = dynamicMotherFacts
+  local function dynamicEntry(_, _contact, entry)
+    return { tokens = { { kind = "glyph", code = entry, text = "dyn-" .. tostring(entry), raw = { 1 } } } }
+  end
   local menuController = PhoneController.new({
     state = menuState,
     catalog = record.catalog,
@@ -311,6 +323,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
+      resolveContactEntry = dynamicEntry,
       resolvePhoneUiMessage = function(_, entryId)
         assert(type(entryId) == "number", "phone UI text resolves through its source bank entry")
         local text = "fixture-ui-271-" .. entryId
@@ -357,7 +370,10 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local menuTexts = {}
   local menuResult
   local menuProgram
-  for _ = 1, 40 do
+  -- The bound only guards against a stuck call: the source dial costs two
+  -- staged tone waits before the conversation, and the savings offer owes
+  -- its menu beside several typed pages.
+  for _ = 1, 60 do
     menuResult = menuController:takeResult()
     if menuResult ~= nil then
       break
@@ -380,7 +396,10 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
     if menuResult ~= nil then
       break
     end
-    menuController:updateFixed({ { type = "advance" } })
+    -- The dynamic savings offer owes its menu once the intro prints, so
+    -- the driving edge follows the published stage.
+    local edge = (callView --[[@as table]]).stage == "choice" and "confirm" or "advance"
+    menuController:updateFixed({ { type = edge } })
   end
   Assert.isNil(menuResult, "menu calls return to their list without a script-host result")
   Assert.isNil(menuController:status().view.call, "the menu releases its completed call projection")
@@ -389,6 +408,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   -- Scripted entry: the same invitation through staged setup/run nodes
   -- on the real scheduler lane with the real script host underneath.
   local scriptWorld = worldFixture()
+  scriptWorld.nativeSelectorFacts = dynamicMotherFacts
   local scriptState = PokegearState.new({ seed = 2024 }, { catalog = record.catalog })
   scriptState:registerContact("custom.mom")
   local host = PokegearScriptHost.new({
@@ -400,6 +420,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
       resolveLine = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
+      resolveContactEntry = dynamicEntry,
       resolvePhoneUiMessage = function(_, entryId)
         assert(type(entryId) == "number", "phone UI text resolves through its source bank entry")
         local text = "fixture-ui-271-" .. entryId
@@ -415,7 +436,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
     api = 1,
     id = "test.phone_shared_engine",
     steps = {
-      S.phoneSetCall({ contact = "custom.mom", direction = "outgoing", kind = "ordinary" }),
+      S.phoneSetCall({ contact = "custom.mom", scriptedCall = 2, callScriptID = 0 }),
       S.phoneRunCall(),
       S.stop(),
     },
@@ -438,7 +459,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local scriptResult = settleCall(host, scriptHandle --[[@as table]])
   Assert.deepEqual(scriptWorld.rematchReady, {}, "ordinary calls do not stage rematch readiness")
   Assert.equal(scriptResult.contact, "custom.mom", "the scripted result names the same source caller")
-  Assert.equal(scriptResult.kind, "ordinary", "the scripted result names the same call kind")
+  Assert.equal(scriptResult.kind, "incoming", "the scripted result names its source call kind")
   Assert.equal(scriptResult.program, menuProgram, "both paths resolve the same source program")
   Assert.isTrue(#menuTexts >= 2, "the menu path observed real conversation progress to compare")
   host:close(scriptHandle --[[@as table]])
@@ -459,10 +480,16 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local state2 = PokegearState.new({ seed = 77 }, { catalog = record.catalog })
   state2:registerContact("custom.mom")
   state2:registerContact("custom.trainer-plain")
+  local stagingMessages = messageRefs()
+  stagingMessages.resolveContactEntry = dynamicEntry
+  stagingMessages.resolvePhoneUiMessage = function(_, entryId)
+    local text = "staged-ui-271-" .. tostring(entryId)
+    return { text = text, tokens = { { kind = "glyph", code = 1, text = text, raw = { 1 } } } }
+  end
   local host2 = PokegearScriptHost.new({
     state = state2,
     catalog = record.catalog,
-    messages = messageRefs(),
+    messages = stagingMessages,
     world = world2,
     audio = instantAudio(),
     random = PokegearRandom.new(77),
@@ -481,7 +508,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
     id = "test.phone_staging",
     steps = {
       S.setVar({ variable = "caller", value = "custom.mom" }),
-      S.phoneSetCall({ contact = S.var("caller"), direction = "outgoing", kind = "rematch" }),
+      S.phoneSetCall({ contact = S.var("caller"), scriptedCall = 2, callScriptID = 0 }),
       S.setVar({ variable = "caller", value = "custom.trainer-plain" }),
       S.phoneRunCall(),
       S.stop(),

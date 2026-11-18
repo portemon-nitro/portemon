@@ -120,7 +120,9 @@ function MapInitScriptController:startLifecycle(lifecycle, tick)
   assert(EVENT_TYPES[lifecycle], "unknown map lifecycle: " .. tostring(lifecycle))
   for _, group in ipairs(self.rules) do
     if group.type == lifecycle then
-      local started = self.scriptClient:startInitScript(group.scriptId, tick) == true
+      -- Load/transition/resume lifecycles are source map-load scripts:
+      -- they run during the load and own no field input.
+      local started = self.scriptClient:startInitScript(group.scriptId, tick, false) == true
       if started then
         self.activeLifecycle = lifecycle
       end
@@ -147,7 +149,9 @@ function MapInitScriptController:evaluateFrame(tick)
     if group.type == "on_frame_eq" then
       for _, rule in ipairs(group.rules) do
         if self.world:getVar(rule.variableId) == rule.equals then
-          return self.scriptClient:startInitScript(rule.scriptId, tick) == true
+          -- A frame-table entry is a source map-scene script: it runs as a
+          -- field task and the field is not interactable while it lives.
+          return self.scriptClient:startInitScript(rule.scriptId, tick, true) == true
         end
       end
     end

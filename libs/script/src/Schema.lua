@@ -383,14 +383,15 @@ Schema.OPERATIONS = {
   -- Staged foreground phone call setup: evaluates its operands and stores
   -- one pending source request on the calling script session without
   -- taking the feature lease or blocking. The run operation below consumes
-  -- it. Contact, direction, and kind accept evaluated value references so
-  -- intervening commands observe the staging order; runtime revalidates
-  -- evaluated enum operands against the closed vocabulary.
+  -- it. Contact, scripted marker, and predefined script identity accept
+  -- evaluated value references so intervening commands observe the staging
+  -- order. The source stores the caller parameters on the ring manager and
+  -- always launches the call as incoming, so no direction operand exists.
   phone_set_call = {
     fields = {
       contact = { type = "scalar_or_value", required = true },
-      direction = { type = "scalar_or_value", required = true },
-      kind = { type = "scalar_or_value", required = true },
+      scriptedCall = { type = "scalar_or_value", required = true },
+      callScriptID = { type = "scalar_or_value", required = true },
     },
   },
   -- Blocking foreground phone call run: consumes the pending request
@@ -2039,7 +2040,7 @@ Schema.CONSTRUCTORS = {
       {
         signature = "S.phoneSetCall(spec)",
         canonical = "op=phone_set_call",
-        notes = "spec={contact,direction,kind}; direction is incoming or outgoing, kind is ordinary, rematch, predefined, or incoming. Each operand accepts an evaluated value reference.",
+        notes = "spec={contact,scriptedCall,callScriptID}; the source caller number, its isScriptedCall marker (2 opens the caller's map-script branch) and predefined phone-script identity. The launch is always incoming. Each operand accepts an evaluated value reference.",
       },
       {
         signature = "S.phoneRunCall(spec=nil)",

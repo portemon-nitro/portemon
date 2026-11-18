@@ -49,7 +49,7 @@ local function greetingMessages(catalog, versionId)
     byKey[
       contact.key --[[@as string]]
     ] = contact
-    local ref = string.format("msg.hgss.%d.%d", contact.messageBank, contact.greeting)
+    local ref = string.format("msg.hgss.%d.%d", contact.messageBank, contact.phoneScriptIfLocal)
     messages[
       contact.key --[[@as string]]
     ] = ref
@@ -82,9 +82,17 @@ local function greetingMessages(catalog, versionId)
     assert(definition.male.bank == contact.messageBank, "the selected script belongs to its caller bank")
     return resolveMessage(definition.male.bank, definition.male.entry)
   end
+  -- Dynamic handlers (the scripted Mother savings offer and the other
+  -- incoming/outgoing branches) resolve their bank entries through the
+  -- same provider, exactly like the production contact-entry reader.
+  local function resolveContactEntry(_, key, entry)
+    local contact = assert(byKey[key], "dynamic entries resolve through the compiled contacts")
+    return resolveMessage(contact.messageBank --[[@as integer]], entry)
+  end
   messages.resolveName = resolveName
   messages.resolveClass = resolveClass
   messages.resolveLine = resolveLine
+  messages.resolveContactEntry = resolveContactEntry
   -- The live call reads its choice and hangup copy through the same
   -- bank pipeline: bank271 UI entries behind the shared reader the
   -- field runtime publishes to both entry paths.
@@ -92,7 +100,7 @@ local function greetingMessages(catalog, versionId)
     assert(
       type(entryId) == "number"
         and entryId % 1 == 0
-        and ((entryId >= 8 and entryId <= 19) or entryId == 22 or (entryId >= 33 and entryId <= 35)),
+        and ((entryId >= 8 and entryId <= 19) or entryId == 22 or (entryId >= 30 and entryId <= 35) or entryId == 37),
       "phone UI text names a known bank271 entry"
     )
     return resolveMessage(271, entryId)
@@ -142,13 +150,13 @@ function T.contacts_carry_their_source_message_bank(romFs, versionId)
   end
   Assert.equal(byKey[MOM_KEY].messageBank, 664, "the mother greeting reads bank 664")
   Assert.equal(byKey[ELM_KEY].messageBank, 716, "the elm greeting reads bank 716")
-  Assert.equal(byKey[MOM_KEY].greeting, 23, "the mother greeting reads number 23")
-  Assert.equal(byKey[ELM_KEY].greeting, 1, "the elm greeting reads number 1")
+  Assert.equal(byKey[MOM_KEY].phoneScriptIfLocal, 23, "the mother greeting reads number 23")
+  Assert.equal(byKey[ELM_KEY].phoneScriptIfLocal, 1, "the elm greeting reads number 1")
   Assert.equal(byKey[MOM_KEY].class.kind, "blank", "Mom's trainer class has no label")
   Assert.equal(byKey[ELM_KEY].class.bank, 271, "the professor phone-only class uses bank 271")
   Assert.equal(
     byKey[ELM_KEY].class.entry,
-    byKey[ELM_KEY].trainer - 201 + 38,
+    byKey[ELM_KEY].trainerClass - 201 + 38,
     "the professor class entry follows the native class code"
   )
   Assert.deepEqual(
@@ -199,7 +207,7 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
   for _, record in ipairs(catalog.contacts) do
     local contact = record --[[@as table<string, unknown>]]
     local bank = contact.messageBank --[[@as integer]]
-    local entry = contact.greeting --[[@as integer]]
+    local entry = contact.phoneScriptIfLocal --[[@as integer]]
     local acquired, acquireErr = provider:acquireBank(bank)
     Assert.notNil(
       acquired,
@@ -273,8 +281,9 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
   end
   for _, key in ipairs({ ELM_KEY }) do
     local contact = byKey[key]
-    local template =
-      assert(provider:acquireBank(contact.messageBank) and provider:get(contact.messageBank, contact.greeting))
+    local template = assert(
+      provider:acquireBank(contact.messageBank) and provider:get(contact.messageBank, contact.phoneScriptIfLocal)
+    )
     local formatted = provider:format(template, { playerName = "GOLD" }, resolvers)
     Assert.isFalse(formatted.hadUnresolvedSubstitutions, key .. " formats cleanly through the token machinery")
     provider:releaseBank(contact.messageBank)
@@ -301,6 +310,11 @@ local function openHost(catalog, messages)
       nativeSelectorFacts = function()
         return { localMap = true }
       end,
+      -- The scripted Mother call is the source savings offer: its
+      -- selector marks the after-naming conversation and its choice
+      -- writes the native savings flag through this boundary.
+      setFlag = function() end,
+      setMomSavingsChoice = function() end,
     },
     audio = {
       playDialing = function() end,
@@ -363,8 +377,24 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
   local FieldScriptComposition = require("game.hgss.src.field.FieldScriptComposition")
   local Runtime = require("libs.script.src.Runtime")
   local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+  -- The field's phone call manager contract on the script-platform
+  -- boundary: the ROM setup writes the pending caller and the run consumes
+  -- it. The real manager has its own suites.
+  local calls = { staged = nil }
+  function calls:stageCall(request)
+    self.staged = request
+  end
+  function calls:takePendingCall()
+    local staged = self.staged
+    self.staged = nil
+    if staged == nil then
+      return nil
+    end
+    return { contactKey = staged.contact, isScriptedCall = staged.isScriptedCall, callScriptID = staged.callScriptID }
+  end
   local services = {
     pokegearApplications = host,
+    phoneCalls = calls,
     phoneContactIndex = assert(
       FieldScriptComposition.phoneContactIndex(catalog),
       "the scripted call resolves numbers through the compiled index"
@@ -389,9 +419,10 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
     end
   end
   mom = assert(mom, "the compiled phonebook carries Mom")
-  -- The phonebook number is source-derived; the current map facts select Mom's local reply.
+  -- The phonebook number is source-derived; a scripted setup always opens
+  -- the call as incoming, so the call takes the dynamic path.
   Assert.equal(
-    Runtime.executeNode({ op = "phone_set_call", contact = mom.id, direction = "outgoing", kind = 0 }, run),
+    Runtime.executeNode({ op = "phone_set_call", contact = mom.id, scriptedCall = 2, callScriptID = 0 }, run),
     Runtime.OUTCOME_CONTINUE,
     "the scripted setup stages same-tick"
   )
@@ -409,7 +440,8 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
   )
   Assert.equal(#staged, 1, "the run blocks on exactly one application task")
   Assert.equal(staged[1].spec.request.contact, MOM_KEY, "the source phonebook number stages Mom")
-  Assert.equal(staged[1].spec.request.direction, "outgoing", "the native local selector takes the outgoing path")
+  Assert.equal(staged[1].spec.request.direction, "incoming", "a scripted setup opens the call as incoming")
+  Assert.equal(staged[1].spec.request.isScriptedCall, 2, "the source scripted marker rides the request")
   local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
   local taskState = PokegearApplicationTask.create({
@@ -419,14 +451,20 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
   }, taskCtx)
   taskCtx.input = { uiEvents = { { type = "advance" } } }
   local done = false
-  for _ = 1, 60 do
+  for _ = 1, 400 do
+    -- The scripted Mother call is the source savings offer: it owes the
+    -- menu once its intro prints, so the driving edge follows the stage.
+    local status = host:status()
+    local call = status and status.view and status.view.call
+    local edge = type(call) == "table" and call.stage == "choice" and "confirm" or "advance"
+    taskCtx.input = { uiEvents = { { type = edge } } }
     local polled = PokegearApplicationTask.poll(taskState, taskCtx)
     if polled.complete then
       done = true
       break
     end
   end
-  Assert.isTrue(done, "the scripted local call completes through its task and host")
+  Assert.isTrue(done, "the scripted call completes through its task and host")
   Assert.isFalse(host:isActive(), "completion releases the feature lease")
   messages.dispose(messages)
   local provider = assert(FieldMessageProvider.new(CacheFs.forVersion(versionId)))

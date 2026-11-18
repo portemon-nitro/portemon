@@ -45,23 +45,23 @@ function PhoneWorldContext.new(owners)
   return setmetatable({ _owners = checkOwners(owners) }, PhoneWorldContext)
 end
 
--- Reads the native Mom selector facts from the live map-section and
--- event owners. The pinned selector compares PhoneBookEntry.mapId with
--- the player's map section and checks these two save flags in order.
+-- Reads the native Mom selector facts from the live map and event
+-- owners. The pinned selector compares the phonebook map header with
+-- the player's map header and checks these two save flags in order.
 ---@param contact table<string, unknown>
 ---@return table<string, boolean> the native Mom selector facts
 function PhoneWorldContext:nativeSelectorFacts(contact)
   assert(
-    type(contact) == "table" and type(contact.map) == "number",
-    "native phone selection reads the contact map section"
+    type(contact) == "table" and type(contact.mapId) == "number",
+    "native phone selection reads the contact map identity"
   )
   local runtime = self._owners.runtime
   assert(type(runtime) == "table", "native phone selection reads the live field runtime")
   local session = runtime.session
   local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
   assert(
-    type(currentMap) == "table" and type(currentMap.mapSectionNativeId) == "number",
-    "native phone selection reads the current map section"
+    type(currentMap) == "table" and type(currentMap.mapId) == "number",
+    "native phone selection reads the current map identity"
   )
   local events = self._owners.flags
   assert(
@@ -73,7 +73,7 @@ function PhoneWorldContext:nativeSelectorFacts(contact)
   assert(type(flags) == "table", "native phone selection reads story flag identities")
   local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
   return {
-    localMap = contact.map == currentMap.mapSectionNativeId,
+    localMap = contact.mapId == currentMap.mapId,
     gaveRivalName = isFlagSet(events, flags.FLAG_GAVE_RIVAL_NAME_TO_OFFICER) == true,
     talkedAfterNamingRival = isFlagSet(events, flags.FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL) == true,
     eggCallPending = isFlagSet(events, flags.FLAG_SYS_TRIGGER_EGG_CALL) == true,
@@ -91,6 +91,21 @@ function PhoneWorldContext:callFacts(contact)
   local playerData = runtime.playerData
   if type(playerData) == "table" and type(playerData.profile) == "table" then
     facts.money = playerData.profile.money
+    -- Buena and friend handlers print gendered intros behind the
+    -- profile gender, mirroring PhoneCallMessagePrint_Gendered.
+    facts.playerGender = playerData.profile.gender
+    -- Retail counts profile badges for the Elm gate; a missing badge
+    -- set reads as zero exactly like a fresh profile.
+    local badges = playerData.profile.badges
+    if type(badges) == "table" then
+      local count = 0
+      for _, owned in pairs(badges) do
+        if owned == true then
+          count = count + 1
+        end
+      end
+      facts.badges = count
+    end
   end
   local clock = runtime.localClock
   if type(clock) == "table" and type(clock.nowLocal) == "function" then
@@ -106,6 +121,7 @@ function PhoneWorldContext:callFacts(contact)
       local _, weekday = CivilDate.parts({ year = sample.year, month = sample.month, day = sample.day })
       facts.weekday = weekday
       local hour = math.floor(sample.hour)
+      facts.hour = hour
       facts.timeOfDay = hour >= 4 and hour < 10 and 0 or (hour >= 20 or hour < 4) and 2 or 1
     end
   end
@@ -121,6 +137,70 @@ function PhoneWorldContext:callFacts(contact)
     facts.dexCaught = dex:countCaught("national")
     facts.nationalDex = dex:hasNationalDex()
   end
+  -- Generic header gates read the tower, takeover, and contest facts
+  -- through the live event state: the radio-tower flag, the takeover
+  -- scene variable in its active window, and the bug-contest flag. An
+  -- event state without variable reads omits the takeover fact, which
+  -- the gates treat like the unset source value.
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flagNames = FieldScriptSymbols.flagsByName
+  assert(type(flagNames) == "table", "phone calls read story flag identities")
+  local events = self._owners.flags
+  if type(events) == "table" and type(events.isFlagSet) == "function" then
+    local readFlag = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    facts.towerCleared = readFlag(events, flagNames.FLAG_BEAT_RADIO_TOWER_ROCKETS) == true
+    facts.bugContest = readFlag(events, flagNames.FLAG_UNK_996) == true
+    -- The Elm chain reads its story flags in source order: the panic
+    -- call, the rival naming, the egg call and gift, the hatch and
+    -- Everstone, the ticket, and Pokerus. Pending-event facts invert
+    -- their flags (the call fires while the flag is unset); state
+    -- facts read their flags directly.
+    facts.panicCall = readFlag(events, flagNames.FLAG_GOT_ELMS_PANIC_CALL) ~= true
+    facts.eggEvent = readFlag(events, flagNames.FLAG_GOT_PICK_UP_EGG_CALL_FROM_ELM) ~= true
+    facts.eggGift = readFlag(events, flagNames.FLAG_GOT_EGG_FROM_ELMS_ASSISTANT) ~= true
+    facts.eggHatched = readFlag(events, flagNames.FLAG_SYS_HATCHED_TOGEPI_EGG) == true
+    facts.everstone = readFlag(events, flagNames.FLAG_GOT_EVERSTONE_FROM_ELM) == true
+    facts.ssTicket = readFlag(events, flagNames.FLAG_GOT_SS_TICKET_FROM_ELM) == true
+    facts.pokerus = readFlag(events, flagNames.FLAG_WAS_TOLD_ABOUT_POKERUS) == true
+    facts.gameClear = readFlag(events, flagNames.FLAG_GAME_CLEAR) == true
+    -- The Kurt status flags behind the dynamic status line: the
+    -- order flag and the ball-making flag.
+    facts.kurtFlag127 = readFlag(events, flagNames.FLAG_UNK_127) == true
+    facts.kurtMaking = readFlag(events, flagNames.FLAG_DAILY_KURT_MAKING_BALLS) == true
+    -- The Oak johto acknowledgement behind the dynamic menu identity.
+    facts.oakJohtoAcked = readFlag(events, flagNames.FLAG_SYS_OAK_ACKNOWLEDGED_JOHTO_DEX_COMPLETION) == true
+    -- The region-1 flypoint behind friend outgoing region messages.
+    facts.flypoint25 = readFlag(events, flagNames.FLAG_UNK_9C9) == true
+    if type(events.getVar) == "function" then
+      local varNames = FieldScriptSymbols.variablesByName
+      assert(type(varNames) == "table", "phone calls read story variable identities")
+      local scene = events.getVar(events, varNames.VAR_SCENE_ROCKET_TAKEOVER)
+      facts.takeover = type(scene) == "number" and scene >= 2 and scene <= 4
+      -- Retail always returns Var4057 plus the base Baoba script: a
+      -- missing var reads as zero exactly like the source zero-init.
+      local safariVar = events.getVar(events, varNames.VAR_UNK_4057)
+      facts.safariTest = type(safariVar) == "number" and safariVar or 0
+    end
+  end
+  -- The Kenji errand wait and activity ride the durable companion
+  -- counters: retail zero-inits the same persistent record, so absent
+  -- fields read as zero and false.
+  local phoneState = self._owners.state
+  if type(phoneState) == "table" and type(phoneState.readPhone) == "function" then
+    local phone = phoneState:readPhone()
+    local kenji = type(phone) == "table" and phone.kenji or nil
+    facts.kenjiWaitDays = type(kenji) == "table" and kenji.waitDays or 0
+    facts.kenjiActive = type(kenji) == "table" and kenji.active == true
+  end
+  -- The friend outgoing region messages key the saved map unlock
+  -- level, mirroring Pokegear_GetMapUnlockLevel.
+  if type(phoneState) == "table" and type(phoneState.readPreferences) == "function" then
+    local preferences = phoneState:readPreferences()
+    local unlockLevel = type(preferences) == "table" and preferences.mapUnlockLevel or nil
+    if type(unlockLevel) == "number" and unlockLevel % 1 == 0 then
+      facts.unlockLevel = unlockLevel
+    end
+  end
   -- Mom intro param joins the current map id onto the static map-header
   -- catalog (romdump maps.lua momCallIntroParam, zero-based map ids).
   -- Absent maps or headers omit the fact; the call defaults to 10.
@@ -128,6 +208,9 @@ function PhoneWorldContext:callFacts(contact)
   local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
   local mapId = type(currentMap) == "table" and currentMap.mapId or nil
   if type(mapId) == "number" and mapId % 1 == 0 then
+    -- The friend incoming location message keys off the current
+    -- native map identity, the same header the selector compares.
+    facts.mapId = mapId
     local okMaps, maps = pcall(require, "romdump.src.catalog.hgss.maps")
     if okMaps and type(maps) == "table" then
       local byId = (maps --[[@as table<string, unknown>]]).byId
@@ -145,6 +228,32 @@ function PhoneWorldContext:callFacts(contact)
   return facts
 end
 
+-- Reads the map call signal behind call setup: the header flag for
+-- the requested direction, exactly like MapHeader_CanPlacePhoneCalls
+-- and MapHeader_CanReceivePhoneCalls. A missing header fails loudly
+-- instead of inventing coverage.
+---@param direction string incoming or outgoing
+---@return boolean signaled
+function PhoneWorldContext:phoneSignal(direction)
+  assert(direction == "incoming" or direction == "outgoing", "phone signal reads a known direction")
+  local runtime = self._owners.runtime
+  assert(type(runtime) == "table", "phone signal reads the live field runtime")
+  local session = runtime.session
+  local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+  local mapId = type(currentMap) == "table" and currentMap.mapId or nil
+  assert(type(mapId) == "number" and mapId % 1 == 0, "phone signal reads the current map")
+  local okMaps, maps = pcall(require, "romdump.src.catalog.hgss.maps")
+  assert(okMaps and type(maps) == "table", "phone signal reads the static map-header catalog")
+  local byId = (maps --[[@as table<string, unknown>]]).byId
+  assert(type(byId) == "table", "phone signal reads indexed map headers")
+  local header = (byId --[[@as table<integer, unknown>]])[mapId]
+  assert(type(header) == "table", "phone signal needs a header for the current map")
+  local flag = direction == "incoming" and "incomingCalls" or "outgoingCalls"
+  local signaled = (header --[[@as table<string, unknown>]])[flag]
+  assert(type(signaled) == "boolean", "phone signal headers carry their call coverage")
+  return signaled
+end
+
 ---@param contact string
 ---@return table<string, unknown>
 function PhoneWorldContext:rematchFacts(contact)
@@ -157,6 +266,92 @@ function PhoneWorldContext:rematchFacts(contact)
   end
   missingOwner("phone", "no catalog contact describes rematch window " .. contact)
   error("unreachable", 0)
+end
+
+-- The native fisherman trainer class behind the good-rod encounter
+-- slot rule (TRAINERCLASS_FISHERMAN).
+PhoneWorldContext.FISHERMAN_CLASS = 11
+
+-- Lists the trainer party species keys behind generic phone chatter:
+-- the same compiled trainer template the battle factory materializes,
+-- read by native trainer number. Absent trainer data fails with
+-- attribution instead of inventing a party.
+---@param trainerId integer native trainer number
+---@return string[] species keys in team order
+function PhoneWorldContext:trainerPartySpecies(trainerId)
+  assert(type(trainerId) == "number" and trainerId % 1 == 0, "trainer parties read their native trainer number")
+  local runtime = self._owners.runtime
+  local catalog = type(runtime) == "table" and runtime._trainerCatalog or nil
+  if type(catalog) ~= "table" then
+    missingOwner("trainers", "no compiled trainer catalog backs phone chatter")
+  end
+  assert(type(catalog) == "table", "trainer parties read the compiled trainer catalog")
+  local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+  local template = HgssTrainerCatalog.trainer(catalog, trainerId)
+  if type(template) ~= "table" then
+    local failure = Errors.new(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "phone chatter names a compiled trainer, got " .. tostring(trainerId),
+      { trainer = trainerId }
+    )
+    error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+  end
+  assert(type(template) == "table", "trainer templates resolve through the compiled catalog")
+  local members = (template --[[@as table<string, unknown>]]).members
+  assert(type(members) == "table" and #members > 0, "trainer templates carry their party")
+  local keys = {}
+  for _, member in
+    ipairs(members --[[@as table<integer, unknown>]])
+  do
+    local species = (member --[[@as table<string, unknown>]]).species
+    assert(type(species) == "string" and species ~= "", "trainer parties name their species")
+    keys[#keys + 1] = species
+  end
+  return keys
+end
+
+-- Lists one land time band's encounter species keys behind generic
+-- phone chatter: the compiled encounter member for the map with a
+-- neutral rod and radio, mirroring the raw table the source reads.
+-- Fishermen read the good-rod slots; every other class reads the land
+-- slots for the time band. Absent encounter data fails with attribution.
+---@param mapId integer native map identity
+---@param timeOfDay string morning, day, or night
+---@param trainerClass integer native trainer class
+---@return string[] species keys in slot order
+function PhoneWorldContext:encounterSpecies(mapId, timeOfDay, trainerClass)
+  assert(type(mapId) == "number" and mapId % 1 == 0, "encounter slots read their native map")
+  assert(timeOfDay == "morning" or timeOfDay == "day" or timeOfDay == "night", "encounter slots read a known time band")
+  assert(type(trainerClass) == "number" and trainerClass % 1 == 0, "encounter slots read the caller class")
+  local runtime = self._owners.runtime
+  local catalog = type(runtime) == "table" and runtime._encounterCatalog or nil
+  if type(catalog) ~= "table" then
+    missingOwner("encounters", "no compiled encounter catalog backs phone chatter")
+  end
+  assert(type(catalog) == "table", "encounter slots read the compiled encounter catalog")
+  local member = catalog:tableFor(mapId, {
+    timeOfDay = timeOfDay,
+    radio = "none",
+    rod = trainerClass == PhoneWorldContext.FISHERMAN_CLASS and "good_rod" or nil,
+    game = type(runtime) == "table" and runtime.versionId or nil,
+  })
+  assert(type(member) == "table", "encounter tables resolve through the compiled catalog")
+  local slots = nil
+  if trainerClass == PhoneWorldContext.FISHERMAN_CLASS then
+    slots = (member --[[@as table<string, unknown>]]).goodRod
+  else
+    slots = (member --[[@as table<string, unknown>]])[timeOfDay]
+  end
+  assert(type(slots) == "table" and #slots > 0, "encounter tables carry slots for the caller")
+  local keys = {}
+  for _, slot in
+    ipairs(slots --[[@as table<integer, unknown>]])
+  do
+    local species = (slot --[[@as table<string, unknown>]]).species
+    assert(type(species) == "string" and species ~= "", "encounter slots name their species")
+    keys[#keys + 1] = species
+  end
+  return keys
 end
 
 ---@param key unknown
@@ -392,6 +587,30 @@ function PhoneWorldContext:read(key)
     if fact == "local-greeting" then
       return { key = "kurt.local-greeting" }
     end
+    if fact == "pending" then
+      -- The handed Kurt order behind the dynamic status line: the
+      -- live apricorn service's pending order, or an empty handed
+      -- count when nothing is staged. An absent apricorn service
+      -- fails with attribution instead of an invented empty box.
+      local runtime = self._owners.runtime
+      local mart = type(runtime) == "table" and runtime.martService or self._owners.kurt
+      if type(mart) ~= "table" or type(mart.pendingKurt) ~= "function" then
+        missingOwner("kurt", "no live apricorn owner is available")
+      end
+      assert(type(mart) == "table", "kurt orders read the live apricorn service")
+      local pending = mart:pendingKurt()
+      if type(pending) ~= "table" then
+        return { quantity = 0 }
+      end
+      local order = pending --[[@as table<string, unknown>]]
+      local quantity = order.quantity
+      assert(type(quantity) == "number" and quantity % 1 == 0 and quantity >= 0, "kurt orders read the handed count")
+      local apricorn = order.apricornKey
+      if quantity > 0 then
+        assert(type(apricorn) == "string" and apricorn ~= "", "a kurt order names its apricorn")
+      end
+      return { quantity = quantity, apricorn = apricorn }
+    end
     return self:_domainOwner("kurt")
   end
   if domain == "daycare" then
@@ -438,6 +657,30 @@ function PhoneWorldContext:read(key)
     if fact == "caught" then
       assert(type(dex.countCaught) == "function", "phone Dex reads its live knowledge counts")
       return dex:countCaught("national")
+    end
+    if fact == "johto-seen" then
+      assert(type(dex.countSeen) == "function", "phone Dex reads its live knowledge counts")
+      return dex:countSeen("johto")
+    end
+    if fact == "johto-caught" then
+      assert(type(dex.countCaught) == "function", "phone Dex reads its live knowledge counts")
+      return dex:countCaught("johto")
+    end
+    if fact == "national-owned-ex-mythical" then
+      assert(type(dex.countOwnedExcludeMythical) == "function", "phone Dex reads its rating counts")
+      return dex:countOwnedExcludeMythical("national")
+    end
+    if fact == "johto-owned-ex-mythical" then
+      assert(type(dex.countOwnedExcludeMythical) == "function", "phone Dex reads its rating counts")
+      return dex:countOwnedExcludeMythical("johto")
+    end
+    if fact == "national-complete" then
+      assert(type(dex.isNationalDexComplete) == "function", "phone Dex reads its completion")
+      return dex:isNationalDexComplete()
+    end
+    if fact == "johto-complete" then
+      assert(type(dex.isJohtoDexComplete) == "function", "phone Dex reads its completion")
+      return dex:isJohtoDexComplete()
     end
     assert(false, "phone dex reads name a known dex fact")
   end
@@ -514,27 +757,104 @@ function PhoneWorldContext:setRematch(contact, record)
   state:setRematch(contact, record)
 end
 
+--- Writes the Kenji errand activity through durable companion state,
+--- preserving the staged wait days. Retail sets the same persistent
+--- active flag beside the seeking invitation on the day and morning
+--- branches.
+---@param active boolean errand activity
+function PhoneWorldContext:setKenjiActive(active)
+  assert(type(active) == "boolean", "kenji errand activity is a boolean")
+  local state = self._owners.state
+  assert(
+    type(state) == "table" and type(state.readPhone) == "function" and type(state.setKenjiErrand) == "function",
+    "kenji errands write durable companion state"
+  )
+  local phone = state:readPhone()
+  local kenji = type(phone) == "table" and phone.kenji or nil
+  local waitDays = type(kenji) == "table" and kenji.waitDays or 0
+  assert(type(waitDays) == "number", "kenji errands carry integral wait days")
+  state:setKenjiErrand(waitDays, active)
+end
+
+-- Applies the Baoba incoming trigger side effects behind the native
+-- selector (PhoneCall_GetScriptId_Baoba): 142 stages safari test 4,
+-- 143/144 raise the object unlock level with the unlock time, 145/146
+-- raise it by four, and every numbered trigger stages safari test 7.
+-- The Var4057 writes ride the live event state today; the arrangement
+-- unlock levels need the safari arrangement owner, so 143..146 fail
+-- with attribution until that owner is composed. Non-142..146 scripts
+-- resolve statically with no effect.
+---@param scriptId integer incoming trigger script identity
+function PhoneWorldContext:applyBaobaTrigger(scriptId)
+  assert(type(scriptId) == "number" and scriptId % 1 == 0, "baoba triggers apply their source script identity")
+  local runtime = self._owners.runtime
+  local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
+  if type(flags) ~= "table" or type(flags.setVar) ~= "function" then
+    missingOwner("vars", "no live world variable owner stages the safari test")
+  end
+  assert(type(flags) == "table", "baoba triggers write through a live event state")
+  local setVar = flags.setVar --[[@as fun(self: table<string, unknown>, var: integer, value: integer)]]
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local var4057 = symbols.variablesByName.VAR_UNK_4057
+  assert(type(var4057) == "number", "baoba triggers stage the safari test var")
+  if scriptId == 142 then
+    setVar(flags, var4057 --[[@as integer]], 4)
+    return
+  end
+  if scriptId < 143 or scriptId > 146 then
+    return
+  end
+  missingOwner("safari", "no live safari arrangement owner stages unlock levels")
+end
+
+-- Writes one story flag through the event-state owner behind static
+-- flag-kind scripts (PhoneCall_ApplyGenericNPCcallSideEffect
+-- PHONESCRIPTTYPE_FLAG) and the professor acknowledgement branches. The
+-- compiled phone table and the caller name flags semantically; this
+-- boundary is the single place their identities resolve. Absent event
+-- state fails with attribution instead of staging a silent no-op.
+---@param name string semantic story flag name
+function PhoneWorldContext:setFlag(name)
+  self:_writeFlag(name, true)
+end
+
+-- Clears one story flag through the event-state owner.
+---@param name string semantic story flag name
+function PhoneWorldContext:clearFlag(name)
+  self:_writeFlag(name, false)
+end
+
+---@param name string semantic story flag name
+---@param set boolean whether the flag is written or cleared
+function PhoneWorldContext:_writeFlag(name, set)
+  assert(type(name) == "string" and name ~= "", "phone flag writes name a story flag")
+  local runtime = self._owners.runtime
+  local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
+  if type(flags) ~= "table" then
+    missingOwner("flags", "no live world flag owner is available")
+  end
+  assert(type(flags) == "table", "phone flag writes go through a live event state")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flag = symbols.flagsByName[name]
+  assert(type(flag) == "number", "phone flag writes name a catalogued story flag: " .. name)
+  local write = set and flags.setFlag or flags.clearFlag
+  assert(
+    type(flags.setFlag) == "function" and type(flags.clearFlag) == "function",
+    "phone flag writes go through FieldEventState"
+  )
+  write(flags, flag --[[@as integer]])
+end
+
 -- Writes Mother's source flag through the event-state owner. The save
 -- choice has one authoritative representation; no phone-local shadow is
 -- published.
 ---@param saving boolean
 function PhoneWorldContext:setMomSavingsChoice(saving)
   assert(type(saving) == "boolean", "Mother savings choice is a boolean")
-  local runtime = self._owners.runtime
-  local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
-  if type(flags) ~= "table" then
-    missingOwner("flags", "no live world flag owner is available")
-  end
-  assert(type(flags) == "table", "Mother savings writes through a live event state")
-  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
-  local flag = symbols.flagsByName.FLAG_SYS_MOMS_SAVINGS
-  assert(type(flag) == "number", "Mother savings writes the native event flag")
-  local setFlag, clearFlag = flags.setFlag, flags.clearFlag
-  assert(type(setFlag) == "function" and type(clearFlag) == "function", "Mother savings writes through FieldEventState")
   if saving then
-    setFlag(flags, flag --[[@as integer]])
+    self:setFlag("FLAG_SYS_MOMS_SAVINGS")
   else
-    clearFlag(flags, flag --[[@as integer]])
+    self:clearFlag("FLAG_SYS_MOMS_SAVINGS")
   end
 end
 

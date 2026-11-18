@@ -180,9 +180,9 @@ end
 ---@field battleBalls { entries: table<string, table<string, unknown>> }
 ---@field menus { command: FieldBattlePresentation.MenuSection, moves: FieldBattlePresentation.MenuSection, target: FieldBattlePresentation.MenuSection, twoOption: FieldBattlePresentation.MenuSection, lower: { pulseMask: string } }
 ---@field bag { pages: { image: string, x: integer, y: integer, width: integer, height: integer }[], finger: { image: string, width: integer, height: integer }, cursor: table<string, { image: string, width: integer, height: integer }>, buttons: table<integer, { button: integer, frame: integer, bank: integer, image: string }> }
+---@field party { pages: { key: string, layers: { image: string, x: integer, y: integer, width: integer, height: integer }[] }[], buttons: { button: integer, frame: integer, variant: "self"|"partner", image: string }[], expTiles: { level: integer, image: string }[] }
 ---@field messages { roles: table<string, { font: string }> }
 ---@field audioRoles { wild: string, trainer: string, rival: string, select: string }
----@field party { pages: { key: string, layers: table[] }[], buttons: { button: integer, frame: integer, variant: "self"|"partner", image: string }[], expTiles: { level: integer, image: string }[] }
 
 -- The one staged/planning decision. BattlePresentationCache.load answers
 -- either a verified manifest that passed
@@ -2971,33 +2971,33 @@ function FieldBattlePresentation:_preparationServices()
       function composite:getDimensions()
         return 256, 192
       end
-      local function drawLayer(handle, drawGraphics, x, y, quad)
+      local function drawLayer(handle, drawGraphics, x, y, quad, ...)
         if type(handle) == "table" and type(handle.drawQuad) == "function" then
           if quad ~= nil then
-            return handle:drawQuad(drawGraphics, quad, x, y)
+            return handle:drawQuad(drawGraphics, quad, x, y, ...)
           end
-          return handle:draw(drawGraphics, x, y)
+          return handle:draw(drawGraphics, x, y, ...)
         end
         local inner = type(handle) == "table" and handle.lease or nil
         if type(inner) == "table" and type(inner.drawQuad) == "function" then
           if quad ~= nil then
-            return inner:drawQuad(drawGraphics, quad, x, y)
+            return inner:drawQuad(drawGraphics, quad, x, y, ...)
           end
-          return inner:draw(drawGraphics, x, y)
+          return inner:draw(drawGraphics, x, y, ...)
         end
         local pixels = type(handle) == "table" and (handle.image or inner) or handle
         if quad ~= nil then
-          return drawGraphics.draw(pixels, quad, x, y)
+          return drawGraphics.draw(pixels, quad, x, y, ...)
         end
-        return drawGraphics.draw(pixels, x, y)
+        return drawGraphics.draw(pixels, x, y, ...)
       end
-      function composite:draw(drawGraphics, x, y)
-        drawLayer(self.layers[2], drawGraphics, x, y, nil)
-        drawLayer(self.layers[1], drawGraphics, x, y, nil)
+      function composite:draw(drawGraphics, x, y, ...)
+        drawLayer(self.layers[2], drawGraphics, x, y, nil, ...)
+        drawLayer(self.layers[1], drawGraphics, x, y, nil, ...)
       end
-      function composite:drawQuad(drawGraphics, quad, x, y)
-        drawLayer(self.layers[2], drawGraphics, x, y, quad)
-        drawLayer(self.layers[1], drawGraphics, x, y, quad)
+      function composite:drawQuad(drawGraphics, quad, x, y, ...)
+        drawLayer(self.layers[2], drawGraphics, x, y, quad, ...)
+        drawLayer(self.layers[1], drawGraphics, x, y, quad, ...)
       end
       images[key] = composite
       return composite

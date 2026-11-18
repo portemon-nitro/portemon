@@ -3,13 +3,13 @@
 -- script entry opens here and blocks on its scheduler task, but both build
 -- the same card controller and conversation engine underneath. At most one
 -- handle is active: a second open while the lease is held is an attributed
--- refusal naming the lease, never a steal and never a deadlock. Staged
--- setup requests wait outside the lease keyed by their script session and
--- are consumed once; a terminal result reads back until the owner closes
--- the handle, and closing releases exactly once without rolling back
--- committed effects. This host never owns input routing: the field
--- application host owns normal input and the script modal lane owns script
--- input. Pure module: no love dependency.
+-- refusal naming the lease, never a steal and never a deadlock. The
+-- pending caller request a launch reads belongs to the field's phone call
+-- manager, never to this host; a terminal result reads back until the
+-- owner closes the handle, and closing releases exactly once without
+-- rolling back committed effects. This host never owns input routing: the
+-- field application host owns normal input and the script modal lane owns
+-- script input. Pure module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -28,7 +28,6 @@ local PhoneController = require("game.hgss.src.pokegear.PhoneController")
 ---@field _random table<string, unknown>? the borrowed companion streams
 ---@field _active table<string, unknown>? the live application record
 ---@field _lastResult table<string, unknown>? the retained terminal result of the last cancelled call
----@field _staged table<string, table<string, string>> staged setup requests by session key
 ---@field _nextId integer
 ---@field _disposed boolean
 local PokegearScriptHost = {}
@@ -76,7 +75,6 @@ function PokegearScriptHost.new(opts)
     _random = opts.random,
     _active = nil,
     _lastResult = nil,
-    _staged = {},
     _nextId = 0,
     _disposed = false,
   }, PokegearScriptHost)
@@ -357,6 +355,34 @@ function PokegearScriptHost:isActive()
   return self._active ~= nil
 end
 
+-- Whether a live call holds the companion lease. The field presents such a
+-- call as a framed window over the live field, so the field's own script
+-- cover has nothing to hide while it is live.
+---@return boolean
+function PokegearScriptHost:isCallActive()
+  local active = self._active
+  if active == nil then
+    return false
+  end
+  return (active --[[@as table<string, unknown>]]).mode == "call"
+end
+
+-- Borrows the live application status for presentation: the detached
+-- controller status while a child is open, nil while idle. Reads never
+-- mutate and never duplicate an effect.
+---@return table<string, unknown>?
+function PokegearScriptHost:status()
+  local active = self._active
+  if active == nil then
+    return nil
+  end
+  local record = active --[[@as table<string, unknown>]]
+  local controller = record.controller --[[@as table<string, unknown>]]
+  local takeStatus = controller.status --[[@as fun(self: table<string, unknown>): table<string, unknown>?]]
+  assert(type(takeStatus) == "function", "companion applications publish their status")
+  return takeStatus(controller)
+end
+
 ---@return table<string, unknown>?
 function PokegearScriptHost:activeHandle()
   local active = self._active
@@ -471,55 +497,6 @@ function PokegearScriptHost:isStableForSave()
   return self._active == nil
 end
 
--- Stages one evaluated setup request outside the lease under its script
--- session key. Staging never blocks and never touches the lease; a later
--- setup from the same session replaces its own pending request.
----@param ownerKey string
----@param request { contact: string, direction: string, kind: string }
-function PokegearScriptHost:stageCall(ownerKey, request)
-  if self._disposed then
-    Errors.raise(ScriptErrors.FEATURE_UNAVAILABLE, "a disposed companion host stages nothing", {})
-  end
-  assert(isNonEmptyString(ownerKey), "staged phone requests carry their session key")
-  assert(type(request) == "table", "staged phone requests stay records")
-  local record = request --[[@as table<string, unknown>]]
-  assert(
-    isNonEmptyString(record.contact) and isNonEmptyString(record.direction) and isNonEmptyString(record.kind),
-    "staged phone requests carry their evaluated call identity"
-  )
-  if record.isScriptedCall ~= nil then
-    assert(
-      type(record.isScriptedCall) == "number" and record.isScriptedCall % 1 == 0,
-      "staged phone requests carry their source scripted flag"
-    )
-  end
-  if record.callScriptID ~= nil then
-    assert(
-      type(record.callScriptID) == "number" and record.callScriptID % 1 == 0,
-      "staged phone requests carry their source script identity"
-    )
-  end
-  self._staged[ownerKey] = {
-    contact = record.contact --[[@as string]],
-    direction = record.direction --[[@as string]],
-    kind = record.kind --[[@as string]],
-    isScriptedCall = record.isScriptedCall,
-    callScriptID = record.callScriptID,
-  }
-end
-
--- Consumes the staged setup request for one session key, or nil when the
--- session staged nothing. Consumption is exactly-once: a second take
--- finds nothing.
----@param ownerKey string
----@return table<string, string>?
-function PokegearScriptHost:takeStagedCall(ownerKey)
-  assert(isNonEmptyString(ownerKey), "staged phone requests carry their session key")
-  local pending = self._staged[ownerKey]
-  self._staged[ownerKey] = nil
-  return pending
-end
-
 -- Answers the field rematch readiness query through a transient
 -- conversation engine over the borrowed owners. Pure read: no lease, no
 -- mutation.
@@ -577,14 +554,13 @@ function PokegearScriptHost:cancelPointerCapture()
 end
 
 -- Idempotent release of the logical lifetime: the live child unwinds
--- once, staged requests clear, and no later open succeeds.
+-- once and no later open succeeds.
 function PokegearScriptHost:dispose()
   if self._disposed then
     return
   end
   self._disposed = true
   self:cancel("companion host teardown")
-  self._staged = {}
 end
 
 return PokegearScriptHost

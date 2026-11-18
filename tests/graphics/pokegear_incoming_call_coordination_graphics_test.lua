@@ -75,10 +75,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -116,7 +114,7 @@ local function fixtureManifest()
     { key = LONG_KEY, name = LONG_NAME, sortWeight = 20, family = "trainer" },
   }
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -129,8 +127,8 @@ local function fixtureManifest()
       contactOrder = { MOM_KEY, LONG_KEY },
       callDefinitions = {},
       callTriggers = {
-        { key = MOM_TRIGGER, contact = MOM_KEY, kind = 3, slot = 12, clearOnPickup = true },
-        { key = LONG_TRIGGER, contact = LONG_KEY, kind = 3, slot = 13, clearOnPickup = false },
+        { key = MOM_TRIGGER, contact = MOM_KEY, slot = 12, forcePickUp = false },
+        { key = LONG_TRIGGER, contact = LONG_KEY, slot = 13, forcePickUp = false },
       },
       rematches = {},
       gifts = {},
@@ -355,6 +353,14 @@ local function startRing(triggerKey)
         return false
       end,
     },
+    -- The field's scene-script starter behind a forced trigger: this
+    -- suite rings an ambient trigger, so only its presence is required.
+    startCallScript = function()
+      return "scene-graphics"
+    end,
+    mapReceivesCalls = function()
+      return true
+    end,
     audio = {
       plays = {},
       playRing = function(self, sequence)
@@ -364,7 +370,6 @@ local function startRing(triggerKey)
         return false
       end,
       completeRing = function() end,
-      stopRing = function() end,
     },
   })
   calls:onFieldClock(moment(0))

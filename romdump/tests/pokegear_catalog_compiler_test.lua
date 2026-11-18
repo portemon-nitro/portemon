@@ -21,14 +21,51 @@ local function packU16(value)
   return string.char(value % 256, math.floor(value / 256) % 256)
 end
 
--- One synthetic phonebook record in the source little-endian layout: four
--- bytes, four halfwords, eight bytes.
-local function phonebookRecord(trainer, map, weights)
-  weights = weights or { 1, 2, 3, 4 }
-  local head = string.char(7, 1, 2, trainer % 256)
-  local halves = packU16(map % 65536) .. packU16(11) .. packU16(12) .. packU16(13)
-  local tail = string.char(3, 4, 5, weights[1] % 256, weights[2] % 256, weights[3] % 256, weights[4] % 256, 0)
+-- One synthetic phonebook record in the native PhoneBookEntry layout:
+-- id, type, unused byte, trainer class, trainer id, map id, gift
+-- item, local phone-script selector, greeting set, rematch weekday,
+-- rematch time of day, random-call group, and four sort bytes.
+---@param fields table<string, integer|integer[]|nil>
+---@return string
+local function structRecord(fields)
+  local weights = fields.sortWeights or { 0, 0, 0, 0 }
+  local head = string.char(fields.id % 256, fields.type % 256, 0, fields.trainerClass % 256)
+  local halves = packU16(fields.trainerId or 0)
+    .. packU16(fields.mapId or 0)
+    .. packU16(fields.gift or 0)
+    .. packU16(fields.phoneScriptIfLocal or 0)
+  local tail = string.char(
+    fields.greetingMsgSet or 0,
+    fields.rematchWeekday or 0,
+    fields.rematchTimeOfDay or 0,
+    fields.randomCallGroup or 0,
+    weights[1] % 256,
+    weights[2] % 256,
+    weights[3] % 256,
+    weights[4] % 256
+  )
   return head .. halves .. tail
+end
+
+---@param trainerClass integer
+---@param trainerId integer
+---@param weights integer[]?
+---@return string
+local function phonebookRecord(trainerClass, trainerId, weights)
+  return structRecord({
+    id = 7,
+    type = 1,
+    trainerClass = trainerClass,
+    trainerId = trainerId,
+    mapId = 11,
+    gift = 12,
+    phoneScriptIfLocal = 13,
+    greetingMsgSet = 3,
+    rematchWeekday = 4,
+    rematchTimeOfDay = 5,
+    randomCallGroup = 6,
+    sortWeights = weights or { 1, 2, 3, 4 },
+  })
 end
 
 local function phonebookBytes(records)
@@ -47,7 +84,7 @@ function T.phone_catalog_records_native_name_and_class_sources()
   Assert.equal(contact.name.entry, 0, "caller names use message entry zero")
   Assert.equal(contact.class.kind, "message", "trainer classes use a source message")
   Assert.equal(contact.class.bank, 730, "ordinary class text uses the source trainer-class bank")
-  Assert.equal(contact.class.entry, contact.trainer, "ordinary class entry follows the native trainer-class byte")
+  Assert.equal(contact.class.entry, contact.trainerClass, "ordinary class entry follows the native trainer-class byte")
   local mother = assert(PokegearCatalogCompiler.decodePhonebook(phonebookBytes({ phonebookRecord(200, 11) })))
   Assert.equal(mother.contacts[1].class.kind, "blank", "the native Mom trainer class has no class label")
 end
@@ -78,7 +115,7 @@ function T.well_formed_phonebook_decodes_contacts_with_stable_keys()
   local first, second = decoded.contacts[1], decoded.contacts[2]
   Assert.isTrue(first.key ~= second.key, "contacts carry distinct semantic keys")
   Assert.isTrue(first.key:find(".", 1, true) ~= nil, "contact keys are namespaced")
-  Assert.equal(first.sortWeights[1], 30, "source sort weights are preserved, not re-sorted")
+  Assert.deepEqual(first.sortWeights, { 30, 20, 10, 40 }, "all four sort bytes compile as sort weights")
   Assert.equal(decoded.contactOrder[1], first.key, "array position never becomes contact identity")
   Assert.equal(first.sourceIndex, 0, "the producer translation retains the native index")
 end
@@ -102,6 +139,87 @@ function T.duplicate_derived_contact_identities_are_rejected()
     PokegearCatalogCompiler.decodePhonebook(phonebookBytes({ phonebookRecord(5, 11), phonebookRecord(5, 11) }))
   Assert.isNil(decoded, "duplicate derived identities must not decode")
   Assert.notNil(err, "duplicate identities must carry an error")
+end
+
+-- The retail phonebook record follows the native PhoneBookEntry struct:
+-- id, type, two class bytes, trainer id, map id, gift item, local
+-- phone-script selector, greeting set, rematch weekday, rematch time of
+-- day, random-call group, and four sort bytes. The decoder publishes
+-- those struct names so runtime selection never re-derives them.
+function T.phonebook_records_decode_to_native_struct_names()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local decoded, err = PokegearCatalogCompiler.decodePhonebook(phonebookBytes({
+    structRecord({
+      id = 0,
+      type = 1,
+      trainerClass = 200,
+      trainerId = 0,
+      mapId = 63,
+      gift = 0,
+      phoneScriptIfLocal = 23,
+      greetingMsgSet = 255,
+      rematchWeekday = 3,
+      rematchTimeOfDay = 3,
+      randomCallGroup = 0,
+      sortWeights = { 1, 55, 30, 0 },
+    }),
+  }))
+  Assert.notNil(decoded, "a struct-layout phonebook must decode: " .. tostring(err and err.message or err))
+  assert(decoded ~= nil, "struct-layout phonebook decoded above")
+  local contact = decoded.contacts[1]
+  Assert.equal(contact.key, "hg.trainer.200.map.0.contact.0", "contact identity names its class, map, and index")
+  Assert.equal(contact.trainerClass, 200, "the class byte names the trainer class")
+  Assert.equal(contact.trainerId, 0, "the first halfword names the trainer identity")
+  Assert.equal(contact.mapId, 63, "the second halfword names the map identity")
+  Assert.equal(contact.gift, 0, "the third halfword names the gift item")
+  Assert.equal(contact.phoneScriptIfLocal, 23, "the fourth halfword names the local phone-script selector")
+  Assert.equal(contact.greetingMsgSet, 255, "the trailing set byte names the greeting set")
+  Assert.equal(contact.rematchWeekday, 3, "rematch weekday follows the greeting set")
+  Assert.equal(contact.rematchTimeOfDay, 3, "rematch time of day follows the weekday")
+  Assert.equal(contact.randomCallGroup, 0, "the group byte names the random-call group")
+  Assert.deepEqual(contact.sortWeights, { 1, 55, 30, 0 }, "all four sort bytes compile as sort weights")
+end
+
+-- Trainer contacts carry their own generic header tables: every row
+-- stays a four-number gate tuple, and mutating the compiled rows never
+-- touches the shared producer tables.
+function T.trainer_contacts_carry_detached_generic_header_tables()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local decoded, err = PokegearCatalogCompiler.decodePhonebook(phonebookBytes({
+    structRecord({
+      id = 10,
+      type = 0,
+      trainerClass = 2,
+      trainerId = 8,
+      mapId = 34,
+      gift = 45,
+      phoneScriptIfLocal = 29,
+      greetingMsgSet = 0,
+      rematchWeekday = 1,
+      rematchTimeOfDay = 1,
+      randomCallGroup = 1,
+    }),
+  }))
+  Assert.notNil(decoded, "a trainer phonebook must decode: " .. tostring(err and err.message or err))
+  assert(decoded ~= nil, "trainer phonebook decoded above")
+  local contact = decoded.contacts[1]
+  local headers = assert(contact.genericHeaders, "trainer contacts carry generic header tables")
+  for _, direction in ipairs({ "outgoing", "incoming" }) do
+    local rows = headers[direction]
+    Assert.equal(#rows, 8, "the " .. direction .. " table carries eight rows")
+    for index, row in ipairs(rows) do
+      Assert.equal(#row, 4, direction .. " row " .. index .. " stays a four-field gate tuple")
+    end
+  end
+  local producerRow = assert(PokegearSources.phoneGenericHeaders[10].outgoing[1], "the producer carries Joey's rows")
+  local producerGate = producerRow[1]
+  headers.outgoing[1][1] = 255
+  Assert.equal(
+    PokegearSources.phoneGenericHeaders[10].outgoing[1][1],
+    producerGate,
+    "a compiled-row mutation never reaches the producer table"
+  )
 end
 
 local SENTINEL_U32 = 4294967294
@@ -366,6 +484,75 @@ function T.compiled_contacts_carry_their_message_bank()
   Assert.isNil(rejected, "a contact id outside the phone index must not decode")
   Assert.notNil(rejectErr, "an out-of-index contact id must carry an error")
   Assert.equal(rejectErr.code, "POKEGEAR_PHONEBOOK_INVALID", "the failure carries its attribution")
+end
+
+-- The retail trigger table behind GearPhoneRingManager
+-- (sPhoneCallTriggers): one record per source slot carrying that slot's
+-- caller, predefined script identity, and force-pickup flag.
+function T.native_phone_trigger_table_names_every_source_slot_once()
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local records = PokegearSources.phoneTriggerRecords("soulsilver")
+  -- sPhoneCallTriggers order: script identity and force-pickup flag per
+  -- slot (Oak, Day-Care Man, and the newest Baoba slots launch with
+  -- PHONE_SCRIPT_NONE, i.e. no predefined script).
+  local expected = {
+    [0] = { callScriptID = 13, forcePickUp = false },
+    [1] = { callScriptID = 7, forcePickUp = false },
+    [2] = { callScriptID = 85, forcePickUp = true },
+    [3] = { callScriptID = 93, forcePickUp = true },
+    [4] = { forcePickUp = false },
+    [5] = { forcePickUp = false },
+    [6] = { forcePickUp = false },
+    [7] = { callScriptID = 142, forcePickUp = true },
+    [8] = { callScriptID = 143, forcePickUp = true },
+    [9] = { callScriptID = 144, forcePickUp = true },
+    [10] = { callScriptID = 145, forcePickUp = true },
+    [11] = { callScriptID = 146, forcePickUp = true },
+    [12] = { callScriptID = 27, forcePickUp = false },
+  }
+  local bySlot, keys = {}, {}
+  for _, record in ipairs(records) do
+    Assert.equal(bySlot[record.slot], nil, "slot " .. tostring(record.slot) .. " is compiled once")
+    Assert.isTrue(type(record.key) == "string" and record.key ~= "", "every trigger record names its key")
+    Assert.equal(keys[record.key], nil, "trigger keys stay unique: " .. record.key)
+    Assert.isTrue(type(record.contact) == "string" and record.contact ~= "", "every trigger names its caller")
+    bySlot[record.slot] = record
+    keys[record.key] = true
+  end
+  for slot, want in pairs(expected) do
+    local record = assert(bySlot[slot], "the trigger table carries source slot " .. tostring(slot))
+    Assert.equal(record.callScriptID, want.callScriptID, "slot " .. slot .. " carries its source script identity")
+    Assert.equal(record.forcePickUp, want.forcePickUp, "slot " .. slot .. " carries its source pickup flag")
+  end
+  -- Slots sharing a retail caller share one catalogue contact: Elm owns
+  -- the egg and Pokerus calls, Baoba owns the arrangement calls.
+  Assert.equal(bySlot[0].contact, bySlot[1].contact, "both Elm calls ring the same caller")
+  for slot = 7, 11 do
+    Assert.equal(bySlot[slot].contact, bySlot[6].contact, "every Baoba call rings the same caller")
+  end
+  Assert.equal(#records, 13, "the trigger table carries only its thirteen source slots")
+end
+
+-- Word-kind scripts stage a bank-entry reference plus a pick count:
+-- the consumer formats bank entry (base + pick), so every word
+-- definition must carry a parseable reference and a positive count.
+function T.word_script_definitions_carry_parseable_word_references()
+  local PokegearPhoneScriptSources = require("romdump.src.config.PokegearPhoneScriptSources")
+  local seen = 0
+  for _, definition in ipairs(PokegearPhoneScriptSources.definitions) do
+    if definition.kind == "word" then
+      seen = seen + 1
+      Assert.isTrue(
+        type(definition.param1) == "string" and definition.param1:match("^msg_(%d+)_(%d+)$") ~= nil,
+        "word script " .. tostring(definition.id) .. " stages a bank entry reference"
+      )
+      Assert.isTrue(
+        type(definition.param0) == "number" and definition.param0 > 0,
+        "word script " .. tostring(definition.id) .. " draws a positive pick count"
+      )
+    end
+  end
+  Assert.isTrue(seen > 0, "the script table stages word picks")
 end
 
 return { tests = T }

@@ -220,6 +220,10 @@ function FieldMessageCompiler.requiredBankIds()
   for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
     set[bankId] = true
   end
+  -- The generic time-of-day phone greeting lives in bank 640 behind
+  -- the source sGreetingMsgIDs table, addressed through the contact
+  -- greeting set rather than any caller bank.
+  set[640] = true
   set[PokegearSources.phoneClassLabels.specialBank] = true
   set[PokegearSources.phoneClassLabels.trainerBank] = true
   set[PokegearSources.phoneClassLabels.landmarkBank] = true

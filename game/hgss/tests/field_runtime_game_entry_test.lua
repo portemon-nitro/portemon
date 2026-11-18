@@ -225,9 +225,7 @@ local function captureRuntime(overrides)
     },
     mailbox = require("libs.hgss.src.save.Mailbox").new(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new(),
-    sysInfo = require("libs.hgss.src.save.SysInfoState").new(
-      require("libs.hgss.src.save.SysInfoState").empty()
-    ),
+    sysInfo = require("libs.hgss.src.save.SysInfoState").new(require("libs.hgss.src.save.SysInfoState").empty()),
     bagService = {
       capture = function()
         return require("libs.hgss.src.save.BagSave").empty()
@@ -316,7 +314,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.deepEqual(valid.fieldPoison, FieldPoisonSave.initial(), "every save captures the poison counter")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
   Assert.equal(valid.gameStats.schema, "hgss-stats-v2", "every save captures the stats bucket")
-  Assert.equal(valid.pokegear.schema, "hgss-pokegear-v1", "every save captures the companion bucket")
+  Assert.equal(valid.pokegear.schema, "hgss-pokegear-v2", "every save captures the companion bucket")
   Assert.equal(valid.easyChat.schema, "hgss-easy-chat-v1", "every save captures the word bucket")
   Assert.equal(scriptCaptureCalls, 1)
   valid.easyChat.greetings = 0

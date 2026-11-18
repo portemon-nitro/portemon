@@ -1759,7 +1759,7 @@ local function projectMonMenu(self, shell, native, kind)
     cursor = 0
   end
   local focusMap = { switch = "switch", summary = "summary", check_moves = "moves", quit = "back" }
-  local slot = tonumber(native.menuSlot) or 0 --[[@as integer]]
+  local slot = math.floor(tonumber(native.menuSlot) or 0)
   local record = pageRecord(self, slot) or {}
   local isEgg = record.isEgg == true
   local positions = pagePositions(self)

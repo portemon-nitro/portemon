@@ -1,18 +1,13 @@
--- Incoming calls across the real field composition: a competing field
--- claim owns the tick while an eligible call waits, ringing never opens
--- a second modal on its own, preemption clears only transient ring state
+-- Incoming calls across the real FieldSession: a competing field claim
+-- owns the tick while an eligible call waits, ringing never opens a
+-- second modal on its own, preemption clears only transient ring state
 -- while the pending trigger survives, and only genuine producer facts
--- raise triggers while absent world systems stay silent. The field side
--- runs through the real FieldSession with deterministic collaborator
--- stand-ins in the established session-test shape; the gear side runs
--- through the real companion state, calendar, random streams, phone
--- policy, reward, and world-context providers. Only host audio, host
--- input snapshots, and the companion application lease are recording
--- boundaries; maps, scripts, actors, messages, and saves are never
--- faked. Full boot-harness journeys stay with the final composition
--- gate: this layer proves the session-to-coordinator priority seam with
--- deterministic claims. No derived assets are required. No ROM data is
--- required.
+-- raise triggers while absent world systems stay silent. The session
+-- owns the claim, the accepted host handle, and terminal release; the
+-- phone side runs through the real companion state, calendar, random
+-- streams, policy, reward, and world-context providers. Host audio, host
+-- input snapshots, and the companion application lease are the only
+-- recording boundaries.
 
 local Assert = require("tests.support.Assert")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
@@ -30,21 +25,6 @@ local T = {
   },
   tests = {},
 }
-
--- Loads the incoming-call coordinator that does not exist yet at this
--- baseline. The failure names the missing behaviour instead of surfacing
--- as a suite load error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
 
 local MOM_KEY = "custom.mom"
 local TRAINER_KEY = "custom.trainer-plain"
@@ -94,10 +74,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -133,18 +111,17 @@ local function contactRecord(key, name, weight, family)
   return { key = key, name = name, sortWeight = weight, family = family }
 end
 
--- The durable trigger facts the coordinator selects from. Each record
--- carries the trigger key, its owning contact, and the source call kind:
--- kind 3 is an event trigger that clears at acceptance. The record shape
--- is the proposal the coordinator adopts; the single-fire behaviour
--- below is the locked contract.
+-- The durable trigger facts the coordinator selects from: the trigger
+-- key, its owning contact, and its source slot. Every trigger launches
+-- with the source isScriptedCall marker 3, so the launch clears the
+-- trigger it picked; the single-fire behaviour below is the locked
+-- contract.
 ---@param key string
 ---@param contact string
----@param kind integer
 ---@return table
-local function triggerRecord(key, contact, kind)
+local function triggerRecord(key, contact)
   local slot = key == MOM_TRIGGER and 12 or key == BILL_TRIGGER and 13 or 14
-  return { key = key, contact = contact, kind = kind, slot = slot, clearOnPickup = slot == 12 }
+  return { key = key, contact = contact, slot = slot, forcePickUp = false }
 end
 
 ---@param contacts table[]
@@ -156,7 +133,7 @@ local function fixtureManifest(contacts, triggers)
     order[#order + 1] = contact.key
   end
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -220,7 +197,7 @@ end
 ---@param stuck boolean?
 ---@return table
 local function ringAudio(stuck)
-  local audio = { plays = {}, playing = false, stops = 0, stuck = stuck == true }
+  local audio = { plays = {}, playing = false, stuck = stuck == true }
   ---@param sequence string
   function audio:playRing(sequence)
     self.plays[#self.plays + 1] = sequence
@@ -233,9 +210,6 @@ local function ringAudio(stuck)
     if not self.stuck then
       self.playing = false
     end
-  end
-  function audio:stopRing()
-    self.stops = self.stops + 1
   end
   return audio
 end
@@ -298,10 +272,7 @@ end
 ---@param setTriggers string[]
 ---@return table
 local function freshCoordinator(seed, contacts, triggers, setTriggers)
-  local IncomingCalls = requireFeature(
-    "game.hgss.src.pokegear.IncomingCalls",
-    "incoming calls have no field coordinator yet: the session has no pending-caller opportunity to route"
-  )
+  local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
   local record = PokegearAssetSchema.validate(fixtureManifest(contacts, triggers))
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
@@ -314,6 +285,7 @@ local function freshCoordinator(seed, contacts, triggers, setTriggers)
   end
   local trace = {}
   local host = recordingHost()
+  local scriptStarts = {}
   return {
     calls = IncomingCalls.new({
       state = state,
@@ -323,7 +295,15 @@ local function freshCoordinator(seed, contacts, triggers, setTriggers)
       world = PhoneWorldContext.new({ state = state, flags = {} }),
       host = host,
       audio = ringAudio(false),
+      startCallScript = function()
+        scriptStarts[#scriptStarts + 1] = true
+        return "scene-" .. tostring(#scriptStarts)
+      end,
+      mapReceivesCalls = function()
+        return true
+      end,
     }),
+    scriptStarts = scriptStarts,
     state = state,
     trace = trace,
     record = record,
@@ -593,7 +573,7 @@ function T.tests.a_competing_field_claim_owns_the_tick_and_ringing_never_opens_a
   local rig = freshCoordinator(4242, {
     contactRecord(MOM_KEY, "MOM", 10, "mother"),
     contactRecord(TRAINER_KEY, "JACE", 20, "trainer"),
-  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY) }, { MOM_TRIGGER })
   local calls = rig.calls
   driveEligible(calls)
   local session, controls = makeFieldSession({ incomingCalls = calls, pokegearApplications = rig.host })
@@ -644,17 +624,22 @@ function T.tests.a_competing_field_claim_owns_the_tick_and_ringing_never_opens_a
   assert(type(again) == "table", "ringing publishes its caller view")
   Assert.equal(again.contactKey, MOM_KEY, "the re-ring still names the trigger owner")
 
-  -- The direct transient seam agrees: clearing for no signal quiets the
-  -- view without touching the trigger, and only acceptance opens the
-  -- host, exactly once.
+  -- The direct transient seam agrees with the source manager reset: the
+  -- view quiets, the pending trigger survives, and the eligibility clock
+  -- restarts, so an instant re-ring is refused until ten fresh minutes
+  -- have passed. Only acceptance opens the host, exactly once.
   calls:resetTransient("no-signal")
-  Assert.isFalse(calls:notification(), "clearing transient state quiets the view")
+  Assert.isFalse(calls:notification(), "the manager reset quiets the view")
   Assert.isTrue(
     rig.state:readPhone().triggers[MOM_TRIGGER] == true,
-    "clearing transient state preserves the pending event trigger"
+    "the manager reset preserves the pending event trigger"
   )
   session:updateFixed({})
-  Assert.notNil(calls:notification(), "the trigger re-rings after the transient clear")
+  Assert.isFalse(calls:notification(), "the restarted eligibility clock refuses an instant re-ring")
+  calls:onFieldClock(moment(30))
+  calls:onFieldClock(moment(40))
+  session:updateFixed({})
+  Assert.notNil(calls:notification(), "the surviving trigger rings again after ten fresh minutes")
   session:updateFixed({ actionPressed = true })
   Assert.equal(#rig.host.opens, 1, "only acceptance opens the companion modal, exactly once")
   Assert.isFalse(calls:notification(), "acceptance ends the ring")
@@ -665,7 +650,7 @@ end
 function T.tests.field_session_cancels_only_its_ambient_host_handle_once()
   local rig = freshCoordinator(4242, {
     contactRecord(MOM_KEY, "MOM", 10, "mother"),
-  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY) }, { MOM_TRIGGER })
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityArgs())
   local session = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
@@ -682,7 +667,7 @@ function T.tests.field_session_cancels_only_its_ambient_host_handle_once()
 
   local ownedRig = freshCoordinator(4242, {
     contactRecord(MOM_KEY, "MOM", 10, "mother"),
-  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY) }, { MOM_TRIGGER })
   driveEligible(ownedRig.calls)
   ownedRig.calls:onOpportunity(opportunityArgs())
   local ownedSession = makeFieldSession({
@@ -700,7 +685,7 @@ end
 function T.tests.ambient_call_steps_once_per_tick_and_closes_once_on_terminal_result()
   local rig = freshCoordinator(4242, {
     contactRecord(MOM_KEY, "MOM", 10, "mother"),
-  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY) }, { MOM_TRIGGER })
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityArgs())
   local session, controls = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
@@ -725,7 +710,7 @@ end
 function T.tests.failed_host_acquisition_keeps_the_ring_and_does_not_dispatch_the_action()
   local rig = freshCoordinator(4242, {
     contactRecord(MOM_KEY, "MOM", 10, "mother"),
-  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY) }, { MOM_TRIGGER })
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityArgs())
   rig.host.failOpen = true
@@ -790,7 +775,7 @@ function T.tests.ambient_answer_action_yields_to_higher_priority_field_claims()
   for _, case in ipairs(cases) do
     local rig = freshCoordinator(4242, {
       contactRecord(MOM_KEY, "MOM", 10, "mother"),
-    }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+    }, { triggerRecord(MOM_TRIGGER, MOM_KEY) }, { MOM_TRIGGER })
     driveEligible(rig.calls)
     rig.calls:onOpportunity(opportunityArgs())
     local session, controls = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
@@ -850,15 +835,16 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     contactRecord(OAK_KEY, "OAK", 30, "oak"),
   }
   local triggers = {
-    triggerRecord(MOM_TRIGGER, MOM_KEY, 3),
-    triggerRecord(BILL_TRIGGER, BILL_KEY, 3),
-    triggerRecord(OAK_TRIGGER, OAK_KEY, 3),
+    triggerRecord(MOM_TRIGGER, MOM_KEY),
+    triggerRecord(BILL_TRIGGER, BILL_KEY),
+    triggerRecord(OAK_TRIGGER, OAK_KEY),
   }
   local seed = findSilentSeed()
 
   -- An earned savings purchase is a genuine producer fact: the real
   -- reward path sets the gift trigger, the coordinator rings its owner,
-  -- and answering preserves Mom's pending gift until source pickup.
+  -- and answering closes the source launch boundary like every other
+  -- trigger launch.
   do
     local rig = freshCoordinator(seed, contacts, triggers, {})
     local candidate = PhoneRewards.preparePurchases(rig.state:revision(), {
@@ -882,10 +868,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     Assert.equal(ringing.contactKey, MOM_KEY, "the purchase trigger rings its owner")
     Assert.equal(#rig.host.opens, 0, "the genuine ring opens no modal before acceptance")
     answerThroughFieldInput(rig)
-    Assert.isTrue(
-      rig.state:readPhone().triggers[MOM_TRIGGER] == true,
-      "answering Mom preserves her gift trigger until pickup"
-    )
+    Assert.deepEqual(rig.state:readPhone().triggers, {}, "answering Mom clears the launched gift trigger")
     rig.calls:dispose()
   end
 

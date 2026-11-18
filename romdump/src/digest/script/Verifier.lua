@@ -675,8 +675,8 @@ local function checkSetPhoneCall(ins, step)
   end
   if
     not operandMatches(ins.operands[1].raw, step.contact)
-    or not operandMatches(ins.operands[2].raw, step.direction)
-    or not operandMatches(ins.operands[3].raw, step.kind)
+    or not operandMatches(ins.operands[2].raw, step.scriptedCall)
+    or not operandMatches(ins.operands[3].raw, step.callScriptID)
   then
     return "opcode 430 call setup operands changed by translation"
   end

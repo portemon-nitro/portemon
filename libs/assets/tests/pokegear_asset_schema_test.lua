@@ -56,7 +56,7 @@ end
 
 local function customManifest()
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -93,7 +93,7 @@ function T.valid_custom_records_validate_without_source_identities()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record, err = PokegearAssetSchema.validate(customManifest())
   Assert.notNil(record, "valid custom records must validate: " .. tostring(err and err.message or err))
-  Assert.equal(record.schema, "g4-pokegear-assets-v3", "validation preserves the schema identity")
+  Assert.equal(record.schema, "g4-pokegear-assets-v4", "validation preserves the schema identity")
 end
 
 function T.phone_dim_roles_are_required()

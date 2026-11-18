@@ -138,6 +138,27 @@ local function readU32Field(reader, offset, label)
   return value
 end
 
+---@param id integer native phonebook contact number
+---@return table<string, table<integer, table<integer, integer>>>? detached header tables, nil without gated rows
+local function copyGenericHeaders(id)
+  local source = PokegearSources.phoneGenericHeaders[id]
+  if type(source) ~= "table" then
+    return nil
+  end
+  local out = {}
+  for _, half in ipairs({ "outgoing", "incoming" }) do
+    local rows = source[half]
+    assert(type(rows) == "table" and #rows == 8, "generic header tables carry eight rows per direction")
+    local copied = {}
+    for index, row in ipairs(rows) do
+      assert(type(row) == "table" and #row == 4, "generic header rows carry type, chance, script type, and script")
+      copied[index] = { row[1], row[2], row[3], row[4] }
+    end
+    out[half] = copied
+  end
+  return out
+end
+
 ---@param bytes string whole phonebook file bytes
 ---@return { count: integer, contacts: table[], contactOrder: string[] }|nil
 ---@return Errors.Error|nil
@@ -161,33 +182,44 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
   local contacts, contactOrder, seen = {}, {}, {}
   for index = 0, count - 1 do
     local base = 4 + index * PokegearSources.phonebook.recordBytes
+    -- The record follows the native PhoneBookEntry struct exactly: id,
+    -- entry type, an unused byte, trainer class, trainer id, map id,
+    -- gift item, local phone-script selector, greeting set, rematch
+    -- weekday, rematch time of day, random-call group, and four sort
+    -- bytes. Earlier layouts misread every field from the trainer id
+    -- onward by one halfword, which corrupted local-map checks,
+    -- same-map suppression, gift items, rematch windows, sort weights,
+    -- and the random-call pool.
     local id = reader:u8(base)
     local entryType = reader:u8(base + 1)
-    local contactClass = reader:u8(base + 2)
-    local trainer = reader:u8(base + 3)
-    local map = reader:u16le(base + 4)
-    local gift = reader:u16le(base + 6)
-    local localScript = reader:u16le(base + 8)
-    local greeting = reader:u16le(base + 10)
-    local rematchWeekday = reader:u8(base + 12)
-    local rematchTime = reader:u8(base + 13)
-    local category = reader:u8(base + 14)
+    local trainerClass = reader:u8(base + 3)
+    local trainerId = reader:u16le(base + 4)
+    local mapId = reader:u16le(base + 6)
+    local gift = reader:u16le(base + 8)
+    local phoneScriptIfLocal = reader:u16le(base + 10)
+    local greetingMsgSet = reader:u8(base + 12)
+    local rematchWeekday = reader:u8(base + 13)
+    local rematchTimeOfDay = reader:u8(base + 14)
+    local randomCallGroup = reader:u8(base + 15)
     local weights = {
-      reader:u8(base + 15),
       reader:u8(base + 16),
       reader:u8(base + 17),
       reader:u8(base + 18),
+      reader:u8(base + 19),
     }
-    -- Native contact identity is the record's own trainer/map/contact
-    -- triple; array position is retained only as the producer
-    -- translation. A repeated triple is a genuine duplicate identity.
-    -- The greeting number rides beside its message bank: the record id is
-    -- the phonebook number the source GetPhoneMessageGmm switches on for
-    -- the bank, while the greeting number itself is the source
-    -- phone-script selector (PhoneBookEntry.phoneScriptIfLocal), resolved
-    -- onto bank messages by the phone script table. An id outside the
-    -- bank index is corrupt phonebook data, never an empty bank.
-    local key = string.format("hg.trainer.%d.map.%d.contact.%d", trainer, map, id)
+    -- Native contact identity is the record's own trainer-class,
+    -- trainer-id, and contact triple; array position is retained only
+    -- as the producer translation. A repeated triple is a genuine
+    -- duplicate identity. The local phone-script selector rides beside
+    -- its message bank: the record id is the phonebook number the
+    -- source GetPhoneMessageGmm switches on for the bank, while the
+    -- selector itself (PhoneBookEntry.phoneScriptIfLocal) resolves onto
+    -- bank messages through the phone script table. An id outside the
+    -- bank index is corrupt phonebook data, never an empty bank. Keys
+    -- keep the historical trainer.map.contact shape over the class and
+    -- trainer bytes so previously persisted contact references survive
+    -- the rename.
+    local key = string.format("hg.trainer.%d.map.%d.contact.%d", trainerClass, trainerId, id)
     local family = PokegearSources.phoneContactFamilies[id + 1]
     if type(family) ~= "string" or family == "" then
       return nil,
@@ -221,20 +253,21 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
       id = id,
       family = family,
       entryType = entryType,
-      contactClass = contactClass,
-      trainer = trainer,
-      map = map,
+      trainerClass = trainerClass,
+      trainerId = trainerId,
+      mapId = mapId,
       gift = gift,
-      localScript = localScript,
-      greeting = greeting,
+      phoneScriptIfLocal = phoneScriptIfLocal,
+      greetingMsgSet = greetingMsgSet,
       messageBank = messageBank,
       name = { bank = messageBank, entry = 0 },
-      class = phoneClassReference(trainer),
+      class = phoneClassReference(trainerClass),
       rematchWeekday = rematchWeekday,
-      rematchTime = rematchTime,
-      category = category,
+      rematchTimeOfDay = rematchTimeOfDay,
+      randomCallGroup = randomCallGroup,
       sortWeights = weights,
       sortWeight = weights[1],
+      genericHeaders = copyGenericHeaders(id),
     }
     contactOrder[#contactOrder + 1] = key
   end

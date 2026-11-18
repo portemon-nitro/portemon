@@ -3566,7 +3566,7 @@ local PRESS_FRAME = { [1] = 1, [2] = 2, [3] = 0 }
 
 ---@param child table<string, unknown> detached wrapper child view under lookup
 ---@param index integer code window index under lookup
----@return table<string, number>? pixel origin, extent, and palette bank, nil without a staged template
+---@return table<string, integer>? pixel origin, extent, and palette bank, nil without a staged template
 local function pageWindowBox(child, index)
   local boxes = child.windowBoxes --[[@as table<integer, table<string, number>>?]]
   local box = type(boxes) == "table" and boxes[index + 1] or nil
@@ -3587,7 +3587,7 @@ local function pageWindowBox(child, index)
     y = box.top * 8,
     w = box.width * 8,
     h = box.height * 8,
-    bank = box.palette,
+    bank = math.floor(box.palette),
   }
 end
 
@@ -3602,7 +3602,7 @@ end
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param role string source font role behind measurement (font 0 reads hud, font 4 reads menu)
 ---@param content string text under drawing
----@param box table<string, number> window pixel origin, extent, and palette bank under drawing
+---@param box table<string, integer> window pixel origin, extent, and palette bank under drawing
 ---@param spec table<string, unknown> in-window origin, alignment, and palette slots
 local function pageText(text, view, role, content, box, spec)
   if content == "" then
@@ -3636,7 +3636,7 @@ end
 ---@param graphics table<string, unknown> borrowed host graphics
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param entry table<string, unknown> projected window content under drawing
----@param box table<string, number> window pixel origin and extent under drawing
+---@param box table<string, integer> window pixel origin and extent under drawing
 ---@param spec table<string, unknown> transcribed text layout behind the role
 local function drawWrapperRole(text, graphics, view, entry, box, spec)
   local role = spec.font == "menu" and "menu" or "hud"
@@ -3768,7 +3768,7 @@ end
 ---@param text table<string, unknown> borrowed text services
 ---@param view table<string, unknown> internal semantic snapshot carrying the staged text palettes
 ---@param child table<string, unknown> detached wrapper child view under drawing
----@param box table<string, number> window pixel origin and extent under drawing
+---@param box table<string, integer> window pixel origin and extent under drawing
 ---@param nameEntry table<string, unknown> projected mon-name window under drawing
 ---@param genderEntry table<string, unknown>? projected mon-gender window under drawing
 local function drawMonMenuName(text, view, child, box, nameEntry, genderEntry)
@@ -3993,7 +3993,7 @@ local function drawWrapperFaces(resources, view, child)
       end
     end
   elseif page == "move_detail" then
-    local selected = tonumber(child.pageMove) or 0 --[[@as integer]]
+    local selected = math.floor(tonumber(child.pageMove) or 0)
     if pressButton ~= 30 + selected then
       drawWrapperFace(assets, graphics, child, 30 + selected, 2)
     end

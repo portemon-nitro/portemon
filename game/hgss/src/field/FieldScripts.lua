@@ -274,6 +274,7 @@ end
 ---@field pcApplications table<string, unknown> the script-owned PC application host
 ---@field pcTerminal table<string, unknown> source PC terminal effects
 ---@field pokegearApplications table<string, unknown>|nil the script-owned companion host behind calls and town-map opens (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field phoneCalls table<string, unknown>|nil the field's phone call manager behind staged and forced calls (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field phoneContactIndex table<string, unknown>|nil the compiled phonebook index { byId, byTrainer } for number resolution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field pokegearState table<string, unknown>|nil the durable companion state behind card and trigger writes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field phoneGifts table<string, unknown>|nil the contact and parent gift query adapter (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -588,6 +589,7 @@ function FieldScripts.new(opts)
       pcApplications = opts.pcApplications,
       pcTerminal = opts.pcTerminal,
       pokegearApplications = opts.pokegearApplications,
+      phoneCalls = opts.phoneCalls,
       phoneContactIndex = opts.phoneContactIndex,
       pokegearState = opts.pokegearState,
       phoneGifts = opts.phoneGifts,

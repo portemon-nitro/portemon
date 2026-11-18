@@ -43,11 +43,17 @@ PhoneCall.KINDS = { ordinary = true, rematch = true, predefined = true, incoming
 -- bespoke playDialing/playHangup fakes keep working where the generic
 -- play entry is absent, and toneless fakes stay silent.
 PhoneCall.DIAL_SEQUENCE = "SEQ_SE_GS_PHONE0"
+-- The two source dial notices (bank271 entries 30 and 31) printed in the
+-- speech window beside each PHONE0 tone of PhoneCall_InitialRing.
+PhoneCall.DIAL_MESSAGE_ENTRIES = { 30, 31 }
 PhoneCall.HANGUP_SEQUENCE = "SEQ_SE_GS_PHONE_OFF"
 -- The three staged hangup messages, read through the shared UI message
 -- reader: the first prints on hangup entry, the other two each follow
 -- an eleven-tick post-increment wait, and a third wait ends the call.
 PhoneCall.HANGUP_MESSAGE_ENTRIES = { 33, 34, 35 }
+-- The button-press tone behind the pre-hangup wait, played once when
+-- the player confirms the finished conversation.
+PhoneCall.SELECT_SEQUENCE = "SEQ_SE_DP_SELECT"
 
 -- World facts frozen at the call boundary for program dispatch. Only
 -- these keys are snapshotted; a long call never switches its greeting
@@ -75,6 +81,9 @@ local FACT_KEYS = {
   "contest",
   "weekday",
   "hour",
+  "timeOfDay",
+  "mapId",
+  "playerGender",
   "morning",
   "repeatCall",
   "aboutProduction",
@@ -90,7 +99,13 @@ local FACT_KEYS = {
   "acknowledged",
   "storyEvent",
   "kenjiActive",
+  "kenjiWaitDays",
   "waitExpired",
+  "kurtFlag127",
+  "kurtMaking",
+  "oakJohtoAcked",
+  "flypoint25",
+  "unlockLevel",
   "scriptedCall",
   "momBalance",
   "momGiftFull",
@@ -302,12 +317,13 @@ local function resolveFamily(record)
 end
 
 -- Opens one foreground call. Validates the contact, direction, call
--- kind, message references, and signal before taking the single call
--- lease; branch-required facts are preflighted at their stage, not
--- here. An invalid signal takes no lease and selects no program.
--- Scripted field calls thread their source isScriptedCall/callScriptID
--- through the request so the native selector sees scriptedCall==2
--- first, before localMap (retail order).
+-- kind, and message references before taking the single call lease;
+-- branch-required facts are preflighted at their stage, not here. A
+-- map without signal opens the no-signal flow instead of the
+-- conversation, exactly like the source out-of-area states. Scripted
+-- field calls thread their source isScriptedCall/callScriptID through
+-- the request so the native selector sees scriptedCall==2 first,
+-- before localMap (retail order).
 ---@param args { id: string, contact: string, direction: string, kind: string, isScriptedCall: integer?, callScriptID: integer? }
 ---@return { id: string } typed call handle
 function PhoneCall:begin(args)
@@ -345,6 +361,9 @@ function PhoneCall:begin(args)
   end
   if args.callScriptID ~= nil then
     facts.callScriptID = args.callScriptID
+    -- Trigger and scripted launches carry the source predefined script
+    -- identity the native selector reads for incoming calls.
+    facts.predefinedScript = args.callScriptID
   end
   -- Mom balance and gift-full read through the durable companion state,
   -- never the world facade: the balance stages the save-prompt variant
@@ -376,6 +395,7 @@ function PhoneCall:begin(args)
     direction = args.direction,
     kind = args.kind,
     world = self._world,
+    catalog = self._catalog,
     record = record,
     greeting = greeting,
     facts = facts,
@@ -408,19 +428,57 @@ function PhoneCall:begin(args)
   end
   session.owner = owner
   session.family = family
+  -- Outgoing calls dial twice behind the connecting wait, exactly like
+  -- the source InitialRing; incoming calls start at the conversation
+  -- (mainState 1) and never dial. A map without signal opens the
+  -- no-signal flow instead of either stage.
+  local signaled = true
+  local phoneSignal = self._world.phoneSignal
+  if type(phoneSignal) == "function" then
+    signaled = phoneSignal(self._world, args.direction) == true
+  end
+  if not signaled then
+    session.stage = "noSignal"
+    session.noSignalSub = 0
+    session.noSignalTimer = 0
+    session.noSignalArmed = true
+    session.lines = { self:_uiText(30) }
+    session.textPage = 1
+    self._calls[args.id] = session
+    self._active = args.id
+    return { id = args.id }
+  end
+  if args.direction ~= "incoming" then
+    session.stage = "connecting"
+    session.dialSub = 0
+    self._calls[args.id] = session
+    self._active = args.id
+    self:_dialStep(session)
+    return { id = args.id }
+  end
+  session.stage = "greeting"
   self._calls[args.id] = session
   self._active = args.id
+  return { id = args.id }
+end
+
+-- Plays one source dial step: PhoneCall_InitialRing stage 0 opens the
+-- window with the first dial notice beside its tone, and stage 1 plays
+-- again with the second notice once that tone has finished.
+---@param session table<string, unknown>
+function PhoneCall:_dialStep(session)
+  local sub = session.dialSub --[[@as integer]]
+  assert(sub == 0 or sub == 1, "the source dial has two tone steps")
+  session.lines = { self:_uiText(PhoneCall.DIAL_MESSAGE_ENTRIES[sub + 1]) }
+  session.textPage = 1
   local audio = self._audio
   if type(audio) == "table" and audio.playDialing ~= nil then
     local dial = audio.playDialing --[[@as fun(self: table<string, unknown>)]]
     dial(audio)
-    dial(audio)
   elseif type(audio) == "table" and type(audio.play) == "function" then
     local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
     play(audio, PhoneCall.DIAL_SEQUENCE)
-    play(audio, PhoneCall.DIAL_SEQUENCE)
   end
-  return { id = args.id }
 end
 
 ---@param handle unknown
@@ -474,9 +532,290 @@ function PhoneCall:_selectProgramAtGreeting(session)
   end
 end
 
+-- Native generic header gate types in GenericPhoneCallType order:
+-- nil, random, rematch-until-tower, rematch window, contest days,
+-- takeover, random, rematch outside contest, gift outside contest, and
+-- the terminator. The runtime resolves outgoing and incoming tables
+-- through the same gates as GearPhoneCall_GetScriptId_Generic.
+PhoneCall.GENERIC_GATE = {
+  NIL = 0,
+  RANDOM = 1,
+  REMATCH = 2,
+  WINDOW = 3,
+  CONTEST_DAYS = 4,
+  TAKEOVER = 5,
+  RANDOM6 = 6,
+  REMATCH_NO_CONTEST = 7,
+  GIFT_NO_CONTEST = 8,
+  NONE = 255,
+}
+
+-- The National Park map identity behind the bug-contest call exclusion.
+PhoneCall.NATIONAL_PARK_MAP = 96
+
+-- Replicates the source percent-chance roll: two source draws folded
+-- exactly like PhoneScript_Generic_RandomChance.
+---@param chance integer percent chance 0..100
+---@return boolean passed
+function PhoneCall:_rollPercentChance(chance)
+  local first, second
+  local random = self._random
+  if type(random) == "table" and type(random.mt) == "function" then
+    first = random:mt("generic-gate")
+    second = random:mt("generic-gate")
+  else
+    first = math.random(0, 4294967295)
+    second = math.random(0, 4294967295)
+  end
+  local combined = bit.bxor(first, second)
+  if combined < 0 then
+    combined = combined + 4294967296
+  end
+  local folded = bit.bxor(combined % 65536, math.floor(combined / 256)) % 100
+  return folded <= chance
+end
+
+-- Draws a retail LCRandom-bounded pick: the Elm Everstone and
+-- Pokerus rolls and the dynamic Buena, friend, and gym draws.
+-- Mirrors the Bill advice draw with its headless fallback.
+---@param count integer exclusive upper bound
+---@param stream string labelled draw stream
+---@return integer bounded pick
+function PhoneCall:_drawBounded(count, stream)
+  assert(type(count) == "number" and count > 0, "selectors bound their draws")
+  local random = self._random
+  if type(random) == "table" and type(random.lc) == "function" then
+    return random:lc(stream) % count
+  end
+  return math.random(0, count - 1)
+end
+
+-- Reads Kenji's staged seeking invitation behind the native selector:
+-- a durable rematch record with a positive stage, exactly like the
+-- trainer readiness query. Worlds without the query stage nothing.
+---@param session table<string, unknown>
+---@return boolean seeking
+function PhoneCall:_kenjiSeeking(session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local query = world.queryRematch
+  assert(type(query) == "function", "kenji selection reads the staged rematch record")
+  local contact = session.contact --[[@as string]]
+  local current = query(world, contact)
+  return type(current) == "table" and (current --[[@as table<string, unknown>]]).stage > 0
+end
+
+-- Stages the Kenji errand side effect behind script 89/90, mirroring
+-- the source SetActiveFlag plus SetSeeking writes: the durable active
+-- flag flips on while the seeking invitation stages with its
+-- accumulated wins preserved, exactly like the static rematch kind.
+---@param session table<string, unknown>
+function PhoneCall:_stageKenjiErrand(session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local contact = session.contact --[[@as string]]
+  local setRematch = world.setRematch
+  assert(type(setRematch) == "function", "kenji errands stage their seeking invitation through durable state")
+  local query = world.queryRematch
+  local wins = 0
+  if type(query) == "function" then
+    local current = query(world, contact)
+    if type(current) == "table" and type(current.wins) == "number" then
+      wins = current.wins --[[@as integer]]
+    end
+  end
+  setRematch(world, contact, { stage = 1, wins = wins })
+  local setActive = world.setKenjiActive
+  assert(type(setActive) == "function", "kenji errands record their active flag through durable state")
+  setActive(world, true)
+end
+
+-- Evaluates one generic header gate for the session. Weekday, time,
+-- tower, takeover, and contest facts ride the frozen selection facts;
+-- seeking and the staged gift read the live companion owners, exactly
+-- like their source checks.
+---@param session table<string, unknown>
+---@param row table<integer, integer> {gate, chance, scriptType, scriptID}
+---@param defKind string? script definition kind behind rematch staging
+---@return boolean passed
+function PhoneCall:_genericGatePasses(session, row, defKind)
+  local gate, chance = row[1], row[2]
+  if gate == PhoneCall.GENERIC_GATE.RANDOM or gate == PhoneCall.GENERIC_GATE.RANDOM6 then
+    return self:_rollPercentChance(chance)
+  end
+  local facts = session.facts --[[@as table<string, unknown>]]
+  if gate == PhoneCall.GENERIC_GATE.CONTEST_DAYS then
+    local weekday = facts.weekday
+    if weekday ~= 2 and weekday ~= 4 and weekday ~= 6 then
+      return false
+    end
+    return self:_rollPercentChance(chance)
+  end
+  if gate == PhoneCall.GENERIC_GATE.TAKEOVER then
+    if facts.takeover ~= true then
+      return false
+    end
+    return self:_rollPercentChance(chance)
+  end
+  local world = session.world --[[@as table<string, unknown>]]
+  local query = world.queryRematch
+  assert(type(query) == "function", "generic rematch gates read durable companion state")
+  local stored = query(world, session.contact --[[@as string]])
+  local seeking = type(stored) == "table"
+    and (stored --[[@as table<string, unknown>]]).stage ~= nil
+    and (stored --[[@as table<string, unknown>]]).stage --[[@as integer]]
+      > 0
+  local gifted = false
+  local readPhone = (self._state --[[@as table<string, unknown>]]).readPhone
+  assert(type(readPhone) == "function", "generic gift gates read the companion phone")
+  local phone = readPhone(self._state)
+  if type(phone) == "table" then
+    local contacts = (phone --[[@as table<string, unknown>]]).contacts
+    if type(contacts) == "table" then
+      local entry = (contacts --[[@as table<string, unknown>]])[
+        session.contact --[[@as string]]
+      ]
+      gifted = type(entry) == "table" and (entry --[[@as table<string, unknown>]]).reward ~= nil
+    end
+  end
+  if gate == PhoneCall.GENERIC_GATE.REMATCH then
+    if seeking or gifted then
+      return false
+    end
+    if facts.towerCleared ~= true and row[3] == 0 and defKind == "rematch" then
+      return false
+    end
+    return self:_rollPercentChance(chance)
+  end
+  if gate == PhoneCall.GENERIC_GATE.WINDOW then
+    if facts.towerCleared ~= true then
+      return false
+    end
+    local record = session.record --[[@as table<string, unknown>]]
+    if facts.weekday ~= record.rematchWeekday or facts.timeOfDay ~= record.rematchTimeOfDay then
+      return false
+    end
+    return self:_rollPercentChance(chance)
+  end
+  if gate == PhoneCall.GENERIC_GATE.REMATCH_NO_CONTEST then
+    if facts.towerCleared ~= true then
+      return false
+    end
+    local record = session.record --[[@as table<string, unknown>]]
+    if record.mapId == PhoneCall.NATIONAL_PARK_MAP and facts.bugContest == true then
+      return false
+    end
+    if not seeking then
+      return false
+    end
+    return self:_rollPercentChance(chance)
+  end
+  if gate == PhoneCall.GENERIC_GATE.GIFT_NO_CONTEST then
+    local record = session.record --[[@as table<string, unknown>]]
+    if record.mapId == PhoneCall.NATIONAL_PARK_MAP and facts.bugContest == true then
+      return false
+    end
+    if not gifted then
+      return false
+    end
+    return self:_rollPercentChance(chance)
+  end
+  local failure = Errors.new(
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "generic calls name a known source header gate, got " .. tostring(gate),
+    { contact = session.contact }
+  )
+  error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+end
+
+-- Draws the generic chatter species pair behind script types 1 and 2:
+-- the caller's own party mon and the map encounter slot, exactly like
+-- the Generic handler buffers species 10 and 11. The keys publish
+-- through the world species buffer the text resolver reads.
+---@param session table<string, unknown>
+function PhoneCall:_drawGenericSpecies(session)
+  local record = session.record --[[@as table<string, unknown>]]
+  local world = session.world --[[@as table<string, unknown>]]
+  local trainerId = record.trainerId
+  assert(type(trainerId) == "number", "generic chatter reads the caller trainer number")
+  local mapId = record.mapId
+  assert(type(mapId) == "number", "generic chatter reads the caller map")
+  local trainerClass = record.trainerClass
+  assert(type(trainerClass) == "number", "generic chatter reads the caller class")
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local timeOfDay = facts.timeOfDay
+  assert(timeOfDay == 0 or timeOfDay == 1 or timeOfDay == 2, "generic chatter reads the call time band")
+  local partyFor = world.trainerPartySpecies
+  assert(type(partyFor) == "function", "generic chatter reads trainer parties through the world")
+  local party = partyFor(world, trainerId)
+  assert(type(party) == "table" and #party > 0, "trainer parties carry species for phone chatter")
+  local slotsFor = world.encounterSpecies
+  assert(type(slotsFor) == "function", "generic chatter reads encounter slots through the world")
+  local band = timeOfDay == 0 and "morning" or (timeOfDay == 1 and "day" or "night")
+  local slots = slotsFor(world, mapId, band, trainerClass)
+  assert(type(slots) == "table" and #slots > 0, "encounter tables carry slots for phone chatter")
+  local random = self._random
+  local pickA, pickB
+  if type(random) == "table" and type(random.lc) == "function" then
+    pickA = random:lc("generic-species") % #party
+    pickB = random:lc("generic-species") % #slots
+  else
+    pickA = math.random(0, #party - 1)
+    pickB = math.random(0, #slots - 1)
+  end
+  local buffer = self._messages.speciesStaging
+  if type(buffer) ~= "table" then
+    buffer = {}
+    self._messages.speciesStaging = buffer
+  end
+  assert(type(buffer) == "table", "generic chatter publishes its species buffer");
+  (buffer --[[@as table<string, unknown>]])[
+    session.contact --[[@as string]]
+  ] = {
+    a = party[pickA + 1],
+    b = slots[pickB + 1],
+  }
+end
+
+-- Resolves one generic header table in source order: the first passing
+-- gate wins with its script; a nil/none terminator stops the scan and
+-- reports the empty script; falling off the end reports the last
+-- examined row, exactly like PhoneScriptGeneric_GetScriptIdInternal.
+-- Script types 1 and 2 draw the chatter species pair first.
+---@param session table<string, unknown>
+---@param rows table<integer, table<integer, integer>> eight header rows
+function PhoneCall:_resolveGenericHeaders(session, rows)
+  local definitions = (self._catalog --[[@as table<string, unknown>]]).callDefinitions
+  local lastType, lastID = 0, 0
+  for _, row in ipairs(rows) do
+    local gate = row[1]
+    if gate == PhoneCall.GENERIC_GATE.NONE or gate == PhoneCall.GENERIC_GATE.NIL then
+      session.scriptId = 0
+      session.scriptType = 0
+      return
+    end
+    lastType, lastID = row[3], row[4]
+    local definition = type(definitions) == "table" and definitions[lastID] or nil
+    local kind = type(definition) == "table" and (definition --[[@as table<string, unknown>]]).kind or nil
+    if
+      self:_genericGatePasses(session, row, kind --[[@as string?]])
+    then
+      session.scriptId = lastID
+      session.scriptType = lastType
+      if lastType == 1 or lastType == 2 then
+        self:_drawGenericSpecies(session)
+      end
+      return
+    end
+  end
+  session.scriptId = lastID
+  session.scriptType = lastType
+  if lastType == 1 or lastType == 2 then
+    self:_drawGenericSpecies(session)
+  end
+end
+
 ---@param session table<string, unknown>
 ---@param record table<string, unknown>
-local function selectNativeScript(session, record)
+local function selectNativeScript(self, session, record)
   local facts = session.facts --[[@as table<string, unknown>]]
   local world = session.world --[[@as table<string, unknown>]]
   local readFacts = world.nativeSelectorFacts
@@ -489,7 +828,13 @@ local function selectNativeScript(session, record)
     -- then the local-map greeting, the incoming predefined script,
     -- then the early-rival greetings in flag order. A fall-through
     -- reaches the dynamic savings offer (scriptType 4, no scriptId).
+    -- The scripted branch also marks the after-naming conversation as
+    -- held, so the later early-rival greeting never repeats.
     if scripted == 2 then
+      local setFlag = world.setFlag
+      assert(type(setFlag) == "function", "the scripted mother branch writes its source flag")
+      setFlag(world, "FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL")
+      facts.talkedAfterNamingRival = true
       session.dynamicMother = true
       facts.dynamicMother = true
     elseif nativeFacts.localMap then
@@ -552,7 +897,38 @@ local function selectNativeScript(session, record)
     elseif facts.eggGift == true then
       session.scriptId = 11
     else
-      session.dynamicElm = true
+      -- Source order below the gift state: the badge chain with the
+      -- Everstone roll, the takeover, the badge gate, the clear and
+      -- ticket gates, the late egg fallback, then the Pokerus roll.
+      -- Retail counts badges from the player profile; a missing count
+      -- reads as zero exactly like a fresh profile.
+      local badges = facts.badges or 0
+      assert(type(badges) == "number", "elm selection counts profile badges")
+      local hatched = facts.eggHatched == true
+      local everstone = facts.everstone == true
+      if badges < 7 then
+        if not hatched then
+          session.scriptId = 12
+        elseif everstone then
+          session.scriptId = 14 + self:_drawBounded(2, "elm-everstone")
+        else
+          session.scriptId = 13
+        end
+      elseif facts.takeover == true then
+        session.scriptId = 16
+      elseif badges < 8 then
+        session.scriptId = 17
+      elseif facts.gameClear ~= true then
+        session.scriptId = 18
+      elseif facts.ssTicket ~= true then
+        session.scriptId = 19
+      elseif not everstone then
+        session.scriptId = hatched and 13 or 12
+      elseif facts.pokerus == true then
+        session.scriptId = 20 + self:_drawBounded(3, "elm-pokerus")
+      else
+        session.scriptId = 20 + self:_drawBounded(2, "elm-pokerus")
+      end
     end
   elseif session.family == "oak" then
     if scripted == 2 then
@@ -573,7 +949,10 @@ local function selectNativeScript(session, record)
       session.scriptId = 68
     elseif facts.acknowledged == true then
       session.scriptId = 81
-    elseif facts.nationalDex == true then
+    elseif facts.nationalDex ~= true and facts.oakJohtoAcked == true then
+      -- Retail sends only the johto-acked trainer without the
+      -- national dex to the static 80; national dex owners fall
+      -- through to the dynamic handler with menus 4 and 5.
       session.scriptId = 80
     else
       session.dynamicOak = true
@@ -584,22 +963,52 @@ local function selectNativeScript(session, record)
     elseif nativeFacts.localMap then
       session.scriptId = 140
     elseif session.direction == "incoming" then
-      session.scriptId = facts.predefinedScript
-    else
-      local safariVar = facts.safariTest
-      if type(safariVar) == "number" then
-        session.scriptId = 147 + safariVar
+      -- Source scriptType 15: an incoming call without a predefined
+      -- script prints the safari arrangement dynamically. Numbered
+      -- trigger scripts resolve statically with the selector side
+      -- effects; anything outside 142..146 falls back to 154.
+      if type(facts.predefinedScript) ~= "number" then
+        session.dynamicBaobaArrangement = true
+      elseif facts.predefinedScript >= 142 and facts.predefinedScript <= 146 then
+        local applyTrigger = world.applyBaobaTrigger
+        assert(
+          type(applyTrigger) == "function",
+          "baoba triggers stage their selector side effects through the borrowed world"
+        )
+        applyTrigger(world, facts.predefinedScript)
+        session.scriptId = facts.predefinedScript
+      else
+        session.scriptId = 154
       end
+    else
+      -- Retail always returns Var4057 plus the base script: a missing
+      -- var reads as zero exactly like the source zero-init.
+      local safariVar = facts.safariTest or 0
+      assert(type(safariVar) == "number", "baoba selection reads the numeric safari var")
+      session.scriptId = 147 + safariVar
     end
   elseif session.family == "kenji" then
     if nativeFacts.localMap then
       session.scriptId = 86
-    elseif facts.waitExpired == true then
-      session.scriptId = 88
-    elseif facts.kenjiActive == true then
-      session.scriptId = 87
     else
-      session.dynamicKenji = true
+      -- Source order past the local map: wait days split first, then
+      -- an active errand without a staged invitation, then the
+      -- evening split. Retail zero-inits the persistent wait and
+      -- active flag, so missing facts read as zero and false.
+      local waitDays = facts.kenjiWaitDays or 0
+      assert(type(waitDays) == "number" and waitDays % 1 == 0, "kenji selection reads integral wait days")
+      if waitDays > 1 then
+        session.scriptId = 87
+      elseif waitDays == 1 then
+        session.scriptId = 88
+      elseif facts.kenjiActive == true and not self:_kenjiSeeking(session) then
+        session.scriptId = 87
+      elseif facts.timeOfDay == 2 then
+        session.scriptId = 91
+      else
+        session.scriptId = facts.timeOfDay == 1 and 90 or 89
+        self:_stageKenjiErrand(session)
+      end
     end
   elseif session.family == "irwin" then
     if session.direction ~= "incoming" then
@@ -626,13 +1035,38 @@ local function selectNativeScript(session, record)
     else
       session.scriptId = 170
     end
-  elseif session.family == "gym" or session.family == "rematch" or session.family == "trainer" then
-    if nativeFacts.localMap and record.localScript ~= nil then
-      session.scriptId = record.localScript
+  elseif session.family == "gym" or session.family == "rematch" then
+    if nativeFacts.localMap and record.phoneScriptIfLocal ~= nil then
+      -- A same-map gym call skips the script table and prints the
+      -- caller's bank entry one directly, with no side effect.
+      session.localBankEntry = 1
     elseif session.direction == "incoming" then
-      session.scriptId = facts.predefinedScript
+      session.dynamicGymIncoming = true
     else
-      session.dynamicGeneric = true
+      -- Same-map gym calls skip the script table above; every other
+      -- outgoing gym call runs the dynamic outgoing handler, never
+      -- the fixture generic path.
+      session.dynamicGymOutgoing = true
+    end
+  elseif session.family == "trainer" or session.family == "generic" then
+    if session.direction ~= "incoming" and nativeFacts.localMap and record.phoneScriptIfLocal ~= nil then
+      session.scriptId = record.phoneScriptIfLocal
+    else
+      local headers = record.genericHeaders
+      if type(headers) ~= "table" then
+        -- Fixture contacts without compiled header tables keep the
+        -- historical predefined-script incoming path; anything else is
+        -- an unimplemented dynamic branch.
+        if session.direction == "incoming" and facts.predefinedScript ~= nil then
+          session.scriptId = facts.predefinedScript
+        else
+          session.dynamicGeneric = true
+        end
+      else
+        local rows = session.direction == "incoming" and headers.incoming or headers.outgoing
+        assert(type(rows) == "table", "generic header tables carry both directions")
+        self:_resolveGenericHeaders(session, rows)
+      end
     end
   elseif session.family == "friend" then
     if session.direction == "incoming" then
@@ -656,15 +1090,27 @@ local function selectNativeScript(session, record)
       session.dynamicBuena = true
     end
   elseif session.family == "generic" then
-    if nativeFacts.localMap and record.localScript ~= nil then
-      session.scriptId = record.localScript
-    elseif session.direction == "incoming" then
-      session.scriptId = facts.predefinedScript
+    if session.direction ~= "incoming" and nativeFacts.localMap and record.phoneScriptIfLocal ~= nil then
+      session.scriptId = record.phoneScriptIfLocal
     else
-      session.dynamicGeneric = true
+      local headers = record.genericHeaders
+      if type(headers) ~= "table" then
+        if session.direction == "incoming" and facts.predefinedScript ~= nil then
+          session.scriptId = facts.predefinedScript
+        else
+          session.dynamicGeneric = true
+        end
+      else
+        local rows = session.direction == "incoming" and headers.incoming or headers.outgoing
+        assert(type(rows) == "table", "generic header tables carry both directions")
+        self:_resolveGenericHeaders(session, rows)
+      end
     end
   end
   if session.dynamicMother == true then
+    return
+  end
+  if session.localBankEntry ~= nil then
     return
   end
   if
@@ -672,14 +1118,15 @@ local function selectNativeScript(session, record)
     or session.dynamicKurt == true
     or session.dynamicDaycareMan == true
     or session.dynamicDaycareLady == true
-    or session.dynamicElm == true
     or session.dynamicOak == true
-    or session.dynamicKenji == true
     or session.dynamicGeneric == true
+    or session.dynamicGymIncoming == true
+    or session.dynamicGymOutgoing == true
     or session.dynamicFriendIncoming == true
     or session.dynamicFriend == true
     or session.dynamicBuenaIncoming == true
     or session.dynamicBuena == true
+    or session.dynamicBaobaArrangement == true
   then
     return
   end
@@ -717,23 +1164,23 @@ end
 
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
----@return string|{ status: string, entry: integer? } program step result ("waiting"|"done" or { status: string, entry: integer? } for dynamic lines)
+---@return string|{ status: string, entry: integer?, entries: integer[]?, fanfare: string? } program step result
 local function stepProgram(session, input)
   local owner = session.owner --[[@as string]]
   local programSession = session.programSession --[[@as table<string, unknown>]]
   if owner == "mother" then
-    return MotherPhoneProgram.step(programSession, input)
+    return MotherPhoneProgram.step(programSession, input) --[[@as string|{ status: string, entry: integer?, entries: integer[]?, fanfare: string? }]]
   end
   if owner == "professor" then
-    return ProfessorPhonePrograms.step(programSession, input)
+    return ProfessorPhonePrograms.step(programSession, input) --[[@as string|{ status: string, entry: integer?, entries: integer[]?, fanfare: string? }]]
   end
   if owner == "service" then
-    return ServicePhonePrograms.step(programSession, input)
+    return ServicePhonePrograms.step(programSession, input) --[[@as string|{ status: string, entry: integer?, entries: integer[]?, fanfare: string? }]]
   end
   if owner == "trainer" then
-    return TrainerPhonePrograms.step(programSession, input)
+    return TrainerPhonePrograms.step(programSession, input) --[[@as string|{ status: string, entry: integer?, entries: integer[]?, fanfare: string? }]]
   end
-  return GenericPhoneProgram.step(programSession, input)
+  return GenericPhoneProgram.step(programSession, input) --[[@as string|{ status: string, entry: integer?, entries: integer[]?, fanfare: string? }]]
 end
 
 -- Resolves one bank-664 entry for the dynamic Mother flow through the
@@ -763,29 +1210,555 @@ local function resolveMotherEntry(messages, session, entry)
   error("dynamic mother needs its contact-entry message reader, got entry " .. tostring(entry), 0)
 end
 
+-- Resolves the dynamic Bill conversation behind GearPhoneCall_Bill:
+-- the gendered intro (665.3/4), the box status (665.9 when full,
+-- else 665.5/6/7), and the closer 665.8. The box name and free count
+-- stage through the entry options for the slot-10/11 substitutions,
+-- mirroring the source BufferString/BufferIntegerAsString case. The
+-- shared time-of-day greeting prints ahead of these entries through
+-- the normal greeting path. An absent pc owner fails with attribution
+-- instead of an invented box.
+---@param self table<string, unknown>
 ---@param messages table<string, unknown>
 ---@param session table<string, unknown>
 ---@return table<string, unknown> resolved native dialogue
-local function resolveNativeDialogue(messages, session)
-  selectNativeScript(session, session.record --[[@as table<string, unknown>]])
+local function resolveBillDialogue(self, messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  assert(type(world) == "table", "bill dialogue borrows its world")
+  local pc = (world --[[@as table<string, unknown>]]).pc
+  if type(pc) ~= "table" then
+    local failure =
+      Errors.new(ScriptErrors.FEATURE_UNAVAILABLE, "phone bill branch needs its missing pc owner", { domain = "pc" })
+    error({ code = failure.code, message = failure.message, context = failure.context, domain = "pc" })
+  end
+  local box = pc --[[@as table<string, unknown>]]
+  local freeSlots = box.freeSlots
+  assert(type(freeSlots) == "number" and freeSlots % 1 == 0, "bill dialogue reads the free box count")
+  local boxName = box.boxName
+  assert(type(boxName) == "string" and boxName ~= "", "bill dialogue reads the active box name")
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local roll = 0
+  local random = (self --[[@as table<string, unknown>]])._random
+  if type(random) == "table" and type(random.lc) == "function" then
+    roll = random:lc("bill-advice") % 3
+  else
+    roll = math.random(0, 2)
+  end
+  local entries = {
+    ServicePhonePrograms.billIntroEntry(facts),
+    ServicePhonePrograms.billStatusEntry(freeSlots, roll),
+    ServicePhonePrograms.billCloserEntry(),
+  }
+  local resolveEntry = messages.resolveContactEntry
+  assert(type(resolveEntry) == "function", "bill dialogue resolves through its contact-entry reader")
+  local tokens = {}
+  local opts = { boxName = boxName, freeCount = freeSlots }
+  for _, entry in ipairs(entries) do
+    local formatted = resolveEntry(messages, session.contact, entry, opts)
+    assert(
+      type(formatted) == "table" and type(formatted.tokens) == "table",
+      "bill dialogue returns formatted source tokens"
+    )
+    for _, token in ipairs(formatted.tokens) do
+      tokens[#tokens + 1] = token
+    end
+  end
+  return { tokens = tokens }
+end
+
+-- Resolves one dynamic contact-entry conversation: each bank entry
+-- prints through the contact-entry reader and concatenates its
+-- tokens, exactly like the Bill staging loop. A stage is either a
+-- bare entry number sharing the common options, or an
+-- { entry, opts } pair carrying its own slot staging behind handlers
+-- that re-buffer between messages.
+---@param messages table<string, unknown> field message provider
+---@param contact string catalog contact key
+---@param entries (integer|{ entry: integer, opts: table<string, unknown>? })[] bank entries in source order
+---@param opts table<string, unknown>? common slot staging options
+---@return table<string, unknown> formatted native dialogue
+local function resolveContactEntries(messages, contact, entries, opts)
+  local resolveEntry = messages.resolveContactEntry
+  assert(type(resolveEntry) == "function", "dynamic dialogue resolves through its contact-entry reader")
+  local tokens = {}
+  for _, stage in ipairs(entries) do
+    local entry, stageOpts = stage, opts
+    if type(stage) == "table" then
+      entry = (stage --[[@as table<string, unknown>]]).entry
+      stageOpts = (stage --[[@as table<string, unknown>]]).opts
+    end
+    assert(type(entry) == "number" and entry % 1 == 0, "dynamic dialogue names its bank entry")
+    local formatted = resolveEntry(messages, contact, entry, stageOpts)
+    assert(
+      type(formatted) == "table" and type(formatted.tokens) == "table",
+      "dynamic dialogue returns formatted source tokens"
+    )
+    for _, token in ipairs(formatted.tokens) do
+      tokens[#tokens + 1] = token
+    end
+  end
+  return { tokens = tokens }
+end
+
+-- Resolves the dynamic Buena incoming conversation behind
+-- GearPhoneCall_Buena: the gendered time-of-day intro (3/5/7 male,
+-- 4/6/8 female) and the random extra 10..12. No owner reads, no
+-- slot buffers, no side effects.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveBuenaIncomingDialogue(self, messages, session)
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local timeOfDay = facts.timeOfDay
+  assert(
+    type(timeOfDay) == "number" and timeOfDay % 1 == 0 and timeOfDay >= 0 and timeOfDay <= 2,
+    "buena dialogue reads the source time band"
+  )
+  local entries = {
+    ServicePhonePrograms.buenaIntroEntry(facts.playerGender, timeOfDay),
+    ServicePhonePrograms.buenaExtraEntry((self --[[@as table<string, unknown>]]):_drawBounded(3, "buena-extra")),
+  }
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic Buena outgoing conversation behind
+-- GearPhoneCall_Buena2: the gendered time-of-day intro (15/17/19
+-- male, 16/18/20 female) and the password-hour body (36 on the air,
+-- else 21 plus the clear-sized roll with the gendered 34/35 pair on
+-- 13). The password identity derives from the raw civil hour exactly
+-- like IsBuenasPasswordOnAir.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveBuenaDialogue(self, messages, session)
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local timeOfDay = facts.timeOfDay
+  assert(
+    type(timeOfDay) == "number" and timeOfDay % 1 == 0 and timeOfDay >= 0 and timeOfDay <= 2,
+    "buena dialogue reads the source time band"
+  )
+  local hour = facts.hour
+  assert(type(hour) == "number" and hour % 1 == 0 and hour >= 0 and hour < 24, "buena dialogue reads the civil hour")
+  local sharedU8
+  if hour % 3 == 2 then
+    sharedU8 = 3
+  elseif hour > 3 and hour < 10 then
+    sharedU8 = 0
+  elseif hour > 9 and hour < 20 then
+    sharedU8 = 1
+  else
+    sharedU8 = 2
+  end
+  local gameClear = facts.gameClear == true
+  local count = gameClear and 14 or 11
+  local roll = (self --[[@as table<string, unknown>]]):_drawBounded(count, "buena-body")
+  local entries = {
+    ServicePhonePrograms.buena2IntroEntry(facts.playerGender, timeOfDay),
+    ServicePhonePrograms.buena2BodyEntry(sharedU8, gameClear, roll, facts.playerGender),
+  }
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic friend incoming conversation behind
+-- GearPhoneCall_EthanLyra: the time-of-day intro 4/5/6 and the
+-- caller-map location message 13..85 with the 10..12 fallback. No
+-- slot buffers, no side effects.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveFriendIncomingDialogue(self, messages, session)
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local timeOfDay = facts.timeOfDay
+  assert(
+    type(timeOfDay) == "number" and timeOfDay % 1 == 0 and timeOfDay >= 0 and timeOfDay <= 2,
+    "friend dialogue reads the source time band"
+  )
+  local entries = {
+    ServicePhonePrograms.friendIntroEntry(timeOfDay),
+    ServicePhonePrograms.friendLocationEntry(
+      facts.mapId,
+      (self --[[@as table<string, unknown>]]):_drawBounded(3, "friend-location")
+    ),
+  }
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic gym incoming conversation behind
+-- GearPhoneCall_GymLeader_Incoming: the opener 10 and the seeking
+-- body 11, else 12..14 behind the source LCRandom()%3. Seeking reads
+-- the staged rematch record exactly like the trainer readiness query.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveGymIncomingDialogue(self, messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local query = world.queryRematch
+  assert(type(query) == "function", "gym dialogue reads the staged rematch record")
+  local contact = session.contact --[[@as string]]
+  local current = query(world, contact)
+  local seeking = type(current) == "table" and (current --[[@as table<string, unknown>]]).stage > 0
+  local entries = {
+    ServicePhonePrograms.gymIncomingOpenerEntry(),
+    ServicePhonePrograms.gymIncomingBodyEntry(
+      seeking,
+      (self --[[@as table<string, unknown>]]):_drawBounded(3, "gym-incoming")
+    ),
+  }
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic Kurt conversation behind GearPhoneCall_Kurt:
+-- the order-flag intro (6 while the flag stands, else 2) and the
+-- handed status (5 empty, 4 while the balls are made, else 3 with
+-- the staged ball item and quantity). The handed order reads its
+-- apricorn owner; an absent owner fails with attribution instead of
+-- an invented empty box.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveKurtDialogue(messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local pending = ServicePhonePrograms.kurtPending(world)
+  local entries = {
+    ServicePhonePrograms.kurtIntroEntry(facts.kurtFlag127 == true),
+    ServicePhonePrograms.kurtStatusEntry(pending.quantity, facts.kurtMaking == true),
+  }
+  local opts = nil
+  if pending.quantity > 0 and facts.kurtMaking ~= true then
+    opts = {
+      ballItem = ServicePhonePrograms.kurtBallItem(pending.apricorn --[[@as string]]),
+      kurtCount = pending.quantity,
+    }
+  end
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries, opts)
+end
+
+-- Resolves the dynamic friend outgoing conversation behind
+-- GearPhoneCall_EthanLyra2: the time-of-day intro 7/8/9 and the
+-- coin flip between the fixed 10..12 and the region message 86..158
+-- behind the unlock and flypoint state. No slot buffers, no side
+-- effects.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveFriendOutgoingDialogue(self, messages, session)
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local timeOfDay = facts.timeOfDay
+  assert(
+    type(timeOfDay) == "number" and timeOfDay % 1 == 0 and timeOfDay >= 0 and timeOfDay <= 2,
+    "friend dialogue reads the source time band"
+  )
+  local bounded = (self --[[@as table<string, unknown>]])._drawBounded
+  local coin = bounded(self, 1000, "friend-coin")
+  local body
+  if coin < 500 then
+    body = ServicePhonePrograms.friendFixedEntry(bounded(self, 900, "friend-fixed"))
+  else
+    local unlock = facts.unlockLevel
+    assert(type(unlock) == "number" and unlock % 1 == 0 and unlock >= 0, "friend regions read the map unlock level")
+    local available = {
+      [0] = true,
+      [1] = facts.flypoint25 == true,
+      [2] = unlock ~= 0,
+      [3] = unlock > 1,
+    }
+    -- The candidate count is data-dependent, so the region draw
+    -- bounds itself after counting: at most the 73 table rows.
+    local count = 0
+    for _, class in ipairs(ServicePhonePrograms.FRIEND_REGION_CONDITIONS) do
+      if available[class] == true then
+        count = count + 1
+      end
+    end
+    assert(count > 0, "friend regions open at least one candidate row")
+    body = ServicePhonePrograms.friendRegionEntry(available, bounded(self, count, "friend-region"))
+  end
+  local entries = { ServicePhonePrograms.friendOutgoingIntroEntry(timeOfDay), body }
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic Day Care Man conversation behind
+-- GearPhoneCall_DayCareMan: the opener 2 with the egg, empty,
+-- single, or pair branch and the compatibility message. Both
+-- stabled nicknames stage for slots 10/11 behind the whole call,
+-- exactly like the selection-time buffers.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveDaycareManDialogue(messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local status = ServicePhonePrograms.daycareStatus(world)
+  local entries = ServicePhonePrograms.daycareManEntries(status)
+  local opts = { nickA = status.nicknames[1], nickB = status.nicknames[2] }
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries, opts)
+end
+
+-- Resolves the dynamic Day Care Lady conversation behind
+-- GearPhoneCall_DayCareLady: the gendered intro 3/4, the empty 10
+-- or the stabled 5, then the per-mon growth report 6 with its own
+-- nickname and growth staging, closed by the single 8 or pair 9.
+-- Each growth report re-buffers its own mon, so every 6 carries its
+-- own slot options.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveDaycareLadyDialogue(messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local status = ServicePhonePrograms.daycareStatus(world)
+  ---@type (integer|{ entry: integer, opts: table<string, unknown> })[] bank entries with per-message staging
+  local stages = { ServicePhonePrograms.daycareLadyIntroEntry(facts.playerGender) }
+  if status.count == 0 then
+    stages[#stages + 1] = 10
+    return resolveContactEntries(messages, session.contact --[[@as string]], stages)
+  end
+  stages[#stages + 1] = 5
+  local growths = status.growths
+  -- Retail zero-inits the growth of an absent mon, so a missing
+  -- second growth reads as no growth.
+  local secondGrowth = growths[2] or 0
+  local first = growths[1] ~= 0 and 1 or (secondGrowth ~= 0 and 2 or nil)
+  if first == nil then
+    stages[#stages + 1] = 9
+    return resolveContactEntries(messages, session.contact --[[@as string]], stages)
+  end
+  stages[#stages + 1] = {
+    entry = 6,
+    opts = { nickname = status.nicknames[first], growth = growths[first] },
+  }
+  local second = first == 1 and secondGrowth ~= 0
+  if second then
+    stages[#stages + 1] = {
+      entry = 6,
+      opts = { nickname = status.nicknames[2], growth = growths[2] },
+    }
+  end
+  stages[#stages + 1] = status.count == 1 and 8 or 9
+  return resolveContactEntries(messages, session.contact --[[@as string]], stages)
+end
+
+-- Resolves the dynamic Baoba arrangement conversation behind
+-- GearPhoneCall_Baoba: the empty gendered 38/39, the full 24/25,
+-- else the gendered 14/15 pair by area count with the area names
+-- staged for slots 10 and up. An absent safari owner fails with
+-- attribution instead of an invented empty zone.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveBaobaArrangementDialogue(messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local read = world.read
+  assert(type(read) == "function", "baoba dialogue reads its safari owner")
+  local arrangement = read(world, "safari.arrangement")
+  assert(type(arrangement) == "table", "baoba dialogue resolves its area arrangement")
+  local clean = arrangement --[[@as table<string, unknown>]]
+  local count = clean.count
+  assert(type(count) == "number" and count % 1 == 0 and count >= 0, "baoba dialogue reads its arranged area count")
+  local names = clean.names
+  assert(type(names) == "table", "baoba dialogue reads its arranged area names")
+  local female = facts.playerGender == "female" or facts.playerGender == 1
+  local entry
+  if count == 0 then
+    entry = female and 39 or 38
+  elseif count >= 6 then
+    entry = female and 25 or 24
+  else
+    entry = (female and 15 or 14) + 2 * (count - 1)
+    for index = 1, count do
+      assert(type(names[index]) == "string" and names[index] ~= "", "baoba dialogue names every arranged area")
+    end
+  end
+  local opts = nil
+  if count > 0 and count < 6 then
+    opts = { areaNames = names }
+  end
+  return resolveContactEntries(messages, session.contact --[[@as string]], { entry }, opts)
+end
+
+-- Resolves the dynamic gym outgoing conversation behind
+-- GearPhoneCall_GymLeader_Outgoing: the opener 2 with the badge 3,
+-- seeking 9, window 4, or invitation 5 branch. The invitation owes
+-- the yes/no menu; the dojo reading freezes behind the answer
+-- exactly like the source single-iteration quirk.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveGymOutgoingDialogue(self, messages, session)
+  local world = session.world --[[@as table<string, unknown>]]
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local query = world.queryRematch
+  assert(type(query) == "function", "gym dialogue reads the staged rematch record")
+  local contact = session.contact --[[@as string]]
+  local current = query(world, contact)
+  local seeking = type(current) == "table" and (current --[[@as table<string, unknown>]]).stage > 0
+  local badges = facts.badges or 0
+  assert(type(badges) == "number", "gym selection counts profile badges")
+  local me = self --[[@as table<string, unknown>]]
+  local catalog = me._catalog --[[@as table<string, unknown>]]
+  local windowOk = TrainerPhonePrograms.eligible(contact, world, catalog)
+  local entries = {
+    TrainerPhonePrograms.gymOutgoingOpenerEntry(),
+    TrainerPhonePrograms.gymOutgoingBranchEntry(badges >= 16, seeking, windowOk),
+  }
+  if entries[2] == 5 then
+    -- The first compiled gym contact anchors the source quirk loop;
+    -- the caller always resolves through the catalog above.
+    local firstKey = nil
+    local contacts = (catalog --[[@as table<string, unknown>]]).contacts
+    assert(type(contacts) == "table", "gym quirks read the contact catalog")
+    for _, record in ipairs(contacts) do
+      local candidate = record --[[@as table<string, unknown>]]
+      if candidate.family == "gym" or candidate.family == "rematch" then
+        firstKey = candidate.key
+        break
+      end
+    end
+    assert(type(firstKey) == "string", "gym quirks name their first compiled contact")
+    local firstSeeking = false
+    if firstKey ~= contact then
+      local first = query(world, firstKey --[[@as string]])
+      firstSeeking = type(first) == "table" and (first --[[@as table<string, unknown>]]).stage > 0
+    end
+    facts.dynamicGymMenu = true
+    session.dynamicGymMenu = true
+    facts.dynamicGymDojoFull = TrainerPhonePrograms.gymDojoFull(contact, firstKey, firstSeeking)
+  end
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic Oak opening behind GearPhoneCall_ProfOak:
+-- the gendered intro 13/14 and the second message 15. The menu
+-- identity derives from the national dex and johto acknowledgement
+-- facts; the evaluation itself stages behind the menu answer.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveOakDialogue(messages, session)
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local shared = ProfessorPhonePrograms.oakMenuIndex(facts.nationalDex == true, facts.oakJohtoAcked == true)
+  local entries = {
+    ProfessorPhonePrograms.oakIntroEntry(facts.playerGender),
+    15,
+  }
+  facts.dynamicOakMenu = true
+  session.dynamicOakMenu = true
+  facts.dynamicOakShared = shared
+  session.dynamicOakShared = shared
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries)
+end
+
+-- Resolves the dynamic Oak result entries with their fanfare: plays
+-- the staged rating fanfare through the audio boundary, then prints
+-- the seen/owned 20 with its slot staging plus the rating and the
+-- closer 21 unless the completed dex ends the call.
+---@param self table<string, unknown>
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@param outcome table<string, unknown> answer outcome
+---@return table<string, unknown> resolved native dialogue
+local function resolveOakResult(self, messages, session, outcome)
+  local fanfare = outcome.fanfare
+  if fanfare ~= nil then
+    assert(type(fanfare) == "string" and fanfare ~= "", "oak ratings play their fanfare sequence")
+    local audio = (self --[[@as table<string, unknown>]])._audio
+    assert(type(audio) == "table", "oak ratings play through the audio boundary")
+    local play = audio.play --[[@as fun(self: table<string, unknown>, sequence: string)]]
+    assert(type(play) == "function", "oak fanfare plays its source sequence")
+    play(audio, fanfare)
+  end
+  local entries = outcome.entries
+  assert(type(entries) == "table" and #entries > 0, "oak answers stage their result entries")
+  local facts = session.facts --[[@as table<string, unknown>]]
+  local opts = nil
+  if type(facts.dynamicOakSeen) == "number" and type(facts.dynamicOakOwned) == "number" then
+    opts = { seenCount = facts.dynamicOakSeen, ownedCount = facts.dynamicOakOwned }
+  end
+  return resolveContactEntries(messages, session.contact --[[@as string]], entries, opts)
+end
+
+-- Resolves the source time-of-day greeting for one static call: the
+-- contact greeting set behind the call time band, direction, and
+-- player gender. Dynamic sessions and local-bank calls resolve their
+-- own intros and skip the generic greeting, exactly like the source
+-- handlers that never print it. Dynamic Bill is the exception: its
+-- handler prints the greeting before its own entries, so it greets
+-- like a static call. Contacts without a greeting set skip
+-- silently; a set without a greeting reader fails loudly.
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown>? formatted greeting text
+local function resolveCallGreeting(messages, session)
+  if session.dynamicMother == true or session.localBankEntry ~= nil then
+    return nil
+  end
+  if type(session.scriptId) ~= "number" and session.dynamicBill ~= true then
+    return nil
+  end
+  local record = session.record --[[@as table<string, unknown>]]
+  local set = record.greetingMsgSet
+  if type(set) ~= "number" or set == 255 then
+    return nil
+  end
+  local resolveGreeting = messages.resolveCallGreeting
+  assert(type(resolveGreeting) == "function", "static calls greet through the shared greeting reader")
+  local facts = session.facts --[[@as table<string, unknown>]]
+  return resolveGreeting(messages, session.contact --[[@as string]], facts.timeOfDay, session.direction == "incoming")
+end
+
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@return table<string, unknown> resolved native dialogue
+local function resolveNativeDialogue(self, messages, session)
+  selectNativeScript(self, session, session.record --[[@as table<string, unknown>]])
   if session.dynamicMother == true then
     local entry = MotherPhoneProgram.introEntry(session.facts --[[@as table<string, unknown>]])
     return resolveMotherEntry(messages, session, entry)
   end
-  if
-    session.dynamicBill == true
-    or session.dynamicKurt == true
-    or session.dynamicDaycareMan == true
-    or session.dynamicDaycareLady == true
-    or session.dynamicElm == true
-    or session.dynamicOak == true
-    or session.dynamicKenji == true
-    or session.dynamicGeneric == true
-    or session.dynamicFriendIncoming == true
-    or session.dynamicFriend == true
-    or session.dynamicBuenaIncoming == true
-    or session.dynamicBuena == true
-  then
+  if session.dynamicBill == true then
+    return resolveBillDialogue(self, messages, session)
+  end
+  if session.dynamicBuenaIncoming == true then
+    return resolveBuenaIncomingDialogue(self, messages, session)
+  end
+  if session.dynamicBuena == true then
+    return resolveBuenaDialogue(self, messages, session)
+  end
+  if session.dynamicFriendIncoming == true then
+    return resolveFriendIncomingDialogue(self, messages, session)
+  end
+  if session.dynamicGymIncoming == true then
+    return resolveGymIncomingDialogue(self, messages, session)
+  end
+  if session.dynamicGymOutgoing == true then
+    return resolveGymOutgoingDialogue(self, messages, session)
+  end
+  if session.dynamicKurt == true then
+    return resolveKurtDialogue(messages, session)
+  end
+  if session.dynamicFriend == true then
+    return resolveFriendOutgoingDialogue(self, messages, session)
+  end
+  if session.dynamicDaycareMan == true then
+    return resolveDaycareManDialogue(messages, session)
+  end
+  if session.dynamicDaycareLady == true then
+    return resolveDaycareLadyDialogue(messages, session)
+  end
+  if session.dynamicOak == true then
+    return resolveOakDialogue(messages, session)
+  end
+  if session.dynamicBaobaArrangement == true then
+    return resolveBaobaArrangementDialogue(messages, session)
+  end
+  if session.dynamicGeneric == true then
     local failure = Errors.new(
       ScriptErrors.FEATURE_UNAVAILABLE,
       "native phone dynamic handler needs its save-owned program wiring for " .. tostring(session.family),
@@ -795,6 +1768,16 @@ local function resolveNativeDialogue(messages, session)
   end
   local scriptId = session.scriptId
   local resolveLine = messages.resolveLine
+  if session.localBankEntry ~= nil then
+    -- Same-map gym calls print the caller's bank entry one with no
+    -- side effect, exactly like the outgoing gym handler's local map
+    -- branch.
+    local entry = session.localBankEntry --[[@as integer]]
+    assert(type(entry) == "number", "the local caller carries its bank entry")
+    local resolveEntry = messages.resolveContactEntry
+    assert(type(resolveEntry) == "function", "phone dialogue resolves through its contact-entry reader")
+    return resolveEntry(messages, session.contact --[[@as string]], entry)
+  end
   assert(type(scriptId) == "number", "the selected caller carries its native script identity")
   assert(type(resolveLine) == "function", "phone dialogue resolves through the field message provider")
   return resolveLine(messages, session.contact, scriptId)
@@ -839,16 +1822,14 @@ function PhoneCall:_playSequence(sequence)
   end
 end
 
--- Reads one localized hangup message through the shared UI message
--- reader. No literal text lives in the session.
----@param entryId integer bank271 hangup entry number
----@return table<string, unknown> the printable speech line
-function PhoneCall:_hangupText(entryId)
-  local resolveUi = self._messages.resolvePhoneUiMessage
-  assert(type(resolveUi) == "function", "phone hangup text resolves through the shared UI message reader")
-  local record = resolveUi(self._messages, entryId)
-  assert(type(record) == "table" and type(record.text) == "string", "phone hangup entries resolve to printable text")
-  return { text = record.text, tokens = record.tokens }
+-- Enters the pre-hangup button wait: the finished conversation holds
+-- its last page until the player confirms with Action or the
+-- fast-forward touch, which plays the source SELECT tone once before
+-- the staged hangup runs. Mirrors PhoneCall_WaitButtonBeforeHangup.
+---@param session table<string, unknown>
+function PhoneCall:_beginWaitPress(session)
+  session.stage = "waitPress"
+  enterStage(session)
 end
 
 -- Enters the staged hangup: plays the source PHONE_OFF tone once,
@@ -864,7 +1845,7 @@ function PhoneCall:_beginHangup(session)
   enterStage(session)
   session.hangupSub = 0
   session.hangupTimer = 0
-  session.lines = { self:_hangupText(PhoneCall.HANGUP_MESSAGE_ENTRIES[1]) }
+  session.lines = { self:_uiText(PhoneCall.HANGUP_MESSAGE_ENTRIES[1]) }
   session.textPage = 1
   self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
 end
@@ -889,17 +1870,73 @@ function PhoneCall:_advanceHangup(session)
   session.hangupSub = sub
   enterStage(session)
   if sub == 1 then
-    session.lines = { self:_hangupText(PhoneCall.HANGUP_MESSAGE_ENTRIES[2]) }
+    session.lines = { self:_uiText(PhoneCall.HANGUP_MESSAGE_ENTRIES[2]) }
     session.textPage = 1
     return false
   end
   if sub == 2 then
-    session.lines = { self:_hangupText(PhoneCall.HANGUP_MESSAGE_ENTRIES[3]) }
+    session.lines = { self:_uiText(PhoneCall.HANGUP_MESSAGE_ENTRIES[3]) }
     session.textPage = 1
+    return false
+  end
+  if session.noSignalArmed == true then
+    -- The out-of-area closer replaces the hangup window after the
+    -- tone completes; its button wait ends the call with no replay.
+    session.lines = { self:_uiText(PhoneCall.NO_SIGNAL_CLOSER_ENTRY) }
+    session.textPage = 1
+    session.stage = "waitPress"
+    enterStage(session)
     return false
   end
   self:_finishHangup(session)
   return true
+end
+
+-- The two no-signal message sets: the toneless out-of-area notices
+-- (bank 271 entries 30-32) and the out-of-area closer (entry 37)
+-- printed after the hangup tone completes.
+PhoneCall.NO_SIGNAL_MESSAGE_ENTRIES = { 30, 31, 32 }
+PhoneCall.NO_SIGNAL_CLOSER_ENTRY = 37
+
+-- Reads one localized bank271 call line through the shared UI message
+-- reader: the dial notices, the hangup clicks, and the away notice. No
+-- literal text lives in the session.
+---@param entryId integer bank271 entry number
+---@return table<string, unknown> the printable speech line
+function PhoneCall:_uiText(entryId)
+  local resolveUi = self._messages.resolvePhoneUiMessage
+  assert(type(resolveUi) == "function", "phone call text resolves through the shared UI message reader")
+  local record = resolveUi(self._messages, entryId)
+  assert(type(record) == "table" and type(record.text) == "string", "phone call entries resolve to printable text")
+  return { text = record.text, tokens = record.tokens }
+end
+
+-- Advances the no-signal flow one tick: the three toneless notices
+-- print across eleven-tick waits, then the staged hangup runs behind
+-- the armed flag so the out-of-area closer follows it.
+---@param session table<string, unknown>
+function PhoneCall:_advanceNoSignal(session)
+  local sub = session.noSignalSub --[[@as integer]] or 0
+  local timer = session.noSignalTimer --[[@as integer]] or 0
+  if timer < 10 then
+    session.noSignalTimer = timer + 1
+    return
+  end
+  session.noSignalTimer = 0
+  sub = sub + 1
+  session.noSignalSub = sub
+  enterStage(session)
+  if sub == 1 then
+    session.lines = { self:_uiText(PhoneCall.NO_SIGNAL_MESSAGE_ENTRIES[2]) }
+    session.textPage = 1
+    return
+  end
+  if sub == 2 then
+    session.lines = { self:_uiText(PhoneCall.NO_SIGNAL_MESSAGE_ENTRIES[3]) }
+    session.textPage = 1
+    return
+  end
+  self:_beginHangup(session)
 end
 
 -- Completes the staged hangup with its terminal result. The hangup
@@ -930,24 +1967,51 @@ function PhoneCall:_finishHangup(session)
   end
 end
 
--- Snapshots the owed savings choice: the source menu identity with the
--- two localized display labels in source order, plus the localized
--- choice prompt. Semantic answers stay with MotherPhoneProgram; the
--- session only carries display strings. Resolved once at choice entry
--- so detached views never fetch messages.
+-- Snapshots the owed menu choice: the source menu identity with its
+-- bank-271 display labels in source order, plus the localized choice
+-- prompt where the menu carries one. The savings menu keeps its
+-- historical entries; dynamic gym and oak menus ride their own
+-- identities. Semantic answers stay with the owning program module;
+-- the session only carries display strings. Resolved once at choice
+-- entry so detached views never fetch messages.
 ---@param session table<string, unknown>
 function PhoneCall:_resolveChoiceLabels(session)
   local resolveUi = self._messages.resolvePhoneUiMessage
   assert(type(resolveUi) == "function", "phone choices resolve through the shared UI message reader")
-  local first = resolveUi(self._messages, 8)
-  local second = resolveUi(self._messages, 9)
-  local prompt = resolveUi(self._messages, 22)
-  assert(type(first) == "table" and type(first.text) == "string", "phone choice entries resolve to printable text")
-  assert(type(second) == "table" and type(second.text) == "string", "phone choice entries resolve to printable text")
-  assert(type(prompt) == "table" and type(prompt.text) == "string", "phone choice prompt resolves to printable text")
-  session.menuId = 2
-  session.choiceLabels = { first.text, second.text }
-  session.choiceTooltip = prompt.text
+  local menuId, base, count, tooltipEntry, choices = 2, 8, 2, 22, MotherPhoneProgram.CHOICES
+  if session.dynamicGymMenu == true then
+    menuId, base, count, tooltipEntry, choices = 6, 18, 2, 22, TrainerPhonePrograms.GYM_MENU_CHOICES
+  elseif session.dynamicOakMenu == true then
+    local shared = session.dynamicOakShared
+    assert(type(shared) == "number" and shared % 1 == 0 and shared >= 0 and shared <= 2, "oak menus read their menu")
+    local menu = ProfessorPhonePrograms.OAK_MENUS[shared]
+    assert(type(menu) == "table", "oak menus carry their source identity")
+    menuId, base, choices = menu.id, menu.base, menu.choices
+    assert(type(choices) == "table", "oak menus carry their semantic choices")
+    count, tooltipEntry = #choices, 22
+  end
+  local labels = {}
+  for offset = 0, count - 1 do
+    local item = resolveUi(self._messages, base + offset)
+    assert(
+      type(item) == "table" and type((item --[[@as table<string, unknown>]]).text) == "string",
+      "phone choice entries resolve to printable text"
+    )
+    labels[#labels + 1] = (item --[[@as table<string, unknown>]]).text
+  end
+  local tooltip = nil
+  if tooltipEntry ~= nil then
+    local prompt = resolveUi(self._messages, tooltipEntry)
+    assert(
+      type(prompt) == "table" and type((prompt --[[@as table<string, unknown>]]).text) == "string",
+      "phone choice prompt resolves to printable text"
+    )
+    tooltip = (prompt --[[@as table<string, unknown>]]).text
+  end
+  session.menuId = menuId
+  session.choiceLabels = labels
+  session.choiceTooltip = tooltip
+  session.choiceIds = choices
 end
 
 -- Counts the printable glyphs on the session's current page: only
@@ -1073,6 +2137,13 @@ function PhoneCall:step(handle, input)
         return
       end
       forced = false
+      -- The dial advances one source stage per settled tone: the second
+      -- tone and its notice, then the conversation.
+      if session.dialSub == 0 then
+        session.dialSub = 1
+        self:_dialStep(session)
+        return
+      end
       session.stage = "greeting"
       enterStage(session)
     elseif stage == "greeting" then
@@ -1080,7 +2151,7 @@ function PhoneCall:step(handle, input)
         self:_selectProgramAtGreeting(session)
         self:_openProgramSession(session)
       end
-      local ok, formatted = pcall(resolveNativeDialogue, self._messages, session)
+      local ok, formatted = pcall(resolveNativeDialogue, self, self._messages, session)
       if not ok then
         self:_failCall(session, formatted)
         return
@@ -1089,7 +2160,29 @@ function PhoneCall:step(handle, input)
         type(formatted) == "table" and type(formatted.tokens) == "table",
         "phone dialogue returns formatted source tokens"
       )
-      session.lines = self:_pagesFromTokens(formatted.tokens)
+      -- Static calls open behind the source time-of-day greeting when
+      -- the caller carries a greeting set, exactly like the Simple,
+      -- Generic, and Generic2 handlers print before their script text.
+      -- Dynamic and local-bank calls resolve their own intros.
+      local pages = {}
+      local greetOk, greeting = pcall(resolveCallGreeting, self._messages, session)
+      if not greetOk then
+        self:_failCall(session, greeting)
+        return
+      end
+      if greeting ~= nil then
+        assert(
+          type(greeting) == "table" and type(greeting.tokens) == "table",
+          "phone greetings return formatted source tokens"
+        )
+        for _, page in ipairs(self:_pagesFromTokens(greeting.tokens)) do
+          pages[#pages + 1] = page
+        end
+      end
+      for _, page in ipairs(self:_pagesFromTokens(formatted.tokens)) do
+        pages[#pages + 1] = page
+      end
+      session.lines = pages
       session.textRevealed, session.textTick = 0, 0
       assert(#session.lines > 0, "phone scripts produce at least one printable text page")
       -- Static script side effects (rematch/item/flag/word) run once at
@@ -1145,8 +2238,10 @@ function PhoneCall:step(handle, input)
         entry = (outcome --[[@as table<string, unknown>]]).entry
       end
       if status == "waiting" then
-        -- Dynamic Mother prompt: resolve the staged prompt entry so the
-        -- choice views the retail prompt text before answering.
+        -- Dynamic menu prompts: the savings prompt resolves its bank
+        -- entry while gym and oak prompts already printed behind the
+        -- message stage, so the choice views the staged text before
+        -- answering.
         if type(entry) == "number" and session.dynamicMother == true then
           local promptOk, promptFormatted = pcall(resolveMotherEntry, self._messages, session, entry)
           if not promptOk then
@@ -1168,8 +2263,11 @@ function PhoneCall:step(handle, input)
         end
         return
       end
-      -- Dynamic Mother terminal entries (gift-full 21, result 25/26):
-      -- show the staged pages in a result stage before hangup.
+      -- Dynamic menu terminal entries (the savings gift-full 21 and
+      -- results 25/26, the gym answers 6/7/8): show the staged pages
+      -- in a result stage before hangup. Savings entries resolve
+      -- through the balance reader; gym and oak answers resolve
+      -- through the contact-entry reader like their dialogue.
       if type(entry) == "number" and session.dynamicMother == true then
         local resultOk, resultFormatted = pcall(resolveMotherEntry, self._messages, session, entry)
         if not resultOk then
@@ -1183,7 +2281,39 @@ function PhoneCall:step(handle, input)
         enterStage(session)
         return
       end
-      self:_beginHangup(session)
+      if type(entry) == "number" and session.dynamicGymMenu == true then
+        local resultOk, resultFormatted =
+          pcall(resolveContactEntries, self._messages, session.contact --[[@as string]], { entry })
+        if not resultOk then
+          self:_failCall(session, resultFormatted)
+          return
+        end
+        session.lines = self:_pagesFromTokens(resultFormatted.tokens)
+        session.textPage = 1
+        session.textRevealed, session.textTick = 0, 0
+        session.stage = "result"
+        enterStage(session)
+        return
+      end
+      if session.dynamicOakMenu == true and type(outcome) == "table" then
+        local answerOutcome = outcome --[[@as table<string, unknown>]]
+        if type(answerOutcome.entries) ~= "table" then
+          self:_failCall(session, "oak answers stage their result entries")
+          return
+        end
+        local resultOk, resultFormatted = pcall(resolveOakResult, self, self._messages, session, answerOutcome)
+        if not resultOk then
+          self:_failCall(session, resultFormatted)
+          return
+        end
+        session.lines = self:_pagesFromTokens(resultFormatted.tokens)
+        session.textPage = 1
+        session.textRevealed, session.textTick = 0, 0
+        session.stage = "result"
+        enterStage(session)
+        return
+      end
+      self:_beginWaitPress(session)
       return
     elseif stage == "choice" then
       if edges.choice == nil then
@@ -1228,7 +2358,39 @@ function PhoneCall:step(handle, input)
         enterStage(session)
         return
       end
-      self:_beginHangup(session)
+      if type(entry) == "number" and session.dynamicGymMenu == true then
+        local resultOk, resultFormatted =
+          pcall(resolveContactEntries, self._messages, session.contact --[[@as string]], { entry })
+        if not resultOk then
+          self:_failCall(session, resultFormatted)
+          return
+        end
+        session.lines = self:_pagesFromTokens(resultFormatted.tokens)
+        session.textPage = 1
+        session.textRevealed, session.textTick = 0, 0
+        session.stage = "result"
+        enterStage(session)
+        return
+      end
+      if session.dynamicOakMenu == true and type(outcome) == "table" then
+        local answerOutcome = outcome --[[@as table<string, unknown>]]
+        if type(answerOutcome.entries) ~= "table" then
+          self:_failCall(session, "oak answers stage their result entries")
+          return
+        end
+        local resultOk, resultFormatted = pcall(resolveOakResult, self, self._messages, session, answerOutcome)
+        if not resultOk then
+          self:_failCall(session, resultFormatted)
+          return
+        end
+        session.lines = self:_pagesFromTokens(resultFormatted.tokens)
+        session.textPage = 1
+        session.textRevealed, session.textTick = 0, 0
+        session.stage = "result"
+        enterStage(session)
+        return
+      end
+      self:_beginWaitPress(session)
       return
     elseif stage == "result" then
       -- Dynamic Mother result/gift-full pages print like message pages,
@@ -1252,10 +2414,30 @@ function PhoneCall:step(handle, input)
         enterStage(session)
         return
       end
-      self:_beginHangup(session)
+      self:_beginWaitPress(session)
+      return
+    elseif stage == "noSignal" then
+      self:_advanceNoSignal(session)
       return
     elseif stage == "hangingUp" then
       self:_advanceHangup(session)
+      return
+    elseif stage == "waitPress" then
+      -- The finished conversation holds its last page: a press plays
+      -- the source SELECT tone once. Ordinary calls stage the timed
+      -- hangup behind it; an armed no-signal flow ends at once with
+      -- no tone replay.
+      if not forced then
+        return
+      end
+      forced = false
+      self:_playSequence(PhoneCall.SELECT_SEQUENCE)
+      if session.noSignalArmed == true then
+        session.noSignalArmed = false
+        self:_finishHangup(session)
+        return
+      end
+      self:_beginHangup(session)
       return
     else
       return
@@ -1391,8 +2573,10 @@ function PhoneCall:_applyStaticSideEffect(session)
     return
   end
   if kind == "flag" then
+    -- The compiled table names its flag semantically; the world boundary
+    -- resolves that name to its native identity.
     local flag = record.param1
-    assert(flag ~= nil, "phone flag effects name their flag")
+    assert(type(flag) == "string" and flag ~= "", "phone flag effects name their flag")
     local set = record.param0 ~= 0
     local world = self._world --[[@as table<string, unknown>]]
     if type(world.setFlag) == "function" and type(world.clearFlag) == "function" then
@@ -1421,13 +2605,12 @@ function PhoneCall:_applyStaticSideEffect(session)
     else
       pick = math.random(0, count - 1)
     end
-    local world = self._world --[[@as table<string, unknown>]]
-    local words = world.wordBuffer
-    if type(words) ~= "table" then
-      words = {}
-      world.wordBuffer = words
+    local staging = self._messages.wordStaging
+    if type(staging) ~= "table" then
+      staging = {}
+      self._messages.wordStaging = staging
     end
-    (words --[[@as table<string, unknown>]])[contact] = { base = record.param1, pick = pick }
+    (staging --[[@as table<string, unknown>]])[contact] = { base = record.param1, pick = pick }
     return
   end
   error("phone static effects name a known source kind, got " .. tostring(kind), 0)
@@ -1439,7 +2622,7 @@ local function publicStage(stage)
   if stage == "connecting" then
     return "connecting"
   end
-  if stage == "greeting" or stage == "message" or stage == "program" or stage == "result" then
+  if stage == "greeting" or stage == "message" or stage == "program" or stage == "result" or stage == "waitPress" then
     return "message"
   end
   if stage == "choice" then
@@ -1480,20 +2663,33 @@ function PhoneCall:view(handle)
     shown.total = pageGlyphTotal(session)
   end
   if stage == "choice" then
-    -- Only the savings choice waits for input today; the owed choice
-    -- ids stay with the program that defines them so a new waiting
-    -- program cannot silently inherit these. Display labels and the
-    -- choice prompt ride along in the same order; game effects only
-    -- read the semantic ids.
-    assert(session.owner == "mother", "only the savings choice waits for input")
-    shown.choices = { MotherPhoneProgram.CHOICES[1], MotherPhoneProgram.CHOICES[2] }
-    assert(session.menuId == 2, "the savings choice carries its menu identity")
+    -- Choice menus ride the session's staged identities: the savings
+    -- menu and the dynamic gym and oak menus each carry their own
+    -- semantic ids, menu identity, labels, and prompt. Display labels
+    -- and the choice prompt ride along in the same order; game effects
+    -- only read the semantic ids.
+    local choices = session.choiceIds or MotherPhoneProgram.CHOICES
+    assert(type(choices) == "table" and #choices >= 2 and #choices <= 3, "choice menus carry two or three semantic ids")
+    assert(
+      session.owner == "mother" or session.dynamicGymMenu == true or session.dynamicOakMenu == true,
+      "only staged menus wait for input"
+    )
+    local menuId = session.menuId
+    assert(type(menuId) == "number", "choice menus carry their menu identity")
     local labels = session.choiceLabels
-    assert(type(labels) == "table" and #labels == 2, "the savings choice carries its localized display labels")
+    assert(type(labels) == "table" and #labels == #choices, "choice menus carry one display label per semantic id")
     local tooltip = session.choiceTooltip
-    assert(type(tooltip) == "string", "the savings choice carries its localized prompt")
-    shown.menuId = session.menuId
-    shown.choiceLabels = { labels[1], labels[2] }
+    assert(tooltip == nil or type(tooltip) == "string", "choice menus carry their localized prompt")
+    local shownChoices, shownLabels = {}, {}
+    for _, choice in ipairs(choices) do
+      shownChoices[#shownChoices + 1] = choice
+    end
+    for _, label in ipairs(labels) do
+      shownLabels[#shownLabels + 1] = label
+    end
+    shown.choices = shownChoices
+    shown.menuId = menuId
+    shown.choiceLabels = shownLabels
     shown.choiceTooltip = tooltip
   end
   if session.result ~= nil then

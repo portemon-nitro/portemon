@@ -166,10 +166,11 @@ function T.interaction_claim_survives_child_execution_and_explicit_unlock()
   Assert.isTrue(h.scheduler:playerInputOwned(), "combined ownership must stay true from the surviving claim")
 end
 
--- A map-init root gets no implicit interaction claim. Explicit lock opcodes
--- still work normally and independently drive the explicit and combined
--- facts while held.
-function T.map_init_root_does_not_implicitly_own_player_input()
+-- A map-init root launched for a map-load lifecycle gets no implicit
+-- interaction claim; a frame-table entry is a source map-scene script and
+-- does own the field while it runs. Explicit lock opcodes still work
+-- normally and independently drive the explicit and combined facts.
+function T.map_load_init_root_does_not_implicitly_own_player_input()
   local h = harness()
   install(
     h,
@@ -180,16 +181,50 @@ function T.map_init_root_does_not_implicitly_own_player_input()
     })
   )
 
-  local started = h.client:startInitScript("test.map_init_no_lock", 300)
+  local started = h.client:startInitScript("test.map_init_no_lock", 300, false)
   Assert.isTrue(started)
 
   Assert.notNil(h.scheduler:foregroundEnvironmentId(), "map init still starts a foreground root")
   Assert.isFalse(h.scheduler:explicitPlayerLocked())
   Assert.isFalse(
     h.scheduler:interactionOwnsPlayerInput(),
-    "map initialization must never acquire the field-interaction claim"
+    "a map-load initialization must never acquire the field-interaction claim"
   )
-  Assert.isFalse(h.scheduler:playerInputOwned(), "a non-owning map-init root must not own player input")
+  Assert.isFalse(h.scheduler:playerInputOwned(), "a non-owning map-load root must not own player input")
+end
+
+function T.frame_table_init_root_owns_the_field_while_it_runs()
+  local h = harness()
+  install(
+    h,
+    script("test.map_frame_owns", {
+      S.yieldTick(),
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    })
+  )
+
+  local started = h.client:startInitScript("test.map_frame_owns", 300, true)
+  Assert.isTrue(started)
+
+  Assert.notNil(h.scheduler:foregroundEnvironmentId(), "the frame entry starts a foreground root")
+  Assert.isFalse(h.scheduler:explicitPlayerLocked(), "the source frame script locks nothing explicitly")
+  Assert.isTrue(
+    h.scheduler:interactionOwnsPlayerInput(),
+    "a source map-scene frame entry owns the field while it runs"
+  )
+  Assert.isTrue(h.scheduler:playerInputOwned(), "the frame entry owns player input")
+  h.scheduler:setMaxNodes(200)
+  h.scheduler:step(330, {})
+  h.scheduler:step(331, {})
+  h.scheduler:step(332, {})
+  h.scheduler:step(333, {})
+  h.scheduler:step(334, {})
+  h.scheduler:step(335, {})
+  h.scheduler:step(336, {})
+  h.scheduler:step(337, {})
+  Assert.isNil(h.scheduler:foregroundEnvironmentId(), "the frame entry releases the field when it ends")
+  Assert.isFalse(h.scheduler:playerInputOwned(), "the claim ends with its environment")
 end
 
 function T.map_init_lifecycle_does_not_settle_after_root_cancellation()

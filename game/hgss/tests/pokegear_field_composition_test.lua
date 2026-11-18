@@ -58,9 +58,51 @@ end
 local function contactCatalog()
   return {
     contacts = {
-      { key = MOM_KEY, family = "mother", id = 1, trainer = 201, gift = 61, map = 0, sortWeight = 10 },
-      { key = NEIGHBOR_KEY, family = "friend", id = 10, trainer = 2, gift = 34, map = 8, sortWeight = 20 },
-      { key = TRAINER_KEY, family = "trainer", id = 30, trainer = 108, gift = 398, map = 259, sortWeight = 30 },
+      {
+        key = MOM_KEY,
+        family = "mother",
+        id = 1,
+        trainerClass = 201,
+        trainerId = 0,
+        mapId = 61,
+        gift = 0,
+        phoneScriptIfLocal = 1,
+        greetingMsgSet = 255,
+        rematchWeekday = 7,
+        rematchTimeOfDay = 3,
+        randomCallGroup = 0,
+        sortWeight = 10,
+      },
+      {
+        key = NEIGHBOR_KEY,
+        family = "friend",
+        id = 10,
+        trainerClass = 2,
+        trainerId = 8,
+        mapId = 34,
+        gift = 45,
+        phoneScriptIfLocal = 29,
+        greetingMsgSet = 0,
+        rematchWeekday = 1,
+        rematchTimeOfDay = 1,
+        randomCallGroup = 1,
+        sortWeight = 20,
+      },
+      {
+        key = TRAINER_KEY,
+        family = "trainer",
+        id = 30,
+        trainerClass = 108,
+        trainerId = 259,
+        mapId = 398,
+        gift = 0,
+        phoneScriptIfLocal = 181,
+        greetingMsgSet = 255,
+        rematchWeekday = 0,
+        rematchTimeOfDay = 1,
+        randomCallGroup = 2,
+        sortWeight = 30,
+      },
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
     callTriggers = {},
@@ -108,6 +150,7 @@ local function composeGear(friends, latch)
     session = {
       currentMap = {
         mapSymbol = "MAP_NEW_BARK",
+        mapId = 60,
         mapSectionNativeId = 60,
         fieldData = { transitionEnvironment = "outdoors" },
       },
@@ -168,7 +211,26 @@ local function composeGear(friends, latch)
     assets = assetFamily(friends.catalog),
     clock = runtime.localClock,
     audio = nil,
-    messages = { greeting = "test.greeting.ref" },
+    -- The composed call resolves static lines, dynamic contact
+    -- entries, and greetings through these readers, so the stub
+    -- formats every bank entry like the production provider.
+    messages = {
+      greeting = "test.greeting.ref",
+      resolveLine = function(_, _, scriptId)
+        return { tokens = { { kind = "glyph", text = "line" .. scriptId } } }
+      end,
+      resolveContactEntry = function(_, _, entry)
+        return { tokens = { { kind = "glyph", text = "entry" .. entry } } }
+      end,
+      resolveCallGreeting = function()
+        return { tokens = { { kind = "glyph", text = "composed-greeting" } } }
+      end,
+      resolvePhoneUiMessage = function(_, entryId)
+        assert(type(entryId) == "number" and entryId % 1 == 0, "phone UI text resolves through its bank entry")
+        local text = "composed-ui-271-" .. entryId
+        return { text = text, tokens = { { kind = "glyph", text = text } } }
+      end,
+    },
   })
   runtime.pokegear = bundle
   return bundle, runtime
@@ -196,6 +258,7 @@ end
 local function scriptServices(bundle, friends)
   return {
     pokegearApplications = bundle.scriptHost,
+    phoneCalls = bundle.incoming,
     phoneContactIndex = assert(
       FieldScriptComposition.phoneContactIndex(friends.catalog),
       "contact index builds over the synthetic catalog"
@@ -298,6 +361,7 @@ function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
   runtime.session = {
     currentMap = {
       mapSymbol = "MAP_NEW_BARK",
+      mapId = 60,
       mapSectionNativeId = 60,
       fieldData = { transitionEnvironment = "outdoors" },
     },
@@ -461,22 +525,22 @@ function T.tests.unknown_contacts_and_selectors_fail_loudly()
     pcall(Runtime.executeNode, { op = "pokegear_update", kind = "register_contact", contact = 999 }, run)
   Assert.isFalse(okContact, "unknown contact numbers never register")
   Assert.notNil(tostring(errContact):find("999", 1, true), "the failure names its number")
-  local okDirection, errDirection = pcall(Runtime.executeNode, {
+  local okScripted, errScripted = pcall(Runtime.executeNode, {
     op = "phone_set_call",
     contact = NEIGHBOR_KEY,
-    direction = 9,
-    kind = 0,
+    scriptedCall = 256,
+    callScriptID = 0,
   }, run)
-  Assert.isFalse(okDirection, "unknown direction codes never stage")
-  Assert.equal(errDirection.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its vocabulary")
-  local okKind, errKind = pcall(Runtime.executeNode, {
+  Assert.isFalse(okScripted, "out-of-width scripted markers never stage")
+  Assert.equal(errScripted.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its vocabulary")
+  local okScript, errScript = pcall(Runtime.executeNode, {
     op = "phone_set_call",
     contact = NEIGHBOR_KEY,
-    direction = 2,
-    kind = 9,
+    scriptedCall = 2,
+    callScriptID = 70000,
   }, run)
-  Assert.isFalse(okKind, "unknown kind codes never stage")
-  Assert.equal(errKind.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its vocabulary")
+  Assert.isFalse(okScript, "out-of-width script identities never stage")
+  Assert.equal(errScript.code, "SCRIPT_INVALID_REFERENCE", "the failure carries its vocabulary")
   local okTrigger, errTrigger =
     pcall(Runtime.executeNode, { op = "pokegear_set_trigger", trigger = 300, active = true }, run)
   Assert.isFalse(okTrigger, "out-of-range slots never switch")
@@ -497,7 +561,7 @@ function T.tests.setup_and_run_keep_their_native_sequencing()
     end,
   }
   Assert.equal(
-    Runtime.executeNode({ op = "phone_set_call", contact = 10, direction = 2, kind = 0 }, run),
+    Runtime.executeNode({ op = "phone_set_call", contact = 10, scriptedCall = 2, callScriptID = 0 }, run),
     Runtime.OUTCOME_CONTINUE,
     "numeric setup stages without blocking"
   )
@@ -506,8 +570,9 @@ function T.tests.setup_and_run_keep_their_native_sequencing()
   Assert.equal(staged[1].type, "pokegear_application", "the task is the companion application")
   Assert.equal(staged[1].spec.kind, "call", "the staged call opens its child")
   Assert.equal(staged[1].spec.request.contact, NEIGHBOR_KEY, "numbers translate at the boundary")
-  Assert.equal(staged[1].spec.request.direction, "incoming", "the observed code stages incoming")
-  Assert.equal(staged[1].spec.request.kind, "ordinary", "the observed code stages ordinary")
+  Assert.equal(staged[1].spec.request.direction, "incoming", "a scripted setup always stages incoming")
+  Assert.equal(staged[1].spec.request.isScriptedCall, 2, "the source scripted marker rides the request")
+  Assert.equal(staged[1].spec.request.callScriptID, 0, "the source script identity rides the request")
   local lonelyRun = handlerRun(services)
   local ok, err = pcall(Runtime.executeNode, { op = "phone_run_call" }, lonelyRun)
   Assert.isFalse(ok, "running without a staged request faults")
@@ -568,13 +633,13 @@ function T.tests.phonebook_resolution_uses_the_source_none_sentinel()
   Assert.equal(
     Runtime.executeNode({
       op = "phone_resolve_contact",
-      trainer = 2,
+      trainer = 8,
       result = { value = "var", id = "entry" },
     }, run2),
     Runtime.OUTCOME_CONTINUE,
     "trainer numbers resolve same-tick"
   )
-  Assert.equal(vars2.entry, 10, "trainer 2 answers phonebook entry 10")
+  Assert.equal(vars2.entry, 10, "trainer 8 answers phonebook entry 10")
   local run3, vars3 = handlerRun(scriptServices(bundle, friends))
   Assert.equal(
     Runtime.executeNode({
@@ -1041,7 +1106,7 @@ local function flyMarkerFamily()
   local Fixture = require("tests.support.PokegearMapFixture")
   local family = Fixture.manifest()
   family.catalog.contacts = {
-    { key = "test.caller.falkner", sortWeight = 10, map = 10 },
+    { key = "test.caller.falkner", sortWeight = 10, mapId = 10 },
   }
   family.catalog.contactOrder = { "test.caller.falkner" }
   family.catalog.locations[1].flypoint = "test.fly.a"

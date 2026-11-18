@@ -22,21 +22,6 @@ local T = {
   tests = {},
 }
 
--- Loads a shell module that does not exist yet at this baseline. The
--- failure names the missing behaviour instead of surfacing as a suite load
--- error, so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
-
 ---@param path string
 ---@return table
 local function visualRef(path)
@@ -92,7 +77,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v3",
+    schema = "g4-pokegear-assets-v4",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -268,14 +253,8 @@ end
 ---@param params table
 ---@return table box { shell: table, state: table, record: table, log: table, box: table, moment: table }
 local function openShell(params)
-  local PokegearScreenState = requireFeature(
-    "game.hgss.src.pokegear.PokegearScreenState",
-    "the gear shell has no screen owner yet: entry, card locks, strip focus, and remembered cards are unavailable"
-  )
-  local PokegearInterface = requireFeature(
-    "game.hgss.src.pokegear.PokegearInterface",
-    "the gear shell has no presentation owner yet: matched information/controls plans and pointer mapping are unavailable"
-  )
+  local PokegearScreenState = require("game.hgss.src.pokegear.PokegearScreenState")
+  local PokegearInterface = require("game.hgss.src.pokegear.PokegearInterface")
   local record = PokegearAssetSchema.validate(params.manifest or fixtureManifest())
   Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
@@ -720,10 +699,7 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
 end
 
 function T.tests.shell_lifecycle_failure_and_non_rendering_clock()
-  local PokegearScreenState = requireFeature(
-    "game.hgss.src.pokegear.PokegearScreenState",
-    "the gear shell has no lifecycle owner yet: acquisition, failure, disposal, and clock purity are unavailable"
-  )
+  local PokegearScreenState = require("game.hgss.src.pokegear.PokegearScreenState")
   assert(PokegearScreenState ~= nil, "shell lifecycle needs its screen owner")
 
   -- Missing collaborators fail at construction, never on first draw.
@@ -734,10 +710,7 @@ function T.tests.shell_lifecycle_failure_and_non_rendering_clock()
     local record = PokegearAssetSchema.validate(fixtureManifest())
     Assert.notNil(record, "the synthetic companion catalog must validate")
     assert(record ~= nil, "synthetic catalog validated above")
-    local PokegearInterface = requireFeature(
-      "game.hgss.src.pokegear.PokegearInterface",
-      "the gear shell has no presentation owner yet: construction cannot validate its interface set"
-    )
+    local PokegearInterface = require("game.hgss.src.pokegear.PokegearInterface")
     Assert.throws(function()
       PokegearScreenState.new({
         state = fullCardState(record),
@@ -968,14 +941,8 @@ end
 -- on first draw: unknown entry kinds, missing card factories, factories
 -- returning nothing usable, and missing display facts all fail up front.
 function T.tests.shell_construction_rejects_malformed_options()
-  local PokegearScreenState = requireFeature(
-    "game.hgss.src.pokegear.PokegearScreenState",
-    "the gear shell has no screen owner yet: malformed construction cannot fail"
-  )
-  local PokegearInterface = requireFeature(
-    "game.hgss.src.pokegear.PokegearInterface",
-    "the gear shell has no presentation owner yet: malformed construction cannot fail"
-  )
+  local PokegearScreenState = require("game.hgss.src.pokegear.PokegearScreenState")
+  local PokegearInterface = require("game.hgss.src.pokegear.PokegearInterface")
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
@@ -1311,11 +1278,7 @@ function T.tests.cancelling_to_the_strip_plays_the_cancel_tone()
   local silent = #host.log.effects
   press(host.shell, { type = "cancel" })
   Assert.equal(#host.log.effects, silent + 1, "closing from the strip answers audibly")
-  Assert.equal(
-    host.log.effects[#host.log.effects],
-    "SEQ_SE_GS_GEARCANCEL",
-    "closing the gear plays the cancel tone"
-  )
+  Assert.equal(host.log.effects[#host.log.effects], "SEQ_SE_GS_GEARCANCEL", "closing the gear plays the cancel tone")
   host.shell:dispose()
 end
 
@@ -1343,6 +1306,7 @@ function T.tests.shell_prepares_the_active_cards_presentation_images()
   end
   local ok, err = pcall(FieldState._drawPokegearApplication, {
     runtime = { imageAssets = pool },
+    _realizeCompanionImages = FieldState._realizeCompanionImages,
   }, { battleTextRenderers = { menu = {} }, windowRenderer = {}, applicationFrameIndex = 0 }, {
     tab = "phone",
     focus = "application",

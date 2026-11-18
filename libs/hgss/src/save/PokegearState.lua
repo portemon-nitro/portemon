@@ -18,8 +18,14 @@ local bit = require("bit")
 local PokegearState = {}
 PokegearState.__index = PokegearState
 
-PokegearState.SCHEMA = "hgss-pokegear-v1"
-PokegearState.STATE_VERSION = 1
+PokegearState.SCHEMA = "hgss-pokegear-v2"
+PokegearState.STATE_VERSION = 2
+
+-- The ordered recent-caller journal behind SaveMisc (save_misc.c
+-- _020F677C): one caller list per random-call group, sized 4/2/2.
+-- The single chunk-size table every journal reader shares.
+---@type table<integer, integer>
+PokegearState.HISTORY_CHUNK_SIZES = { [0] = 4, [1] = 2, [2] = 2 }
 
 local CODE = "POKEGEAR_STATE_INVALID"
 local STALE_CODE = "POKEGEAR_STALE_CANDIDATE"
@@ -664,12 +670,24 @@ local function checkKenji(kenji)
   end
   assert(type(kenji) == "table", "restoration reads caller counters")
   for key in pairs(kenji) do
-    if key ~= "calls" then
+    if key ~= "calls" and key ~= "waitDays" and key ~= "active" then
       fail("pokegear caller counters contain an unknown field", { field = key })
     end
   end
   if type(kenji.calls) ~= "number" or kenji.calls % 1 ~= 0 or kenji.calls < 0 then
     fail("pokegear caller counters must be non-negative integers", {})
+  end
+  -- The errand wait and activity are optional so saves written before
+  -- the Kenji errand tracking restore as the source zero state: no
+  -- wait, no active errand. Retail zero-inits the same persistent
+  -- record.
+  if kenji.waitDays ~= nil then
+    if type(kenji.waitDays) ~= "number" or kenji.waitDays % 1 ~= 0 or kenji.waitDays < 0 then
+      fail("pokegear kenji wait must be a non-negative integer", {})
+    end
+  end
+  if kenji.active ~= nil and type(kenji.active) ~= "boolean" then
+    fail("pokegear kenji activity must be a boolean", {})
   end
 end
 
@@ -847,10 +865,10 @@ local function defaults(seed)
     phone = {
       contacts = {},
       triggers = {},
-      history = {},
+      history = { [0] = {}, {}, {} },
       rematches = {},
       mom = { balance = 0, purchases = {}, gifts = {} },
-      kenji = { calls = 0 },
+      kenji = { calls = 0, waitDays = 0, active = false },
     },
     calendar = defaultCalendar(seed),
     random = PokegearState.freshRandom(seed),
@@ -907,6 +925,58 @@ function PokegearState.new(initial, refs)
   return build(data, contacts, locations)
 end
 
+-- Migrates a version-one bucket in place: the flat caller set
+-- distributes into per-chunk caller lists by catalog random-call
+-- group in stable key order with ungrouped callers reading as group
+-- zero, truncating overfull chunks. New saves always write version
+-- two; only restore accepts version one, and anything else keeps the
+-- strict version failure below.
+---@param data table<string, unknown> detached persisted bucket
+---@param refs table<string, unknown> catalog references
+local function migrateHistoryV1(data, refs)
+  if data.schema == PokegearState.SCHEMA and data.stateVersion == PokegearState.STATE_VERSION then
+    return
+  end
+  if data.schema ~= "hgss-pokegear-v1" or data.stateVersion ~= 1 then
+    return
+  end
+  if type(data.phone) ~= "table" then
+    return
+  end
+  local catalog = refs.catalog
+  local groups = {}
+  if type(catalog) == "table" and type(catalog.contacts) == "table" then
+    for _, contact in ipairs(catalog.contacts) do
+      if type(contact) == "table" and type(contact.key) == "string" and contact.key ~= "" then
+        local group = contact.randomCallGroup
+        groups[contact.key] = (type(group) == "number" and group % 1 == 0 and group >= 0 and group <= 2) and group or 0
+      end
+    end
+  end
+  local flat = data.phone.history
+  local keys = {}
+  if type(flat) == "table" then
+    for contactKey, value in pairs(flat) do
+      if type(contactKey) == "string" and contactKey ~= "" and value == true then
+        keys[#keys + 1] = contactKey
+      end
+    end
+  end
+  table.sort(keys)
+  local chunks = { [0] = {}, {}, {} }
+  for _, contactKey in ipairs(keys) do
+    local chunk = groups[contactKey] or 0
+    local size = PokegearState.HISTORY_CHUNK_SIZES[chunk]
+    assert(type(size) == "number", "migration reads the chunk size")
+    if #chunks[chunk] < size then
+      chunks[chunk][#chunks[chunk] + 1] = contactKey
+    end
+  end
+  data.phone.history = chunks
+  data.schema = PokegearState.SCHEMA
+  data.stateVersion = PokegearState.STATE_VERSION
+end
+
 -- Restores a persisted bucket exactly: corrupted data fails with its
 -- domain, never resets to defaults. Unknown referenced entries fail naming
 -- their semantic key; unrelated catalog growth stays compatible.
@@ -924,6 +994,7 @@ function PokegearState.restore(bucket, refs)
   local contacts, locations = checkCatalogRefs(refs)
   local data = detach(bucket)
   assert(type(data) == "table", "restoration validates a detached copy")
+  migrateHistoryV1(data, refs --[[@as table<string, unknown>]])
   checkRestorable(data, contacts, locations)
   return build(data, contacts, locations)
 end
@@ -1163,18 +1234,48 @@ local function applySetPreference(data, name, value)
 end
 
 ---@param history unknown
----@return table<string, boolean> the canonical caller set
+---@return table<integer, string[]> the canonical per-chunk caller lists
 local function checkCallHistory(history)
   if type(history) ~= "table" then
-    fail("pokegear call history must be a caller set", {})
+    fail("pokegear call history must be a per-chunk caller record", {})
   end
-  assert(type(history) == "table", "history writes read the caller set")
+  assert(type(history) == "table", "history writes read the chunk record")
   local clean = {}
-  for contactKey, value in pairs(history) do
-    if type(contactKey) ~= "string" or contactKey == "" or value ~= true then
-      fail("pokegear call history carries only called contact keys", { key = contactKey })
+  for chunk = 0, 2 do
+    local list = (history --[[@as table<string, unknown>]])[chunk]
+    if type(list) ~= "table" then
+      fail("pokegear call history carries every chunk list", { chunk = chunk })
     end
-    clean[contactKey] = true
+    local size = PokegearState.HISTORY_CHUNK_SIZES[chunk]
+    assert(type(size) == "number", "history writes read the chunk size")
+    local staged = list --[[@as table<integer, unknown>]]
+    local dense = 0
+    for _ in pairs(staged) do
+      dense = dense + 1
+    end
+    if dense ~= #staged then
+      fail("pokegear call history carries dense caller lists", { chunk = chunk })
+    end
+    clean[chunk] = {}
+    local seen = {}
+    for index, contactKey in ipairs(staged) do
+      if type(contactKey) ~= "string" or contactKey == "" then
+        fail("pokegear call history carries only called contact keys", { key = contactKey })
+      end
+      if seen[contactKey] == true then
+        fail("pokegear call history lists every caller once per chunk", { key = contactKey })
+      end
+      seen[contactKey] = true
+      clean[chunk][index] = contactKey
+    end
+    if #clean[chunk] > size then
+      fail("pokegear call history respects its chunk size", { chunk = chunk, size = size })
+    end
+  end
+  for key in pairs(history) do
+    if key ~= 0 and key ~= 1 and key ~= 2 then
+      fail("pokegear call history carries only source chunks", { key = key })
+    end
   end
   return clean
 end
@@ -1190,18 +1291,23 @@ local function applySetCallHistory(data, history)
   local current = phone.history
   assert(type(current) == "table", "history writes compare the call journal")
   local same = true
-  for contactKey in pairs(clean) do
-    if current[contactKey] ~= true then
+  for chunk = 0, 2 do
+    local staged = clean[chunk]
+    local kept = (current --[[@as table<string, unknown>]])[chunk]
+    if type(kept) ~= "table" or #kept ~= #staged then
       same = false
       break
     end
-  end
-  if same then
-    for contactKey in pairs(current) do
-      if clean[contactKey] ~= true then
+    for index, contactKey in ipairs(staged) do
+      if
+        (kept --[[@as table<integer, unknown>]])[index] ~= contactKey
+      then
         same = false
         break
       end
+    end
+    if not same then
+      break
     end
   end
   if same then
@@ -1530,6 +1636,38 @@ function PokegearState:queryRematch(key)
   local records = phone.rematches --[[@as table<string, unknown>]]
   local record = records[key]
   return record == nil and nil or detach(record) --[[@as { stage: integer, wins: integer }?]]
+end
+
+-- Stages the Kenji errand wait and activity behind the native selector
+-- and the daily field update, mirroring the source persistent wait
+-- days and active flag. Writing the current pair never moves the
+-- revision.
+---@param waitDays integer non-negative wait days
+---@param active boolean errand activity
+---@return table<string, unknown>
+function PokegearState:setKenjiErrand(waitDays, active)
+  if type(waitDays) ~= "number" or waitDays % 1 ~= 0 or waitDays < 0 then
+    fail("pokegear kenji wait must be a non-negative integer", {})
+  end
+  assert(type(waitDays) == "number", "kenji errand writes carry integral wait days")
+  if type(active) ~= "boolean" then
+    fail("pokegear kenji activity must be a boolean", {})
+  end
+  assert(type(active) == "boolean", "kenji errand writes carry the activity flag")
+  assert(type(self._data) == "table" and type(self._data.phone) == "table", "kenji errand writes read phone state")
+  local phone = self._data.phone --[[@as table<string, unknown>]]
+  local kenji = phone.kenji --[[@as table<string, unknown>]]
+  assert(type(kenji) == "table", "kenji errand writes read the caller counters")
+  local changed = false
+  if kenji.waitDays ~= waitDays then
+    kenji.waitDays = waitDays
+    changed = true
+  end
+  if kenji.active ~= active then
+    kenji.active = active
+    changed = true
+  end
+  return self:_commit(changed)
 end
 
 -- Stores the four icon and four word slots for a region-map location keyed
