@@ -200,9 +200,12 @@ local function vertices(item)
     top, bottom = -height / 2, height / 2
   elseif hasStripCrop then
     -- Strip bands stay centered on the submitted native center: only
-    -- the UV window moves, never the rectangle.
-    left, right = left + xOffset, right + xOffset
-    top, bottom = top + yOffset, bottom + yOffset
+    -- the UV window moves, never the rectangle. The native sprite affine
+    -- scale widens the drawn quad while the authored crop keeps its exact
+    -- pixel window.
+    local scaleX, scaleY = item.scaleX or 1, item.scaleY or 1
+    left, right = (left + xOffset) * scaleX, (right + xOffset) * scaleX
+    top, bottom = (top + yOffset) * scaleY, (bottom + yOffset) * scaleY
   elseif item.pictureVisible then
     left, right = -40 + xOffset + xOffset2, -40 + xOffset + xOffset2 + width
     top, bottom = -40 + yOffset + yOffset2, -40 + yOffset + yOffset2 + height
@@ -1301,6 +1304,7 @@ function BattlePicturePass:render(graphics, items)
         image = item.image,
         palette = item.palette,
         indexed = item.imageKind == "r8",
+        offset = item.paletteOffset,
       })
       self.shader:send("paletteFadeColor", fadeColor)
       self.shader:send("paletteFadeAmount", fadeAmount)

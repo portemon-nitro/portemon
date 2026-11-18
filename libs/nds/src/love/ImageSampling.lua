@@ -18,9 +18,11 @@
 ---@field image unknown? bound source image of a map material
 ---@field palette love.Image? exact RGBA palette of an indexed map material
 ---@field indexed boolean? true when the material samples through a palette
+---@field offset integer? native palette override offset in colors
 
 ---@class ImageSamplingShader
 ---@field send function texture and sampling uniform delivery
+---@field hasUniform function? uniform presence query when the host shader exposes it
 ---@field release function? shader disposal when owned elsewhere
 
 local ImageSampling = {}
@@ -91,7 +93,7 @@ end
 -- resolve through their palette image, everything else samples straight
 -- RGBA. The flag is sent on every draw so no stale palette state leaks
 -- across materials or into untextured draws.
----@param shader { send: function } sampling uniform sink of the calling renderer
+---@param shader { send: function, hasUniform: function? } sampling uniform sink of the calling renderer
 ---@param material ImageSamplingMaterial?
 function ImageSampling.sendMaterialSampling(shader, material)
   if type(material) == "table" and material.indexed == true and material.image ~= nil then
@@ -99,6 +101,9 @@ function ImageSampling.sendMaterialSampling(shader, material)
     shader:send("u_usePalette", true)
     shader:send("u_paletteCount", palette:getWidth())
     shader:send("u_palette", palette)
+    if type(shader.hasUniform) == "function" and shader:hasUniform("u_paletteOffset") then
+      shader:send("u_paletteOffset", material.offset or 0)
+    end
   else
     shader:send("u_usePalette", false)
   end
@@ -140,6 +145,7 @@ local function drawWithShader(graphics, shader, handle, quad, x, y, ...)
     shader:send("u_usePalette", true)
     shader:send("u_paletteCount", palette:getWidth())
     shader:send("u_palette", palette)
+    shader:send("u_paletteOffset", 0)
   else
     shader:send("u_usePalette", false)
   end

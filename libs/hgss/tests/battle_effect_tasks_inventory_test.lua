@@ -21,6 +21,69 @@ local PARTICLE_KINDS = {
   ["battle-particle-emitter-curved-battler-path"] = true,
 }
 
+-- Configured sprite selector parameter words whose callbacks read script
+-- operands. Every other selector takes no words.
+local CONFIGURED_SPRITE_WORDS = {
+  [1] = { 3 },
+  [3] = { 2 },
+  [17] = { 0, 0, 10, 20 },
+  [19] = { 2 },
+  [20] = { 6 },
+  [25] = { 10, 20 },
+}
+
+-- Synthetic staged roles for the configured-sprite lane: one texture strip,
+-- one palette record, one NCER cell, and four NANR sequences long enough for
+-- the native lead-in skips.
+local CONFIGURED_SPRITE_KEYS = {
+  character = "configured/character",
+  palette = "configured/palette",
+  cell = "configured/cell",
+  animation = "configured/animation",
+}
+
+local function configuredLeases()
+  local anims = {
+    { frames = { { cell = 0, duration = 200 } } },
+    { frames = { { cell = 0, duration = 200 } } },
+    { frames = { { cell = 0, duration = 200 } } },
+    { frames = { { cell = 0, duration = 200 } } },
+  }
+  return {
+    [CONFIGURED_SPRITE_KEYS.character] = { key = CONFIGURED_SPRITE_KEYS.character, kind = "texture", width = 512 },
+    [CONFIGURED_SPRITE_KEYS.palette] = {
+      key = CONFIGURED_SPRITE_KEYS.palette,
+      kind = "palette",
+      data = { colors = { 0, 1, 2 } },
+    },
+    [CONFIGURED_SPRITE_KEYS.cell] = {
+      key = CONFIGURED_SPRITE_KEYS.cell,
+      kind = "cells",
+      data = { cells = { { objs = { { x = 0, y = 0, tile = 0, width = 8, height = 8, priority = 0 } } } } },
+    },
+    [CONFIGURED_SPRITE_KEYS.animation] = {
+      key = CONFIGURED_SPRITE_KEYS.animation,
+      kind = "animation",
+      data = { anims = anims },
+    },
+  }
+end
+
+local function configuredServices(scene, journal, audio)
+  local leases = configuredLeases()
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    local lease = leases[key]
+    assert(lease ~= nil, "configured sprite roles stage " .. key)
+    return lease
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  return { scene = scene, audio = audio, resources = resources }
+end
+
 -- Representative source words per normalized callback selector, in
 -- {selector, count, ...words} shape. Shapes follow the pinned source
 -- table: every entry must resolve through the real producer function.
@@ -127,6 +190,10 @@ local function occurrenceContext()
     packetId = 1,
     programKey = "inventory-probe",
     seed = 4242,
+    -- The executed move power behind selector 28's four-picture profile
+    -- ladder, frozen on the occurrence event exactly like playback does.
+    movePower = 90,
+    event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "inventory-probe", move = { power = 90 } },
     random = function(bound)
       draws = draws + 1
       assert(type(bound) == "number" and bound >= 1, "visual draws name a positive bound")
@@ -136,7 +203,6 @@ local function occurrenceContext()
       attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
       targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
     },
-    event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "inventory-probe" },
     visualSeed = 4242,
   }
 end
@@ -181,15 +247,24 @@ local function controllableAudio()
   return audio
 end
 
----@return table<string, table<string, unknown>> nonparticle kind to producer args
+-- Every kind derived from a pinned selector table is scheduled by the move
+-- and named-animation corpus, so the two loops below require those kinds to
+-- construct and run rather than tolerating a refused spawn.
+---@return table<string, table<string, unknown>> inventory nonparticle kind to producer args
+---@return table<string, boolean> configuredKinds true for configured-sprite kinds
+---@return table<string, boolean> selectorKinds true for kinds derived from a pinned selector table
 local function deriveNonparticleInventory()
   local inventory = {}
-  local function consider(kind, args)
+  local configuredKinds = {}
+  local selectorKinds = {}
+  local function consider(kind, args, fromSelector, configured)
     if kind == nil or PARTICLE_KINDS[kind] == true then
       return
     end
     if inventory[kind] == nil then
       inventory[kind] = args
+      configuredKinds[kind] = configured == true
+      selectorKinds[kind] = fromSelector == true or configured == true
     end
   end
   for selector = 0, 5 do
@@ -205,10 +280,16 @@ local function deriveNonparticleInventory()
     end
   end
   for selector = 0, BattleAnimationSources.configuredSpriteCallbackCount() - 1 do
-    local resolved, reason = BattleAnimationSources.resolveConfiguredSpriteAction(selector)
+    local resolved, reason =
+      BattleAnimationSources.resolveConfiguredSpriteAction(selector, CONFIGURED_SPRITE_WORDS[selector])
     Assert.notNil(resolved, "configured sprite selector " .. selector .. " resolves: " .. tostring(reason))
     assert(resolved ~= nil, "the configured sprite plan stays available for the inventory")
-    consider(resolved.taskKind, { taskContext = resolved.context, parameters = resolved.parameters })
+    consider(
+      resolved.taskKind,
+      { taskContext = resolved.context, parameters = resolved.parameters, resourceKeys = CONFIGURED_SPRITE_KEYS },
+      false,
+      true
+    )
   end
   for selector, fixture in pairs(CALLBACK_FIXTURES) do
     local resolved, reason = BattleAnimationSources.resolveBattleAnimationCallback(fixture)
@@ -225,7 +306,7 @@ local function deriveNonparticleInventory()
         resourceKeys = resolved.resourceKeys,
         runtimeSelection = resolved.runtimeSelection,
         activation = targeted and { combatant = 1, activation = 1 } or nil,
-      })
+      }, true)
     end
   end
   local function probeKinds(key, words)
@@ -264,19 +345,38 @@ local function deriveNonparticleInventory()
     count = count + 1
   end
   Assert.isTrue(count > 0, "the derived nonparticle vocabulary is not empty")
-  return inventory
+  return inventory, configuredKinds, selectorKinds
 end
 
--- Kinds whose run needs a staged live layer the generic spawn cannot
--- supply. The background cleanup removes the installed effect plane, so
--- stepping it on the inventory's bare scene must stay a loud
--- unknown-layer ownership error (proven with staged fixtures in the task
--- owner tests); the generic run/cancel loops below cannot stage that
--- precondition and skip it. The background load keeps its inventory
--- slot: slotless generic spawns fail closed at construction.
+-- Kinds whose run needs staged leases the generic spawn cannot supply.
+-- The background cleanup removes the installed effect plane, so stepping it
+-- on the inventory's bare scene must stay a loud unknown-layer ownership
+-- error (proven with staged fixtures in the task owner tests); the object
+-- window panel slide stages twelve stripe members from the compiled
+-- resource keys, which the producer resolves from source selections the
+-- compiler stages (proven in the slide's owner test). Both skip the generic
+-- construction loops below.
 local LIVE_LAYER_KINDS = {
   ["battle-presentation-resource-cleanup"] = true,
+  ["battle-sprite-panel-slide"] = true,
 }
+
+-- Kinds outside the pinned selector tables may legitimately refuse a generic
+-- spawn, but the refusal still has to name the kind, publish nothing, and
+-- leak no lease.
+local function checkConstructionFailure(kind, failure, scene, journal)
+  Assert.isTrue(type(failure) == "string", "kind fails with provenance instead of succeeding: " .. kind)
+  Assert.isTrue(
+    string.find(failure, kind, 1, true) ~= nil
+      and (
+        string.find(failure, "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil
+        or string.find(failure, "BATTLE_EFFECT_TASK_UNKNOWN", 1, true) ~= nil
+      ),
+    "kind fails closed naming itself: " .. kind .. ": " .. tostring(failure)
+  )
+  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing: " .. kind)
+  Assert.equal(#journal.released, #journal.acquired, "the rejected construction leaks no lease: " .. kind)
+end
 
 local function runnableShape(task, kind)
   Assert.equal(type(task), "table", "kind " .. kind .. " constructs a task object")
@@ -331,25 +431,6 @@ local function observableActivity(scene, audio)
   return false
 end
 
--- Task bodies whose spawn carries compiled timing retire at their own
--- boundary; kinds whose spawn carries none fail closed with their kind
--- identity instead of retiring on a fixed budget. Both outcomes are
--- proven here: completion with observable state and exact release, or
--- a loud construction failure that publishes nothing and leaks no lease.
-local function checkConstructionFailure(kind, failure, scene, journal)
-  Assert.isTrue(type(failure) == "string", "kind fails with provenance instead of succeeding: " .. kind)
-  Assert.isTrue(
-    string.find(failure, kind, 1, true) ~= nil
-      and (
-        string.find(failure, "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil
-        or string.find(failure, "BATTLE_EFFECT_TASK_UNKNOWN", 1, true) ~= nil
-      ),
-    "kind fails closed naming itself: " .. kind .. ": " .. tostring(failure)
-  )
-  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing: " .. kind)
-  Assert.equal(#journal.released, #journal.acquired, "the rejected construction leaks no lease: " .. kind)
-end
-
 function T.admission_covers_every_derived_nonparticle_kind()
   local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   Assert.equal(type(Factory.supportsKind), "function", "the factory publishes its narrow admission predicate")
@@ -364,80 +445,87 @@ end
 
 function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
   local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
-  local inventory = deriveNonparticleInventory()
+  local inventory, configuredKinds, selectorKinds = deriveNonparticleInventory()
   for kind, args in pairs(inventory) do
     if LIVE_LAYER_KINDS[kind] ~= true then
-    local scene = sceneWithPair()
-    local journal = { acquired = {}, released = {} }
-    local audio = controllableAudio()
-    local ok, task = pcall(Factory.create, kind, args, occurrenceContext(), factoryServices(scene, journal, audio))
-    if not ok then
-      checkConstructionFailure(kind, task, scene, journal)
-    else
-      runnableShape(task, kind)
-      local seen = observableActivity(scene, audio)
-      local ticks = 0
-      for _ = 1, 3 do
-        if task:status() == "complete" then
-          break
-        end
-        task:stepSourceTick({ tick = 1 })
-        ticks = ticks + 1
-        seen = observableActivity(scene, audio) or seen
+      local scene = sceneWithPair()
+      local journal = { acquired = {}, released = {} }
+      local audio = controllableAudio()
+      local services = configuredKinds[kind] == true and configuredServices(scene, journal, audio)
+        or factoryServices(scene, journal, audio)
+      local ok, taskOrFailure = pcall(Factory.create, kind, args, occurrenceContext(), services)
+      if selectorKinds[kind] == true then
+        Assert.isTrue(ok, "every selector-derived kind constructs: " .. kind .. ": " .. tostring(taskOrFailure))
       end
-      if not seen then
-        -- Imageless runs prove their own boundary instead. Timing-less
-        -- spawns retire synchronously as validated markers, timed
-        -- bodies without an owned activation hold their boundary, and
-        -- both repeat deterministically across seeded runs without
-        -- publishing pictures or staging leases. An addressed timed run
-        -- that stays imageless is only accepted for the three documented
-        -- holds below: the sinusoidal motion carries cycles but no
-        -- amplitude operand, the selected-position transition moves
-        -- between anchors with no magnitude operand, and the
-        -- target-background slide owns only the fixed 55-tick native
-        -- wobble lifetime (three phases of one setup plus seventeen
-        -- wobble ticks, then teardown) while its scanline wobble pixels
-        -- stay unreproduced.
-        while task:status() ~= "complete" and ticks < 600 do
+      local task = taskOrFailure
+      if ok then
+        runnableShape(task, kind)
+        local seen = observableActivity(scene, audio)
+        local ticks = 0
+        for _ = 1, 3 do
+          if task:status() == "complete" then
+            break
+          end
           task:stepSourceTick({ tick = 1 })
           ticks = ticks + 1
+          seen = observableActivity(scene, audio) or seen
         end
-        Assert.isTrue(task:status() == "complete", "kind reaches its own completion instead of stalling: " .. kind)
-        Assert.isTrue(ticks >= 1, "kind retires on its own boundary: " .. kind)
-        if ticks > 1 and args.activation ~= nil and kind ~= "pokemon-picture-animation" then
-          Assert.isTrue(
-            kind == "pokemon-picture-sinusoidal-position-motion"
-              or kind == "pokemon-picture-selected-position-transition"
-              or kind == "pokemon-picture-target-background-slide",
-            "addressed timed runs show pixels unless documented: " .. kind
-          )
+        if not seen then
+          -- Imageless runs prove their own boundary instead. Timing-less
+          -- spawns retire synchronously as validated markers, timed
+          -- bodies without an owned activation hold their boundary, and
+          -- both repeat deterministically across seeded runs without
+          -- publishing pictures or staging leases. An addressed timed run
+          -- that stays imageless is only accepted for the three documented
+          -- holds below: the sinusoidal motion carries cycles but no
+          -- amplitude operand, the selected-position transition moves
+          -- between anchors with no magnitude operand, and the
+          -- target-background slide owns only the fixed 55-tick native
+          -- wobble lifetime (three phases of one setup plus seventeen
+          -- wobble ticks, then teardown) while its scanline wobble pixels
+          -- stay unreproduced.
+          while task:status() ~= "complete" and ticks < 600 do
+            task:stepSourceTick({ tick = 1 })
+            ticks = ticks + 1
+          end
+          Assert.isTrue(task:status() == "complete", "kind reaches its own completion instead of stalling: " .. kind)
+          Assert.isTrue(ticks >= 1, "kind retires on its own boundary: " .. kind)
+          if ticks > 1 and args.activation ~= nil and kind ~= "pokemon-picture-animation" then
+            Assert.isTrue(
+              kind == "pokemon-picture-sinusoidal-position-motion"
+                or kind == "pokemon-picture-selected-position-transition"
+                or kind == "pokemon-picture-target-background-slide",
+              "addressed timed runs show pixels unless documented: " .. kind
+            )
+          end
+          local repeatScene = sceneWithPair()
+          local repeatJournal = { acquired = {}, released = {} }
+          local repeatAudio = controllableAudio()
+          local repeatServices = configuredKinds[kind] == true
+              and configuredServices(repeatScene, repeatJournal, repeatAudio)
+            or factoryServices(repeatScene, repeatJournal, repeatAudio)
+          local repeatTask = assert(Factory.create(kind, args, occurrenceContext(), repeatServices))
+          local repeatTicks = 0
+          while repeatTask:status() ~= "complete" and repeatTicks < 600 do
+            repeatTask:stepSourceTick({ tick = 1 })
+            repeatTicks = repeatTicks + 1
+          end
+          Assert.equal(repeatTicks, ticks, "the boundary is deterministic across seeded runs: " .. kind)
+          repeatTask:dispose()
+        else
+          local completed = runToCompletion(task, kind, audio)
+          Assert.isTrue(completed, "kind reaches its own completion instead of stalling: " .. kind)
         end
-        local repeatScene = sceneWithPair()
-        local repeatJournal = { acquired = {}, released = {} }
-        local repeatAudio = controllableAudio()
-        local repeatTask = assert(
-          Factory.create(kind, args, occurrenceContext(), factoryServices(repeatScene, repeatJournal, repeatAudio))
-        )
-        local repeatTicks = 0
-        while repeatTask:status() ~= "complete" and repeatTicks < 600 do
-          repeatTask:stepSourceTick({ tick = 1 })
-          repeatTicks = repeatTicks + 1
-        end
-        Assert.equal(repeatTicks, ticks, "the boundary is deterministic across seeded runs: " .. kind)
-        repeatTask:dispose()
+        Assert.equal(task:status(), "complete", "kind reports complete: " .. kind)
+        Assert.equal(#scene:effectViews(), 0, "completion releases every transient record: " .. kind)
+        Assert.equal(#journal.released, #journal.acquired, "completion releases every staged lease once: " .. kind)
+        task:dispose()
+        task:dispose()
+        task:cancel("late")
+        Assert.equal(task:status(), "complete", "completion survives late cancellation: " .. kind)
+        Assert.equal(#journal.released, #journal.acquired, "late teardown stays silent: " .. kind)
       else
-        local completed = runToCompletion(task, kind, audio)
-        Assert.isTrue(completed, "kind reaches its own completion instead of stalling: " .. kind)
-      end
-      Assert.equal(task:status(), "complete", "kind reports complete: " .. kind)
-      Assert.equal(#scene:effectViews(), 0, "completion releases every transient record: " .. kind)
-      Assert.equal(#journal.released, #journal.acquired, "completion releases every staged lease once: " .. kind)
-      task:dispose()
-      task:dispose()
-      task:cancel("late")
-      Assert.equal(task:status(), "complete", "completion survives late cancellation: " .. kind)
-      Assert.equal(#journal.released, #journal.acquired, "late teardown stays silent: " .. kind)
+        checkConstructionFailure(kind, taskOrFailure, scene, journal)
       end
     end
   end
@@ -445,39 +533,48 @@ end
 
 function T.every_derived_nonparticle_kind_cancels_without_touching_other_state()
   local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
-  local inventory = deriveNonparticleInventory()
+  local inventory, configuredKinds, selectorKinds = deriveNonparticleInventory()
   for kind, args in pairs(inventory) do
     if LIVE_LAYER_KINDS[kind] ~= true then
-    local scene = sceneWithPair()
-    local journal = { acquired = {}, released = {} }
-    local audio = controllableAudio()
-    local ok, task = pcall(Factory.create, kind, args, occurrenceContext(), factoryServices(scene, journal, audio))
-    if not ok then
-      checkConstructionFailure(kind, task, scene, journal)
-    else
-      runnableShape(task, kind)
-      task:stepSourceTick({ tick = 1 })
-      if task:status() == "complete" then
-        -- Synchronous markers retire on their first tick, so
-        -- cancellation after retirement keeps the completion and
-        -- publishes nothing.
-        task:cancel("superseded")
-        Assert.equal(task:status(), "complete", "retired markers keep their completion: " .. kind)
-      else
-        task:cancel("superseded")
-        Assert.equal(task:status(), "cancelled", "kind lands on cancelled: " .. kind)
-        task:cancel("repeated")
-        task:dispose()
-        task:dispose()
-        task:stepSourceTick({ tick = 9 })
-        Assert.equal(task:status(), "cancelled", "disposed tasks never advance again: " .. kind)
+      local scene = sceneWithPair()
+      local journal = { acquired = {}, released = {} }
+      local audio = controllableAudio()
+      local services = configuredKinds[kind] == true and configuredServices(scene, journal, audio)
+        or factoryServices(scene, journal, audio)
+      local ok, taskOrFailure = pcall(Factory.create, kind, args, occurrenceContext(), services)
+      if selectorKinds[kind] == true then
+        Assert.isTrue(
+          ok,
+          "every selector-derived kind constructs for cancellation: " .. kind .. ": " .. tostring(taskOrFailure)
+        )
       end
-      Assert.equal(#scene:effectViews(), 0, "cancellation releases every transient record: " .. kind)
-      Assert.equal(#journal.released, #journal.acquired, "cancellation releases every staged lease once: " .. kind)
-      Assert.isNil(
-        scene:pictureState({ combatant = 3, activation = 3 }),
-        "cancelling one activation never patches the other: " .. kind
-      )
+      local task = taskOrFailure
+      if ok then
+        runnableShape(task, kind)
+        task:stepSourceTick({ tick = 1 })
+        if task:status() == "complete" then
+          -- Synchronous markers retire on their first tick, so
+          -- cancellation after retirement keeps the completion and
+          -- publishes nothing.
+          task:cancel("superseded")
+          Assert.equal(task:status(), "complete", "retired markers keep their completion: " .. kind)
+        else
+          task:cancel("superseded")
+          Assert.equal(task:status(), "cancelled", "kind lands on cancelled: " .. kind)
+          task:cancel("repeated")
+          task:dispose()
+          task:dispose()
+          task:stepSourceTick({ tick = 9 })
+          Assert.equal(task:status(), "cancelled", "disposed tasks never advance again: " .. kind)
+        end
+        Assert.equal(#scene:effectViews(), 0, "cancellation releases every transient record: " .. kind)
+        Assert.equal(#journal.released, #journal.acquired, "cancellation releases every staged lease once: " .. kind)
+        Assert.isNil(
+          scene:pictureState({ combatant = 3, activation = 3 }),
+          "cancelling one activation never patches the other: " .. kind
+        )
+      else
+        checkConstructionFailure(kind, taskOrFailure, scene, journal)
       end
     end
   end
@@ -495,72 +592,6 @@ function T.direct_operations_resolve_without_factory_task_kinds()
   Assert.notNil(resolved, "the default branch resolves: " .. tostring(reason))
   assert(resolved ~= nil, "the default branch stays available")
   Assert.equal(resolved.op, "noop", "the unmatched branch is a proven no-op, not a silent task")
-end
-
-local function seededRandom(seed)
-  local state = seed
-  return function(bound)
-    assert(type(bound) == "number" and bound >= 1, "visual draws name a positive bound")
-    state = (state * 1103515245 + 12345) % 2147483648
-    return state % bound
-  end
-end
-
-function T.randomized_picture_motion_moves_with_the_seeded_stream()
-  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
-  local parameters = {
-    pictureTarget = "attacker",
-    amplitude = 24,
-    durationTicks = 16,
-  }
-  local function runWithSeed(seed)
-    local scene = sceneWithPair()
-    local journal = { acquired = {}, released = {} }
-    local resources = {}
-    function resources.resolve(key)
-      journal.acquired[#journal.acquired + 1] = key
-      return { key = key, lease = key }
-    end
-    function resources.release(lease)
-      journal.released[#journal.released + 1] = lease
-    end
-    local context = occurrenceContext()
-    context.random = seededRandom(seed)
-    context.visualSeed = seed
-    local task = assert(Factory.create("pokemon-picture-randomized-position-motion", {
-      battlerTarget = "attacker",
-      activation = { combatant = 1, activation = 1 },
-      parameters = parameters,
-    }, context, { scene = scene, audio = {}, resources = resources }))
-    local positions = {}
-    for _ = 1, 8 do
-      task:stepSourceTick({ tick = 1 })
-      local patch =
-        assert(scene:pictureState({ combatant = 1, activation = 1 }), "the seeded run moves the picture every tick")
-      positions[#positions + 1] =
-        string.format("%s/%s", tostring(patch.pictureXOffset2), tostring(patch.pictureYOffset))
-    end
-    task:dispose()
-    return positions
-  end
-  local first = runWithSeed(4242)
-  local second = runWithSeed(4242)
-  Assert.deepEqual(second, first, "the same seed paints the same positions on every schedule")
-  local distinct = false
-  for _, position in ipairs(first) do
-    if position ~= first[1] then
-      distinct = true
-    end
-  end
-  Assert.isTrue(distinct, "the run moves across ticks instead of holding one offset")
-  local other = runWithSeed(777)
-  local varied = false
-  for index, position in ipairs(other) do
-    if position ~= first[index] then
-      varied = true
-    end
-  end
-  Assert.isTrue(varied, "a different seed paints a different motion")
 end
 
 function T.malformed_construction_fails_before_publishing_side_effects()

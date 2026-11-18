@@ -22,7 +22,9 @@
 -- BattleEffectTasks.supportsKind is the narrow admission view over this
 -- same dispatch.
 
+local BattleConfiguredSpriteEffects = require("libs.hgss.src.presentation.BattleConfiguredSpriteEffects")
 local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
+local BattleSourceTimedEffects = require("libs.hgss.src.presentation.BattleSourceTimedEffects")
 
 ---@class BattleEffectTasks
 local BattleEffectTasks = {}
@@ -63,14 +65,7 @@ local SOUND_ESCAPE_TICKS = 90
 -- renderer draws mons through (not the 3D emitter volumes): 2D sprite
 -- anchors, dashes, and magnifier legs all ride the mon's picture center
 -- so effects stay centered on the displayed battler.
-local EMITTER_CENTERS = {
-  ["solo-player"] = { x = 64, y = 112 },
-  ["solo-enemy"] = { x = 192, y = 50 },
-  ["player-side-slot-1"] = { x = 40, y = 112 },
-  ["enemy-side-slot-1"] = { x = 216, y = 50 },
-  ["player-side-slot-2"] = { x = 80, y = 120 },
-  ["enemy-side-slot-2"] = { x = 176, y = 42 },
-}
+local EMITTER_CENTERS = require("libs.hgss.src.presentation.BattleSlotCenters").centers
 
 ---@class BattleVoiceMonitor
 ---@field _voice string awaited voice key staged by one occurrence
@@ -1735,7 +1730,6 @@ local NATIVE_VISUAL_KINDS = {
   ["battle-background-alpha-scroll-transition"] = true,
   ["battle-background-alternating-scroll-transition"] = true,
   ["battle-background-four-picture-move-power-transition"] = true,
-  ["battle-background-picture-coordinate-sweep"] = true,
   ["battle-background-picture-palette-scroll"] = true,
   ["battle-background-picture-scroll-oscillation"] = true,
   ["battle-background-picture-wipe-transition"] = true,
@@ -1755,20 +1749,10 @@ local NATIVE_VISUAL_KINDS = {
   ["battle-sprite-priority-appearance-transition"] = true,
   ["battle-sprite-sinusoidal-position-animation"] = true,
   ["managed-sprite-draw-loop"] = true,
-  ["multi-sprite-battler-animation"] = true,
-  ["multi-sprite-picture-animation"] = true,
-  ["multi-sprite-position-tick"] = true,
-  ["multi-sprite-position-transition"] = true,
   ["pokemon-picture-affine-blend-palette-transition"] = true,
   ["pokemon-picture-affine-sprite-entry-transition"] = true,
-  ["pokemon-picture-affine-transition"] = true,
   ["pokemon-picture-and-battle-palette-fade"] = true,
-  ["pokemon-picture-and-battle-palette-fade-cycle"] = true,
-  ["pokemon-picture-animation-palette-fade"] = true,
-  ["pokemon-picture-animation-position-transition"] = true,
-  ["pokemon-picture-animation-speed-transition"] = true,
   ["pokemon-picture-attacker-dash-afterimages"] = true,
-  ["pokemon-picture-battle-palette-fade-cycle"] = true,
   ["pokemon-picture-battler-pair-scale-transition"] = true,
   ["pokemon-picture-blend-sprite-palette"] = true,
   ["pokemon-picture-cyclic-two-phase-position-transition"] = true,
@@ -1781,8 +1765,6 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-linear-offscreen-transition"] = true,
   ["pokemon-picture-managed-sprite-affine-pair-transition"] = true,
   ["pokemon-picture-managed-sprite-scale-pulse"] = true,
-  ["pokemon-picture-multi-sprite-animation"] = true,
-  ["pokemon-picture-oam-animation-transition"] = true,
   ["pokemon-picture-oscillating-axis-motion"] = true,
   ["pokemon-picture-paired-position-interpolation"] = true,
   ["pokemon-picture-palette-fade"] = true,
@@ -1790,10 +1772,8 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-palette-pulse-position-transition"] = true,
   ["pokemon-picture-position-offset-transition"] = true,
   ["pokemon-picture-position-path-transition"] = true,
-  ["pokemon-picture-priority-motion"] = true,
   ["pokemon-picture-randomized-position-motion"] = true,
   ["pokemon-picture-reciprocal-position-palette-transition"] = true,
-  ["pokemon-picture-relative-sprite-path-transition"] = true,
   ["pokemon-picture-repeated-palette-fade"] = true,
   ["pokemon-picture-repeated-scale-position-transition"] = true,
   ["pokemon-picture-repeated-vanish-transition"] = true,
@@ -1804,7 +1784,6 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-selected-position-offset-transition"] = true,
   ["pokemon-picture-selected-position-transition"] = true,
   ["pokemon-picture-sinusoidal-position-motion"] = true,
-  ["pokemon-picture-sprite-position-transition"] = true,
   ["pokemon-picture-table-driven-position-transition"] = true,
   ["pokemon-picture-target-background-slide"] = true,
   ["pokemon-picture-target-priority-transition"] = true,
@@ -1817,24 +1796,7 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-vanish-and-restore-transition"] = true,
   ["pokemon-picture-vertical-offset-visibility-transition"] = true,
   ["pokemon-picture-z-rotation-transition"] = true,
-  ["sprite-affine-animation"] = true,
-  ["sprite-affine-animation-lifecycle"] = true,
-  ["sprite-affine-rotation-motion"] = true,
-  ["sprite-affine-rotation-transition"] = true,
   ["sprite-affine-scale-and-blend-transition"] = true,
-  ["sprite-affine-scale-draw-transition"] = true,
-  ["sprite-affine-transform-motion"] = true,
-  ["sprite-alpha-transition"] = true,
-  ["sprite-animation-affine-scale-transition"] = true,
-  ["sprite-animation-completion"] = true,
-  ["sprite-animation-lifecycle"] = true,
-  ["sprite-animation-palette-offset"] = true,
-  ["sprite-animation-position-transition"] = true,
-  ["sprite-brightness-transition"] = true,
-  ["sprite-flip-and-offset-transition"] = true,
-  ["sprite-flip-animation-transition"] = true,
-  ["sprite-position-offset"] = true,
-  ["sprite-randomized-affine-motion"] = true,
 }
 
 -- Sound task kinds with real voice bodies in this lane.
@@ -1892,16 +1854,6 @@ local OWN_SIDE_SIGNS = {
   [5] = 1,
 }
 
--- Picture/sprite task kinds owning both selected activations at once.
--- Every other family owns the single planned activation, or nothing
--- when the spawn resolves none.
-local PAIR_TASK_KINDS = {
-  ["pokemon-picture-battler-pair-scale-transition"] = true,
-  ["pokemon-picture-two-battler-crossing-motion"] = true,
-  ["pokemon-picture-selected-pair-transition"] = true,
-  ["pokemon-picture-managed-sprite-affine-pair-transition"] = true,
-}
-
 -- Selects the source control law behind a picture/sprite kind. The timed
 -- holds below keep their compiled boundary with no patch, each pinned to
 -- its producer shape (romdump/src/config/BattleAnimationSources.lua,
@@ -1917,9 +1869,6 @@ local PAIR_TASK_KINDS = {
 local function familyFor(kind)
   if kind == "pokemon-picture-attacker-dash-afterimages" then
     return "dash"
-  end
-  if PAIR_TASK_KINDS[kind] == true then
-    return "pair"
   end
   if kind == "pokemon-picture-cyclic-two-phase-position-transition" then
     return "cyclic"
@@ -1949,20 +1898,10 @@ local function familyFor(kind)
     or string.find(kind, "three-sprite", 1, true) ~= nil
     or string.find(kind, "double-sprite", 1, true) ~= nil
     or string.find(kind, "oam-animation", 1, true) ~= nil
-    or string.find(kind, "sprite-animation-lifecycle", 1, true) ~= nil
-    or string.find(kind, "relative-sprite-path", 1, true) ~= nil
   then
     return "multi"
   end
   return "motion"
-end
-
----@param kind string task kind under classification
----@return boolean affine true for pair kinds driven by affine operands
-local function pairUsesAffine(kind)
-  return string.find(kind, "affine", 1, true) ~= nil
-    or string.find(kind, "rotation", 1, true) ~= nil
-    or string.find(kind, "scale", 1, true) ~= nil
 end
 
 -- Converts a compiled scale operand to the scene affine factor:
@@ -3634,20 +3573,6 @@ local function newNativeVisualTask(kind, args, context, services)
   if activation ~= nil then
     activations[#activations + 1] = activation
   end
-  if family == "pair" then
-    local topology = context.topology
-    local targets = type(topology) == "table" and topology.targets or nil
-    local first = type(targets) == "table" and targets[1] or nil
-    if type(first) ~= "table" or type(first.combatant) ~= "number" then
-      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pairs two selected activations", 0)
-    end
-    local partner = { combatant = first.combatant, activation = first.activation }
-    if activation == nil then
-      activations[#activations + 1] = partner
-    elseif activation.combatant ~= partner.combatant or activation.activation ~= partner.activation then
-      activations[#activations + 1] = partner
-    end
-  end
   local canPatch = type(scene.applyTaskPicturePatch) == "function" and type(scene.removeTaskPicturePatch) == "function"
   local picturePlan = nil
   local canScroll = type(scene.scroll) == "function" and type(scene.applyScrollPatch) == "function"
@@ -3661,7 +3586,7 @@ local function newNativeVisualTask(kind, args, context, services)
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " retires only on compiled timing operands", 0)
   end
   if duration ~= nil then
-    if #activations > 0 and canPatch and (family == "motion" or (family == "pair" and not pairUsesAffine(kind))) then
+    if #activations > 0 and canPatch and family == "motion" then
       picturePlan = picturePlanFor(parameters)
       if kind == MOVE_BATTLER_BY_KIND then
         picturePlan = rebaseLungePlan(picturePlan, scene, activations[1], context, kind)
@@ -3832,7 +3757,7 @@ local function writeVisualTick(self, progress)
     return
   end
   local patch = nil
-  if self._family == "affine" or (self._family == "pair" and pairUsesAffine(self._kind)) then
+  if self._family == "affine" then
     patch = affinePatchFor(self, progress)
   elseif self._family == "cyclic" then
     patch = cyclicPatchFor(self)
@@ -4023,43 +3948,6 @@ end
 -- word. Multi-cell resources stay manager-owned through their loader
 -- opcodes, so this lane stages exactly the four roles it draws from.
 local CONFIGURED_SPRITE_REQUIRED_ROLES = { "character", "palette", "cell", "animation" }
-
----@param args table<string, unknown> instruction-derived construction arguments
----@return boolean configured true when the spawn carries the full sprite role map
-local function isConfiguredSpriteSpawn(args)
-  if type(args) ~= "table" then
-    return false
-  end
-  local resourceKeys = args.resourceKeys
-  if type(resourceKeys) ~= "table" then
-    return false
-  end
-  for _, role in ipairs(CONFIGURED_SPRITE_REQUIRED_ROLES) do
-    if type(resourceKeys[role]) ~= "string" or resourceKeys[role] == "" then
-      return false
-    end
-  end
-  return true
-end
-
----@class BattleConfiguredSpriteTask
----@field _scene table<string, unknown> scene behind owned transient records
----@field _kind string configured sprite kind behind the run
----@field _staged table<integer, BattleEffectLeaseRecord> staged occurrence leases
----@field _characterKey string staged texture role behind picture submissions
----@field _stripWidth integer staged strip width in pixels behind tile crops
----@field _anchor table<string, integer> native slot center behind object placement
----@field _frames table<integer, { cell: integer, duration: integer }> authored display frames
----@field _total integer authored source ticks behind completion
----@field _cells table<integer, table<string, unknown>> normalized NCER cells
----@field _effectIds table<integer, integer> live transient identities behind the shown frame
----@field _shown integer last published display frame, 0 before the first tick
----@field _ticks integer source ticks advanced
----@field _state string pending, running, complete, or cancelled
----@field _cancelReason string? last cancellation cause under diagnosis
----@field _disposed boolean release has run
-local BattleConfiguredSpriteTask = {}
-BattleConfiguredSpriteTask.__index = BattleConfiguredSpriteTask
 
 -- Names the staged lease behind one owned role: leases are occurrence
 -- journals in acquisition order, so the role key selects deterministically.
@@ -4601,151 +4489,6 @@ function BattleZigzagSlashTask:dispose()
   end
   self._disposed = true
   retireZigzagSlash(self)
-end
-
--- Owns one source-cell sprite occurrence over its decoded leases: the
--- task stages each role once, walks authored NANR frames over NCER
--- objects, and publishes transient strip-band pictures through the
--- existing scene/renderer path.
----@param kind string configured sprite kind under construction
----@param args table<string, unknown> instruction-derived construction arguments
----@param context table<string, unknown> occurrence-bound playback context
----@param services table<string, unknown> scene, audio, and resource collaborators
----@return table<string, unknown> runnable sprite task
-local function newConfiguredSpriteTask(kind, args, context, services)
-  local scene, staged, resourceKeys = stageConfiguredSpriteLeases(kind, args, services)
-  local bank = decodeConfiguredSpriteBank(kind, resourceKeys, staged, context)
-  return setmetatable({
-    _scene = scene,
-    _kind = kind,
-    _staged = staged,
-    _characterKey = bank.characterKey,
-    _stripWidth = bank.stripWidth,
-    _anchor = bank.anchor,
-    _frames = bank.walk,
-    _total = bank.total,
-    _cells = bank.cells,
-    _effectIds = {},
-    _shown = 0,
-    _ticks = 0,
-    _state = "pending",
-    _cancelReason = nil,
-    _disposed = false,
-  }, BattleConfiguredSpriteTask)
-end
-
--- Releases owned transient identities without touching the persistent
--- battler scene: unknown or repeated identities stay silent.
----@param self BattleConfiguredSpriteTask
-local function teardownConfiguredSprite(self)
-  if #self._effectIds > 0 then
-    local scene = self._scene
-    for _, id in ipairs(self._effectIds) do
-      scene.releaseEffect(scene, id)
-    end
-    self._effectIds = {}
-  end
-  self._shown = 0
-end
-
--- Releases owned transient records and staged leases exactly once:
--- teardown clears scene state while the staged journal guards the
--- double release, so complete, cancel, and dispose share this path.
----@param self BattleConfiguredSpriteTask
-local function retireConfiguredSprite(self)
-  teardownConfiguredSprite(self)
-  releaseStaged(self._staged)
-end
-
--- Selects the display frame behind a source tick count over the
--- authored cumulative durations.
----@param self BattleConfiguredSpriteTask
----@param tick integer source ticks advanced
----@return integer display frame behind the tick
-local function frameAt(self, tick)
-  local elapsed = 0
-  for index, frame in ipairs(self._frames) do
-    elapsed = elapsed + frame.duration
-    if tick <= elapsed then
-      return index
-    end
-  end
-  return #self._frames
-end
-
--- Publishes one authored cell as transient strip-band pictures: each
--- 8-pixel object row crops its staged tile band through the existing
--- scene record, ordered by NCER object order with native offsets,
--- flips, and priority depth.
----@param self BattleConfiguredSpriteTask
----@param cellIndex integer zero-based authored cell behind publishing
-local function publishConfiguredCell(self, cellIndex)
-  teardownConfiguredSprite(self)
-  local bank = {
-    characterKey = self._characterKey,
-    stripWidth = self._stripWidth,
-    anchor = self._anchor,
-    cells = self._cells,
-  }
-  publishConfiguredCellBands(self._scene, self._kind, bank, cellIndex, 0, 0, 1, self._effectIds)
-end
-
--- Advances one source tick toward the authored animation boundary.
--- Mid-task scene failures restore the task's own partial visuals
--- before the failure reaches the player.
----@param self BattleConfiguredSpriteTask
----@param tick table<string, unknown>? source tick under advancement
-function BattleConfiguredSpriteTask:stepSourceTick(tick)
-  local _ = tick
-  if self._disposed or self._state == "complete" or self._state == "cancelled" then
-    return
-  end
-  self._state = "running"
-  self._ticks = self._ticks + 1
-  local index = frameAt(self, self._ticks)
-  if index ~= self._shown then
-    local ok, err = pcall(publishConfiguredCell, self, self._frames[index].cell)
-    if not ok then
-      retireConfiguredSprite(self)
-      error(err, 0)
-    end
-    self._shown = index
-  end
-  if self._ticks >= self._total then
-    self._state = "complete"
-    retireConfiguredSprite(self)
-  end
-end
-
--- Reports the sprite run state for the player's retirement accounting.
----@param self BattleConfiguredSpriteTask
----@return string
-function BattleConfiguredSpriteTask:status()
-  assert(VALID_TASK_STATES[self._state] == true, "configured sprite tasks report a known run state")
-  return self._state
-end
-
--- Cancels the sprite run; completion and cancellation stay separate, so
--- a completed run keeps its completion.
----@param self BattleConfiguredSpriteTask
----@param reason string cancellation cause under diagnosis
-function BattleConfiguredSpriteTask:cancel(reason)
-  if self._state == "complete" then
-    return
-  end
-  self._state = "cancelled"
-  self._cancelReason = reason
-  retireConfiguredSprite(self)
-end
-
--- Releases owned transient records and staged leases exactly once.
----@param self BattleConfiguredSpriteTask
-function BattleConfiguredSpriteTask:dispose()
-  if self._disposed then
-    return
-  end
-  self._disposed = true
-  retireConfiguredSprite(self)
 end
 
 -- Synchronous no-op behind the argument-free empty callback: no counter
@@ -5763,6 +5506,12 @@ function BattleEffectTasks.supportsKind(kind)
   then
     return true
   end
+  if BattleSourceTimedEffects.supportsKind(kind) then
+    return true
+  end
+  if BattleConfiguredSpriteEffects.supportsKind(kind) then
+    return true
+  end
   return NATIVE_VISUAL_KINDS[kind] == true
 end
 
@@ -5862,9 +5611,20 @@ function BattleEffectTasks.create(kind, args, context, services)
     assert(type(services) == "table", "zigzag slash tasks require their services record")
     return newZigzagSlashTask(kind, args or {}, context or {}, services)
   end
-  if isConfiguredSpriteSpawn(args or {}) then
+  if BattleSourceTimedEffects.supportsKind(kind) then
+    assert(type(services) == "table", "source-timed tasks require their services record")
+    return BattleSourceTimedEffects.create(kind, args or {}, context or {}, services)
+  end
+  if BattleConfiguredSpriteEffects.supportsKind(kind) then
     assert(type(services) == "table", "configured sprite tasks require their services record")
-    return newConfiguredSpriteTask(kind, args or {}, context or {}, services)
+    local laneServices = {
+      scene = services.scene,
+      audio = services.audio,
+      resources = services.resources,
+      stageLease = stageLease,
+      releaseStaged = releaseStaged,
+    }
+    return BattleConfiguredSpriteEffects.create(kind, args or {}, context or {}, laneServices)
   end
   local backgroundConstructor = BACKGROUND_TASK_CONSTRUCTORS[kind]
   if backgroundConstructor ~= nil then

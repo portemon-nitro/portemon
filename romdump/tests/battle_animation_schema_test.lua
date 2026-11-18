@@ -575,16 +575,6 @@ function T.reciprocal_position_palette_callback_has_a_closed_task_contract()
   })))
 end
 
-function T.battle_palette_callback_schema_names_pokemon_picture_fades()
-  Assert.isTrue(schema().assertProgram(program({
-    op = "invoke-battle-animation-callback",
-    callback = "pokemon-picture-and-battle-palette-fade-cycle",
-    taskKind = "pokemon-picture-and-battle-palette-fade-cycle",
-    taskContext = "battle-palette",
-    parameters = {},
-  })))
-end
-
 function T.particle_emitter_curved_path_callback_has_a_typed_context_and_curve_contract()
   local instruction = {
     op = "invoke-battle-animation-callback",
@@ -704,24 +694,16 @@ function T.picture_palette_fade_position_schema_bounds_its_typed_parameters()
 end
 
 function T.background_picture_scroll_callback_schema_closes_its_mode_parameters()
-  for _, instruction in ipairs({
-    {
+  Assert.isTrue(
+    schema().assertProgram(program({
       op = "invoke-battle-animation-callback",
       callback = "battle-background-picture-scroll-oscillation",
       taskKind = "battle-background-picture-scroll-oscillation",
       taskContext = "battle-display",
-      parameters = { directionState = 1, phaseIndex = 4 },
-    },
-    {
-      op = "invoke-battle-animation-callback",
-      callback = "battle-background-picture-coordinate-sweep",
-      taskKind = "battle-background-picture-coordinate-sweep",
-      taskContext = "battle-display",
-      parameters = { startX = -2, startY = 3, deltaX = -4, deltaY = 7 },
-    },
-  }) do
-    Assert.isTrue(schema().assertProgram(program(instruction)), "selector 27 mode has its closed semantic profile")
-  end
+      parameters = { shake = 1, shakeAmpX = -2, shakeAmpY = 3, shakeInterval = -4, shakeCount = 7, shakeExtra = 0 },
+    })),
+    "selector 27 has its closed semantic profile"
+  )
 end
 
 function T.picture_affine_sprite_pair_callback_schema_requires_its_named_task()
@@ -885,12 +867,27 @@ function T.animation_callback_schema_accepts_battle_picture_palette_fade_cycle()
   Assert.isTrue(
     schema().assertProgram(program({
       op = "invoke-battle-animation-callback",
-      callback = "pokemon-picture-battle-palette-fade-cycle",
-      taskKind = "pokemon-picture-battle-palette-fade-cycle",
+      callback = "pokemon-picture-and-battle-palette-fade-cycle",
+      taskKind = "pokemon-picture-and-battle-palette-fade-cycle",
       taskContext = "battle-palette",
+      battlerTarget = "attacker",
       parameters = {},
     })),
     "the callback owns both battle palette and picture fade state"
+  )
+end
+
+function T.animation_callback_schema_accepts_attacker_leap_offscreen()
+  Assert.isTrue(
+    schema().assertProgram(program({
+      op = "invoke-battle-animation-callback",
+      callback = "pokemon-picture-leap-offscreen-transition",
+      taskKind = "pokemon-picture-leap-offscreen-transition",
+      taskContext = "pokemon-picture",
+      battlerTarget = "attacker",
+      parameters = {},
+    })),
+    "the leap callback owns the attacker picture's scale legs"
   )
 end
 
@@ -1261,7 +1258,7 @@ function T.configured_sprite_parameters_are_named_and_task_specific()
   local instruction = {
     op = "create-configured-sprite",
     parameters = { offsetX = -12, offsetY = 8 },
-    taskKind = "sprite-position-offset",
+    taskKind = "sprite-offset-animate",
     taskContext = "battle-sprite",
     resourceKeys = {
       character = "battle/sprite/example/character",

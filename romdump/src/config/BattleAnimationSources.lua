@@ -276,52 +276,57 @@ local PARTICLE_ACTION_PROFILES = {
 -- own fade and pokepic flash, not a palette fade, so it names its own
 -- task instead of sharing the picture-fade vocabulary.
 local CONFIGURED_SPRITE_TASKS = {
-  { taskKind = "multi-sprite-position-tick", context = "sprite-system" },
-  { taskKind = "sprite-affine-scale-draw-transition", context = "battle-sprite" },
-  { taskKind = "sprite-animation-position-transition", context = "battle-sprite" },
-  { taskKind = "pokemon-picture-multi-sprite-animation", context = "pokemon-picture" },
-  { taskKind = "sprite-affine-rotation-motion", context = "battle-sprite" },
-  { taskKind = "pokemon-picture-sprite-position-transition", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-affine-transition", context = "pokemon-picture" },
-  { taskKind = "sprite-alpha-transition", context = "pokemon-picture" },
+  { taskKind = "sprite-spread-copies", context = "sprite-system" },
+  { taskKind = "sprite-blink-scale-fade", context = "battle-sprite" },
+  { taskKind = "sprite-orbit-trail", context = "battle-sprite" },
+  { taskKind = "sprite-crossing", context = "pokemon-picture" },
+  { taskKind = "sprite-grow-rock-shrink", context = "battle-sprite" },
+  { taskKind = "sprite-stack-on-defender", context = "pokemon-picture" },
+  { taskKind = "sprite-boomerang", context = "pokemon-picture" },
+  { taskKind = "sprite-rise-stretch", context = "pokemon-picture" },
   { taskKind = "pokemon-picture-zigzag-slash", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-animation-palette-fade", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-relative-sprite-path-transition", context = "pokemon-picture" },
-  { taskKind = "sprite-brightness-transition", context = "battle-display" },
-  { taskKind = "pokemon-picture-animation", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-animation-speed-transition", context = "pokemon-picture" },
-  { taskKind = "sprite-affine-animation", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-oam-animation-transition", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-animation-position-transition", context = "pokemon-picture" },
-  { taskKind = "sprite-affine-rotation-transition", context = "battle-sprite" },
-  { taskKind = "sprite-animation-completion", context = "battle-sprite" },
-  { taskKind = "sprite-animation-affine-scale-transition", context = "battle-sprite" },
-  { taskKind = "sprite-flip-animation-transition", context = "battle-sprite" },
-  { taskKind = "sprite-randomized-affine-motion", context = "battle-sprite" },
-  { taskKind = "sprite-flip-and-offset-transition", context = "battle-sprite" },
-  { taskKind = "pokemon-picture-randomized-position-motion", context = "pokemon-picture" },
-  { taskKind = "pokemon-picture-priority-motion", context = "pokemon-picture" },
-  { taskKind = "sprite-position-offset", context = "battle-sprite" },
-  { taskKind = "sprite-affine-transform-motion", context = "battle-sprite" },
-  { taskKind = "sprite-animation-lifecycle", context = "battle-sprite" },
-  { taskKind = "sprite-affine-animation-lifecycle", context = "battle-sprite" },
-  { taskKind = "multi-sprite-battler-animation", context = "pokemon-picture" },
-  { taskKind = "multi-sprite-position-transition", context = "battle-sprite" },
-  { taskKind = "sprite-animation-palette-offset", context = "battle-palette" },
-  { taskKind = "multi-sprite-picture-animation", context = "pokemon-picture" },
+  { taskKind = "sprite-zigzag-flash", context = "pokemon-picture" },
+  { taskKind = "sprite-pops", context = "pokemon-picture" },
+  { taskKind = "sprite-pulse-brightness", context = "battle-display" },
+  { taskKind = "sprite-fan-around-attacker", context = "pokemon-picture" },
+  { taskKind = "sprite-shrink-attacker-into", context = "pokemon-picture" },
+  { taskKind = "sprite-scale-over-defender", context = "pokemon-picture" },
+  { taskKind = "sprite-orbit-attacker-bobbing", context = "pokemon-picture" },
+  { taskKind = "sprite-floating-stream", context = "pokemon-picture" },
+  { taskKind = "sprite-throw-arc", context = "battle-sprite" },
+  { taskKind = "sprite-fade-anim", context = "battle-sprite" },
+  { taskKind = "sprite-blink-center", context = "battle-sprite" },
+  { taskKind = "sprite-sliding-pairs", context = "battle-sprite" },
+  { taskKind = "sprite-pop-scatter", context = "battle-sprite" },
+  { taskKind = "sprite-quad", context = "battle-sprite" },
+  { taskKind = "sprite-flash-around-attacker", context = "pokemon-picture" },
+  { taskKind = "sprite-trail-to-defender", context = "pokemon-picture" },
+  { taskKind = "sprite-offset-animate", context = "battle-sprite" },
+  { taskKind = "sprite-orbit", context = "battle-sprite" },
+  { taskKind = "sprite-above-defender", context = "battle-sprite" },
+  { taskKind = "sprite-arc", context = "battle-sprite" },
+  { taskKind = "sprite-rising-shrink", context = "pokemon-picture" },
+  { taskKind = "sprite-row-sequence", context = "battle-sprite" },
+  { taskKind = "sprite-palette-cycle", context = "battle-palette" },
+  { taskKind = "sprite-orbit-attacker", context = "pokemon-picture" },
 }
 
 local CONFIGURED_SPRITE_PARAMETERS = {
+  -- BattleAnimSpriteFunc_BlinkScaleFadeSprites / CrossingSprites /
+  -- BlinkSpritesCenter / SlidingSpritePairs copy counts.
   [1] = { { name = "spriteCount", index = 1, encoding = "signed32" } },
   [3] = { { name = "spriteCount", index = 1, encoding = "signed32" } },
+  -- BattleAnimSpriteFunc_ThrowSpriteArc reads its four script words as the
+  -- defender-relative offset, flight duration, and arc height.
   [17] = {
-    { name = "spriteSpacingX", index = 1, encoding = "signed16" },
-    { name = "spriteSpacingY", index = 2, encoding = "signed16" },
-    { name = "positionTransitionTicks", index = 3, encoding = "unsigned16" },
-    { name = "rotationAngle", index = 4, encoding = "unsigned32" },
+    { name = "offsetX", index = 1, encoding = "signed16" },
+    { name = "offsetY", index = 2, encoding = "signed16" },
+    { name = "durationTicks", index = 3, encoding = "unsigned16" },
+    { name = "arcHeight", index = 4, encoding = "signed32" },
   },
   [19] = { { name = "spriteCount", index = 1, encoding = "unsigned8" } },
   [20] = { { name = "spriteCount", index = 1, encoding = "unsigned8" } },
+  -- BattleAnimSpriteFunc_MoveSpriteAndAnimate reads its two offset words.
   [25] = {
     { name = "offsetX", index = 1, encoding = "signed16" },
     { name = "offsetY", index = 2, encoding = "signed16" },
@@ -1710,17 +1715,25 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       parameters = {},
     }
   elseif selector == 15 then
+    -- AttackerLeapOffscreen: two gBattleAnimLeapOffscreenSteps scale legs
+    -- around a five-tick rise, then the terminal vanish write on the
+    -- attacker's own picture. The source reads no script words.
+    return {
+      callback = "pokemon-picture-leap-offscreen-transition",
+      taskKind = "pokemon-picture-leap-offscreen-transition",
+      context = "pokemon-picture",
+      battlerTarget = "attacker",
+      parameters = {},
+    }
+  elseif selector == 16 then
+    -- AttackerSilhouette: the battlefield palette fades to white while the
+    -- attacker picture palette fades to black, holds six ticks, and both
+    -- fade back. The source reads no script words.
     return {
       callback = "pokemon-picture-and-battle-palette-fade-cycle",
       taskKind = "pokemon-picture-and-battle-palette-fade-cycle",
       context = "battle-palette",
-      parameters = {},
-    }
-  elseif selector == 16 then
-    return {
-      callback = "pokemon-picture-battle-palette-fade-cycle",
-      taskKind = "pokemon-picture-battle-palette-fade-cycle",
-      context = "battle-palette",
+      battlerTarget = "attacker",
       parameters = {},
     }
   elseif selector == 17 then
@@ -1833,26 +1846,21 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       parameters = {},
     }
   elseif selector == 27 then
-    if operands[3] == 0 then
-      return {
-        callback = "battle-background-picture-scroll-oscillation",
-        taskKind = "battle-background-picture-scroll-oscillation",
-        context = "battle-display",
-        parameters = {
-          directionState = (operands[4] or 0) % 256,
-          phaseIndex = (operands[5] or 0) % 256,
-        },
-      }
-    end
+    -- RockOrShakeAttacker (battle_anim_move_effects.c): a zero shake word
+    -- rocks the attacker picture through gBattleAnimRockAttackerSteps, and
+    -- any other word shakes the defender picture with the amplitude,
+    -- interval, and count words that follow it.
     return {
-      callback = "battle-background-picture-coordinate-sweep",
-      taskKind = "battle-background-picture-coordinate-sweep",
+      callback = "battle-background-picture-scroll-oscillation",
+      taskKind = "battle-background-picture-scroll-oscillation",
       context = "battle-display",
       parameters = {
-        startX = signed16(operands[4] or 0),
-        startY = signed16(operands[5] or 0),
-        deltaX = signed16(operands[6] or 0),
-        deltaY = signed16(operands[7] or 0),
+        shake = (operands[3] or 0) ~= 0 and 1 or 0,
+        shakeAmpX = signed16(operands[4] or 0),
+        shakeAmpY = signed16(operands[5] or 0),
+        shakeInterval = signed16(operands[6] or 0),
+        shakeCount = signed16(operands[7] or 0),
+        shakeExtra = signed16(operands[8] or 0),
       },
     }
   elseif selector == 49 then

@@ -7,12 +7,16 @@
 uniform Image u_palette;
 uniform float u_paletteCount;
 uniform bool u_usePalette;
+// Source palette override offset in colors, added to every index before the
+// exact palette fetch. Zero for every material that selects its whole
+// palette; configured sprites use it for native palette-offset cycling.
+uniform float u_paletteOffset;
 
 vec4 resolveExactTexel(vec4 raw)
 {
   if (!u_usePalette) {
     return raw;
   }
-  float slot = floor(raw.r * 255.0 + 0.5);
+  float slot = mod(floor(raw.r * 255.0 + 0.5) + u_paletteOffset, u_paletteCount);
   return Texel(u_palette, vec2((slot + 0.5) / u_paletteCount, 0.5));
 }

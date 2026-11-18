@@ -330,19 +330,50 @@ end
 
 function T.configured_sprite_task_runs_from_typed_parameters()
   local Sources = require("romdump.src.config.BattleAnimationSources")
-  local resolved = assert(Sources.resolveConfiguredSpriteAction(17, { 10, 20, 4, 0x100 }))
-  Assert.equal(resolved.taskKind, "sprite-affine-rotation-transition", "the probe selects its source task kind")
+  local resolved = assert(Sources.resolveConfiguredSpriteAction(17, { 10, 20, 10, 0x100 }))
+  Assert.equal(resolved.taskKind, "sprite-throw-arc", "the probe selects its source task kind")
+  Assert.deepEqual(resolved.parameters, {
+    offsetX = 10,
+    offsetY = 20,
+    durationTicks = 10,
+    arcHeight = 0x100,
+  }, "the thrown arc reads its four script words")
   local scene = sceneWithPair()
-  local services, journal = journalServices(scene)
-  local task = assert(
-    BattleEffectTasks.create(
-      resolved.taskKind,
-      { taskContext = resolved.context, parameters = resolved.parameters },
-      occurrenceContext(),
-      services
-    )
-  )
-  Assert.equal(task:status(), "pending", "configured sprite tasks open pending")
+  local journal = { acquired = {}, released = {} }
+  local leases = {
+    ["probe/character"] = { key = "probe/character", kind = "texture", width = 512 },
+    ["probe/palette"] = { key = "probe/palette", kind = "palette", data = { colors = { 0, 1, 2 } } },
+    ["probe/cell"] = {
+      key = "probe/cell",
+      kind = "cells",
+      data = { cells = { { objs = { { x = 0, y = 0, tile = 0, width = 8, height = 8, priority = 0 } } } } },
+    },
+    ["probe/animation"] = {
+      key = "probe/animation",
+      kind = "animation",
+      data = { anims = { { frames = { { cell = 0, duration = 32 } } } } },
+    },
+  }
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return assert(leases[key], "configured roles stage " .. key)
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  local services = { scene = scene, audio = {}, resources = resources }
+  local args = {
+    taskContext = resolved.context,
+    parameters = resolved.parameters,
+    resourceKeys = {
+      character = "probe/character",
+      palette = "probe/palette",
+      cell = "probe/cell",
+      animation = "probe/animation",
+    },
+  }
+  local task = assert(BattleEffectTasks.create(resolved.taskKind, args, occurrenceContext(), services))
   for _ = 1, 300 do
     task:stepSourceTick({ tick = 1 })
     if task:status() == "complete" then
@@ -353,14 +384,7 @@ function T.configured_sprite_task_runs_from_typed_parameters()
   Assert.equal(#scene:effectViews(), 0, "completion releases every transient record")
   Assert.equal(#journal.released, #journal.acquired, "completion releases every staged lease once")
   task:dispose()
-  local cancelling = assert(
-    BattleEffectTasks.create(
-      resolved.taskKind,
-      { taskContext = resolved.context, parameters = resolved.parameters },
-      occurrenceContext(77),
-      services
-    )
-  )
+  local cancelling = assert(BattleEffectTasks.create(resolved.taskKind, args, occurrenceContext(77), services))
   cancelling:stepSourceTick({ tick = 1 })
   cancelling:cancel("superseded")
   Assert.equal(cancelling:status(), "cancelled", "cancellation lands on cancelled")
@@ -923,16 +947,17 @@ function T.operand_less_visual_without_a_marker_citation_fails_closed()
   -- Only verified synchronous-marker kinds retire without compiled timing
   -- operands; every other timing-less spawn fails closed with its kind
   -- identity instead of retiring silently with zero writes. The
-  -- four-sprite wave below carries no marker citation, so its
+  -- selected-position kind below carries no marker citation, so its
   -- operand-less spawn never yields a runnable task, publishes nothing,
   -- and stages nothing.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
-  local ok, failure =
-    pcall(BattleEffectTasks.create, "pokemon-picture-four-sprite-wave-transition", {}, occurrenceContext(), services)
+  local ok, failure = pcall(BattleEffectTasks.create, "pokemon-picture-selected-position-transition", {
+    parameters = {},
+  }, occurrenceContext(), services)
   Assert.isFalse(ok, "a timing-less spawn outside the marker set never yields a runnable task")
   Assert.isTrue(
-    string.find(tostring(failure), "pokemon-picture-four-sprite-wave-transition", 1, true) ~= nil
+    string.find(tostring(failure), "pokemon-picture-selected-position-transition", 1, true) ~= nil
       and string.find(tostring(failure), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
     "the timing-less spawn fails closed naming itself: " .. tostring(failure)
   )
@@ -1037,9 +1062,9 @@ function T.admission_predicate_covers_only_implemented_kinds()
   end
   for _, kind in ipairs({
     "pokemon-picture-selected-horizontal-offset-transition",
-    "battle-background-picture-coordinate-sweep",
+    "battle-background-picture-scroll-oscillation",
     "battle-sprite-sinusoidal-position-animation",
-    "sprite-affine-rotation-transition",
+    "sprite-throw-arc",
   }) do
     Assert.isTrue(BattleEffectTasks.supportsKind(kind), "the visual body is admitted: " .. kind)
   end
