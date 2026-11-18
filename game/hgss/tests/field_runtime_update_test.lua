@@ -527,6 +527,28 @@ function T.tests.follower_update_resumes_when_map_ownership_matches()
   Assert.equal(calls.count, 1, "follower reconciliation resumes for coherent ownership")
 end
 
+-- The follower commits its own step after the session tick, so the runtime
+-- publishes that step in the same tick: its grass lands with its feet instead
+-- of one tick later.
+function T.tests.follower_step_publication_follows_its_update_in_the_same_tick()
+  local order = {}
+  local runtime = runtimeWithFollowerPresentation({ calls = 0 }, false)
+  runtime.followingMon.update = function()
+    order[#order + 1] = "follower update"
+  end
+  runtime.session.emitCommittedActorSteps = function()
+    order[#order + 1] = "actor step publication"
+  end
+
+  runtime:update(FieldSession.FIXED_DT)
+
+  Assert.deepEqual(
+    order,
+    { "follower update", "actor step publication" },
+    "the follower's own step publishes in its tick"
+  )
+end
+
 local function runtimeWithPartyWarmup(hostCalls, revisionOf)
   local calls = {}
   local runtime = runtimeWithoutAudio(calls)

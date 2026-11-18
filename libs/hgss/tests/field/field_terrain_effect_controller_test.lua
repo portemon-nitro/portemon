@@ -230,11 +230,19 @@ end
 
 -- Each held effect belongs to the object that stepped into it. The player
 -- standing still in its own grass must not keep a partner-owned effect alive,
--- and a moving partner must release only its own effect.
+-- a moving partner must release only its own effect, and an owner that leaves
+-- the owner set releases its held effect with it.
 T.tests["held effects belong to their own owner, not to the player"] = function()
   local effects = controller()
   effects:emit({ ownerKey = "player", kind = "tall_grass", fieldX = 1, fieldZ = 1, worldY = 0, direction = "south" })
-  effects:emit({ ownerKey = "field:partner", kind = "tall_grass", fieldX = 4, fieldZ = 4, worldY = 0, direction = "south" })
+  effects:emit({
+    ownerKey = "field:partner",
+    kind = "tall_grass",
+    fieldX = 4,
+    fieldZ = 4,
+    worldY = 0,
+    direction = "south",
+  })
   local owners = {
     player = { fieldX = 1, fieldZ = 1, facing = "south" },
     ["field:partner"] = { fieldX = 4, fieldZ = 4, facing = "south" },
@@ -250,13 +258,20 @@ T.tests["held effects belong to their own owner, not to the player"] = function(
   Assert.equal(#remaining, 1, "only the partner-owned effect releases when the partner walks off")
   Assert.equal(remaining[1].fieldX, 1)
   Assert.equal(remaining[1].ownerKey, "player")
-end
 
-T.tests["an owner leaving the owner set releases its held effects"] = function()
-  local effects = controller()
-  effects:emit({ ownerKey = "field:partner", kind = "tall_grass", fieldX = 4, fieldZ = 4, worldY = 0, direction = "south" })
-  updateWithOwners(effects, { player = { fieldX = 1, fieldZ = 1, facing = "south" } })
-  Assert.equal(#effects:status().instances, 0, "an absent partner owns no held effect")
+  effects:emit({
+    ownerKey = "field:partner",
+    kind = "tall_grass",
+    fieldX = 5,
+    fieldZ = 4,
+    worldY = 0,
+    direction = "east",
+  })
+  updateWithOwners(effects, owners)
+  Assert.equal(#effects:status().instances, 2, "a re-arrived partner holds its new grass")
+  owners["field:partner"] = nil
+  updateWithOwners(effects, owners)
+  Assert.equal(#effects:status().instances, 1, "an owner that left the field keeps no held effect")
 end
 
 T.tests["dynamic grass instances change pose independently from their semantic age"] = function()

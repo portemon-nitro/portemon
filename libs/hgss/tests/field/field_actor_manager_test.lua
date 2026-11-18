@@ -2262,13 +2262,17 @@ function T.scripted_walk_uses_nonresident_probe_without_autonomous_collision_pol
   mgr:dispose()
 end
 
-function T.autonomous_wander_settles_before_its_wait()
+-- One committed autonomous step publishes the object's destination facts
+-- exactly once, so the composition can spawn that object's own source terrain
+-- responses at its own tile.
+function T.autonomous_wander_settles_and_publishes_its_step()
   local mgr = manager(
     { object({ movementType = "wander_around", xRange = -1, yRange = -1 }) },
     { autonomyRng = deterministicRng({ 3, 0 }) }
   )
   local actorId = "map:61:object:0"
   local actor = assert(mgr:getById(actorId))
+  Assert.isNil(mgr:takeCommittedSteps(), "map entry commits no step")
   mgr:step(1)
   Assert.equal(actor.pose, "walk")
   Assert.isFalse(mgr:isPausable(actorId))
@@ -2276,14 +2280,29 @@ function T.autonomous_wander_settles_before_its_wait()
     mgr:step(tick)
     Assert.equal(actor.pose, "walk", "a wandering actor walks while its autonomous action is active")
     Assert.isFalse(mgr:isPausable(actorId))
+    Assert.isNil(mgr:takeCommittedSteps(), "an in-flight walk publishes nothing")
   end
 
   mgr:step(9)
-  Assert.equal(actor:getFieldPosition().fieldX, 3)
-  Assert.equal(actor:getFieldPosition().fieldZ, 3)
+  local position = actor:getFieldPosition()
+  Assert.equal(position.fieldX, 3)
+  Assert.equal(position.fieldZ, 3)
   Assert.isTrue(mgr:isPausable(actorId))
   Assert.equal(actor.pose, "idle", "a completed wandering step settles before its wait")
   Assert.equal(actor:getPoseTick(), 0, "settling restores the idle pose-clock baseline")
+
+  local steps = assert(mgr:takeCommittedSteps(), "the settled step publishes its destination facts")
+  Assert.equal(#steps, 1, "one committed step publishes one record")
+  local step = steps[1]
+  Assert.equal(step.actorId, actorId)
+  Assert.equal(step.mapId, 61)
+  Assert.equal(step.fieldX, position.fieldX, "the record carries the committed destination")
+  Assert.equal(step.fieldZ, position.fieldZ, "the record carries the committed destination")
+  Assert.equal(step.facing, actor.facing, "the record carries the object's committed facing")
+  Assert.equal(step.worldY, actor:getWorldPosition().y, "the record carries its world height")
+  Assert.equal(step.visible, true)
+  Assert.equal(step.large, false, "an ordinary map object never disturbs the tile behind")
+  Assert.isNil(mgr:takeCommittedSteps(), "the publication is consumed exactly once")
 
   mgr:step(10)
   mgr:step(11)
@@ -2292,66 +2311,39 @@ function T.autonomous_wander_settles_before_its_wait()
   mgr:dispose()
 end
 
--- One committed autonomous step publishes the object's destination facts
--- exactly once, so the composition can spawn that object's own source terrain
--- responses at its own tile.
-function T.autonomous_step_publishes_its_destination_facts_once()
-  local mgr = manager(
-    { object({ movementType = "wander_around", xRange = -1, yRange = -1 }) },
-    { autonomyRng = deterministicRng({ 3, 0 }) }
-  )
-  local actorId = "map:61:object:0"
-  Assert.isNil(mgr:takeCommittedSteps(), "map entry commits no step")
-  for tick = 1, 8 do
-    mgr:step(tick)
-    Assert.isNil(mgr:takeCommittedSteps(), "an in-flight walk publishes nothing")
-  end
-
-  mgr:step(9)
-  local steps = assert(mgr:takeCommittedSteps(), "the committed autonomous step is observable")
-  Assert.equal(#steps, 1, "one committed step publishes one record")
-  local step = steps[1]
-  Assert.equal(step.actorId, actorId)
-  Assert.equal(step.mapId, 61)
-  Assert.equal(step.fieldX, 3, "the record carries the committed destination")
-  Assert.equal(step.fieldZ, 3)
-  Assert.equal(step.facing, "east", "the record carries the object's step facing")
-  Assert.equal(step.visible, true)
-  Assert.equal(step.large, false, "an ordinary map object never disturbs the tile behind")
-  Assert.isTrue(type(step.worldY) == "number", "the record carries its world height")
-  Assert.isNil(mgr:takeCommittedSteps(), "the publication is consumed exactly once")
-  mgr:dispose()
-end
-
--- A walk-in-place never occupies a new tile, so it publishes no step: the
--- object's grass stays held exactly as it was.
-function T.walk_in_place_publishes_no_committed_step()
+-- A scripted object walk commits through the same publication as an
+-- autonomous step, so script-driven objects rustle their own grass too. A
+-- walk-in-place never occupies a new tile, and a step a departing map never
+-- published must not survive it.
+function T.scripted_walk_publishes_its_committed_step()
   local mgr = manager({ object({ movementType = "stationary" }) })
   local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+
   mgr:beginScriptedAction(actorId, { action = "walk_in_place", direction = "east", speed = "normal" })
   mgr:advanceScriptedAction(actorId, 8, 8)
   mgr:commitScriptedAction(actorId)
   Assert.isNil(mgr:takeCommittedSteps(), "a hold that keeps its tile publishes no step")
-  mgr:dispose()
-end
 
--- A scripted object walk commits through the same publication as an
--- autonomous step, so script-driven objects rustle their own grass too.
-function T.scripted_walk_publishes_its_committed_step()
-  local mgr = manager({ object({ movementType = "stationary" }) })
-  local actorId = "map:61:object:0"
   mgr:setFacing(actorId, "east")
   mgr:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
   mgr:advanceScriptedAction(actorId, 8, 8)
   mgr:commitScriptedAction(actorId)
+  local position = actor:getFieldPosition()
   local steps = assert(mgr:takeCommittedSteps(), "the committed scripted step is observable")
   Assert.equal(#steps, 1)
   Assert.equal(steps[1].actorId, actorId)
-  Assert.equal(steps[1].fieldX, 3, "the record carries the committed destination")
-  Assert.equal(steps[1].fieldZ, 3)
+  Assert.equal(steps[1].fieldX, position.fieldX, "the record carries the committed destination")
+  Assert.equal(steps[1].fieldZ, position.fieldZ, "the record carries the committed destination")
   Assert.equal(steps[1].facing, "east")
   Assert.equal(steps[1].visible, true)
   Assert.isNil(mgr:takeCommittedSteps(), "the publication is consumed exactly once")
+
+  mgr:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
+  mgr:advanceScriptedAction(actorId, 8, 8)
+  mgr:commitScriptedAction(actorId)
+  mgr:leaveMap(61)
+  Assert.isNil(mgr:takeCommittedSteps(), "a departed map publishes none of its undrained steps")
   mgr:dispose()
 end
 
@@ -3965,10 +3957,7 @@ function T.autonomous_cross_cell_probe_landing_keeps_departure_occupancy()
   )
 
   mgr:removePresence(actorId, false)
-  Assert.isNil(
-    mgr:getAt(61, stableCandidate(33, 3, 1, "1:0", 13)),
-    "destroying an actor vacates its committed cell"
-  )
+  Assert.isNil(mgr:getAt(61, stableCandidate(33, 3, 1, "1:0", 13)), "destroying an actor vacates its committed cell")
   mgr:dispose()
 end
 

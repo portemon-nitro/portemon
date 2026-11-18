@@ -479,47 +479,6 @@ function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permis
     Assert.notNil(game:snapshot().actors[partnerId(game)], "the follower must be published on Route 29")
     game:moveTo(facts.grass)
     Assert.equal(game:snapshot().mapId, facts.route29.mapId, "the post-seam trail probe starts on Route 29")
-    -- The follower's own step into the grass tile (the tile the player just
-    -- vacated) must spawn the follower's own source terrain effect, owned by
-    -- the partner so it holds and releases on the partner's tile.
-    local followerId = assert(partnerId(game))
-    local grassTile = playerTile(game:snapshot())
-    local leftGrass = false
-    for _, direction in ipairs(DIRECTIONS) do
-      local before = playerTile(game:snapshot())
-      game:face(direction)
-      game:move(direction)
-      local after = game:advanceUntil("player leaves the grass tile", function(snapshot)
-        return snapshot.player.motion == "idle"
-      end, 120)
-      if not sameTile(playerTile(after), before) then
-        leftGrass = true
-        break
-      end
-    end
-    Assert.isTrue(leftGrass, "the grass tile offers one walkable exit")
-    local settled = game:advanceUntil("followed step settles on the vacated grass tile", function(snapshot)
-      local actor = snapshot.actors[followerId]
-      return snapshot.player.motion == "idle"
-        and actor ~= nil
-        and actor.fieldX == grassTile.fieldX
-        and actor.fieldZ == grassTile.fieldZ
-        and followingMon:isMovementSettled()
-    end, 180)
-    local partnerGrass
-    for _, instance in ipairs(assert(settled.terrainEffects, "terrain effect status is required").instances) do
-      if
-        instance.ownerKey == followerId
-        and instance.fieldX == grassTile.fieldX
-        and instance.fieldZ == grassTile.fieldZ
-      then
-        partnerGrass = instance
-      end
-    end
-    Assert.notNil(
-      partnerGrass,
-      "the follower's grass step must spawn a partner-owned terrain effect at its own tile"
-    )
     assertFollowerTrailsOrdinarySteps(game, followingMon, partnerId(game), facts.route29.mapId, 2)
     assertNoFault(game, "while trailing after the Route 29 seam")
     Assert.equal(partnerId(game), "field:partner", "the post-seam follower keeps its stable actor identity")

@@ -526,28 +526,33 @@ end
 -- motion through the field update used to double the step rate, end the tile
 -- early, and leave the movement task faulting on a motion it no longer owned.
 function T.scripted_motion_is_advanced_by_its_script_owner_not_the_field_update()
-  local p = player(runtimeMap(), 0, 4, 0, "east")
-  p:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
-  p:advanceScriptedAction(1, FieldPlayer.WALK_STEP_TICKS)
-  Assert.equal(p:presentationState().scriptedPoseDelta, 1, "the first scripted tick advances one pose step")
-
-  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
-    p:updateFixed({})
-    Assert.equal(p.motion, "walking", "the field update never completes a scripted step")
-    Assert.equal(p.fieldX, 0, "the scripted tile commits only through its owner")
+  for _, case in ipairs({
+    { speed = "normal", poseDelta = 1 },
+    { speed = "fast", poseDelta = 2 },
+  }) do
+    local duration = assert(MovementCalibration.SPEED_TICKS[case.speed], "the walk speed must be calibrated")
+    local p = player(runtimeMap(), 0, 4, 0, "east")
+    p:beginScriptedAction({ action = "walk", direction = "east", speed = case.speed })
+    for progress = 1, duration do
+      p:advanceScriptedAction(progress, duration)
+      Assert.equal(
+        p:presentationState().scriptedPoseDelta,
+        case.poseDelta,
+        "the " .. case.speed .. " walk advances its own pose frames per scripted tick"
+      )
+      p:updateFixed({})
+      Assert.equal(p.motion, "walking", "the field update never completes a scripted step")
+      Assert.equal(p.fieldX, 0, "the scripted tile commits only through its owner")
+    end
+    Assert.equal(
+      p:presentationState().scriptedPoseDelta,
+      case.poseDelta,
+      "the field update preserves the scripted cadence for the presentation clock"
+    )
+    p:commitScriptedAction()
+    Assert.equal(p.fieldX, 1, "the scripted owner commits the tile")
+    Assert.equal(p.motion, "idle")
   end
-  Assert.equal(
-    p:presentationState().scriptedPoseDelta,
-    1,
-    "the field update preserves the scripted cadence for the presentation clock"
-  )
-
-  for progress = 2, FieldPlayer.WALK_STEP_TICKS do
-    p:advanceScriptedAction(progress, FieldPlayer.WALK_STEP_TICKS)
-  end
-  p:commitScriptedAction()
-  Assert.equal(p.fieldX, 1, "the scripted owner commits the tile")
-  Assert.equal(p.motion, "idle")
 end
 
 -- The script movement owner cancels its own scripted action; cancelling when
@@ -568,26 +573,6 @@ function T.cancelling_an_absent_scripted_motion_keeps_an_ordinary_step()
   end
   Assert.equal(p.fieldX, 1, "the ordinary step still commits its destination tile")
   Assert.equal(p.motion, "idle")
-end
-
--- A scripted fast walk keeps its calibrated two-frames-per-tick cadence even
--- while the ordinary field update runs in the same tick, instead of falling
--- back to the ordinary walk cadence.
-function T.scripted_fast_walk_keeps_its_own_pose_cadence_across_field_updates()
-  local p = player(runtimeMap(), 0, 4, 0, "east")
-  p:beginScriptedAction({ action = "walk", direction = "east", speed = "fast" })
-  for progress = 1, MovementCalibration.SPEED_TICKS.fast do
-    p:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.fast)
-    Assert.equal(
-      p:presentationState().scriptedPoseDelta,
-      2,
-      "the fast walk advances two pose frames per scripted tick"
-    )
-    p:updateFixed({})
-    Assert.equal(p.fieldX, 0, "the field update never advances the fast scripted step")
-  end
-  p:commitScriptedAction()
-  Assert.equal(p.fieldX, 1)
 end
 
 function T.ambiguous_terrain_failure_is_not_a_blocked_step()
