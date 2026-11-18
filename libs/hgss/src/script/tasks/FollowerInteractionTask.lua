@@ -96,6 +96,9 @@ local function emitGrassTurn(svc, state, previousFacing, facing)
   local grass = svc.followerInteraction:partnerTurnGrass(state.savedFacing)
   if grass then
     grass.direction = facing
+    -- The rustled grass belongs to the partner's tile, so the held effect
+    -- releases on the partner's displacement, never the player's.
+    grass.ownerKey = partnerId(svc.followingMon)
     svc.terrainEffects:emit(grass)
   end
 end

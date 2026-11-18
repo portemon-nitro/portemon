@@ -20,8 +20,8 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 
 local function updateWithOwner(controller, owner)
   local update = controller.updateFixed
-  ---@cast update fun(self: table, owner: table)
-  return update(controller, owner)
+  ---@cast update fun(self: table, owners: table<string, table>)
+  return update(controller, { player = owner })
 end
 
 local function sceneRuntime()

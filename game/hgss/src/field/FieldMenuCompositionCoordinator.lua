@@ -790,8 +790,8 @@ function FieldMenuCompositionCoordinator:menuPlayerPort()
   local function readFacing(_)
     return live().facing
   end
-  local function beginPlayerAction(_, action)
-    return live():beginScriptedAction(action)
+  local function beginPlayerAction(_, action, advancement)
+    return live():beginScriptedAction(action, advancement)
   end
   local function advancePlayerAction(_, progressTicks, durationTicks)
     return live():advanceScriptedAction(progressTicks, durationTicks)

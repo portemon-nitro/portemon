@@ -403,6 +403,9 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
         updateOptions.last = options
         updateOptions.seenNil = updateOptions.seenNil or options == nil
       end,
+      takeCommittedStep = function()
+        return nil
+      end,
     },
     dialogue = modal == nil and nil or {
       isModal = function()
@@ -430,6 +433,9 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
     followingMon = {
       update = function()
         calls.count = calls.count + 1
+      end,
+      takeCommittedStep = function()
+        return nil
       end,
     },
     transition = {

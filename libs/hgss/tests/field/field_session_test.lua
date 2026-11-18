@@ -21,6 +21,7 @@ local Registry = require("libs.script.src.Registry")
 local Composition = require("libs.script.src.Composition")
 local TaskRegistry = require("libs.script.src.TaskRegistry")
 local Scheduler = require("libs.script.src.Scheduler")
+local MovementBarrierTask = require("libs.hgss.src.script.tasks.MovementBarrierTask")
 local MovementTask = require("libs.hgss.src.script.tasks.MovementTask")
 local WaitTicksTask = require("libs.script.src.tasks.WaitTicksTask")
 local ScriptActorWorld = require("libs.hgss.src.script.ScriptActorWorld")
@@ -4052,6 +4053,290 @@ function T.session_passes_committed_step_speed_to_the_player_visual()
   Assert.equal(player.fieldX, 3, "the auto-run lock applies to the following step")
   Assert.equal(visual.pose, "run", "the locked run keeps the run clip")
   Assert.equal(visual.poseTick, 16, "the locked run keeps the source gait cadence")
+end
+
+-- One foreground field script driving the real player through the real
+-- Scheduler + MovementTask stack. The player facade forwards the scripted
+-- action owners directly to the live FieldPlayer, so the session tick sees
+-- exactly the production split between the script phase and the field update.
+---@param map RuntimeFieldMap
+---@param player FieldPlayer
+---@param steps table[]
+---@param visual FieldPlayerVisual?
+---@return FieldSession session, table scheduler, FakeServices services, string instanceId
+local function scriptedPlayerSession(map, player, steps, visual)
+  local manager = {
+    getActor = function()
+      return nil
+    end,
+    show = function() end,
+    hide = function() end,
+    setPosition = function() end,
+    setFacing = function() end,
+    setMovementType = function() end,
+    setAnimationPaused = function() end,
+    getPosition = function()
+      error("unexpected manager getPosition")
+    end,
+    getFacing = function()
+      error("unexpected manager getFacing")
+    end,
+    numericId = function()
+      return nil
+    end,
+    actorIdForMapIndex = function()
+      return nil
+    end,
+    cameraTargetId = function()
+      return nil
+    end,
+    partnerId = function()
+      return nil
+    end,
+    isVisible = function()
+      return true
+    end,
+    setPresentationOffset = function() end,
+    clearPresentationOffset = function() end,
+    removePresence = function() end,
+    materializeObject = function() end,
+  }
+  local facade = {
+    position = function()
+      return { fieldX = player.fieldX, fieldZ = player.fieldZ, worldY = player.worldY }
+    end,
+    facing = function()
+      return player.facing
+    end,
+    turn = function(_, direction)
+      player:turn(direction)
+    end,
+    setPosition = function(_, position)
+      player:setScriptPosition(position)
+    end,
+    beginScriptedAction = function(_, action)
+      player:beginScriptedAction(action)
+    end,
+    advanceScriptedAction = function(_, progress, duration)
+      player:advanceScriptedAction(progress, duration)
+    end,
+    commitScriptedAction = function()
+      player:commitScriptedAction()
+    end,
+    cancelScriptedMovement = function()
+      player:cancelScriptedMovement()
+    end,
+    isScriptedMoving = function()
+      return player:isScriptedMoving()
+    end,
+    gender = function()
+      return 0
+    end,
+    name = function()
+      return "Gold"
+    end,
+  }
+  local world = ScriptActorWorld.new(manager --[[@as ScriptActorManager]], facade)
+  local services = FakeServices.new()
+  services.actors = world --[[@as unknown as ScriptActorManager]]
+  services.player = facade --[[@as unknown as FieldPlayer]]
+  local registry = Registry.new()
+  local composition = Composition.new(registry)
+  local taskRegistry = TaskRegistry.new()
+  taskRegistry:register("wait_ticks", 1, WaitTicksTask --[[@as unknown as TaskImplementation]])
+  taskRegistry:register("movement", 1, MovementTask --[[@as unknown as TaskImplementation]])
+  taskRegistry:register("movement_barrier", 1, MovementBarrierTask --[[@as unknown as TaskImplementation]])
+  local scheduler = Scheduler.new({
+    services = services,
+    taskRegistry = taskRegistry,
+    semantics = require("libs.hgss.src.script.RuntimeValues"),
+    resolveComposition = function(id)
+      return composition:effective(id)
+    end,
+  })
+  local resource = S.script({ api = 1, id = "test.scripted_player_walk", steps = steps })
+  registry:installBase(resource.id, resource, "generated")
+  local composed = assert(composition:effective(resource.id))
+  local instanceId = assert(scheduler:createForeground(composed, nil, 0))
+  local session = FieldSession.new(baseOptions({
+    currentMap = map,
+    player = player,
+    playerVisual = visual,
+    scriptScheduler = scheduler,
+  }))
+  return session, scheduler, services, instanceId
+end
+
+-- A foreground script that walks the player without an explicit input lock is
+-- a legal source script (ApplyMovement itself never locks). The movement task
+-- owns that step: it must take exactly the calibrated number of field ticks,
+-- the script must complete without faulting on a motion the ordinary update
+-- advanced out from under it, and the player must land on the committed tile.
+function T.unlocked_scripted_player_walk_keeps_its_owner_and_cadence()
+  local map = movementMap()
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 0, fieldZ = 4, surfaceId = 0, facing = "south" })
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local session, scheduler, services, instanceId = scriptedPlayerSession(map, player, {
+    S.applyMovement({ actor = "player", movement = { S.m.walk({ direction = "east", speed = "normal", tiles = 2 }) } }),
+    S.waitMovement(),
+    S.stop(),
+  }, visual)
+
+  local poses = {}
+  local posesAtCommit = {}
+  for _ = 1, 60 do
+    session:updateFixed({})
+    if visual.pose == "walk" then
+      poses[#poses + 1] = visual.poseTick
+    end
+    if player.fieldX > 0 and posesAtCommit[player.fieldX] == nil then
+      posesAtCommit[player.fieldX] = #poses
+    end
+    if player.fieldX == 2 and player.motion == "idle" and visual.pose == "idle" then
+      break
+    end
+  end
+
+  local expected = {}
+  for index = 1, 16 do
+    expected[index] = index
+  end
+  Assert.deepEqual(poses, expected, "two normal scripted tiles advance one pose frame per field tick")
+  Assert.equal(posesAtCommit[1], 8, "the first scripted tile commits on its own eight-tick calibration")
+  Assert.equal(posesAtCommit[2], 16, "the second scripted tile commits on its own eight-tick calibration")
+  Assert.equal(player.fieldX, 2, "the scripted walk reaches its destination")
+  Assert.equal(visual.pose, "idle", "the finished scripted walk releases the pose clock")
+  for _ = 1, 8 do
+    session:updateFixed({})
+  end
+  Assert.isNil(services.events:eventFor("script.error", instanceId), "an unlocked scripted walk must not fault")
+  Assert.isNil(scheduler:foregroundEnvironmentId(), "the walking script reaches its own stop command")
+end
+
+function T.unlocked_scripted_fast_walk_keeps_its_two_frame_pose_cadence()
+  local map = movementMap()
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 0, fieldZ = 4, surfaceId = 0, facing = "south" })
+  local visual = FieldPlayerVisual.new({ player = player, spriteId = 0 })
+  local session, _, services, instanceId = scriptedPlayerSession(map, player, {
+    S.applyMovement({ actor = "player", movement = { S.m.walk({ direction = "east", speed = "fast", tiles = 1 }) } }),
+    S.waitMovement(),
+    S.stop(),
+  }, visual)
+
+  local poses = {}
+  for _ = 1, 40 do
+    session:updateFixed({})
+    if visual.pose == "walk" then
+      poses[#poses + 1] = visual.poseTick
+    end
+    if player.fieldX == 1 and player.motion == "idle" and visual.pose == "idle" then
+      break
+    end
+  end
+  Assert.deepEqual(poses, { 2, 4, 6, 8 }, "a fast scripted tile advances two pose frames per field tick")
+  Assert.equal(player.fieldX, 1, "the fast scripted walk commits on its own four-tick calibration")
+  Assert.isNil(services.events:eventFor("script.error", instanceId), "the fast scripted walk must not fault")
+end
+
+-- The terrain-effect clock advances with every live owner. The player is one
+-- owner; the walking partner is the other, so a held follower grass effect can
+-- release on the follower's own displacement instead of the player's.
+function T.session_publishes_the_live_partner_as_a_terrain_effect_owner()
+  local captured = {}
+  local terrainEffects = {
+    updateFixed = function(_, owners)
+      local partner = owners["field:partner"]
+      captured[#captured + 1] = {
+        playerX = owners.player.fieldX,
+        playerZ = owners.player.fieldZ,
+        playerFacing = owners.player.facing,
+        partnerX = partner and partner.fieldX or nil,
+        partnerZ = partner and partner.fieldZ or nil,
+        partnerFacing = partner and partner.facing or nil,
+      }
+    end,
+    emitAll = function() end,
+    emit = function() end,
+  }
+  local partner = { fieldX = 4, fieldZ = 6, facing = "north" }
+  local actors = {
+    beginFixedStep = function() end,
+    step = function() end,
+    cameraTargetId = function()
+      return nil
+    end,
+    partnerId = function()
+      return "field:partner"
+    end,
+    getPosition = function(_, actorId)
+      Assert.equal(actorId, "field:partner", "only the live partner is queried")
+      return { fieldX = partner.fieldX, fieldZ = partner.fieldZ }
+    end,
+    getById = function(_, actorId)
+      Assert.equal(actorId, "field:partner", "only the live partner is queried")
+      return { facing = partner.facing }
+    end,
+  }
+  local player = defaultPlayer()
+  local session = FieldSession.new(baseOptions({
+    player = player,
+    actors = actors,
+    terrainEffects = terrainEffects,
+  }))
+
+  session:updateFixed({})
+  Assert.equal(#captured, 1)
+  Assert.equal(captured[1].playerX, player.fieldX)
+  Assert.equal(captured[1].partnerX, 4, "the partner joins the owner set at its live tile")
+  Assert.equal(captured[1].partnerZ, 6)
+  Assert.equal(captured[1].partnerFacing, "north", "the partner owner carries its own facing")
+
+  partner.fieldX, partner.fieldZ, partner.facing = 5, 6, "east"
+  session:updateFixed({})
+  Assert.equal(captured[2].partnerX, 5, "the partner owner follows the live actor tile")
+  Assert.equal(captured[2].partnerFacing, "east")
+end
+
+-- On-frame map scripts are only evaluated on a settled player boundary. A
+-- script that started while the player was mid-step froze that step (and its
+-- follower trail) and then refused the player movement it issued, because the
+-- player was still physically walking.
+function T.on_frame_map_scripts_start_only_on_a_settled_player_boundary()
+  local map = movementMap()
+  local player = FieldPlayer.new({ currentMap = map, fieldX = 0, fieldZ = 4, surfaceId = 0, facing = "east" })
+  local calls = {}
+  local started = false
+  local controller = {
+    hasLifecycle = function()
+      return false
+    end,
+    startLifecycle = function()
+      return false
+    end,
+    evaluateFrame = function(_, tick)
+      calls[#calls + 1] = tick
+      if started then
+        return false
+      end
+      started = true
+      return true
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ currentMap = map, player = player, initController = controller }))
+
+  Assert.isTrue(player:tryStep("east"), "the fixture step must start")
+  for _ = 1, 12 do
+    session:updateFixed({})
+    if player.motion == "idle" then
+      break
+    end
+  end
+  Assert.equal(player.fieldX, 1, "the ordinary step commits before any frame rule runs")
+  Assert.deepEqual(calls, {}, "no on-frame rule is evaluated while the player is mid-step")
+
+  session:updateFixed({})
+  Assert.equal(#calls, 1, "the settled step boundary offers the frame rule")
+  Assert.equal(calls[1], session.tick, "the rule sees the settled tick")
 end
 
 local function ledgeSession(options)

@@ -70,6 +70,10 @@ function FieldTerrainEffectController:emit(response)
   self.nextId = self.nextId + 1
   self.instances[#self.instances + 1] = {
     id = self.nextId,
+    -- The stepping object that owns this held effect. Session-originated
+    -- responses default to the player; another object (the walking partner)
+    -- names itself so its grass holds and releases on its own tile.
+    ownerKey = response.ownerKey or "player",
     kind = response.kind,
     definition = definition.definition or response.kind,
     fieldX = response.fieldX,
@@ -94,27 +98,36 @@ function FieldTerrainEffectController:emitAll(responses)
   end
 end
 
----@param owner { fieldX: integer, fieldZ: integer, facing: string }
-function FieldTerrainEffectController:updateFixed(owner)
+---@param owners table<string, { fieldX: integer, fieldZ: integer, facing: string }> live owners keyed by their semantic identity
+function FieldTerrainEffectController:updateFixed(owners)
   self:_invalidatePresentation()
-  assert(type(owner) == "table", "terrain effect owner is required")
-  assert(type(owner.fieldX) == "number" and type(owner.fieldZ) == "number", "terrain effect owner tile is required")
-  assert(type(owner.facing) == "string", "terrain effect owner facing is required")
+  assert(type(owners) == "table", "terrain effect owners are required")
   for index = #self.instances, 1, -1 do
     local instance = self.instances[index]
     local lifecycle = instance.lifecycle
     if lifecycle.mode == "hold_until_owner_moves" then
-      local wasIntro = instance.sourceFrame < lifecycle.holdFrame
-      instance.age = instance.age + 1
-      if wasIntro then
-        instance.modelInstance:updateFixed()
-        instance.sourceFrame = math.min(lifecycle.holdFrame, instance.sourceFrame + 1)
-      elseif
-        owner.fieldX ~= instance.fieldX
-        or owner.fieldZ ~= instance.fieldZ
-        or (instance.direction ~= nil and owner.facing ~= instance.direction)
-      then
+      local owner = owners[instance.ownerKey]
+      if owner == nil then
+        -- The owning object left the field: its held effect goes with it.
         table.remove(self.instances, index)
+      else
+        assert(
+          type(owner.fieldX) == "number" and type(owner.fieldZ) == "number",
+          "terrain effect owner tile is required"
+        )
+        assert(type(owner.facing) == "string", "terrain effect owner facing is required")
+        local wasIntro = instance.sourceFrame < lifecycle.holdFrame
+        instance.age = instance.age + 1
+        if wasIntro then
+          instance.modelInstance:updateFixed()
+          instance.sourceFrame = math.min(lifecycle.holdFrame, instance.sourceFrame + 1)
+        elseif
+          owner.fieldX ~= instance.fieldX
+          or owner.fieldZ ~= instance.fieldZ
+          or (instance.direction ~= nil and owner.facing ~= instance.direction)
+        then
+          table.remove(self.instances, index)
+        end
       end
     elseif lifecycle.mode == "once" then
       instance.age = instance.age + 1
@@ -162,6 +175,7 @@ function FieldTerrainEffectController:status()
   for index, instance in ipairs(self.instances) do
     instances[index] = {
       id = instance.id,
+      ownerKey = instance.ownerKey,
       kind = instance.kind,
       definition = instance.definition,
       fieldX = instance.fieldX,

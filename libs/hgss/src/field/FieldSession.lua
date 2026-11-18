@@ -229,6 +229,8 @@ end
 ---@field entranceInput { map: RuntimeFieldMap, player: FieldPlayer, transition: { ownsField: boolean } }
 ---@field coordinateProbe { fieldX: integer, fieldZ: integer, facing: string }
 ---@field terrainResponseInput table<string, unknown>
+---@field terrainOwners table<string, { fieldX: integer, fieldZ: integer, facing: string }>
+---@field partnerTerrainOwner { fieldX: integer, fieldZ: integer, facing: string }
 ---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")?, scriptedPoseDelta: integer? }
 ---@field carriedMovementInput table<string, unknown>
 ---@field heldMovementInput table<string, unknown>
@@ -256,6 +258,10 @@ local function newTickScratch(actorLocked)
     cameraTarget = { x = 0, y = 0, z = 0 },
     entranceInput = { map = nil, player = nil, transition = { ownsField = false } },
     coordinateProbe = { fieldX = 0, fieldZ = 0, facing = "south" },
+    terrainOwners = {
+      player = nil,
+    },
+    partnerTerrainOwner = { fieldX = 0, fieldZ = 0, facing = "south" },
     terrainResponseInput = {
       committed = true,
       destination = {
@@ -807,6 +813,34 @@ function FieldSession:_advanceTick()
   self.tick = self.tick + 1
 end
 
+-- The installed walking partner as a terrain-effect owner, or nil when the
+-- actor world holds none. Reuses one scratch record per tick.
+---@param self FieldSession
+---@return { actorId: string, owner: { fieldX: integer, fieldZ: integer, facing: string } }?
+function FieldSession:_livePartnerTerrainOwner()
+  local actors = self.actors
+  if type(actors.partnerId) ~= "function" or type(actors.getPosition) ~= "function" then
+    return nil
+  end
+  local actorId = actors:partnerId()
+  if actorId == nil then
+    return nil
+  end
+  local position = actors:getPosition(actorId)
+  if position == nil then
+    return nil
+  end
+  local actor = type(actors.getById) == "function" and actors:getById(actorId) or nil
+  if actor == nil then
+    return nil
+  end
+  local owner = self._tickScratch.partnerTerrainOwner
+  owner.fieldX = position.fieldX
+  owner.fieldZ = position.fieldZ
+  owner.facing = actor.facing
+  return { actorId = actorId, owner = owner }
+end
+
 function FieldSession:_emitTerrainResponse()
   if not self.terrainEffects then
     return
@@ -831,6 +865,9 @@ function FieldSession:_emitTerrainResponse()
   destination.cellKey = self.player.committedSourceCellKey
   destination.sourceSurfaceId = self.player.committedSourceSurfaceId
   local responses = require("libs.hgss.src.world.FieldTerrainResponse").resolve(terrainResponseInput)
+  for _, response in ipairs(responses) do
+    response.ownerKey = "player"
+  end
   self.terrainEffects:emitAll(responses)
 end
 
@@ -1279,11 +1316,26 @@ function FieldSession:updateFixed(inputSnapshot)
   local carriedBoundaryDirection = self._boundaryMovementDirection
   self._boundaryMovementDirection = nil
   if self.terrainEffects then
+    -- The effect clock advances with every live owner: the player and, when
+    -- one is installed, the walking partner. Each effect remembers the object
+    -- that stepped into it, so a follower's held grass releases on the
+    -- follower's own displacement instead of the player's.
     local terrainInput = self._tickScratch.terrainInput
     terrainInput.fieldX = self.player.fieldX
     terrainInput.fieldZ = self.player.fieldZ
     terrainInput.facing = self.player.facing
-    self.terrainEffects:updateFixed(terrainInput)
+    local terrainOwners = self._tickScratch.terrainOwners
+    terrainOwners.player = terrainInput
+    for key in pairs(terrainOwners) do
+      if key ~= "player" then
+        terrainOwners[key] = nil
+      end
+    end
+    local partnerTerrainOwner = self:_livePartnerTerrainOwner()
+    if partnerTerrainOwner ~= nil then
+      terrainOwners[partnerTerrainOwner.actorId] = partnerTerrainOwner.owner
+    end
+    self.terrainEffects:updateFixed(terrainOwners)
   end
   -- The door/stair choreography drives the player during the locked
   -- transition: the pose clock hears the locomotion state at tick start, the
@@ -1550,7 +1602,12 @@ function FieldSession:updateFixed(inputSnapshot)
 
   if self.initController and self.initController.startLifecycle then
     local evaluateFrame = self.initController.evaluateFrame
-    if evaluateFrame and evaluateFrame(self.initController, self.tick + 1) then
+    -- On-frame map scripts start only on a settled player boundary. A script
+    -- that took the field mid-step would freeze the unfinished step (its
+    -- follower trail included) and could then never move a player that is
+    -- still physically walking. The next step boundary always offers the rule
+    -- again, because the committed tile ends its tick with an idle motion.
+    if evaluateFrame and self.player.motion == "idle" and evaluateFrame(self.initController, self.tick + 1) then
       self:_advanceTick()
       return
     end
@@ -1692,9 +1749,10 @@ function FieldSession:updateFixed(inputSnapshot)
 
   -- The pose clock treats a tick as locomoting if the player was locomoting at either
   -- end of it, so the gait phase carries across the tile commit instead of
-  -- restarting on every arrival (the ROM's walk range spans two tiles).
+  -- restarting on every arrival (the ROM's walk range spans two tiles). The
+  -- pre-scheduler capture is the true tick-start half: a script phase that
+  -- commits its scripted action must not make the arrival tick look idle.
   local ordinaryPresentation = self.player:presentationStateInto(self._tickScratch.playerPresentation)
-  local ordinaryLocomotionAtTickStart = ordinaryPresentation.locomotionActive
   local ordinaryStepSpeedAtTickStart = ordinaryPresentation.ordinaryStepSpeed
 
   local movementInput = inputSnapshot
@@ -1872,7 +1930,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- Pose clocks advance only on a tick that could change the world, so a fade or
   -- a locked transition freezes animation instead of walking it in place.
   if self.playerVisual then
-    self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart, ordinaryStepSpeedAtTickStart)
+    self.playerVisual:updateFixed(scriptedLocomotionAtTickStart, ordinaryStepSpeedAtTickStart)
   end
   self.camera:updateFixed(cameraTargetInto(self))
   -- The ambient phone opportunity lives at this settled boundary, after

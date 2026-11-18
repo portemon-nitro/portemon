@@ -2987,6 +2987,9 @@ function T.presented_win_carries_every_phase_assertion()
       update = function()
         followerSteps = followerSteps + 1
       end,
+      takeCommittedStep = function()
+        return nil
+      end,
       dispose = function() end,
     }
     runtime.followingMonTransition = {

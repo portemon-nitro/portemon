@@ -157,8 +157,8 @@ local function setup(map, player, avatar)
       facing = function()
         return player.facing
       end,
-      beginScriptedAction = function(_, action)
-        return player:beginScriptedAction(action)
+      beginScriptedAction = function(_, action, advancement)
+        return player:beginScriptedAction(action, advancement)
       end,
       advanceScriptedAction = function(_, progress, duration)
         return player:advanceScriptedAction(progress, duration)

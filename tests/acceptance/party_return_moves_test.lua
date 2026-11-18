@@ -142,8 +142,8 @@ local function livePlayerPort(game)
   function port:facing()
     return live().facing
   end
-  function port:beginScriptedAction(action)
-    return live():beginScriptedAction(action)
+  function port:beginScriptedAction(action, advancement)
+    return live():beginScriptedAction(action, advancement)
   end
   function port:advanceScriptedAction(progress, duration)
     return live():advanceScriptedAction(progress, duration)

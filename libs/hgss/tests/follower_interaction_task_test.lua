@@ -606,8 +606,22 @@ T["interaction turns emit the partner's turn grass only for actual facing change
   end
   local emitted = seen.terrainEffects.emitted
   Assert.equal(#emitted, 2, "one motion turn and normal facing restoration emit two effects")
-  Assert.deepEqual(emitted[1], { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5, direction = "north" })
-  Assert.deepEqual(emitted[2], { kind = "tall_grass", fieldX = 13, fieldZ = 8, worldY = 2.5, direction = "west" })
+  Assert.deepEqual(emitted[1], {
+    ownerKey = "partner",
+    kind = "tall_grass",
+    fieldX = 13,
+    fieldZ = 8,
+    worldY = 2.5,
+    direction = "north",
+  })
+  Assert.deepEqual(emitted[2], {
+    ownerKey = "partner",
+    kind = "tall_grass",
+    fieldX = 13,
+    fieldZ = 8,
+    worldY = 2.5,
+    direction = "west",
+  })
   Assert.deepEqual(seen.turnGrassQueries, { "west", "west" }, "grass follows the facing saved at interaction start")
   Assert.equal(seen.actor.facing, "west")
 

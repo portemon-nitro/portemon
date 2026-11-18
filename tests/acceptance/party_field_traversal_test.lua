@@ -89,8 +89,8 @@ local function livePlayerPort(game)
   function port:facing()
     return player.facing
   end
-  function port:beginScriptedAction(action)
-    return player:beginScriptedAction(action)
+  function port:beginScriptedAction(action, advancement)
+    return player:beginScriptedAction(action, advancement)
   end
   function port:advanceScriptedAction(progress, duration)
     return player:advanceScriptedAction(progress, duration)
@@ -500,8 +500,8 @@ local function rigWorld(player, avatar, map, applied)
       facing = function()
         return player.facing
       end,
-      beginScriptedAction = function(_, action)
-        return player:beginScriptedAction(action)
+      beginScriptedAction = function(_, action, advancement)
+        return player:beginScriptedAction(action, advancement)
       end,
       advanceScriptedAction = function(_, progress, duration)
         return player:advanceScriptedAction(progress, duration)

@@ -11,6 +11,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local Runtime = require("libs.script.src.Runtime")
 local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
@@ -49,16 +50,24 @@ local function dispatchMovementMode(game, movementType)
 end
 
 -- Drive one scripted player walk through the production runtime and settle
--- both actors. Returns the vacated player tile and the follower tile before
+-- both actors. The caller owns a script-command walk: it advances the action
+-- on the movement task's cadence and commits on the final tick, exactly like
+-- MovementTask. Returns the vacated player tile and the follower tile before
 -- the step.
 local function driveScriptedWalk(game, partnerId, direction, speed)
   local before = game:snapshot()
   local vacated = { fieldX = before.player.fieldX, fieldZ = before.player.fieldZ }
   local followerBefore = assert(before.actors[partnerId], "the partner must be installed before the step")
-  game.runtime.player:beginScriptedAction({ action = "walk", direction = direction, speed = speed })
-  game:advanceUntil("scripted player walk resolves", function(snapshot)
-    return snapshot.player.motion == "idle"
-  end, 120)
+  local duration = assert(MovementCalibration.SPEED_TICKS[speed], "the walk speed must be calibrated")
+  local player = game.runtime.player
+  player:beginScriptedAction({ action = "walk", direction = direction, speed = speed })
+  for progress = 1, duration do
+    player:advanceScriptedAction(progress, duration)
+    if progress == duration then
+      player:commitScriptedAction()
+    end
+    game:step()
+  end
   game:advanceUntil("follower trail settles", function()
     return game.runtime.followingMon:isMovementSettled()
   end, 180)
@@ -121,20 +130,31 @@ function T.tests.transition_mode_replays_the_follower_command_through_the_fast_c
       Assert.equal(partner.fieldZ, stacked.fieldZ, "the arrangement stacks the partner on the player tile")
     end
 
-    game.runtime.player:beginScriptedAction({ action = "walk", direction = "north", speed = "fast" })
-    game:step()
-    Assert.isNil(game.runtime.errorText, "field runtime faulted on the transition step")
-    Assert.isFalse(
-      game.runtime.followingMon:isMovementSettled(),
-      "the follower replays its remembered command while the player step is still in flight"
-    )
-    do
-      local actor = assert(game.runtime.actors:getById(id), "the partner survives the transition step start")
-      Assert.equal(actor.pose, "walk", "the replay walks while the player step is in flight")
-      Assert.equal(actor.facing, "east", "the replay faces the remembered direction, not the vacated tile")
-      local motion = assert(actor:scriptedMotionState(), "the replay has an active presentation")
-      Assert.equal(motion.speed, "fast", "the replay keeps the remembered fast pace")
+    -- The caller owns the script-command walk: advance it on the movement
+    -- task's own cadence and commit on the final tick.
+    local stepDuration = assert(MovementCalibration.SPEED_TICKS.fast, "the fast walk must be calibrated")
+    local player = game.runtime.player
+    player:beginScriptedAction({ action = "walk", direction = "north", speed = "fast" })
+    for progress = 1, stepDuration do
+      player:advanceScriptedAction(progress, stepDuration)
+      if progress == stepDuration then
+        player:commitScriptedAction()
+      end
+      game:step()
+      if progress == 1 then
+        Assert.isNil(game.runtime.errorText, "field runtime faulted on the transition step")
+        Assert.isFalse(
+          game.runtime.followingMon:isMovementSettled(),
+          "the follower replays its remembered command while the player step is still in flight"
+        )
+        local actor = assert(game.runtime.actors:getById(id), "the partner survives the transition step start")
+        Assert.equal(actor.pose, "walk", "the replay walks while the player step is in flight")
+        Assert.equal(actor.facing, "east", "the replay faces the remembered direction, not the vacated tile")
+        local motion = assert(actor:scriptedMotionState(), "the replay has an active presentation")
+        Assert.equal(motion.speed, "fast", "the replay keeps the remembered fast pace")
+      end
     end
+    Assert.isNil(game.runtime.errorText, "field runtime faulted on the transition step")
     game:advanceUntil("fast transition step resolves", function(snapshot)
       return snapshot.player.motion == "idle"
     end, 120)

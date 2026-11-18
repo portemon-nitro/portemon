@@ -1434,7 +1434,10 @@ function FieldMoveWorld:beginTraversalSegment(plan)
   else
     action.speed = assert(segment.speed, "traversal segment needs its gait")
   end
-  self._player:beginScriptedAction(action)
+  -- Field traversal is the one scripted action the fixed field update owns:
+  -- the plan begins it and then only observes the session tick advancing and
+  -- committing it (FieldMoveRuntime:advance).
+  self._player:beginScriptedAction(action, "tick")
   if plan.segmentIndex == 0 and plan.effect ~= nil then
     self:playEffect(plan.effect)
   end

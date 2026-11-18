@@ -1013,6 +1013,56 @@ function T.transition_b_replays_the_remembered_command_instead_of_steering()
   steering.mgr:dispose()
 end
 
+-- A door arrival publishes the follower hidden on the player's tile and the
+-- first trail step owns the reveal. That first step can be driven by a script
+-- in a transition movement mode (the source scenes set the mode right before
+-- walking the player), so the reveal cannot live only in free-follow steering:
+-- here the follower already stands on the vacated tile and never needs to walk
+-- to satisfy the obligation.
+function T.arrival_rejoin_reveals_on_a_transition_mode_trail_step()
+  for _, movementType in ipairs({ "follow_transition_a", "follow_transition_b" }) do
+    local w = world()
+    w.svc:setLead(0, mon())
+    tick(w, 3)
+    local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+    w.controller:rejoin("egress")
+    Assert.isFalse(w.mgr:isVisible(partnerId), movementType .. " starts from the hidden arrival state")
+    w.controller:setMovementType(movementType)
+    driveScriptedWalk(w, "south", "normal")
+    Assert.isTrue(
+      w.mgr:isVisible(partnerId),
+      movementType .. " must reveal the hidden arrival on its trail step"
+    )
+    Assert.isTrue(w.controller:isMovementSettled(), movementType .. " settles after the scripted step")
+    w.mgr:dispose()
+  end
+end
+
+-- A committed follower step publishes its destination facts exactly once so
+-- the composition can spawn that step's source terrain responses (tall grass)
+-- at the follower's own tile. The runtime never guesses: every fact comes from
+-- the actor the manager just committed.
+function T.committed_follower_step_publishes_its_destination_facts_once()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 3)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  Assert.isNil(w.controller:takeCommittedStep(), "installation commits no step")
+
+  local vacated = driveScriptedWalk(w, "south", "normal")
+  local commit = assert(w.controller:takeCommittedStep(), "the completed follower step is observable")
+  Assert.equal(commit.actorId, partnerId)
+  Assert.equal(commit.mapId, 61)
+  Assert.equal(commit.fieldX, vacated.fieldX, "the follower committed onto the vacated tile")
+  Assert.equal(commit.fieldZ, vacated.fieldZ, "the follower committed onto the vacated tile")
+  Assert.equal(commit.facing, "south")
+  Assert.equal(commit.visible, true, "the visible partner reports its step")
+  Assert.equal(commit.large, true, "the fixture lead carries a nonzero source shape nibble")
+  Assert.isTrue(type(commit.worldY) == "number", "the committed step carries its world height")
+  Assert.isNil(w.controller:takeCommittedStep(), "the observation is consumed exactly once")
+  w.mgr:dispose()
+end
+
 -- An arriving walk start begins the real trail in the same update without
 -- queueing behind anything stationary: the follower holds no presentation
 -- action, so the trail starts at once.
