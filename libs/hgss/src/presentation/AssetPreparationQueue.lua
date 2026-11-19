@@ -52,18 +52,17 @@ local VALID_KINDS =
   { mesh = true, image = true, ["image-derivative"] = true, ["audio-sample"] = true, g4gx = true, g4tx = true }
 
 -- Native bank requests carry a discriminated selector instead of a single
--- path; the identity of one request is its bank file plus the selected draw or
--- named texture/palette pair, so repeated demand of one selected asset runs
--- once while another selection of the same bank stays a separate decode.
----@param kind string
----@param payload string|ModelAsset.GeometryReference|ModelAsset.TextureReference
+-- path; the identity of one request is its bank file plus the selected
+-- texture/palette pair, so repeated demand of one selected asset runs once
+-- while another selection of the same bank stays a separate decode. A native
+-- model bank is identified by its file alone: its preparation decodes the
+-- whole bank as one transaction, and the scene's draws realize from that
+-- result.
+---@param payload string|ModelAsset.TextureReference
 ---@return string
-local function requestIdentity(kind, payload)
+local function requestIdentity(payload)
   if type(payload) == "string" then
     return payload
-  end
-  if kind == "g4gx" then
-    return string.format("%s#draw%d", assert(payload.file), assert(payload.drawIndex))
   end
   return string.format("%s#%s#%s", assert(payload.file), tostring(payload.textureName), tostring(payload.paletteName))
 end
@@ -181,6 +180,36 @@ end
 -- Best-effort byte size for one absorbed payload, so the transient
 -- ready-but-unclaimed ceiling stays honest across payload kinds. Unknown
 -- shapes count zero rather than blocking the bound.
+---@param data unknown
+---@return integer
+local function dataByteSize(data)
+  if type(data) == "string" then
+    return #data
+  end
+  if type(data) ~= "table" and type(data) ~= "userdata" then
+    return 0
+  end
+  local ok, size = pcall(function()
+    local sized = data --[[@as { getSize: fun(self: table): integer }]]
+    if type(sized.getSize) == "function" then
+      return sized:getSize()
+    end
+    return 0
+  end)
+  if ok and type(size) == "number" and size > 0 then
+    return math.floor(size)
+  end
+  if type(data) == "table" and type(data.getString) == "function" then
+    local stringOk, bytes = pcall(function()
+      return (data --[[@as { getString: fun(self: table): string }]]):getString()
+    end)
+    if stringOk and type(bytes) == "string" then
+      return #bytes
+    end
+  end
+  return 0
+end
+
 ---@param kind string
 ---@param payload table<string, unknown>
 ---@return integer
@@ -189,41 +218,21 @@ function AssetPreparationQueue:_payloadByteSize(kind, payload)
     if type(payload.size) == "number" and payload.size >= 0 then
       return math.floor(payload.size)
     end
-    local data = payload.byteData
-    if type(data) == "table" or type(data) == "userdata" then
-      local ok, size = pcall(function()
-        return (data --[[@as { getSize: fun(self: table): integer }]]):getSize()
-      end)
-      if ok and type(size) == "number" and size >= 0 then
-        return math.floor(size)
-      end
+    return dataByteSize(payload.byteData)
+  end
+  if kind == "g4gx" then
+    -- A model bank holds one upload packet per draw.
+    local total = 0
+    for _, packet in
+      ipairs(payload.draws --[[@as table[] ]])
+    do
+      total = total + dataByteSize(packet.vertexData) + dataByteSize(packet.indexData)
     end
-    return 0
+    return total
   end
   local total = 0
   for _, field in ipairs({ "indexData", "paletteData", "vertexData", "imageData" }) do
-    local data = payload[field]
-    if type(data) == "string" then
-      total = total + #data
-    elseif type(data) == "table" or type(data) == "userdata" then
-      local ok, size = pcall(function()
-        local sized = data --[[@as { getSize: fun(self: table): integer }]]
-        if type(sized.getSize) == "function" then
-          return sized:getSize()
-        end
-        return 0
-      end)
-      if ok and type(size) == "number" and size > 0 then
-        total = total + math.floor(size)
-      elseif type(data.getString) == "function" then
-        local stringOk, bytes = pcall(function()
-          return (data --[[@as { getString: fun(self: table): string }]]):getString()
-        end)
-        if stringOk and type(bytes) == "string" then
-          total = total + #bytes
-        end
-      end
-    end
+    total = total + dataByteSize(payload[field])
   end
   return total
 end
@@ -374,6 +383,12 @@ function AssetPreparationQueue:_publishOk(record, response)
     self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
     return
   end
+  if record.kind == "g4gx" then
+    record.payload = { draws = response.draws }
+    record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+    self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
+    return
+  end
   record.payload = {
     vertexData = response.vertexData,
     indexData = response.indexData,
@@ -451,7 +466,7 @@ function AssetPreparationQueue:_drain()
 end
 
 ---@param kind "mesh"|"image"|"image-derivative"|"audio-sample"|"g4gx"|"g4tx"
----@param logicalPath string|ModelAsset.GeometryReference|ModelAsset.TextureReference generated file path, or a native bank selector for g4gx/g4tx
+---@param logicalPath string|ModelAsset.TextureReference generated file path, or a native texture bank selector for g4tx
 ---@param priority "demand"|"prefetch"
 ---@return integer
 function AssetPreparationQueue:request(kind, logicalPath, priority)
@@ -459,7 +474,7 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
   assert(VALID_KINDS[kind], "unknown preparation kind " .. tostring(kind))
   assert(VALID_PRIORITIES[priority], "unknown preparation priority " .. tostring(priority))
   assert(
-    type(logicalPath) == "string" or ((kind == "g4gx" or kind == "g4tx") and type(logicalPath) == "table"),
+    type(logicalPath) == "string" or (kind == "g4tx" and type(logicalPath) == "table"),
     "preparation path is required"
   )
   self:_drain()
@@ -467,7 +482,7 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
   if self._workerFailure ~= nil then
     error(self._workerFailure, 0)
   end
-  local identity = requestIdentity(kind, logicalPath)
+  local identity = requestIdentity(logicalPath)
   local file = type(logicalPath) == "table" and logicalPath.file or logicalPath
   local resolved = self._cacheFs:resolve(file)
   local key = kind .. "\0" .. resolved .. "\0" .. identity

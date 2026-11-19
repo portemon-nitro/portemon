@@ -699,6 +699,7 @@ function FieldPresentationResources.new(runtime)
       cacheFs = runtime.cacheFs,
       manifest = bagManifest,
       imageAssets = sharedImages,
+      assetPreparation = assert(runtime.assetPreparation, "the bag hero borrows the runtime preparation worker"),
     })
     self.bagRenderer = BagRenderer.new({
       cacheFs = runtime.cacheFs,

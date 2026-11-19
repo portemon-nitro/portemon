@@ -46,6 +46,7 @@ local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local FixedPoint = require("libs.math.src.FixedPoint")
 local Matrix4 = require("libs.math.src.Matrix4")
+local bit = require("bit")
 local ffi = require("ffi")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
@@ -308,6 +309,9 @@ local function newDecoder(arena, scratch)
     primType = nil,
     opcodeCounts = {},
     polygonAttrs = {}, -- set of distinct POLYGON_ATTR words issued in-list
+    -- Reused parameter slots: every command loads only its own words and reads
+    -- exactly those, so the hot replay loop allocates no per-command table.
+    params = {},
     -- Dynamic (transform-preserving) mode state: the display-list-local
     -- matrix baked into vertices, the transform source of the current
     -- segment, and the segments themselves. Unused in static mode.
@@ -919,21 +923,23 @@ local function executeBeginVertices(d, p) -- BEGIN_VTXS
 end
 EXEC[0x40] = executeBeginVertices
 
-local function unpackCommandWord(cmdWord)
-  return {
-    cmdWord % 256,
-    math.floor(cmdWord / 256) % 256,
-    math.floor(cmdWord / 65536) % 256,
-    math.floor(cmdWord / 16777216) % 256,
-  }
+-- One command byte of a packed word: the DS FIFO stores four opcodes in a
+-- little-endian word, so slot `index` (zero-based) is that byte.
+---@param cmdWord integer
+---@param index integer
+---@return integer
+local function commandByte(cmdWord, index)
+  return bit.band(bit.rshift(cmdWord, index * 8), 0xFF)
 end
 
-local function readCommandParameters(r, pos, count)
-  local params = {}
-  for k = 0, count - 1 do
-    params[k + 1] = r:u32le(pos + k * 4)
-  end
-  return params
+local function unknownOpcode(op, offset, context)
+  error(
+    Errors.new(
+      "GX_UNKNOWN_OPCODE",
+      string.format("unknown geometry opcode 0x%02X at offset 0x%X", op, offset),
+      { opcode = op, offset = offset, source = context }
+    )
+  )
 end
 
 local function applyCommand(d, op, params, offset, context, lenientEnd, commandOffset)
@@ -980,33 +986,26 @@ function GxDisplayList.scanState(bytes, context)
   local pos = 0
   while pos + 4 <= len do
     local cmdWord = r:u32le(pos)
-    local cmdBytes = unpackCommandWord(cmdWord)
     local cmdOffset = pos
     pos = pos + 4
-    for i = 1, 4 do
-      local op = cmdBytes[i]
+    for slot = 0, 3 do
+      local op = commandByte(cmdWord, slot)
       local n = PARAM_WORDS[op]
       if n == nil then
-        error(
-          Errors.new(
-            "GX_UNKNOWN_OPCODE",
-            string.format("unknown geometry opcode 0x%02X at offset 0x%X", op, cmdOffset + i - 1),
-            { opcode = op, offset = cmdOffset + i - 1, source = context }
-          )
-        )
+        unknownOpcode(op, cmdOffset + slot, context)
       end
       if op ~= 0x00 then
-        local params = readCommandParameters(r, pos, n)
+        local word = n > 0 and r:u32le(pos) or nil
         pos = pos + n * 4
         opcodeCounts[op] = (opcodeCounts[op] or 0) + 1
         if op == 0x20 then
-          colorR, colorG, colorB = FixedPoint.rgb555(params[1] % 0x8000)
+          colorR, colorG, colorB = FixedPoint.rgb555(assert(word) % 0x8000)
           colorSource = COLOR_SOURCE.LITERAL
         elseif op == 0x21 then
-          normalX, normalY, normalZ = FixedPoint.normal10(params[1])
+          normalX, normalY, normalZ = FixedPoint.normal10(assert(word))
           colorSource = COLOR_SOURCE.NORMAL_LIT
         elseif op == 0x29 then
-          polygonAttrs[#polygonAttrs + 1] = params[1]
+          polygonAttrs[#polygonAttrs + 1] = assert(word)
         elseif op == 0x40 then
           runOpen = true
         elseif op == 0x41 then
@@ -1036,20 +1035,13 @@ local function scanCommandStream(r, len, options)
   local pos = 0
   while pos + 4 <= len do
     local cmdWord = r:u32le(pos)
-    local cmdBytes = unpackCommandWord(cmdWord)
     local cmdOffset = pos
     pos = pos + 4
-    for i = 1, 4 do
-      local op = cmdBytes[i]
+    for slot = 0, 3 do
+      local op = commandByte(cmdWord, slot)
       local n = PARAM_WORDS[op]
       if n == nil then
-        error(
-          Errors.new(
-            "GX_UNKNOWN_OPCODE",
-            string.format("unknown geometry opcode 0x%02X at offset 0x%X", op, cmdOffset + i - 1),
-            { opcode = op, offset = cmdOffset + i - 1, source = options.context }
-          )
-        )
+        unknownOpcode(op, cmdOffset + slot, options.context)
       end
       if op ~= 0x00 then
         pos = pos + n * 4
@@ -1078,6 +1070,11 @@ local function _decode(bytes, options)
   ensureRunCapacity(scratch, math.max(1, reserveVertices))
   local d = newDecoder(arena, scratch)
   d.requireColorSource = options.requireColorSource == true
+  -- `collectCommands = false` is the replay fast path: the caller consumes
+  -- geometry slices/segments plus the engine state they may feed forward, so
+  -- the command trace and the static bounds fold (which packing re-derives
+  -- from the uploaded vertices) are not built at all.
+  local diagnostics = options.collectCommands ~= false
   d.slice = arena:beginSlice()
   -- The SBC evaluator supplies position matrices only; their direction
   -- counterparts are the linear parts, derived on demand.
@@ -1115,35 +1112,31 @@ local function _decode(bytes, options)
   end
   local pos = 0
   local commands
-  if options.collectCommands ~= false then
+  if diagnostics then
     commands = {}
   end
 
   while pos + 4 <= len do
     local cmdWord = r:u32le(pos)
-    local cmdBytes = unpackCommandWord(cmdWord)
     local cmdOffset = pos
     pos = pos + 4
-    for i = 1, 4 do
-      local op = cmdBytes[i]
+    for slot = 0, 3 do
+      local op = commandByte(cmdWord, slot)
       local n = PARAM_WORDS[op]
       if n == nil then
-        error(
-          Errors.new(
-            "GX_UNKNOWN_OPCODE",
-            string.format("unknown geometry opcode 0x%02X at offset 0x%X", op, cmdOffset + i - 1),
-            { opcode = op, offset = cmdOffset + i - 1, source = options.context }
-          )
-        )
+        unknownOpcode(op, cmdOffset + slot, options.context)
       end
       if op ~= 0x00 then
-        local params = readCommandParameters(r, pos, n)
-        pos = pos + n * 4
+        local params = d.params
+        for k = 1, n do
+          params[k] = r:u32le(pos)
+          pos = pos + 4
+        end
         if commands then
-          commands[#commands + 1] = { opcode = op, offset = cmdOffset + i - 1 }
+          commands[#commands + 1] = { opcode = op, offset = cmdOffset + slot }
         end
         d.opcodeCounts[op] = (d.opcodeCounts[op] or 0) + 1
-        applyCommand(d, op, params, cmdOffset + i - 1, options.context, d.runSplit, cmdOffset)
+        applyCommand(d, op, params, cmdOffset + slot, options.context, d.runSplit, cmdOffset)
       end
     end
   end
@@ -1196,7 +1189,7 @@ local function _decode(bytes, options)
     finishSegment(d, slice)
   end
   local bounds
-  if not d.dynamic then
+  if not d.dynamic and diagnostics then
     local numeric = arena.numeric
     local slice = assert(d.slice)
     for offset = 0, slice.vertexCount - 1 do

@@ -793,8 +793,17 @@ local function pockets()
   return tabs
 end
 
+-- The hero spy models the staged hero contract: the bag preparation admits the
+-- state only once the hero reports ready, so draw is the observed handoff.
 local function heroSpy(order)
-  local spy = { draws = {}, releaseCount = 0 }
+  local spy = { draws = {}, releaseCount = 0, prepares = {} }
+  function spy:prepare(gender, maxWorkUnits)
+    self.prepares[#self.prepares + 1] = { gender = gender, maxWorkUnits = maxWorkUnits }
+    return true
+  end
+  function spy:isReady(_)
+    return true
+  end
   function spy:draw(gender, heroStatus, heroPlacement)
     self.draws[#self.draws + 1] = { gender = gender, status = heroStatus, placement = heroPlacement }
     if order ~= nil then

@@ -1,5 +1,6 @@
 -- Holds the selected edition's loader/title while the existing Main Menu is staged.
 
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local CacheFs = require("libs.storage.src.CacheFs")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local HgssOpeningMovie = require("libs.hgss.src.presentation.HgssOpeningMovie")
@@ -48,7 +49,8 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field titleElapsed integer
 ---@field titleEntry integer remaining retail title start-up calls before its theme starts
 ---@field titleAnimating boolean true once the adopted title has run its first animation call
----@field titleReadyPending boolean
+---@field titleBuild HgssTitleScene.Build? staged title construction in progress
+---@field titleAssets table<string, unknown>? owned preparation worker for the title build
 ---@field menuError unknown?
 ---@field titleError unknown?
 ---@field bootstrapError unknown?
@@ -104,6 +106,9 @@ local FADE_IN_FRAMES = 18
 -- frame. Warm entries skip this beat and enter as soon as the movie is
 -- drawable.
 local LOADER_DWELL_SECONDS = 0.8
+-- Title geometry realization budget per update: one prepared mesh upload per
+-- frame, so the title handoff never uploads a whole model in one frame.
+local TITLE_BUILD_WORK_UNITS = 1
 local DWELL_DT_CAP = 0.25
 local OPENING_SCENE_COUNT = 5
 
@@ -201,7 +206,8 @@ function StartupTitleState.new(options)
     titleElapsed = 0,
     titleEntry = 0,
     titleAnimating = false,
-    titleReadyPending = false,
+    titleBuild = nil,
+    titleAssets = nil,
     menuError = nil,
     titleError = nil,
     bootstrapError = nil,
@@ -289,11 +295,7 @@ function StartupTitleState:_startRequests()
   do
     local ready, failure = self:_request("startup-title")
     if ready then
-      if not self.movieCompleted then
-        self.titleReadyPending = true
-      else
-        self:_adoptTitle()
-      end
+      self:_beginTitleBuild()
     elseif failure ~= nil then
       self.titleError = failure
       self.phase = "error"
@@ -486,37 +488,94 @@ function StartupTitleState:_finishMovie()
   self.movie = nil
   self.movieCompleted = true
   movie:dispose()
-  if self.titleReadyPending then
-    self.titleReadyPending = false
-    self:_adoptTitle()
+  -- The staged title takes over as soon as its build is ready; a build still
+  -- in progress (or a title milestone still being validated) keeps the loader
+  -- visible and is advanced by the next polling update.
+  self.phase = "loading"
+  self:_pollTitleBuild()
+end
+
+-- Begins the staged title build once the validated title milestone is ready.
+-- The build asks the presentation worker for the title model banks while the
+-- opening cinematic is still playing, so the handoff frame only uploads
+-- prepared mesh packets instead of decoding GX geometry on this thread.
+function StartupTitleState:_beginTitleBuild()
+  -- A journey that already failed (a terminal scene or milestone failure keeps
+  -- the diagnostic loader) never starts the title presentation behind it.
+  if self.phase == "error" or self.sceneFailed then
     return
   end
-  local ready, failure = self:_request("startup-title")
-  if failure ~= nil then
-    self.titleError = failure
+  if self.titleBuild ~= nil or self.title ~= nil or self.titleError ~= nil then
+    return
+  end
+  local okFs, cacheFs = pcall(CacheFs.forVersion, self.versionId)
+  if not okFs then
+    self.titleError = cacheFs
     self.phase = "error"
     return
   end
-  if ready then
+  local queue = self.titleAssets
+  if queue == nil then
+    local okQueue, queueOrError = pcall(AssetPreparationQueue.new, cacheFs)
+    if not okQueue then
+      self.titleError = queueOrError
+      self.phase = "error"
+      return
+    end
+    queue = queueOrError
+    self.titleAssets = queue
+  end
+  local ok, build = pcall(HgssTitleScene.begin, {
+    versionId = self.versionId,
+    cacheFs = cacheFs,
+    width = self.width,
+    height = self.height,
+    assetPreparation = queue,
+  })
+  if not ok then
+    self.titleError = build
+    self.phase = "error"
+    return
+  end
+  self.titleBuild = build
+  self.titleObserved = true
+end
+
+-- Advances the staged title build by one bounded main-thread work unit and
+-- hands the finished scene over once the cinematic has handed off.
+function StartupTitleState:_pollTitleBuild()
+  local build = self.titleBuild
+  if build == nil then
+    return
+  end
+  if not build:isReady() then
+    local ok, failure = pcall(build.advance, build, TITLE_BUILD_WORK_UNITS)
+    if not ok then
+      self.titleError = failure
+      self.phase = "error"
+      pcall(build.release, build)
+      self.titleBuild = nil
+      return
+    end
+    if not build:isReady() then
+      return
+    end
+  end
+  if self.movieCompleted then
     self:_adoptTitle()
-  else
-    self.phase = "loading"
   end
 end
 
 function StartupTitleState:_adoptTitle()
-  if self.titleObserved or not self:_live() then
+  if self.title ~= nil or not self:_live() then
     return
   end
-  self.titleObserved = true
-  local ok, result = pcall(function()
-    return HgssTitleScene.new({
-      versionId = self.versionId,
-      cacheFs = CacheFs.forVersion(self.versionId),
-      width = self.width,
-      height = self.height,
-    })
-  end)
+  local build = self.titleBuild
+  if build == nil or not build:isReady() then
+    return
+  end
+  local ok, result = pcall(build.takeResult, build)
+  self.titleBuild = nil
   if not ok then
     self.titleError = result
     self.phase = "error"
@@ -611,13 +670,10 @@ function StartupTitleState:_pollAssets()
       self.phase = "error"
       self.titleObserved = true
     elseif ready then
-      if not self.movieCompleted then
-        self.titleReadyPending = true
-      else
-        self:_adoptTitle()
-      end
+      self:_beginTitleBuild()
     end
   end
+  self:_pollTitleBuild()
   if not self.bootstrapObserved then
     -- Bootstrap rides near until the cinematic pipeline shows progress,
     -- then it is promoted so the menu stages promptly behind the title.
@@ -701,7 +757,6 @@ function StartupTitleState:_reenterMovie()
   local title = self.title
   self.title = nil
   self.titleObserved = false
-  self.titleReadyPending = true
   self.movieCompleted = false
   self.titleElapsed = 0
   if title ~= nil then
@@ -1148,11 +1203,16 @@ function StartupTitleState:dispose()
   end
   self.disposed = true
   local menu, title, movie, loading = self.stagedMenu, self.title, self.movie, self.loading
+  local titleBuild, titleAssets = self.titleBuild, self.titleAssets
   self.stagedMenu, self.title, self.movie, self.loading = nil, nil, nil, nil
+  self.titleBuild, self.titleAssets = nil, nil
   self.derivedAssets = nil
   self.audio = nil
   if menu ~= nil then
     menu:dispose()
+  end
+  if titleBuild ~= nil then
+    titleBuild:release()
   end
   if title ~= nil then
     title:dispose()
@@ -1162,6 +1222,10 @@ function StartupTitleState:dispose()
   end
   if loading ~= nil then
     loading:dispose()
+  end
+  -- The title's preparation worker outlives each build but never this state.
+  if titleAssets ~= nil then
+    titleAssets:release()
   end
 end
 

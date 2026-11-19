@@ -11,6 +11,7 @@
 local Assert = require("tests.support.Assert")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FakeGraphics = require("tests.support.FakeGraphics").new
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 
 local HERO_MODULE = "libs.hgss.src.presentation.BagHeroRenderer"
 local POOL_MODULE = "libs.hgss.src.presentation.GpuAssetPool"
@@ -144,6 +145,12 @@ local function placement()
   }
 end
 
+-- The hero realizes through the presentation preparation worker: this stand-in
+-- keeps the camera fixtures on already-prepared geometry.
+local function fakePreparationQueue()
+  return FakePreparationQueue.new()
+end
+
 local function stubCache()
   return {
     read = function(_)
@@ -153,7 +160,12 @@ local function stubCache()
 end
 
 local function newHero(Hero, value)
-  return Hero.new({ cacheFs = stubCache(), manifest = value, graphics = FakeGraphics({}) })
+  return Hero.new({
+    cacheFs = stubCache(),
+    manifest = value,
+    graphics = FakeGraphics({}),
+    assetPreparation = fakePreparationQueue(),
+  })
 end
 
 local function makeDoubles()
@@ -163,6 +175,10 @@ local function makeDoubles()
     local pool = {}
     function pool:meshFor(_)
       return { mesh = {}, center = { 0, 0, 0 } }
+    end
+    function pool:preparedMesh(path, await)
+      assert(type(await) == "function", "prepared mesh realization needs the preparation await")
+      return self:meshFor(path)
     end
     function pool:imageFor(_)
       return {}
@@ -179,6 +195,7 @@ local function makeDoubles()
     local key = (opts and opts.key) or "hero"
     local definition = {
       animations = desc.animations,
+      materials = desc.materials or {},
       meshes = { { id = "hero-mesh-0", geometry = "bag-hero/" .. key .. "/geometry-0" } },
     }
     function definition:animation(nameOrSemantic)
@@ -223,6 +240,10 @@ local function makeDoubles()
       return 0
     end
     function instance:evaluatePose() end
+    function instance:evaluateMaterials() end
+    function instance:effectiveMaterial(_)
+      return {}
+    end
     function instance:drawItems()
       return {}
     end

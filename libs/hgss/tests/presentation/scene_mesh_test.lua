@@ -59,6 +59,129 @@ end
 ---@field mesh unknown?
 ---@field image unknown?
 
+
+-- ---- native model banks -------------------------------------------------
+--
+-- A G4GX bank keeps the display-list command bytes, so the runtime replays
+-- them. These fixtures pin the work a bank operation performs: one replay per
+-- distinct decode context and one terrain repair for the whole bank, whatever
+-- number of draws a scene later selects.
+
+local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+local TerrainBoundaryConformer = require("libs.hgss.src.presentation.TerrainBoundaryConformer")
+
+local function gxU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+local function gxVertex(gx, x, y, z)
+  return gxU32(gx.fixed(x) + gx.fixed(y) * 0x10000) .. gxU32(gx.fixed(z))
+end
+
+local GX_FIXED = {
+  fixed = function(value)
+    return math.floor(value * 4096) % 0x10000
+  end,
+}
+
+-- BEGIN_VTXS(quads), one normal plus one VTX_16 per corner, END_VTXS, packed
+-- into the geometry FIFO's four-opcode groups.
+local function gxQuad(vertices)
+  local ops, params = { 0x40 }, { gxU32(1) }
+  for _, vertex in ipairs(vertices) do
+    ops[#ops + 1], params[#params + 1] = 0x21, gxU32(0x00000FFF)
+    ops[#ops + 1], params[#params + 1] = 0x22, gxU32(0)
+    ops[#ops + 1], params[#params + 1] = 0x23, gxVertex(GX_FIXED, vertex[1], vertex[2], vertex[3])
+  end
+  ops[#ops + 1], params[#params + 1] = 0x41, ""
+  while #ops % 4 ~= 0 do
+    ops[#ops + 1], params[#params + 1] = 0x00, ""
+  end
+  local out = {}
+  for group = 0, #ops / 4 - 1 do
+    local opcodeBytes = {}
+    for slot = 1, 4 do
+      opcodeBytes[slot] = string.char(ops[group * 4 + slot])
+    end
+    out[#out + 1] = table.concat(opcodeBytes)
+    for slot = 1, 4 do
+      out[#out + 1] = params[group * 4 + slot]
+    end
+  end
+  return table.concat(out)
+end
+
+-- One terrain bank: two eligible draws sharing the boundary x=0 (the coarse
+-- side's z span is broken at z=2 by the fine neighbour) plus a third eligible
+-- draw and one ineligible draw that must not take part in the repair.
+local function terrainBank()
+  return NativeGxFormat.encode({
+    draws = {
+      {
+        commands = gxQuad({ { -4, 1, 0 }, { 0, 1, 0 }, { 0, 1, 4 }, { -4, 1, 4 } }),
+        nodeIndex = 0,
+        materialIndex = 0,
+        shapeIndex = 0,
+        transformMode = "static",
+        terrainBoundaryEligible = true,
+      },
+      {
+        commands = gxQuad({ { 0, 1, 0 }, { 4, 1, 0 }, { 4, 1, 2 }, { 0, 1, 2 } })
+          .. gxQuad({ { 0, 1, 2 }, { 4, 1, 2 }, { 4, 1, 4 }, { 0, 1, 4 } }),
+        nodeIndex = 0,
+        materialIndex = 1,
+        shapeIndex = 0,
+        transformMode = "static",
+        terrainBoundaryEligible = true,
+      },
+      {
+        commands = gxQuad({ { -8, 1, 0 }, { -4, 1, 0 }, { -4, 1, 4 }, { -8, 1, 4 } }),
+        nodeIndex = 0,
+        materialIndex = 2,
+        shapeIndex = 0,
+        transformMode = "static",
+        terrainBoundaryEligible = true,
+      },
+      {
+        commands = gxQuad({ { 8, 2, 0 }, { 12, 2, 0 }, { 12, 2, 4 }, { 8, 2, 4 } }),
+        nodeIndex = 0,
+        materialIndex = 3,
+        shapeIndex = 0,
+        transformMode = "static",
+      },
+    },
+  })
+end
+
+-- Runs `fn` with the GX replay and the terrain repair counted, so a bank
+-- operation's work multiplicity is observable without asserting internals.
+local function countingBankWork(fn)
+  local decode = GxDisplayList.decode
+  local conform = TerrainBoundaryConformer.conform
+  local counts = { replay = 0, conform = 0 }
+  GxDisplayList.decode = function(...)
+    counts.replay = counts.replay + 1
+    return decode(...)
+  end
+  TerrainBoundaryConformer.conform = function(...)
+    counts.conform = counts.conform + 1
+    return conform(...)
+  end
+  local ok, result = pcall(fn)
+  GxDisplayList.decode = decode
+  TerrainBoundaryConformer.conform = conform
+  if not ok then
+    error(result, 0)
+  end
+  return result, counts
+end
+
 return {
   tests = {
     ["round-trips a batch through encode/decode"] = function()
@@ -317,6 +440,87 @@ return {
       local bytes = patchByte(MeshWriter.encode(sampleBatch()), G4MeshFormat.HEADER_SIZE + 36, 7)
       throwsCode("MESH_BAD_COLOR_SOURCE", function()
         SceneMesh.decode(bytes)
+      end)
+    end,
+
+    ["a native bank replays each draw once and repairs its terrain group once"] = function()
+      local bytes = terrainBank()
+      local prepared, prepareWork = countingBankWork(function()
+        return SceneMesh.prepareNativeBank(bytes, "scene-mesh-bank")
+      end)
+      Assert.equal(#prepared.draws, 4, "every draw of the bank comes back as one upload packet")
+      Assert.equal(prepareWork.replay, 4, "each distinct draw context is replayed exactly once")
+      Assert.equal(prepareWork.conform, 1, "the whole eligible group is repaired in one pass")
+      Assert.equal(prepared.draws[1].vertexCount, 5, "the coarse draw adopts the neighbour's breakpoint")
+      Assert.equal(prepared.draws[1].indexCount, 9, "the repaired draw expresses the shared breakpoint once")
+      Assert.equal(prepared.draws[2].indexCount, 12, "the already-segmented neighbour keeps its four triangles")
+      Assert.equal(prepared.draws[4].indexCount, 6, "the ineligible draw is decoded without sibling repair")
+      Assert.isNil(prepared.draws[1].mesh, "preparation never realizes a GPU object")
+
+      local decoded, decodeWork = countingBankWork(function()
+        return SceneMesh.decodeNativeBank(bytes, "scene-mesh-bank")
+      end)
+      Assert.equal(decodeWork.replay, 4, "the reference path performs the same single replay per draw")
+      Assert.equal(decodeWork.conform, 1, "the reference path repairs the group once")
+      Assert.equal(decoded.draws[1].vertexCount, 5, "both paths report the same repaired topology")
+      Assert.equal(decoded.draws[1].indexCount, prepared.draws[1].indexCount)
+      Assert.equal(decoded.draws[2].indexCount, prepared.draws[2].indexCount)
+    end,
+
+    ["a native bank replays one shared command stream for every pose segment"] = function()
+      -- One shape whose display list restores matrix slot 2 halfway through:
+      -- the transform-preserving replay splits it into two segments, and each
+      -- segment draw selects one of them without replaying the shape.
+      local commands = gxQuad({ { 0, 1, 0 }, { 4, 1, 0 }, { 4, 1, 1 }, { 0, 1, 1 } })
+        .. string.char(0x14, 0, 0, 0)
+        .. gxU32(2)
+        .. gxQuad({ { 0, 2, 0 }, { 4, 2, 0 }, { 4, 2, 1 }, { 0, 2, 1 } })
+      local bytes = NativeGxFormat.encode({
+        draws = {
+          {
+            commands = commands,
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+            segmentIndex = 0,
+            positionScale = 1,
+          },
+          {
+            commands = commands,
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+            segmentIndex = 1,
+            positionScale = 1,
+          },
+        },
+      })
+      local prepared, work = countingBankWork(function()
+        return SceneMesh.prepareNativeBank(bytes, "scene-mesh-segments")
+      end)
+      Assert.equal(work.replay, 1, "both pose segments of one shape come from a single replay")
+      Assert.equal(#prepared.draws, 2, "each segment draw still gets its own upload packet")
+      Assert.equal(prepared.draws[1].indexCount, 6, "the first segment carries its own quad")
+      Assert.equal(prepared.draws[2].indexCount, 6, "the second segment carries its own quad")
+    end,
+
+    ["a native bank rejects a draw that names a pose segment its shape lacks"] = function()
+      local bytes = NativeGxFormat.encode({
+        draws = {
+          {
+            commands = gxQuad({ { 0, 1, 0 }, { 4, 1, 0 }, { 4, 1, 1 }, { 0, 1, 1 } }),
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+            segmentIndex = 3,
+          },
+        },
+      })
+      throwsCode("SCENE_MESH_NATIVE_SEGMENT_MISSING", function()
+        SceneMesh.prepareNativeBank(bytes, "scene-mesh-segments")
       end)
     end,
   },

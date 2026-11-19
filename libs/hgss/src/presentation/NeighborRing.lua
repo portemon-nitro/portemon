@@ -93,8 +93,9 @@ end
 ---@param clip table<string, unknown>|false
 ---@param wait fun() staged checkpoint yielded while a shared image is pending
 ---@param checkpoint fun() charges one bounded main-thread work unit
+---@param acquireMesh fun(geometry: string|ModelAsset.GeometryReference): table<string, unknown>
 ---@return table<string, unknown> ring with draws, stats, updateAnimated, release
-local function buildRing(pool, descriptors, clip, wait, checkpoint)
+local function buildRing(pool, descriptors, clip, wait, checkpoint, acquireMesh)
   -- One draw per (cell, batch), with the cell's 32-tile world offset baked into
   -- the transform only -- the mesh center stays in model space for queue
   -- sorting -- and one { record, runtime } binding per source material: the
@@ -116,7 +117,7 @@ local function buildRing(pool, descriptors, clip, wait, checkpoint)
       }
     end
     for _, batch in ipairs(cell.batches) do
-      local entry = pool:meshFor(batch.geometry)
+      local entry = acquireMesh(batch.geometry)
       local c = entry.center
       local draw = {
         cullMode = batch.cullMode,
@@ -287,20 +288,54 @@ end
 -- the completed ring is transferred or the task is cancelled/failed.
 -- `cacheFs` is a CacheFs.forVersion; `descriptors` is scene.neighbors;
 -- `opts` passes through to the asset pool (injectable graphics for headless
--- tests), and `opts.textureSrt` carries the central scene's compiled
--- texture-SRT clip (false/nil = no area animation).
+-- tests), `opts.textureSrt` carries the central scene's compiled texture-SRT
+-- clip (false/nil = no area animation), and `opts.assetPreparation` routes
+-- geometry decode through the preparation worker exactly like the central
+-- scene build.
 ---@param cacheFs table<string, unknown>
 ---@param descriptors table[]
----@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown> }?
+---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown>, assetPreparation?: table<string, unknown> }?
 ---@return NeighborRing.BuildTask
 function NeighborRing.begin(cacheFs, descriptors, opts)
   opts = opts or {}
   local pool = GpuAssetPool.new(cacheFs, opts)
+  local queue = opts.assetPreparation
   local function waitShared()
     coroutine["yield"](WAIT)
   end
   local function checkpoint()
     coroutine["yield"](1)
+  end
+  -- Geometry arrives the same way the central scene's does: the preparation
+  -- worker decodes a whole native bank once for every draw the ring selects,
+  -- and this build only realizes the prepared upload packets, yielding WAIT
+  -- while the worker is still busy.
+  local meshEntries = {}
+  local function awaitPrepared(kind, path)
+    local prepareQueue = assert(queue, "prepared mesh realization requires a preparation queue")
+    local token = prepareQueue:request(kind, path, "prefetch")
+    while true do
+      local status, failure = prepareQueue:poll(token)
+      if status == "ready" then
+        return prepareQueue:take(token)
+      end
+      if status == "failed" then
+        error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
+      end
+      coroutine["yield"](WAIT)
+    end
+  end
+  local function acquireMesh(geometry)
+    local entry = meshEntries[geometry]
+    if entry == nil then
+      if queue ~= nil then
+        entry = pool:preparedMesh(geometry, awaitPrepared)
+      else
+        entry = pool:meshFor(geometry)
+      end
+      meshEntries[geometry] = entry
+    end
+    return entry
   end
   ---@type NeighborRing.BuildTask
   local task = setmetatable({
@@ -329,7 +364,7 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
         end
       end
     end
-    return buildRing(pool, descriptors, opts.textureSrt, waitShared, checkpoint)
+    return buildRing(pool, descriptors, opts.textureSrt, waitShared, checkpoint, acquireMesh)
   end)
   return task
 end
@@ -338,14 +373,16 @@ end
 -- explicitly blocking wrapper over the staged task for standalone callers:
 -- `cacheFs` is a CacheFs.forVersion; `descriptors` is scene.neighbors;
 -- `opts` passes through to the asset pool (injectable graphics for headless
--- tests), and `opts.textureSrt` carries the central scene's compiled
--- texture-SRT clip (false/nil = no area animation). Returns
+-- tests), `opts.textureSrt` carries the central scene's compiled
+-- texture-SRT clip (false/nil = no area animation), and
+-- `opts.assetPreparation` routes geometry decode through the preparation
+-- worker exactly like the central scene build. Returns
 -- { draws, stats, updateAnimated, release }. Any failure -- including a
 -- malformed cell descriptor -- releases every GPU object the construction
 -- acquired before the error propagates.
 ---@param cacheFs table<string, unknown>
 ---@param descriptors table[]
----@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown> }?
+---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown>, assetPreparation?: table<string, unknown> }?
 ---@return table<string, unknown>
 function NeighborRing.load(cacheFs, descriptors, opts)
   return NeighborRing.begin(cacheFs, descriptors, opts):finish()

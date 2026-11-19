@@ -252,9 +252,12 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   local function acquireMesh(path)
     local entry = meshEntries[path]
     if entry == nil then
+      -- With a preparation queue the worker owns the CPU work: it decodes a
+      -- whole native bank once for every draw the scene selects (one replay
+      -- per decode context, one terrain repair) and this staged build only
+      -- realizes the resulting upload packets into LÖVE meshes.
       if queue then
-        local kind = type(path) == "table" and "g4gx" or "mesh"
-        entry = pool:meshFromPrepared(path, awaitPrepared(kind, path))
+        entry = pool:preparedMesh(path, awaitPrepared)
       else
         entry = pool:meshFor(path)
       end

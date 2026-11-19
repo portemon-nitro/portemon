@@ -14,7 +14,6 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
-local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 
@@ -185,10 +184,9 @@ function T.uvs_are_normalized(romFs, version)
       bytes = assert(bytes:getString(), "a finalized model bank carries its bytes")
     end
     local file = MapAssetCache.modelBankPath(key)
-    local drawCount = assert(NativeGxFormat.read(bytes)).drawCount
-    for drawIndex = 0, drawCount - 1 do
-      local decoded = SceneMesh.decodeNativeBank(bytes, { file = file, drawIndex = drawIndex })
-      for _, vtx in ipairs(decoded.vertices) do
+    local decoded = SceneMesh.decodeNativeBank(bytes, file)
+    for _, draw in ipairs(decoded.draws) do
+      for _, vtx in ipairs(draw.vertices) do
         maxUV = math.max(maxUV, math.abs(vtx[4]), math.abs(vtx[5]))
       end
     end
@@ -226,8 +224,9 @@ function T.cache_only_restart(romFs, version)
     local file = ModelAsset.geometryFile(b.geometry)
     Assert.isTrue(file:find("^assets/generated/") ~= nil, "geometry is a derived asset: " .. file)
     local bytes = assert(cache:read(file), "model bank present: " .. file)
-    local decoded = SceneMesh.decodeNativeBank(bytes, { file = file, drawIndex = b.geometry.drawIndex })
-    Assert.isTrue(decoded.vertexCount > 0, "baked draw has vertices")
+    local decoded = SceneMesh.decodeNativeBank(bytes, file)
+    local draw = assert(decoded.draws[b.geometry.drawIndex + 1], "the bank carries the selected draw")
+    Assert.isTrue(draw.vertexCount > 0, "baked draw has vertices")
   end
   for _, inst in ipairs(scene.buildingInstances) do
     Assert.isTrue(cache:exists(MapAssetCache.modelPath(inst.modelKey)), "model descriptor cached")

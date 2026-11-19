@@ -292,8 +292,9 @@ function PreparedArtifact:deferImage(relativePath, width, height, rgba)
     )
     bytes = host.data.newByteData(bytes)
   end
-  assert(type(bytes) == "userdata" and type(bytes.getSize) == "function", "deferred image requires its RGBA buffer")
-  assert(bytes:getSize() == width * height * 4, "deferred image RGBA size does not match its dimensions")
+  local sized = bytes --[[@as { getSize: fun(self: table): integer }]]
+  assert(type(bytes) == "userdata" and type(sized.getSize) == "function", "deferred image requires its RGBA buffer")
+  assert(sized:getSize() == width * height * 4, "deferred image RGBA size does not match its dimensions")
   local record = { relativePath = relativePath, width = width, height = height, rgba = bytes }
   self._deferredImages[relativePath] = record
   self._deferredOrder[#self._deferredOrder + 1] = record

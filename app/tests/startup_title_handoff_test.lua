@@ -61,6 +61,54 @@ local function fakeMenu(options)
   return menu
 end
 
+-- The launcher stages the title through a build task: the fake scene realizes
+-- on the first advance and transfers exactly like the production build.
+local function fakeTitleBuild(scene)
+  local build = { _ready = false }
+  function build:advance(maxWorkUnits)
+    if maxWorkUnits == 0 or self._ready then
+      return 0
+    end
+    self._ready = true
+    return 1
+  end
+  function build:isReady()
+    return self._ready
+  end
+  function build:takeResult()
+    return scene
+  end
+  function build:release()
+    scene:dispose()
+  end
+  return build
+end
+
+-- Replaces the staged title presentation for launcher tests that model the
+-- movie and loader beats rather than the title content: the build stub plus the
+-- preparation worker the launcher borrows for it. Returns the restore function.
+local function stubTitleAssets()
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local savedBegin, savedQueueNew = titleSceneModule.begin, AssetPreparationQueue.new
+  titleSceneModule.begin = function(_)
+    local scene = { bundle = { crySpeciesId = 25 } }
+    function scene:updateFixed() end
+    function scene:update() end
+    function scene:draw() end
+    function scene:resize() end
+    function scene:beginProceed() end
+    function scene:dispose() end
+    return fakeTitleBuild(scene)
+  end
+  AssetPreparationQueue.new = function()
+    return { release = function() end }
+  end
+  return function()
+    titleSceneModule.begin = savedBegin
+    AssetPreparationQueue.new = savedQueueNew
+  end
+end
+
 local function withStartup(fn)
   local saved = {
     state = App.state,
@@ -86,6 +134,7 @@ local function withStartup(fn)
     graphicsRectangle = love.graphics.rectangle,
     romIsReady = require("romdump.src.source.RomImporter").isReady,
     titleSceneNew = titleSceneModule.new,
+    titleSceneBegin = titleSceneModule.begin,
     movieNew = movieModule.new,
     loadOpeningScene = StartupAssetCache.loadOpeningScene,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
@@ -219,7 +268,9 @@ local function withStartup(fn)
   StartupAssetCache.loadOpeningScene = function(_, sceneNumber, versionId)
     return { sceneNumber = sceneNumber, versionId = versionId, generationId = "startup-test-generation" }
   end
-  titleSceneModule.new = function(options)
+  -- The launcher stages the title through its build task: the fake scene
+  -- realizes on the first advance and transfers like the real build.
+  titleSceneModule.begin = function(options)
     local scene = {
       versionId = options.versionId,
       bundle = { crySpeciesId = 25 },
@@ -252,7 +303,7 @@ local function withStartup(fn)
       self.disposed = self.disposed + 1
     end
     active.scenes[#active.scenes + 1] = scene
-    return scene
+    return fakeTitleBuild(scene)
   end
   MainMenuComposition.new = fakeMenu
   FirstPlayCompletion.isCurrent = function()
@@ -321,6 +372,7 @@ local function withStartup(fn)
   love.graphics.rectangle = saved.graphicsRectangle
   require("romdump.src.source.RomImporter").isReady = saved.romIsReady
   titleSceneModule.new = saved.titleSceneNew
+  titleSceneModule.begin = saved.titleSceneBegin
   movieModule.new = saved.movieNew
   StartupAssetCache.loadOpeningScene = saved.loadOpeningScene
   HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
@@ -1317,6 +1369,7 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
     loadScenes = MovieModule.loadValidatedScenes,
     movieNew = MovieModule.new,
   }
+  local restoreTitle = stubTitleAssets()
   local function fakeLoading()
     local presentation = {}
     function presentation:update() end
@@ -1406,6 +1459,7 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
     CacheFs.forVersion = saved.forVersion
     MovieModule.loadValidatedScenes = saved.loadScenes
     MovieModule.new = saved.movieNew
+    restoreTitle()
   end
   local ok, err = xpcall(function()
     do
@@ -1452,6 +1506,7 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
     loadScenes = MovieModule.loadValidatedScenes,
     movieNew = MovieModule.new,
   }
+  local restoreTitle = stubTitleAssets()
   local audioPending = true
   local audioUrgencies = {}
   local order = {}
@@ -1588,6 +1643,7 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
   CacheFs.forVersion = saved.forVersion
   MovieModule.loadValidatedScenes = saved.loadScenes
   MovieModule.new = saved.movieNew
+  restoreTitle()
   if not ok then
     error(err, 0)
   end
@@ -1605,6 +1661,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
     loadScenes = MovieModule.loadValidatedScenes,
     movieNew = MovieModule.new,
   }
+  local restoreTitle = stubTitleAssets()
   local function runCase(mode)
     local ticks = 0
     local statuses = {}
@@ -1710,6 +1767,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
     CacheFs.forVersion = saved.forVersion
     MovieModule.loadValidatedScenes = saved.loadScenes
     MovieModule.new = saved.movieNew
+    restoreTitle()
     if not ok then
       error(err, 0)
     end
@@ -1731,6 +1789,7 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
     loadScenes = MovieModule.loadValidatedScenes,
     movieNew = MovieModule.new,
   }
+  local restoreTitle = stubTitleAssets()
   local function fakeLoading()
     local presentation = {}
     function presentation:update() end
@@ -1944,6 +2003,7 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
   CacheFs.forVersion = saved.forVersion
   MovieModule.loadValidatedScenes = saved.loadScenes
   MovieModule.new = saved.movieNew
+  restoreTitle()
   if not ok then
     error(err, 0)
   end
@@ -1972,6 +2032,7 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     appPending = App._pendingImport,
     appProvisioner = App.provisioner,
   }
+  local restoreTitle = stubTitleAssets()
   local function fakeLoading()
     local presentation = {}
     function presentation:update() end
@@ -2286,6 +2347,7 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
   CacheFs.forVersion = saved.forVersion
   MovieModule.loadValidatedScenes = saved.loadScenes
   MovieModule.new = saved.movieNew
+  restoreTitle()
   App.state = saved.appState
   App.startupAudioSession = saved.appAudio
   App.startupAudioError = saved.appError

@@ -278,13 +278,24 @@ local function textureKey(reference)
   return string.format("%s#%s#%s", reference.file, tostring(reference.textureName), tostring(reference.paletteName))
 end
 
-local function buildModel(self, descriptor, clips, key)
+-- One title stage: its geometry comes from the preparation worker (a whole
+-- native bank prepared once per file), so this only realizes the upload
+-- packets into LÖVE meshes and charges one work unit per realized stage, which
+-- keeps the staged build spread across frames instead of stalling one.
+---@param self HgssTitleScene
+---@param descriptor table<string, unknown> staged model descriptor
+---@param clips table<string, unknown> staged animation channels
+---@param key string model key
+---@param await fun(kind: string, path: string): table<string, unknown>
+---@return ModelInstance
+local function buildModel(self, descriptor, clips, key, await)
   local definition = ModelDefinition.fromNitroDescriptor(copyWithAnimations(descriptor, clips), { key = key })
   local meshes = {}
   for _, mesh in ipairs(definition.meshes) do
-    local resource = self.pool:meshFor(mesh.geometry)
+    local resource = self.pool:preparedMesh(mesh.geometry, await)
     mesh.center = resource.center
     meshes[mesh.id] = resource.mesh
+    coroutine["yield"](1)
   end
   local wraps = SceneDescriptor.wrapByMaterial(descriptor.materials)
   local imageByKey = {}
@@ -447,12 +458,171 @@ local function overlayTone(self)
   return pulseShade(self), revealAlpha(self)
 end
 
----@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext }
+-- The construction body, resumed by an owning build task: it loads the
+-- validated title bundle, allocates the pool and renderers, and realizes the
+-- two model stages one mesh at a time. Geometry CPU work and upload packing
+-- already ran on the preparation worker, so an advance here only uploads
+-- prepared packets on this thread.
+---@param self HgssTitleScene
+---@param await fun(kind: string, path: string): table<string, unknown>
+local function buildScene(self, await)
+  local bundle = StartupAssetCache.loadTitle(self.cacheFs, self.versionId)
+  assert(bundle, "validated title assets are unavailable")
+  self.bundle = bundle
+  self.pool = GpuAssetPool.new(self.cacheFs, { graphics = self.graphics })
+  self.renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = self.graphics })
+  -- The start prompt prints with the ROM field font (font 0, the printer the
+  -- decomp selects). The title milestone always carries the font beside the
+  -- bundle, so a missing font fails loudly here instead of falling back to a
+  -- wrong system look.
+  self.textRenderer = FieldTextRenderer.new({ cacheFs = self.cacheFs, graphics = self.graphics })
+  self.legend = buildModel(self, bundle.model, bundle.clips, "startup-title:" .. self.versionId, await)
+  self.sparkle =
+    buildModel(self, bundle.sparkle.model, bundle.sparkle.clips, "startup-title-sparkle:" .. self.versionId, await)
+  self.surfaces = {}
+  for role, surface in pairs(bundle.surfaces) do
+    -- Enlarged 2D title surfaces use linear filtering for the smooth
+    -- cinematic blend; 3D model textures keep nearest filtering via their own
+    -- resolveImage path.
+    self.surfaces[role] = ownedImage(self, surface.image, WIDTH, HEIGHT, "linear")
+  end
+  self.sourceEnvironment = {
+    lighting = bundle.lighting,
+    edgeColors = TITLE_ENVIRONMENT.edgeColors,
+    fog = TITLE_ENVIRONMENT.fog,
+  }
+  initCameraState(self)
+  self:resize(self.width, self.height)
+  assert(self.canvas ~= nil, "title canvas allocation failed")
+end
+
+-- A title build in progress. The build owns the growing scene until a
+-- completed scene is transferred or the task is cancelled/failed; `advance`
+-- executes bounded main-thread work (one realized stage per unit) and yields
+-- without charging a unit while the preparation worker is still busy, while
+-- `finish` is the explicitly blocking path for synchronous callers.
+---@class HgssTitleScene.Build
+---@field _scene HgssTitleScene
+---@field _thread thread
+---@field _state string "active", "ready", "transferred", "released", or "failed"
+---@field _queue table<string, unknown> borrowed preparation queue
+---@field _token integer? preparation token the resumed coroutine is waiting on
+---@field _finishing boolean the explicit synchronous caller blocks instead of yielding
+---@field _result HgssTitleScene?
+---@field _failed unknown?
+local TitleBuild = {}
+TitleBuild.__index = TitleBuild
+
+-- Private staged-work sentinel: the build coroutine yields it while the
+-- preparation worker is still busy. It consumes no work budget; only a
+-- realized stage yields 1.
+local TITLE_BUILD_WAIT = {}
+
+---@param build HgssTitleScene.Build
+---@param err unknown
+local function failBuild(build, err)
+  if build._state == "active" then
+    build._state = "failed"
+    build._token = nil
+    build._scene:dispose()
+  end
+  build._failed = err
+  error(err, 0)
+end
+
+---@param maxWorkUnits integer main-thread work budget for this advance
+---@return integer consumed work units within the caller budget
+function TitleBuild:advance(maxWorkUnits)
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(self._state == "active" or self._state == "ready", "title build is no longer active")
+  assert(
+    type(maxWorkUnits) == "number" and maxWorkUnits >= 0 and maxWorkUnits % 1 == 0,
+    "title build advance requires non-negative integer work units"
+  )
+  if self._state == "ready" or maxWorkUnits == 0 then
+    return 0
+  end
+  local consumed = 0
+  while consumed < maxWorkUnits and self._state == "active" do
+    local ok, yielded = coroutine.resume(self._thread)
+    if not ok then
+      failBuild(self, yielded)
+    end
+    if coroutine.status(self._thread) == "dead" then
+      self._result = assert(yielded, "title build returned no scene")
+      self._state = "ready"
+    elseif yielded == TITLE_BUILD_WAIT then
+      break
+    else
+      assert(yielded == 1, "title build yielded an invalid work unit")
+      consumed = consumed + 1
+    end
+  end
+  return consumed
+end
+
+---@return boolean
+function TitleBuild:isReady()
+  return self._state == "ready"
+end
+
 ---@return HgssTitleScene
-function HgssTitleScene.new(options)
+function TitleBuild:takeResult()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(self._state == "ready", "title build result is not ready")
+  local scene = assert(self._result)
+  self._result = nil
+  self._state = "transferred"
+  return scene
+end
+
+-- Finish the build synchronously: the outstanding preparation request blocks
+-- instead of yielding a frame. Only explicit synchronous owners call this;
+-- the launcher advances the build across frames.
+---@return HgssTitleScene
+function TitleBuild:finish()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  self._finishing = true
+  while self._state == "active" do
+    self:advance(1)
+  end
+  return self:takeResult()
+end
+
+-- Release a build that will never be transferred: drop pending interest in the
+-- outstanding preparation and dispose everything the construction already
+-- created. After transfer the scene owns its own disposal, so this is a no-op.
+function TitleBuild:release()
+  if self._state == "transferred" or self._state == "released" or self._state == "failed" then
+    return
+  end
+  self._state = "released"
+  self._result = nil
+  local token = self._token
+  self._token = nil
+  if token ~= nil then
+    pcall(self._queue.cancel, self._queue, token)
+  end
+  self._scene:dispose()
+end
+
+-- Begin one resumable title build. The worker prepares the title model banks
+-- (one bank request per model file), and this build realizes those prepared
+-- packets as LÖVE meshes across as many frames as the caller grants. The
+-- caller keeps ownership of `options.assetPreparation` for its whole lifetime.
+---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown> }
+---@return HgssTitleScene.Build
+function HgssTitleScene.begin(options)
   assert(type(options) == "table", "title scene requires composition options")
   assert(options.versionId == "heartgold" or options.versionId == "soulsilver", "title scene edition is invalid")
   assert(options.cacheFs and type(options.cacheFs.loadLua) == "function", "title scene requires generated cache access")
+  local queue = assert(options.assetPreparation, "title scene requires the presentation preparation queue")
   local graphics = options.graphics or love.graphics
   local displayContext = options.displayContext or DisplayContext.new({ graphics = graphics })
   local self = setmetatable({
@@ -484,41 +654,55 @@ function HgssTitleScene.new(options)
     blendShader = nil,
     textRenderer = nil,
   }, HgssTitleScene)
-  local ok, failure = pcall(function()
-    local bundle = StartupAssetCache.loadTitle(self.cacheFs, self.versionId)
-    assert(bundle, "validated title assets are unavailable")
-    self.bundle = bundle
-    self.pool = GpuAssetPool.new(self.cacheFs, { graphics = graphics })
-    self.renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = graphics })
-    -- The start prompt prints with the ROM field font (font 0, the
-    -- printer the decomp selects). The title milestone always carries
-    -- the font beside the bundle, so a missing font fails loudly here
-    -- instead of falling back to a wrong system look.
-    self.textRenderer = FieldTextRenderer.new({ cacheFs = self.cacheFs, graphics = graphics })
-    self.legend = buildModel(self, bundle.model, bundle.clips, "startup-title:" .. self.versionId)
-    self.sparkle =
-      buildModel(self, bundle.sparkle.model, bundle.sparkle.clips, "startup-title-sparkle:" .. self.versionId)
-    self.surfaces = {}
-    for role, surface in pairs(bundle.surfaces) do
-      -- Enlarged 2D title surfaces use linear filtering for the smooth
-      -- cinematic blend; 3D model textures keep nearest filtering via
-      -- their own resolveImage path.
-      self.surfaces[role] = ownedImage(self, surface.image, WIDTH, HEIGHT, "linear")
+  ---@cast self HgssTitleScene
+  local build ---@type HgssTitleScene.Build
+  -- One prepared bank per title model file, realized mesh by mesh; a pending
+  -- worker request yields the frame budget instead of blocking it, and the
+  -- explicit synchronous entry blocks in `finish`.
+  local function awaitPrepared(kind, path)
+    local token = queue:request(kind, path, "prefetch")
+    build._token = token
+    while true do
+      local status, failure = queue:poll(token)
+      if status == "ready" then
+        build._token = nil
+        return queue:take(token)
+      end
+      if status == "failed" then
+        build._token = nil
+        error("title asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
+      end
+      if build._finishing then
+        local waitOk, payload = pcall(queue.wait, queue, token)
+        build._token = nil
+        if not waitOk then
+          error(payload, 0)
+        end
+        return payload
+      end
+      coroutine["yield"](TITLE_BUILD_WAIT)
     end
-    self.sourceEnvironment = {
-      lighting = bundle.lighting,
-      edgeColors = TITLE_ENVIRONMENT.edgeColors,
-      fog = TITLE_ENVIRONMENT.fog,
-    }
-    initCameraState(self)
-    self:resize(options.width, options.height)
-    assert(self.canvas ~= nil, "title canvas allocation failed")
-  end)
-  if not ok then
-    self:dispose()
-    error(failure, 0)
   end
-  return self
+  build = setmetatable({
+    _scene = self,
+    _thread = coroutine.create(function()
+      buildScene(self, awaitPrepared)
+      return self
+    end),
+    _state = "active",
+    _queue = queue,
+    _token = nil,
+    _finishing = false,
+    _result = nil,
+    _failed = nil,
+  }, TitleBuild)
+  return build
+end
+
+---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown> }
+---@return HgssTitleScene
+function HgssTitleScene.new(options)
+  return HgssTitleScene.begin(options):finish()
 end
 
 -- Records the single accepted title input. The latched flag only holds the

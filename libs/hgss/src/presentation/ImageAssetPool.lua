@@ -23,6 +23,7 @@
 
 local ffi = require("ffi")
 
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
@@ -245,14 +246,10 @@ end
 -- The stable identity of one generated image source: a PNG path, or the named
 -- texture/palette pair a native texture bank selector carries. Two palettes of
 -- one bank are different visible images, so the pair is part of the identity.
----@param source string|ModelAsset.TextureReference
----@return string
-local function sourceIdentity(source)
-  if type(source) == "string" then
-    return source
-  end
-  return string.format("%s#%s#%s", source.file, tostring(source.textureName), tostring(source.paletteName))
-end
+-- The image owner's logical identity is the shared generated-asset identity
+-- (a PNG path or a native bank selection) plus the full immutable sampler
+-- state.
+local sourceIdentity = ModelAsset.assetIdentity
 
 -- The private logical identity: the generated path plus the full immutable
 -- sampler state. The length prefix keeps a path containing a separator from

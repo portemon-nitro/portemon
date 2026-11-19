@@ -483,31 +483,26 @@ local function terrainBank()
 end
 
 -- Terrain boundary repair runs over the whole eligible draw group of one
--- source model bank when the first draw is decoded: the coarse side adopts the
--- neighbour's breakpoint before any of the group reaches the GPU, and a later
--- request for the sibling draw decodes the already-conformed group instead of
--- repairing it again per draw.
-function T.terrain_bank_group_is_conformed_before_the_first_draw_is_used()
+-- source model bank when the bank is prepared: the coarse side adopts the
+-- neighbour's breakpoint before any of the group reaches the GPU, and the one
+-- bank reply carries every draw, so selecting the sibling draw never replays
+-- the bank or repairs it twice.
+function T.terrain_bank_group_is_conformed_once_for_the_whole_bank_reply()
   local AssetPreparationQueue = requireQueue()
   local cache = CacheFs.forVersion(VERSION_ID)
   local bank = terrainBank()
   local runOk, runErr = pcall(function()
     cache:write(TERRAIN_BANK_PATH, bank)
     local queue = AssetPreparationQueue.new(cache)
-    local coarseToken = queue:request("g4gx", { file = TERRAIN_BANK_PATH, drawIndex = 0 }, "demand")
-    local coarse = queue:wait(coarseToken)
+    local token = queue:request("g4gx", TERRAIN_BANK_PATH, "demand")
+    local prepared = queue:wait(token)
+    Assert.equal(#prepared.draws, 2, "one bank reply carries one upload packet per draw")
+    local coarse = prepared.draws[1]
     Assert.equal(coarse.indexCount, 9, "the coarse draw adopts the neighbour's boundary breakpoint")
     Assert.equal(coarse.vertexCount, 5, "the repaired draw expresses the shared breakpoint once")
     Assert.isNil(coarse.mesh, "the worker never realizes a love Mesh")
-
-    local fineToken = queue:request("g4gx", { file = TERRAIN_BANK_PATH, drawIndex = 1 }, "demand")
-    local fine = queue:wait(fineToken)
+    local fine = prepared.draws[2]
     Assert.equal(fine.indexCount, 12, "the already-segmented neighbour keeps its four triangles")
-
-    local repeatToken = queue:request("g4gx", { file = TERRAIN_BANK_PATH, drawIndex = 0 }, "demand")
-    local repeated = queue:wait(repeatToken)
-    Assert.equal(repeated.indexCount, 9, "repeated demand never repairs the same group twice")
-    Assert.equal(repeated.vertexCount, 5, "repeated demand keeps the repaired topology stable")
     queue:release()
   end)
   cache:removeTree("")

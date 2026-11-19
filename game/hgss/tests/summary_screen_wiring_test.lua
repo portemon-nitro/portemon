@@ -12,6 +12,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local MonCache = require("libs.assets.src.MonCache")
@@ -1016,6 +1017,7 @@ local function fprRuntime(versionId)
   -- rig-owned bundles: the sized pool keeps real consumers (mart chrome
   -- reads dimensions off borrows) honest without staging anything.
   runtime.imageAssets = SummaryAcceptanceFixture.sizedImagePool()
+  runtime.assetPreparation = FakePreparationQueue.new()
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)
     return 1

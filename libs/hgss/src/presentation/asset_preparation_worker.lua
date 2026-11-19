@@ -158,25 +158,23 @@ function Worker.run(requestChannel, replyChannel)
     end
   end
 
-  -- One draw of a native model bank, decoded and packed for upload: the draw's
-  -- command bytes replay through the shared GX decoder, every terrain-eligible
-  -- sibling of the same bank is decoded and repaired with it once, and the
-  -- result is the existing upload packet. No ROM source and no GPU object.
-  local function prepareNativeMesh(token, versionId, logicalPath, path, selector)
+  -- One whole native model bank, decoded and packed for upload: every draw of
+  -- the bank replays once (transform-preserving draws replay each shared
+  -- command stream once and fan their pose segments out), the bank's terrain
+  -- group is repaired once, and one upload packet per draw comes back. The
+  -- main thread then only realizes the draws the scene actually selects. No
+  -- ROM source and no GPU object.
+  local function prepareNativeBank(token, versionId, logicalPath, path)
     local function work()
-      assert(
-        type(selector) == "table" and type(selector.drawIndex) == "number",
-        "native mesh preparation requires a draw selector"
-      )
       local cache = cacheFor(versionId)
       if cache:resolve(logicalPath) ~= path then
-        error("native mesh preparation path escapes its confined cache entry", 0)
+        error("native bank preparation path escapes its confined cache entry", 0)
       end
       local bytes = cache:read(logicalPath)
       if bytes == nil then
         error("unreadable cache file: " .. tostring(path), 0)
       end
-      return SceneMesh.prepareNativeBank(bytes, selector, path)
+      return SceneMesh.prepareNativeBank(bytes, path)
     end
     local ok, prepared = pcall(work)
     if not ok then
@@ -186,22 +184,9 @@ function Worker.run(requestChannel, replyChannel)
     replyChannel:push({
       token = token,
       ok = true,
-      kind = "mesh",
+      kind = "g4gx",
       path = path,
-      vertexData = prepared.vertexData,
-      indexData = prepared.indexData,
-      vertexCount = prepared.vertexCount,
-      indexCount = prepared.indexCount,
-      indexType = prepared.indexType,
-      centerX = prepared.centerX,
-      centerY = prepared.centerY,
-      centerZ = prepared.centerZ,
-      minX = prepared.minX,
-      maxX = prepared.maxX,
-      minY = prepared.minY,
-      maxY = prepared.maxY,
-      minZ = prepared.minZ,
-      maxZ = prepared.maxZ,
+      draws = prepared.draws,
     })
   end
 
@@ -365,7 +350,7 @@ function Worker.run(requestChannel, replyChannel)
         fail(job.token, job.kind, job.path, err)
       end
     elseif job.op == "prepare" and job.kind == "g4gx" then
-      local ok, err = pcall(prepareNativeMesh, job.token, job.versionId, job.logicalPath, job.path, job.selector)
+      local ok, err = pcall(prepareNativeBank, job.token, job.versionId, job.logicalPath, job.path)
       if not ok then
         fail(job.token, job.kind, job.path, err)
       end

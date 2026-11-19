@@ -23,6 +23,7 @@ end
 ---@param bundle table<string, unknown>
 ---@param writeAtlas fun(path: string, atlas: { width: integer, height: integer, pixels: string })
 ---@param present fun(path: string): boolean
+---@return string marker
 local function persist(stage, bundle, writeAtlas, present)
   for _, spriteId in ipairs(bundle.index.spriteIds) do
     local atlas = bundle.atlases[spriteId]
