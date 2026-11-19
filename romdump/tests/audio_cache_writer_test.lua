@@ -294,18 +294,20 @@ T["stageCatalog publishes the runtime index before any bank closure"] = function
 end
 
 -- The family summary owns no payload and never republishes the runtime index:
--- it derives one marker for its own receipt, which the caller has already
--- gated on the current bank and catalog receipts.
+-- it hashes the catalog receipt marker into one marker for its own receipt,
+-- which the caller has already gated on the current bank and catalog
+-- receipts.
 T["stageSummary owns only its receipt"] = function()
   local bundle = AudioFixture.bundle()
   local cache = versionCache()
   local plan = catalogPlan(bundle)
   local identity = soundIdentity()
-  local marker = AudioCacheWriter.summaryMarker(plan, identity)
-  Assert.equal(AudioCacheWriter.summaryMarker(plan, identity), marker, "the summary marker is deterministic")
+  local catalogMarker = AudioCacheWriter.catalogMarker(plan, identity)
+  local marker = AudioCacheWriter.summaryMarker(plan, catalogMarker)
+  Assert.equal(AudioCacheWriter.summaryMarker(plan, catalogMarker), marker, "the summary marker is deterministic")
   local otherIdentity = { romSha1 = "other-rom", sdatSha1 = "archive-sha", sdatFileId = 13 }
-  local otherMarker = AudioCacheWriter.summaryMarker(plan, otherIdentity)
-  Assert.isTrue(otherMarker ~= marker, "the summary marker binds the adopted source identity")
+  local otherMarker = AudioCacheWriter.summaryMarker(plan, AudioCacheWriter.catalogMarker(plan, otherIdentity))
+  Assert.isTrue(otherMarker ~= marker, "the summary marker binds the adopted source identity through the catalog")
   local summary = PreparedArtifact.new({
     cacheFs = cache,
     generationId = GENERATION,
@@ -315,7 +317,11 @@ T["stageSummary owns only its receipt"] = function()
     jobKey = "audio-summary:global",
     stageName = "audio-summary",
   })
-  Assert.equal(AudioCacheWriter.stageSummary(summary, plan, identity), marker, "summary staging returns its marker")
+  Assert.equal(
+    AudioCacheWriter.stageSummary(summary, plan, catalogMarker),
+    marker,
+    "summary staging returns its marker"
+  )
   Assert.isNil(summary:stageFs():loadLua(AudioCache.indexPath()), "the summary never republishes the catalog index")
   summary:finishSuccess({ marker = marker })
   Assert.deepEqual(

@@ -10,6 +10,7 @@ local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioCacheValidator = require("libs.assets.src.audio.AudioCacheValidator")
+local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local Hashing = require("romdump.src.digest.Hashing")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -1430,11 +1431,38 @@ function T.easy_chat_registers_two_bounded_global_scopes()
   Assert.isTrue(uiSet["audio-catalog:global"] == true, "the presentation scope waits for the audio catalog")
 end
 
+-- The explicit audit over the published audio family alone: the canonical
+-- inventory is narrowed to those jobs so the family payload walk is the only
+-- subject, matching the controlled audits elsewhere.
+---@param cacheFs CacheFs
+---@param generation string
+---@param plans ArtifactJobs.Plans
+---@return boolean
+local function audioFamilyAudit(cacheFs, generation, plans)
+  local realCompleteJobs = ArtifactJobs.completeJobs
+  ArtifactJobs.completeJobs = function()
+    local jobs = {}
+    for _, bankId in ipairs(assert(plans.audioBankIds, "the controlled audit needs the bank closures")) do
+      jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId), jobKey = "audio-bank:" .. bankId }
+    end
+    jobs[#jobs + 1] = { kind = "audio-catalog", key = "global", jobKey = "audio-catalog:global" }
+    return jobs
+  end
+  local ok, available = pcall(DerivedCacheAudit.isAvailable, cacheFs, {
+    versionId = "heartgold",
+    generationId = generation,
+    producerId = "controlled-audio-audit",
+  }, plans)
+  ArtifactJobs.completeJobs = realCompleteJobs
+  Assert.isTrue(ok, "the controlled audio audit resolves: " .. tostring(available))
+  return available == true
+end
+
 -- Audio bank, catalog and summary jobs publish current-generation receipts
 -- and no separate completion or provenance files. Warm family readiness
 -- trusts those receipts without reading sample payloads, the summary never
--- rereads the bank closures, and the explicit validator still reports a
--- corrupt payload.
+-- rereads the bank closures, and the explicit audit still reports a corrupt
+-- or missing payload.
 function T.audio_family_readiness_trusts_current_job_receipts()
   local bytes = assert(twoBankAudioSource())
   local romFs = leafRomFs(bytes)
@@ -1508,6 +1536,7 @@ function T.audio_family_readiness_trusts_current_job_receipts()
   local payload = assert(cacheFs:read(AudioCache.samplePath(sampleKey)))
   cacheFs:write(AudioCache.samplePath(sampleKey), payload:sub(1, #payload - 2))
   Assert.notNil(AudioCacheValidator.validate(cacheFs), "the explicit validator reports the corrupt sample payload")
+  Assert.isFalse(audioFamilyAudit(cacheFs, generation, plans), "the explicit audit reports the corrupt sample payload")
   Assert.isTrue(
     ArtifactJobs.validate(cacheFs, generation, "audio-bank", "0", plans),
     "warm bank readiness stays receipt-based"
@@ -1516,6 +1545,10 @@ function T.audio_family_readiness_trusts_current_job_receipts()
     ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
     "warm family readiness is not an exhaustive payload walk"
   )
+  cacheFs:write(AudioCache.samplePath(sampleKey), payload)
+  Assert.isTrue(audioFamilyAudit(cacheFs, generation, plans), "restoring the payload makes the audit pass again")
+  cacheFs:remove(AudioCache.samplePath(sampleKey))
+  Assert.isFalse(audioFamilyAudit(cacheFs, generation, plans), "the explicit audit reports a missing sample payload")
   cacheFs:write(AudioCache.samplePath(sampleKey), payload)
 
   -- One missing bank receipt breaks family readiness even though every

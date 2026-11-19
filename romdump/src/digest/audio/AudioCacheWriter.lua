@@ -225,32 +225,29 @@ function AudioCacheWriter.writeBank(cacheFs, romFs, bankPlan)
   return result
 end
 
--- The deterministic family summary marker: the adopted source identity, the
--- planned roster, and the runtime index content. Equal plans over equal
--- source repair to the same marker, and the receipt it names attests exactly
--- the roster the caller verified.
----@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
----@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+-- The deterministic family summary marker: the cache format, the covered
+-- bank roster, and the current catalog receipt marker, which already binds
+-- the adopted source identity and the runtime index. Equal plans over equal
+-- source repair to the same marker, and the summary never serializes the
+-- index again. The caller has already verified that every planned closure
+-- receipt is current.
+---@param plan { bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
+---@param catalogMarker string current audio-catalog receipt marker
 ---@return string
-function AudioCacheWriter.summaryMarker(plan, soundIdentity)
-  assert(type(plan.index) == "table", "summary staging requires the family index")
+function AudioCacheWriter.summaryMarker(plan, catalogMarker)
+  assert(type(plan) == "table", "summary staging requires the catalog plan")
   assert(type(plan.bankPlans) == "table", "summary staging requires the bank closure plans")
-  local identity = checkSoundIdentity(soundIdentity)
+  assert(type(catalogMarker) == "string" and catalogMarker ~= "", "summary staging requires the current catalog marker")
   local bankIds = {}
   for _, bankPlan in ipairs(plan.bankPlans) do
     assert(type(bankPlan.bankId) == "number", "summary staging requires a bank identity")
     bankIds[#bankIds + 1] = bankPlan.bankId
   end
-  return AudioCache.marker(
-    identity.romSha1,
-    Hashing.hashLua({
-      cacheFormat = AudioCache.FORMAT,
-      versionRomSha1 = identity.romSha1,
-      soundArchive = { fileId = identity.sdatFileId, sha1 = identity.sdatSha1 },
-      coveredBankIds = bankIds,
-      index = plan.index,
-    })
-  )
+  return Hashing.hashLua({
+    cacheFormat = AudioCache.FORMAT,
+    coveredBankIds = bankIds,
+    catalogMarker = catalogMarker,
+  })
 end
 
 -- The deterministic catalog completion marker: the sound source identity
@@ -331,14 +328,15 @@ end
 -- Stage the family summary through a caller-owned prepared artifact. A
 -- summary owns no payload of its own: its current-generation receipt is the
 -- whole publication, and the caller has already verified that every planned
--- closure and the catalog are current. Nothing is read back here.
+-- closure and the catalog are current. Nothing is read back here, so the
+-- caller passes the catalog receipt marker the summary hashes.
 ---@param artifact PreparedArtifact
 ---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
----@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+---@param catalogMarker string current audio-catalog receipt marker
 ---@return string
-function AudioCacheWriter.stageSummary(artifact, plan, soundIdentity)
+function AudioCacheWriter.stageSummary(artifact, plan, catalogMarker)
   assert(artifact and artifact.stageFs and artifact.cacheFs, "summary staging requires a PreparedArtifact")
-  return AudioCacheWriter.summaryMarker(checkCatalogPlan(plan), soundIdentity)
+  return AudioCacheWriter.summaryMarker(checkCatalogPlan(plan), catalogMarker)
 end
 
 local function stageBundle(tx, bundle)
