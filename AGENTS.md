@@ -182,9 +182,7 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
 - Required production collaborators remain required in tests. Fix incomplete fakes rather
   than adding production fallbacks for them.
 - Select the narrowest credible local evidence for the diff using `scripts/test.sh` filters
-  and layers. The final integrated/branch gate runs the full available suite. CI cannot
-  exercise user-owned ROM data, so affected ROM/acceptance evidence must not be assumed to
-  exist merely because CI is green.
+  and layers.
 - Tests are code and runtime cost. Prefer strengthening an existing owner test, the cheapest
   layer that proves the contract, and one expensive production boot with multiple related
   assertions over repeated journeys.

@@ -271,10 +271,10 @@ function FakeGraphics.new(opts)
     getColor = function()
       return state.color[1], state.color[2], state.color[3], state.color[4]
     end,
-    draw = function(image, quad, x, y, rotation, sx, sy)
+    draw = function(image, quad, x, y, rotation, sx, sy, ox, oy)
       drawCalls = drawCalls + 1
       if type(quad) == "number" then
-        quad, x, y, rotation, sx, sy = nil, quad, x, y, rotation, sx or rotation
+        quad, x, y, rotation, sx, sy, ox, oy = nil, quad, x, y, rotation, sx or rotation, sy, ox
       end
       local record = {
         kind = "draw",
@@ -285,6 +285,8 @@ function FakeGraphics.new(opts)
         rotation = rotation,
         sx = sx,
         sy = sy,
+        ox = ox,
+        oy = oy,
         color = state.color,
       }
       if type(image) == "table" and image.drawMode ~= nil then

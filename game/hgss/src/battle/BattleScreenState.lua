@@ -1529,8 +1529,43 @@ function BattleScreenState.new(opts)
     "the battle screen binds its per-launch ball entries for launch " .. opts.launchId
   )
   local function ballFadeColor(ballKey)
-    local entry = assert(battleBalls["ball:" .. ballKey], "recall and send-out balls are in the ball inventory")
+    -- Capture balls thrown from the bag may stage outside the launch's
+    -- active send-out inventory; a missing leaf simply keeps the unfaded
+    -- vanish instead of failing the break-out.
+    local entry = battleBalls["ball:" .. ballKey]
+    if entry == nil then
+      return nil
+    end
     return entry.fadeColor
+  end
+  -- The cue player advances a send-out ball's opening animation by the
+  -- staged source durations instead of holding one cell.
+  local function ballOpening(ballKey)
+    local entry = battleBalls["ball:" .. ballKey]
+    if entry == nil then
+      return nil
+    end
+    local opening = assert(entry.opening, "a staged ball carries its opening animation")
+    local frames = {}
+    for _, frame in ipairs(opening.frames) do
+      frames[#frames + 1] = { drawableKey = frame.drawableKey, durationTicks = frame.durationTicks }
+    end
+    return { frames = frames }
+  end
+  -- The cue player ticks each thrown ball's own throw animation by its
+  -- staged source frame durations.
+  local function ballThrow(ballKey)
+    -- Capture balls thrown from the bag may stage outside the active
+    -- battlers' inventory; a missing entry simply keeps the throw cell.
+    local entry = battleBalls["ball:" .. ballKey]
+    if entry == nil then
+      return nil
+    end
+    local frames = {}
+    for _, frame in ipairs(entry.frames) do
+      frames[#frames + 1] = { drawableKey = frame.drawableKey, durationTicks = frame.durationTicks }
+    end
+    return { frames = frames }
   end
   -- The cue player times the send-out hold and cry delay from the staged
   -- motion headers: the foe reads the front header while the player
@@ -1562,6 +1597,8 @@ function BattleScreenState.new(opts)
   self._timeline = BattleTimeline.new({
     encounterFadeColor = background:match("^cave_") and "black" or "white",
     ballFadeColor = ballFadeColor,
+    ballOpening = ballOpening,
+    ballThrow = ballThrow,
     trainerPictures = trainerPictures,
     moveName = moveNameOf,
     speciesName = speciesNameOf,
@@ -2247,6 +2284,10 @@ local function sourceIndexPathsAtSlot(entry, firstSlot)
   end
   if type(entry.frames) == "table" then
     for _, frame in ipairs(entry.frames) do
+      addFrame(frame)
+    end
+    local opening = assert(entry.opening, "a staged ball carries its opening animation")
+    for _, frame in ipairs(opening.frames) do
       addFrame(frame)
     end
   else
@@ -4399,6 +4440,34 @@ local function leafSelectorsOf(view)
   return trainers, balls
 end
 
+-- Semantic ball selectors behind the capture throws a packet delivers:
+-- the thrown ball is a bag item, so it never appears in the active
+-- send-out records and must be demanded from the events themselves.
+---@param events table<integer, table<string, unknown>>? delivered sanitized events
+---@return string[] sorted semantic `ball:<key>` selectors
+local function thrownBallSelectors(events)
+  local selectors = {}
+  if type(events) ~= "table" then
+    return selectors
+  end
+  local seen = {}
+  for _, event in ipairs(events) do
+    if type(event) == "table" and event.kind == "throw" then
+      local payload = event.payload
+      local ball = type(payload) == "table" and payload.ball or nil
+      if type(ball) == "string" and ball:match("^[A-Z][A-Z0-9_]*$") ~= nil then
+        local selector = "ball:" .. ball
+        if not seen[selector] then
+          seen[selector] = true
+          selectors[#selectors + 1] = selector
+        end
+      end
+    end
+  end
+  table.sort(selectors)
+  return selectors
+end
+
 -- Whether every trainer and ball leaf behind the candidate views is
 -- already staged in the per-launch entries. Pending entries hold the
 -- delivering packet instead of letting cue construction dereference
@@ -4555,6 +4624,14 @@ function BattleScreenState:_portPresent(packet)
         end
       end
     end
+    local thrownBalls = thrownBallSelectors(packet.events)
+    for _, selector in ipairs(thrownBalls) do
+      if not seenBalls[selector] then
+        seenBalls[selector] = true
+        balls[#balls + 1] = selector
+      end
+    end
+    table.sort(balls)
     if #trainers > 0 then
       self._assets:addTrainerPictures(trainers)
     end
@@ -5473,12 +5550,17 @@ function BattleScreenState:_shiftPrompt()
   return stagedBattleText(self._manifest, "battle/prompt/shift-offer", { className, trainerName, incomingName })
 end
 
----@return table<string, unknown>? staged Yes/No labels behind the Shift prompt, nil outside the offer
+---@return table<string, unknown>? staged source option labels behind the Shift prompt, nil outside the offer
 function BattleScreenState:_shiftTwoOption()
   if self._mode ~= "shift" or self:_shiftActor() == nil then
     return nil
   end
-  return self:_stagedYesNo("shift prompts require")
+  return self:_stagedTwoOption(
+    "menu/switch-or-keep",
+    "label/switch",
+    "label/keep-battling-switch",
+    "shift prompts require"
+  )
 end
 
 -- Seals the provided empty stay fragment for the held offer: prompt
@@ -5613,38 +5695,40 @@ function BattleScreenState:_useNextPrompt()
   return stagedBattleText(self._manifest, "battle/prompt/use-next", {})
 end
 
----@return table<string, unknown>? staged Yes/No labels behind the wild offer, nil outside the offer
+---@return table<string, unknown>? staged source option labels behind the wild offer, nil outside the offer
 function BattleScreenState:_useNextTwoOption()
   if self._mode ~= "use-next" or self:_useNextActor() == nil then
     return nil
   end
-  return self:_stagedYesNo("use-next prompts require")
+  return self:_stagedTwoOption("menu/switch-or-flee", "label/use-next-mon", "label/flee", "use-next prompts require")
 end
 
--- Stages the source Yes/No labels shared by the Shift and use-next
--- offers through the staged menu catalog.
+-- Stages the source option labels of one menu route through the staged
+-- menu catalog. Each offer answers with the retail words of its own
+-- BattleInput template (switch-or-flee / switch-or-keep), never the
+-- generic Yes/No pair.
+---@param routeKey string staged source menu route owning the option text
+---@param topKey string semantic label entry of the top option
+---@param bottomKey string semantic label entry of the bottom option
 ---@param context string owner prefix for assertion messages
----@return table<string, unknown> Yes/No two-option view
-function BattleScreenState:_stagedYesNo(context)
+---@return table<string, unknown> staged two-option view
+function BattleScreenState:_stagedTwoOption(routeKey, topKey, bottomKey, context)
   local menus = assert(self._manifest.menus, context .. " the staged menu catalog") --[[@as table<string, unknown>]]
   local routes = assert(menus.routes, context .. " staged source routes") --[[@as table<string, unknown>]]
-  local route = assert(routes["menu/yes-no"], context .. " the source yes-no route") --[[@as table<string, unknown>]]
+  local route = assert(routes[routeKey], context .. " the source " .. routeKey .. " route") --[[@as table<string, unknown>]]
   local selected = {}
   for _, key in
     ipairs(route.messageEntries --[[@as table<integer, string>]])
   do
     selected[key] = true
   end
-  assert(
-    selected["label/yes"] == true and selected["label/no"] == true,
-    "the selected text set stages both source labels"
-  )
+  assert(selected[topKey] == true and selected[bottomKey] == true, "the selected text set stages both source labels")
   local messages = assert(self._manifest.messages, context .. " staged message entries") --[[@as table<string, unknown>]]
   local entries = assert(messages.entries, context .. " semantic message entries") --[[@as table<string, table<string, unknown>>]]
-  local topRecord = assert(entries["label/yes"], "the top source option has a staged label")
-  local bottomRecord = assert(entries["label/no"], "the bottom source option has a staged label")
+  local topRecord = assert(entries[topKey], "the top source option has a staged label")
+  local bottomRecord = assert(entries[bottomKey], "the bottom source option has a staged label")
   return {
-    route = "menu/yes-no",
+    route = routeKey,
     top = menuLabelText(topRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
     bottom = menuLabelText(bottomRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
   }
@@ -6617,7 +6701,7 @@ function BattleScreenState:_consume(event)
       -- Keyboard focus still moves through navigate; command and move
       -- presses keep their focus bookkeeping above.
     elseif self._mode == "shift" or self._mode == "use-next" then
-      -- A prompt tap arms its Yes/No cell and moves the selection so the
+      -- A prompt tap arms its answer cell and moves the selection so the
       -- matched release settles the identical fragment as keyboard input.
       local control = event.control --[[@as table<string, unknown>?]]
       if
@@ -7888,6 +7972,9 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
     if type(child) == "table" and child.kind == "learn" and type(child.confirmation) == "table" then
       activeLayout = "two-option"
     end
+  elseif self._mode == "shift" or self._mode == "use-next" then
+    -- The held offers answer through the source two-option planes.
+    activeLayout = "two-option"
   else
     activeLayout = "command"
   end
@@ -7906,7 +7993,13 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
       local key = "menu:" .. activeLayout .. ":screen:" .. tostring(index) .. "@" .. background .. touch
       addDescriptor(key, assert(screen.sourceIndices, "visible lower menu screen carries source indices"))
       local armed = self._armed
-      if type(armed) == "table" and armed.scope == activeLayout then
+      -- The held offers arm their cells under their own input scope while
+      -- the shared source two-option planes own the feedback art.
+      local armedScope = type(armed) == "table"
+          and (armed.scope == "shift" or armed.scope == "use-next")
+          and "two-option"
+        or (type(armed) == "table" and armed.scope or nil)
+      if type(armed) == "table" and armedScope == activeLayout then
         local feedback = type(screen.feedback) == "table" and screen.feedback[armed.id] or nil
         local patch = type(feedback) == "table" and feedback.pressed or nil
         if type(patch) == "table" then
@@ -8045,8 +8138,8 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
         assert(type(selector) == "string", "visible ball throw names its selector")
         local ballKey = selector:match("^ball:([%w_]+)$")
         assert(ballKey ~= nil, "visible ball throw uses a staged ball selector")
-        local frame = assert(type(ball.frame) == "number" and ball.frame, "visible ball throw names its frame")
-        local frameKey = "battle-ball:" .. ballKey .. ":" .. tostring(frame)
+        local frameKey =
+          assert(type(ball.drawableKey) == "string" and ball.drawableKey, "visible ball throw names its staged cell")
         local layout = assert(layer.nativePaletteLayout, "ball throw has its accepted physical palette layout")
         local selected = nil
         for _, candidate in ipairs(layout.balls) do
@@ -8057,7 +8150,7 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
         end
         assert(selected ~= nil, "visible ball throw resolves to an accepted native palette instance")
         local selectedPath =
-          assert(selected.sourceIndexPaths[frameKey], "visible ball frame has a selected slot variant")
+          assert(selected.sourceIndexPaths[frameKey], "visible ball cell has a selected slot variant")
         local key = "battle-palette:ball:" .. tostring(selected.firstSlot) .. ":" .. frameKey
         ball.paletteDrawableKey = key
         addDescriptor(key, { path = selectedPath })

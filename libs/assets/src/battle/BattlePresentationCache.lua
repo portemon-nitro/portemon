@@ -143,8 +143,14 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@field clickEmitter integer burst emitter the capture click plays alone and the opening burst skips
 ---@field burstStartTick integer ticks after the ball starts opening until the burst emits
 
+---@class BattlePresentationCache.BallOpening
+---@field playMode string source play mode of the opening animation
+---@field loopStartFrameIdx integer
+---@field frames { drawableKey: string, image: string, width: integer, height: integer, durationTicks: integer, sourceIndices: BattlePresentationCache.SourceIndices }[]
+
 ---@class BattlePresentationCache.BallEntry
----@field frames { drawableKey: string, image: string, width: integer, height: integer, sourceIndices: BattlePresentationCache.SourceIndices }[]
+---@field frames { drawableKey: string, image: string, width: integer, height: integer, durationTicks: integer, sourceIndices: BattlePresentationCache.SourceIndices }[]
+---@field opening BattlePresentationCache.BallOpening
 ---@field fadeColor integer
 ---@field particles BattlePresentationCache.BallParticles|nil
 
@@ -966,17 +972,26 @@ end
 ---@return boolean true only when every staged frame and particle texture parses
 local function hasBallImageClosure(cacheFs, record)
   local entry = record.entry
-  for _, frame in ipairs(entry.frames) do
-    for _, variant in pairs(frame.sourceIndices.variants) do
-      local pixels = cacheFs:read(variant.path)
-      if type(pixels) ~= "string" or #pixels ~= frame.width * frame.height * 4 then
+  local function cellsComplete(cells)
+    for _, frame in ipairs(cells) do
+      for _, variant in pairs(frame.sourceIndices.variants) do
+        local pixels = cacheFs:read(variant.path)
+        if type(pixels) ~= "string" or #pixels ~= frame.width * frame.height * 4 then
+          return false
+        end
+      end
+      local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
+      if width ~= frame.width or height ~= frame.height then
         return false
       end
     end
-    local width, height = PngWriter.completeDimensions(cacheFs:read(frame.image))
-    if width ~= frame.width or height ~= frame.height then
-      return false
-    end
+    return true
+  end
+  if not cellsComplete(entry.frames) then
+    return false
+  end
+  if not cellsComplete(assert(entry.opening, "a staged ball carries its opening animation").frames) then
+    return false
   end
   local particles = entry.particles
   if particles ~= nil then

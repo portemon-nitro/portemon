@@ -61,7 +61,7 @@ local function stubPortrait(key)
   end
   return StubLease.new(key)
 end
-local TICK = 1 / 60
+local TICK = require("libs.hgss.src.field.SourceTick").DT
 
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local STATE_MODULE = "game.hgss.tests.support.BattleScreenFixture"
@@ -1207,8 +1207,10 @@ function T.exhausted_doubled_lead_reaches_struggle_targets_and_batches_atomicall
     end
     Assert.isTrue(touch.screen:view().menuInputEnabled ~= false, "source menu entry completes before tap")
     touch.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
+
     touch.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
     touch.pump(6)
+
     for _ = 1, 12 do
       if touch.screen:view().menuInputEnabled ~= false then
         break

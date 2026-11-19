@@ -16,7 +16,6 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
-local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattlePartyPages = require("game.hgss.src.battle.BattlePartyPages")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
@@ -44,6 +43,14 @@ local TARGET_OUTER = { x = 0, y = 120, width = 256, height = 72 }
 local NARRATION_OUTER = { x = 0, y = 136, width = 256, height = 56 }
 local PROMPT_ORIGIN = { x = 12, y = 146 }
 local PROMPT_MAX_WIDTH = 88
+-- Adapted two-option dock: one framed window holds the staged question
+-- over the two source answers, mirroring the paired lower screen's source
+-- Yes/No cells while keeping the long replacement wording whole. It rises
+-- above the narration dock like the move and target docks do, because a
+-- two-line question and two answer rows do not fit the command strip.
+local TWO_OPTION_OUTER = { x = 0, y = 100, width = 256, height = 92 }
+local TWO_OPTION_QUESTION_LINES = 2
+local TWO_OPTION_ROW_HEIGHT = 20
 local COMMAND_IDS = { "fight", "bag", "pokemon", "run" }
 local COMMAND_LABELS = { fight = "FIGHT", bag = "BAG", pokemon = "POKEMON", run = "RUN" }
 local COMMAND_CELL_WIDTH = 64
@@ -180,8 +187,8 @@ local function scopeFor(mode, view)
     end
   elseif mode == "shift" or mode == "use-next" then
     -- The held Shift offer and the wild replacement offer answer through
-    -- the source Yes/No planes behind their staged questions instead of
-    -- the command menu.
+    -- the source two-option identities instead of the command menu, with
+    -- the compact dock adapting those cells to one surface.
     return "two-option"
   end
   return "command"
@@ -668,6 +675,26 @@ function BattleCompactInterface.contentFor(view)
   if mode == "child" and type(view.childView) == "table" then
     childPlan = childContent(view.childView --[[@as table<string, unknown>]])
   end
+  local twoOptionDock = nil
+  if mode == "shift" or mode == "use-next" then
+    local content = contentOf(TWO_OPTION_OUTER)
+    local questionHeight = TWO_OPTION_QUESTION_LINES * 16
+    local rows = {}
+    for index, id in ipairs({ "confirm", "back" }) do
+      rows[index] = {
+        id = id,
+        x = TWO_OPTION_OUTER.x,
+        y = content.y + questionHeight + (index - 1) * TWO_OPTION_ROW_HEIGHT,
+        width = TWO_OPTION_OUTER.width,
+        height = TWO_OPTION_ROW_HEIGHT,
+      }
+    end
+    twoOptionDock = {
+      outer = copyRect(TWO_OPTION_OUTER),
+      content = content,
+      rows = rows,
+    }
+  end
   -- Doubles take the position-keyed layout whenever some side claims
   -- doubles slots, even while a neighbor hides mid-transition; hidden
   -- slots keep their cells with no live owner. Every other occupancy
@@ -691,6 +718,7 @@ function BattleCompactInterface.contentFor(view)
       cells = cells,
       cursors = cursors,
     },
+    twoOption = twoOptionDock,
     movePanels = { left = contentOf(MOVE_LEFT_OUTER), right = contentOf(MOVE_RIGHT_OUTER) },
     moveGrid = { x = MOVE_GRID_X, columnWidth = MOVE_COLUMN_WIDTH, rowHeight = MOVE_ROW_HEIGHT },
     moveBack = {
@@ -817,16 +845,20 @@ local function regionsFor(content, mode)
     return { { id = "dialogue", x = 0, y = 0, width = 256, height = 192, scope = mode } }
   end
   if mode == "shift" or mode == "use-next" then
-    -- Pointer taps arm the Yes/No cells directly: confirm answers Yes
-    -- and back answers No through the same semantic edges as keypad.
+    -- Pointer taps arm the two adapted answer rows directly: confirm
+    -- answers the source top option and back the bottom one through the
+    -- same semantic edges as the keypad.
+    local dock = assert(content.twoOption, "the held offers carry their two-option dock")
     local regions = {}
-    for _, region in ipairs(BattleMenuRegions.forLayout("two-option") or {}) do
+    for _, row in
+      ipairs(dock.rows --[[@as table<integer, table<string, unknown>> ]])
+    do
       regions[#regions + 1] = {
-        id = region.id,
-        x = region.x,
-        y = region.y,
-        width = region.w,
-        height = region.h,
+        id = row.id,
+        x = row.x,
+        y = row.y,
+        width = row.width,
+        height = row.height,
         scope = mode,
       }
     end
@@ -1147,6 +1179,44 @@ local function drawCommandDock(resources, view, content)
   end
   windows.drawApplicationFrame(content.prompt.content, frame)
   windows.drawApplicationFrame(content.commands.content, frame)
+end
+
+-- Draws the adapted two-option dock: the staged question over the two
+-- source answers, with the text cursor on the selected row.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param content table<string, unknown> canonical compact plan content under drawing
+local function drawTwoOptionDock(resources, view, content)
+  local text = assert(resources.text, "the compact render borrows its text services")
+  local windows = assert(resources.windows, "the compact render borrows its window services")
+  local background = backgroundOf(resources)
+  local frame = resources.frameKey
+  local dock = assert(content.twoOption, "the held offers carry their two-option dock") --[[@as table<string, unknown>]]
+  local inner = assert(dock.content, "the two-option dock carries its framed content") --[[@as table<string, number>]]
+  fillBox(resources.graphics, background, dock.outer --[[@as table<string, unknown>]])
+  local lines = wrapPrompt(text, view.message or "", inner.width, TWO_OPTION_QUESTION_LINES)
+  for index, line in ipairs(lines) do
+    drawLabel(text, line, inner.x, inner.y + (index - 1) * 16)
+  end
+  local labels = view.twoOption --[[@as table<string, unknown>?]]
+  if type(labels) == "table" then
+    local right = inner.x + inner.width
+    for _, row in
+      ipairs(dock.rows --[[@as table<integer, table<string, unknown>> ]])
+    do
+      local wording = row.id == "confirm" and labels.top or labels.bottom
+      if type(wording) == "string" then
+        local selected = (row.id == "confirm" and view.selection == "yes")
+          or (row.id == "back" and view.selection == "no")
+        local textX = inner.x + 16
+        if selected then
+          drawLabel(text, CURSOR, inner.x, row.y --[[@as integer]] + 2)
+        end
+        drawLabel(text, fitText(text, wording --[[@as string]], right - textX), textX, row.y --[[@as integer]] + 2)
+      end
+    end
+  end
+  windows.drawApplicationFrame(dock.content, frame)
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -2462,6 +2532,11 @@ function BattleCompactInterface.render(resources, view, plan)
         draw = drawTargetSubDock,
         rect = { x = 0, y = 120, width = 256, height = 72 },
       }
+    elseif mode == "shift" or mode == "use-next" then
+      local function drawTwoOptionSubDock()
+        drawTwoOptionDock(resources, view, content)
+      end
+      subDock = { draw = drawTwoOptionSubDock, rect = content.twoOption.outer }
     else
       local function drawNarrationWindow()
         drawNarrationDock(resources, view, content)

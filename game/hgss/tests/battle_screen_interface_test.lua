@@ -293,6 +293,37 @@ function T.learn_confirmation_uses_the_native_two_option_scope_and_hit_regions()
   Assert.equal(bottom.control.id, "back", "the bottom Keep/No option returns to the learning list")
 end
 
+-- The held Shift and wild replacement offers answer through the source
+-- two-option menu on the interaction pane: the plan selects the source
+-- layout, and its Yes/No cells answer the prompt's own input scope.
+function T.shift_and_use_next_prompts_use_the_native_two_option_scope()
+  local session = ApplicationPresentation.new(BattleScreenInterface.defaults(), nil)
+  for _, case in ipairs({
+    { mode = "shift", route = "menu/switch-or-keep", top = "Switch Pokémon", bottom = "Keep battling" },
+    { mode = "use-next", route = "menu/switch-or-flee", top = "Use next Pokémon", bottom = "Flee" },
+  }) do
+    local tag = " (" .. case.mode .. ")"
+    local prompt = view(case.mode)
+    prompt.selection = "yes"
+    prompt.twoOption = { route = case.route, top = case.top, bottom = case.bottom }
+    local plan = session:resolve(dualMeasurement(), prompt)
+    Assert.equal(plan.content.layout, "two-option", "the prompt selects the source two-option menu" .. tag)
+    local yes = plan.mapInput({ type = "pointer_down", pointerId = "tap-yes", x = 8, y = 40 }, prompt, plan)
+    Assert.notNil(yes, "the top source cell answers the open prompt" .. tag)
+    Assert.equal(yes.type, "battle_press", "the top cell presses like a menu control" .. tag)
+    Assert.equal(yes.control.id, "confirm", "the top cell is the source confirm option" .. tag)
+    Assert.equal(yes.control.scope, case.mode, "the top cell answers this prompt's own scope" .. tag)
+    local no = plan.mapInput({ type = "pointer_down", pointerId = "tap-no", x = 8, y = 112 }, prompt, plan)
+    Assert.notNil(no, "the bottom source cell answers the open prompt" .. tag)
+    Assert.equal(no.control.id, "back", "the bottom cell is the source back option" .. tag)
+    Assert.equal(no.control.scope, case.mode, "the bottom cell answers this prompt's own scope" .. tag)
+    Assert.isNil(
+      plan.mapInput({ type = "pointer_down", pointerId = "tap-gutter", x = 8, y = 100 }, prompt, plan),
+      "the gutter between the two options claims nothing" .. tag
+    )
+  end
+end
+
 -- Move anchors map per slot with their cancel region; target anchors map
 -- per admitted target.
 function T.move_and_target_anchors_map()

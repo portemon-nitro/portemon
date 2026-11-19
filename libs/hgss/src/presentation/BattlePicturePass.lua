@@ -51,6 +51,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
 #ifdef PIXEL
 varying vec2 vTexCoord;
 /*__portemon_shared_image_sampling__*/
+/*__portemon_shared_palette_fade__*/
 uniform vec3 paletteFadeColor;
 uniform float paletteFadeAmount;
 vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
@@ -58,10 +59,7 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
   vec4 pixel = resolveExactTexel(Texel(image, vTexCoord));
   if (pixel.a <= 0.0) discard;
   if (paletteFadeAmount > 0.0) {
-    vec3 source5 = floor(pixel.rgb * 31.0 + 0.5);
-    vec3 target5 = floor(paletteFadeColor * 31.0 + 0.5);
-    vec3 blended5 = source5 + floor((target5 - source5) * paletteFadeAmount / 16.0);
-    pixel.rgb = (blended5 * 8.0 + floor(blended5 / 4.0)) / 255.0;
+    pixel.rgb = portemonPaletteFade(pixel.rgb, paletteFadeColor, paletteFadeAmount);
   }
   pixel *= color;
   return pixel;
@@ -264,7 +262,7 @@ function BattlePicturePass.new(graphics)
     -- Indexed staged pages resolve through the shared exact-sampling
     -- rule: the source stays the mesh texture while the palette rides
     -- per-item uniforms, exactly like the map renderer borrows.
-    shader = graphics.newShader(ImageSampling.withSharedSampling(SHADER))
+    shader = graphics.newShader(ImageSampling.withSharedSnippets(SHADER))
   end)
   if not ok then
     if shader then

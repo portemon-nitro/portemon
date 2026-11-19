@@ -506,10 +506,10 @@ DerivedAssetContract.trainerCatalog = {
 -- voices name shared audio sequence symbols instead of staging private
 -- sound payloads).
 DerivedAssetContract.battlePresentation = {
-  cacheFormat = "battle-presentation-cache-v8",
+  cacheFormat = "battle-presentation-cache-v9",
   schema = "g4-battle-presentation-v17",
   trainerPictureSchema = "g4-battle-trainer-picture-v1",
-  ballSchema = "g4-battle-ball-v2",
+  ballSchema = "g4-battle-ball-v4",
   evolutionSchema = "g4-battle-evolution-v2",
   sceneSchema = "g4-battle-scene-v7",
   effectSchema = "g4-battle-effect-v6",

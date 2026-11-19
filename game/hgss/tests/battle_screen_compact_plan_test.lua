@@ -860,10 +860,10 @@ local function footerRosterRows(count, occupied)
   return rows
 end
 
----@param plan table resolved plan under test driving
----@param view table internal semantic snapshot under test driving
----@return table<string, integer> drawn text census keyed by content
-local function childDrawCensus(plan, view)
+---@param plan table resolved plan under test drawing
+---@param view table internal semantic snapshot under test drawing
+---@return table[] drawn text entries for one plan draw
+local function planDrawText(plan, view)
   local graphics = FakeGraphics.new({})
   local order = {}
   local text = recordingText(order)
@@ -880,12 +880,25 @@ local function childDrawCensus(plan, view)
     frameKey = "compact-plan-test-frame",
     sceneImageKey = "scene:test",
   }, view, plan)
+  return text.draws
+end
+
+---@param draws table[] drawn text entries under census
+---@return table<string, integer> drawn text census keyed by content
+local function censusOf(draws)
   local census = {}
-  for _, entry in ipairs(text.draws) do
+  for _, entry in ipairs(draws) do
     local content = tostring(entry.content)
     census[content] = (census[content] or 0) + 1
   end
   return census
+end
+
+---@param plan table resolved plan under test drawing
+---@param view table internal semantic snapshot under test drawing
+---@return table<string, integer> drawn text census keyed by content
+local function childDrawCensus(plan, view)
+  return censusOf(planDrawText(plan, view))
 end
 
 ---@param view table internal semantic snapshot under test driving
@@ -1047,6 +1060,77 @@ function T.child_footer_wording_matches_across_compact_and_paired_draws()
         end
       end
     end
+  end
+end
+
+-- The held Shift and use-next offers adapt the source two-option menu to
+-- one compact dock: a two-line question over the two staged answers with
+-- the cursor on the selected row, and each row claims its tap under the
+-- offer's own scope.
+function T.two_option_dock_adapts_the_source_answers_to_one_surface()
+  require(COMPACT_MODULE)
+  for _, case in ipairs({
+    {
+      mode = "shift",
+      route = "menu/switch-or-keep",
+      question = "LEAD is about to switch out.",
+      top = "Switch Pokémon",
+      bottom = "Keep battling",
+    },
+    {
+      mode = "use-next",
+      route = "menu/switch-or-flee",
+      question = "Use next Pokémon?",
+      top = "Use next Pokémon",
+      bottom = "Flee",
+    },
+  }) do
+    local tag = " (" .. case.mode .. ")"
+    local view = snapshot(case.mode, {
+      message = case.question,
+      selection = "yes",
+      twoOption = { route = case.route, top = case.top, bottom = case.bottom },
+    })
+    local plan = resolve(singleMeasurement(256, 192, "compact-plan-test:two-option-" .. case.mode), view)
+    local content = assert(plan.content, "the compact plan carries its content" .. tag)
+    Assert.equal(content.layout, "two-option", "the offer draws the source two-option menu" .. tag)
+    local dock = assert(content.twoOption, "the held offer carries its two-option dock" .. tag)
+    Assert.equal(#dock.rows, 2, "the dock adapts both source answers" .. tag)
+    local top, bottom = dock.rows[1], dock.rows[2]
+    Assert.equal(top.id, "confirm", "the first row answers the top source option" .. tag)
+    Assert.equal(bottom.id, "back", "the second row answers the bottom source option" .. tag)
+    Assert.isTrue(bottom.y >= top.y + top.height, "the answers stack without overlapping" .. tag)
+    Assert.isTrue(
+      bottom.y + bottom.height <= dock.outer.y + dock.outer.height,
+      "both answer rows stay inside the dock" .. tag
+    )
+    Assert.isTrue(dock.content.y + 32 <= top.y, "the question keeps its two lines above the answers" .. tag)
+    for _, row in ipairs({ top, bottom }) do
+      local press = plan.mapInput(
+        { type = "pointer_down", pointerId = "tap:" .. row.id, x = row.x + 8, y = row.y + 8 },
+        view,
+        plan
+      )
+      Assert.notNil(press, "the " .. row.id .. " row claims its tap" .. tag)
+      Assert.equal(press.control.id, row.id, "the tap names its own answer cell" .. tag)
+      Assert.equal(press.control.scope, case.mode, "the tap answers under the offer's own scope" .. tag)
+    end
+    Assert.isNil(
+      plan.mapInput({ type = "pointer_down", pointerId = "tap:question", x = 128, y = top.y - 2 }, view, plan),
+      "the question above the answers claims nothing" .. tag
+    )
+    local draws = planDrawText(plan, view)
+    local ink = censusOf(draws)
+    Assert.equal(ink[case.question], 1, "the dock paints the staged question" .. tag)
+    Assert.equal(ink[case.top], 1, "the top answer paints its staged wording" .. tag)
+    Assert.equal(ink[case.bottom], 1, "the bottom answer paints its staged wording" .. tag)
+    local cursors = 0
+    for _, entry in ipairs(draws) do
+      if entry.x == dock.content.x and entry.y == top.y + 2 then
+        cursors = cursors + 1
+      end
+    end
+    Assert.equal(cursors, 1, "the cursor rests on the selected answer" .. tag)
   end
 end
 

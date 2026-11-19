@@ -114,7 +114,8 @@ local function plan(start, particles)
   end
 end
 
--- Ticks after the cue before the effect creates its emitters.
+-- Ticks after the cue before the effect creates its emitters: the
+-- staged source tick of the selected effect.
 ---@param start table<string, unknown> timeline start
 ---@param particles table<string, unknown> staged ball particles
 ---@return integer ticks

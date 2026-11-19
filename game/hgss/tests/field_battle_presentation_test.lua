@@ -2024,10 +2024,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     revealed = true
     imageStaged = true
     local entered, enterFailure = services.prepare(demand())
-    Assert.isTrue(
-      entered,
-      versionId .. " enters once the staged scene validates: " .. tostring(enterFailure)
-    )
+    Assert.isTrue(entered, versionId .. " enters once the staged scene validates: " .. tostring(enterFailure))
     -- A ready worker answer with an emptied cache fails naming the
     -- scene instead of polling forever: the trusted record load is the
     -- attribution point, not a pixel existence census.
@@ -3003,10 +3000,7 @@ function T.presented_win_carries_every_phase_assertion()
       Assert.equal(runtime.overworld:phase(), "present", "the claim holds presence while covering")
       local coveredAt, leftAt, coverAtLeave = nil, nil, nil
       local ticks = 0
-      while
-        (runtime.battleCoordinator:activeBattle() == nil or envelope:cover().coefficient ~= 0)
-        and ticks < 900
-      do
+      while (runtime.battleCoordinator:activeBattle() == nil or envelope:cover().coefficient ~= 0) and ticks < 900 do
         runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
@@ -4171,6 +4165,9 @@ function T.selected_trainer_and_ball_leaves_stage_without_the_global_inventory()
     for _, frame in ipairs(ballRecord.entry.frames) do
       expectedUploads[frame.image] = true
     end
+    for _, frame in ipairs(ballRecord.entry.opening.frames) do
+      expectedUploads[frame.image] = true
+    end
     local enrolled = {}
     for path in pairs(envelope._pendingUploads) do
       enrolled[#enrolled + 1] = path
@@ -4819,6 +4816,7 @@ return {
       "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
       "battle-trainer-picture:front-BUG_CATCHER",
       "battle-ball:POKE_BALL",
+      "battle-ball:MASTER_BALL",
     },
   },
 }

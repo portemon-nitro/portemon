@@ -296,6 +296,26 @@ function T.battle_ball_frames_validate_ordered_semantic_drawables_and_staged_ima
   Assert.isFalse(pcall(Schema.assertBall, foreignImage), "a ball leaf never stages through a sibling item prefix")
 end
 
+-- The ball's opening animation is part of its leaf contract: the source
+-- cells, their order, and their frame durations stage beside the throw
+-- frames so the runtime never invents an open beat.
+function T.battle_ball_opening_animation_carries_ordered_source_cells()
+  local valid = ManifestFixture.ballRecord("ball:POKE_BALL")
+  Assert.isTrue(pcall(Schema.assertBall, valid), "the source-shaped ball opening leaf validates")
+  local missingDuration = ManifestFixture.ballRecord("ball:POKE_BALL")
+  missingDuration.entry.opening.frames[1].durationTicks = nil
+  Assert.isFalse(pcall(Schema.assertBall, missingDuration), "opening frames keep their source durations")
+  local wrongCell = ManifestFixture.ballRecord("ball:POKE_BALL")
+  wrongCell.entry.opening.frames[2].drawableKey = "battle-ball-open:POKE_BALL:0"
+  Assert.isFalse(pcall(Schema.assertBall, wrongCell), "opening cells follow their zero-based source order")
+  local foreignPrefix = ManifestFixture.ballRecord("ball:POKE_BALL")
+  foreignPrefix.entry.opening.frames[1].image = "assets/generated/battle/balls/GREAT_BALL-open-0.png"
+  Assert.isFalse(pcall(Schema.assertBall, foreignPrefix), "opening cells never stage through a sibling item prefix")
+  local emptyOpening = ManifestFixture.ballRecord("ball:POKE_BALL")
+  emptyOpening.entry.opening.frames = {}
+  Assert.isFalse(pcall(Schema.assertBall, emptyOpening), "a ball leaf stages its opening animation or none")
+end
+
 function T.transition_routes_accept_strict_normalized_camera_task_data()
   local valid = manifest()
   local poses = {}

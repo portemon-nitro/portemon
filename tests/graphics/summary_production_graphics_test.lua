@@ -449,7 +449,7 @@ local function pictureShader(scope)
   Assert.notNil(source, "the picture shader source loads")
   -- Mirror production bundle assembly: the shared sampling rule splices
   -- into the picture shader before compilation.
-  return scope:own(love.graphics.newShader(ImageSampling.withSharedSampling(source)))
+  return scope:own(love.graphics.newShader(ImageSampling.withSharedSnippets(source)))
 end
 
 -- Ready-bundle-shaped test assembly over realized cache art: named

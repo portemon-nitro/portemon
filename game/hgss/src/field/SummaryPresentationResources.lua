@@ -215,7 +215,7 @@ function SummaryPresentationResources:_loadShader()
     self._shaderFailed = tostring(source)
     return
   end
-  local compiled, shader = pcall(self._graphics.newShader, ImageAssetPool.withSharedSampling(source))
+  local compiled, shader = pcall(self._graphics.newShader, ImageAssetPool.withSharedSnippets(source))
   if not compiled then
     self._shaderFailed = tostring(shader)
     return

@@ -19,6 +19,7 @@ local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local SplParticleDraw = require("libs.hgss.src.presentation.SplParticleDraw")
 local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local BattleMenuRegions = require("game.hgss.src.battle.BattleMenuRegions")
 local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 
@@ -307,7 +308,7 @@ end
 -- headless descriptors and bare test stand-ins stay drawable-shaped so
 -- recording views prove without GPU uploads, while pool leases resolve
 -- to their staged image for measurement.
----@param art table<string, unknown> resolved drawable handle under drawing
+---@param art table<string, unknown>|userdata resolved drawable handle under drawing
 ---@return table<string, unknown>|userdata|nil measurable staged image behind the handle
 local function stagedPixelsOf(art)
   if type(art.getWidth) == "function" then
@@ -432,7 +433,7 @@ end
 -- sampler when it samples, directly otherwise. Extra placement
 -- arguments forward to the draw call.
 ---@param graphics table<string, unknown> injected host graphics
----@param art table<string, unknown> resolved drawable handle under drawing
+---@param art table<string, unknown>|userdata resolved drawable handle under drawing
 ---@param quad table<string, unknown>? caller-owned viewport, nil for whole-image draws
 ---@param x number draw position x
 ---@param y number draw position y
@@ -2478,9 +2479,110 @@ local function drawTrainerPictures(graphics, assets, view)
   end
 end
 
+-- The pixel extent of one staged image handle: uploaded palette rasters
+-- and test doubles expose it through different accessors.
+---@param image table<string, unknown>|userdata staged image handle under drawing
+---@return number width, number height
+local function imageCellExtent(image)
+  local source = image --[[@as table<string, unknown>]]
+  local dimensions = source.getDimensions --[[@as (fun(self: table<string, unknown>): number, number)?]]
+  if type(dimensions) == "function" then
+    return dimensions(source)
+  end
+  local getWidth = source.getWidth --[[@as (fun(self: table<string, unknown>): number)?]]
+  local getHeight = source.getHeight --[[@as (fun(self: table<string, unknown>): number)?]]
+  if type(getWidth) == "function" and type(getHeight) == "function" then
+    return getWidth(source), getHeight(source)
+  end
+  local width = source.width
+  local height = source.height
+  assert(type(width) == "number" and type(height) == "number", "a drawn ball cell exposes its pixel extent")
+  return width, height
+end
+
+-- The source send-out ball flash: the ball cell blends toward white while
+-- BallThrow_RunThrowArc's palette blend runs. One shader serves every
+-- flashing ball on a graphics namespace.
+local BALL_FLASH_SHADER_PATH = "libs/hgss/src/presentation/shaders/ball_palette_flash.glsl"
+local ballFlashShaders = setmetatable({}, { __mode = "k" })
+
+---@param path string repo-relative shader source path
+---@return string shader source
+local function readShaderSource(path)
+  if love and love.filesystem then
+    local ok, source = pcall(love.filesystem.read, path)
+    if ok and type(source) == "string" and source ~= "" then
+      return source
+    end
+  end
+  local handle = io.open(path, "rb")
+  if handle ~= nil then
+    local source = handle:read("*a")
+    handle:close()
+    if type(source) == "string" and source ~= "" then
+      return source
+    end
+  end
+  error("cannot read battle ball flash shader source: " .. path, 0)
+end
+
+---@param graphics table<string, unknown> injected host graphics
+---@return table<string, unknown> compiled ball flash shader
+local function ballFlashShader(graphics)
+  local shader = ballFlashShaders[graphics]
+  if shader == nil then
+    shader = graphics.newShader(ImageAssetPool.withSharedSnippets(readShaderSource(BALL_FLASH_SHADER_PATH)))
+    ballFlashShaders[graphics] = shader
+  end
+  return shader
+end
+
+-- Draws the ball cell through the source palette flash when the cue carries
+-- one. Pool leases draw their staged pixels under the flash shader (the ball
+-- cells stay unindexed RGBA); plain uploaded images draw directly.
+---@param graphics table<string, unknown> injected host graphics
+---@param image table<string, unknown>|userdata staged ball drawable
+---@param flash integer|nil source blend coefficient 0..16
+---@param ... unknown placement arguments forwarded to the draw call
+local function drawBallCell(graphics, image, flash, ...)
+  if flash == nil or flash == 0 then
+    drawArtwork(graphics, image, nil, ...)
+    return
+  end
+  assert(
+    type(flash) == "number" and flash % 1 == 0 and flash >= 0 and flash <= 16,
+    "ball flash is a source blend 0..16"
+  )
+  local drawable = image
+  local sampler = samplerOf(image)
+  if sampler ~= nil then
+    assert(sampler.kind ~= "r8", "flashing ball cells are not indexed draws")
+    -- Headless descriptors stay drawable-shaped for recording; they carry
+    -- no staged pixels to unwrap. A live borrow keeps the shared exact
+    -- nearest rule the sampler would have applied.
+    local pixels = stagedPixelsOf(image)
+    if pixels ~= nil and type(pixels.setFilter) == "function" then
+      pixels:setFilter("nearest", "nearest")
+    end
+    drawable = pixels or image
+  end
+  local previous = graphics.getShader()
+  local shader = ballFlashShader(graphics)
+  graphics.setShader(shader)
+  shader:send("u_target", { 1, 1, 1 })
+  shader:send("u_coefficient", flash)
+  local ok, err = pcall(drawArtwork, graphics, drawable, nil, ...)
+  graphics.setShader(previous)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 -- Draws the thrown Poke Ball sprite over the battlefield. Ball cells are
 -- 16x16 with their origin at the center, so the staged frame draws
--- centered on the sprite position and spins about it.
+-- centered on the sprite position and spins about it; the opening
+-- animation's burst cell is 32x32 and centers on its own extent. A cue
+-- carrying the source palette flash draws through the shared blend.
 ---@param graphics table<string, unknown> borrowed host graphics
 ---@param assets table<string, unknown> borrowed battle asset holder
 ---@param view table<string, unknown> internal semantic snapshot
@@ -2496,17 +2598,29 @@ local function drawThrownBall(graphics, assets, view)
   assert(ballKey ~= nil, "ball throw selectors name a semantic ball key")
   local x = assert(ball.x, "ball throw cues carry their source-pixel x") --[[@as number]]
   local y = assert(ball.y, "ball throw cues carry their source-pixel y") --[[@as number]]
-  local frame = assert(ball.frame, "ball throw cues select a source animation frame") --[[@as integer]]
-  assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "ball frames are zero-based integers")
+  local drawableKey = assert(ball.drawableKey, "ball throw cues select their staged source cell") --[[@as string]]
   local rotation = assert(ball.rotation, "ball throw cues carry their 16-bit rotation") --[[@as integer]]
   assert(type(rotation) == "number" and rotation >= 0 and rotation < 0x10000, "ball rotation is a 16-bit angle")
   assert(type(ball.visible) == "boolean", "ball throw cues state their visibility")
   if ball.visible then
-    local key = type(ball.paletteDrawableKey) == "string" and ball.paletteDrawableKey
-      or "battle-ball:" .. ballKey .. ":" .. tostring(frame)
+    local key = type(ball.paletteDrawableKey) == "string" and ball.paletteDrawableKey or drawableKey
     local image = assets:drawable(key)
     if image ~= nil then
-      drawArtwork(graphics, image, nil, x, y, rotation / 0x10000 * 2 * math.pi, 1, 1, 8, 8)
+      -- Ball cells anchor at their own center: the throw cells are 16x16
+      -- and the opening animation's burst cell is 32x32.
+      local width, height = imageCellExtent(image)
+      drawBallCell(
+        graphics,
+        image,
+        ball.paletteFlash --[[@as integer?]],
+        x,
+        y,
+        rotation / 0x10000 * 2 * math.pi,
+        1,
+        1,
+        math.floor(width / 2),
+        math.floor(height / 2)
+      )
     end
   end
 end
@@ -4303,11 +4417,31 @@ local function drawInteraction(resources, view, content, placement)
   local layers = assert(menuLayers[MENU_SECTIONS[layout]], "the battle view carries layers for its selected menu") --[[@as table[] ]]
   local regions = assert(BattleMenuRegions.forLayout(layout), "the active battle menu has native source regions")
   local menuWindows = type(view.menuWindows) == "table" and view.menuWindows or nil
+  -- The held Shift and use-next offers arm their cells under their own
+  -- input scope while the shared source two-option planes name the
+  -- confirm/back cells, so both the pressed feedback and the source plane
+  -- blend resolve against the drawn layout.
+  local menuView = view
+  if view.mode == "shift" or view.mode == "use-next" then
+    menuView = {}
+    for key, value in pairs(view) do
+      menuView[key] = value
+    end
+    local armed = view.armed --[[@as table<string, unknown>?]]
+    if type(armed) == "table" and type(armed.id) == "string" then
+      menuView.armed = { scope = "two-option", id = armed.id, pointerId = armed.pointerId }
+    end
+  end
   -- The menu tilemaps stay up behind the encounter fade (their sampled
   -- palettes carry the flash), but the controls belong to command input:
   -- intro, narration, resolution, and outcome panes show gauges alone,
-  -- so the reveal never replays over already-visible controls.
-  local inputMode = view.mode == "command" or view.mode == "moves" or view.mode == "target"
+  -- so the reveal never replays over already-visible controls. The held
+  -- offers own their two-option controls the same way.
+  local inputMode = view.mode == "command"
+    or view.mode == "moves"
+    or view.mode == "target"
+    or view.mode == "shift"
+    or view.mode == "use-next"
   -- Retail hides every plane but SUB_2 while no menu is open
   -- (BattleInput_ShowOnlySubBgLayer2): the plain backdrop without
   -- the button tilemaps.
@@ -4325,7 +4459,7 @@ local function drawInteraction(resources, view, content, placement)
   for role, entries in pairs(grouped) do
     local function drawInteractionPlane(planeGraphics)
       for _, entry in ipairs(entries) do
-        BattleMenuPresenter.drawPlane(planeGraphics, assets, layout, view, entry)
+        BattleMenuPresenter.drawPlane(planeGraphics, assets, layout, menuView, entry)
       end
     end
     planeDraws[role] = drawInteractionPlane
@@ -4337,8 +4471,8 @@ local function drawInteraction(resources, view, content, placement)
       if acting ~= nil then
         drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
       end
-      drawControls(resources, view, layout, regions)
-      drawKeypadCursor(graphics, assets, view, layout, regions)
+      drawControls(resources, menuView, layout, regions)
+      drawKeypadCursor(graphics, assets, menuView, layout, regions)
     end
     local top = type(menuWindows) == "table" and menuWindows.outsideTop or nil
     local bottom = type(menuWindows) == "table" and menuWindows.outsideBottom or nil

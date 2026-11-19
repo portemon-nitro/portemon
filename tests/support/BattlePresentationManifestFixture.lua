@@ -943,6 +943,36 @@ local function fullManifest()
               image = "assets/generated/battle/battle-ball-POKE_BALL-0.png",
               width = 16,
               height = 16,
+              durationTicks = 2,
+            },
+          },
+          -- The ball's source opening animation (NANR sequence 1): the
+          -- closed cell, the open cell, then the 32x32 burst cell.
+          opening = {
+            playMode = "forward",
+            loopStartFrameIdx = 0,
+            frames = {
+              {
+                drawableKey = "battle-ball-open:POKE_BALL:0",
+                image = "assets/generated/battle/balls/POKE_BALL-open-0.png",
+                width = 16,
+                height = 16,
+                durationTicks = 10,
+              },
+              {
+                drawableKey = "battle-ball-open:POKE_BALL:1",
+                image = "assets/generated/battle/balls/POKE_BALL-open-1.png",
+                width = 16,
+                height = 16,
+                durationTicks = 10,
+              },
+              {
+                drawableKey = "battle-ball-open:POKE_BALL:2",
+                image = "assets/generated/battle/balls/POKE_BALL-open-2.png",
+                width = 32,
+                height = 32,
+                durationTicks = 50,
+              },
             },
           },
         },
@@ -1085,6 +1115,28 @@ local function fullManifest()
           screenGroup = "two-option",
           textSet = "keep-forget",
           messageEntries = { "label/keep-move", "label/forget-move" },
+          messageRoutes = {},
+          fontRoles = { "menu" },
+          assetRoles = {},
+          assetBindings = {},
+          requiredContext = {},
+          resources = {},
+        },
+        ["menu/switch-or-flee"] = {
+          screenGroup = "two-option",
+          textSet = "switch-or-flee",
+          messageEntries = { "label/switch", "label/use-next-mon", "label/flee" },
+          messageRoutes = {},
+          fontRoles = { "menu" },
+          assetRoles = {},
+          assetBindings = {},
+          requiredContext = {},
+          resources = {},
+        },
+        ["menu/switch-or-keep"] = {
+          screenGroup = "two-option",
+          textSet = "switch-or-keep",
+          messageEntries = { "label/switch", "label/keep-battling-switch" },
           messageRoutes = {},
           fontRoles = { "menu" },
           assetRoles = {},
@@ -1906,6 +1958,10 @@ local function fullManifest()
         ["label/target-cancel"] = menuLabel("CANCEL"),
         ["label/yes"] = menuLabel("Yes"),
         ["label/no"] = menuLabel("No"),
+        ["label/switch"] = menuLabel("Switch Pokémon"),
+        ["label/keep-battling-switch"] = menuLabel("Keep battling"),
+        ["label/use-next-mon"] = menuLabel("Use next Pokémon"),
+        ["label/flee"] = menuLabel("Flee"),
         ["label/keep-move"] = menuLabel("Keep old moves!"),
         ["evolution/4"] = messageRecord({ false, " learned ", false, "!" }),
         ["evolution/915"] = messageRecord({ false, " is evolving!" }),
@@ -2061,7 +2117,7 @@ local function fullManifest()
   end
   for _, entry in pairs(manifest.battleBalls.entries) do
     entry.paletteSource = { words = mainObjPaletteWords }
-    for _, frame in ipairs(entry.frames) do
+    local function stageFrame(frame)
       local variants = {}
       for _, firstSlot in ipairs({ 48, 64, 80, 96 }) do
         local slotKey = "slot:" .. tostring(firstSlot)
@@ -2077,6 +2133,12 @@ local function fullManifest()
         height = frame.height,
         variants = variants,
       }
+    end
+    for _, frame in ipairs(entry.frames) do
+      stageFrame(frame)
+    end
+    for _, frame in ipairs(assert(entry.opening, "fixture balls stage their opening animation").frames) do
+      stageFrame(frame)
     end
   end
   return manifest
@@ -2239,13 +2301,13 @@ local function ballRecord(selector)
   local source = fullManifest().battleBalls.entries[selector]
   assert(source ~= nil, "fixture covers ball selector " .. tostring(selector))
   local prefix = "assets/generated/battle/balls/" .. selector:sub(6)
-  local frames = {}
-  for index, frame in ipairs(source.frames) do
-    frames[index] = {
+  local function restage(frame, suffix)
+    return {
       drawableKey = frame.drawableKey,
-      image = prefix .. "-" .. (index - 1) .. ".png",
+      image = prefix .. suffix .. ".png",
       width = frame.width,
       height = frame.height,
+      durationTicks = frame.durationTicks,
       sourceIndices = {
         format = frame.sourceIndices.format,
         plane = frame.sourceIndices.plane,
@@ -2255,14 +2317,27 @@ local function ballRecord(selector)
       },
     }
   end
+  local frames = {}
+  for index, frame in ipairs(source.frames) do
+    frames[index] = restage(frame, "-" .. (index - 1))
+  end
+  local openingFrames = {}
+  for index, frame in ipairs(source.opening.frames) do
+    openingFrames[index] = restage(frame, "-open-" .. (index - 1))
+  end
   return {
-    schema = "g4-battle-ball-v2",
+    schema = "g4-battle-ball-v4",
     selector = selector,
     catalogIdentity = "synthetic-catalog",
     entry = {
       fadeColor = source.fadeColor,
       paletteSource = { words = source.paletteSource.words },
       frames = frames,
+      opening = {
+        playMode = source.opening.playMode,
+        loopStartFrameIdx = source.opening.loopStartFrameIdx,
+        frames = openingFrames,
+      },
       particles = source.particles,
     },
   }

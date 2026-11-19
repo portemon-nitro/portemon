@@ -808,6 +808,31 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
           },
         },
       },
+      opening = {
+        playMode = "forward",
+        loopStartFrameIdx = 0,
+        frames = {
+          {
+            drawableKey = "battle-ball-open:POKE:0",
+            image = "assets/generated/battle/balls/POKE-open-0.png",
+            width = 1,
+            height = 1,
+            durationTicks = 10,
+            sourceIndices = {
+              format = "source-index-rgba8",
+              plane = "mainObj",
+              width = 1,
+              height = 1,
+              variants = {
+                ["slot:48"] = {
+                  path = "battle/ball-open/main-obj-source-index-castle.rgba8",
+                  firstSlot = 48,
+                },
+              },
+            },
+          },
+        },
+      },
     },
     ["ball:GREAT_BALL"] = {
       fadeColor = 0,
@@ -832,11 +857,36 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
           },
         },
       },
+      opening = {
+        playMode = "forward",
+        loopStartFrameIdx = 0,
+        frames = {
+          {
+            drawableKey = "battle-ball-open:GREAT_BALL:0",
+            image = "assets/generated/battle/balls/GREAT_BALL-open-0.png",
+            width = 1,
+            height = 1,
+            durationTicks = 10,
+            sourceIndices = {
+              format = "source-index-rgba8",
+              plane = "mainObj",
+              width = 1,
+              height = 1,
+              variants = {
+                ["slot:64"] = {
+                  path = "battle/ball-great-open/main-obj-source-index-slot64.rgba8",
+                  firstSlot = 64,
+                },
+              },
+            },
+          },
+        },
+      },
     },
   }
   for selector, entry in pairs(manifest.battleBalls.entries) do
     leafRecords[BattlePresentationCache.ballPath(selector)] = {
-      schema = "g4-battle-ball-v2",
+      schema = "g4-battle-ball-v4",
       selector = selector,
       catalogIdentity = manifest.catalogIdentity,
       entry = entry,
@@ -2801,6 +2851,17 @@ function T.modded_trainer_and_ball_payloads_stage_without_catalog_recheck()
         image = "balls/modded.png",
       },
     },
+    opening = {
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+      frames = {
+        {
+          drawableKey = "battle-ball-open:MODDED:0",
+          image = "balls/modded-open.png",
+          durationTicks = 10,
+        },
+      },
+    },
   }
   local leafRecords = {
     [BattlePresentationCache.trainerPicturePath("front:MODDED")] = {
@@ -2810,7 +2871,7 @@ function T.modded_trainer_and_ball_payloads_stage_without_catalog_recheck()
       entry = trainerEntry,
     },
     [BattlePresentationCache.ballPath("ball:MODDED")] = {
-      schema = "g4-battle-ball-v2",
+      schema = "g4-battle-ball-v4",
       selector = "ball:MODDED",
       catalogIdentity = "modded-catalog",
       entry = ballEntry,

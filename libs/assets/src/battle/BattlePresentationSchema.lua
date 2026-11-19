@@ -4322,9 +4322,10 @@ local function checkBallParticleSet(set, itemKey, kind, context, field)
   end
 end
 
--- One ball entry: ordered frame rasters plus the optional seal/burst
--- particle sets. Image staging is proved by the caller, as with trainer
--- pictures.
+-- One ball entry: ordered throw frame rasters with their source frame
+-- durations, the opening animation the ball plays when it lands (with its
+-- source cell durations), and the optional seal/burst particle sets. Image
+-- staging is proved by the caller, as with trainer pictures.
 local function checkBallEntry(selector, record, checkImage, context, field)
   if not isBallSelector(selector) then
     fail(CODE_MANIFEST, "battle ball selector is not semantic: " .. tostring(selector), context)
@@ -4334,7 +4335,7 @@ local function checkBallEntry(selector, record, checkImage, context, field)
   end
   SchemaCheck.checkRecord(
     record,
-    { frames = true, fadeColor = true, particles = true, paletteSource = true },
+    { frames = true, opening = true, fadeColor = true, particles = true, paletteSource = true },
     context,
     CODE_MANIFEST,
     field
@@ -4378,26 +4379,57 @@ local function checkBallEntry(selector, record, checkImage, context, field)
   if not Validate.isArray(record.frames) or #record.frames == 0 then
     fail(CODE_MANIFEST, field .. ".frames must carry ordered animation frames", context)
   end
-  for frameIndex, frame in ipairs(record.frames) do
-    local frameField = field .. ".frames[" .. frameIndex .. "]"
-    SchemaCheck.checkRecord(
-      frame,
-      { drawableKey = true, image = true, width = true, height = true, sourceIndices = true },
-      context,
-      CODE_MANIFEST,
-      frameField
-    )
-    local itemKey = selector:sub(6)
-    if frame.drawableKey ~= "battle-ball:" .. itemKey .. ":" .. (frameIndex - 1) then
-      fail(CODE_MANIFEST, frameField .. ".drawableKey must match its ordered animation frame", context)
+  local itemKey = selector:sub(6)
+  local function checkCell(frame, frameField, checkDuration)
+    local expected = { drawableKey = true, image = true, width = true, height = true, sourceIndices = true }
+    if checkDuration then
+      expected.durationTicks = true
     end
+    SchemaCheck.checkRecord(frame, expected, context, CODE_MANIFEST, frameField)
     checkImage(frame.image, frameField .. ".image")
     checkInt(frame.width, 1, 128, context, CODE_MANIFEST, frameField .. ".width")
     checkInt(frame.height, 1, 128, context, CODE_MANIFEST, frameField .. ".height")
+    if checkDuration then
+      checkInt(frame.durationTicks, 0, 65535, context, CODE_MANIFEST, frameField .. ".durationTicks")
+    end
     if frame.sourceIndices.width ~= frame.width or frame.sourceIndices.height ~= frame.height then
       fail(CODE_MANIFEST, frameField .. ".sourceIndices dimensions must match its image", context)
     end
     checkPhysicalSourceIndices(frame.sourceIndices, record.paletteSource.words, context, frameField .. ".sourceIndices")
+  end
+  for frameIndex, frame in ipairs(record.frames) do
+    local frameField = field .. ".frames[" .. frameIndex .. "]"
+    checkCell(frame, frameField, true)
+    if frame.drawableKey ~= "battle-ball:" .. itemKey .. ":" .. (frameIndex - 1) then
+      fail(CODE_MANIFEST, frameField .. ".drawableKey must match its ordered animation frame", context)
+    end
+  end
+  local opening = record.opening
+  if opening == nil then
+    fail(CODE_MANIFEST, field .. ".opening must carry the ball's opening animation", context)
+  end
+  assert(type(opening) == "table", "the missing opening check names its record")
+  local openingField = field .. ".opening"
+  SchemaCheck.checkRecord(
+    opening,
+    { playMode = true, loopStartFrameIdx = true, frames = true },
+    context,
+    CODE_MANIFEST,
+    openingField
+  )
+  if opening.playMode ~= "forward" and opening.playMode ~= "forward_loop" then
+    fail(CODE_MANIFEST, openingField .. ".playMode must name a source play mode", context)
+  end
+  checkInt(opening.loopStartFrameIdx, 0, 0xFFFF, context, CODE_MANIFEST, openingField .. ".loopStartFrameIdx")
+  if not Validate.isArray(opening.frames) or #opening.frames == 0 then
+    fail(CODE_MANIFEST, openingField .. ".frames must carry the opening animation cells", context)
+  end
+  for frameIndex, frame in ipairs(opening.frames) do
+    local frameField = openingField .. ".frames[" .. frameIndex .. "]"
+    checkCell(frame, frameField, true)
+    if frame.drawableKey ~= "battle-ball-open:" .. itemKey .. ":" .. (frameIndex - 1) then
+      fail(CODE_MANIFEST, frameField .. ".drawableKey must match its ordered opening cell", context)
+    end
   end
 end
 

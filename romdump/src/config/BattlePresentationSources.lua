@@ -1696,6 +1696,10 @@ BattlePresentationSources.BALL_PICTURES = {
     table = "sBallSpriteResources",
     index = "BallAnim_GetBallTableIndex(ballId)",
   },
+  -- Each ball's animation member carries two source sequences: the throw
+  -- cycle the sprite ticks while it arcs, and the opening animation
+  -- BallThrow switches to when the ball lands (its cells and their
+  -- durations stage with the ball).
   memberOffsets = {
     animation = 0,
     cell = 1,
@@ -2776,8 +2780,8 @@ BattlePresentationSources.MENU_MESSAGES = {
   ["status/safari-balls-remaining"] = 951,
   ["label/switch"] = 1215,
   ["label/keep-battling-switch"] = 1216,
-  ["label/flee"] = 1217,
-  ["label/switch-flee"] = 1218,
+  ["label/use-next-mon"] = 1217,
+  ["label/flee"] = 1218,
   ["label/pal-park-balls"] = 1220,
   ["status/pal-park-balls-remaining"] = 1221,
   ["label/bug-contest-gender-male"] = 1272,

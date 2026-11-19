@@ -32,6 +32,36 @@ local function record(combatant, name, species, own, controller)
   }
 end
 
+-- The staged ball opening animation: two closed cells then the 32x32
+-- opened-halves cell, matching the source sequence's authored durations.
+---@return table<string, { drawableKey: string, durationTicks: integer }[]> opening records by ball key
+local function ballOpenings()
+  local frames = {}
+  for index, duration in ipairs({ 10, 10, 50 }) do
+    frames[index] = {
+      drawableKey = "battle-ball-open:POKE_BALL:" .. tostring(index - 1),
+      durationTicks = duration,
+    }
+  end
+  return { POKE_BALL = { frames = frames } }
+end
+
+-- The staged ball throw animation: eight cells with the source's
+-- authored durations.
+local THROW_DURATIONS = { 2, 2, 6, 2, 2, 2, 6, 2 }
+
+---@return table<string, { frames: { drawableKey: string, durationTicks: integer }[] }> throw cycles by ball key
+local function ballThrowCycle()
+  local frames = {}
+  for index, duration in ipairs(THROW_DURATIONS) do
+    frames[index] = {
+      drawableKey = "battle-ball:POKE_BALL:" .. tostring(index - 1),
+      durationTicks = duration,
+    }
+  end
+  return { POKE_BALL = { frames = frames } }
+end
+
 local function openingView()
   return {
     round = 1,
@@ -202,7 +232,74 @@ function T.trainer_handoff_clears_intro_terrain()
   end
 end
 
-function T.trainer_foe_ball_bursts_where_it_opens()
+-- The trainer's own throw draws the ball from the settled backpic
+-- anchor and advances the source throw cycle once it releases.
+function T.trainer_player_throw_draws_from_the_backpic_anchor_and_ticks_the_throw()
+  local cycles = ballThrowCycle()
+  local timeline = BattleTimelineFixture.new({
+    ballThrow = function(ballKey)
+      return cycles[ballKey]
+    end,
+  })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, false)
+  local first, last, firstX, firstY, lastX, lastY = nil, nil, nil, nil, nil, nil
+  local cells = {}
+  local tracking = false
+  for tick = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    local ball = timeline:openingPresentation().ballThrow
+    if type(ball) == "table" and ball.visible == true then
+      if tracking or (ball.x == 64 and ball.y == 240) then
+        tracking = true
+        first = first == nil and tick or first
+        firstX = firstX or ball.x
+        firstY = firstY or ball.y
+        last = tick
+        lastX = ball.x
+        lastY = ball.y
+        if cells[#cells] ~= ball.drawableKey then
+          cells[#cells + 1] = ball.drawableKey
+        end
+      end
+    elseif tracking then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.notNil(first, "the trainer throw appears at the settled backpic anchor")
+  Assert.equal(firstX, 64, "the ball follows the settled backpic x anchor")
+  Assert.equal(firstY, 240, "the ball follows the staged backpic y anchor")
+  Assert.equal(
+    last - first + 1,
+    15 + BattleTimelineCore.THROW_ARC_TICKS + BattleTimelineCore.THROW_OPEN_TICKS,
+    "the ball winds up to its release frame, arcs, and opens"
+  )
+  Assert.equal(lastX, 64, "the arc lands on the player's mon spot")
+  Assert.equal(lastY, 144, "the arc lands 32 pixels below the mon anchor")
+  Assert.isTrue(#cells >= 3, "the release ticks the source throw cycle through multiple cells")
+  for position, key in ipairs(cells) do
+    local cell = (position - 1) % #THROW_DURATIONS
+    Assert.equal(
+      key,
+      "battle-ball:POKE_BALL:" .. tostring(cell),
+      "the trainer's throw walks its source cells in order"
+    )
+  end
+end
+
+-- The trainer's own throw runs the capture state machine, whose kind-15
+-- ball opens with BallBurstEffect; the foe trainer's kind 1/3/5 ball
+-- opens with the source cell and palette blend instead.
+function T.trainer_player_throw_bursts_at_its_open()
   local timeline = BattleTimelineFixture.new({})
   local view = openingView()
   timeline:reset(view)
@@ -215,16 +312,76 @@ function T.trainer_foe_ball_bursts_where_it_opens()
       bursts[#bursts + 1] = start
     end
   end
-  Assert.equal(#bursts, 2, "both throws burst where their balls open")
-  local byPos = {}
-  for _, burst in ipairs(bursts) do
-    byPos[burst.x .. "," .. burst.y] = true
+  Assert.equal(#bursts, 1, "only the trainer's own throw uses BallBurstEffect")
+  Assert.equal(bursts[1].x, 64, "the player ball bursts at its arc landing")
+  Assert.equal(bursts[1].y, 144, "the player ball bursts 32 below the mon spot")
+end
+
+-- The foe trainer's own throw walks off while the pre-created kind-1
+-- ball opens in place: the twelve static frames, the opening cell, the
+-- forced opened-halves cell and the white blend, with no burst.
+function T.trainer_foe_ball_opens_with_the_source_cell_and_flash()
+  local openings = ballOpenings()
+  local timeline = BattleTimelineFixture.new({
+    ballOpening = function(ballKey)
+      return openings[ballKey]
+    end,
+  })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, false)
+  local keys, flashes = {}, {}
+  for tick = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    local ball = timeline:openingPresentation().ballThrow
+    if type(ball) == "table" and ball.visible == true and ball.x == 192 and ball.y == 86 then
+      keys[#keys + 1] = ball.drawableKey
+      flashes[#flashes + 1] = ball.paletteFlash
+    end
+    if timeline:settled() then
+      break
+    end
   end
-  Assert.isTrue(byPos["192,86"] == true, "the foe ball bursts at its in-place open")
-  Assert.isTrue(
-    byPos["64,144"] == true,
-    "the player ball bursts at its arc landing: BallThrow_InitThrowTarget kind 6 lands 32 below the mon spot"
-  )
+  Assert.isTrue(timeline:settled(), "the trainer intro drains fully")
+  Assert.isTrue(#keys > 0, "the foe trainer's ball appears at its source spot")
+  -- The ball holds its closed throw cell over the twelve in-place frames,
+  -- then shows the opening cell until the sixth open step forces the
+  -- opened-halves cell.
+  local cells = {}
+  for _, key in ipairs(keys) do
+    if cells[#cells] ~= key then
+      cells[#cells + 1] = key
+    end
+  end
+  Assert.deepEqual(cells, {
+    "battle-ball:POKE_BALL:0",
+    "battle-ball-open:POKE_BALL:0",
+    "battle-ball-open:POKE_BALL:2",
+  }, "the foe trainer's ball walks its source cells once")
+  local forced, peakFlash = 0, nil
+  for position, key in ipairs(keys) do
+    if key == "battle-ball-open:POKE_BALL:2" then
+      forced = forced + 1
+      local flash = flashes[position]
+      if type(flash) == "number" then
+        peakFlash = math.max(peakFlash or 0, flash)
+      end
+    end
+  end
+  Assert.isTrue(forced > 1, "the opened-halves cell stays through the ball task")
+  Assert.equal(peakFlash, BattleTimelineCore.BALL_FLASH_FULL, "the opened cell blends to source white")
+  local foeBurst = false
+  for _, start in ipairs(timeline:takeBallParticleStarts()) do
+    if type(start) == "table" and start.effect == "burst" and start.x == 192 and start.y == 86 then
+      foeBurst = true
+    end
+  end
+  Assert.isFalse(foeBurst, "the foe trainer's ball starts no burst stand-in")
 end
 
 function T.wild_terrain_stays_through_the_encounter_line()
@@ -497,7 +654,7 @@ end
 -- runs Task_FollowMonSlideIn): the trainer walks off with no ball, no
 -- seal, and no ball sound behind it, and the follower appears with no
 -- ball-color poof before its cry.
-function T.follower_lead_skips_the_ball_but_walks_the_trainer_off()
+function T.wild_follower_lead_slides_in_without_a_ball_or_trainer()
   local timeline = BattleTimelineFixture.new({})
   local view = openingView()
   view.followMonSlot = 0
@@ -511,11 +668,7 @@ function T.follower_lead_skips_the_ball_but_walks_the_trainer_off()
       throws[#throws + 1] = cue
     end
   end
-  Assert.equal(#throws, 1, "the follower send-out still walks the trainer off behind one throw cue")
-  Assert.isTrue(
-    throws[1].noBall == true,
-    "the follower slides in with no ball behind it: Task_FollowMonSlideIn runs no BallThrow"
-  )
+  Assert.equal(#throws, 0, "the wild follower lead runs no BallThrow and walks no trainer")
   Assert.isTrue(
     type(BattleAudio.SINK_SOUNDS.followerSlide) == "string",
     "the follower slide has its staged switch sound"
@@ -526,11 +679,7 @@ function T.follower_lead_skips_the_ball_but_walks_the_trainer_off()
       Assert.isTrue(cue.cue.symbol ~= BattleAudio.SINK_SOUNDS.ballOpen, "no ball sound voices without a ball opening")
       if cue.cue.symbol == BattleAudio.SINK_SOUNDS.followerSlide then
         slideSounds = slideSounds + 1
-        Assert.equal(
-          cue.cue.pan,
-          BattleAudio.SIDE_PAN.player,
-          "the slide switch sound voices on the player side"
-        )
+        Assert.equal(cue.cue.pan, BattleAudio.SIDE_PAN.player, "the slide switch sound voices on the player side")
       end
     end
     if cue.kind == "ball-particles" then
@@ -586,9 +735,9 @@ function T.player_arcs_target_the_mon_spot_per_side_type()
   Assert.equal(arcs[2].targetY, 152, "the partner lands 32 pixels below its mon anchor")
 end
 
--- Doubles with a follower lead: the first throw walks the trainer off
--- with no ball, and the partner still arcs from its own release point.
-function T.follower_lead_doubles_still_arcs_the_partner()
+-- Doubles with a follower lead: the follower slides in ball-free with no
+-- trainer on a wild path, and the partner still arcs from the hand spot.
+function T.wild_follower_lead_doubles_arcs_the_partner_without_a_trainer()
   local timeline = BattleTimelineFixture.new({})
   local view = doublesView(1, 2)
   view.followMonSlot = 0
@@ -601,11 +750,17 @@ function T.follower_lead_doubles_still_arcs_the_partner()
       throws[#throws + 1] = cue
     end
   end
-  Assert.equal(#throws, 2, "both player send-outs queue their throw")
-  Assert.isTrue(throws[1].noBall == true, "the follower lead throws no ball")
-  Assert.isTrue(throws[2].arcOnly == true, "the partner arcs without its own windup")
-  Assert.equal(throws[2].targetX, 80, "the partner arc keeps its own mon spot")
-  Assert.equal(throws[2].targetY, 152, "the partner arc keeps its own landing")
+  Assert.equal(#throws, 1, "only the partner queues a ball on a wild path")
+  Assert.isTrue(throws[1].trainerless == true, "the partner arcs with no trainer on screen")
+  Assert.equal(throws[1].targetX, 80, "the partner arc keeps its own mon spot")
+  Assert.equal(throws[1].targetY, 152, "the partner arc keeps its own landing")
+  Assert.equal(
+    throws[1].nominalTicks,
+    BattleTimelineCore.THROW_ARC_TICKS
+      + BattleTimelineCore.BALL_ARC_APEX_TICKS
+      + BattleTimelineCore.BALL_FLASHING_OPEN_TICKS,
+    "the partner runs the source arc, apex hold, and blend tail"
+  )
   local queue = queued(timeline)
   local goIndex = nil
   for index, cue in ipairs(queue) do
@@ -624,8 +779,8 @@ function T.follower_lead_doubles_still_arcs_the_partner()
   Assert.equal(#playerWaits, 1, "the doubles opening settles once")
   Assert.equal(
     playerWaits[1].duration,
-    4,
-    "the settle keeps 96 minus the serial visuals (21 exit plus 20 slide for the follower, 39 arc plus 12 reveal for the partner)"
+    35,
+    "the settle keeps 96 minus the serial visuals (20 slide plus 12 reveal for the follower, 29 arc plus 12 reveal for the partner)"
   )
 end
 
@@ -651,11 +806,7 @@ function T.follower_partner_waits_twelve_ticks_before_sliding()
     12 + BattleTimelineCore.FOLLOW_SLIDE_TICKS,
     "the hold plus the slide keep the source thirty-two ticks"
   )
-  Assert.equal(
-    reveal.slideOffset,
-    -160,
-    "the partner starts 160 px left of its spot (offscreen -80 to home 80)"
-  )
+  Assert.equal(reveal.slideOffset, -160, "the partner starts 160 px left of its spot (offscreen -80 to home 80)")
   local revealTicks = 0
   local done = false
   local seenHidden = false
@@ -679,8 +830,7 @@ function T.follower_partner_waits_twelve_ticks_before_sliding()
       if revealTicks <= 12 then
         seenHidden = seenHidden or shown.visible ~= true
       elseif shown.visible == true then
-        seenTravel = seenTravel
-          or (type(shown.pictureXOffset) == "number" and shown.pictureXOffset < 0)
+        seenTravel = seenTravel or (type(shown.pictureXOffset) == "number" and shown.pictureXOffset < 0)
       end
     elseif revealTicks > 0 then
       done = true

@@ -294,6 +294,17 @@ local function stageSourceIndices(cache, sourceIndices)
   end
 end
 
+-- Stage one ball record's animation cells: the compiled PNG and the
+-- source-index variants of each throw and opening frame.
+---@param cache table staging cache under test
+---@param cells table[] staged ball animation cells
+local function stageBallLeafCells(cache, cells)
+  for _, frame in ipairs(cells) do
+    stagePng(cache, frame.image, frame.width, frame.height)
+    stageSourceIndices(cache, frame.sourceIndices)
+  end
+end
+
 local function stageBattle(cache, manifest, sceneKey)
   cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
   cache:write(BattlePresentationCache.markerPath(), "marker")
@@ -351,9 +362,13 @@ local function stageBattle(cache, manifest, sceneKey)
   local battleBalls = type(manifest.battleBalls) == "table" and manifest.battleBalls.entries or nil
   if type(battleBalls) == "table" then
     for _, entry in pairs(battleBalls) do
-      for _, frame in ipairs(entry.frames) do
-        stageGlobalSourceIndices(frame.sourceIndices)
+      local function stageBallCells(cells)
+        for _, frame in ipairs(cells) do
+          stageGlobalSourceIndices(frame.sourceIndices)
+        end
       end
+      stageBallCells(entry.frames)
+      stageBallCells(entry.opening.frames)
     end
   end
   local record = {
@@ -620,12 +635,15 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
   stageBattle(cache, manifest, "general/grass/day")
   stageMonPage(cache, portraitSelector)
   cache:writeLua(BattlePresentationCache.ballPath(selector), leaf)
-  stagePng(cache, leaf.entry.frames[1].image, 16, 16)
-  stageSourceIndices(cache, leaf.entry.frames[1].sourceIndices)
+  stageBallLeafCells(cache, leaf.entry.frames)
+  stageBallLeafCells(cache, leaf.entry.opening.frames)
   cache:write(BattlePresentationCache.ballMarkerPath(selector), "marker")
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "every requested frame is staged")
   cache:write(leaf.entry.frames[1].image, "truncated")
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a broken requested frame is never ready")
+  stagePng(cache, leaf.entry.frames[1].image, leaf.entry.frames[1].width, leaf.entry.frames[1].height)
+  cache:write(leaf.entry.opening.frames[1].image, "truncated")
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a broken opening cell is never ready")
 end
 
 function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
@@ -1075,8 +1093,8 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   local ballEntry = ballRecord.entry
   local ballImage = ballEntry.frames[1].image
   cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), ballRecord)
-  stagePng(cache, ballImage, ballEntry.frames[1].width, ballEntry.frames[1].height)
-  stageSourceIndices(cache, ballEntry.frames[1].sourceIndices)
+  stageBallLeafCells(cache, { ballEntry.frames[1] })
+  stageBallLeafCells(cache, ballEntry.opening.frames)
   cache:write(BattlePresentationCache.ballMarkerPath("ball:POKE_BALL"), "leaf-marker")
   Assert.isTrue(
     BattlePresentationCache.isBallReady(cache, "ball:POKE_BALL", "leaf-marker"),
@@ -1087,7 +1105,7 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   -- stays on disk.
   local replacementImage = "assets/generated/battle/balls/POKE_BALL-1.png"
   local replacement = {
-    schema = "g4-battle-ball-v2",
+    schema = "g4-battle-ball-v4",
     selector = "ball:POKE_BALL",
     catalogIdentity = core.catalogIdentity,
     entry = {
@@ -1099,9 +1117,11 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
           image = replacementImage,
           width = ballEntry.frames[1].width,
           height = ballEntry.frames[1].height,
+          durationTicks = ballEntry.frames[1].durationTicks,
           sourceIndices = ballEntry.frames[1].sourceIndices,
         },
       },
+      opening = ballEntry.opening,
     },
   }
   cache:writeLua(BattlePresentationCache.ballPath("ball:POKE_BALL"), replacement)
@@ -1252,10 +1272,8 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   local ballSelector = "ball:POKE_BALL"
   local ballRecord = ManifestFixture.ballRecord(ballSelector)
   cache:writeLua(BattlePresentationCache.ballPath(ballSelector), ballRecord)
-  for _, frame in ipairs(ballRecord.entry.frames) do
-    stagePng(cache, frame.image, frame.width, frame.height)
-    stageSourceIndices(cache, frame.sourceIndices)
-  end
+  stageBallLeafCells(cache, ballRecord.entry.frames)
+  stageBallLeafCells(cache, ballRecord.entry.opening.frames)
   if ballRecord.entry.particles ~= nil then
     for _, set in ipairs({ ballRecord.entry.particles.seal, ballRecord.entry.particles.burst }) do
       for _, texture in ipairs(set.textures) do

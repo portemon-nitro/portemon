@@ -1061,6 +1061,15 @@ function T.bag_selection_consumes_only_through_native_execution()
     )
     Assert.equal(capture.battle:status().result, "capture", "the guaranteed ball reports its capture" .. tag)
     Assert.equal(capture.bag:quantity("MASTER_BALL"), 0, "the thrown ball publishes exactly once" .. tag)
+    local demandedBall = false
+    for _, demand in ipairs(capture.assets.prepared) do
+      for _, selector in ipairs(type(demand.battleBalls) == "table" and demand.battleBalls or {}) do
+        if selector == "ball:MASTER_BALL" then
+          demandedBall = true
+        end
+      end
+    end
+    Assert.isTrue(demandedBall, "the thrown bag ball reaches the launch demand" .. tag)
     local replayed = capture.battle:submit(capture.submits[1])
     Assert.isFalse(replayed == true, "a repeated capture reply seals nothing more" .. tag)
     capture.screen:dispose()
@@ -2683,23 +2692,11 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     rig.battle:dispose()
   end
 end
+
 -- The voluntary party child shares its native roster across display
 -- cases: paired and compact focus the same reserve, move it together,
 -- paint it through the same native renderer, and cancelling from
 -- either returns to the command prompt without sealing a reply.
-
----@param rig table live screen rig under test driving
----@return table<string, integer> drawn text census for one rendered frame
-local function drawnInk(rig)
-  rig.text.draws = {}
-  rig.screen:draw({ graphics = FakeGraphics.new({}) })
-  local ink = {}
-  for _, drawn in ipairs(rig.text.draws) do
-    local content = tostring(drawn.content)
-    ink[content] = (ink[content] or 0) + 1
-  end
-  return ink
-end
 function T.same_party_child_shares_focus_across_layouts_behind_the_native_roster()
   local captured = {}
   for _, layout in ipairs({ "paired", "compact" }) do
@@ -2810,7 +2807,11 @@ function T.native_party_focus_and_fragment_authority()
     Assert.equal(forced.screen:status().mode, "child", "answering Yes opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
     requireChildOwner("native forced replacement authority")
-    Assert.equal(forced.screen:view().childView.focusId, "party:1", "the forced child focuses its eligible reserve" .. tag)
+    Assert.equal(
+      forced.screen:view().childView.focusId,
+      "party:1",
+      "the forced child focuses its eligible reserve" .. tag
+    )
     press(forced, { type = "cancel" })
     Assert.equal(#forced.submits, 0, "forced cancel seals nothing" .. tag)
     Assert.equal(forced.screen:status().mode, "child", "forced cancel keeps the child" .. tag)
@@ -2822,37 +2823,60 @@ function T.native_party_focus_and_fragment_authority()
   end
 end
 
--- Answering No to the wild replacement offer seals flight: the screen
--- leaves the prompt without opening party and the reply carries one run
--- fragment per addressed entry (retail falls through TryEscape before
--- ShowParty). A single-layout smoke suffices: the Yes branches above prove
--- both displays open the party child, and the session suite owns the
--- flight semantics.
-function T.wild_replacement_no_answers_flight_without_party()
-  local rig = openRig({
-    layout = "paired",
-    launchId = "launch-use-next-no-paired",
-    party = {
-      { species = "EEVEE", level = 5, seed = 0x55555555 },
-      { species = "EEVEE", level = 5, seed = 0x66666666 },
-    },
-    bag = {},
-    foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
-  })
-  driveToMode(rig, "command")
-  waitForBattleDecision(rig, "replacement")
-  waitForScreenDecision(rig, "replacement")
-  Assert.equal(rig.screen:status().mode, "use-next", "the wild faint offers its next mon")
-  press(rig, { type = "navigate", direction = "down" })
-  rig.pump(1)
-  press(rig, { type = "confirm" })
-  rig.pump(5)
-  Assert.equal(#rig.submits, 1, "answering No seals exactly one reply")
-  for _, choice in ipairs(rig.submits[1].choices) do
-    Assert.equal(choice.kind, "run", "the No answer names flight, never a reserve")
+-- The wild replacement offer names the source answers and answers them
+-- on both display cases: paired answers No from the keypad and compact
+-- taps the Flee row, and both seal flight without opening party (retail
+-- falls through TryEscape before ShowParty).
+function T.wild_replacement_offer_names_the_source_answers_and_seals_flight()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-use-next-no-" .. layout,
+      party = {
+        { species = "EEVEE", level = 5, seed = 0x55555555 },
+        { species = "EEVEE", level = 5, seed = 0x66666666 },
+      },
+      bag = {},
+      foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
+    })
+    driveToMode(rig, "command")
+    waitForBattleDecision(rig, "replacement")
+    waitForScreenDecision(rig, "replacement")
+    Assert.equal(rig.screen:status().mode, "use-next", "the wild faint offers its next mon" .. tag)
+    -- The offer draws the answers of its own source template.
+    local graphics = FakeGraphics.new({})
+    rig.text.draws = {}
+    rig.screen:draw({ graphics = graphics })
+    local ink = {}
+    for _, drawn in ipairs(rig.text.draws) do
+      local content = tostring(drawn.content)
+      ink[content] = (ink[content] or 0) + 1
+    end
+    Assert.equal(ink["Use next Pokémon"], 1, "the top cell names the replacement answer" .. tag)
+    Assert.equal(ink["Flee"], 1, "the bottom cell names the escape answer" .. tag)
+    if layout == "paired" then
+      press(rig, { type = "navigate", direction = "down" })
+      rig.pump(1)
+      press(rig, { type = "confirm" })
+    else
+      -- The compact dock's second answer row sits at the bottom of its one
+      -- surface. A tap that moves the cursor and one that settles arrive
+      -- as a single gesture: the compact input identity tracks the
+      -- selection, so a gesture split across batches is remeasured.
+      local down = { type = "pointer_down", pointerId = "tap:flee", x = 160, y = 176 }
+      local up = { type = "pointer_up", pointerId = "tap:flee", x = 160, y = 176 }
+      rig.screen:input({ down, up })
+      rig.pump(1)
+    end
+    rig.pump(5)
+    Assert.equal(#rig.submits, 1, "answering the offer seals exactly one reply" .. tag)
+    for _, choice in ipairs(rig.submits[1].choices) do
+      Assert.equal(choice.kind, "run", "the answer names flight, never a reserve" .. tag)
+    end
+    rig.screen:dispose()
+    rig.battle:dispose()
   end
-  rig.screen:dispose()
-  rig.battle:dispose()
 end
 
 -- The trainer doll refusal reaches its staged message page through the

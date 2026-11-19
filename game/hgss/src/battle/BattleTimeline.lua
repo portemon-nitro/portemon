@@ -62,6 +62,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
 ---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
 ---@field _ballFadeColor (fun(ballKey: string): integer)? Pokepic palette-fade target of a ball (sBallColors)
+---@field _ballOpening (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged opening animation of a ball
+---@field _ballThrow (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged throw animation of a ball
 ---@field _faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts
 ---@field _messageText fun(context: unknown, key: string, substitutions: string[]): string source text resolver supplied by the battle screen or test fixture
 ---@field _messageTextContext unknown? owner passed to the source text resolver
@@ -110,16 +112,48 @@ BattleTimeline.THROW_EXIT_TICKS = 21
 -- so one staged frame duration lasts half as many ticks.
 BattleTimeline.TRAINER_ANIM_RATE = 2
 -- Player send-out ball after the windup release (kind 6/8/7): a 21-tick
--- arc phase (init plus the 20-tick flight at height 48) and an 18-tick
--- open phase (ThrowArcAndOpen steps around the arc). Foe send-outs open
--- in place and need no arc. Retail flashes the ball sprite white through
--- the open (RunThrowArc's palette blend); with no runtime blend path for
--- thrown sprites, the staged ball-open burst stands in at the same spot
--- and beat, matching the capture and recall opens.
+-- arc phase (init plus the 20-tick flight at height 48) and the source
+-- open phase around the landing. Foe send-outs open in place and need no
+-- arc. RunThrowArc blends the ball sprite's palette white through the
+-- open; the timeline publishes the source coefficient and the renderer
+-- applies the shared palette fade.
 BattleTimeline.THROW_ARC_TICKS = 21
 BattleTimeline.THROW_ARC_HEIGHT = 48
 BattleTimeline.THROW_OPEN_TICKS = 18
 BattleTimeline.THROW_ARC_MOTION_TICKS = 20
+-- RunThrowArc holds a player send-out ball (gOpponentBallKinds 6/8/7) for
+-- four frames past its arc midpoint: while modeFrames sits between
+-- arcDuration / 2 and arcDuration / 2 + 4 the kind gate skips
+-- BattleAnimUtil_UpdateLinearSinMotionSprite, so the twenty updates (and
+-- therefore the landing) finish four frames later than the plain arc.
+BattleTimeline.BALL_ARC_APEX_TICKS = 4
+-- gOpponentBallKinds selects a source kind per battler type. The
+-- player-side kinds (0/2/4 -> 6/8/7) spin and flash their palette during
+-- the throw; the foe-side kinds (1/3/5 -> 1/3/5) hold a static ball and
+-- flash where the opening animation reaches its fifth frame.
+BattleTimeline.BALL_KIND_BY_BATTLER_TYPE = { [0] = 6, [1] = 1, [2] = 8, [3] = 3, [4] = 7, [5] = 5 }
+BattleTimeline.BALL_FLASHING_KINDS = { [6] = true, [7] = true, [8] = true, [9] = true, [10] = true, [11] = true }
+-- RunThrowArc starts the blend at arcDuration / 2 + 10, four frames before
+-- the held arc lands, and ramps 0..14 in steps of two over seven frames.
+BattleTimeline.BALL_FLASH_LEAD_TICKS = 4
+BattleTimeline.BALL_FLASH_STEP = 2
+BattleTimeline.BALL_FLASH_FULL = 14
+-- Task_PokemonSendOut and Task_PokemonSlideIn report the ball opened and
+-- start their BallSealEffect, their BOWA2, and the figure growth where the
+-- source does. A flashing kind reports opened when its in-arc blend
+-- finishes, four ticks after the ball lands. The other kinds run two
+-- RunThrowArc setup steps, then the opening animation's sixth step runs
+-- `modeFrames == 5`, which forces the opened ball cell and starts the
+-- blend eight open ticks after landing; 16 open steps end the ball task.
+BattleTimeline.BALL_OPEN_SETUP_TICKS = 2
+BattleTimeline.BALL_OPEN_FLASH_TICKS = 6
+BattleTimeline.BALL_FLASHING_OPEN_TICKS = 4
+-- A foe send-out ball (gOpponentBallKinds 1/3/5) runs the same arc phase
+-- in place: BallThrow_InitThrowTarget keeps its target on the sprite's own
+-- position with zero height over twelve frames, and those kinds never
+-- spin. The open steps then follow, so the foe ball opens twenty ticks
+-- after its task starts.
+BattleTimeline.BALL_IN_PLACE_ARC_TICKS = 12
 -- BallThrow_InitThrowTarget for the player send-out kinds (6/8/7): the
 -- ball lands on the mon's screen spot plus 32 pixels, per side type.
 BattleTimeline.PLAYER_ARC_TARGETS = {
@@ -225,6 +259,8 @@ end
 ---@field encounterFadeColor "white"|"black" gBattleEncounterFadeColors entry of the scene background
 ---@field encounterSource BattleEncounterPalette.Source? staged source palette buffers and fill behind the encounter evaluator, absent without staged art
 ---@field ballFadeColor (fun(ballKey: string): integer)? source recall and send-out fade color of a ball
+---@field ballOpening (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged opening animation frames of a ball
+---@field ballThrow (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged throw animation frames of a ball
 ---@field motionFacts (fun(species: string, foe: boolean): { totalTicks: integer, cryDelay: integer }?)? staged send-out motion hold and cry delay by species, absent without staged motion data
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
@@ -258,6 +294,8 @@ function BattleTimeline.new(opts)
     _itemName = opts.itemName,
     _battleItemUse = opts.battleItemUse,
     _ballFadeColor = opts.ballFadeColor,
+    _ballOpening = opts.ballOpening,
+    _ballThrow = opts.ballThrow,
     _encounterFadeColor = opts.encounterFadeColor,
     _encounterSource = opts.encounterSource,
     _encounterPalette = nil,
@@ -597,17 +635,121 @@ end
 -- Forward send-out addressing: the opening thrower reads side types and
 -- the follower slot before their owners' definitions below.
 local battlerTypeOf, isFollowSendOut
--- Forward ball-burst start: the trainerless open fires it at cue start,
--- before the burst owner's definition below.
-local startBallBurst
+-- The staged drawable of one ball source cell: the throw animation's
+-- frames and the opening animation's frames share the ball's own palette.
+---@param ballKey string semantic ball key behind the sprite
+---@param frameIndex integer zero-based source throw-animation cell
+---@return string drawableKey
+local function ballCellKey(ballKey, frameIndex)
+  return "battle-ball:" .. ballKey .. ":" .. tostring(frameIndex)
+end
+
+-- The ball's current source frame during a throw. A flashing kind never
+-- plays the opening sequence: its throw cell whitens through the flight.
+-- The other kinds run the opening animation; the trainerless send-outs
+-- force the source's opened-ball cell at the flash tick instead of
+-- following the staged cell durations, while the trainer's own throw
+-- follows them.
+---@param cue table<string, unknown> open-phase ball throw cue
+---@return string? drawableKey of the shown opening frame, nil while the throw cell holds
+local function openBallFrameKey(cue)
+  local opening = cue.opening --[[@as { frames: { drawableKey: string, durationTicks: integer }[] }?]]
+  if opening == nil or cue.flashing == true then
+    return nil
+  end
+  local openElapsed = cue.openElapsed --[[@as integer]]
+  if cue.openingStyle == "forced" then
+    -- SetAnim lands one setup step after the arc; the sixth open step
+    -- forces the source's third cell (the opened ball halves) where the
+    -- flash starts.
+    if openElapsed < 2 then
+      return nil
+    end
+    if
+      openElapsed < cue.openEventTick --[[@as integer]]
+    then
+      return opening.frames[1].drawableKey
+    end
+    local forced = opening.frames[3] or opening.frames[#opening.frames]
+    return forced.drawableKey
+  end
+  local animTick = openElapsed - 1
+  if animTick < 1 then
+    return nil
+  end
+  local elapsed = 0
+  for _, frame in ipairs(opening.frames) do
+    elapsed = elapsed + frame.durationTicks
+    if animTick <= elapsed then
+      return frame.drawableKey
+    end
+  end
+  return opening.frames[#opening.frames].drawableKey
+end
+
+-- The source ball kind behind one battler type, and whether it blends its
+-- palette white during the throw.
+---@param self BattleTimeline
+---@param combatant integer battler under lookup
+---@return integer? kind
+local function ballKindOf(self, combatant)
+  return BattleTimeline.BALL_KIND_BY_BATTLER_TYPE[battlerTypeOf(self, combatant)]
+end
+
+---@param kind integer? source ball kind
+---@return boolean
+local function ballFlashes(kind)
+  return kind ~= nil and BattleTimeline.BALL_FLASHING_KINDS[kind] == true
+end
+
+-- The source blend coefficient at one tick of the open, or of the in-arc
+-- flash for the flashing kinds: a two-unit step toward fourteen every tick
+-- after the blend starts.
+---@param elapsed integer source tick relative to the blend start
+---@param startTick integer first tick of the blend
+---@return integer coefficient 0..14
+local function ballFlashCoefficient(elapsed, startTick)
+  local step = math.max(0, elapsed - startTick) * BattleTimeline.BALL_FLASH_STEP
+  return math.min(BattleTimeline.BALL_FLASH_FULL, step)
+end
+
+-- The throw animation's current source cell at one flight tick: the
+-- animation loops through its authored frame durations.
+---@param cue table<string, unknown> cue carrying the staged throw frames
+---@param elapsed integer flight tick since the release
+---@return string? drawableKey
+local function throwFrameKey(cue, elapsed)
+  local throw = cue.throwFrames --[[@as { frames: { drawableKey: string, durationTicks: integer }[] }?]]
+  local frames = throw ~= nil and throw.frames or nil
+  if frames == nil or #frames == 0 then
+    return nil
+  end
+  local total = 0
+  for _, frame in ipairs(frames) do
+    total = total + frame.durationTicks
+  end
+  if total <= 0 then
+    return frames[1].drawableKey
+  end
+  local tick = math.max(0, elapsed) % total
+  local accumulated = 0
+  for _, frame in ipairs(frames) do
+    accumulated = accumulated + frame.durationTicks
+    if tick < accumulated then
+      return frame.drawableKey
+    end
+  end
+  return frames[#frames].drawableKey
+end
 
 ---@param self BattleTimeline
 ---@param combatant integer battler receiving the source send-out
 ---@param role "player"|"foe" source side selected for the opening throw
 ---@return integer nominal throw ticks behind the settle math
+---@return boolean true when a queued ball-throw cue owns the ball's open beat
 local function enqueueBallThrow(self, combatant, role)
   if self._openingPresentation == nil then
-    return 0
+    return 0, false
   end
   local view = assert(self._latest, "send-out ball selection uses the newest detached battle view")
   local record = nil
@@ -628,6 +770,16 @@ local function enqueueBallThrow(self, combatant, role)
   local trainerSelector = nil
   local throwOffsets = nil
   local participant = nil
+  local pan = role == "player" and BattleAudio.SIDE_PAN.player or BattleAudio.SIDE_PAN.foe
+  -- Ball-throw cues own the ball's open beat: the cue plays the open sound,
+  -- starts the seal, and flashes where the source reports the ball opened.
+  local function enqueueThrow(cue)
+    cue.kind = "ball-throw"
+    cue.openPan = pan
+    cue.combatant = combatant
+    cue.throwAnimated = role == "player"
+    enqueue(self, cue)
+  end
   if role == "player" then
     local trainer = assert(view.playerTrainer, "player throws carry their trainer class") --[[@as table<string, unknown>]]
     trainerSelector = "back:" .. assert(trainer.classKey, "player throws carry their backpic selector") --[[@as string]]
@@ -643,14 +795,16 @@ local function enqueueBallThrow(self, combatant, role)
       -- with no windup (Task_PokemonSendOut), unless the follower slides
       -- in ball-free.
       if isFollowSendOut(self, combatant) then
-        return 0
+        return 0, false
       end
       local target = assert(
         BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
         "player send-outs arc to a staged side type"
       )
-      enqueue(self, {
-        kind = "ball-throw",
+      local arcTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.BALL_ARC_APEX_TICKS
+      local openTicks = ballFlashes(ballKindOf(self, combatant)) and BattleTimeline.BALL_FLASHING_OPEN_TICKS
+        or BattleTimeline.THROW_OPEN_TICKS
+      enqueueThrow({
         selector = "ball:" .. ballKey,
         requiresImage = "battle-ball:" .. ballKey .. ":0",
         trainerless = true,
@@ -658,9 +812,14 @@ local function enqueueBallThrow(self, combatant, role)
         fromY = BattleTimeline.PLAYER_ARC_START.y,
         targetX = target.x,
         targetY = target.y,
-        nominalTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
+        -- Task_PokemonSendOut builds a kind 6/8/7 ball in mode 0:
+        -- RunThrowArc holds at the apex and reports opened as the in-arc
+        -- blend finishes, so the open phase is the blend tail.
+        arcTicks = arcTicks,
+        apexHoldTicks = BattleTimeline.BALL_ARC_APEX_TICKS,
+        nominalTicks = arcTicks + openTicks,
       })
-      return BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
+      return arcTicks + openTicks, true
     end
     local entry = assert(self._trainerPictures[trainerSelector], "player trainer backpic metadata is staged")
     assert(type(entry.animation) == "table", "player trainer backpic carries its sequence-zero compatibility record")
@@ -675,21 +834,23 @@ local function enqueueBallThrow(self, combatant, role)
       -- walks off (marking the throw handled so a doubles partner arcs
       -- from the release point), but no arc, open, or burst follows.
       playerTrack.throwQueued = true
-      enqueue(self, {
-        kind = "ball-throw",
+      enqueueThrow({
         trainerSelector = trainerSelector,
         noBall = true,
         nominalTicks = BattleTimeline.THROW_EXIT_TICKS,
       })
-      return BattleTimeline.THROW_EXIT_TICKS
+      return BattleTimeline.THROW_EXIT_TICKS, false
     end
     if playerTrack.throwQueued == true then
       -- Doubles partner: the trainer already left with the first ball, so
       -- only the arc and open run, from the release point the first throw
       -- stashes when it releases (resolved at cue start, not here: the
-      -- first throw has not run yet at enqueue time).
-      enqueue(self, {
-        kind = "ball-throw",
+      -- first throw has not run yet at enqueue time). The partner's own
+      -- kind 6/8/7 ball runs the same apex hold and in-arc blend.
+      local arcTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.BALL_ARC_APEX_TICKS
+      local openTicks = ballFlashes(ballKindOf(self, combatant)) and BattleTimeline.BALL_FLASHING_OPEN_TICKS
+        or BattleTimeline.THROW_OPEN_TICKS
+      enqueueThrow({
         selector = "ball:" .. ballKey,
         trainerSelector = trainerSelector,
         throwOffsets = throwOffsets,
@@ -697,9 +858,11 @@ local function enqueueBallThrow(self, combatant, role)
         arcOnly = true,
         targetX = target.x,
         targetY = target.y,
-        nominalTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
+        arcTicks = arcTicks,
+        apexHoldTicks = BattleTimeline.BALL_ARC_APEX_TICKS,
+        nominalTicks = arcTicks + openTicks,
       })
-      return BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
+      return arcTicks + openTicks, true
     end
     playerTrack.throwQueued = true
   else
@@ -721,8 +884,7 @@ local function enqueueBallThrow(self, combatant, role)
         FOE_BALL_START_BY_BATTLER_TYPE[battlerTypeOf(self, combatant)],
         "foe send-outs open at a staged source ball position"
       )
-      enqueue(self, {
-        kind = "ball-throw",
+      enqueueThrow({
         selector = "ball:" .. ballKey,
         requiresImage = "battle-ball:" .. ballKey .. ":0",
         trainerless = true,
@@ -731,9 +893,9 @@ local function enqueueBallThrow(self, combatant, role)
         fromY = target.y,
         targetX = target.x,
         targetY = target.y,
-        nominalTicks = BattleTimeline.THROW_OPEN_TICKS,
+        nominalTicks = BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
       })
-      return BattleTimeline.THROW_OPEN_TICKS
+      return BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS, true
     end
     local start = assert(
       FOE_BALL_START_BY_BATTLER_TYPE[
@@ -741,17 +903,23 @@ local function enqueueBallThrow(self, combatant, role)
       ],
       "foe trainer type has a source ball start position"
     )
+    -- Task_ThrowPokeball walks the foe trainer off while the pre-created
+    -- kind 1/3/5 ball runs its own in-place open: the cue owns both, so
+    -- it runs the trainer's twenty-one exit frames and the ball's thirty
+    -- arc-plus-open frames.
     enqueue(self, {
       kind = "trainer-exit",
       role = "foe",
       participant = participant,
       selector = "ball:" .. ballKey,
+      combatant = combatant,
+      openPan = pan,
       ballX = start.x,
       ballY = start.y,
       requiresImage = "battle-ball:" .. ballKey .. ":0",
-      nominalTicks = BattleTimeline.THROW_EXIT_TICKS,
+      nominalTicks = BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
     })
-    return BattleTimeline.THROW_EXIT_TICKS
+    return BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS, false
   end
   local selector = "ball:" .. ballKey
   local releaseTicks = throwReleaseTicks(self, trainerSelector)
@@ -766,8 +934,7 @@ local function enqueueBallThrow(self, combatant, role)
     BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
     "player send-outs arc to a staged side type"
   )
-  enqueue(self, {
-    kind = "ball-throw",
+  enqueueThrow({
     selector = selector,
     trainerSelector = trainerSelector,
     throwOffsets = throwOffsets,
@@ -777,7 +944,7 @@ local function enqueueBallThrow(self, combatant, role)
     targetX = target.x,
     targetY = target.y,
   })
-  return nominalTicks
+  return nominalTicks, true
 end
 
 ---@param view table<string, unknown> detached view carrying semantic trainer keys
@@ -845,8 +1012,11 @@ local function openingTrainerSlides(self, view, wild)
       sourceBattlerType = sourceBattlerType,
     }
   end
-  addSlide("player", "back:" .. playerClassKey, 336, 112, -1, 64)
+  -- Wild battles send the lead out with no trainer on screen
+  -- (BtlCmd_PokemonSlideIn/PokemonSendOut player side); only trainer
+  -- battles show the player's backpic walking in and throwing.
   if not wild then
+    addSlide("player", "back:" .. playerClassKey, 336, 112, -1, 64)
     local trainers = view.foeTrainers --[[@as table<integer, table<string, unknown>>]]
     assert(type(trainers) == "table", "trainer openings carry foe class records")
     assert(#trainers > 0, "trainer openings carry at least one opponent trainer")
@@ -1645,7 +1815,7 @@ local function queueOpening(self, view)
   local trainerSlides, trainerTracks = openingTrainerSlides(self, view, wild)
   local terrainSlides, terrainTracks = openingTerrainSlides()
   self._openingPresentation = {
-    playerTrainerVisible = true,
+    playerTrainerVisible = not wild,
     foeTrainerVisible = not wild,
     playerGaugeVisible = false,
     enemyGaugeVisible = false,
@@ -2693,18 +2863,17 @@ function enqueueSendOut(self, incoming, event, switching)
   if switching == true then
     enqueuePartyGauge(self, ownSide, BattleTimeline.PARTY_GAUGE_HIDE_TICKS, false)
   end
-  local throwTicks = enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+  local throwTicks, ownsBallOpen = enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
   -- The follower slides in with no ball at all: Task_FollowMonSendOut
   -- runs no seal, no ball sound, and no palette fade behind its cry,
-  -- voicing the switch sound as its slide starts instead.
+  -- voicing the switch sound as its slide starts instead. A queued ball
+  -- cue owns its own open sound and seal (see tickBallThrowCue); the
+  -- trainer-exit foe path keeps them on the script beat.
   local follower = isFollowSendOut(self, incoming)
   if follower then
     enqueueFollowerSlideSound(self, incoming)
-  else
+  elseif ownsBallOpen ~= true then
     enqueueBallSound(self, incoming)
-  end
-  -- Task_PokemonSendOut starts the ball's seal particles with its ball sound.
-  if not follower then
     local sendOutBall = ballKeyOf(self, incoming)
     if sendOutBall ~= nil then
       enqueue(self, {
@@ -2820,14 +2989,16 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
   end
   local visualTicks = 0
   for _, incoming in ipairs(combatants) do
-    visualTicks = visualTicks + enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+    local incomingTicks, ownsBallOpen = enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+    visualTicks = visualTicks + incomingTicks
     -- The follower slides in with no ball at all: Task_FollowMonSlideIn
     -- runs no seal and no ball sound behind its cry, voicing the switch
-    -- sound as its slide starts instead.
+    -- sound as its slide starts instead. A queued ball cue owns its own
+    -- open sound and seal; the trainer-exit foe path keeps them here.
     local follower = isFollowSendOut(self, incoming)
     if follower then
       enqueueFollowerSlideSound(self, incoming)
-    else
+    elseif ownsBallOpen ~= true then
       enqueueBallSound(self, incoming)
       local sendOutBall = ballKeyOf(self, incoming)
       if sendOutBall ~= nil then
@@ -3863,11 +4034,14 @@ local function translateBrokeFree(self, event)
         selector = "ball:" .. resting.ballKey,
         trainerless = true,
         openOnly = true,
+        combatant = target,
+        openPan = BattleAudio.SIDE_PAN.foe,
+        throwAnimated = false,
         fromX = spot.x,
         fromY = spot.y,
         targetX = spot.x,
         targetY = spot.y,
-        nominalTicks = BattleTimeline.THROW_OPEN_TICKS,
+        nominalTicks = BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
       })
     end
     self._captureBall = nil
@@ -4244,7 +4418,7 @@ function BattleTimeline:intro(view, wild)
   local trainerSlides, trainerTracks = openingTrainerSlides(self, view, wild)
   local terrainSlides, terrainTracks = openingTerrainSlides()
   self._openingPresentation = {
-    playerTrainerVisible = true,
+    playerTrainerVisible = not wild,
     foeTrainerVisible = not wild,
     playerGaugeVisible = false,
     enemyGaugeVisible = false,
@@ -4922,7 +5096,41 @@ local function startCue(self, cue)
     local state = assert(self._openingPresentation, "opening ball throws follow an installed opening")
     local trainerTracks = self._trainerSlideTracks
     local slides = state.trainerSlides --[[@as table<integer, table<string, unknown>>]]
+    -- BallThrow runs Task_PokemonSendOut/ThrowPokeball's own ball in mode
+    -- 0 (RunThrowArc with the apex hold and the in-arc open) while the
+    -- trainer's own windup throw runs the capture state machine (mode 3),
+    -- whose kind-15 ball reports opened as the arc completes. The source
+    -- kind behind a trainerless throw selects whether the palette blends
+    -- during flight or where the opening animation reaches its open cell.
+    local modeZero = cue.trainerless == true or cue.arcOnly == true
+    cue.modeZero = modeZero
+    local function resolveBall()
+      local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key")
+      cue.ballKey = ballKey
+      cue.opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
+      cue.throwFrames = self._ballThrow ~= nil and self._ballThrow(ballKey) or nil
+      local ballKind = modeZero and ballKindOf(self, cue.combatant --[[@as integer]]) or nil
+      cue.ballKind = ballKind
+      cue.flashing = modeZero and ballFlashes(ballKind) or false
+      if modeZero then
+        if cue.flashing then
+          cue.openEventTick = BattleTimeline.BALL_FLASHING_OPEN_TICKS
+          cue.openEndTick = BattleTimeline.BALL_FLASHING_OPEN_TICKS
+          cue.openingStyle = nil
+        else
+          cue.openEventTick = BattleTimeline.BALL_OPEN_SETUP_TICKS + BattleTimeline.BALL_OPEN_FLASH_TICKS
+          cue.openEndTick = BattleTimeline.THROW_OPEN_TICKS
+          cue.openingStyle = "forced"
+        end
+      else
+        cue.openEventTick = 1
+        cue.openEndTick = BattleTimeline.THROW_OPEN_TICKS
+        cue.openingStyle = "durations"
+      end
+      return ballKey
+    end
     if cue.trainerless == true then
+      local ballKey = resolveBall()
       -- Mid-battle send-out: no trainer on screen, so the ball starts at
       -- its staged spot and arcs (player) or opens in place (foe).
       cue.phase = "arc"
@@ -4935,16 +5143,21 @@ local function startCue(self, cue)
         selector = cue.selector,
         x = cue.startX,
         y = cue.startY,
-        frame = 0,
+        drawableKey = ballCellKey(ballKey, 0),
         rotation = 0,
         visible = true,
       }
       if cue.openOnly == true then
-        cue.phase = "open"
-        cue.openElapsed = 0
-        local ballKey = cue.selector:match("^ball:([%w_]+)$")
-        assert(type(ballKey) == "string", "thrown balls name their staged ball key")
-        startBallBurst(self, ballKey, cue.targetX, cue.targetY)
+        -- The foe ball opens where it already sits: its twelve arc frames
+        -- hold the sprite still with no spin before the open steps run.
+        cue.motionTicks = BattleTimeline.BALL_IN_PLACE_ARC_TICKS
+        cue.arcTicks = BattleTimeline.BALL_IN_PLACE_ARC_TICKS
+        cue.arcHeight = 0
+        cue.spin = false
+      elseif cue.flashing then
+        -- The flashing kinds start their blend four frames before the
+        -- held arc lands, while the ball is still in flight.
+        cue.flashStartArcTick = (cue.arcTicks or BattleTimeline.THROW_ARC_TICKS) - BattleTimeline.BALL_FLASH_LEAD_TICKS
       end
       return
     end
@@ -4987,6 +5200,12 @@ local function startCue(self, cue)
       -- the trainer off, publishing no ball sprite.
       return
     end
+    local ballKey = resolveBall()
+    if cue.flashing then
+      -- The doubles partner's own ball runs the same in-arc blend from
+      -- its stashed release point.
+      cue.flashStartArcTick = (cue.arcTicks or BattleTimeline.THROW_ARC_TICKS) - BattleTimeline.BALL_FLASH_LEAD_TICKS
+    end
     -- Arc targets ride the cue from enqueue (per side type); the cue
     -- start never re-derives them.
     assert(
@@ -4997,7 +5216,7 @@ local function startCue(self, cue)
       selector = cue.selector,
       x = 0,
       y = 0,
-      frame = 0,
+      drawableKey = ballCellKey(ballKey, 0),
       rotation = 0,
       trainerSelector = cue.trainerSelector,
       throwOffsets = cue.throwOffsets,
@@ -5015,14 +5234,26 @@ local function startCue(self, cue)
         slide.phase = "exit-slide"
       end
     end
+    local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key")
+    cue.ballKey = ballKey
+    cue.opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
+    cue.modeZero = true
+    cue.flashing = false
+    cue.openingStyle = "forced"
+    cue.openEventTick = BattleTimeline.BALL_OPEN_SETUP_TICKS + BattleTimeline.BALL_OPEN_FLASH_TICKS
+    cue.openEndTick = BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
   elseif cue.kind == "ball-flight" then
     local state = self._openingPresentation
     if state ~= nil then
+      local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key")
+      cue.ballKey = ballKey
+      cue.throwFrames = self._ballThrow ~= nil and self._ballThrow(ballKey) or nil
+      cue.throwAnimated = true
       state.ballThrow = {
         selector = cue.selector,
         x = cue.startX,
         y = cue.startY,
-        frame = 0,
+        drawableKey = ballCellKey(ballKey, 0),
         rotation = 0,
         visible = true,
       }
@@ -5357,15 +5588,14 @@ function tickBallPoof(self, cue, shown, entering)
   end
 end
 
--- Starts the ball-burst flash where a thrown ball opens, mirroring the
--- ball-particles cue: the thrown ball bursts while the send-out poof grows
--- the mon behind it, so the open never reads as a frozen ball. The burst
--- animates on its own timeline once started; the cue timing is unchanged.
+-- Starts the capture-style ball burst where a trainer-thrown ball opens.
+-- The burst animates on its own timeline once started; the cue timing is
+-- unchanged.
 ---@param self BattleTimeline
 ---@param ballKey string staged ball behind the burst particles
 ---@param x number burst origin x in source pixels
 ---@param y number burst origin y in source pixels
-function startBallBurst(self, ballKey, x, y)
+local function startBallBurst(self, ballKey, x, y)
   self._ballParticleStarts[#self._ballParticleStarts + 1] = {
     effect = "burst",
     ballKey = ballKey,
@@ -5409,14 +5639,47 @@ local function tickStatsWindowCue(_, cue)
   return cue.acknowledged == true
 end
 
+-- Advances a non-flashing in-place open on one ball sprite: the opening
+-- animation's closed cell, the forced opened-halves cell, the white blend
+-- and the seal/open sound at the source open tick. Returns true once the
+-- ball task's open finished.
+---@param self BattleTimeline
+---@param cue table<string, unknown> cue carrying the source open fields
+---@param ball table<string, unknown> published ball sprite
+---@param openElapsed integer open tick since the arc landed
+---@return boolean finished
+local function tickInPlaceOpen(self, cue, ball, openElapsed)
+  cue.openElapsed = openElapsed
+  local eventTick = cue.openEventTick --[[@as integer]]
+  ball.visible = true
+  ball.rotation = 0
+  ball.paletteFlash = openElapsed >= eventTick and ballFlashCoefficient(openElapsed, eventTick) or nil
+  if openElapsed == eventTick then
+    -- Task_PokemonSendOut/Task_PokemonSlideIn report the ball opened
+    -- here: the BOWA2 and the BallSealEffect sparkle start on this tick.
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.ballOpen, { pan = cue.openPan }))
+    self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+      effect = "seal",
+      ballKey = cue.ballKey,
+      battlerType = battlerTypeOf(self, cue.combatant --[[@as integer]]),
+      duration = 0,
+    }
+  end
+  local frameKey = openBallFrameKey(cue)
+  if frameKey ~= nil then
+    ball.drawableKey = frameKey
+  end
+  return openElapsed >= (cue.openEndTick or BattleTimeline.THROW_OPEN_TICKS)
+end
+
 local function tickTrainerExitCue(self, cue)
   local found = false
-  local finished = true
+  local slideHidden = false
   for index, slide in ipairs(self._openingPresentation and self._openingPresentation.trainerSlides or {}) do
     local track = assert(self._trainerSlideTracks[index], "trainer exits retain their source slide tracks")
     if slide.role == cue.role and track.participant == cue.participant then
       found = true
-      finished = finished and slide.visible ~= true
+      slideHidden = slide.visible ~= true
       local x = assert(type(slide.x) == "number" and slide.x, "foe trainer exits carry their native x")
       if x >= 160 then
         local ball = self._openingPresentation.ballThrow
@@ -5425,30 +5688,35 @@ local function tickTrainerExitCue(self, cue)
             selector = cue.selector,
             x = cue.ballX,
             y = cue.ballY,
-            frame = 0,
+            drawableKey = ballCellKey(assert(cue.selector:match("^ball:([%w_]+)$")), 0),
             rotation = 0,
             trainerParticipant = cue.participant,
             visible = true,
           }
           self._openingPresentation.ballThrow = ball
-          cue.ballElapsed = 0
+          cue.ballElapsed = 1
         else
           cue.ballElapsed = (cue.ballElapsed or 0) + 1
         end
-        if cue.ballElapsed >= 12 and ball.visible ~= false then
-          -- The in-place open finishes here (BallThrow_OpenInPlace):
-          -- burst the ball so its hide reads as an opening, matching
-          -- the player arc's burst at its own open.
-          ball.visible = false
-          local ballKey = cue.selector:match("^ball:([%w_]+)$")
-          assert(type(ballKey) == "string", "thrown balls name their staged ball key")
-          startBallBurst(self, ballKey, ball.x, ball.y)
+        local elapsed = assert(cue.ballElapsed) --[[@as integer]]
+        if elapsed <= BattleTimeline.BALL_IN_PLACE_ARC_TICKS then
+          -- RunThrowArc holds the static foe ball in place before the
+          -- opening animation starts.
+          ball.drawableKey = ballCellKey(cue.ballKey, 0)
+          ball.paletteFlash = nil
+        else
+          local openElapsed = elapsed - BattleTimeline.BALL_IN_PLACE_ARC_TICKS
+          if tickInPlaceOpen(self, cue, ball, openElapsed) then
+            ball.visible = false
+          end
         end
       end
     end
   end
   assert(found, "trainer exit resolves to its source participant slide")
-  return finished
+  -- The trainer walks off over its own twenty-one frames while the
+  -- BallThrow task keeps opening the ball; the cue owns both.
+  return slideHidden and (cue.ballElapsed or 0) >= (cue.openEndTick or BattleTimeline.THROW_OPEN_TICKS)
 end
 
 local function tickBallThrowCue(self, cue)
@@ -5501,18 +5769,45 @@ local function tickBallThrowCue(self, cue)
   ball = assert(ball, "active throws publish a ball sprite")
   if cue.phase == "arc" then
     -- Ball in flight from the release point to the mon spot, spinning
-    -- as it travels, then opening over the target.
+    -- as it travels, then opening over the target. RunThrowArc's player
+    -- send-out hold freezes the sprite (and its motion updates) for four
+    -- frames past the arc midpoint instead of moving every tick.
     cue.arcElapsed = (cue.arcElapsed or 0) + 1
-    local n = math.min(BattleTimeline.THROW_ARC_MOTION_TICKS, cue.arcElapsed - 1)
+    local motionTicks = cue.motionTicks --[[@as integer]]
+    local elapsed = cue.arcElapsed --[[@as integer]]
+    local hold = cue.apexHoldTicks --[[@as integer?]]
+    local n
+    if hold == nil or hold == 0 then
+      n = math.min(motionTicks, elapsed - 1)
+    else
+      local midpoint = math.floor(motionTicks / 2)
+      if elapsed - 1 <= midpoint then
+        n = math.max(0, elapsed - 1)
+      elseif elapsed - 1 <= midpoint + hold then
+        n = midpoint
+      else
+        n = math.min(motionTicks, elapsed - 1 - hold)
+      end
+    end
     ball.x, ball.y = ballArcPoint(cue --[[@as table<string, unknown>]], n)
     ball.visible = true
-    ball.rotation = (n * 0x2000) % 0x10000
-    if cue.arcElapsed >= BattleTimeline.THROW_ARC_TICKS then
+    ball.rotation = cue.spin == false and 0 or (n * 0x2000) % 0x10000
+    if cue.throwAnimated == true then
+      local frameKey = throwFrameKey(cue, elapsed - 1)
+      if frameKey ~= nil then
+        ball.drawableKey = frameKey
+      end
+    end
+    if cue.flashing == true then
+      -- RunThrowArc starts the ball's palette blend at arcDuration / 2 +
+      -- 10, four frames before the held arc lands.
+      local flashStart = cue.flashStartArcTick --[[@as integer]]
+      ball.paletteFlash = elapsed >= flashStart and ballFlashCoefficient(elapsed, flashStart) or nil
+    end
+    if cue.arcElapsed >= (cue.arcTicks or BattleTimeline.THROW_ARC_TICKS) then
       cue.phase = "open"
       cue.openElapsed = 0
-      local ballKey = cue.selector:match("^ball:([%w_]+)$")
-      assert(type(ballKey) == "string", "thrown balls name their staged ball key")
-      startBallBurst(self, ballKey, cue.targetX, cue.targetY)
+      ball.rotation = 0
     end
     return false
   end
@@ -5522,7 +5817,52 @@ local function tickBallThrowCue(self, cue)
     ball.y = cue.targetY
     ball.visible = true
     ball.rotation = 0
-    if cue.openElapsed >= BattleTimeline.THROW_OPEN_TICKS then
+    local eventTick = cue.openEventTick or 1
+    if cue.flashing == true then
+      -- The flashing kinds keep the throw animation running behind the
+      -- in-arc blend and start no opening sequence.
+      local arcTicks = cue.arcTicks or BattleTimeline.THROW_ARC_TICKS
+      ball.paletteFlash = ballFlashCoefficient(arcTicks + cue.openElapsed, cue.flashStartArcTick --[[@as integer]])
+      if cue.throwAnimated == true then
+        local frameKey = throwFrameKey(cue, arcTicks + cue.openElapsed - 1)
+        if frameKey ~= nil then
+          ball.drawableKey = frameKey
+        end
+      end
+      if cue.openElapsed == eventTick then
+        emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.ballOpen, { pan = cue.openPan }))
+        self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+          effect = "seal",
+          ballKey = cue.ballKey,
+          battlerType = battlerTypeOf(self, cue.combatant --[[@as integer]]),
+          duration = 0,
+        }
+      end
+    elseif cue.modeZero == true then
+      if tickInPlaceOpen(self, cue, ball, cue.openElapsed) then
+        ball.visible = false
+        return true
+      end
+      return false
+    else
+      -- The trainer's own kind-15 throw opens with BallBurstEffect and
+      -- follows the staged opening cell durations.
+      if cue.openElapsed == eventTick then
+        emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.ballOpen, { pan = cue.openPan }))
+        self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+          effect = "seal",
+          ballKey = cue.ballKey,
+          battlerType = battlerTypeOf(self, cue.combatant --[[@as integer]]),
+          duration = 0,
+        }
+        startBallBurst(self, cue.ballKey, cue.targetX, cue.targetY)
+      end
+      local frameKey = openBallFrameKey(cue)
+      if frameKey ~= nil then
+        ball.drawableKey = frameKey
+      end
+    end
+    if cue.openElapsed >= (cue.openEndTick or BattleTimeline.THROW_OPEN_TICKS) then
       ball.visible = false
       return true
     end
@@ -5591,6 +5931,12 @@ local function tickBallFlightCue(self, cue)
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
   if ball ~= nil then
     ball.x, ball.y = ballArcPoint(cue, n)
+    if cue.throwAnimated == true then
+      local frameKey = throwFrameKey(cue, elapsed - 1)
+      if frameKey ~= nil then
+        ball.drawableKey = frameKey
+      end
+    end
     if cue.spin == false then
       -- The capture fall drops straight down with no spin: the arc
       -- reset the rotation when its flight finished.

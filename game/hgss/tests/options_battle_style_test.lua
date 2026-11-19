@@ -11,6 +11,7 @@ local BattlePresentationManifestFixture = require("tests.support.BattlePresentat
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -468,6 +469,17 @@ function T.screen_yes_opens_the_shift_party_child_and_seals_the_reserve()
     type(view.message) == "string" and view.message:find(rig.foeReserveName, 1, true) ~= nil,
     "the prompt names the frozen arrival"
   )
+  -- The held offer draws its own BattleInput template's answer wording,
+  -- never the generic Yes/No pair.
+  rig.text.draws = {}
+  rig.screen:draw({ graphics = FakeGraphics.new({}) })
+  local ink = {}
+  for _, drawn in ipairs(rig.text.draws) do
+    local content = tostring(drawn.content)
+    ink[content] = (ink[content] or 0) + 1
+  end
+  Assert.equal(ink["Switch Pokémon"], 1, "the top cell names the source switch answer")
+  Assert.equal(ink["Keep battling"], 1, "the bottom cell names the source keep answer")
   press(rig, { type = "confirm" })
   Assert.equal(rig.screen:status().mode, "child", "Yes opens the party child")
   local childView = rig.screen:view().childView

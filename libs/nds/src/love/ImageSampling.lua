@@ -31,10 +31,15 @@ local ImageSampling = {}
 -- shader source in this package.
 local SAMPLING_SOURCE_PATH = "libs/nds/src/love/shaders/palette_sampling.glsl"
 
+-- Shared source palette blend toward an RGB555 target. Consumers that
+-- carry the marker below splice it in at construction time.
+local PALETTE_FADE_SOURCE_PATH = "libs/nds/src/love/shaders/palette_fade.glsl"
+
 -- Marker comment inside map.glsl where the shared snippet is substituted
 -- at renderer construction. Sources without the marker (test doubles)
 -- pass through untouched.
 local SAMPLING_MARKER = "/*__portemon_shared_image_sampling__*/"
+local PALETTE_FADE_MARKER = "/*__portemon_shared_palette_fade__*/"
 
 local EFFECT_WRAPPER = [[
 vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
@@ -43,13 +48,14 @@ vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
 ]]
 
 local _snippet = nil
+local _paletteFadeSnippet = nil
 local _shaderCache = setmetatable({}, { __mode = "k" })
 
--- Read the shared snippet through the same archive-or-checkout boundary
+-- Read one shared snippet through the same archive-or-checkout boundary
 -- the renderer uses for its own shader sources.
 ---@param path string
 ---@return string
-local function readSamplingSource(path)
+local function readSharedSource(path)
   if love and love.filesystem then
     local source = love.filesystem.read(path)
     if source then
@@ -63,7 +69,7 @@ local function readSamplingSource(path)
       return fallback
     end
   end
-  error("cannot read shared sampling source: " .. path)
+  error("cannot read shared shader snippet: " .. path)
 end
 
 -- The shared snippet text, read once. The map renderer substitutes it for
@@ -71,9 +77,19 @@ end
 ---@return string
 function ImageSampling.samplingGlsl()
   if _snippet == nil then
-    _snippet = readSamplingSource(SAMPLING_SOURCE_PATH)
+    _snippet = readSharedSource(SAMPLING_SOURCE_PATH)
   end
   return _snippet
+end
+
+-- The shared palette-fade snippet text, read once. Shaders that apply the
+-- source blend splice it in at their own marker.
+---@return string
+function ImageSampling.paletteFadeGlsl()
+  if _paletteFadeSnippet == nil then
+    _paletteFadeSnippet = readSharedSource(PALETTE_FADE_SOURCE_PATH)
+  end
+  return _paletteFadeSnippet
 end
 
 -- Substitute the shared snippet for the marker inside a map shader source.
@@ -87,6 +103,26 @@ function ImageSampling.withSharedSampling(source)
     return source
   end
   return source:sub(1, at - 1) .. ImageSampling.samplingGlsl() .. source:sub(at + #SAMPLING_MARKER)
+end
+
+-- Substitute the shared palette-fade snippet for its marker inside a shader
+-- source. Sources without the marker pass through untouched.
+---@param source string shader source as read from its owner path
+---@return string
+function ImageSampling.withSharedPaletteFade(source)
+  local at = source:find(PALETTE_FADE_MARKER, 1, true)
+  if at == nil then
+    return source
+  end
+  return source:sub(1, at - 1) .. ImageSampling.paletteFadeGlsl() .. source:sub(at + #PALETTE_FADE_MARKER)
+end
+
+-- Substitute every shared snippet a shader source declares. Sources with no
+-- markers come back unchanged, like withSharedSampling alone.
+---@param source string shader source as read from its owner path
+---@return string
+function ImageSampling.withSharedSnippets(source)
+  return ImageSampling.withSharedPaletteFade(ImageSampling.withSharedSampling(source))
 end
 
 -- Bind the map-side sampling uniforms for one material: indexed materials

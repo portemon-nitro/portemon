@@ -172,6 +172,14 @@ function ImageAssetPool.withSharedSampling(source)
   return ImageSampling.withSharedSampling(source)
 end
 
+-- Substitute every shared shader snippet a custom source declares. Sources
+-- without markers pass through untouched.
+---@param source string custom shader source carrying shared snippet markers
+---@return string shader source with every declared snippet spliced in
+function ImageAssetPool.withSharedSnippets(source)
+  return ImageSampling.withSharedSnippets(source)
+end
+
 -- Validate one immutable sampler record: every channel is an explicit
 -- string so two records compare by value in the physical key.
 ---@param sampler ImageAssetPoolSampler

@@ -872,17 +872,21 @@ local function checkTrainerPictures(envelope, selectors)
   return true
 end
 
--- Every staged image of one ball entry: its animation frames, then the
--- textures of its seal and burst particle sets.
+-- Every staged image of one ball entry: its throw and opening animation
+-- cells, then the textures of its seal and burst particle sets.
 ---@param entry table<string, unknown> staged ball entry with validated frames
 ---@return string[] paths cache-relative image paths
 local function ballImagePaths(entry)
   local paths = {}
-  for _, frame in
-    ipairs(entry.frames --[[@as table<string, unknown>[] ]])
-  do
-    paths[#paths + 1] = frame.image --[[@as string]]
+  local function addCells(cells)
+    for _, frame in
+      ipairs(cells --[[@as table<string, unknown>[] ]])
+    do
+      paths[#paths + 1] = frame.image --[[@as string]]
+    end
   end
+  addCells(entry.frames)
+  addCells(assert(entry.opening, "a staged ball carries its opening animation").frames)
   local particles = entry.particles --[[@as { seal: table<string, unknown>, burst: table<string, unknown> }?]]
   if particles ~= nil then
     for _, set in ipairs({ particles.seal, particles.burst }) do

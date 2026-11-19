@@ -260,7 +260,7 @@ local function pictureShader(scope)
   Assert.notNil(source, "the picture shader source loads")
   -- Mirror production bundle assembly: the shared sampling rule splices
   -- into the picture shader before compilation.
-  return scope:own(love.graphics.newShader(ImageSampling.withSharedSampling(source)))
+  return scope:own(love.graphics.newShader(ImageSampling.withSharedSnippets(source)))
 end
 
 ---@param renderer table<string, unknown> Summary renderer under test
@@ -715,7 +715,7 @@ function T.picture_shader_matches_the_integer_reference_across_levels(scope)
     handle:close()
   end
   Assert.notNil(source, "the picture shader source loads")
-  local shader = scope:own(love.graphics.newShader(ImageSampling.withSharedSampling(source)))
+  local shader = scope:own(love.graphics.newShader(ImageSampling.withSharedSnippets(source)))
   local steps = 32
   local data = love.image.newImageData(steps + 1, 1)
   for level = 0, 31 do

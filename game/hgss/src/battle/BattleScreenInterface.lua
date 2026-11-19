@@ -256,6 +256,10 @@ local function regionsFor(view)
     return targetRegions(view)
   elseif mode == "child" then
     return childRegions(view.childView --[[@as table<string, unknown>?]])
+  elseif mode == "shift" or mode == "use-next" then
+    -- The held Shift offer and the wild replacement offer answer through
+    -- the source Yes/No planes behind their staged questions.
+    return BattleMenuRegions.forLayout("two-option")
   end
   return nil
 end
@@ -273,8 +277,22 @@ local function scopeFor(view)
     if child.kind == "learn" and type(child.confirmation) == "table" then
       return "two-option"
     end
+  elseif mode == "shift" or mode == "use-next" then
+    return "two-option"
   end
   return "command"
+end
+
+-- Prompt answers keep their own input scope while drawing the shared
+-- source two-option planes: each offer settles through its own mode.
+---@param view table<string, unknown>
+---@return string input scope behind the current mode
+local function inputScopeFor(view)
+  local mode = view.mode
+  if mode == "shift" or mode == "use-next" then
+    return mode --[[@as string]]
+  end
+  return scopeFor(view)
 end
 
 ---@param event table<string, unknown> session-inverted logical input
@@ -291,13 +309,17 @@ local function mapPointer(event, view, regions)
     if region == nil then
       return nil
     end
-    return { type = "battle_press", control = { scope = scopeFor(view), id = region.id }, pointerId = event.pointerId }
+    return {
+      type = "battle_press",
+      control = { scope = inputScopeFor(view), id = region.id },
+      pointerId = event.pointerId,
+    }
   end
   if eventType == "pointer_move" and type(event.x) == "number" and type(event.y) == "number" then
     local region = hitRegion(regions, event.x --[[@as number]], event.y --[[@as number]])
     local control = nil
     if region ~= nil then
-      control = { scope = scopeFor(view), id = region.id }
+      control = { scope = inputScopeFor(view), id = region.id }
     end
     return { type = "battle_slide", control = control, pointerId = event.pointerId }
   end
@@ -305,7 +327,7 @@ local function mapPointer(event, view, regions)
     local region = hitRegion(regions, event.x --[[@as number]], event.y --[[@as number]])
     local control = nil
     if region ~= nil then
-      control = { scope = scopeFor(view), id = region.id }
+      control = { scope = inputScopeFor(view), id = region.id }
     end
     return { type = "battle_activate", control = control, pointerId = event.pointerId }
   end

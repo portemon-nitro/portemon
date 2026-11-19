@@ -315,11 +315,7 @@ function T.failed_move_announces_without_starting_a_visual()
     end
   end
   Assert.isTrue(timeline:settled(), "the failed-move narration drains")
-  Assert.equal(
-    battler(timeline:battlers(), 3).hp,
-    57,
-    "the failed move changes neither health bar"
-  )
+  Assert.equal(battler(timeline:battlers(), 3).hp, 57, "the failed move changes neither health bar")
 end
 
 function T.multi_hit_summary_uses_its_staged_source_record()
@@ -1134,11 +1130,7 @@ function T.wild_intro_signals_picture_animation_at_slide_arrival()
   Assert.notNil(arrivedAt, "the wild foe slide reaches its settled position")
   Assert.notNil(seqAtArrival, "the slide arrival restarts the Pokepic animation like PlayMonAnimAndCry")
   local foe = battler(timeline:battlers(), 3)
-  Assert.equal(
-    foe.pictureAnimSeq,
-    seqAtArrival,
-    "the arrival signal fires once instead of every source tick"
-  )
+  Assert.equal(foe.pictureAnimSeq, seqAtArrival, "the arrival signal fires once instead of every source tick")
 end
 
 function T.intro_slides_both_terrain_bases_after_the_source_delay()
@@ -1197,22 +1189,11 @@ function T.opening_presentation_starts_with_the_native_trainer_visibility()
   wild:reset(openingView())
   wild:intro(openingView(), true)
   Assert.deepEqual(wild:openingPresentation(), {
-    playerTrainerVisible = true,
+    playerTrainerVisible = false,
     foeTrainerVisible = false,
     playerGaugeVisible = false,
     enemyGaugeVisible = false,
-    trainerSlides = {
-      {
-        role = "player",
-        selector = "back:PKMN_TRAINER_ETHAN",
-        sourceSequence = 2,
-        x = 336,
-        y = 112,
-        frame = 0,
-        visible = true,
-        phase = "intro-delay",
-      },
-    },
+    trainerSlides = {},
     terrainSlides = {
       { role = "player", x = 336, y = 136, visible = true, phase = "intro-delay" },
       { role = "foe", x = -80, y = 88, visible = true, phase = "intro-delay" },
@@ -1618,7 +1599,10 @@ function T.trainer_exit_finishes_before_the_player_sendout_is_visible()
   Assert.isFalse(trainersVisibleAtSendout, "trainer sprites have left before the player's mon is revealed")
 end
 
-function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
+-- Wild battles send the lead out with no trainer on screen: the ball
+-- leaves the source hand spot (10, 100), holds at the apex, flashes its
+-- palette white through the in-arc blend, and starts no burst stand-in.
+function T.wild_player_send_out_throws_from_the_hand_spot_and_flashes()
   local timeline = BattleTimeline.new({ sound = function(_) end, textSpeed = "fastest" })
   local view = openingView()
   timeline:reset(view)
@@ -1629,6 +1613,7 @@ function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
   local lastVisibleTick = nil
   local lastVisibleX = nil
   local lastVisibleY = nil
+  local lastFlash = nil
   for tick = 1, 1000 do
     advance(timeline, TICK)
     if timeline:messageActive() then
@@ -1643,36 +1628,34 @@ function T.player_send_out_draws_the_ball_from_its_source_trainer_anchor()
       lastVisibleTick = tick
       lastVisibleX = ball.x
       lastVisibleY = ball.y
+      lastFlash = ball.paletteFlash
     elseif firstVisibleTick ~= nil then
       break
     end
   end
-  Assert.notNil(firstVisibleTick, "the player send-out opens with its staged ball sprite")
-  Assert.equal(firstVisibleX, 64, "the player ball follows the settled backpic x anchor")
-  Assert.equal(firstVisibleY, 240, "the player ball follows the staged backpic y anchor")
+  Assert.notNil(firstVisibleTick, "the wild lead opens with its staged ball sprite")
+  Assert.equal(firstVisibleX, 10, "the wild lead ball starts at the source hand spot")
+  Assert.equal(firstVisibleY, 100, "the wild lead ball starts at the source hand spot")
   Assert.equal(
     lastVisibleTick - firstVisibleTick + 1,
-    15 + BattleTimelineCore.THROW_ARC_TICKS + BattleTimelineCore.THROW_OPEN_TICKS,
-    "the ball winds up to its release frame, arcs, and opens before the poof: "
-      .. "Task_ThrowPokeball releases on the fourth throw frame, then BallThrow arcs and opens"
+    BattleTimelineCore.THROW_ARC_TICKS
+      + BattleTimelineCore.BALL_ARC_APEX_TICKS
+      + BattleTimelineCore.BALL_FLASHING_OPEN_TICKS
+      - 1,
+    "the wild lead arcs, holds at the apex, and finishes its in-arc blend with no trainer windup"
   )
   Assert.equal(lastVisibleX, 64, "the arc lands on the player's mon spot")
-  Assert.equal(
-    lastVisibleY,
-    144,
-    "the arc lands 32 pixels below the mon anchor: BallThrow_InitThrowTarget kind 6"
-  )
+  Assert.equal(lastVisibleY, 144, "the arc lands 32 pixels below the mon anchor: BallThrow_InitThrowTarget kind 6")
+  Assert.equal(lastFlash, BattleTimelineCore.BALL_FLASH_FULL, "the ball hides white where its blend finishes")
   local ball = timeline:openingPresentation().ballThrow
-  Assert.isFalse(ball.visible, "the staged ball hides after its opening sequence")
+  Assert.isFalse(ball.visible, "the staged ball hides after its blend")
   local bursts = {}
   for _, start in ipairs(timeline:takeBallParticleStarts()) do
     if type(start) == "table" and start.effect == "burst" then
       bursts[#bursts + 1] = start
     end
   end
-  Assert.equal(#bursts, 1, "the opening arc bursts once where it lands")
-  Assert.equal(bursts[1].x, 64, "the burst covers the landing spot")
-  Assert.equal(bursts[1].y, 144, "the burst covers the landing spot 32 below the mon anchor")
+  Assert.equal(#bursts, 0, "the wild lead's flashing ball starts no burst stand-in")
 end
 
 -- Retail text delay is counted by printer-task update. NitroMain runs
@@ -2052,7 +2035,6 @@ function T.send_out_reveal_covers_the_baked_motion_span_with_a_delayed_cry()
     "staged motion stretches the reveal past the poof alone"
   )
 end
-
 
 function T.knockout_reveal_keeps_vacated_slot_and_leaves_partner_alone()
   local opening = doubleOpeningView()
@@ -2801,15 +2783,13 @@ local function taskAwareEffects(program)
   function resources.release(lease)
     resources.released[#resources.released + 1] = lease
   end
-  local player = assert(
-    Player.new({
-      scene = scene,
-      audio = audio,
-      resources = resources,
-      tasks = Factory,
-      services = { onNativeFrame = function() end },
-    })
-  )
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = Factory,
+    services = { onNativeFrame = function() end },
+  }))
   local rec = { starts = {}, player = player, audio = audio, resources = resources, scene = scene }
   function rec.start(cue)
     Assert.isTrue(type(cue) == "table", "native cues carry their cue record with launch and effect identity")
@@ -3824,11 +3804,7 @@ function T.follower_switch_in_rides_no_ball_and_slides_home()
       end
       if cue.cue.symbol == BattleAudio.SINK_SOUNDS.followerSlide then
         slideSounds = slideSounds + 1
-        Assert.equal(
-          cue.cue.pan,
-          BattleAudio.SIDE_PAN.player,
-          "the slide switch sound voices on the player side"
-        )
+        Assert.equal(cue.cue.pan, BattleAudio.SIDE_PAN.player, "the slide switch sound voices on the player side")
       end
     end
     if cue.kind == "ball-particles" and cue.effect == "seal" then
@@ -3860,11 +3836,7 @@ function T.follower_switch_in_rides_no_ball_and_slides_home()
     end
   end
   Assert.notNil(reveal, "the follower switch-in reveals its battler")
-  Assert.equal(
-    reveal.slideOffset,
-    -144,
-    "the solo follower starts 144 px left of its spot (offscreen -80 to home 64)"
-  )
+  Assert.equal(reveal.slideOffset, -144, "the solo follower starts 144 px left of its spot (offscreen -80 to home 64)")
   local seenVisibleEarly = false
   local seenTravel = false
   local revealTicks = 0
@@ -3922,6 +3894,313 @@ local function drainOpening(timeline)
   error("the opening never settles", 0)
 end
 
+-- The staged opening animation of a ball: the source's three cells (two
+-- closed-ball frames and the 32x32 opened-halves cell).
+---@return table<string, { drawableKey: string, durationTicks: integer }[]> synthetic opening records by ball key
+local function ballOpenings()
+  local frames = {}
+  for index, duration in ipairs({ 10, 10, 50 }) do
+    frames[index] = {
+      drawableKey = "battle-ball-open:POKE_BALL:" .. tostring(index - 1),
+      durationTicks = duration,
+    }
+  end
+  return { POKE_BALL = { frames = frames } }
+end
+
+-- The staged ball throw animation: eight cells with the source's authored
+-- durations (2,2,6,2,2,2,6,2).
+local THROW_DURATIONS = { 2, 2, 6, 2, 2, 2, 6, 2 }
+
+---@return table<string, { frames: { drawableKey: string, durationTicks: integer }[] }> throw cycles by ball key
+local function ballThrowCycles()
+  local frames = {}
+  for index, duration in ipairs(THROW_DURATIONS) do
+    frames[index] = {
+      drawableKey = "battle-ball:POKE_BALL:" .. tostring(index - 1),
+      durationTicks = duration,
+    }
+  end
+  return { POKE_BALL = { frames = frames } }
+end
+
+-- The contiguous cell runs of one observed flight: a cell that stays on
+-- screen over several ticks is one run, in source order.
+---@param keys table<integer, string?> shown cell per flight tick
+---@param ticks integer last observed flight tick
+---@return { key: string, ticks: integer }[]
+local function cellRuns(keys, ticks)
+  local runs = {}
+  for tick = 1, ticks do
+    local key = assert(keys[tick], "the flashing ball stays on screen through its open tail")
+    local run = runs[#runs]
+    if run ~= nil and run.key == key then
+      run.ticks = run.ticks + 1
+    else
+      runs[#runs + 1] = { key = key, ticks = 1 }
+    end
+  end
+  return runs
+end
+
+-- A player reserve's own ball (kind 6/8/7) holds at the arc apex and
+-- blends its palette white from four frames before it lands. RunThrowArc
+-- reports the ball opened as the blend finishes, so the open phase is the
+-- blend tail and no opening cell plays.
+function T.mid_battle_send_out_flashes_the_ball_white_through_the_arc()
+  local openings = ballOpenings()
+  local cycles = ballThrowCycles()
+  local sounds = sink()
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    ballFadeColor = function(_)
+      return 0
+    end,
+    ballOpening = function(ballKey)
+      return openings[ballKey]
+    end,
+    ballThrow = function(ballKey)
+      return cycles[ballKey]
+    end,
+  })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
+  drainOpening(timeline)
+  timeline:takeBallParticleStarts()
+  local after = openingView()
+  after.own = {
+    {
+      combatant = 2,
+      participant = 2,
+      side = 1,
+      controller = "player",
+      active = true,
+      position = 1,
+      activation = 2,
+      hp = 52,
+      maxHp = 52,
+      species = "EEVEE",
+      form = 0,
+      name = "BACKUP",
+      level = 20,
+      ballKey = "POKE_BALL",
+      slot = 1,
+      selector = "back",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back"),
+      moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+      experience = 8000,
+    },
+  }
+  local switch = event("switch", { from = 1, incoming = 2 }, { [1] = 52, [3] = 57 })
+  Assert.isTrue(timeline:present(packet(1, { switch }, after)), "the mid-battle switch is accepted")
+  -- The send-out script prints its line and slides the party gauge before
+  -- the throw, so advance to the first visible ball and then observe it
+  -- frame by frame.
+  local throwStart = nil
+  local startX = nil
+  for tick = 1, 600 do
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    advance(timeline, TICK)
+    local ball = timeline:openingPresentation().ballThrow
+    if type(ball) == "table" and ball.visible == true then
+      throwStart = tick
+      startX = ball.x
+      break
+    end
+  end
+  Assert.notNil(throwStart, "the send-out throw starts after its script line")
+  local arcTicks = BattleTimelineCore.THROW_ARC_TICKS + BattleTimelineCore.BALL_ARC_APEX_TICKS
+  local openTicks = BattleTimelineCore.BALL_FLASHING_OPEN_TICKS
+  -- The cue runs its first arc tick on the tick the ball appears, so the
+  -- landing falls one loop tick before the nominal arc length.
+  local landingTick = arcTicks - 1
+  local openEndTick = landingTick + openTicks
+  local xByTick, keysByTick, flashByTick, soundsByTick, startsByTick = {}, {}, {}, {}, {}
+  local heard = #sounds.played
+  for tick = 1, openEndTick do
+    advance(timeline, TICK)
+    local ball = timeline:openingPresentation().ballThrow
+    if type(ball) == "table" and ball.visible == true then
+      xByTick[tick] = ball.x
+      keysByTick[tick] = ball.drawableKey
+      flashByTick[tick] = ball.paletteFlash
+    end
+    soundsByTick[tick] = #sounds.played - heard
+    heard = #sounds.played
+    startsByTick[tick] = #timeline:takeBallParticleStarts()
+  end
+  Assert.equal(startX, 10, "the trainerless ball starts at the source hand spot")
+  -- RunThrowArc skips its motion updates for four frames past the arc's
+  -- midpoint, so the ball hangs at its apex instead of moving every tick.
+  local heldTicks = 0
+  for tick = 2, landingTick do
+    if xByTick[tick] == xByTick[tick - 1] then
+      heldTicks = heldTicks + 1
+    end
+  end
+  Assert.equal(heldTicks, 4, "the player send-out arc holds four frames at its apex")
+  -- The fixed-point arc truncates one pixel above the open spot, then the
+  -- open tick snaps to the source target.
+  Assert.equal(xByTick[landingTick], 63, "the last arc step lands one pixel above the open spot")
+  Assert.equal(xByTick[landingTick + 1], 64, "the first open tick rests on the mon spot plus 32 pixels")
+  -- A flashing kind never plays the opening sequence: the throw cycle
+  -- keeps advancing through the whole flight and open tail, each cell for
+  -- its own source duration.
+  local runs = cellRuns(keysByTick, openEndTick - 1)
+  Assert.isTrue(#runs >= 3, "the flight ticks the throw cycle through several cells")
+  for index, run in ipairs(runs) do
+    local cell = (index - 1) % #THROW_DURATIONS + 1
+    Assert.equal(run.key, "battle-ball:POKE_BALL:" .. tostring(cell - 1), "the throw walks its cells in source order")
+    local authored = THROW_DURATIONS[cell]
+    if index == 1 or index == #runs then
+      -- The observation window opens after the release showed its first
+      -- cell and ends where the blend finishes, so both ends clip.
+      Assert.isTrue(run.ticks <= authored, "a clipped cycle cell never overruns its source duration")
+    else
+      Assert.equal(run.ticks, authored, "cell " .. tostring(cell - 1) .. " keeps its source duration")
+    end
+  end
+  Assert.isNil(keysByTick[openEndTick], "the ball hides where its blend ends")
+  -- RunThrowArc starts the blend four frames before landing and ramps the
+  -- source coefficient every tick until the cell is source white.
+  local flashStart = landingTick - BattleTimelineCore.BALL_FLASH_LEAD_TICKS
+  Assert.isNil(flashByTick[flashStart - 1], "no blend precedes the source flash start")
+  Assert.equal(flashByTick[flashStart], 0, "the blend starts on the source flash tick")
+  Assert.equal(flashByTick[landingTick], 8, "the ball is half white where the arc lands")
+  Assert.equal(flashByTick[openEndTick - 1], BattleTimelineCore.BALL_FLASH_FULL, "the blend finishes white")
+  for tick = flashStart + 1, openEndTick - 1 do
+    Assert.isTrue(flashByTick[tick] > flashByTick[tick - 1], "the blend ramps until it is white")
+  end
+  -- The seal and the open sound start where the blend finishes; the
+  -- flashing kinds start no burst stand-in.
+  Assert.equal(soundsByTick[openEndTick], 1, "the ball open sound voices where the blend finishes")
+  Assert.equal(startsByTick[openEndTick - 1] or 0, 0, "no seal precedes the open")
+  Assert.equal(startsByTick[openEndTick], 1, "the seal starts with the open sound")
+  Assert.equal(#timeline:takeBallParticleStarts(), 0, "the flashing ball starts no burst stand-in")
+end
+
+-- A foe reserve's own ball (kind 1/3/5) holds still in place for twelve
+-- frames, then plays the source opening sequence: the closed cell shows
+-- until RunThrowArc's sixth open step forces the 32x32 opened-halves cell
+-- and starts the palette blend. No burst stand-in plays.
+function T.mid_battle_foe_send_out_shows_the_source_open_cell_and_flash()
+  local openings = ballOpenings()
+  local sounds = sink()
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    ballFadeColor = function(_)
+      return 0
+    end,
+    ballOpening = function(ballKey)
+      return openings[ballKey]
+    end,
+  })
+  local view = openingView()
+  timeline:reset(view)
+  timeline:intro(view, true)
+  drainOpening(timeline)
+  timeline:takeBallParticleStarts()
+  local after = openingView()
+  after.foes = {
+    {
+      combatant = 5,
+      participant = 5,
+      side = 2,
+      controller = "wild",
+      active = true,
+      hp = 57,
+      maxHp = 57,
+      species = "EEVEE",
+      form = 0,
+      name = "FOE2",
+      level = 20,
+      ballKey = "POKE_BALL",
+      selector = "front",
+      portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false),
+    },
+  }
+  local switch = event("switch", { from = 3, incoming = 5 }, { [1] = 52, [5] = 57 })
+  switch.sequence = 2
+  Assert.isTrue(timeline:present(packet(2, { switch }, after)), "the mid-battle foe switch is accepted")
+  local throwStart = nil
+  for tick = 1, 600 do
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    advance(timeline, TICK)
+    local ball = timeline:openingPresentation().ballThrow
+    if type(ball) == "table" and ball.visible == true then
+      throwStart = tick
+      break
+    end
+  end
+  Assert.notNil(throwStart, "the foe send-out opens after its script line")
+  local arcTicks = BattleTimelineCore.BALL_IN_PLACE_ARC_TICKS
+  local openTicks = BattleTimelineCore.THROW_OPEN_TICKS
+  local eventTick = BattleTimelineCore.BALL_OPEN_SETUP_TICKS + BattleTimelineCore.BALL_OPEN_FLASH_TICKS
+  -- The cue runs its first in-place tick on the tick the ball appears.
+  local landingTick = arcTicks - 1
+  local openEndTick = landingTick + openTicks
+  local eventLoopTick = landingTick + eventTick
+  local keysByTick, flashByTick, soundsByTick, startsByTick = {}, {}, {}, {}
+  local heard = #sounds.played
+  for tick = 1, openEndTick do
+    advance(timeline, TICK)
+    local ball = timeline:openingPresentation().ballThrow
+    if type(ball) == "table" and ball.visible == true then
+      keysByTick[tick] = ball.drawableKey
+      flashByTick[tick] = ball.paletteFlash
+    end
+    soundsByTick[tick] = #sounds.played - heard
+    heard = #sounds.played
+    startsByTick[tick] = #timeline:takeBallParticleStarts()
+  end
+  -- The foe ball holds its source spot for RunThrowArc's twelve in-place
+  -- frames, then the opening sequence runs.
+  for tick = 1, landingTick do
+    Assert.equal(keysByTick[tick], "battle-ball:POKE_BALL:0", "the in-place frames hold the closed throw cell")
+  end
+  Assert.equal(keysByTick[landingTick + 1], "battle-ball:POKE_BALL:0", "the first open setup tick keeps the throw cell")
+  Assert.equal(keysByTick[landingTick + 2], "battle-ball-open:POKE_BALL:0", "SetAnim shows the opening cell")
+  Assert.equal(
+    keysByTick[eventLoopTick - 1],
+    "battle-ball-open:POKE_BALL:0",
+    "the opening cell holds until the forced step"
+  )
+  Assert.equal(
+    keysByTick[eventLoopTick],
+    "battle-ball-open:POKE_BALL:2",
+    "the sixth open step forces the opened-halves cell"
+  )
+  Assert.equal(
+    keysByTick[openEndTick - 1],
+    "battle-ball-open:POKE_BALL:2",
+    "the opened cell stays until the ball task ends"
+  )
+  Assert.isNil(keysByTick[openEndTick], "the ball hides where its task ends")
+  -- The blend starts on the same forced step and ramps to source white,
+  -- where it holds for the rest of the open.
+  Assert.isNil(flashByTick[eventLoopTick - 1], "no blend precedes the source open")
+  Assert.equal(flashByTick[eventLoopTick], 0, "the foe blend starts on its source open tick")
+  Assert.isTrue(flashByTick[eventLoopTick + 1] > 0, "the foe blend ramps off its source open tick")
+  for tick = eventLoopTick + 1, openEndTick - 1 do
+    Assert.isTrue(flashByTick[tick] >= flashByTick[tick - 1], "the foe blend never recedes")
+  end
+  Assert.equal(flashByTick[openEndTick - 1], BattleTimelineCore.BALL_FLASH_FULL, "the blend stays white")
+  -- The open sound and the seal start where the cell is forced.
+  Assert.equal(soundsByTick[eventLoopTick], 1, "the ball open sound voices where the ball opens")
+  Assert.equal(startsByTick[eventLoopTick - 1] or 0, 0, "no seal precedes the open")
+  Assert.equal(startsByTick[eventLoopTick], 1, "the seal starts with the open sound")
+  Assert.equal(#timeline:takeBallParticleStarts(), 0, "the foe open starts no burst stand-in")
+end
+
 -- Retail mid-battle send-outs fly their own ball with no trainer on
 -- screen (Task_PokemonSendOut builds its BallThrow from the hand spot):
 -- the player ball arcs from (10, 100) to the mon spot plus 32 pixels,
@@ -3929,9 +4208,11 @@ end
 function T.mid_battle_send_outs_fly_their_own_balls()
   -- The staged fade color stands in for the production ball inventory:
   -- without it every reveal degrades to the unfaded vanish.
-  local timeline = BattleTimeline.new({ ballFadeColor = function(_)
-    return 0
-  end })
+  local timeline = BattleTimeline.new({
+    ballFadeColor = function(_)
+      return 0
+    end,
+  })
   local view = openingView()
   timeline:reset(view)
   timeline:intro(view, true)
@@ -3982,15 +4263,17 @@ function T.mid_battle_send_outs_fly_their_own_balls()
   Assert.equal(throws[1].targetY, 144, "the mid-battle arc lands 32 pixels below the mon anchor")
   Assert.equal(
     throws[1].nominalTicks,
-    BattleTimelineCore.THROW_ARC_TICKS + BattleTimelineCore.THROW_OPEN_TICKS,
-    "the mid-battle arc runs the source arc plus open with no windup"
+    BattleTimelineCore.THROW_ARC_TICKS
+      + BattleTimelineCore.BALL_ARC_APEX_TICKS
+      + BattleTimelineCore.BALL_FLASHING_OPEN_TICKS,
+    "the mid-battle arc runs the source arc, its apex hold, and the in-arc blend tail with no windup"
   )
   Assert.equal(#reveals, 1, "the mid-battle send-out reveals its battler")
   Assert.equal(reveals[1].duration, 25, "the mid-battle poof keeps its ball-color fade")
   -- The switch also holds the party gauge open and closed; the settle
   -- wait is the last hold before the box slides in.
   Assert.isTrue(#waits >= 1, "the mid-battle send-out settles")
-  Assert.equal(waits[#waits].duration, 8, "the settle keeps WaitTime 72 minus the arc and the poof")
+  Assert.equal(waits[#waits].duration, 18, "the settle keeps WaitTime 72 minus the arc and the poof")
   drainOpening(timeline)
   local bursts = {}
   for _, start in ipairs(timeline:takeBallParticleStarts()) do
@@ -3998,9 +4281,7 @@ function T.mid_battle_send_outs_fly_their_own_balls()
       bursts[#bursts + 1] = start
     end
   end
-  Assert.equal(#bursts, 1, "the mid-battle arc bursts once where it lands")
-  Assert.equal(bursts[1].x, 64, "the mid-battle burst covers the landing spot")
-  Assert.equal(bursts[1].y, 144, "the mid-battle burst covers the landing spot")
+  Assert.equal(#bursts, 0, "the flashing mid-battle ball starts no burst stand-in")
   -- The foe send-out opens its own ball in place on the same mid-battle
   -- timeline: no trainer tracks it and it never arcs.
   local queued = #timeline._queue
@@ -4067,13 +4348,13 @@ function T.mid_battle_send_outs_fly_their_own_balls()
   Assert.equal(throws[1].targetY, 86, "the foe ball opens at its source spot")
   Assert.equal(
     throws[1].nominalTicks,
-    BattleTimelineCore.THROW_OPEN_TICKS,
-    "the in-place open runs the source open with no arc"
+    BattleTimelineCore.BALL_IN_PLACE_ARC_TICKS + BattleTimelineCore.THROW_OPEN_TICKS,
+    "the foe open runs RunThrowArc's twelve in-place frames before its open"
   )
   -- The switch also holds the party gauge open and closed; the settle
   -- wait is the last hold before the box slides in.
   Assert.isTrue(#waits >= 1, "the foe send-out settles")
-  Assert.equal(waits[#waits].duration, 29, "the settle keeps WaitTime 72 minus the open and the poof")
+  Assert.equal(waits[#waits].duration, 17, "the settle keeps WaitTime 72 minus the open and the poof")
   drainOpening(timeline)
   local bursts = {}
   for _, start in ipairs(timeline:takeBallParticleStarts()) do
@@ -4081,9 +4362,7 @@ function T.mid_battle_send_outs_fly_their_own_balls()
       bursts[#bursts + 1] = start
     end
   end
-  Assert.equal(#bursts, 1, "the foe ball bursts once where it opens")
-  Assert.equal(bursts[1].x, 192, "the foe burst covers its source spot")
-  Assert.equal(bursts[1].y, 86, "the foe burst covers its source spot")
+  Assert.equal(#bursts, 0, "the foe open starts no burst stand-in")
 end
 
 -- BallThrow_CaptureStateDrop lowers the opened ball 32 pixels over 10
@@ -4187,9 +4466,7 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
       bursts[#bursts + 1] = start
     end
   end
-  Assert.equal(#bursts, 1, "the re-open bursts once at the foe's source spot")
-  Assert.equal(bursts[1].x, 192, "the re-open burst covers the foe's source spot")
-  Assert.equal(bursts[1].y, 86, "the re-open burst covers the foe's source spot")
+  Assert.equal(#bursts, 0, "the re-open starts no burst stand-in")
 end
 
 return { tests = T }

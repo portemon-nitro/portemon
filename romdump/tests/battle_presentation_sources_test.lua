@@ -531,6 +531,24 @@ function T.menu_and_message_sources_keep_semantic_keys_separate_from_selector_id
   Assert.equal(Sources.MENU_MESSAGES["label/forget-move"], 1181, "the forget choice uses its native battle label")
   Assert.equal(Sources.MENU_MESSAGES["label/keep-move"], 1182, "the keep choice uses its native battle label")
   Assert.equal(Sources.MENU_MESSAGES["label/yes"], 940, "yes/no text binds source message records")
+  -- BattleInput_CreateSwitchOrKeepMenuObjects (msg 1215/1216) and
+  -- CreateSwitchOrFleeMenuObjects (msg 1217/1218) label the two held
+  -- replacement offers; the flee word is the use-next prompt's escape
+  -- answer, not a generic No.
+  Assert.equal(Sources.MENU_MESSAGES["label/switch"], 1215, "the shift offer's switch answer binds its source record")
+  Assert.equal(
+    Sources.MENU_MESSAGES["label/keep-battling-switch"],
+    1216,
+    "the shift offer's keep answer binds its source record"
+  )
+  Assert.equal(
+    Sources.MENU_MESSAGES["label/use-next-mon"],
+    1217,
+    "the wild offer's replacement answer binds its source record"
+  )
+  Assert.equal(Sources.MENU_MESSAGES["label/flee"], 1218, "the wild offer's escape answer binds its source record")
+  Assert.deepEqual(Sources.MENU_ROUTES["menu/switch-or-flee"].textSet, "switch-or-flee")
+  Assert.deepEqual(Sources.MENU_ROUTES["menu/switch-or-keep"].textSet, "switch-or-keep")
   Assert.isNil(Sources.MENU_MESSAGES[924], "message IDs are not runtime catalog keys")
 end
 

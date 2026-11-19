@@ -1364,7 +1364,7 @@ local function compileMenuTextSets()
     ["keep-forget"] = { entries = { "label/keep-move", "label/forget-move" }, routes = {}, fonts = { "menu" } },
     ["give-up"] = { entries = {}, routes = { "menu/give-up-move" }, fonts = { "menu" } },
     ["switch-or-flee"] = {
-      entries = { "label/switch", "label/flee", "label/switch-flee" },
+      entries = { "label/switch", "label/use-next-mon", "label/flee" },
       routes = {},
       fonts = { "menu" },
     },
@@ -3497,6 +3497,7 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
       image = imagePath,
       width = raster.width,
       height = raster.height,
+      durationTicks = animation.frames[sourceFrameIndex].duration,
       sourceIndices = {
         format = "source-index-rgba8",
         plane = "mainObj",
@@ -3507,16 +3508,75 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
     }
   end
   assert(#frames > 0, "ball animation exposes at least one rendered frame for ball " .. tostring(ballId))
-  local entry =
-    { frames = frames, fadeColor = fadeColors[ballId], paletteSource = { words = paletteWords(paletteData) } }
+  -- The source opening animation (NANR sequence 1) plays when the ball
+  -- lands: BallThrow_RunThrowArc switches the sprite to it, then ticks its
+  -- cells by their source durations while the white flash and the seal
+  -- run. Stage every cell with its duration so the runtime advances the
+  -- open beat from source data.
+  local sourceOpening = assert(animationData.anims[2], label .. " has its opening animation")
+  assert(#sourceOpening.frames > 0, label .. " opening animation exposes its cells")
+  local openingFrames = {}
+  for sourceFrameIndex = 1, #sourceOpening.frames do
+    local raster =
+      G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, sourceOpening, sourceFrameIndex, {
+        asset = "battle-balls",
+        member = resource.animationMember,
+        role = label .. " opening",
+        frame = sourceFrameIndex - 1,
+      }, nil, mapping)
+    local sourceIndexRaster =
+      G2dRasterizer.renderAnimationFrame(charData, sourceIndexPalette, cellData, sourceOpening, sourceFrameIndex, {
+        asset = "battle-balls",
+        member = resource.animationMember,
+        role = label .. " opening source indices",
+        frame = sourceFrameIndex - 1,
+      }, nil, mapping)
+    assert(
+      sourceIndexRaster.width == raster.width and sourceIndexRaster.height == raster.height,
+      label .. " opening source-index raster matches its color raster"
+    )
+    local frameIndex = sourceFrameIndex - 1
+    local imagePath = BattlePresentationCache.assetDir() .. "/balls/" .. itemKey .. "-open-" .. frameIndex .. ".png"
+    local variants = sourceIndexSlotVariants(
+      "battle-ball-open-" .. itemKey .. "-" .. frameIndex,
+      sourceIndexRaster.pixels,
+      Sources.MAIN_OBJ_PALETTE_BASE.contextualBall,
+      { 48, 64, 80, 96 },
+      rawFiles
+    )
+    images[imagePath] = raster
+    openingFrames[#openingFrames + 1] = {
+      drawableKey = "battle-ball-open:" .. itemKey .. ":" .. frameIndex,
+      image = imagePath,
+      width = raster.width,
+      height = raster.height,
+      durationTicks = sourceOpening.frames[sourceFrameIndex].duration,
+      sourceIndices = {
+        format = "source-index-rgba8",
+        plane = "mainObj",
+        width = sourceIndexRaster.width,
+        height = sourceIndexRaster.height,
+        variants = variants,
+      },
+    }
+  end
+  local entry = {
+    frames = frames,
+    opening = {
+      playMode = sourceOpening.playMode,
+      loopStartFrameIdx = sourceOpening.loopStartFrameIdx,
+      frames = openingFrames,
+    },
+    fadeColor = fadeColors[ballId],
+    paletteSource = { words = paletteWords(paletteData) },
+  }
   local particlePngs = {}
   local particleSource = assert(particleSources.entries[itemKey], "every ball sprite has its particle sources")
   if particleSources.unrepresented[itemKey] == nil then
     -- BallThrow_CaptureStateOpen starts the burst once the opening
     -- animation (sequence 1) reaches its third frame, one task step after
     -- the first two frames' durations elapsed.
-    local opening = assert(animationData.anims[2], label .. " has its opening animation")
-    assert(#opening.frames >= 3, label .. " opening animation reaches its third frame")
+    assert(#sourceOpening.frames >= 3, label .. " opening animation reaches its third frame")
     entry.particles = {
       seal = compileBallParticleSet(
         particleArchive,
@@ -3535,7 +3595,7 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
         particlePngs
       ),
       clickEmitter = particleSource.burstClickEmitter,
-      burstStartTick = opening.frames[1].duration + opening.frames[2].duration + 1,
+      burstStartTick = sourceOpening.frames[1].duration + sourceOpening.frames[2].duration + 1,
     }
   end
   local metadata = romFs:metadata()
