@@ -42,7 +42,7 @@ local function compileWith(memberBytes, animationFormat)
         textureOutput.texture = { pixels = "pixel" }
         meshOutput.mesh = {}
         return {
-          schema = "g4-model-v6",
+          schema = ModelAsset.SCHEMA,
           kind = "nitro-dynamic",
           dynamic = { batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } } },
           materials = { { texture = "assets/generated/maps/textures/texture.png", variants = {} } },

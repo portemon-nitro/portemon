@@ -20,8 +20,10 @@ local function withLove(fakeLove, fn)
   return result
 end
 
-local function fakeLove()
-  local backend = FakeCache.new()
+-- An optional store lets a scenario drive the production reader against the
+-- same in-memory tree its own cache access already published into.
+local function fakeLove(sharedBackend)
+  local backend = sharedBackend or FakeCache.new()
   return {
     filesystem = {
       write = function(path, data)
@@ -97,6 +99,10 @@ local function scriptedChannel(messages)
   end
   function channel:getCount()
     return #pending
+  end
+  function channel:queueFront(value)
+    table.insert(pending, 1, value)
+    return true
   end
   return channel
 end
@@ -847,6 +853,119 @@ function T.unreadable_receipt_failures_carry_their_cause()
     text:find("injected receipt read failure", 1, true) ~= nil,
     "the failure keeps the backend message: " .. text
   )
+end
+
+-- A receipt belongs to the generation that produced it: the same job asked
+-- for under a newer generation asks for its source again instead of reusing,
+-- and replacing the whole generated version root leaves user saves and mods
+-- byte-identical.
+function T.new_generation_rebuilds_the_job_and_replaces_only_generated_bytes()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local RomFs = require("romdump.src.source.RomFs")
+  local versionId = "heartgold"
+  local earlierGeneration = "generation-one"
+  local selectedGeneration = "generation-two"
+  local savePath = "saves/heartgold/slot-1.lua"
+  local saveLogical = "return { playTime = 3600 }\n"
+  local modPath = "mods/hard-mode/info.lua"
+  local modLogical = "return { name = 'hard mode' }\n"
+  local backend = FakeCache.new()
+  backend:write(savePath, saveLogical)
+  backend:write(modPath, modLogical)
+
+  local cache = CacheFs.forVersion(versionId, backend)
+  cache:recoverPublication()
+  cache:write("maps/7/complete", "earlier-generation-bytes")
+  cache:writeLua(ArtifactState.path("map", "7"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = earlierGeneration,
+    kind = "map",
+    key = "7",
+    marker = "earlier",
+  })
+
+  local sourceRequests = {}
+  local reported = {}
+  local sourceOpens = 0
+  withLove(fakeLove(backend), function()
+    local job = {
+      kind = "map",
+      key = "7",
+      jobKey = "map:7",
+      versionId = versionId,
+      generationId = selectedGeneration,
+      epoch = 2,
+      stageName = "map-stage",
+      sizeClass = "normal",
+      payload = { mapId = 7 },
+      producerFingerprint = "producer",
+    }
+    local input = scriptedChannel({ job, { kind = "stop" } })
+    local resultsChannel = scriptedChannel({})
+    local push = resultsChannel.push
+    function resultsChannel:push(value)
+      reported[#reported + 1] = value
+      if type(value) == "table" and value.status == "source-needed" then
+        sourceRequests[#sourceRequests + 1] = value
+        input:queueFront(pooledSupply(value))
+      end
+      return push(self, value)
+    end
+    local realOpen = RomFs.open
+    RomFs.open = function()
+      sourceOpens = sourceOpens + 1
+      return { close = function(_) end }
+    end
+    local realExecute = CompilerWorker.execute
+    CompilerWorker.execute = function(executeJob)
+      return { stageName = executeJob.stageName, result = { marker = "fresh" } }
+    end
+    local completed, runErr = pcall(CompilerWorker.run, 1, input, resultsChannel)
+    RomFs.open = realOpen
+    CompilerWorker.execute = realExecute
+    Assert.isTrue(completed, "the driven worker loop resolves: " .. tostring(runErr))
+
+    Assert.isNil(
+      ArtifactState.read(cache, selectedGeneration, "map", "7"),
+      "the earlier generation's receipt is not current for the selected generation"
+    )
+    Assert.notNil(
+      ArtifactState.read(cache, earlierGeneration, "map", "7"),
+      "the earlier generation keeps its own receipt until it is rebuilt"
+    )
+  end)
+
+  Assert.equal(#sourceRequests, 1, "a new generation asks for its source exactly once")
+  Assert.equal(sourceRequests[1].generationId, selectedGeneration, "the request names the selected generation")
+  Assert.equal(sourceOpens, 1, "the job compiles from a freshly supplied source")
+  local terminal = {}
+  for _, message in ipairs(reported) do
+    if
+      type(message) == "table"
+      and message.jobKey == "map:7"
+      and (message.status == "reused" or message.status == "prepared" or message.status == "failed")
+    then
+      terminal[#terminal + 1] = message
+    end
+  end
+  Assert.equal(#terminal, 1, "the job reports exactly one terminal result")
+  Assert.equal(terminal[1].status, "prepared", "a receipt from an earlier generation never settles as reuse")
+
+  local staging = CacheFs.forStaging(versionId, backend)
+  staging:write("data/generated/maps/0007/terrain.lua", "return { rebuilt = true }\n")
+  cache:publishFromStage(staging)
+  Assert.equal(
+    cache:read("data/generated/maps/0007/terrain.lua"),
+    "return { rebuilt = true }\n",
+    "the replacement installs the new generated bytes"
+  )
+  Assert.isNil(cache:read("maps/7/complete"), "the replaced generation root carries no earlier payload")
+  Assert.isNil(cache:read(savePath), "a generated cache root never reaches a save")
+  Assert.isNil(cache:read(modPath), "a generated cache root never reaches a mod")
+  Assert.equal(backend:read(savePath), saveLogical, "replacing the generated root leaves user saves untouched")
+  Assert.equal(backend:read(modPath), modLogical, "replacing the generated root leaves mods untouched")
 end
 
 return { tests = T }

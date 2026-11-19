@@ -95,10 +95,32 @@ local function raiseFailure(code, message, context)
   Errors.raise(code, message, context)
 end
 
+-- Generated script bundles and field message banks are human-editable data:
+-- their Lua source is the physical representation. These cache-relative roots
+-- mirror the owning families' `dir()` paths (`ScriptCache`, `FieldMessageCache`)
+-- so staged and live trees agree; storage cannot import the asset package, so
+-- the normalized roots stay local to the codec owner.
+local PLAIN_LUA_ROOTS = {
+  "data/generated/script/",
+  "data/generated/field/messages/",
+}
+
+---@param path string cache-relative path with '/' separators
+---@return boolean
+local function isPlainLuaPath(path)
+  for _, root in ipairs(PLAIN_LUA_ROOTS) do
+    if path:sub(1, #root) == root then
+      return true
+    end
+  end
+  return false
+end
+
 -- Compression policy by cache-relative logical path only. Lua and PCM use
--- zlib, geometry/collision use LZ4; PNG and unrecognized extensions are
--- always unwrapped. Not injectable: every producer and consumer must agree
--- on the physical form without consulting caller state.
+-- zlib, geometry/collision use LZ4; PNG, generated script/message Lua, and
+-- unrecognized extensions are always unwrapped. Not injectable: every producer
+-- and consumer must agree on the physical form without consulting caller
+-- state.
 ---@param relativePath string
 ---@return "lz4"|"zlib"|nil
 local function codecForPath(relativePath)
@@ -110,6 +132,9 @@ local function codecForPath(relativePath)
     return nil
   end
   if path:sub(-4) == ".lua" then
+    if isPlainLuaPath(path) then
+      return nil
+    end
     return "zlib"
   end
   if path:sub(-8) == ".pcm16le" then

@@ -15,6 +15,7 @@
 -- the completion marker.
 
 local Assert = require("tests.support.Assert")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local AnimationFixture = require("tests.support.AnimationFixture")
 local BdhcBuilder = require("tests.support.BdhcBuilder")
 local CollisionFixture = require("tests.support.CollisionFixture")
@@ -970,7 +971,7 @@ function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   })
   local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL))
   local model = onlyModel(bundle)
-  Assert.equal(model.schema, "g4-model-v6")
+  Assert.equal(model.schema, ModelAsset.SCHEMA)
   Assert.equal(model.kind, "nitro-dynamic")
   Assert.equal(#model.animations, 1)
   Assert.equal(model.animations[1].name, "door_op")

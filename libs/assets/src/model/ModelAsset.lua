@@ -25,21 +25,17 @@
 local Errors = require("libs.errors.src.Errors")
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
 local CompiledNsbtaClip = require("libs.assets.src.model.CompiledNsbtaClip")
+local Contract = require("libs.assets.src.DerivedAssetContract")
 local PolygonState = require("libs.assets.src.model.PolygonState")
 local Validate = require("libs.assets.src.Validate")
 
 local ModelAsset = {}
 
--- v3: every batch record carries fogEnabled (PolygonState.FIELDS), the
--- per-polygon fog gate the map shader now reads.
---
--- v4: every dynamic material record carries polygonMode (the real decoded DS
--- polygon mode), so the runtime evaluator can classify final alpha
--- (AlphaClassifier v2) without a placeholder mode.
---
--- v6: a dynamic batch's straddle record is `{ sources }` (one draw source per
--- leading vertex), replacing the single-source `{ leading, source }`.
-ModelAsset.SCHEMA = "g4-model-v6"
+-- The descriptor schema is a generated contract identity: the map, cell,
+-- field-effect, field-emote, bag, starter-choice, title, and opening families
+-- embed these records, so the contract table carries the current value and its
+-- revision history.
+ModelAsset.SCHEMA = Contract.model.schema
 ModelAsset.KINDS = { static = true, ["nitro-dynamic"] = true }
 
 -- Structured error code owned by this module.

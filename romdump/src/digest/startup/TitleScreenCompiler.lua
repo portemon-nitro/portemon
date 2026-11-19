@@ -2,6 +2,7 @@
 -- Source basis: the retail HGSS title resources in NARC_demo_title_titledemo.
 
 local Errors = require("libs.errors.src.Errors")
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local Hashing = require("romdump.src.digest.Hashing")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
@@ -613,7 +614,7 @@ local function compile(romFs, versionId)
   dependencies.modelMembers = memberIds
   return {
     manifest = {
-      schema = "g4-startup-title-v2",
+      schema = DerivedAssetContract.startupTitle.schema,
       versionId = versionId,
       kind = "animated-title",
       legendary = resources.legendary,

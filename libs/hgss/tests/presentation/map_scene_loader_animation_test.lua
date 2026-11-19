@@ -12,6 +12,7 @@ local Matrix3 = require("libs.math.src.Matrix3")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
@@ -211,7 +212,7 @@ local function doorDescriptor()
   -- quad under (the geometry path is arbitrary within this test).
   local meshSha = "mesh_door_quad_0000000000000000000000000000000000"
   return {
-    schema = "g4-model-v6",
+    schema = ModelAsset.SCHEMA,
     key = "outdoor:26:door",
     memberId = 26,
     kind = "nitro-dynamic",

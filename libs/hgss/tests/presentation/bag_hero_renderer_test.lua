@@ -7,6 +7,7 @@
 -- narrow recording doubles; no graphics context is required.
 
 local Assert = require("tests.support.Assert")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FakeGraphics = require("tests.support.FakeGraphics").new
 
 local HERO_MODULE = "libs.hgss.src.presentation.BagHeroRenderer"
@@ -91,7 +92,7 @@ local function heroDescriptor(gender)
   end
   clips[#clips + 1] = trsClip(gender .. ".material", "bag.material")
   return {
-    schema = "g4-model-v6",
+    schema = ModelAsset.SCHEMA,
     kind = "nitro-dynamic",
     dynamic = { nodes = {}, transformProgram = {}, batches = {} },
     materials = { dynamicMaterial() },
@@ -109,7 +110,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v20",
+    schema = "g4-bag-assets-v21",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -835,7 +836,7 @@ function T.scene_edge_colors_come_from_the_generated_records()
   withDoubles(function()
     local Hero = requireHero()
     local manifest = validManifest()
-    manifest.schema = "g4-bag-assets-v20"
+    manifest.schema = "g4-bag-assets-v21"
     manifest.hero.presentation.edgeColors = {
       { r = 10, g = 10, b = 10 },
       { r = 15, g = 9, b = 4 },
@@ -860,7 +861,7 @@ function T.scene_edge_colors_come_from_the_generated_records()
     Assert.isNil(edgeColors[8], "the edge table carries no ninth entry")
     renderer:release()
     local missing = validManifest()
-    missing.schema = "g4-bag-assets-v20"
+    missing.schema = "g4-bag-assets-v21"
     missing.hero.presentation.edgeColors = nil
     Assert.throws(function()
       Hero.new({ cacheFs = stubCache(), manifest = missing, graphics = FakeGraphics({}) })

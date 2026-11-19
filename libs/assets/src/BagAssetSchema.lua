@@ -25,6 +25,7 @@
 -- leaked source identities fail loudly. Love-free and filesystem-free.
 
 local Errors = require("libs.errors.src.Errors")
+local Contract = require("libs.assets.src.DerivedAssetContract")
 local Checks = require("libs.assets.src.BagManifestChecks")
 local HeroValidation = require("libs.assets.src.BagHeroValidation")
 local InteractiveValidation = require("libs.assets.src.BagInteractiveValidation")
@@ -32,7 +33,7 @@ local InteractiveValidation = require("libs.assets.src.BagInteractiveValidation"
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v20"
+BagAssetSchema.SCHEMA = Contract.bag.schema
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
