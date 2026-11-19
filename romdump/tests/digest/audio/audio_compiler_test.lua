@@ -93,6 +93,47 @@ end
 
 local PCM8_KEY = memberKey(pcm8Member())
 
+-- The normative binary sample identity: a fixed domain prefix, the exact
+-- little-endian PCM byte length and bytes, the base timer, the loop flag and
+-- the loop window. Assembled here with explicit byte arithmetic so these
+-- expectations never depend on Lua text escaping or on the compiler's own
+-- encoding code.
+local function u16le(value)
+  return string.char(value % 256, math.floor(value / 256) % 256)
+end
+
+local function u32le(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+local function binarySampleKey(pcm, baseTimer, loopEnabled, loopStartFrame, loopEndFrame)
+  local encoded = "g4pcm2\0"
+    .. u32le(#pcm)
+    .. pcm
+    .. u16le(baseTimer)
+    .. string.char(loopEnabled and 1 or 0)
+    .. u32le(loopStartFrame)
+    .. u32le(loopEndFrame)
+  return Hashing.sha1hex(encoded)
+end
+
+-- One fixed tuple whose SHA-1 was computed outside the repository: the
+-- literal pins the domain prefix and the field widths independently of the
+-- helper above, and the same tuple carries embedded NUL and high-bit bytes.
+local BINARY_IDENTITY = {
+  pcm = string.char(0, 255, 128, 0, 1, 15, 240, 0),
+  baseTimer = 8006,
+  loopEnabled = true,
+  loopStartFrame = 0,
+  loopEndFrame = 4,
+  key = "6fa64968e33ae003db9f722a1b7cb64a09155d6b",
+}
+
 -- Builds the two-track sequence payload: the FE header's open-track record
 -- (track 0's first command), the main program, and a call target deep in the
 -- file. Symbolic targets resolve against the fixture's own layout.
@@ -627,6 +668,200 @@ function T.source_planning_binds_plan_and_identity_to_one_archive_read()
   Assert.equal(planned.identity.sdatSha1, Hashing.sha1hex(bytes), "identity hashes the observed bytes")
   Assert.equal(planned.identity.romSha1, "fake-rom-sha1", "identity carries the source ROM")
   Assert.equal(planned.identity.sdatFileId, 123, "identity carries the archive file")
+end
+
+-- The sample key is the SHA-1 of a fixed binary tuple, so arbitrary PCM
+-- bytes hash without Lua quoting and every runtime-distinct timer or loop
+-- setting keeps its own key.
+function T.sample_keys_hash_the_binary_identity_of_pcm_timer_and_loop()
+  local vector = BINARY_IDENTITY
+  local key = AudioCompiler.sampleKey(
+    vector.pcm,
+    vector.baseTimer,
+    vector.loopEnabled,
+    vector.loopStartFrame,
+    vector.loopEndFrame
+  )
+  Assert.equal(key, vector.key, "the sample key is the SHA-1 of the fixed binary tuple")
+  Assert.equal(#key, 40, "the sample key is a 40-character digest")
+  Assert.isTrue(key:match("^[0-9a-f]+$") ~= nil, "the sample key is lowercase hexadecimal")
+  Assert.equal(
+    AudioCache.samplePath(key),
+    AudioCache.dir() .. "/samples/" .. key .. ".pcm16le",
+    "the payload path is the content key"
+  )
+
+  local tuples = {
+    {
+      name = "identical",
+      pcm = vector.pcm,
+      baseTimer = vector.baseTimer,
+      loopEnabled = vector.loopEnabled,
+      loopStartFrame = vector.loopStartFrame,
+      loopEndFrame = vector.loopEndFrame,
+    },
+    {
+      name = "base timer",
+      pcm = vector.pcm,
+      baseTimer = 7606,
+      loopEnabled = vector.loopEnabled,
+      loopStartFrame = vector.loopStartFrame,
+      loopEndFrame = vector.loopEndFrame,
+    },
+    {
+      name = "loop flag",
+      pcm = vector.pcm,
+      baseTimer = vector.baseTimer,
+      loopEnabled = false,
+      loopStartFrame = vector.loopStartFrame,
+      loopEndFrame = vector.loopEndFrame,
+    },
+    {
+      name = "loop start",
+      pcm = vector.pcm,
+      baseTimer = vector.baseTimer,
+      loopEnabled = vector.loopEnabled,
+      loopStartFrame = 1,
+      loopEndFrame = vector.loopEndFrame,
+    },
+    {
+      name = "loop end",
+      pcm = vector.pcm,
+      baseTimer = vector.baseTimer,
+      loopEnabled = vector.loopEnabled,
+      loopStartFrame = vector.loopStartFrame,
+      loopEndFrame = 3,
+    },
+    {
+      name = "pcm bytes",
+      pcm = string.char(92, 110, 0, 127, 128, 1, 0, 0),
+      baseTimer = vector.baseTimer,
+      loopEnabled = vector.loopEnabled,
+      loopStartFrame = vector.loopStartFrame,
+      loopEndFrame = vector.loopEndFrame,
+    },
+  }
+  local seen = {}
+  for _, tuple in ipairs(tuples) do
+    local tupleKey = AudioCompiler.sampleKey(
+      tuple.pcm,
+      tuple.baseTimer,
+      tuple.loopEnabled,
+      tuple.loopStartFrame,
+      tuple.loopEndFrame
+    )
+    Assert.equal(
+      tupleKey,
+      binarySampleKey(tuple.pcm, tuple.baseTimer, tuple.loopEnabled, tuple.loopStartFrame, tuple.loopEndFrame),
+      "the " .. tuple.name .. " identity hashes its exact binary tuple"
+    )
+    Assert.isNil(seen[tupleKey], "a tuple differing only in " .. tuple.name .. " never aliases another")
+    seen[tupleKey] = true
+  end
+  Assert.equal(seen[vector.key], true, "the identical tuple reproduces the fixed key")
+end
+
+-- The fixed-width binary encoding has no room for out-of-range values, so the
+-- key rejects them instead of silently wrapping or truncating the tuple.
+function T.sample_keys_reject_out_of_range_fields()
+  local pcm = BINARY_IDENTITY.pcm
+  local invalid = {
+    {
+      name = "negative base timer",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, -1, true, 0, 4)
+      end,
+    },
+    {
+      name = "base timer beyond 16 bits",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, 0x10000, true, 0, 4)
+      end,
+    },
+    {
+      name = "fractional base timer",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, 8006.5, true, 0, 4)
+      end,
+    },
+    {
+      name = "negative loop start",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, 8006, true, -1, 4)
+      end,
+    },
+    {
+      name = "negative loop end",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, 8006, true, 0, -4)
+      end,
+    },
+    {
+      name = "fractional loop end",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, 8006, true, 0, 3.5)
+      end,
+    },
+    {
+      name = "loop end beyond 32 bits",
+      call = function()
+        return AudioCompiler.sampleKey(pcm, 8006, true, 0, 0x100000000)
+      end,
+    },
+  }
+  for _, case in ipairs(invalid) do
+    Assert.throws(case.call, "the sample key rejects an invalid " .. case.name)
+  end
+end
+
+-- Every compiled sample carries the binary-identity key of its decoded
+-- source wave in both build modes: the batch spelling and a retained worker
+-- session emit the same keys and payload bytes.
+function T.compiled_sample_keys_match_the_binary_identity()
+  local bytes = buildArchive()
+  local romFs = fakeRomFs(bytes)
+  local identity = assert(AudioCompiler.soundIdentity(romFs))
+  local bundle = compileOrFail(bytes)
+  local expected = {}
+  for _, memberBytes in ipairs({ pcm8Member(), pcm16Member(), adpcmMember() }) do
+    local wave = assert(Swav.decode(memberBytes, "fixture"))
+    local key = binarySampleKey(
+      wave.pcm16le,
+      wave.baseTimer,
+      wave.loopEnabled,
+      wave.loop.startFrame,
+      wave.loop.endFrame
+    )
+    Assert.notNil(bundle.samples[key], "the batch bundle carries the binary-identity sample")
+    Assert.equal(bundle.samples[key], wave.pcm16le, "the binary-identity key addresses the decoded PCM bytes")
+    expected[key] = wave.pcm16le
+  end
+  local compiledSamples = 0
+  for _ in pairs(bundle.samples) do
+    compiledSamples = compiledSamples + 1
+  end
+  local expectedSamples = 0
+  for _ in pairs(expected) do
+    expectedSamples = expectedSamples + 1
+  end
+  Assert.equal(compiledSamples, expectedSamples, "every compiled sample is keyed by its binary identity")
+
+  local session = assert(AudioCompiler.openSession(romFs, identity))
+  local staged = {}
+  assert(session:compileBank({ bankId = 0, sequenceIds = { 2 } }, function(key, metadata, pcm)
+    staged[key] = { metadata = metadata, pcm = pcm }
+  end))
+  session:close()
+  for key, stagedSample in pairs(staged) do
+    Assert.notNil(expected[key], "the session stages a binary-identity sample")
+    Assert.equal(stagedSample.pcm, expected[key], "the session stages the decoded PCM bytes for " .. key)
+    Assert.equal(stagedSample.pcm, bundle.samples[key], "the session and batch payloads agree for " .. key)
+  end
+  local stagedSamples = 0
+  for _ in pairs(staged) do
+    stagedSamples = stagedSamples + 1
+  end
+  Assert.equal(stagedSamples, 2, "the plan-zero bank references its two source waves")
 end
 
 return { tests = T }

@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
+local AudioCacheValidator = require("libs.assets.src.audio.AudioCacheValidator")
 local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -24,10 +25,6 @@ local SequenceLowering = require("romdump.src.digest.audio.SequenceLowering")
 local T = {}
 
 local GENERATION = "test-generation-audio-banks"
-
-local function bankCompletePath(bankId)
-  return "data/generated/audio/bank-complete/" .. tostring(bankId) .. ".lua"
-end
 
 local function fakeRomFs(reads)
   local romFs = {
@@ -248,12 +245,9 @@ local function stageAndPublishBank(cache, romFs, bankPlan, stageName)
     jobKey = "audio-bank:" .. key,
     stageName = stageName,
   })
-  AudioCacheWriter.stageBank(artifact, romFs, bankPlan)
-  local completion = artifact:stageFs():loadLua(bankCompletePath(bankPlan.bankId))
-  Assert.notNil(completion, "the staged bank carries its completion record")
-  assert(completion, "a staged completion is a record")
-  Assert.equal(type(completion.marker), "string", "the completion record carries a marker")
-  artifact:finishSuccess({ marker = completion.marker })
+  local marker = AudioCacheWriter.stageBank(artifact, romFs, bankPlan)
+  Assert.equal(type(marker), "string", "bank staging returns its closure marker")
+  artifact:finishSuccess({ marker = marker })
   artifact:publish({
     generationId = GENERATION,
     epoch = 1,
@@ -261,7 +255,7 @@ local function stageAndPublishBank(cache, romFs, bankPlan, stageName)
     key = key,
     jobKey = "audio-bank:" .. key,
   })
-  return completion.marker
+  return marker
 end
 
 local function planById(plan)
@@ -531,13 +525,17 @@ function T.sample_identity_keeps_timer_and_loop_windows_distinct()
 end
 
 -- One failed closure blocks only completeness: the healthy bank publishes and
--- stays ready, the failed bank publishes no receipt, and the family summary
--- refuses while the failure stays explicit.
+-- its closure validates, the failed bank publishes no bank record, and the
+-- failure stays explicit instead of becoming silence.
 function T.failed_bank_closure_blocks_only_the_family_summary()
   Assert.equal(type(AudioCompiler.plan), "function", "catalog planning must be a public compiler operation")
   Assert.equal(type(AudioCacheWriter.stageBank), "function", "bank closures stage one at a time")
   Assert.equal(type(AudioCacheWriter.stageSummary), "function", "the family summary stages after its banks")
-  Assert.equal(type(AudioCache.isBankReady), "function", "bank readiness is separate from family readiness")
+  Assert.equal(
+    type(AudioCacheValidator.validateBankClosure),
+    "function",
+    "closure validation is separate from family validation"
+  )
   withDecoderSeams(function()
     local romFs = fakeRomFs({})
     local sdat = fakeSdat({
@@ -586,12 +584,11 @@ function T.failed_bank_closure_blocks_only_the_family_summary()
     Assert.notNil(byId[7], "the failing bank is planned")
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    local healthyMarker = stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
-    Assert.isTrue(
-      AudioCache.isBankReady(cache, 4, healthyMarker),
-      "the healthy bank stays current without source decoding"
+    stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
+    Assert.isNil(
+      AudioCacheValidator.validateBankClosure(cache, 4, byId[4].sequenceIds),
+      "the healthy bank closure validates without source decoding"
     )
-    Assert.isFalse(AudioCache.isBankReady(cache, 4, healthyMarker .. "-stale"), "a stale marker does not read as ready")
     local failing = PreparedArtifact.new({
       cacheFs = cache,
       generationId = GENERATION,
@@ -608,26 +605,13 @@ function T.failed_bank_closure_blocks_only_the_family_summary()
       Errors.is(failure) or tostring(failure):find("7", 1, true) ~= nil,
       "the closure failure is explicit about its bank"
     )
-    Assert.isNil(cache:read(bankCompletePath(7)), "no receipt is published for the failed closure")
-    Assert.isFalse(AudioCache.isBankReady(cache, 7, healthyMarker), "the failed bank is not ready")
-    local summary = PreparedArtifact.new({
-      cacheFs = cache,
-      generationId = GENERATION,
-      epoch = 1,
-      kind = "audio-bank",
-      key = "global",
-      jobKey = "audio-bank:global",
-      stageName = "audio-summary-partial",
-    })
-    local summaryOk = pcall(AudioCacheWriter.stageSummary, summary, plan)
-    summary:abort()
-    Assert.isFalse(summaryOk, "the summary refuses while a bank closure is missing")
-    Assert.isFalse(
-      AudioCache.isReady(cache, "no-summary-published"),
-      "an unpublished summary leaves the family incomplete"
+    Assert.isNil(cache:read(AudioCache.bankPath(7)), "the failed closure publishes no bank record")
+    Assert.notNil(
+      AudioCacheValidator.validateBankClosure(cache, 7, byId[7].sequenceIds),
+      "the failed bank closure does not validate"
     )
-    Assert.isTrue(
-      AudioCache.isBankReady(cache, 4, healthyMarker),
+    Assert.isNil(
+      AudioCacheValidator.validateBankClosure(cache, 4, byId[4].sequenceIds),
       "the failed closure does not revoke the healthy bank"
     )
     Assert.notNil(cache:read(AudioCache.bankPath(4)), "the failed closure does not revoke unrelated bank artifacts")
@@ -677,7 +661,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
     local byId = planById(plan)
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    local markerA = stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
+    stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
     stageAndPublishBank(cache, romFs, byId[7], "audio-bank-7")
     local catalogArtifact = PreparedArtifact.new({
       cacheFs = cache,
@@ -697,7 +681,10 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       key = "global",
       jobKey = "audio-catalog:global",
     })
-    Assert.isTrue(AudioCache.isCatalogReady(cache, catalogMarker), "the staged catalog reads ready before the summary")
+    Assert.isNil(
+      AudioCacheValidator.validateCatalog(cache:loadLua(AudioCache.indexPath())),
+      "the published catalog validates before the summary"
+    )
     local summaryArtifact = PreparedArtifact.new({
       cacheFs = cache,
       generationId = GENERATION,
@@ -707,8 +694,8 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       jobKey = "audio-bank:global",
       stageName = "audio-summary",
     })
-    local summaryMarker = AudioCacheWriter.stageSummary(summaryArtifact, plan)
-    Assert.equal(type(summaryMarker), "string", "the summary stages its completion marker")
+    local summaryMarker = AudioCacheWriter.stageSummary(summaryArtifact, plan, identity)
+    Assert.equal(type(summaryMarker), "string", "the summary stages its marker")
     summaryArtifact:finishSuccess({ marker = summaryMarker })
     summaryArtifact:publish({
       generationId = GENERATION,
@@ -717,7 +704,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       key = "global",
       jobKey = "audio-bank:global",
     })
-    Assert.isTrue(AudioCache.isReady(cache, summaryMarker), "full coverage publishes a ready family")
+    Assert.isNil(AudioCacheValidator.validate(cache), "full coverage publishes a complete audio family")
 
     local siblingBank = cache:read(AudioCache.bankPath(4))
     local siblingSequence = cache:read(AudioCache.sequencePath(0))
@@ -725,10 +712,15 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
     Assert.notNil(siblingBank, "sibling bank staged")
     Assert.notNil(damagedBank, "damaged bank staged before removal")
     cache:remove(AudioCache.bankPath(7))
-    cache:remove(bankCompletePath(7))
-    Assert.isFalse(AudioCache.isBankReady(cache, 7, summaryMarker), "the removed bank reads as not ready")
-    Assert.isFalse(AudioCache.isReady(cache, summaryMarker), "a missing bank is never hidden by an old summary")
-    Assert.isTrue(AudioCache.isBankReady(cache, 4, markerA), "the sibling bank stays current")
+    Assert.notNil(
+      AudioCacheValidator.validateBankClosure(cache, 7, byId[7].sequenceIds),
+      "the removed bank closure no longer validates"
+    )
+    Assert.notNil(AudioCacheValidator.validate(cache), "a missing bank payload is reported by the audit")
+    Assert.isNil(
+      AudioCacheValidator.validateBankClosure(cache, 4, byId[4].sequenceIds),
+      "the sibling bank stays complete"
+    )
 
     local writes = {}
     local originalWrite = backend.write
@@ -747,7 +739,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
         jobKey = "audio-bank:global",
         stageName = "audio-summary-repair",
       })
-      local repairedMarker = AudioCacheWriter.stageSummary(repairSummary, plan)
+      local repairedMarker = AudioCacheWriter.stageSummary(repairSummary, plan, identity)
       repairSummary:finishSuccess({ marker = repairedMarker })
       repairSummary:publish({
         generationId = GENERATION,
@@ -765,11 +757,11 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
     Assert.equal(cache:read(AudioCache.sequencePath(0)), siblingSequence, "sibling sequences are untouched")
     for _, path in ipairs(writes) do
       Assert.isFalse(
-        path == AudioCache.bankPath(4) or path == bankCompletePath(4),
+        path == AudioCache.bankPath(4),
         "repair writes no sibling bank artifact: " .. tostring(path)
       )
     end
-    Assert.isTrue(AudioCache.isReady(cache, summaryMarker), "the repaired family reads ready again")
+    Assert.isNil(AudioCacheValidator.validate(cache), "the repaired family validates again")
   end)
 end
 
@@ -967,11 +959,10 @@ function T.staging_a_bank_leaves_published_siblings_untouched()
     local byId = planById(plan)
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    local markerA = stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
+    stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
     stageAndPublishBank(cache, romFs, byId[7], "audio-bank-7")
     local siblingBank = cache:read(AudioCache.bankPath(4))
     local siblingSequence = cache:read(AudioCache.sequencePath(0))
-    local siblingCompletion = cache:read(bankCompletePath(4))
     Assert.notNil(siblingBank, "sibling bank published")
     Assert.notNil(siblingSequence, "sibling sequence published")
     local restage = PreparedArtifact.new({
@@ -987,8 +978,10 @@ function T.staging_a_bank_leaves_published_siblings_untouched()
     restage:abort()
     Assert.equal(cache:read(AudioCache.bankPath(4)), siblingBank, "staging never rewrites the sibling bank")
     Assert.equal(cache:read(AudioCache.sequencePath(0)), siblingSequence, "staging never rewrites sibling sequences")
-    Assert.equal(cache:read(bankCompletePath(4)), siblingCompletion, "staging never rewrites the sibling completion")
-    Assert.isTrue(AudioCache.isBankReady(cache, 4, markerA), "the sibling closure stays ready")
+    Assert.isNil(
+      AudioCacheValidator.validateBankClosure(cache, 4, byId[4].sequenceIds),
+      "the sibling closure stays complete"
+    )
   end)
 end
 
@@ -1033,24 +1026,28 @@ function T.batch_bank_and_summary_publication_matches_staged_closures()
     Assert.equal(type(identity.sdatSha1), "string", "the source identity carries the archive identity")
     local byId = planById(plan)
     local cache = versionCache()
-    local markers = {}
     for _, bankPlan in ipairs(plan.bankPlans) do
       local expected = AudioCompiler.bankMarker(identity, bankPlan)
       Assert.equal(AudioCompiler.bankMarker(identity, bankPlan), expected, "closure markers are deterministic")
       local marker, err = AudioCacheWriter.writeBank(cache, romFs, bankPlan)
       Assert.notNil(marker, "the bank publishes: " .. tostring(err and Errors.format(err) or "no error"))
       Assert.equal(marker, expected, "a published bank carries its planned marker")
-      markers[bankPlan.bankId] = marker
-      Assert.isTrue(AudioCache.isBankReady(cache, bankPlan.bankId, expected), "the published bank reads ready")
+      Assert.isNil(
+        AudioCacheValidator.validateBankClosure(cache, bankPlan.bankId, bankPlan.sequenceIds),
+        "the published bank closure validates"
+      )
     end
     local catalogMarker = AudioCacheWriter.writeCatalog(cache, plan, identity)
-    Assert.isTrue(AudioCache.isCatalogReady(cache, catalogMarker), "the batch catalog reads ready before the summary")
-    local summaryMarker = AudioCacheWriter.summaryMarker(plan, markers)
-    Assert.equal(AudioCacheWriter.summaryMarker(plan, markers), summaryMarker, "the family marker is deterministic")
-    Assert.equal(AudioCacheWriter.writeSummary(cache, plan), summaryMarker, "the summary publishes its marker")
-    Assert.isTrue(AudioCache.isReady(cache, summaryMarker), "the batch family reads ready")
-    Assert.notNil(cache:read(AudioCache.bankPath(4)), "bank closures survive the summary")
-    Assert.notNil(cache:read(AudioCache.bankPath(byId[7].bankId)), "every planned bank survives the summary")
+    Assert.isNil(
+      AudioCacheValidator.validateCatalog(cache:loadLua(AudioCache.indexPath())),
+      "the batch catalog validates before the summary"
+    )
+    local summaryMarker = AudioCacheWriter.summaryMarker(plan, identity)
+    Assert.equal(AudioCacheWriter.summaryMarker(plan, identity), summaryMarker, "the family marker is deterministic")
+    Assert.isTrue(catalogMarker ~= summaryMarker, "the catalog and family markers name different selections")
+    Assert.isNil(AudioCacheValidator.validate(cache), "the batch family validates")
+    Assert.notNil(cache:read(AudioCache.bankPath(4)), "bank closures survive the family check")
+    Assert.notNil(cache:read(AudioCache.bankPath(byId[7].bankId)), "every planned bank survives the family check")
   end)
 end
 
@@ -1233,7 +1230,7 @@ function T.session_staged_bank_matches_direct_staged_bytes()
     local directBundle = assert(AudioCompiler.compileBank(romFs, bankPlan, function(key, metadata, bytes)
       directSunk[key] = { metadata = metadata, pcm = bytes }
     end))
-    AudioCacheWriter.stageBank(directArtifact, romFs, bankPlan)
+    local directMarker = AudioCacheWriter.stageBank(directArtifact, romFs, bankPlan)
     local directStage = directArtifact:stageFs()
     local session = assert(AudioCompiler.openSession(romFs, identity))
     local sessionSunk = {}
@@ -1250,7 +1247,7 @@ function T.session_staged_bank_matches_direct_staged_bytes()
     local sessionBundle = assert(session:compileBank(bankPlan, function(key, metadata, bytes)
       sessionSunk[key] = { metadata = metadata, pcm = bytes }
     end))
-    AudioCacheWriter.stageBank(sessionArtifact, session, bankPlan)
+    local sessionMarker = AudioCacheWriter.stageBank(sessionArtifact, session, bankPlan)
     local stagedStage = sessionArtifact:stageFs()
     session:close()
     Assert.equal(
@@ -1293,10 +1290,7 @@ function T.session_staged_bank_matches_direct_staged_bytes()
         "the staged sample metadata matches for " .. key
       )
     end
-    local directCompletion = assert(directStage:loadLua(bankCompletePath(4)), "the direct stage carries its completion")
-    local stagedCompletion =
-      assert(stagedStage:loadLua(bankCompletePath(4)), "the session stage carries its completion")
-    Assert.equal(stagedCompletion.marker, directCompletion.marker, "both stages attest the identical marker")
+    Assert.equal(sessionMarker, directMarker, "both stages attest the identical marker")
     directArtifact:abort()
     sessionArtifact:abort()
     local wrongIdentity = { romSha1 = identity.romSha1, sdatSha1 = "wrong-archive", sdatFileId = 13 }
@@ -1307,8 +1301,7 @@ function T.session_staged_bank_matches_direct_staged_bytes()
 end
 
 -- A staging failure before publication preserves the previously published
--- bank: the live bank, sequence, completion, and readiness survive the
--- aborted stage.
+-- bank: the live bank, sequence, and completeness survive the aborted stage.
 function T.failed_session_bank_stage_preserves_the_published_bank()
   withDecoderSeams(function()
     local romFs = fakeRomFs({})
@@ -1331,11 +1324,13 @@ function T.failed_session_bank_stage_preserves_the_published_bank()
     local bankPlan = assert(planById(plan)[4], "the bank is planned")
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    local marker = stageAndPublishBank(cache, romFs, bankPlan, "audio-bank-4-live")
-    Assert.isTrue(AudioCache.isBankReady(cache, 4, marker), "the published bank reads ready")
+    stageAndPublishBank(cache, romFs, bankPlan, "audio-bank-4-live")
+    Assert.isNil(
+      AudioCacheValidator.validateBankClosure(cache, 4, bankPlan.sequenceIds),
+      "the published bank closure validates"
+    )
     local liveBank = cache:read(AudioCache.bankPath(4))
     local liveSequence = cache:read(AudioCache.sequencePath(0))
-    local liveCompletion = cache:read(bankCompletePath(4))
     local failing = PreparedArtifact.new({
       cacheFs = cache,
       generationId = GENERATION,
@@ -1359,8 +1354,111 @@ function T.failed_session_bank_stage_preserves_the_published_bank()
     Assert.isFalse(ok, "the failing stage stages nothing")
     Assert.equal(cache:read(AudioCache.bankPath(4)), liveBank, "the live bank survives the failed stage")
     Assert.equal(cache:read(AudioCache.sequencePath(0)), liveSequence, "the live sequence survives")
-    Assert.equal(cache:read(bankCompletePath(4)), liveCompletion, "the live completion survives")
-    Assert.isTrue(AudioCache.isBankReady(cache, 4, marker), "the published bank stays ready")
+    Assert.isNil(
+      AudioCacheValidator.validateBankClosure(cache, 4, bankPlan.sequenceIds),
+      "the published bank closure stays complete"
+    )
+  end)
+end
+
+-- Two independently compiled bank closures that reference the same source
+-- wave share one parsed archive and one decoded wave inside the retained
+-- worker session, while each bank job still stages its own sample output; a
+-- repeated job stages again without decoding, and a new generation decodes
+-- afresh.
+function T.session_reuses_one_source_wave_across_bank_closures()
+  Assert.equal(
+    type(AudioCompiler.openSession),
+    "function",
+    "the retained worker-generation audio session must be a public compiler operation"
+  )
+  withDecoderSeams(function()
+    local romFs = fakeRomFs({})
+    -- Both banks route their wave-archive slot 0 to the same archive and
+    -- their only instrument to the same wave member.
+    local sdat = fakeSdat({
+      sequenceCount = 2,
+      bankCount = 8,
+      sequences = {},
+      banks = {
+        { id = 4, waveArchives = { [0] = 0 } },
+        { id = 7, waveArchives = { [0] = 0 } },
+      },
+      waveArchives = { [0] = 3000 },
+    })
+    -- Arbitrary PCM: embedded NUL and high-bit bytes must survive the reuse.
+    local pcm = string.char(0, 255, 128, 0, 1, 15, 240, 0)
+    local counters = { sbnk = 0, swar = 0, swav = {}, lower = 0 }
+    installCompileDoubles(sdat, {
+      ["swav-bytes:3000:0"] = waveHead(pcm, { baseTimer = 8006, loop = { startFrame = 0, endFrame = 4 } }),
+    }, {}, counters)
+    Sbnk.decode = function(bytes, _)
+      counters.sbnk = counters.sbnk + 1
+      Assert.isTrue(
+        bytes == "sdat-file-2004" or bytes == "sdat-file-2007",
+        "only the requested bank decodes: " .. tostring(bytes)
+      )
+      return { instruments = { [0] = { type = Sbnk.TYPE_PCM, param = pcmLeaf(0, 0).param } } }
+    end
+    local identity = assert(AudioCompiler.soundIdentity(romFs))
+    local function compileIn(session, bankId)
+      local staged = {}
+      local bundle = assert(session:compileBank({ bankId = bankId, sequenceIds = {} }, function(key, metadata, bytes)
+        staged[#staged + 1] = { key = key, metadata = metadata, pcm = bytes }
+      end))
+      return bundle, staged
+    end
+
+    local session = assert(AudioCompiler.openSession(romFs, identity))
+    local bankA, sinkA = compileIn(session, 4)
+    local bankB, sinkB = compileIn(session, 7)
+    Assert.equal(counters.swar, 1, "one wave-archive decode serves both bank closures in a session")
+    Assert.equal(counters.swav["swav-bytes:3000:0"], 1, "one source wave decodes for both bank closures")
+    Assert.equal(#sinkA, 1, "the first bank stages its referenced sample")
+    Assert.equal(#sinkB, 1, "the second bank independently stages its referenced sample")
+    Assert.equal(sinkA[1].key, sinkB[1].key, "both banks reference the identical semantic sample")
+    Assert.equal(sinkA[1].pcm, pcm, "the first bank stages the source PCM bytes")
+    Assert.equal(sinkB[1].pcm, pcm, "the reused decode stages the same PCM bytes to the second bank")
+    Assert.deepEqual(sinkA[1].metadata, sinkB[1].metadata, "both banks stage identical playback metadata")
+    Assert.equal(sinkA[1].metadata.frames, 4, "the staged metadata keeps the decoded frame count")
+    Assert.equal(sinkA[1].metadata.baseTimer, 8006, "the staged metadata keeps the source base timer")
+    Assert.equal(bankA.bank.instruments[0].voice.generator.sample, sinkA[1].key, "the bank voice names its sample key")
+    Assert.equal(bankB.bank.instruments[0].voice.generator.sample, sinkB[1].key, "the reused voice names the key")
+
+    local _, sinkAgain = compileIn(session, 7)
+    Assert.equal(#sinkAgain, 1, "a repeated bank job stages its own sample again")
+    Assert.equal(sinkAgain[1].key, sinkA[1].key, "the repeated bank job keeps the semantic key")
+    Assert.equal(counters.swav["swav-bytes:3000:0"], 1, "a repeated bank job decodes nothing new")
+    session:close()
+
+    local nextSession = assert(AudioCompiler.openSession(romFs, identity))
+    local _, sinkNext = compileIn(nextSession, 4)
+    nextSession:close()
+    Assert.equal(counters.swav["swav-bytes:3000:0"], 2, "a new worker session decodes the source wave again")
+    Assert.equal(counters.swar, 2, "a new worker session parses the wave archive again")
+    Assert.equal(#sinkNext, 1, "the new session stages the sample for its bank")
+    Assert.equal(sinkNext[1].key, sinkA[1].key, "the new session derives the identical semantic key")
+    Assert.equal(sinkNext[1].pcm, pcm, "the new session stages the identical PCM bytes")
+
+    -- The worker session must not change the one-shot result: the same bank
+    -- compiled without a session carries the identical record and sample.
+    local directStaged = {}
+    local directBundle =
+      assert(AudioCompiler.compileBank(romFs, { bankId = 4, sequenceIds = {} }, function(key, metadata, bytes)
+        directStaged[key] = { metadata = metadata, pcm = bytes }
+      end))
+    Assert.equal(
+      LuaWriter.encode(directBundle.bank),
+      LuaWriter.encode(bankA.bank),
+      "the one-shot compile carries the identical bank record"
+    )
+    Assert.equal(directBundle.marker, bankA.marker, "the one-shot compile carries the identical closure marker")
+    Assert.equal(directStaged[sinkA[1].key].pcm, pcm, "the one-shot compile stages the identical PCM bytes")
+    Assert.deepEqual(
+      directStaged[sinkA[1].key].metadata,
+      sinkA[1].metadata,
+      "the one-shot compile stages identical playback metadata"
+    )
   end)
 end
 

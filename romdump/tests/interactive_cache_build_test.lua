@@ -758,7 +758,6 @@ local function publishAudioCatalogLive(env, marker)
       marker = marker,
     })
     env.cacheFs:writeLua(AudioCache.indexPath(), bundle.index)
-    env.cacheFs:write(AudioCache.catalogMarkerPath(), marker)
   end)
 end
 local function requestJob(env, kind, key, urgency)

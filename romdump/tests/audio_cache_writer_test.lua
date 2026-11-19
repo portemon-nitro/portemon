@@ -1,12 +1,15 @@
--- AudioCacheWriter contract: one staged transaction per class — provenance,
--- index, sequences, banks, unique content-addressed sample payloads/metadata,
--- readback validation of shape and references, marker last, then publish. A
+-- AudioCacheWriter contract: one staged transaction per class — index,
+-- sequences, banks, unique content-addressed sample payloads/metadata,
+-- readback validation of shape and references, then publish. Completion is
+-- the producer job receipt, so the writer emits no marker of its own. A
 -- failed rebuild must never destroy a previously usable audio cache; publish
 -- failures keep the stage as recovery material.
 
 local Assert = require("tests.support.Assert")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
+local AudioCacheValidator = require("libs.assets.src.audio.AudioCacheValidator")
 local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local AudioFixture = require("tests.support.AudioFixture")
@@ -43,17 +46,13 @@ local function versionCache()
   return CacheFs.forVersion("heartgold", FakeCache.new())
 end
 
--- The writer publishes provenance, the index, every indexed sequence and
--- bank, every sample payload with its metadata, and only then the marker;
--- the class then reads ready.
-T["write publishes provenance index assets and marker last"] = function()
+-- The writer publishes the index, every indexed sequence and bank, every
+-- sample payload with its metadata, and the class then passes the
+-- authoritative walk.
+T["write publishes index assets and samples"] = function()
   local cache = versionCache()
   local bundle = AudioFixture.bundle()
   Assert.isTrue(AudioCacheWriter.write(cache, bundle))
-  local provenance = cache:loadLua(AudioCache.provenancePath())
-  provenance = provenance --[[@as { schema: string, dependencies: { soundArchive: { path: string } } }]]
-  Assert.equal(provenance.schema, AudioCache.PROVENANCE_SCHEMA)
-  Assert.equal(provenance.dependencies.soundArchive.path, "data/sound/gs_sound_data.sdat")
   local index = cache:loadLua(AudioCache.indexPath())
   index = index --[[@as { schema: string, version: string }]]
   Assert.equal(index.schema, AudioCache.INDEX_SCHEMA)
@@ -72,11 +71,10 @@ T["write publishes provenance index assets and marker last"] = function()
   metadata = metadata --[[@as { schema: string, key: string }]]
   Assert.equal(metadata.schema, AudioCache.SAMPLE_SCHEMA)
   Assert.equal(metadata.key, key)
-  Assert.equal(cache:read(AudioCache.markerPath()), bundle.marker)
-  Assert.isTrue(AudioCache.isReady(cache, bundle.marker))
+  Assert.isNil(AudioCacheValidator.validate(cache), "the published audio cache passes the authoritative walk")
 end
 
--- The E1 bundle shape is required; a missing section is a programming fault,
+-- The bundle shape is required; a missing section is a programming fault,
 -- never an empty default.
 T["write requires the full bundle shape"] = function()
   local cache = versionCache()
@@ -88,18 +86,17 @@ T["write requires the full bundle shape"] = function()
       sequences = bundle.sequences,
       banks = bundle.banks,
       samples = bundle.samples,
-      sampleMetadata = bundle.sampleMetadata,
     })
-  end, "dependencies is a required bundle section")
+  end, "sampleMetadata is a required bundle section")
   Assert.throws(function()
     AudioCacheWriter.write(cache, {
-      marker = bundle.marker,
       index = bundle.index,
       sequences = bundle.sequences,
       banks = bundle.banks,
       samples = bundle.samples,
+      sampleMetadata = bundle.sampleMetadata,
     })
-  end, "sampleMetadata is a required bundle section")
+  end, "marker is a required bundle section")
 end
 
 -- Samples are content-addressed: several bank voices sharing one key produce
@@ -125,7 +122,6 @@ T["unresolvable sequence bank reference rolls back"] = function()
   Assert.throws(function()
     AudioCacheWriter.write(cache, bundle)
   end)
-  Assert.isNil(cache:read(AudioCache.markerPath()), "no marker may leak from a failed write")
   Assert.isNil(cache:read(AudioCache.indexPath()), "a failed write leaves no live index")
 end
 
@@ -138,7 +134,6 @@ T["sequence content is validated at the write boundary"] = function()
   Assert.throws(function()
     AudioCacheWriter.write(cache, bundle)
   end)
-  Assert.isNil(cache:read(AudioCache.markerPath()))
   Assert.isNil(cache:read(AudioCache.indexPath()))
 end
 
@@ -149,7 +144,6 @@ T["sample metadata is validated at the write boundary"] = function()
   Assert.throws(function()
     AudioCacheWriter.write(cache, bundle)
   end)
-  Assert.isNil(cache:read(AudioCache.markerPath()))
   Assert.isNil(cache:read(AudioCache.indexPath()))
 end
 
@@ -164,14 +158,14 @@ T["sample metadata key must match its address"] = function()
   Assert.throws(function()
     AudioCacheWriter.write(cache, bundle)
   end)
-  Assert.isNil(cache:read(AudioCache.markerPath()))
   Assert.isNil(cache:read(AudioCache.indexPath()))
 end
 
--- Readback and readiness are one rule set: every malformed cross-file
--- relation must fail the staged write AND read as not ready. No second
--- inspection vocabulary may drift from the staging gate.
-T["readback and readiness agree on malformed cross-file relations"] = function()
+-- The staged write gate and the explicit audit are one rule set: every
+-- malformed cross-file relation must fail the staged write AND be reported by
+-- the authoritative walk. No second inspection vocabulary may drift from the
+-- staging gate.
+T["readback and explicit audit agree on malformed cross-file relations"] = function()
   local relations = {
     {
       name = "unknown sequence reference",
@@ -205,12 +199,15 @@ T["readback and readiness agree on malformed cross-file relations"] = function()
     Assert.throws(function()
       AudioCacheWriter.write(versionCache(), broken)
     end, relation.name .. " fails the write")
-    Assert.isFalse(AudioCache.isReady(AudioFixture.readyCache(broken), broken.marker), relation.name .. " is not ready")
+    Assert.notNil(
+      AudioCacheValidator.validate(AudioFixture.readyCache(broken)),
+      relation.name .. " is reported by the explicit audit"
+    )
   end
 end
 
--- A failed rebuild leaves the previous ready artifact untouched, the stage
--- clean, and a retry publishes the new artifact.
+-- A failed rebuild leaves the previous cache untouched, the stage clean,
+-- and a retry publishes the new artifact.
 T["failed rebuild preserves the previous audio artifact"] = function()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
@@ -223,19 +220,23 @@ T["failed rebuild preserves the previous audio artifact"] = function()
     return original(self, path, data)
   end
   local second = AudioFixture.bundle()
-  second.marker = AudioCache.marker("rom-sha", "new-dep-sha")
+  second.index.banks[12].symbol = "BANK_TEST_NEW"
+  second.index.bankBySymbol = { ["BANK_TEST_NEW"] = 12 }
+  second.banks[12].symbol = "BANK_TEST_NEW"
   Assert.throws(function()
     AudioCacheWriter.write(cache, second)
   end)
-  Assert.isTrue(
-    AudioCache.isReady(cache, AudioCache.marker("rom-sha", "dep-sha")),
-    "the previous artifact remains ready"
-  )
-  Assert.equal(cache:read(AudioCache.markerPath()), AudioCache.marker("rom-sha", "dep-sha"), "no new marker leaked")
+  Assert.isNil(AudioCacheValidator.validate(cache), "the previous artifact stays complete")
+  local previousBank = cache:loadLua(AudioCache.bankPath(12))
+  previousBank = previousBank --[[@as { symbol: string }]]
+  Assert.equal(previousBank.symbol, "BANK_TEST", "the failed write never replaced a live payload")
   Assert.isNil(backend:getInfo("staging/heartgold/audio"), "the stage is cleaned on failure")
   backend.write = original
   AudioCacheWriter.write(cache, second)
-  Assert.isTrue(AudioCache.isReady(cache, second.marker), "a retry publishes the new artifact")
+  Assert.isNil(AudioCacheValidator.validate(cache), "a retry publishes the complete artifact")
+  local publishedBank = cache:loadLua(AudioCache.bankPath(12))
+  publishedBank = publishedBank --[[@as { symbol: string }]]
+  Assert.equal(publishedBank.symbol, "BANK_TEST_NEW", "the retry publishes the new payload")
   Assert.isNil(backend:getInfo("staging/heartgold/audio"), "the stage is cleaned on success")
 end
 
@@ -245,6 +246,7 @@ T["publish failure keeps the stage with recovery material"] = function()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   AudioCacheWriter.write(cache, AudioFixture.bundle())
+  local liveBank = cache:read(AudioCache.bankPath(12))
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
     local nextPrefix = "heartgold/" .. AudioCache.dir() .. ".__g4next."
@@ -262,55 +264,48 @@ T["publish failure keeps the stage with recovery material"] = function()
   Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
   Assert.notNil(backend:getInfo("staging/heartgold/audio"), "the stage is not removed once publish has begun")
   local oldPrefix = "heartgold/" .. AudioCache.dir() .. ".__g4old."
-  local oldMarker
+  local oldBank
   for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
-      oldMarker = data
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/banks/0012.lua") == "/banks/0012.lua" then
+      oldBank = data
     end
   end
-  Assert.equal(
-    oldMarker,
-    AudioCache.marker("rom-sha", "dep-sha"),
-    "the last-known-good audio class stays in the stage as recovery material"
-  )
+  Assert.equal(oldBank, liveBank, "the last-known-good audio class stays in the stage as recovery material")
 end
 
 -- The catalog stages the runtime index apart from every bank payload: the
--- staged index plus the catalog completion reads catalog-ready while the
--- full family still refuses, and the runtime provider constructs from the
--- staged index alone.
+-- staged index passes catalog validation while the full audio family is still
+-- incomplete, and the runtime provider constructs from the staged index alone.
 T["stageCatalog publishes the runtime index before any bank closure"] = function()
   local bundle = AudioFixture.bundle()
   local cache = versionCache()
   local artifact = catalogArtifact(cache)
   local marker = AudioCacheWriter.stageCatalog(artifact, catalogPlan(bundle), soundIdentity())
-  Assert.equal(type(marker), "string", "catalog staging returns its completion marker")
+  Assert.equal(type(marker), "string", "catalog staging returns its marker")
   local stage = artifact:stageFs()
-  Assert.isTrue(AudioCache.isCatalogReady(stage, marker), "the staged index reads catalog-ready")
-  Assert.isFalse(AudioCache.isReady(stage, marker), "catalog readiness never implies full family readiness")
+  Assert.isNil(
+    AudioCacheValidator.validateCatalog(stage:loadLua(AudioCache.indexPath())),
+    "the staged index passes catalog validation"
+  )
+  Assert.notNil(AudioCacheValidator.validate(stage), "a catalog alone is never a complete audio family")
   local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
   Assert.notNil(AudioAssetProvider.new(stage), "the runtime provider constructs from the catalog stage")
   artifact:abort()
 end
 
--- The family summary no longer owns the runtime index: it publishes only
--- provenance and completion over the already-published catalog and every
--- bank closure, and it refuses a live catalog index that differs from the
--- current plan.
-T["stageSummary attests the live catalog without republishing the index"] = function()
+-- The family summary owns no payload and never republishes the runtime index:
+-- it derives one marker for its own receipt, which the caller has already
+-- gated on the current bank and catalog receipts.
+T["stageSummary owns only its receipt"] = function()
   local bundle = AudioFixture.bundle()
   local cache = versionCache()
-  local catalog = catalogArtifact(cache)
-  local catalogMarker = AudioCacheWriter.stageCatalog(catalog, catalogPlan(bundle), soundIdentity())
-  catalog:finishSuccess({ marker = catalogMarker })
-  catalog:publish({
-    generationId = GENERATION,
-    epoch = 1,
-    kind = "audio-catalog",
-    key = "global",
-    jobKey = "audio-catalog:global",
-  })
-  Assert.isTrue(AudioCache.isCatalogReady(cache, catalogMarker), "the published catalog stays ready")
+  local plan = catalogPlan(bundle)
+  local identity = soundIdentity()
+  local marker = AudioCacheWriter.summaryMarker(plan, identity)
+  Assert.equal(AudioCacheWriter.summaryMarker(plan, identity), marker, "the summary marker is deterministic")
+  local otherIdentity = { romSha1 = "other-rom", sdatSha1 = "archive-sha", sdatFileId = 13 }
+  local otherMarker = AudioCacheWriter.summaryMarker(plan, otherIdentity)
+  Assert.isTrue(otherMarker ~= marker, "the summary marker binds the adopted source identity")
   local summary = PreparedArtifact.new({
     cacheFs = cache,
     generationId = GENERATION,
@@ -320,12 +315,24 @@ T["stageSummary attests the live catalog without republishing the index"] = func
     jobKey = "audio-summary:global",
     stageName = "audio-summary",
   })
-  local liveIndex = assert(cache:loadLua(AudioCache.indexPath()), "the live catalog index exists")
-  liveIndex.version = "soulsilver"
-  cache:writeLua(AudioCache.indexPath(), liveIndex)
-  local ok = pcall(AudioCacheWriter.stageSummary, summary, catalogPlan(bundle))
-  summary:abort()
-  Assert.isFalse(ok, "the summary refuses a live catalog index that differs from the current plan")
+  Assert.equal(AudioCacheWriter.stageSummary(summary, plan, identity), marker, "summary staging returns its marker")
+  Assert.isNil(summary:stageFs():loadLua(AudioCache.indexPath()), "the summary never republishes the catalog index")
+  summary:finishSuccess({ marker = marker })
+  Assert.deepEqual(
+    summary:manifest().ownedRoots,
+    { ArtifactState.path("audio-summary", "global") },
+    "the summary owns exactly its generation receipt"
+  )
+  summary:publish({
+    generationId = GENERATION,
+    epoch = 1,
+    kind = "audio-summary",
+    key = "global",
+    jobKey = "audio-summary:global",
+  })
+  local receipt = ArtifactState.read(cache, GENERATION, "audio-summary", "global")
+  Assert.notNil(receipt, "the summary publishes its current receipt")
+  Assert.equal(receipt.marker, marker, "the receipt carries the summary marker")
 end
 
 return { tests = T }

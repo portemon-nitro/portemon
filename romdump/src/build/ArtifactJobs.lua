@@ -1097,7 +1097,23 @@ local function executeAudioSummary(artifact, context, job)
   local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
   local source = generationAudioSource(context, job, "audio summary jobs")
   local audioPlan = assert(source.audioPlan, "audio summary jobs require the published audio membership")
-  return AudioCacheWriter.stageSummary(artifact, audioPlan)
+  ---@cast audioPlan table<string, unknown>
+  local audioIdentity = assert(source.audioIdentity, "audio summary jobs require the published sound identity")
+  local cacheFs = assert(context.cacheFs, "audio summary jobs require a cache filesystem")
+  local generationId = assert(job.generationId, "audio summary jobs require a generation")
+  -- The current-generation receipt is the sole completion proof of each
+  -- independent job, so the summary publishes only once the catalog and
+  -- every planned closure are current. No payload is read back here.
+  if ArtifactState.read(cacheFs, generationId, "audio-catalog", "global") == nil then
+    error("audio summary is missing the current catalog receipt", 0)
+  end
+  for _, bankPlan in ipairs(assert(audioPlan.bankPlans, "audio summary jobs require the published bank closures")) do
+    ---@cast bankPlan table<string, unknown>
+    if ArtifactState.read(cacheFs, generationId, "audio-bank", tostring(bankPlan.bankId)) == nil then
+      error("audio summary is missing the current receipt for bank " .. tostring(bankPlan.bankId), 0)
+    end
+  end
+  return AudioCacheWriter.stageSummary(artifact, audioPlan, audioIdentity)
 end
 
 local function executeScriptMember(artifact, context, memberId, generationKey, producer)
@@ -1561,18 +1577,15 @@ local function executeAudioBankJob(artifact, context, job)
   return executeAudioBank(artifact, context, job, assert(tonumber(job.key), "bank key is not canonical"))
 end
 
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateAudioBank(check)
-  local AudioCache = require("libs.assets.src.audio.AudioCache")
-  return AudioCache.isBankReady(check.cacheFs, canonicalKeyId(check.key, "bank key"), check.marker)
+-- A current receipt is the whole warm proof for one audio closure: its
+-- payload was validated once when the job staged it, and exhaustive payload
+-- checking belongs to the explicit audit, never to a warm readiness walk.
+local function validateAudioBank(_)
+  return true
 end
 
----@param check ArtifactJobs.ReadinessCheck
----@return boolean
-local function validateAudioCatalog(check)
-  local AudioCache = require("libs.assets.src.audio.AudioCache")
-  return AudioCache.isCatalogReady(check.cacheFs, check.marker)
+local function validateAudioCatalog(_)
+  return true
 end
 
 ---@param plans ArtifactJobs.Plans
@@ -1591,20 +1604,18 @@ local function dependenciesAudioSummary(_, plans)
   return deps, true
 end
 
+-- The family summary is current only while its own receipt, the catalog
+-- receipt, and every planned bank receipt belong to this generation. Nothing
+-- here reads a payload: the receipts already attest the published closures.
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
 local function validateAudioSummary(check)
-  local AudioCache = require("libs.assets.src.audio.AudioCache")
-  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
-  if not AudioCache.isReady(cacheFs, marker) then
+  local cacheFs, generationId, plans = check.cacheFs, check.generationId, check.plans
+  if receiptMarker(cacheFs, generationId, "audio-catalog", "global") == nil then
     return false
   end
   for _, bankId in ipairs(assert(plans.audioBankIds, "audio summary needs the bank closures")) do
-    if
-      not childReady(cacheFs, generationId, "audio-bank", tostring(bankId), function(childMarker)
-        return AudioCache.isBankReady(cacheFs, bankId, childMarker)
-      end)
-    then
+    if receiptMarker(cacheFs, generationId, "audio-bank", tostring(bankId)) == nil then
       return false
     end
   end

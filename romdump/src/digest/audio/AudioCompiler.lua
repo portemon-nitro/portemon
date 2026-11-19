@@ -14,10 +14,12 @@
 -- a retained worker-generation session (openSession) acquires the archive
 -- once and compiles every bank of its generation through that one view,
 -- and one-bank streaming compilation (compileBank) owns exactly one used bank,
--- the used sequences naming it, and their referenced sample closure: each
--- distinct source wave decodes once per job, its PCM streams through the
--- caller sink, and the returned bundle holds keys and metadata, never
--- retained PCM. Pure domain module; the marker and hashes are computed
+-- the used sequences naming it, and their referenced sample closure: its PCM
+-- streams through the caller sink and the returned bundle holds keys and
+-- metadata, never retained PCM. A session additionally retains one
+-- source-keyed decoded-wave table, so a wave shared by several bank jobs of
+-- the same generation decodes once while every job still streams its own
+-- sample output. Pure domain module; the marker and hashes are computed
 -- through the injectable sha1hex/hashLua helpers like the other compilers.
 
 local Errors = require("libs.errors.src.Errors")
@@ -48,7 +50,6 @@ local SDAT_PATH = "data/sound/gs_sound_data.sdat"
 ---@field sampleMetadata table<string, table<string, unknown>>
 ---@field samples table<string, string>?
 ---@field marker string
----@field dependencies table<string, unknown>
 
 ---@class AudioCompiler.SoundIdentity
 ---@field romSha1 string
@@ -85,18 +86,45 @@ local function rejectUnsupportedLeaf(leaf, bankId, location)
   end
 end
 
+-- The fixed domain and version prefix of the binary sample identity, so a
+-- change to the tuple invalidates every previously derived sample path.
+local SAMPLE_KEY_DOMAIN = "g4pcm2\0"
+
+---@param value integer
+---@param width integer
+---@param label string
+---@return string
+local function littleEndian(value, width, label)
+  assert(type(value) == "number" and value % 1 == 0, label .. " must be an integer")
+  assert(value >= 0 and value < 2 ^ (8 * width), label .. " does not fit in " .. tostring(width) .. " bytes")
+  local bytes = {}
+  for position = 1, width do
+    bytes[position] = string.char(value % 256)
+    value = math.floor(value / 256)
+  end
+  return table.concat(bytes)
+end
+
 -- The semantic sample key: the canonical deterministic hash of the complete
 -- runtime sample identity (decoded PCM, base timer, loop flag, loop window).
 -- Two waves with identical PCM but different timers or loop regions are
--- observably different samples and must never alias under one key.
+-- observably different samples and must never alias under one key. The key
+-- is the SHA-1 of a fixed binary tuple, so arbitrary PCM bytes hash without
+-- Lua text escaping and every fixed-width field is range-checked before
+-- encoding instead of silently wrapping.
 function AudioCompiler.sampleKey(pcm, baseTimer, loopEnabled, loopStartFrame, loopEndFrame)
-  return Hashing.hashLua({
-    pcm = pcm,
-    baseTimer = baseTimer,
-    loopEnabled = loopEnabled,
-    loopStartFrame = loopStartFrame,
-    loopEndFrame = loopEndFrame,
-  })
+  assert(type(pcm) == "string", "a sample key requires the decoded PCM bytes")
+  assert(#pcm <= 0xFFFFFFFF, "the decoded PCM exceeds the 32-bit sample length limit")
+  assert(type(loopEnabled) == "boolean", "a sample key requires the loop flag")
+  return Hashing.sha1hex(
+    SAMPLE_KEY_DOMAIN
+      .. littleEndian(#pcm, 4, "the sample byte length")
+      .. pcm
+      .. littleEndian(baseTimer, 2, "the sample base timer")
+      .. (loopEnabled and "\1" or "\0")
+      .. littleEndian(loopStartFrame, 4, "the sample loop start")
+      .. littleEndian(loopEndFrame, 4, "the sample loop end")
+  )
 end
 
 -- Zero-based tables (leaves, keys) have no reliable #; count them instead.
@@ -143,31 +171,39 @@ local function voiceFromLeaf(leaf, waveCache, bankId, waveArchives)
   return voice
 end
 
--- Job-local wave resolution: maps an instrument's swar slot through the bank
--- record's wave-archive slots to the SDAT wave archives, decodes each
--- referenced member exactly once per job, and streams its PCM through the
--- staging sink. The sink consumes the bytes synchronously; the job retains
--- only the parsed archive views and the small source-identity to semantic
--- key mapping plus the keyed metadata, never decoded PCM.
+-- Wave resolution for one bank job over the generation-scoped decoded-wave
+-- table: maps an instrument's swar slot through the bank record's
+-- wave-archive slots to the SDAT wave archives, decodes each referenced
+-- member at most once per worker generation, and streams this job's
+-- referenced samples through its own sink. The sink consumes the bytes
+-- synchronously; the generation table keeps the owned PCM and normalized
+-- playback metadata and never a sink.
 local WaveCache = {}
 WaveCache.__index = WaveCache
 
+---@class AudioCompiler.WaveReuse
+---@field swars table<integer, table<string, unknown>>
+---@field decoded table<string, { key: string, metadata: table<string, unknown>, pcm16le: string }>
+
 ---@param sdat table<string, unknown>
 ---@param sampleSink AudioCompiler.SampleSink
+---@param reuse AudioCompiler.WaveReuse? generation-scoped table to borrow; a job without a session owns its own
 ---@return table<string, unknown>
-function WaveCache.new(sdat, sampleSink)
+function WaveCache.new(sdat, sampleSink, reuse)
   assert(type(sampleSink) == "function", "streaming wave resolution requires a sample sink")
+  reuse = reuse or { swars = {}, decoded = {} }
   return setmetatable({
     sdat = sdat,
     sampleSink = sampleSink,
-    swars = {},
-    decoded = {},
+    swars = reuse.swars,
+    decoded = reuse.decoded,
+    emitted = {},
     sampleMetadata = {},
   }, WaveCache)
 end
 
--- The decoded SWAR for a wave-archive id, decoded once and cached. Always
--- returns a usable archive or raises.
+-- The decoded SWAR for a wave-archive id, decoded once per borrowing wave
+-- table. Always returns a usable archive or raises.
 ---@param waveId integer
 ---@param bankId integer
 ---@param slot integer
@@ -200,6 +236,25 @@ function WaveCache:swarFor(waveId, bankId, slot)
   return parsed
 end
 
+-- The derived metadata carries only runtime-relevant identity: the
+-- content key (the payload path is derived from it), the frame count,
+-- the DS base timer, and the loop window. The source sample rate never
+-- enters the derived shape (playback derives from the DS sound clock and
+-- the calculated timer).
+---@param key string
+---@param wave table<string, unknown>
+---@return table<string, unknown>
+local function playbackMetadata(key, wave)
+  return {
+    schema = AudioCache.SAMPLE_SCHEMA,
+    key = key,
+    frames = wave.frames,
+    baseTimer = wave.baseTimer,
+    loopEnabled = wave.loopEnabled,
+    loop = wave.loop,
+  }
+end
+
 ---@param bankId integer
 ---@param waveArchives table<integer, integer>
 ---@param slot integer
@@ -216,8 +271,8 @@ function WaveCache:resolve(bankId, waveArchives, slot, member)
   waveId = assert(waveId)
   local swar = self:swarFor(waveId, bankId, slot)
   local sourceKey = waveId .. ":" .. member
-  local key = self.decoded[sourceKey]
-  if key == nil then
+  local entry = self.decoded[sourceKey]
+  if entry == nil then
     local memberBytes, memberErr = swar:readMember(member)
     if memberBytes == nil then
       memberErr = assert(memberErr)
@@ -233,31 +288,23 @@ function WaveCache:resolve(bankId, waveArchives, slot, member)
       waveErr.context.member = member
       error(waveErr)
     end
-    key =
+    wave = assert(wave)
+    local key =
       AudioCompiler.sampleKey(wave.pcm16le, wave.baseTimer, wave.loopEnabled, wave.loop.startFrame, wave.loop.endFrame)
-    self.decoded[sourceKey] = key
-    if self.sampleMetadata[key] == nil then
-      -- The derived metadata carries only runtime-relevant identity: the
-      -- content key (the payload path is derived from it), the frame count,
-      -- the DS base timer, and the loop window. The source sample rate never
-      -- enters the derived shape (playback derives from the DS sound clock
-      -- and the calculated timer).
-      self.sampleMetadata[key] = {
-        schema = AudioCache.SAMPLE_SCHEMA,
-        key = key,
-        frames = wave.frames,
-        baseTimer = wave.baseTimer,
-        loopEnabled = wave.loopEnabled,
-        loop = wave.loop,
-      }
-    end
-    -- One source wave streams once: the sink stages the bytes synchronously
-    -- and the decoded PCM is discarded before the next wave decodes. A new
-    -- source identity with an already seen semantic key streams its identical
-    -- bytes again; shared staged paths deduplicate at publication.
-    self.sampleSink(key, self.sampleMetadata[key], wave.pcm16le)
+    -- The entry is owned and immutable: its PCM bytes and metadata never
+    -- change, so any later bank job can stream the same sample.
+    entry = { key = key, metadata = playbackMetadata(key, wave), pcm16le = wave.pcm16le }
+    self.decoded[sourceKey] = entry
   end
-  return key
+  -- Every independently published bank stages its referenced sample itself;
+  -- within one bank a semantic key streams once, because a second identical
+  -- source identity would restage identical bytes.
+  if self.emitted[entry.key] == nil then
+    self.sampleSink(entry.key, entry.metadata, entry.pcm16le)
+    self.emitted[entry.key] = true
+    self.sampleMetadata[entry.key] = entry.metadata
+  end
+  return entry.key
 end
 
 local function compileSequence(sdat, symbols, id, record)
@@ -583,9 +630,17 @@ end
 -- retained worker-generation session: the archive view, its symbols, and
 -- the verified source identity are already in hand, so compiling another
 -- closure performs no further source read, archive open, or identity hash.
--- Each call owns a job-local wave cache; decoded PCM streams through the
--- sink and no caller buffer is retained.
-local function compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
+-- The optional generation-scoped wave table supplies already decoded source
+-- waves; without it the call owns one for its single closure. Either way
+-- decoded PCM never enters the returned bundle.
+---@param sdat table<string, unknown>
+---@param symbols table<string, table<string, unknown>>
+---@param identity AudioCompiler.SoundIdentity
+---@param bankPlan AudioCompiler.BankPlan
+---@param sampleSink AudioCompiler.SampleSink
+---@param reuse AudioCompiler.WaveReuse?
+---@return AudioCompiler.BankBundle
+local function compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink, reuse)
   local ownedPlan = checkBankPlan(bankPlan)
   assert(type(sampleSink) == "function", "one-bank compilation requires a sample sink")
   local ok, bank, sequences, sampleMetadata = pcall(function()
@@ -603,7 +658,7 @@ local function compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
         )
       end
     end
-    local cache = WaveCache.new(sdat, sampleSink)
+    local cache = WaveCache.new(sdat, sampleSink, reuse)
     local compiledBank = compileBankRecord(sdat, symbols, ownedPlan.bankId, record, cache)
     local compiledSequences = {}
     for _, sequenceId in ipairs(ownedPlan.sequenceIds) do
@@ -620,15 +675,6 @@ local function compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
     sequences = sequences,
     sampleMetadata = sampleMetadata,
     marker = bankMarkerFor(identity, ownedPlan),
-    dependencies = {
-      cacheFormat = AudioCache.FORMAT,
-      versionRomSha1 = identity.romSha1,
-      soundArchive = {
-        path = SDAT_PATH,
-        fileId = identity.sdatFileId,
-        sha1 = identity.sdatSha1,
-      },
-    },
   }
 end
 
@@ -668,10 +714,11 @@ end
 
 -- One immutable archive session for a worker source generation: a single
 -- source read, a single archive open, and a single identity hash serve
--- every bank compiled through it. The ROM identity rejects before any
--- acquisition; the archive digest and file identity verify against the
--- bytes in hand. Closing drops the retained view and lookup; use after
--- close refuses.
+-- every bank compiled through it, and one source-keyed decoded-wave table
+-- serves every bank job of that generation. The ROM identity rejects before
+-- any acquisition; the archive digest and file identity verify against the
+-- bytes in hand. Closing drops the retained view, the lookup, and every
+-- decoded wave; use after close refuses.
 local function _openSession(romFs, expectedIdentity)
   local expected = checkExpectedIdentity(expectedIdentity)
   assert(
@@ -701,13 +748,19 @@ local function _openSession(romFs, expectedIdentity)
   local liveSdat = sdat
   ---@type table<string, table<string, unknown>>?
   local liveSymbols = symbols
+  local waveReuse = { swars = {}, decoded = {} } ---@type AudioCompiler.WaveReuse
   local closed = false
+  -- One compiled closure against the adopted view and the generation's
+  -- decoded-wave table; the session closes over both, never a sink.
+  local function compileAdopted(bankPlan, sampleSink)
+    return compileBankAgainst(assert(liveSdat), assert(liveSymbols), identity, bankPlan, sampleSink, waveReuse)
+  end
   local session = {}
   function session:compileBank(bankPlan, sampleSink)
     if closed then
       error("the audio session is closed", 0)
     end
-    local ok, bundle = pcall(compileBankAgainst, assert(liveSdat), assert(liveSymbols), identity, bankPlan, sampleSink)
+    local ok, bundle = pcall(compileAdopted, bankPlan, sampleSink)
     if ok then
       return bundle
     end
@@ -720,6 +773,8 @@ local function _openSession(romFs, expectedIdentity)
     closed = true
     liveSdat = nil
     liveSymbols = nil
+    waveReuse.swars = {}
+    waveReuse.decoded = {}
   end
   return session
 end
@@ -855,10 +910,10 @@ function AudioCompiler.bankMarker(identity, bankPlan)
 end
 
 -- Compiles exactly one bank closure: the bank record, the planned sequences,
--- and their referenced samples. Each distinct source wave decodes once in
--- this job and streams its PCM through the sink, which must consume the
--- bytes synchronously; the returned bundle holds the bank, the sequences,
--- and the small keyed sample metadata, never retained PCM.
+-- and their referenced samples. Decoding a source wave this call already
+-- decoded streams the retained bytes instead; the returned bundle holds the
+-- bank, the sequences, and the small keyed sample metadata, never retained
+-- PCM.
 ---@param romFs table<string, unknown>
 ---@param bankPlan AudioCompiler.BankPlan
 ---@param sampleSink AudioCompiler.SampleSink
@@ -884,9 +939,9 @@ end
 -- never a rederived identity). Exactly one source read, archive open, and
 -- identity hash serve every bank compiled through the session; warm reuse
 -- opens nothing further. A mismatched identity opens no session. The
--- session owns archive bytes, the parsed view, and the symbol lookup for
--- its generation; per-bank decoded waves stay job-local and stream
--- through each call's sink.
+-- session owns archive bytes, the parsed view, the symbol lookup, and the
+-- decoded-wave table for its generation; each bank job still streams its
+-- own referenced samples through its own sink.
 ---@param romFs table<string, unknown>
 ---@param expectedIdentity AudioCompiler.SoundIdentity
 ---@return AudioCompiler.Session?|nil

@@ -102,15 +102,12 @@ function T.success_manifest_seals_identity_and_stages_its_receipt()
   })
 end
 
-function T.finish_requires_a_marker_and_a_family_root()
+function T.finish_requires_a_result_marker()
   local stages = requireStages()
   local generation = generationIdFor(Sha256.hex("empty-finish producer"))
   local cache = newCache()
   cache:recoverPublication()
   local bare = stages.new(stageOptions("map", "62", generation, 1, "empty-finish", cache))
-  Assert.throws(function()
-    bare:finishSuccess({ marker = "complete" })
-  end)
   Assert.throws(function()
     bare:finishSuccess({ marker = "" })
   end)
@@ -118,8 +115,45 @@ function T.finish_requires_a_marker_and_a_family_root()
     bare:finishSuccess({})
   end)
   Assert.isTrue(bare:isAbortable(), "a stage that never finished stays abortable")
-  Assert.isFalse(bare:stageFs():exists("data/generated/jobs/map/62.lua"), "no receipt is staged without a family root")
   bare:abort()
+end
+
+-- A job whose whole output is its own generation receipt publishes that
+-- receipt: a family summary over already published jobs writes nothing else.
+function T.receipt_only_jobs_publish_its_generation_receipt()
+  local receipts = requireReceipts()
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("receipt-only producer"))
+  local cache = newCache()
+  cache:recoverPublication()
+  local artifact = stages.new(stageOptions("audio-summary", "global", generation, 1, "receipt-only", cache))
+  artifact:finishSuccess({ marker = "family-marker" })
+  Assert.deepEqual(
+    artifact:manifest().ownedRoots,
+    { receipts.path("audio-summary", "global") },
+    "the receipt is the only owned root of an output-free job"
+  )
+  artifact:publish(expectedOf("audio-summary", "global", generation, 1))
+  local live = receipts.read(cache, generation, "audio-summary", "global")
+  Assert.notNil(live, "the receipt-only job publishes its current receipt")
+  Assert.equal(live.marker, "family-marker", "the published receipt carries the job marker")
+end
+
+-- Declaring an owned root is a promise: a job that never staged one of its
+-- roots cannot publish success, and no receipt becomes visible.
+function T.success_requires_every_declared_owned_root_to_be_staged()
+  local receipts = requireReceipts()
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("missing-root producer"))
+  local cache = newCache()
+  cache:recoverPublication()
+  local artifact = stages.new(stageOptions("map", "63", generation, 1, "missing-root", cache))
+  artifact:addOwnedRoot("maps/63")
+  artifact:finishSuccess({ marker = "complete" })
+  local ok = pcall(artifact.publish, artifact, expectedOf("map", "63", generation, 1))
+  Assert.isFalse(ok, "a declared owned root that never reached the stage blocks publication")
+  Assert.isNil(receipts.read(cache, generation, "map", "63"), "no receipt is visible after the refused publication")
+  artifact:abort()
 end
 
 function T.unknown_kinds_and_unsafe_keys_fail_before_io()

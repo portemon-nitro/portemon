@@ -9,7 +9,6 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
-local AudioCache = require("libs.assets.src.audio.AudioCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -70,7 +69,6 @@ local function publishedMarkers()
     BagCache.markerPath(),
     PartyCache.markerPath(),
     ScriptCache.markerPath(),
-    AudioCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
     FieldMapDataCache.spawnIndexMarkerPath(),

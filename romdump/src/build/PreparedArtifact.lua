@@ -6,8 +6,10 @@
 -- be exact files or directories, but they may never overlap each other or
 -- swallow a shared file. A staged shared file that contradicts live bytes is
 -- a conflict, never a silent reuse. The single generation receipt commits
--- last among the owned roots and is the only readiness proof; the manifest
--- exists only to hand the finished stage to the controller.
+-- last among the owned roots and is the only readiness proof; a job with no
+-- payload of its own (a summary over already published jobs) owns exactly
+-- that receipt. The manifest exists only to hand the finished stage to the
+-- controller.
 
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local Errors = require("libs.errors.src.Errors")
@@ -381,7 +383,6 @@ function PreparedArtifact:_finish(status, result, failure)
   if status == "success" then
     assert(type(result) == "table", "prepared artifact result must be a table")
     assert(type(result.marker) == "string" and result.marker ~= "", "prepared artifact result marker is required")
-    assert(next(self._ownedRoots) ~= nil, "prepared artifact has no owned roots")
     local receiptPath = ArtifactState.path(self._kind, self._key)
     for existing in pairs(self._ownedRoots) do
       assert(not pathsOverlap(existing, receiptPath), "prepared artifact family root swallows its receipt")

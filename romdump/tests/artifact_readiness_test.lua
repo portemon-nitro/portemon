@@ -61,7 +61,6 @@ local function writeMarkers(cache, world)
     MonCache.markerPath(),
     ItemCache.markerPath(),
     require("libs.assets.src.BagCache").markerPath(),
-    AudioCache.markerPath(),
     FieldCameraCache.markerPath(),
     FieldFontCache.markerPath(),
     FieldMessageCache.markerPath(),
@@ -410,7 +409,6 @@ local function publishMessageFamily(cache, marker)
 end
 
 local function publishAudioFamily(cache, marker)
-  cache:write(AudioCache.markerPath(), marker)
   cache:writeLua(AudioCache.indexPath(), {
     schema = AudioCache.INDEX_SCHEMA,
     sequences = {},
@@ -419,7 +417,6 @@ local function publishAudioFamily(cache, marker)
     sequenceBySymbol = {},
     bankBySymbol = {},
   })
-  cache:write(AudioCache.catalogMarkerPath(), marker)
   writeReceipt(cache, "audio-catalog", "global", marker)
   writeReceipt(cache, "audio-summary", "global", marker)
 end
