@@ -78,7 +78,7 @@ end
 
 function ScriptCache.generationDir(generation)
   assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
-  return GENERATIONS_DIR .. "/" .. generation
+  return ScriptCache.generationsDir() .. "/" .. generation
 end
 
 -- The physical unit of generated script content: every script of one source

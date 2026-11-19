@@ -41,13 +41,6 @@ local function scriptCache()
   return cache
 end
 
--- Load one generated script the way a registry does: through its indexed
--- member and source slot.
-local function loadFixture(cache, id, requireFn)
-  local entry = ScriptCacheFixture.entry(cache, id)
-  return ScriptLoader.loadGeneratedFrom(cache, GENERATION, entry.member, entry.scriptIndex, id, requireFn)
-end
-
 -- Count reads of generated member bundles through the cache backend.
 local function countMemberReads(cache)
   local reads = 0
@@ -103,6 +96,16 @@ local function requireShim(name)
     return require("gen4.script")
   end
   error("unexpected require in override chunk: " .. name)
+end
+
+-- Load generated scripts the way the runtime does: the deferred generated
+-- layer decodes through the selected registry, which owns the single
+-- per-member memo, so two ids of one member share one read and evaluation.
+local function registryLoader(cache, requireFn)
+  local registry = ScriptLoader.buildRegistry(cache, overrideFs({}), requireFn, { lazy = true })
+  return function(id)
+    return registry:base(id)
+  end
 end
 
 -- 1. Generated bases install from the cache index and files.
@@ -457,7 +460,7 @@ T["script_loader trusts published generated resources without semantic validatio
     return original(...)
   end)
   local ok, resource = pcall(function()
-    return loadFixture(scriptCache(), "new_bark.lab_sign", requireShim)
+    return registryLoader(scriptCache(), requireShim)("new_bark.lab_sign")
   end)
   local registry = nil
   local installErr = nil
@@ -491,8 +494,6 @@ end
 T["script_loader exposes no replacement validation surface; overrides stay authoring-owned"] = function()
   local Validator = require("libs.script.src.Validator")
   local knownEntryPoints = {
-    loadGenerated = true,
-    loadGeneratedFrom = true,
     installGenerated = true,
     loadOverride = true,
     installOverrides = true,
@@ -573,15 +574,17 @@ T["trusted override executes with standard libraries and a host-provided module"
     GENERATION,
     MARKER,
     { { id = "trusted.demo", steps = 'S.say { message = "msg.hgss.0543.00097" }, S.stop()' } },
-    { prelude = {
-      'local helper = require("trusted.helper")',
-      "local label = string.upper(helper.word) .. tostring(math.floor(2.7))",
-      'assert(label == "HELLO2")',
-    } }
+    {
+      prelude = {
+        'local helper = require("trusted.helper")',
+        "local label = string.upper(helper.word) .. tostring(math.floor(2.7))",
+        'assert(label == "HELLO2")',
+      },
+    }
   )
-  local generated, loadErr = loadFixture(cache, "trusted.demo")
-  Assert.isNil(generated, "the restricted generated load must reject host modules and standard libraries")
-  Assert.notNil(loadErr)
+  throwsCode("SCRIPT_LOAD_FAILED", function()
+    registryLoader(cache)("trusted.demo")
+  end)
 end
 
 -- An override-driven typed async task survives a snapshot/restore boundary:

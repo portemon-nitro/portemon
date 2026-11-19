@@ -177,35 +177,6 @@ local function memberResources(cacheFs, generation, requireFn)
   return resourceAt
 end
 
--- Resolve one generated script from the pinned generation: read and evaluate
--- its member bundle, then take the script at its indexed source slot.
--- Generated resources are producer-validated before publication, so runtime
--- routes by pinned cache identity and script id without rerunning the
--- semantic validator. Returns the resource, or nil plus an Errors object on
--- any failure.
----@param cacheFs table<string, unknown> CacheFs-shaped
----@param generation string
----@param member integer
----@param scriptIndex integer
----@param id string
----@param requireFn fun(name: string): unknown|nil defaults to the restricted gen4.script-only require
----@return table<string, unknown>|nil, Errors.Error?
-local function loadGeneratedAt(cacheFs, generation, member, scriptIndex, id, requireFn)
-  return memberResources(cacheFs, generation, requireFn)(member, scriptIndex, id)
-end
-
-function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
-  assert(
-    opts and opts.generation ~= nil and opts.member ~= nil and opts.scriptIndex ~= nil,
-    "generated script loading requires a pinned generation"
-  )
-  return loadGeneratedAt(cacheFs, opts.generation, opts.member, opts.scriptIndex, id, requireFn)
-end
-
-function ScriptLoader.loadGeneratedFrom(cacheFs, generation, member, scriptIndex, id, requireFn)
-  return loadGeneratedAt(cacheFs, generation, member, scriptIndex, id, requireFn)
-end
-
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@return ScriptSelection
 local function loadSelection(cacheFs)
