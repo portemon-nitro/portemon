@@ -849,6 +849,13 @@ end
 ---@return boolean ready
 ---@return string? failure
 function FieldPresentationResources:prepareMonNamingSubject(subject)
+  if subject.kind == "rival" then
+    -- Rival naming carries no mon icon: the source rival subject animation
+    -- is not part of the generated naming manifest, so only the shared
+    -- keyboard chrome is prepared.
+    ensureMonNamingRenderer(self)
+    return true, nil
+  end
   local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
   local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
   local ready, failure = icons:prepareKeys({ iconKey })

@@ -62,15 +62,30 @@ function T.battle_won_check_lowers_to_a_result_read()
   Assert.equal(CommandCatalog.classification(220), "continue_same_tick", "result reads answer in the same tick")
 end
 
-function T.unknown_battle_opcodes_never_map_to_ordinary_launches()
-  for _, opcode in ipairs({ 36, 168, 214, 217, 218, 221, 225, 249, 562, 683 }) do
+-- The catalog decides which battle commands are still deferred, so a command
+-- that gains real lowering leaves this audit by becoming supported instead of
+-- invalidating a frozen opcode list.
+local function deferredBattleOpcodes()
+  local deferred = {}
+  for opcode in pairs(CommandCatalog.NAMES) do
+    if CommandCatalog.feature(opcode) == "battle" and CommandCatalog.disposition(opcode) == "deferred" then
+      deferred[#deferred + 1] = opcode
+    end
+  end
+  table.sort(deferred)
+  return deferred
+end
+
+function T.deferred_battle_opcodes_never_map_to_ordinary_launches()
+  local deferred = deferredBattleOpcodes()
+  Assert.isTrue(#deferred > 0, "the catalog still defers battle commands")
+  for _, opcode in ipairs(deferred) do
     local step = lowerSingle(opcode, {})
-    Assert.equal(step.op, "unsupported", "opcode " .. opcode .. " must not lower to a battle")
+    Assert.equal(step.op, "unsupported", "deferred opcode " .. opcode .. " must not lower to a battle")
     Assert.isTrue(
       (step.reason or ""):find("deferred", 1, true) ~= nil,
-      "opcode " .. opcode .. " names its owning application"
+      "deferred opcode " .. opcode .. " names its owning application"
     )
-    Assert.equal(CommandCatalog.disposition(opcode), "deferred")
   end
 end
 

@@ -59,6 +59,7 @@ local BLOCKING_OPS = {
   context_choice = true,
   choose_starter = true,
   pokemon_nickname_input = true,
+  rival_naming = true,
   party_select = true,
   menu_exec = true,
   warp = true,
@@ -277,6 +278,44 @@ end
 local function checkClearFlagVar(ins, step)
   if not operandMatches(ins.operands[1].raw, step.flag) then
     return "ClearFlagVar id changed by translation"
+  end
+end
+
+-- The trainer-flag value a covering node carries: the flag write's flag or
+-- the comparison left side of the check, in its folded or fallback form.
+---@param step table<string, unknown>
+---@return table<string, unknown>|nil
+local function trainerFlagValueOf(step)
+  if step.op == "set_flag" or step.op == "clear_flag" then
+    return step.flag --[[@as table<string, unknown>|nil]]
+  end
+  local compared = nil
+  if step.op == "compare" then
+    compared = step.left
+  elseif step.op == "if_cond" or step.op == "call_if" or step.op == "goto_if" or step.op == "if" then
+    compared = step.condition and step.condition.left
+  end
+  if type(compared) == "table" and compared.value == "flag_value" then
+    return compared.flag --[[@as table<string, unknown>]]
+  end
+  return nil
+end
+
+-- Trainer number -> native event flag keeps the source operand: the flag id
+-- stays TRAINER_FLAG_BASE + the live 16-bit trainer number.
+local function checkTrainerFlag(ins, step)
+  local value = trainerFlagValueOf(step)
+  if type(value) ~= "table" or value.value ~= "trainer_flag_id" then
+    return "trainer flag command lost its trainer flag value"
+  end
+  if not operandMatches(ins.operands[1].raw, value.trainer) then
+    return "trainer number changed by translation"
+  end
+end
+
+local function checkNameRival(ins, step)
+  if step.op ~= "rival_naming" or not operandMatches(ins.operands[1].raw, step.result) then
+    return "NameRival result variable changed by translation"
   end
 end
 
@@ -809,6 +848,10 @@ local CHECKERS = {
   [31] = checkClearFlag,
   [33] = checkSetFlagVar,
   [34] = checkClearFlagVar,
+  [36] = checkTrainerFlag,
+  [37] = checkTrainerFlag,
+  [38] = checkTrainerFlag,
+  [143] = checkNameRival,
   [39] = checkAddVar,
   [40] = checkSubVar,
   [41] = checkSetVar,

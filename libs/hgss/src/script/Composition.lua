@@ -31,6 +31,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.MenuTask",
   "libs.hgss.src.script.tasks.ChooseStarterTask",
   "libs.hgss.src.script.tasks.MonNicknameTask",
+  "libs.hgss.src.script.tasks.RivalNamingTask",
   "libs.hgss.src.script.tasks.PartySelectTask",
   "libs.hgss.src.script.tasks.MartTask",
   "libs.hgss.src.script.tasks.FieldMoveTask",

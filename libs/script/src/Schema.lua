@@ -143,7 +143,10 @@ Schema.VALUES = {
   var = { fields = { id = { type = "string", required = true } } },
   ["local"] = { fields = { name = { type = "string", required = true } } },
   arg = { fields = { name = { type = "string", required = true } } },
-  flag_value = { fields = { flag = { type = "id_or_var", required = true } } },
+  -- Flag reads accept a value that resolves to a flag id, so a source
+  -- trainer number stays a live operand instead of a compile-time id.
+  flag_value = { fields = { flag = { type = "flag_id", required = true } } },
+  trainer_flag_id = { fields = { trainer = { type = "scalar_or_value", required = true } } },
   player_gender_value = { fields = {} },
   friend_sprite_value = { fields = {} },
   object_id = { fields = { ref = { type = "actor", required = true } } },
@@ -616,8 +619,8 @@ Schema.OPERATIONS = {
     },
   },
   next = { fields = {} },
-  set_flag = { fields = { flag = { type = "id_or_var", required = true } } },
-  clear_flag = { fields = { flag = { type = "id_or_var", required = true } } },
+  set_flag = { fields = { flag = { type = "flag_id", required = true } } },
+  clear_flag = { fields = { flag = { type = "flag_id", required = true } } },
   set_var = {
     fields = {
       variable = { type = "id_or_var", required = true },
@@ -1616,6 +1619,13 @@ Schema.OPERATIONS = {
   pokemon_nickname_input = {
     fields = {
       slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  -- Rival naming blocks the parent script on the shared field naming screen
+  -- and returns the source no-input result to the destination variable.
+  rival_naming = {
+    fields = {
       result = { type = "value", required = true },
     },
   },

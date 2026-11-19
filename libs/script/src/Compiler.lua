@@ -267,7 +267,7 @@ local function normalizeByTypeImpl(v, ty)
       return normalizeValue(v)
     end
     return v
-  elseif ty == "id_or_var" then
+  elseif ty == "id_or_var" or ty == "flag_id" then
     if type(v) == "table" then
       return normalizeValue(v)
     end

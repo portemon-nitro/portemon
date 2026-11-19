@@ -625,7 +625,7 @@ function NamingScreenRenderer:draw(view, layout)
     local record = naming.playerSubjects[gender]
     local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
     self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
-  else
+  elseif view.subject.kind == "pokemon" then
     local record = naming.pokemonSubject
     local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
     for _, part in ipairs(frame.parts) do
@@ -652,6 +652,10 @@ function NamingScreenRenderer:draw(view, layout)
       assert(gender == "genderless", "mon naming subject has an unsupported gender")
     end
   end
+  -- The source rival subject is its own naming-screen animation
+  -- (src/naming_screen.c::NamingScreen_CreateIconSprite) that the generated
+  -- naming manifest does not carry, so the rival screen draws the shared
+  -- keyboard and name only rather than borrowing a party or player subject.
   -- The focus cursor composites last so it stays above the control it
   -- highlights.
   local cursor = view.cursor

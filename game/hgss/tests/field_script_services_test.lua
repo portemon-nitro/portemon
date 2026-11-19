@@ -8,12 +8,17 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local GameStats = require("libs.hgss.src.mons.GameStats")
 local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
+local LuaWriter = require("libs.codec.src.LuaWriter")
+local MonNamingState = require("game.hgss.src.field.MonNamingState")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptErrors = require("libs.script.src.errors")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
@@ -144,19 +149,20 @@ end
 
 local function composeSlice(services, id, steps)
   local function noop() end
+  local chunk = services.encode or sliceChunk
   local args = {
     cacheFs = testCache(),
-    overrideFs = overrideFs({ [id] = sliceChunk(id, steps) }),
+    overrideFs = overrideFs({ [id] = chunk(id, steps) }),
     eventState = FieldEventState.new(),
     actors = stubActors(),
     player = { fieldX = 1, fieldZ = 2, worldY = 0, facing = "south" },
-    profile = { gender = 0, name = "Gold", badges = {} },
+    profile = services.profile or { gender = 0, name = "Gold", badges = {} },
     dialogue = { isModal = noop },
     messageProvider = {},
     layout = function()
       return {}
     end,
-    fontDef = { charmap = {} },
+    fontDef = services.fontDef or { charmap = {} },
     signpost = { isModal = true, updateFixed = noop },
     windowStyles = {
       resolve = function()
@@ -173,8 +179,78 @@ local function composeSlice(services, id, steps)
     fieldMoves = services.fieldMoves,
     battle = services.battle,
     gameStats = services.gameStats,
+    monNaming = services.monNaming,
   }
   return FieldScripts.new(args --[[@as FieldScriptsOptions]])
+end
+
+-- A slice chunk serialized from a DSL step table: nested steps and value
+-- descriptors travel exactly as authored instead of through a hand emitter.
+local function encodedChunk(id, steps)
+  return LuaWriter.encode({ api = 1, id = id, steps = steps })
+end
+
+-- The shared field naming host the production field wires into script
+-- services, with the same controller, session, and generated charmap.
+local function namingHost()
+  return MonNamingState.new({
+    effect = function() end,
+    charmap = CatalogFixture.CHARMAP,
+    measureDisplay = function()
+      return {
+        width = 800,
+        height = 600,
+        topology = ScreenTopology.oneDisplay({
+          id = "main",
+          rect = { x = 0, y = 0, width = 800, height = 600 },
+          role = "world",
+          touch = true,
+        }),
+        pixelRatio = 1,
+        signature = "rival-naming:800x600",
+      }
+    end,
+  })
+end
+
+local SAVE_CONTEXT = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
+
+-- The live saved player record, validated by its owning module.
+local function savedPlayer(rivalName)
+  return assert(PlayerData.validate({
+    profile = {
+      name = "GOLD",
+      rivalName = rivalName,
+      gender = 0,
+      trainerId = 0,
+      money = 3000,
+      badges = {},
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+      unionAvatar = 0,
+    },
+    options = {
+      textFrame = 0,
+      textSpeed = "mid",
+      battleStyle = "shift",
+      battleScene = true,
+      soundMode = "stereo",
+      battleSpeed = 1,
+    },
+  }, SAVE_CONTEXT))
+end
+
+-- Step the platform until the naming screen owns the field, bounded so a
+-- missing block fails instead of spinning.
+local function stepUntilNaming(platform, naming, firstTick)
+  for index = 1, 32 do
+    platform.scheduler:step(firstTick + index, nil)
+    if naming:isActive() then
+      return firstTick + index
+    end
+  end
+  return nil
 end
 
 local function driveSlice(services, id, steps, tick)
@@ -446,6 +522,239 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
   if not ok then
     error(err, 0)
   end
+end
+
+-- Retail `include/constants/flags.h::TRAINER_FLAG_BASE`.
+local TRAINER_FLAG_BASE = 0x550
+
+local function submitRivalName(platform, tick, name)
+  local events = {}
+  for _ = 1, 7 do
+    events[#events + 1] = { type = "cancel" }
+  end
+  events[#events + 1] = { type = "text", text = name }
+  platform.scheduler:step(tick, { uiEvents = events })
+  platform.scheduler:step(tick + 1, { uiEvents = { { type = "name_control", id = "ok" } } })
+end
+
+-- Poll until the naming host releases the field, running an optional
+-- observation after every step; returns the release tick or nil.
+local function stepUntilNamingClosed(platform, naming, firstTick, observe)
+  for index = 1, 40 do
+    platform.scheduler:step(firstTick + index, nil)
+    if observe ~= nil then
+      observe()
+    end
+    if not naming:isActive() then
+      return firstTick + index
+    end
+  end
+  return nil
+end
+
+local function battleHost(outcome)
+  local launches = {}
+  local sourceResult = outcome == "win" and 1 or 0
+  return {
+    launchBattle = function(_, spec)
+      launches[#launches + 1] = spec
+      return "script-launch-1"
+    end,
+    battleStatus = function()
+      return { phase = "complete", committed = true, result = outcome, sourceResult = sourceResult }
+    end,
+    lastBattleResult = function()
+      return { result = outcome, sourceResult = sourceResult }
+    end,
+  },
+    launches
+end
+
+-- A composed rival battle: the script launches its own battle, branches on
+-- the committed result, and only the winning branch flags the trainer and
+-- runs the source rival naming wait.
+local function rivalBattleSteps()
+  return {
+    {
+      op = "battle_launch",
+      kind = "trainer",
+      details = { trainer = 3 },
+      result = { value = "var", id = "VAR_TEMP_x4001" },
+    },
+    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4001" } },
+    {
+      op = "if",
+      condition = {
+        condition = "compare",
+        operator = "eq",
+        left = { value = "var", id = "VAR_TEMP_x4001" },
+        right = 1,
+      },
+      yes = {
+        { op = "set_flag", flag = { value = "trainer_flag_id", trainer = 3 } },
+        { op = "rival_naming", result = { value = "var", id = "VAR_TEMP_x4003" } },
+        { op = "set_var", variable = "VAR_TEMP_x4002", value = 1 },
+      },
+      no = {
+        { op = "set_var", variable = "VAR_TEMP_x4002", value = 2 },
+      },
+    },
+  }
+end
+
+-- The source rival-naming wait runs the one shared field naming screen and
+-- publishes the accepted name to the live saved profile; the script resumes
+-- only after the screen closes.
+function T.tests.rival_naming_blocks_then_publishes_the_accepted_name_to_the_saved_profile()
+  local record = savedPlayer("SILVER")
+  local naming = namingHost()
+  local platform = composeSlice(
+    {
+      travel = nil,
+      fieldMoves = nil,
+      monNaming = naming,
+      profile = record.profile,
+      fontDef = { charmap = CatalogFixture.CHARMAP },
+      encode = encodedChunk,
+    },
+    "test.rival_naming",
+    {
+      { op = "rival_naming", result = { value = "var", id = "VAR_TEMP_x4003" } },
+      { op = "set_var", variable = "VAR_TEMP_x4002", value = 7 },
+    }
+  )
+  local composed = assert(platform.composition:effective("test.rival_naming"), "the rival naming slice must compose")
+  local instanceId = platform.scheduler:createForeground(composed, nil, 100)
+  local running = assert(platform.scheduler:instance(instanceId))
+  local openedAt = assert(stepUntilNaming(platform, naming, 100), "the script blocks on the naming screen")
+  Assert.equal(running.status, "blocked", "the script instance blocks on the naming task")
+  Assert.notNil(running.waitingTaskId, "the blocking task owns the script continuation")
+  Assert.equal(record.profile.rivalName, "SILVER", "the saved rival name is untouched before acceptance")
+  Assert.equal(platform.worldState:getVar("VAR_TEMP_x4002"), 0, "no script step runs behind the naming screen")
+
+  submitRivalName(platform, openedAt + 1, "SOUL")
+  Assert.equal(record.profile.rivalName, "SILVER", "editing the name publishes nothing yet")
+  local closedAt = assert(
+    stepUntilNamingClosed(platform, naming, openedAt + 2, function()
+      Assert.equal(
+        platform.worldState:getVar("VAR_TEMP_x4002"),
+        0,
+        "the script resumes only after the naming screen closes"
+      )
+    end),
+    "the naming screen settles after its OK press"
+  )
+  for index = 1, 3 do
+    platform.scheduler:step(closedAt + index, nil)
+  end
+
+  Assert.isFalse(naming:isActive(), "the modal released the field")
+  Assert.equal(record.profile.rivalName, "SOUL", "the accepted name lands on the live saved profile")
+  Assert.equal(platform.player:rivalName(), "SOUL", "dialogue reads the new rival name immediately")
+  Assert.equal(
+    platform.worldState:getVar("VAR_TEMP_x4003"),
+    0,
+    "the source result variable receives the accepted result code"
+  )
+  Assert.equal(platform.worldState:getVar("VAR_TEMP_x4002"), 7, "the resumed script ran to its end")
+
+  local captured = assert(PlayerData.validate({ profile = record.profile, options = record.options }, SAVE_CONTEXT))
+  Assert.equal(captured.profile.rivalName, "SOUL", "the captured save carries the new rival name")
+  platform.player:setProfile(captured.profile)
+  Assert.equal(platform.player:rivalName(), "SOUL", "a reloaded save still shows the new rival name")
+end
+
+-- The live name write re-checks the saved-profile name contract, so a name the
+-- generated field font cannot encode -- or one outside the 1..7-glyph limit --
+-- faults before it reaches the profile or any later save capture.
+function T.tests.rival_name_write_rejects_unusable_names_and_keeps_the_profile()
+  local record = savedPlayer("SILVER")
+  local platform = composeSlice({
+    travel = nil,
+    fieldMoves = nil,
+    profile = record.profile,
+    fontDef = { charmap = CatalogFixture.CHARMAP },
+    encode = encodedChunk,
+  }, "test.rival_name_write", { { op = "set_var", variable = "VAR_TEMP_x4002", value = 1 } })
+  -- The generated charmap holds the uppercase letters and only the lowercase
+  -- glyphs the default rival name uses, so "o" and "u" are unencodable.
+  for _, rejected in ipairs({ "Soul", "", "TOOLONGNAME" }) do
+    local err = Assert.throws(function()
+      platform.player:setRivalName(rejected)
+    end)
+    Assert.equal(
+      err and err.code,
+      "PLAYER_DATA_NAME_INVALID",
+      "rival name " .. tostring(rejected) .. " must be rejected"
+    )
+    Assert.equal(record.profile.rivalName, "SILVER", "a rejected name leaves the live profile untouched")
+    Assert.equal(platform.player:rivalName(), "SILVER", "the script-visible rival name stays the accepted one")
+  end
+  platform.player:setRivalName("SOUL")
+  Assert.equal(record.profile.rivalName, "SOUL", "an encodable name inside the limit is published")
+end
+
+-- A scripted rival battle keeps its supported launch and outcome: the
+-- script-owned branch decides the trainer flag and the following naming, and
+-- a loss neither awards a flag nor opens the naming screen.
+function T.tests.rival_battle_outcome_gates_the_trainer_flag_and_the_following_naming()
+  local record = savedPlayer("SILVER")
+  local winHost, winLaunches = battleHost("win")
+  local winNaming = namingHost()
+  local platform = composeSlice({
+    travel = nil,
+    fieldMoves = nil,
+    battle = winHost,
+    monNaming = winNaming,
+    profile = record.profile,
+    fontDef = { charmap = CatalogFixture.CHARMAP },
+    encode = encodedChunk,
+  }, "test.rival_battle", rivalBattleSteps())
+  local composed = assert(platform.composition:effective("test.rival_battle"), "the rival battle slice must compose")
+  local instanceId = platform.scheduler:createForeground(composed, nil, 300)
+  local running = assert(platform.scheduler:instance(instanceId))
+  local openedAt = assert(stepUntilNaming(platform, winNaming, 300), "the winning branch reaches rival naming")
+  Assert.equal(running.status, "blocked", "the script still blocks on the naming task")
+  Assert.notNil(running.waitingTaskId, "the naming task owns the script continuation")
+  Assert.equal(#winLaunches, 1, "the script launched its own rival battle once")
+  Assert.equal(winLaunches[1].kind, "trainer")
+  Assert.isTrue(platform.worldState:isFlagSet(TRAINER_FLAG_BASE + 3), "the winning branch flags the defeated trainer")
+  Assert.equal(platform.worldState:getVar("VAR_TEMP_x4002"), 0, "naming blocks before the following script step")
+
+  submitRivalName(platform, openedAt + 1, "SOUL")
+  local closedAt = assert(stepUntilNamingClosed(platform, winNaming, openedAt + 2), "the naming screen settles")
+  for index = 1, 3 do
+    platform.scheduler:step(closedAt + index, nil)
+  end
+  Assert.equal(record.profile.rivalName, "SOUL", "the winning branch named the rival")
+  Assert.equal(platform.worldState:getVar("VAR_TEMP_x4002"), 1, "the winning branch ran to its end")
+
+  local lostRecord = savedPlayer("SILVER")
+  local lostHost, lostLaunches = battleHost("loss")
+  local lostNaming = namingHost()
+  local lostPlatform = composeSlice({
+    travel = nil,
+    fieldMoves = nil,
+    battle = lostHost,
+    monNaming = lostNaming,
+    profile = lostRecord.profile,
+    fontDef = { charmap = CatalogFixture.CHARMAP },
+    encode = encodedChunk,
+  }, "test.rival_battle", rivalBattleSteps())
+  local lostComposed = assert(lostPlatform.composition:effective("test.rival_battle"))
+  lostPlatform.scheduler:createForeground(lostComposed, nil, 500)
+  for index = 1, 32 do
+    lostPlatform.scheduler:step(500 + index, nil)
+  end
+  Assert.equal(#lostLaunches, 1, "the losing branch still runs the scripted battle")
+  Assert.isFalse(
+    lostPlatform.worldState:isFlagSet(TRAINER_FLAG_BASE + 3),
+    "a lost battle awards no trainer flag by itself"
+  )
+  Assert.isFalse(lostNaming:isActive(), "the losing branch never opens the naming screen")
+  Assert.equal(lostRecord.profile.rivalName, "SILVER", "the losing branch keeps the saved rival name")
+  Assert.equal(lostPlatform.worldState:getVar("VAR_TEMP_x4002"), 2, "the losing branch ran to its end")
+  Assert.isFalse(FieldEventState.new():isFlagSet(TRAINER_FLAG_BASE + 3), "a new game carries no defeated trainer")
 end
 
 return T

@@ -665,6 +665,17 @@ do
     return blockOnTask(run, "pokemon_nickname_input", { slot = evalField(node, run, "slot") }, node.result)
   end
   HANDLERS.pokemon_nickname_input = handleMonNicknameInput
+
+  -- Rival naming blocks on the shared field naming host, which writes an
+  -- accepted name straight to the live player profile; the task result is
+  -- the source no-input code.
+  local function handleRivalNaming(node, run)
+    requireForeground(run, "rival_naming")
+    requireService(run, "player")
+    requireService(run, "monNaming")
+    return blockOnTask(run, "rival_naming", {}, node.result)
+  end
+  HANDLERS.rival_naming = handleRivalNaming
 end
 
 -- Dex count, rating, grant, and alphabet operations. Each handler

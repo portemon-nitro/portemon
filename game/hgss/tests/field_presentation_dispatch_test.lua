@@ -813,6 +813,12 @@ function T.mon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
       Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
       Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
 
+      local rivalReady, rivalFailure = resources:prepareMonNamingSubject({ kind = "rival" })
+      Assert.isTrue(rivalReady, "the rival screen prepares without a mon icon")
+      Assert.isNil(rivalFailure, "the rival screen preparation has no failure")
+      Assert.equal(calls.namingConstructed, 1, "the rival screen reuses the shared naming renderer")
+      Assert.equal(calls.iconQuadCount, 2, "the rival screen demands no mon icon quads")
+
       resources:dispose()
       Assert.equal(calls.namingDisposed, 1, "field resources dispose their naming renderer once")
       Assert.equal(calls.namingImageReleased, 1, "naming disposal releases its owned image")

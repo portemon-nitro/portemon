@@ -231,4 +231,39 @@ function T.tests.subject_callback_is_a_required_constructor_collaborator()
   end, "a renderer without its host subject callback must fail at construction")
 end
 
+-- The rival screen names a subject the generated manifest has no animation
+-- for: the renderer draws the shared keyboard and name and never borrows the
+-- party or player subject.
+function T.tests.rival_subject_draws_no_borrowed_portrait()
+  local graphics, calls = graphicsFake()
+  local manifest = namingManifest()
+  local seen = 0
+  local loader = imageLoader()
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake(),
+    drawSubject = function()
+      seen = seen + 1
+    end,
+    manifest = manifest,
+    imageLoader = loader,
+  })
+  local before = #calls.draws
+  renderer:draw(snapshot({ kind = "rival" }), canonicalLayout())
+  Assert.equal(seen, 0, "the rival subject never reaches the mon icon callback")
+  local playerSubjectAssets = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    for _, frame in ipairs(manifest.namingScreen.playerSubjects[gender].frames) do
+      playerSubjectAssets[manifest.assets[frame.asset].image] = true
+    end
+  end
+  for index = before + 1, #calls.draws do
+    local path = calls.draws[index].image.path
+    Assert.isNil(playerSubjectAssets[path], "the rival screen draws no player portrait")
+  end
+  Assert.isTrue(#calls.draws > before, "the shared naming chrome still draws")
+  Assert.equal(calls.push, calls.pop)
+  renderer:dispose()
+end
+
 return T

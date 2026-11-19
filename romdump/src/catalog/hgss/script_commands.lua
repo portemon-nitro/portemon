@@ -251,31 +251,25 @@ return {
       },
     },
     [36] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SetTrainerFlag",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer defeat flags need the trainer flag owner",
       widths = {
         [1] = 2,
       },
     },
     [37] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_ClearTrainerFlag",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer defeat flags need the trainer flag owner",
       widths = {
         [1] = 2,
       },
     },
     [38] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_CheckTrainerFlag",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer defeat checks need the trainer flag owner",
       widths = {
         [1] = 2,
       },
@@ -1049,6 +1043,7 @@ return {
       },
     },
     [143] = {
+      classification = "native_wait",
       name = "ScrCmd_NameRival",
       widths = {
         [1] = 2,

@@ -783,6 +783,28 @@ function T.rejects_malformed_numeric_world_ids()
   })
 end
 
+-- Flag reads accept a value that resolves to a flag id (a generated source
+-- trainer number stays live), while world-id write destinations keep
+-- requiring a world id or a variable reference.
+function T.flag_reads_accept_a_flag_id_value_but_write_destinations_do_not()
+  valid({
+    api = 1,
+    id = "x",
+    steps = {
+      S.setFlag({ flag = { value = "trainer_flag_id", trainer = { value = "var", id = "VAR_A" } } }),
+      S.stop(),
+    },
+  })
+  invalidCode("SCRIPT_INVALID_REFERENCE", {
+    api = 1,
+    id = "x",
+    steps = {
+      S.setVar({ variable = { value = "trainer_flag_id", trainer = 1 }, value = 0 }),
+      S.stop(),
+    },
+  })
+end
+
 function T.rejects_malformed_value_reference()
   invalidCode(
     "SCRIPT_SCHEMA_INVALID",

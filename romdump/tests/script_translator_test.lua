@@ -254,7 +254,7 @@ T["retained compiler uses injected hashing and counts coverage once"] = function
   Assert.equal(bundle.memberCoverage[1].totals.members, 1)
 end
 
--- 3. An unsupported instruction (e.g. SetTrainerFlag) makes the script
+-- 3. An unsupported instruction (e.g. ChatotHasCry) makes the script
 -- partial with an explicit unsupported node.
 T["unsupported instructions stay explicit"] = function()
   local bytes = ScriptFixture.member({
@@ -262,7 +262,7 @@ T["unsupported instructions stay explicit"] = function()
       {
         offset = 0x20,
         instructions = {
-          { op = 36, args = { { value = 1, width = 2 }, { value = 2, width = 2 } } },
+          { op = 89, args = { { value = 1, width = 2 } } },
           { op = 2, args = {} },
         },
       },
@@ -271,8 +271,8 @@ T["unsupported instructions stay explicit"] = function()
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.equal(#lowered.unsupported, 1)
-  Assert.equal(lowered.unsupported[1].command, 36)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_SetTrainerFlag")
+  Assert.equal(lowered.unsupported[1].command, 89)
+  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_ChatotHasCry")
   local report = Verifier.verifyScript(Structurer.structure(lowered, 0), ir.scripts[0], ir, lowered.omissions)
   Assert.isFalse(report.complete)
   Assert.equal(report.unsupportedCount, 1)
@@ -1742,7 +1742,7 @@ T["unsupported and omitted instructions stay accounted beside folds"] = function
     { opcode = 28, operands = { { raw = 1 }, { raw = "_END" } }, offset = 0x26 },
     { opcode = 0, operands = {}, offset = 0x2D },
     { opcode = 1, operands = {}, offset = 0x2E },
-    { opcode = 36, operands = { { raw = 1 }, { raw = 2 } }, offset = 0x2F },
+    { opcode = 89, operands = { { raw = 1 } }, offset = 0x2F },
     { opcode = 2, operands = {}, offset = 0x33, label = "_END" },
   }
   local script = { label = "_ENTRY", instructions = instructions }
@@ -1758,12 +1758,12 @@ T["unsupported and omitted instructions stay accounted beside folds"] = function
     { offset = 0x2E, opcode = 1 },
   })
   Assert.equal(#lowered.unsupported, 1)
-  Assert.equal(lowered.unsupported[1].command, 36)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_SetTrainerFlag")
+  Assert.equal(lowered.unsupported[1].command, 89)
+  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_ChatotHasCry")
   Assert.isTrue(lowered.unsupported[1] == lowered.items[2], "the diagnostic node is the emitted item")
   Assert.deepEqual(
     lowered.items[2].provenance,
-    { offsets = { 0x2F }, opcodes = { 36 } },
+    { offsets = { 0x2F }, opcodes = { 89 } },
     "the unsupported node keeps its source provenance"
   )
   local seen = {}
@@ -1877,6 +1877,35 @@ T["cross-script call resolves its target and a missing target stays unsupported"
   Assert.isTrue(missingReport.ok, missingReport.problems[1] and missingReport.problems[1].message or "reported")
   Assert.isFalse(missingReport.complete)
   Assert.equal(missingReport.unsupportedCount, 1)
+end
+
+-- NameRival blocks the script on the shared field naming screen and writes
+-- the native no-input result into its destination variable, so the lowering
+-- emits one blocking operation without inventing any nickname operand.
+T["name rival lowers to the blocking rival naming operation"] = function()
+  Assert.deepEqual(CommandCatalog.widths(143), { 2 })
+  Assert.equal(CommandCatalog.classification(143), CommandCatalog.NATIVE_WAIT)
+  Assert.isNil(CommandCatalog.disposition(143))
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 143, args = { { value = 0x8008, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local _, steps, report = translate(bytes, 5, 0)
+  Assert.deepEqual(steps[1], {
+    op = "rival_naming",
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
+    provenance = { offsets = { 0x20 }, opcodes = { 143 } },
+  })
+  Assert.isNil(steps[1].slot, "rival naming is not a party nickname slot")
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "rival naming must verify")
+  Assert.isTrue(report.complete)
 end
 
 return { tests = T }

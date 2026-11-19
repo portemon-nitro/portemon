@@ -35,6 +35,35 @@ function FieldServiceHandlers.strengthFlagAction(ins)
   return FieldServiceHandlers.flagAction(ins, "FLAG_STRENGTH_ACTIVE")
 end
 
+-- ScrCmd_SetTrainerFlag/ClearTrainerFlag/CheckTrainerFlag (36/37/38) read one
+-- ScriptGetVar trainer number into the same numeric event flags as every other
+-- flag command, because the retail trainer flag is TRAINER_FLAG_BASE + trainer
+-- (src/script_manager.c::TrainerFlagSet/Check/Clear). Set and clear are
+-- same-tick writes, and the check publishes that flag's native comparison
+-- state against 1 (ctx->comparisonResult) for the following branch, never a
+-- result variable.
+local function trainerFlagValue(ins)
+  return { value = "trainer_flag_id", trainer = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.setTrainerFlag(ins)
+  return { op = "set_flag", flag = trainerFlagValue(ins) }
+end
+
+function FieldServiceHandlers.clearTrainerFlag(ins)
+  return { op = "clear_flag", flag = trainerFlagValue(ins) }
+end
+
+function FieldServiceHandlers.checkTrainerFlag(ins)
+  return { op = "compare", left = { value = "flag_value", flag = trainerFlagValue(ins) }, right = 1 }
+end
+
+-- ScrCmd_NameRival (143) blocks the parent script on the shared field naming
+-- screen and returns the native no-input result to its destination variable.
+function FieldServiceHandlers.nameRival(ins)
+  return { op = "rival_naming", result = Operands.varRef(ins.operands[1]) }
+end
+
 -- ScrCmd_CheckEscortMode reads FLAG_HAVE_FOLLOWER into its result variable.
 function FieldServiceHandlers.checkEscortMode(ins)
   return {

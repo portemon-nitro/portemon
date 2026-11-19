@@ -50,10 +50,12 @@ function PlayerData.ticksPerGlyph(textSpeed)
 end
 
 -- One saved name: a string of 1..7 glyphs the generated field font encodes.
+-- Exposed so a live name write rejects exactly the names a saved record
+-- rejects instead of keeping a second copy of the rule.
 ---@param name unknown
 ---@param owner string "player" or "rival", for the diagnostic
----@param context table<string, unknown>
-local function validateName(name, owner, context)
+---@param charmap table<string, unknown> the generated field font charmap
+function PlayerData.validateName(name, owner, charmap)
   if type(name) ~= "string" then
     Errors.raise(FieldErrors.PLAYER_DATA_NAME_INVALID, owner .. " name must be a string", { name = name })
   end
@@ -68,7 +70,7 @@ local function validateName(name, owner, context)
         { name = name, glyphs = glyphs }
       )
     end
-    if context.charmap[glyph] == nil then
+    if charmap[glyph] == nil then
       unencodableGlyph = glyph
     end
   end
@@ -95,8 +97,8 @@ local function validate(record, context)
   if type(profile) ~= "table" then
     Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player profile must be a table", {})
   end
-  validateName(profile.name, "player", context)
-  validateName(profile.rivalName, "rival", context)
+  PlayerData.validateName(profile.name, "player", context.charmap)
+  PlayerData.validateName(profile.rivalName, "rival", context.charmap)
   if PlayerData.GENDERS[profile.gender] ~= true then
     Errors.raise(FieldErrors.PLAYER_DATA_GENDER_INVALID, "player gender must be one of the gendered-message values", {
       gender = profile.gender,

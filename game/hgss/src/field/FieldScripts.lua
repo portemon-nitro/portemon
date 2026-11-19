@@ -5,6 +5,7 @@
 
 local Bindings = require("libs.hgss.src.script.Bindings")
 local Errors = require("libs.errors.src.Errors")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 local ScriptErrors = require("libs.script.src.errors")
 local ScriptActorWorld = require("libs.hgss.src.script.ScriptActorWorld")
 local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
@@ -32,6 +33,7 @@ local FieldMoveCue = require("game.hgss.src.field.FieldMoveCue")
 ---@class ScriptPlayerFacade
 ---@field private _player FieldPlayer|nil
 ---@field private _profile table<string, unknown>|nil { gender: integer, name: string, rivalName: string }
+---@field private _charmap table<string, unknown> the generated field font charmap live name writes are validated against
 ---@field private _avatarState table<string, unknown>|nil avatar transition owner for queue/apply consumers
 ---@field private _avatarApplier fun(): table<string, unknown>|nil materializes pending transitions through the owning runtime composition
 local ScriptPlayerFacade = {}
@@ -58,11 +60,14 @@ local PLAYER_STATE_CODE = {
 }
 
 ---@param player FieldPlayer
+---@param charmap table<string, unknown> the generated field font charmap live name writes are validated against
 ---@return ScriptPlayerFacade
-local function playerFacade(player)
+local function playerFacade(player, charmap)
+  assert(type(charmap) == "table", "field scripts require the generated field charmap")
   return setmetatable({
     _player = player,
     _profile = nil,
+    _charmap = charmap,
   }, ScriptPlayerFacade)
 end
 
@@ -164,6 +169,23 @@ function ScriptPlayerFacade:rivalName()
   return profile --[[@as { rivalName: string }]].rivalName
 end
 
+-- Store the accepted rival name on the live profile the rival battle, the
+-- message substitution, and the save capture already read. The naming screen
+-- owns input, so an accepted name is already made of glyphs the generated
+-- charmap encodes; this boundary re-checks the saved-profile name contract
+-- (string, 1..7 glyphs, field-charmap encodable) before publishing, so a
+-- rejected name leaves the live profile untouched.
+---@param name string
+function ScriptPlayerFacade:setRivalName(name)
+  local profile = self._profile
+  if profile == nil then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "no player profile is wired; the rival name cannot be stored", {})
+  end
+  ---@cast profile table<string, unknown>
+  PlayerData.validateName(name, "rival", self._charmap)
+  profile.rivalName = name
+end
+
 function ScriptPlayerFacade:stateCode()
   local avatar = self._avatarState
   assert(avatar and type(avatar.status) == "function", "field scripts require a player avatar state owner")
@@ -225,7 +247,7 @@ end
 ---@field dialogue FieldDialogueController
 ---@field messageProvider FieldMessageProvider
 ---@field layout fun(formatted: table<string, unknown>): table<string, unknown>
----@field fontDef table<string, unknown>
+---@field fontDef table<string, unknown> the generated field font: glyph metrics and the charmap both dialogue and name writes resolve
 ---@field frameIndex integer|nil player-selected HGSS user-frame index for dialogue requests
 ---@field signpost FieldSignpostController the fixed-tick signpost controller the host advances
 ---@field windowStyles FieldWindowStyles the immutable per-runtime window style catalogue the high-level sign ops resolve appearances against
@@ -261,7 +283,7 @@ end
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoveAftermath table<string, unknown>|nil the Rock Smash / Headbutt aftermath service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field sweetScent table<string, unknown>|nil the Sweet Scent host seam for the scent task (absent -> SCRIPT_SERVICE_MISSING on use)
----@field monNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
+---@field monNaming table<string, unknown>|nil the shared field naming host behind nickname and rival naming commands (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field celebiCinematic table<string, unknown>|nil runtime-owned Celebi scene service used by the time-travel task
 ---@field legendCutscene table<string, unknown>|nil runtime-owned legend cutscene command state
@@ -375,7 +397,7 @@ function FieldScripts.new(opts)
     },
     seed = opts.seedText or opts.cacheFs.versionId,
   })
-  local player = playerFacade(opts.player)
+  local player = playerFacade(opts.player, opts.fontDef.charmap)
   -- The real player profile (gender and name) is wired when the game owns
   -- one; without it, profile-dependent operations fault instead of
   -- fabricating values.

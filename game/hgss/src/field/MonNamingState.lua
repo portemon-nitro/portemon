@@ -1,4 +1,5 @@
--- Field-local host for the reusable Pokemon Naming Screen.
+-- Field-local host for the reusable Naming Screen: the source Pokemon
+-- nickname and rival naming commands share this one physical screen.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
@@ -34,10 +35,10 @@ MonNamingState.__index = MonNamingState
 ---@param options MonNamingState.Options
 ---@return MonNamingState
 function MonNamingState.new(options)
-  assert(type(options) == "table", "Pokemon naming requires its composition")
-  assert(type(options.charmap) == "table", "Pokemon naming requires the field charmap")
-  assert(type(options.measureDisplay) == "function", "Pokemon naming requires display measurement")
-  assert(type(options.effect) == "function", "Pokemon naming requires its sound effect boundary")
+  assert(type(options) == "table", "field naming requires its composition")
+  assert(type(options.charmap) == "table", "field naming requires the field charmap")
+  assert(type(options.measureDisplay) == "function", "field naming requires display measurement")
+  assert(type(options.effect) == "function", "field naming requires its sound effect boundary")
   return setmetatable({
     _charmap = options.charmap,
     _effect = options.effect,
@@ -55,26 +56,27 @@ function MonNamingState:isActive()
 end
 
 local function view(self)
-  return assert(self._controller, "Pokemon naming is inactive"):snapshot()
+  return assert(self._controller, "field naming is inactive"):snapshot()
 end
 
 function MonNamingState:_resolve()
-  local session = assert(self._session, "active Pokemon naming owns a presentation session")
+  local session = assert(self._session, "active field naming owns a presentation session")
   session:resolve(self._measureDisplay(), view(self))
 end
 
 function MonNamingState:open(spec)
-  assert(not self:isActive(), "Pokemon naming is already active")
-  assert(type(spec) == "table", "Pokemon naming open requires a spec")
+  assert(not self:isActive(), "the field naming screen is already active")
+  assert(type(spec) == "table", "the field naming screen open requires a spec")
+  local kind = spec.kind or "pokemon"
   local subject = {}
-  for key, value in pairs(assert(spec.subject, "Pokemon naming requires subject facts")) do
+  for key, value in pairs(assert(spec.subject, "field naming requires subject facts")) do
     subject[key] = value
   end
-  subject.kind = "pokemon"
+  subject.kind = kind
   local controller = NamingScreenController.new({
-    kind = "pokemon",
-    maxLength = assert(spec.maxLength, "Pokemon naming requires its glyph limit"),
-    initialText = assert(spec.currentText, "Pokemon naming requires current text"),
+    kind = kind,
+    maxLength = assert(spec.maxLength, "field naming requires its glyph limit"),
+    initialText = assert(spec.currentText, "field naming requires current text"),
     charmap = self._charmap,
     subject = subject,
     effect = self._effect,
@@ -95,12 +97,12 @@ function MonNamingState:open(spec)
 end
 
 function MonNamingState:handleInput(events)
-  local controller = assert(self._controller, "Pokemon naming is inactive")
-  assert(type(events) == "table", "Pokemon naming requires UI events")
+  local controller = assert(self._controller, "field naming is inactive")
+  assert(type(events) == "table", "field naming requires UI events")
   if not self._presentationReady then
     return
   end
-  local session = assert(self._session, "active Pokemon naming owns a presentation session")
+  local session = assert(self._session, "active field naming owns a presentation session")
   self:_resolve()
   for _, event in ipairs(session:mapInput(events, view(self))) do
     controller:applyEvent(event)
@@ -119,8 +121,8 @@ end
 
 ---@param ready boolean whether FieldPresentationResources can draw this subject
 function MonNamingState:setPresentationReady(ready)
-  assert(self:isActive(), "Pokemon naming is inactive")
-  assert(type(ready) == "boolean", "Pokemon naming readiness must be boolean")
+  assert(self:isActive(), "field naming is inactive")
+  assert(type(ready) == "boolean", "field naming readiness must be boolean")
   self._presentationReady = ready
 end
 
@@ -135,7 +137,7 @@ function MonNamingState:status()
     done = snapshot.settled,
     text = snapshot.text,
     snapshot = snapshot,
-    presentation = assert(self._session, "active Pokemon naming owns a presentation session"):plan(),
+    presentation = assert(self._session, "active field naming owns a presentation session"):plan(),
   }
 end
 
@@ -146,8 +148,8 @@ function MonNamingState:cancelPointerCapture()
 end
 
 function MonNamingState:drawPresentation(namingRenderer)
-  local status = assert(self:status(), "Pokemon naming is inactive")
-  local graphics = assert(love and love.graphics, "Pokemon naming requires graphics")
+  local status = assert(self:status(), "field naming is inactive")
+  local graphics = assert(love and love.graphics, "field naming requires graphics")
   ApplicationPresentation.draw(graphics, {
     graphics = graphics,
     namingRenderer = namingRenderer,
@@ -155,7 +157,7 @@ function MonNamingState:drawPresentation(namingRenderer)
 end
 
 function MonNamingState:close()
-  assert(self:isActive(), "Pokemon naming is inactive")
+  assert(self:isActive(), "field naming is inactive")
   self._session:dispose()
   self._session = nil
   self._controller = nil

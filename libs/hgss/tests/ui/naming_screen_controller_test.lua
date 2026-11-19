@@ -203,6 +203,36 @@ function T.tests.player_and_pokemon_subject_contracts_are_strict()
   end)
 end
 
+function T.tests.rival_naming_shares_the_player_keyboard_and_glyph_limit()
+  local rival = NamingScreenController.new({
+    effect = function() end,
+    kind = "rival",
+    maxLength = 7,
+    initialText = "",
+    charmap = CHARMAP,
+    subject = { kind = "rival" },
+  })
+  local view = rival:snapshot()
+  Assert.equal(view.kind, "rival")
+  Assert.deepEqual(view.subject, { kind = "rival" }, "the rival screen carries no party or player subject")
+  Assert.equal(view.maxLength, 7, "rival naming uses the player name limit")
+  Assert.equal(view.grid[2][1].glyph, "A", "the rival screen keeps the shared keyboard")
+  Assert.isTrue(rival:inputText("SILVER"))
+  Assert.isTrue(rival:inputText("S"), "the seventh glyph fits the source limit")
+  Assert.isFalse(rival:inputText("S"), "the eighth glyph is refused")
+  Assert.deepEqual(rival:result(), nil)
+  Assert.throws(function()
+    NamingScreenController.new({
+      effect = function() end,
+      kind = "rival",
+      maxLength = 7,
+      initialText = "",
+      charmap = CHARMAP,
+      subject = { kind = "pokemon", species = 25 },
+    })
+  end, "the rival screen never borrows a party subject")
+end
+
 function T.tests.vertical_motion_out_of_a_skipped_home_region_uses_the_remembered_horizontal_delta()
   local controller = player()
   Assert.isTrue(controller:activateControl("symbols"))

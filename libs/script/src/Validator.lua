@@ -633,6 +633,16 @@ local function checkIdOrVar(context, v, path, field)
   end
   checkVarRef(context, v, path, field)
 end
+-- A flag identifier: a world id, a variable reference, or any value that
+-- resolves to a flag id at runtime. Only flag reads accept the value form;
+-- world-id write destinations stay world ids or variable references.
+local function checkFlagId(context, v, path, field)
+  if type(v) == "table" then
+    checkValueRef(context, v, path, field)
+    return
+  end
+  checkIdOrVar(context, v, path, field)
+end
 CHECKERS.actor = checkActor
 local function checkActorList(context, v, path, field)
   local count = checkArray(context, v, path, field)
@@ -817,6 +827,7 @@ CHECKERS.scalar_or_value = checkScalarOrValue
 CHECKERS.value = checkValueRef
 CHECKERS.text_value = checkTextValue
 CHECKERS.id_or_var = checkIdOrVar
+CHECKERS.flag_id = checkFlagId
 CHECKERS.actor = checkActor
 CHECKERS.actor_list = checkActorList
 CHECKERS.condition = checkCondition

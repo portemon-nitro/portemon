@@ -2014,6 +2014,16 @@ local FieldHandlers = {
   [835] = FieldServiceHandlers.martCardPrefix,
 }
 
+-- NameRival (143), SetTrainerFlag/ClearTrainerFlag (36/37) and
+-- CheckTrainerFlag (38) lower through the cohesive field-service leaf, which
+-- keeps their names off this chunk's exhausted 200-local budget. They are
+-- single-operand lowerings: 36/37/38 read one ScriptGetVar trainer number into
+-- the numeric trainer event flag and 143 blocks on the shared naming screen.
+FieldHandlers[36] = FieldServiceHandlers.setTrainerFlag
+FieldHandlers[37] = FieldServiceHandlers.clearTrainerFlag
+FieldHandlers[38] = FieldServiceHandlers.checkTrainerFlag
+FieldHandlers[143] = FieldServiceHandlers.nameRival
+
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This
 -- chunk sits at LuaJIT's 200-local budget, so the leaf is referenced
 -- through cached inline requires that declare no new locals.

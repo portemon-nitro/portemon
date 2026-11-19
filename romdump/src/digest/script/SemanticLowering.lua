@@ -108,6 +108,18 @@ local function foldConditional(ins, branch)
       return nil
     end
     condition = { condition = "flag", id = Operands.operandValue(ins.operands[1]), expected = expected }
+  elseif ins.opcode == 38 then
+    -- CheckTrainerFlag publishes the trainer defeat flag as native
+    -- comparison state, so the branch compares that flag against 1.
+    condition = {
+      condition = "compare",
+      operator = operator,
+      left = {
+        value = "flag_value",
+        flag = { value = "trainer_flag_id", trainer = Operands.varRef(ins.operands[1]) },
+      },
+      right = 1,
+    }
   else
     return nil
   end
@@ -431,7 +443,7 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
       handler ~= nil
       and nextIns ~= nil
       and (nextIns.opcode == 28 or nextIns.opcode == 29)
-      and (ins.opcode == 17 or ins.opcode == 18 or ins.opcode == 32)
+      and (ins.opcode == 17 or ins.opcode == 18 or ins.opcode == 32 or ins.opcode == 38)
       and nextIns.label == nil
     then
       local folded = foldConditional(ins, nextIns)

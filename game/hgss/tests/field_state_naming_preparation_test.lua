@@ -57,7 +57,7 @@ function T.permanent_preparation_failure_propagates_to_the_host()
   end)
   Assert.isFalse(state._namingPresentationReady, "failed naming presentation stays hidden")
   Assert.isFalse(ok, "a permanent naming preparation failure reaches LÖVE's callback error handler")
-  Assert.equal(tostring(failure), "Pokemon naming presentation failed: page failed")
+  Assert.equal(tostring(failure), "field naming presentation failed: page failed")
   Assert.equal(calls.preparations, 1, "the callback stops at the failed preparation")
   Assert.deepEqual(calls.readiness, { false }, "the failed naming state remains not ready")
 end

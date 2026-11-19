@@ -5,7 +5,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local NamingScreenController = {}
 
 ---@class NamingScreenOptions
----@field kind "player"|"pokemon"|"box"
+---@field kind "player"|"pokemon"|"box"|"rival"
 ---@field maxLength integer
 ---@field initialText string
 ---@field charmap table<string, integer>
@@ -13,7 +13,7 @@ local NamingScreenController = {}
 ---@field effect fun(sequence: string) the semantic sound boundary of the hosting application
 
 ---@class NamingScreenSnapshot
----@field kind "player"|"pokemon"|"box"
+---@field kind "player"|"pokemon"|"box"|"rival"
 ---@field page "upper"|"lower"|"symbols"
 ---@field cursor table<string, unknown>
 ---@field text string
@@ -131,7 +131,9 @@ local function validateSubject(kind, subject)
       )
     end
   else
-    assert(kind == "box" and subject.kind == "box", "box naming subject is neutral text")
+    -- The box editor and the source rival screen are neutral-text subjects:
+    -- neither carries a player or party identity.
+    assert(kind == "box" or kind == "rival", "naming subject kind is unsupported")
   end
 end
 
@@ -167,7 +169,10 @@ end
 function NamingScreenController.new(options)
   assert(type(options) == "table", "naming screen options are required")
   assert(type(options.effect) == "function", "naming screen requires its sound effect boundary")
-  assert(options.kind == "player" or options.kind == "pokemon" or options.kind == "box", "naming kind is invalid")
+  assert(
+    options.kind == "player" or options.kind == "pokemon" or options.kind == "box" or options.kind == "rival",
+    "naming kind is invalid"
+  )
   assert(
     type(options.maxLength) == "number" and options.maxLength % 1 == 0 and options.maxLength > 0,
     "naming maxLength must be a positive integer"
